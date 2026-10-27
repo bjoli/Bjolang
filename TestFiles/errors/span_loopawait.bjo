@@ -1,0 +1,13 @@
+;; A loop variable cannot be a span when the loop suspends.
+;; EXPECT-ERROR: the loop variable 's' of 'loop' is a (System.Span long), and the loop suspends
+(import (std prelude))
+(import/extern
+  (whole (: System.MemoryExtensions.AsSpan (-> (Array %a) (System.Span %a))))
+  (sleep (: System.Threading.Tasks.Task.Delay (-> int void) #:async #:uncancellable)))
+(: (-> (System.Span long) int))
+(defun (len s) (.-Length s))
+
+(defbjo (main) (def xs (vec->array [1L 2L]))
+  (let loop ((i 0) (s (whole xs)))
+    (when (< i 2) (sleep 1) (loop (+ i 1) s)))
+  0)

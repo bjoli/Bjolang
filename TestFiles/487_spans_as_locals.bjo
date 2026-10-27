@@ -1,0 +1,104 @@
+;; A span as a value of its own: a local, an argument and a result. It is
+;; indexed with (.get_Item s i), written with (.set_Item s i v), and used
+;; across if, match, try, a loop, a local function and a (seq ...) that ends
+;; it before each yield. See errors/span_*.bjo for where it may not go.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (Encoding (: System.Text.Encoding)))
+
+(import/extern
+  (utf8 (: System.Text.Encoding.UTF8 #:get))
+  (preamble (: System.Text.Encoding.Preamble (-> Encoding (System.ReadOnlySpan byte)) #:get))
+  (as-span (: System.MemoryExtensions.AsSpan (-> (Array %a) int int (System.Span %a))))
+  (whole (: System.MemoryExtensions.AsSpan (-> (Array %a) (System.Span %a))))
+  (index-of (: System.MemoryExtensions.IndexOf (-> (System.Span long) long int)))
+  (sleep (: System.Threading.Tasks.Task.Delay (-> int void) #:async #:uncancellable)))
+
+;; Takes a span, and loops over it inline.
+(: (-> (System.Span long) long))
+(defun (sum s)
+  (let loop ((i 0) (acc 0L))
+    (if (< i (.-Length s))
+        (loop (+ i 1) (+ acc (.get_Item s i)))
+        acc)))
+
+;; Answers a span over its argument.
+(: (-> (Array long) (System.Span long)))
+(defun (tail-of xs) (as-span xs 1 (- (array-length xs) 1)))
+
+;; Writes through a span, with a keyword parameter.
+(: (-> (System.Span long) (#:by long) void))
+(defun (scale! s #:by 2L)
+  (let loop ((i 0))
+    (when (< i (.-Length s))
+      (.set_Item s i (* by (.get_Item s i)))
+      (loop (+ i 1)))))
+
+;; A loop that stays a local function takes the span as an argument.
+(: (-> (System.Span long) int))
+(defun (count s)
+  (: (-> int (System.Span long) int))
+  (defun (walk i v)
+    (if (< i (.-Length v))
+        (+ 1 (walk (+ i 1) v))
+        0))
+  (walk 0 s))
+
+;; A sequence that makes a span and ends it before each yield.
+(: (-> (Array long) (Seq int)))
+(defun (lengths xs)
+  (seq
+    (yield (.-Length (whole xs)))
+    (yield (.-Length (as-span xs 1 2)))))
+
+;; A bjoroutine may use a span where no yield point follows it.
+(: (-bjo-> (Array long) long))
+(defbjo (sum-later xs)
+  (def n (sum (whole xs)))
+  (sleep 1)
+  n)
+
+(: (-> (Array long) void))
+(defun (spans xs)
+  (expect "a span over an array" (sum (whole xs)) 10L)
+  (expect "a span a function answers" (sum (tail-of xs)) 9L)
+
+  (def s (if (> (array-length xs) 2) (as-span xs 0 2) (as-span xs 0 1)))
+  (expect "a span from an if" (.-Length s) 2)
+
+  (def m (match (array-length xs)
+           (4 (as-span xs 2 2))
+           (_ (whole xs))))
+  (expect "a span from a match" (sum m) 7L)
+
+  (scale! m)
+  (scale! m #:by 10L)
+  (expect "writes through a span reach the array" (array->vec xs) [1L 2L 60L 80L])
+
+  (expect "a span in a try" (try (index-of (whole xs) 2L) #:catch (System.Exception)) (Ok 1))
+
+  (: (-> (System.Span long) long))
+  (defun (first s) (.get_Item s 0))
+  (expect "a local function over a span" (first (tail-of xs)) 2L)
+
+  (def p (preamble utf8))
+  (expect "a read-only span, interpolated" #"${(.-Length p)} ${(.get_Item p 0)}" "3 239")
+
+  (def/mutable t (whole xs))
+  (set! t (as-span xs 1 1))
+  (expect "a mutable span" (.-Length t) 1)
+
+  (expect "a slice" (sum (.Slice (whole xs) 2)) 140L)
+  (.Fill (whole xs) 7L)
+  (expect "a span's own method" (array->vec xs) [7L 7L 7L 7L])
+
+  (expect "a loop that is a local function" (count (whole xs)) 4)
+  (expect "a sequence" (seq->list (lengths xs)) '(4 2)))
+
+(defbjo (main)
+  (spans (vec->array [1L 2L 3L 4L]))
+  (expect "a bjoroutine" (sum-later (vec->array [1L 2L])) 3L)
+  0)

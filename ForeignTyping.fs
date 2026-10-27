@@ -498,7 +498,7 @@ let internal checkDeclaredExtern
             $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' is imported #:copy, but the overload selected here answers %s{DotNetInterop.showType (prune registry result)}, not a span. #:copy only turns a span into an array."
     | Some(TFun(_, written, _)), Some _ when not info.IsCopy && prune registry written <> prune registry result ->
         failwithf
-            $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' answers a %s{DotNetInterop.showType (prune registry result)}, and a span is not a Bjolang value: it lives only as long as the call that made it, so it cannot be held, stored or returned. An array can be passed where a method takes a span, but a span it answers is not an array. Write #:copy in the clause to answer a new array with a copy of its elements."
+            $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' answers a %s{DotNetInterop.showType (prune registry result)}, not an array. An array can be passed where a method takes a span, but a span it answers is not copied unless the clause asks. Declare the result as %s{DotNetInterop.showType (prune registry result)} to use the span in place, or write #:copy in the clause to answer a new array with a copy of its elements."
     | _ -> ()
 
     let result =

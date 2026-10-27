@@ -730,6 +730,12 @@ let rec mapClrType (t: Type) : HMType =
             | true, bjolang -> TCon(bjolang, [])
             | _ -> TCon(name, [])
 
+/// The Bjolang type of what a member answers. A `ref T` or a `ref readonly T`
+/// answer is a `T`, because C# reads it as a copy of the value it refers to.
+/// The indexer of a span answers this way, so `(.get_Item s i)` is `s[i]`.
+let mapClrResultType (t: Type) : HMType =
+    if t.IsByRef then mapClrType (t.GetElementType()) else mapClrType t
+
 /// The Bjolang string type a .NET string type stands for at a call — `string`
 /// for `System.String` and an array of them for `string[]` — if it is one.
 /// `ForeignTyping.bjolangViewOf` is the same, for the passes after this one.
@@ -1308,7 +1314,7 @@ let resolveGenericMethod
             if awaited then
                 awaitedResultType m.ReturnType |> Option.defaultValue (TCon("<not a task>", []))
             else
-                mapClrType m.ReturnType
+                mapClrResultType m.ReturnType
 
         // A method that answers nothing is declared `void`, which in a Bjolang
         // signature is the unit — there is no way to write the interop void, and
@@ -1449,7 +1455,7 @@ let tryResolveMixedGenericMethod
         let ps = m.GetParameters() |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList
 
         let ret =
-            if awaited then awaitedResultType m.ReturnType else Some(mapClrType m.ReturnType)
+            if awaited then awaitedResultType m.ReturnType else Some(mapClrResultType m.ReturnType)
 
         ps.Length = matchedParams.Length
         && List.forall2 sameType ps matchedParams
@@ -2156,6 +2162,43 @@ and resolveMethodReturning
     rejectSyncOverAsync where t name
     let candidates = callableMethods t name (memberFlags isStatic)
 
+    // An indexer that answers a writable `ref T` has no setter: C# writes
+    // `s[i] = v` through the reference. `Span<T>` is such a type. So
+    // `set_Item` is resolved there as `get_Item` with the value after the
+    // keys, and is emitted as an indexer write.
+    let writableRefIndexer () =
+        if name <> "set_Item" || not candidates.IsEmpty || argTypes.IsEmpty then
+            None
+        else
+            let readOnlyRef (m: MethodInfo) =
+                m.ReturnParameter.GetRequiredCustomModifiers()
+                |> Array.exists (fun c -> c.FullName = "System.Runtime.InteropServices.InAttribute")
+
+            let getters =
+                callableMethods t "get_Item" (memberFlags isStatic)
+                |> List.filter (fun (_, m) -> m.ReturnType.IsByRef && not (readOnlyRef m))
+
+            if getters.IsEmpty then
+                None
+            else
+                let keys = List.truncate (argTypes.Length - 1) argTypes
+                let ps, m = selectOverload (describeMethod t "get_Item") where getters keys
+
+                Some
+                    { ParameterTypes =
+                        (ps |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList)
+                        @ [ mapClrResultType m.ReturnType ]
+                      ReturnType = voidType
+                      RawReturnType = typeof<Void>
+                      DeclaringType = t.FullName
+                      Name = name
+                      IsStatic = isStatic
+                      Syntax = IndexerSet }
+
+    match writableRefIndexer () with
+    | Some resolved -> resolved
+    | None ->
+
     let candidates =
         match declaredReturn with
         | Some wanted when name = "op_Explicit" || name = "op_Implicit" ->
@@ -2188,7 +2231,7 @@ and resolveMethodReturning
             | n -> failwith (ex.Message.TrimEnd() + n)
 
     { ParameterTypes = ps |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList
-      ReturnType = mapClrType m.ReturnType
+      ReturnType = mapClrResultType m.ReturnType
       RawReturnType = m.ReturnType
       DeclaringType = t.FullName
       Name = name
@@ -2308,7 +2351,7 @@ let resolveMemberRead (where: string) (declaringType: Type) (name: string) (isSt
         if not prop.CanRead then
             failwithf $"Type Error at %s{where}: '%s{declaringType.FullName}.%s{name}' is write-only."
 
-        mapClrType prop.PropertyType
+        mapClrResultType prop.PropertyType
 
 /// Resolves a `#:set` import — a writable property or field, static or not.
 ///

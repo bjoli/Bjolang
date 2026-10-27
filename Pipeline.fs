@@ -3411,6 +3411,10 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
 
         ColourCheck.run env.Registry loopLoweredAst
 
+        // Beside `ColourCheck`: whether a span is captured or held across a
+        // yield point is decided by the same lowering.
+        Timing.phase "span check" (fun () -> SpanCheck.run env.Registry loopLoweredAst)
+
         // Beside `ColourCheck` and for the same reason: both are about what a
         // body does with the thread it is on, and both want the program as it
         // will be emitted. This one only warns — parking is legal, and the

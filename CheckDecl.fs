@@ -2177,7 +2177,7 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                     else Some(TFun(declaredParams, array, ESync))
                 | Some _ when resolvedReturn <> declaredReturn ->
                     failwithf
-                        $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' answers a %s{DotNetInterop.showType resolvedReturn}, and a span is not a Bjolang value: it lives only as long as the call that made it. Write #:copy in the clause to answer a new array with a copy of its elements."
+                        $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' answers a %s{DotNetInterop.showType resolvedReturn}, not an array. Declare the result as %s{DotNetInterop.showType resolvedReturn} to use the span in place, or write #:copy in the clause to answer a new array with a copy of its elements."
                 | _ when resolvedReturn = declaredReturn -> declaredType
                 | _ -> Some(TFun(declaredParams, resolvedReturn, ESync))
 

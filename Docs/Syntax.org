@@ -1063,7 +1063,7 @@ Declares that a member answers a ~ReadOnlySpan<T>~ or a ~Span<T>~, and that the 
 
 (preamble utf8)                        ;; utf8.Preamble.ToArray()
 #+END_SRC
-A span is not a Bjolang value. Thus, without ~#:copy~, a span result declared as an array is refused. The copy costs an allocation per call. If the copy is too slow, write the loop over the span in C# glue (see [[file:Projects.org][Projects.org]], C# glue). ~#:copy~ does not combine with ~#:async~, ~#:set~ or ~(out T)~ parameters.
+Without ~#:copy~, a span result declared as an array is refused. The copy costs an allocation per call. To use the span in place, declare the result as the span type (see /Spans as values/ below). ~#:copy~ does not combine with ~#:async~, ~#:set~ or ~(out T)~ parameters.
 
 **** ~#:get~ and ~#:set~ — properties and fields
 ~#:get~ reads a property/field, ~#:set~ writes it.
@@ -1083,7 +1083,9 @@ by name: ~(.-Length x)~, ~#:get~ and ~#:set~ are how a property is read and
 written, and naming an accessor is an error that says so. An *indexer* has no
 other spelling, so its accessors are called by name and written as C# writes
 them: ~(.get_Item d k)~ is ~d[k]~ and ~(.set_Item d k v)~ is ~d[k] = v~. An
-~import/extern~ of ~get_Item~ is the same call, ~#:exceptions~ and all.
+~import/extern~ of ~get_Item~ is the same call, ~#:exceptions~ and all. An
+indexer that answers a ~ref T~, as ~Span<T>~'s does, answers a copy of the
+value, and ~(.set_Item s i v)~ writes through the reference.
 
 **** ~(out T)~ — out parameters
 A parameter written ~(out T)~ in the signature is a C# ~out~ parameter, in C#'s position. It is not an argument at the call site: the binding's type is the declared arrow with every ~(out T)~ removed, and the outs come back in the result. The declared result says how, in one of two forms; the compiler checks it against the method and never picks a form itself.
@@ -1221,6 +1223,8 @@ A generic method may be imported ~#:async~ and ~#:cancellable~ too. The declared
 | ~T[]~                | ~(Array %a)~       |
 | a ~ReadOnlySpan<T>~ or ~Span<T>~ parameter | ~(Array %a)~ |
 | a ~ReadOnlySpan<T>~ or ~Span<T>~ result, under ~#:copy~ | ~(Array %a)~, a copy |
+| ~ReadOnlySpan<T>~, ~Span<T>~, any ~ref struct~ | ~(System.ReadOnlySpan %a)~, ~(System.Span %a)~, ..., as a local only |
+| a ~ref T~ result, as of ~Span<T>~'s indexer | ~%a~, a copy of the value |
 | ~void~               | ~void~             |
 | a method's own ~T~   | a type variable    |
 ~Action<T>~ and ~out~ parameters do not cross directly. Use callbacks returning ~unit~ or tuples. For an event handler, an ~Action~ or a delegate type of a library's own, ~(std interop)~ makes a delegate of that type from a Bjolang function.
@@ -1232,7 +1236,30 @@ A generic method may be imported ~#:async~ and ~#:cancellable~ too. The declared
   (write-be! (: System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian (-> (Array byte) int void)))  ; Span<byte>
   (reverse!  (: System.MemoryExtensions.Reverse (-> (Array %a) void))))                      ; Span<T>
 #+END_SRC
-A span a member *answers* is not an array, and has no Bjolang type: it lives only as long as the call that made it, and can point into memory that a later call changes. Import the member ~#:copy~ to answer a new array with a copy of its elements (see ~#:copy~ above). The array is the declared result, as for a span parameter.
+A span a member *answers* is not an array. Import the member ~#:copy~ to answer a new array with a copy of its elements (see ~#:copy~ above), or use the span in place, as below.
+
+**** Spans as values
+A span is a view of memory that is valid only while the call that made it runs. Its type is the .NET one: ~(System.Span %a)~, ~(System.ReadOnlySpan %a)~, or any other ~ref struct~. A span can be a local, an argument and a result, as in C#. Index it with ~(.get_Item s i)~, write it with ~(.set_Item s i v)~, and use its own members, such as ~(.-Length s)~, ~(.Slice s 1)~ and ~(.ToArray s)~:
+#+BEGIN_SRC scheme
+(import/extern
+  (as-span (: System.MemoryExtensions.AsSpan (-> (Array %a) int int (System.Span %a)))))
+
+(: (-> (System.Span long) long))
+(defun (sum s)
+  (let loop ((i 0) (acc 0L))
+    (if (< i (.-Length s))
+        (loop (+ i 1) (+ acc (.get_Item s i)))   ;; s[i]
+        acc)))
+
+(sum (as-span xs 1 3))                   ;; no copy
+#+END_SRC
+A span cannot go where it could outlive the call that made it. The compiler refuses a span:
+- in another value: a vec, a list, a tuple, a record, a union case, an ~Option~ or a ~Result~;
+- as a type argument of a generic function, as in ~(println s)~;
+- as a parameter or result of a function *value*. Call the function by name;
+- captured by a ~(fun ...)~, a local ~(defun ...)~, a loop that stays a local function, a ~(seq ...)~ or a hoisted form. Pass it as an argument;
+- in scope across a yield point of a bjoroutine, or across a ~(yield ...)~ of a ~(seq ...)~. Do the span work in a ~(defun ...)~ that the bjoroutine calls;
+- as a parameter or result of a bjoroutine, as an argument to ~(bjo ...)~, or as a module-level definition.
 
 *** Limits
 Destructuring .NET classes with constructor patterns and generic class imports (except as types) are not supported.

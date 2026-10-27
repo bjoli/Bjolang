@@ -1,0 +1,10 @@
+;; A span cannot be in scope across a yield point of a bjoroutine.
+;; EXPECT-ERROR: 's' is a (System.Span long), and it is in scope across a yield point
+(import (std prelude))
+(import/extern
+  (whole (: System.MemoryExtensions.AsSpan (-> (Array %a) (System.Span %a))))
+  (sleep (: System.Threading.Tasks.Task.Delay (-> int void) #:async #:uncancellable)))
+(: (-> (System.Span long) int))
+(defun (len s) (.-Length s))
+
+(defbjo (main) (def xs (vec->array [1L])) (def s (whole xs)) (sleep 1) (println (len s)) 0)
