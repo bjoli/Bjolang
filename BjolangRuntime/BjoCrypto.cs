@@ -166,6 +166,16 @@ public static class CryptoModule
         return $"${id}$i={iterations}${ToB64(salt)}${ToB64(hash)}";
     }
 
+    public static byte[] DeriveKey(string password, byte[] salt, string algorithm, int iterations, int length)
+    {
+        HashAlgorithmLength(algorithm);
+        if (iterations < 1)
+            throw new ArgumentException("The iteration count must be at least 1.");
+        if (length < 1)
+            throw new ArgumentException("The key length must be at least 1.");
+        return Derive(password, salt, algorithm, iterations, length);
+    }
+
     static int HashAlgorithmLength(string algorithm) => algorithm switch
     {
         "SHA256" => 32,

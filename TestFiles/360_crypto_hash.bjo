@@ -30,6 +30,15 @@
 (: (-> string string))
 (defun (hash-file/sync path) (hex (hash-file path)))
 
+(: (-> string (Array byte) (Array byte)))
+(defun (key/sync password salt) (derive-key password salt #:iterations 1))
+
+(: (-> string (Array byte) (Array byte)))
+(defun (key/md5 password salt) (derive-key password salt #:iterations 1 #:algorithm Md5))
+
+(: (-> string (Array byte) (Array byte)))
+(defun (key/empty password salt) (derive-key password salt #:iterations 1 #:length 0))
+
 ;; RFC 6070-style vectors for PBKDF2-HMAC-SHA256, P = "password", S = "salt".
 (def phc-c1 "$pbkdf2-sha256$i=1$c2FsdA$Eg+2z/z4syxD5yJSVsT4N6hlSMkszDVICAWYfLcL4Xs")
 (def phc-c2 "$pbkdf2-sha256$i=2$c2FsdA$rk0Mla9rRtMtCt/5KPBt0CowP47zwlHf1uLYWpVHTEM")
@@ -143,4 +152,20 @@
             ((Ok _) "answered")
             ((Err _) "raised"))
           "raised")
+
+  ;; ---- Keys -----------------------------------------------------------------
+  (def salt (string->bytes "salt"))
+  (expect "derive-key, one iteration"
+          (hex (derive-key "password" salt #:iterations 1))
+          "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b")
+  (expect "derive-key, two iterations"
+          (hex (derive-key "password" salt #:iterations 2))
+          "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43")
+  (expect "derive-key from a plain function"
+          (hex (key/sync "password" salt))
+          "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b")
+  (expect "derive-key length"
+          (array-length (derive-key "x" salt #:iterations 1 #:length 80 #:algorithm Sha512)) 80)
+  (expect "derive-key refuses md5" (raises? #(key/md5 "x" salt)) #t)
+  (expect "derive-key refuses length 0" (raises? #(key/empty "x" salt)) #t)
   0)

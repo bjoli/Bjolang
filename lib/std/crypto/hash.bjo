@@ -21,6 +21,8 @@
 ;; PBKDF2 at 600000 iterations takes a core for a few hundred milliseconds. In
 ;; a bjoroutine, the password functions run on a thread of their own, so the
 ;; fiber pool is not blocked.
+;;
+;; `derive-key` is PBKDF2 with a salt you give: the same bytes each time.
 
 (export
   ;; Transparent: Md5, Sha1, Sha256, Sha384, Sha512, Sha3-256, Sha3-384, Sha3-512.
@@ -35,7 +37,9 @@
   constant-time-equal? bytes->hex hex->bytes
   ;; Passwords
   password-hash password-verify password-needs-rehash?
-  default-password-iterations)
+  default-password-iterations
+  ;; Keys
+  derive-key)
 
 (import (std prelude))
 (import (only (std random) random-bytes!))
@@ -69,6 +73,8 @@
   (shim-password-hash  (: Bjolang.Runtime.CryptoModule.PasswordHash
                          (-> string (Array byte) string int string)))
   (shim-password-verify (: Bjolang.Runtime.CryptoModule.PasswordVerify (-> string string bool)))
+  (shim-derive-key     (: Bjolang.Runtime.CryptoModule.DeriveKey
+                         (-> string (Array byte) string int int (Array byte))))
   (shim-needs-rehash   (: Bjolang.Runtime.CryptoModule.PasswordNeedsRehash (-> string string int bool))))
 
 ;; The name .NET knows the algorithm by.
@@ -213,3 +219,18 @@
 (: (-> string (#:algorithm HashAlgorithm) (#:iterations int) bool))
 (defun (password-needs-rehash? stored #:algorithm Sha256 #:iterations default-password-iterations)
   (shim-needs-rehash stored (algorithm-name algorithm) iterations))
+
+;; ---------------------------------------------------------------------------
+;; Keys
+;; ---------------------------------------------------------------------------
+
+;; PBKDF2 bytes of `password` with the salt given. Same password and salt,
+;; same bytes. Runs on a thread of its own in a bjoroutine, as
+;; `password-hash` does.
+(: (-> string (Array byte) (#:algorithm HashAlgorithm) (#:iterations int) (#:length int) (Array byte)))
+(defbjouble (derive-key password salt #:algorithm Sha256 #:iterations default-password-iterations
+                        #:length 32)
+  (#:sync (shim-derive-key password salt (algorithm-name algorithm) iterations length))
+  (#:bjo  (unwrap-thread
+           (sync (spawn/thread #(shim-derive-key password salt (algorithm-name algorithm)
+                                                 iterations length))))))
