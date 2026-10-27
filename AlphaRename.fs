@@ -63,8 +63,8 @@ let freshen = Hygiene.freshen
 /// binders as they are.
 let renameFree = Hygiene.renameFree
 
-/// The same, except that a chosen set of names becomes an `EResolved` wherever
-/// it is called — a trait method a macro template wrote.
+/// The same, except that a chosen set of names becomes an `EResolved`, called
+/// or as a value: the names a macro template wrote and did not bind.
 let renameFreeResolving = Hygiene.renameFreeResolving
 
 /// Every name an untyped expression references without binding, given `bound`

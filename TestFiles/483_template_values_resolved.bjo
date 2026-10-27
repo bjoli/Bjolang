@@ -1,0 +1,23 @@
+;; A function a template uses as a value is the one the template meant,
+;; whatever the caller binds under its name.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/value_writing_macros.bjo")
+
+(: lengths (-> (-> string int) (Vec int)))
+(defun (lengths string-length) (lengths-of ["ab" "cde"]))
+
+(: joined (-> int string))
+(defun (joined ->str) (joined-by-commas [1 2]))
+
+(: shadowed-by-def (-> (Vec int)))
+(defun (shadowed-by-def)
+  (def string-length (fun (s) 0))
+  (lengths-of ["abcd"]))
+
+(defun (main)
+  (expect "under a parameter" (lengths (fun (s) 99)) [2 3])
+  (expect "under a parameter of another type" (joined 0) "1,2")
+  (expect "under a def" (shadowed-by-def) [4])
+  (println "done"))

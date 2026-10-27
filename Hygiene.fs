@@ -416,8 +416,8 @@ let rec private renamePattern
 /// substitution instead of adding to it, so a binder shadows an outer name
 /// exactly as it does at runtime.
 ///
-/// A name in `resolved` becomes an `EResolved` where it is *called* rather than
-/// an ordinary reference. Only this traversal knows which occurrences are free,
+/// A name in `resolved` becomes an `EResolved`, called or as a value, rather
+/// than an ordinary reference. Only this traversal knows which occurrences are free,
 /// which is why the choice is made here and not in a pass of its own: a name the
 /// expression binds for itself is not the one being resolved.
 let private renameWith
@@ -488,6 +488,7 @@ let private renameWith
         | EResolved _
         | EQuotedSymbol _
         | EKeyword _ -> e
+        | EIdent(n, r) when Set.contains n resolved && Map.containsKey n subst -> EResolved(subst[n], r)
         | EIdent(n, r) -> EIdent(reference n, r)
         | ETuple(items, r) -> ETuple(List.map sub items, r)
         | EApp(EIdent(n, ir), args, r) when Set.contains n resolved && Map.containsKey n subst ->
