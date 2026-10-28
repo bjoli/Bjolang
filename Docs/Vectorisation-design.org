@@ -175,7 +175,7 @@ loop that is not vectorized is not an error.
 Each step is measured against the scalar loop it replaces, in paired
 rounds, and against Polars where there is a comparison to make.
 
-** Status of steps 1 and 2, and of reductions from step 3
+** Status of steps 1 and 2, and of reductions and filters from step 3
 
 ~VectorMarks~ runs after ~Monomorphise~ and before ~TraitInline~. It marks
 each ~iterable-current~ of a driver whose type implements ~Contiguous~, and
@@ -195,8 +195,11 @@ loop it found. A loop is accepted when:
   ~(array-set! out i x)~, one step of a ~BlockCollector~, or accumulators
   that count or sum integers (~counting~, ~summing~ of ~int~ or ~long~);
 - before the accumulators, ~:when~ and ~:when-let~ make a mask of the lanes
-  that the accumulators take. A ~:when~ test is a comparison of lanes
-  (~<~, ~>~, ~<=~, ~>=~), joined by ~and~, ~or~ and ~not~;
+  that the accumulators and a ~BlockCollector~ take. A ~:when~ test is a
+  comparison of lanes (~<~, ~>~, ~<=~, ~>=~), joined by ~and~, ~or~ and
+  ~not~;
+- a cursor's own values, such as ~row~ in ~(:for row (range 0 n))~, can go
+  to a ~BlockCollector~;
 - a lane value reads arrays at a cursor, uses names and literals that the
   loop does not change, and applies ~+~, ~-~, ~*~, and ~/~ on ~double~ and
   ~float~; casts from ~long~ to ~double~ and from ~int~ to ~float~ are
@@ -218,8 +221,20 @@ mask to a vector, and the lanes of the vector to the accumulator after the
 loop. An integer sum wraps, so the order of the additions does not change
 it. A sum of floats is not vectorized.
 
-Not done yet: ~:when~ before a column or an array (a filter, which needs
-compaction), ~=~ in a test, an ~if~ as a blend, ~min~, ~max~ and ~abs~,
+A ~BlockCollector~ under a mask is a filter. The vector part stores each
+vector at the end of a buffer and copies each lane to the end of the kept
+ones; the count of the kept ones grows by 1 for a lane that is kept, so no
+jump depends on the mask. The buffer goes to the collector when it is full
+and after the loop. A cursor's values that are kept are written one lane at
+a time, so they can be ints in a loop of longs.
+
+The prelude has a ~BlockCollector~ of its own, ~arraying~, which collects
+into an ~Array~, and ~(std mutable vec)~ makes ~MutableVec~ ~Contiguous~.
+So a plain Bjolang loop such as
+~(loop (:for x xs) (:when (> x 2.0)) (:acc (arraying (* 10.0 x))))~ is a
+vector loop too.
+
+Not done yet: a ~:when~ before ~array-set!~, ~=~ in a test, an ~if~ as a blend, ~min~, ~max~ and ~abs~,
 ~summing/fast~ for floats, vecs, and a report of which loops were
 vectorized.
 
@@ -234,6 +249,8 @@ for the vector loop, separate processes for the scalar baseline):
 | ~(+ x x)~, longs                       | 288 µs  | 152 µs  |
 | bjostat ~new column~: two Cells, ~column-building/option~ | 4.11–4.17 ms | 0.99–2.84 ms |
 | bjostat ~filter, count only~: two ~:when-let~, a ~:when~, ~counting~ | 3.53 ms | 0.41 ms |
+| bjostat ~filter, no columns~: the same, ~selecting~ the rows | 4.07–4.15 ms | 1.37 ms |
+| bjostat ~filter, kept rows~: the same and the copy of the rows | 9.72 ms | 6.69 ms |
 
 The conversion from ~long~ to ~double~ has no AVX2 instruction, which is
 why the second loop gains least. The bjostat new column is 8 MB each time,

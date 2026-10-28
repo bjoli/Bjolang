@@ -91,7 +91,9 @@
   (mutablevec-try-ref       (: Bjolang.Runtime.MutableVecModule.TryGet     (-> (MutableVec %a) int (out %a) (Option %a))))
   ;; The last element, removed. `None` leaves the vector as it was, so a
   ;; stack-shaped loop can pop until it stops.
-  (mutablevec-pop!          (: Bjolang.Runtime.MutableVecModule.TryPopBack (-> (MutableVec %a) (out %a) (Option %a)))))
+  (mutablevec-pop!          (: Bjolang.Runtime.MutableVecModule.TryPopBack (-> (MutableVec %a) (out %a) (Option %a))))
+  ;; The elements where the vector keeps them. Valid until the vector grows.
+  (clr-as-span              (: System.Runtime.InteropServices.CollectionsMarshal.AsSpan (-> (MutableVec %a) (Span %a)))))
 
 ;; Sorted by the element's own `Ord`. `mutablevec-sort-by!` takes the comparison
 ;; directly, for an order that is not the type's. Both are stable, as
@@ -150,6 +152,14 @@
   (defun (iterable-done? xs index) (>= index (mutablevec-length xs)))
   (defun (iterable-current xs index) (mutablevec-ref xs index))
   (defun (iterable-next xs index) (+ index 1)))
+
+;; The elements are one .NET array, so a loop over them can be a vector loop.
+;; Such a loop does not add to the vector, so the span stays valid.
+(impl (Contiguous (MutableVec %a))
+  (type %value %a)
+  (defun (contiguous? xs) #t)
+  (defun (contiguous-values xs) (span->ro-span (clr-as-span xs)))
+  (defun (contiguous-valid xs) (array->ro-span (make-array 0))))
 
 (impl (Collection (MutableVec %a))
   (type %content %a)

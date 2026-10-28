@@ -20,7 +20,7 @@
   ArraySlice ReverseArraySlice VecSlice ReverseVecSlice
   VecBackCursor StringWalk ListTails PortReads UpFrom DownFrom
   Enumerated Zipped Cycled Pairwise Repeated Chained
-  Listing ListingReverse Vecing VecingSmall Mapping Stringing Summing Counting Folding
+  Listing ListingReverse Vecing VecingSmall Arraying Mapping Stringing Summing Counting Folding
   VecingInto ListingInto ListingReverseInto MappingInto
   InputPort OutputPort Exception Encoding
 
@@ -955,6 +955,38 @@
   (defun (collector-init c) (vecbuilder-empty))
   (defun (collector-step c acc x) (vecbuilder-add! acc x) acc)
   (defun (collector-finish c acc) (vecbuilder->vec acc)))
+
+;; Arraying: the elements in an array. Its accumulator takes a block of
+;; elements at a time, so a loop of numbers into it can be a vector loop.
+(type (: (Arraying %a) (Union arraying)))
+
+(import/class
+  ((ArrayBuilder %a) (: Bjolang.Runtime.ArrayBuilder)))
+
+(import/extern
+  (arraybuilder-empty     (: Bjolang.Runtime.ArrayBuilderModule.Empty   (-> (ArrayBuilder %a))))
+  (arraybuilder-add       (: Bjolang.Runtime.ArrayBuilderModule.Add     (-> (ArrayBuilder %a) %a (ArrayBuilder %a))))
+  (arraybuilder-count     (: Bjolang.Runtime.ArrayBuilderModule.Count   (-> (ArrayBuilder %a) int)))
+  (arraybuilder-grow      (: Bjolang.Runtime.ArrayBuilderModule.Grow    (-> (ArrayBuilder %a) int (ArrayBuilder %a))))
+  (arraybuilder-span      (: Bjolang.Runtime.ArrayBuilderModule.Span    (-> (ArrayBuilder %a) int int (Span %a))))
+  (arraybuilder->array    (: Bjolang.Runtime.ArrayBuilderModule.ToArray (-> (ArrayBuilder %a) (Array %a))))
+  (arraybuilder-no-none!  (: Bjolang.Runtime.ArrayBuilderModule.NoNone  (-> (ArrayBuilder %a) int void))))
+
+(impl (Collector (Arraying %a))
+  (type %elem %a)
+  (type %acc (ArrayBuilder %a))
+  (type %out (Array %a))
+  (defun (collector-init c) (arraybuilder-empty))
+  (defun (collector-step c acc x) (arraybuilder-add acc x))
+  (defun (collector-finish c acc) (arraybuilder->array acc)))
+
+(impl (BlockCollector (Arraying %a))
+  (type %value %a)
+  (type %acc (ArrayBuilder %a))
+  (defun (block-count c acc) (arraybuilder-count acc))
+  (defun (block-grow c acc n) (arraybuilder-grow acc n))
+  (defun (block-span c acc start n) (arraybuilder-span acc start n))
+  (defun (block-none! c acc i) (arraybuilder-no-none! acc i)))
 
 ;; Vecing into a builder for a vec that is likely small: its tail starts at 4
 ;; items and doubles, where `vecing` takes a leaf of 32 at the first item.

@@ -1,0 +1,26 @@
+;; A `:when` before a BlockCollector keeps some lanes only. The vector part
+;; stores each vector at the end of a buffer, and copies each lane to the end
+;; of the kept ones; the count of the kept ones grows by 1 for a lane that is
+;; kept. So no jump depends on the mask. The buffer goes to the collector when
+;; it is full and after the loop. The numbers of the elements are written one
+;; lane at a time, so they can be ints in a loop of longs.
+;; `499_vector_filters.bjo` is what checks the answers.
+
+(import (std prelude))
+
+;; EXPECT-CS: double\[\] __vbuffer\w* = System\.Buffers\.ArrayPool<double>\.Shared\.Rent\(1024\);
+;; EXPECT-CS: System\.Runtime\.Intrinsics\.Vector256\.StoreUnsafe\(\(__vsplat\w* \* System\.Runtime\.Intrinsics\.Vector256\.LoadUnsafe\(.*\)\), ref System\.Runtime\.InteropServices\.MemoryMarshal\.GetArrayDataReference\(__vbuffer\w*\), \(nuint\)__vat\w*\);
+;; EXPECT-CS: __vbuffer\w*\[__vkept\w*\] = __vbuffer\w*\[__vat\w* \+ __vlane\w*\];
+;; EXPECT-CS: __vkept\w* \+= \(__vkeep\w* >> __vlane\w*\) & 1;
+;; EXPECT-CS: System\.MemoryExtensions\.AsSpan\(__vbuffer\w*, 0, __vkept\w*\)\.CopyTo\(BlockCollector_\w*Arraying<double>\.Instance\.blocksubspan\(
+(: (-> (Array double) double (Array double)))
+(defun (scaled-above xs lo)
+  (loop (:for x xs) (:when (> x lo)) (:acc (arraying (* 10.0 x)))))
+
+;; EXPECT-CS: int\[\] __vbuffer\w* = System\.Buffers\.ArrayPool<int>\.Shared\.Rent\(1024\);
+;; EXPECT-CS: __vbuffer\w*\[__vkept\w*\] = loopcur\w* \+ __vk\w* \+ __vlane\w*;
+(: (-> (Array long) long (Array int)))
+(defun (positions-below xs hi)
+  (loop (:for i (range 0 (array-length xs))) (:for x xs)
+        (:when (< x hi))
+        (:acc (arraying i))))

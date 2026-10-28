@@ -1,0 +1,66 @@
+;; Loops with a `:when` into a BlockCollector, which are compiled to vector
+;; instructions that put the kept lanes next to each other (see
+;; codegen/vector_filter.bjo). The answers must be those of the scalar loop:
+;; for each size, with more kept values than the buffer of the vector loop
+;; holds, with the numbers of the elements kept, and with None values.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std mutable vec))
+
+(: (-> (Array double) double (Array double)))
+(defun (scaled-above xs lo)
+  (loop (:for x xs) (:when (> x lo)) (:acc (arraying (* 10.0 x)))))
+
+;; The numbers of the elements kept: ints, in a loop whose lanes are longs.
+(: (-> (Array long) long (Array int)))
+(defun (positions-below xs hi)
+  (loop (:for i (range 0 (array-length xs))) (:for x xs)
+        (:when (< x hi))
+        (:acc (arraying i))))
+
+(: (-> (MutableVec int) (Array int)))
+(defun (outside v)
+  (loop (:for x v) (:when (or (< x 3) (not (< x 7)))) (:acc (arraying (- x 1)))))
+
+;; The same filter, written for the scalar loop: each element through a
+;; function, which a vector loop cannot call.
+(: (-> int (-> int bool) (-> int %a) (Array %a)))
+(defun (expected n keep? f)
+  (loop (:for i (range 0 n)) (:when (keep? i)) (:acc (arraying (f i)))))
+
+(: (-> (Array %a) (Array %a) bool) (where (Eq %a)))
+(defun (same? a b)
+  (and (= (array-length a) (array-length b))
+       (= 0 (loop (:for i (range 0 (array-length a)))
+                  (:when (not (= (array-ref a i) (array-ref b i))))
+                  (:acc (counting i))))))
+
+(defun (main)
+  (loop
+    (:for n [0 1 3 4 5 7 8 9 15 16 17 100 1001 5000])
+    (:do
+     (def x (fun (i) (% (* 37 i) 10)))
+     (def ds (make-array n #:fill 0.0))
+     (def ls (make-array n #:fill 0L))
+     (def v (mutablevec))
+     (loop (:for i (range 0 n))
+           (:do (array-set! ds i (cast double (x i)))
+                (array-set! ls i (cast long (x i)))
+                (mutablevec-add! v (x i))))
+     (def where (displayed n))
+     (expect (str "scaled above, " where)
+             (same? (scaled-above ds 2.0)
+                    (expected n (fun (i) (> (x i) 2)) (fun (i) (* 10.0 (cast double (x i))))))
+             #t)
+     (expect (str "all kept, " where)
+             (same? (scaled-above ds -1.0) (expected n (fun (i) #t) (fun (i) (* 10.0 (cast double (x i))))))
+             #t)
+     (expect (str "none kept, " where) (array-length (scaled-above ds 100.0)) 0)
+     (expect (str "positions below, " where)
+             (same? (positions-below ls 5L) (expected n (fun (i) (< (x i) 5)) (fun (i) i)))
+             #t)
+     (expect (str "outside, " where)
+             (same? (outside v) (expected n (fun (i) (or (< (x i) 3) (>= (x i) 7))) (fun (i) (- (x i) 1))))
+             #t)))
+  0)

@@ -161,6 +161,9 @@ type VectorExpr =
     | VBinary of string * VectorExpr * VectorExpr
     /// `Vector256.ConvertToDouble` or `Vector256.ConvertToSingle`.
     | VConvert of string * VectorExpr
+    /// The values of a cursor, which are ints: the cursor in lane 0, the
+    /// cursor plus 1 in lane 1, and so on.
+    | VIndex of cursor: string
 
 /// A set of lanes: those of an Option value that are Some, or those for
 /// which a test is true.
@@ -207,14 +210,26 @@ type VectorSink =
     /// and the collector's `BlockCollector` dictionary.
     | SinkBlock of collector: TypedExpr * acc: string * dictionary: TypedExpr
 
+/// The values that a vector loop puts in an array or a collector.
+type VectorStore =
+    { Kind: VectorSink
+      Value: VectorExpr
+      /// The lanes whose values are Some. The others are None.
+      Present: VectorMask
+      /// The lanes that a `:when` keeps. The others are left out, and the
+      /// lanes that are kept are put next to each other.
+      Keep: VectorMask
+      /// The type of a value.
+      Type: HMType }
+
 /// A loop that `Codegen` writes a vector part for. See `vectorLoopOf`.
 type VectorLoop =
     { Cursors: (string * VectorLimit) list
       Drivers: VectorDriver list
       /// The arrays read or written, each with the cursor it is indexed by.
       Arrays: (TypedExpr * string) list
-      /// Where the values go, and the lanes of them that are Some.
-      Sink: (VectorSink * VectorExpr * VectorMask) option
+      /// Where the values go.
+      Sink: VectorStore option
       /// The accumulator slots that lanes are added to, each with the lanes
       /// that it takes.
       Reductions: (string * VectorReduction * VectorMask) list
@@ -2503,7 +2518,7 @@ let private vectorLoopOf
     let drivers = ResizeArray<VectorDriver>()
     let arrays = ResizeArray<TypedExpr * string>()
     let reductions = ResizeArray<string * VectorReduction * VectorMask>()
-    let mutable sink: (VectorSink * VectorExpr * VectorMask * HMType) option = None
+    let mutable sink: VectorStore option = None
     let driverOf cur = drivers |> Seq.tryFindIndex (fun d -> d.Cursor = cur)
 
     // A name or a literal that the loop does not change. The body assigns no
@@ -2534,7 +2549,7 @@ let private vectorLoopOf
         match e.Node with
         | TIdent(n, []) when Map.containsKey n env ->
             match env[n] with
-            | Index _ -> None
+            | Index cur -> Some(Plain(VIndex cur, TypeConstants.intType))
             | l -> Some l
         | TIdent("None", _) ->
             optionValue t
@@ -2711,19 +2726,32 @@ let private vectorLoopOf
                 match cursorOf env index, lane env value, arrayElement out.Type with
                 | Some cur, Some(Plain(v, vt)), Some element when sameType vt element ->
                     arrays.Add(out, cur)
-                    sink <- Some(SinkArray(out, cur), v, MAll, vt)
+                    sink <-
+                        Some
+                            { Kind = SinkArray(out, cur)
+                              Value = v
+                              Present = MAll
+                              Keep = MAll
+                              Type = vt }
                     walk env guard updated rest
                 | _ -> false
+            // A step under a mask keeps the lanes of the mask: they are put
+            // next to each other before they go to the collector.
             | TApply({ Node = TIdent(VectorMarks.StepMark, _) }, [ c; acc; x; _ ], []) when
-                sink.IsNone && guard = MAll && invariant env c
+                sink.IsNone && invariant env c
                 ->
+                let store slot dictionary v present vt =
+                    sink <-
+                        Some
+                            { Kind = SinkBlock(c, slot, dictionary)
+                              Value = v
+                              Present = present
+                              Keep = guard
+                              Type = vt }
+                    walk env guard (Map.add slot n updated) rest
                 match freshAcc updated acc, evidence "BlockCollector" c, lane env x with
-                | Some slot, Some dictionary, Some(Plain(v, vt)) ->
-                    sink <- Some(SinkBlock(c, slot, dictionary), v, MAll, vt)
-                    walk env guard (Map.add slot n updated) rest
-                | Some slot, Some dictionary, Some(Optional(v, m, vt)) ->
-                    sink <- Some(SinkBlock(c, slot, dictionary), v, m, vt)
-                    walk env guard (Map.add slot n updated) rest
+                | Some slot, Some dictionary, Some(Plain(v, vt)) -> store slot dictionary v MAll vt
+                | Some slot, Some dictionary, Some(Optional(v, m, vt)) -> store slot dictionary v m vt
                 | _ -> false
             // `(+ acc x)`: a count when x is 1, and otherwise a sum of
             // integers. An integer sum wraps, so the order in which the lanes
@@ -2799,7 +2827,7 @@ let private vectorLoopOf
             [ for slot, _, _ in reductions do
                   yield slot
               match sink with
-              | Some(SinkBlock(_, acc, _), _, _, _) -> yield acc
+              | Some { Kind = SinkBlock(_, acc, _) } -> yield acc
               | _ -> () ]
         // The type of a lane. It decides the number of lanes, so each lane
         // must have its size.
@@ -2811,6 +2839,7 @@ let private vectorLoopOf
             | VBinary(_, a, _) -> typeOf a
             | VConvert("ConvertToDouble", _) -> Some TypeConstants.doubleType
             | VConvert(_, _) -> Some TypeConstants.singleType
+            | VIndex _ -> Some TypeConstants.intType
         let rec maskExprs m =
             match m with
             | MCompare(_, a, b) -> [ a; b ]
@@ -2833,22 +2862,34 @@ let private vectorLoopOf
                 | VBinary(_, a, b) -> subExprs a @ subExprs b
                 | VConvert(_, a) -> subExprs a
                 | _ -> [])
+        // The values of a cursor that a mask keeps are written one lane at a
+        // time, so they need not have the size of the other lanes.
+        let scalarIndex =
+            match sink with
+            | Some { Value = VIndex _; Keep = keep } -> keep <> MAll
+            | _ -> false
+        let masks =
+            [ match sink with
+              | Some store -> yield store.Present; yield store.Keep
+              | None -> ()
+              for _, _, m in reductions -> m ]
         let exprs =
             [ match sink with
-              | Some(_, v, m, _) -> yield v; yield! maskExprs m
-              | None -> ()
-              for _, r, m in reductions do
+              | Some store when not scalarIndex -> yield store.Value
+              | _ -> ()
+              for _, r, _ in reductions do
                   match r with
                   | RSum(v, _) -> yield v
                   | RCount -> ()
+              for m in masks do
                   yield! maskExprs m ]
             |> List.collect subExprs
         let laneType =
             match sink with
-            | Some(_, _, _, t) -> Some t
-            | None ->
+            | Some store when not scalarIndex -> Some store.Type
+            | _ ->
                 let fromDrivers =
-                    reductions |> Seq.collect (fun (_, _, m) -> maskDrivers m) |> Seq.tryHead
+                    masks |> Seq.collect maskDrivers |> Seq.tryHead
                     |> Option.map (fun k -> drivers[k].Value)
                 exprs |> List.tryPick typeOf |> Option.orElse fromDrivers
         let lanesMatch (t: HMType) =
@@ -2873,7 +2914,7 @@ let private vectorLoopOf
                     { Cursors = cursors |> List.map Option.get
                       Drivers = List.ofSeq drivers
                       Arrays = List.ofSeq arrays
-                      Sink = sink |> Option.map (fun (s, v, m, _) -> s, v, m)
+                      Sink = sink
                       Reductions = List.ofSeq reductions
                       Lane = t }
             | _ -> None
@@ -5989,9 +6030,11 @@ and private generateRecur
 ///
 /// A `BlockCollector` gets room for all the elements of the vector part at
 /// once. Each lane that is None is then made None, one at a time; a column
-/// with few nulls has few. A count adds the number of lanes in its mask, and
-/// a sum adds the lanes in its mask to a vector, whose lanes are added to the
-/// accumulator after the loop.
+/// with few nulls has few. When a `:when` keeps some lanes only, the lanes
+/// that it keeps are put next to each other in a buffer, and the buffer goes
+/// to the collector when it is full and after the loop. A count adds the
+/// number of lanes in its mask, and a sum adds the lanes in its mask to a
+/// vector, whose lanes are added to the accumulator after the loop.
 and private emitVectorLoop (ctx: CodegenContext) (v: VectorLoop) : unit =
     let text (e: TypedExpr) =
         let sb = StringBuilder()
@@ -6017,9 +6060,14 @@ and private emitVectorLoop (ctx: CodegenContext) (v: VectorLoop) : unit =
         | MAll
         | MNone
         | MCompare _ -> Set.empty
+    let rec isAll m =
+        match m with
+        | MAll -> true
+        | MAnd(a, b) -> isAll a && isAll b
+        | _ -> false
     let masks =
         [ match v.Sink with
-          | Some(_, _, m) -> yield m
+          | Some store -> yield store.Present; yield store.Keep
           | None -> ()
           for _, _, m in v.Reductions -> m ]
     let masked = masks |> List.map maskDrivers |> Set.unionMany
@@ -6081,6 +6129,7 @@ and private emitVectorLoop (ctx: CodegenContext) (v: VectorLoop) : unit =
                         let b = expr b
                         $"({a} {op} {b})"
                     | VConvert(f, a) -> $"{vector}.{f}({expr a})"
+                    | VIndex slot -> $"({vector}.Create<int>({cursor slot} + {k}) + {vector}<int>.Indices)"
                 let rec maskText m =
                     match m with
                     | MAll -> full
@@ -6099,79 +6148,134 @@ and private emitVectorLoop (ctx: CodegenContext) (v: VectorLoop) : unit =
                             | "<=" -> "LessThanOrEqual"
                             | _ -> "GreaterThanOrEqual"
                         $"(int){vector}.ExtractMostSignificantBits({vector}.{f}({expr a}, {expr b}))"
-                let rec isAll m =
-                    match m with
-                    | MAll -> true
-                    | MAnd(a, b) -> isAll a && isAll b
-                    | _ -> false
+                let maskOf m = if isAll m then None else Some(maskText m)
                 // The texts are made before the loop, so that the splats they
                 // need are declared there.
-                let sink =
-                    v.Sink
-                    |> Option.map (fun (kind, value, m) ->
-                        kind, expr value, (if isAll m then None else Some(maskText m)))
                 let reductions =
                     v.Reductions
                     |> List.map (fun (slot, r, m) ->
-                        let m = if isAll m then None else Some(maskText m)
                         match r with
-                        | RCount -> slot, None, m
+                        | RCount -> slot, None, maskOf m
                         | RSum(value, t) ->
                             let sum = freshName "__vsum"
                             indent c
                             appendLine c $"var {sum} = {vector}<{typeToString t}>.Zero;"
-                            slot, Some(sum, expr value, typeToString t), m)
-                let store, none =
-                    match sink with
-                    | Some(SinkArray(out, slot), body, _) ->
-                        Some $"{vector}.StoreUnsafe({body}, ref {marshal}.GetArrayDataReference({text out}), (nuint)({cursor slot} + {k}));", None
-                    | Some(SinkBlock(collector, acc, dictionary), body, _) ->
-                        let start = freshName "__vstart"
-                        let span = freshName "__vspan"
-                        let acc = sanitizeIdent acc
-                        let collector = text collector
-                        indent c; appendLine c $"""int {start} = {call dictionary "block-count" [ collector; acc ]};"""
-                        indent c; appendLine c $"""{acc} = {call dictionary "block-grow" [ collector; acc; finished ]};"""
-                        indent c
-                        appendLine c $"""System.Span<{typeToString v.Lane}> {span} = {call dictionary "block-span" [ collector; acc; start; finished ]};"""
-                        Some $"{vector}.StoreUnsafe({body}, ref {marshal}.GetReference({span}), (nuint){k});",
-                        Some(fun (lane: string) -> call dictionary "block-none!" [ collector; acc; $"{start} + {k} + {lane}" ])
-                    | None -> None, None
-                indent c; appendLine c $"for (int {k} = 0; {k} < {finished}; {k} += {count}) {{"
-                withIndent c (fun c ->
-                    for i in masked do
-                        let d = v.Drivers[i]
-                        indent c
-                        appendLine c $"int {bits[i]} = Bjolang.Runtime.BjoVectors.Bits({valid[i]}, {cursor d.Cursor} + {k}, {count});"
-                    store |> Option.iter (fun s -> indent c; appendLine c s)
-                    match sink, none with
-                    | Some(_, _, Some m), Some markNone ->
+                            slot, Some(sum, expr value, typeToString t), maskOf m)
+                // The statements of one vector, and those after the loop.
+                let body = ResizeArray<CodegenContext -> unit>()
+                let after = ResizeArray<CodegenContext -> unit>()
+                let line (s: string) (c: CodegenContext) = indent c; appendLine c s
+                for i in masked do
+                    let d = v.Drivers[i]
+                    body.Add(line $"int {bits[i]} = Bjolang.Runtime.BjoVectors.Bits({valid[i]}, {cursor d.Cursor} + {k}, {count});")
+                match v.Sink with
+                | Some({ Kind = SinkArray(out, slot) } as store) ->
+                    let value = expr store.Value
+                    body.Add(line $"{vector}.StoreUnsafe({value}, ref {marshal}.GetArrayDataReference({text out}), (nuint)({cursor slot} + {k}));")
+                | Some({ Kind = SinkBlock(collector, acc, dictionary) } as store) when isAll store.Keep ->
+                    let value = expr store.Value
+                    let present = maskOf store.Present
+                    let start = freshName "__vstart"
+                    let span = freshName "__vspan"
+                    let acc = sanitizeIdent acc
+                    let collector = text collector
+                    indent c; appendLine c $"""int {start} = {call dictionary "block-count" [ collector; acc ]};"""
+                    indent c; appendLine c $"""{acc} = {call dictionary "block-grow" [ collector; acc; finished ]};"""
+                    indent c
+                    appendLine c $"""System.Span<{typeToString store.Type}> {span} = {call dictionary "block-span" [ collector; acc; start; finished ]};"""
+                    body.Add(line $"{vector}.StoreUnsafe({value}, ref {marshal}.GetReference({span}), (nuint){k});")
+                    match present with
+                    | Some m ->
                         let mask = freshName "__vmask"
                         let lane = freshName "__vlane"
-                        indent c; appendLine c $"int {mask} = {m};"
-                        indent c; appendLine c $"if ({mask} != {full}) {{"
-                        withIndent c (fun c ->
-                            indent c; appendLine c $"for (int {lane} = 0; {lane} < {count}; {lane}++) {{"
-                            withIndent c (fun c ->
-                                indent c; appendLine c $"if ((({mask} >> {lane}) & 1) == 0) {markNone lane};")
-                            indent c; appendLine c "}")
-                        indent c; appendLine c "}"
-                    | _ -> ()
-                    for slot, sum, m in reductions do
-                        match sum, m with
-                        | None, None -> indent c; appendLine c $"{sanitizeIdent slot} += {count};"
-                        | None, Some m ->
-                            indent c
-                            appendLine c $"{sanitizeIdent slot} += System.Numerics.BitOperations.PopCount((uint)({m}));"
-                        | Some(s, value, _), None -> indent c; appendLine c $"{s} += {value};"
-                        | Some(s, value, t), Some m ->
-                            indent c
-                            appendLine c $"{s} += {value} & Bjolang.Runtime.BjoVectors.Lanes<{t}>({m});")
-                indent c; appendLine c "}"
-                for slot, sum, _ in reductions do
-                    match sum with
-                    | Some(s, _, _) -> indent c; appendLine c $"{sanitizeIdent slot} += {vector}.Sum({s});"
+                        let none = call dictionary "block-none!" [ collector; acc; $"{start} + {k} + {lane}" ]
+                        body.Add(line $"int {mask} = {m};")
+                        body.Add(line $"if ({mask} != {full}) {{")
+                        body.Add(line $"    for (int {lane} = 0; {lane} < {count}; {lane}++) {{")
+                        body.Add(line $"        if ((({mask} >> {lane}) & 1) == 0) {none};")
+                        body.Add(line "    }")
+                        body.Add(line "}")
                     | None -> ()
+                | Some({ Kind = SinkBlock(collector, acc, dictionary) } as store) ->
+                    // The lanes that are kept go to a buffer, next to each
+                    // other. A vector is stored at the end of the buffer, and
+                    // then each lane is copied to the end of the kept ones,
+                    // which is never after it; the count of the kept ones
+                    // grows by 1 only for a lane that is kept. So there is no
+                    // jump that depends on the mask.
+                    let t = typeToString store.Type
+                    let keep = freshName "__vkeep"
+                    let some = freshName "__vsome"
+                    let buffer = freshName "__vbuffer"
+                    let none = freshName "__vnone"
+                    let kept = freshName "__vkept"
+                    let at = freshName "__vat"
+                    let lane = freshName "__vlane"
+                    let start = freshName "__vstart"
+                    let i = freshName "__vi"
+                    let acc = sanitizeIdent acc
+                    let collector = text collector
+                    let present = maskOf store.Present
+                    let keepText = maskText store.Keep
+                    let value =
+                        match store.Value with
+                        | VIndex _ -> None
+                        | other -> Some(expr other)
+                    indent c; appendLine c $"{t}[] {buffer} = System.Buffers.ArrayPool<{t}>.Shared.Rent(1024);"
+                    if present.IsSome then
+                        indent c; appendLine c $"bool[] {none} = System.Buffers.ArrayPool<bool>.Shared.Rent({buffer}.Length);"
+                    indent c; appendLine c $"int {kept} = 0;"
+                    let flush (c: CodegenContext) =
+                        indent c; appendLine c $"if ({kept} > 0) {{"
+                        withIndent c (fun c ->
+                            indent c; appendLine c $"""int {start} = {call dictionary "block-count" [ collector; acc ]};"""
+                            indent c; appendLine c $"""{acc} = {call dictionary "block-grow" [ collector; acc; kept ]};"""
+                            indent c
+                            appendLine c $"""System.MemoryExtensions.AsSpan({buffer}, 0, {kept}).CopyTo({call dictionary "block-span" [ collector; acc; start; kept ]});"""
+                            if present.IsSome then
+                                indent c
+                                appendLine c $"""for (int {i} = 0; {i} < {kept}; {i}++) if ({none}[{i}]) {call dictionary "block-none!" [ collector; acc; $"{start} + {i}" ]};"""
+                            indent c; appendLine c $"{kept} = 0;")
+                        indent c; appendLine c "}"
+                    body.Add(line $"int {keep} = {keepText};")
+                    present |> Option.iter (fun m -> body.Add(line $"int {some} = {m};"))
+                    body.Add(fun c ->
+                        indent c; appendLine c $"if ({kept} > {buffer}.Length - {count}) {{"
+                        withIndent c flush
+                        indent c; appendLine c "}")
+                    body.Add(line $"int {at} = {kept};")
+                    value
+                    |> Option.iter (fun value ->
+                        body.Add(line $"{vector}.StoreUnsafe({value}, ref {marshal}.GetArrayDataReference({buffer}), (nuint){at});"))
+                    let laneValue =
+                        match store.Value with
+                        | VIndex slot -> $"{cursor slot} + {k} + {lane}"
+                        | _ -> $"{buffer}[{at} + {lane}]"
+                    body.Add(line $"for (int {lane} = 0; {lane} < {count}; {lane}++) {{")
+                    body.Add(line $"    {buffer}[{kept}] = {laneValue};")
+                    present |> Option.iter (fun _ -> body.Add(line $"    {none}[{kept}] = (({some} >> {lane}) & 1) == 0;"))
+                    body.Add(line $"    {kept} += ({keep} >> {lane}) & 1;")
+                    body.Add(line "}")
+                    after.Add(flush)
+                    after.Add(line $"System.Buffers.ArrayPool<{t}>.Shared.Return({buffer});")
+                    if present.IsSome then
+                        after.Add(line $"System.Buffers.ArrayPool<bool>.Shared.Return({none});")
+                | None -> ()
+                for slot, sum, m in reductions do
+                    let acc = sanitizeIdent slot
+                    match sum, m with
+                    | None, None -> body.Add(line $"{acc} += {count};")
+                    | None, Some m -> body.Add(line $"{acc} += System.Numerics.BitOperations.PopCount((uint)({m}));")
+                    | Some(s, value, _), None -> body.Add(line $"{s} += {value};")
+                    | Some(s, value, t), Some m ->
+                        body.Add(line $"{s} += {value} & Bjolang.Runtime.BjoVectors.Lanes<{t}>({m});")
+                    match sum with
+                    | Some(s, _, _) -> after.Add(line $"{acc} += {vector}.Sum({s});")
+                    | None -> ()
+                indent c; appendLine c $"for (int {k} = 0; {k} < {finished}; {k} += {count}) {{"
+                withIndent c (fun c -> for f in body do f c)
+                indent c; appendLine c "}"
+                for f in after do f c
                 for slot, _ in v.Cursors do
                     indent c; appendLine c $"{cursor slot} += {finished};")
             indent c; appendLine c "}")

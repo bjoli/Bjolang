@@ -109,6 +109,14 @@
   (loop (:for x* xs)
         (:acc (building (match x* ((Some x) (Some (/ x k))) (None None))))))
 
+;; A `:when` keeps some elements, and of those some are None.
+(: (-> Numbers Numbers double (Vec (Option double))))
+(defun (products-above xs ys lo)
+  (loop (:for x* xs) (:for y* ys)
+        (:when-let (Some y) y*)
+        (:when (> y lo))
+        (:acc (building (match x* ((Some x) (Some (* x y))) (None None))))))
+
 ;; The positions where `got` is not what `want` says.
 (: (-> (Vec (Option double)) (-> int (Option double)) int))
 (defun (wrong got want)
@@ -137,6 +145,12 @@
         (expect (str "scaled, " where)
                 (wrong ss (fun (i) (Some (/ (x i) 2.0))))
                 0)
+        (def kept (products-above (numbers n none-at-3 split) (numbers n none-at-2 #f) 20.0))
+        (def kept-want
+          {vecing (if (none-at-3 i) None (Some (* (x i) (x i))))
+                  (:for i (range 0 n))
+                  (:when (and (not (none-at-2 i)) (> (x i) 20.0)))})
+        (expect (str "products above, " where) kept kept-want)
         (def us (scaled (numbers n none-at-2 split) 4.0))
         (expect (str "scaled with None, " where)
                 (wrong us (fun (i) (if (none-at-2 i) None (Some (/ (x i) 4.0)))))
