@@ -1,0 +1,25 @@
+;; `(and a b)` is `(if a b #f)`. When `b` is cheap and can neither throw nor
+;; do anything, it is C#'s `a & b`: both evaluated, and no jump, which a test
+;; that goes either way at random mispredicts half the time. `or` is `|` in
+;; the same way. A side that could throw, or that calls a function, keeps the
+;; jump: `and` is what guards it.
+
+(import (std prelude))
+
+;; EXPECT-CS: return \(\(p > 250\.0\) & \(q > 20L\)\);
+(: (-> double long bool))
+(defun (both-big p q) (and (> p 250.0) (> q 20L)))
+
+;; EXPECT-CS: return \(\(p < 0\.0\) \| \(p > 100\.0\)\);
+(: (-> double bool))
+(defun (out-of-range p) (or (< p 0.0) (> p 100.0)))
+
+;; Three sides: `(and a (and b c))`, each `&`.
+;; EXPECT-CS: return \(\(a > 0L\) & \(\(b > 0L\) & \(\(a \+ b\) < 10L\)\)\);
+(: (-> long long bool))
+(defun (small-pair a b) (and (> a 0L) (> b 0L) (< (+ a b) 10L)))
+
+;; A division may throw, so the jump stays.
+;; EXPECT-NO-CS: \(d != 0L\) &|\(d > 0L\) &
+(: (-> long long bool))
+(defun (ratio-big n d) (and (> d 0L) (> (/ n d) 2L)))

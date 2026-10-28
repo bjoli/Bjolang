@@ -2188,6 +2188,9 @@ let private infixOperators =
           "bitwise-and", "&"
           "bitwise-ior", "|"
           "bitwise-xor", "^"
+          // `and` and `or` of two cheap, pure booleans: see `Simplify`.
+          Simplify.strictAnd, "&"
+          Simplify.strictOr, "|"
           "shift-left", "<<"
           "shift-right", ">>"
           "shift-right-logical", ">>>" ]

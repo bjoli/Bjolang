@@ -1,0 +1,27 @@
+;; `and` and `or` of cheap comparisons are evaluated without a jump (see
+;; codegen/strict_and_or.bjo). The answers are those of the short-circuit
+;; forms, and a side that may throw is still guarded.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: (-> double long bool))
+(defun (both-big p q) (and (> p 250.0) (> q 20L)))
+
+(: (-> double bool))
+(defun (out-of-range p) (or (< p 0.0) (> p 100.0)))
+
+(: (-> long long bool))
+(defun (ratio-big n d) (and (> d 0L) (> (/ n d) 2L)))
+
+(defun (main)
+  (expect "and, both" (both-big 300.0 30L) #t)
+  (expect "and, the first fails" (both-big 100.0 30L) #f)
+  (expect "and, the second fails" (both-big 300.0 10L) #f)
+  (expect "or, the first" (out-of-range -1.0) #t)
+  (expect "or, the second" (out-of-range 101.0) #t)
+  (expect "or, neither" (out-of-range 50.0) #f)
+  (expect "a guarded division, guarded" (ratio-big 10L 0L) #f)
+  (expect "a guarded division" (ratio-big 10L 2L) #t)
+  (expect "in a loop" (loop (:for i (range 0 100)) (:when (and (> i 10) (< i 20))) (:acc (counting i))) 9)
+  0)

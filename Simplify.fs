@@ -118,6 +118,81 @@ let rec private isPure (ctx: Ctx) (expr: TypedExpr) : bool =
             | Some(_, args) -> List.forall (isPure ctx) args
             | None -> false)
 
+// ---------------------------------------------------------------------------
+// `and` and `or` without a branch
+// ---------------------------------------------------------------------------
+
+/// The comparisons and the arithmetic that cannot throw or do anything else
+/// at a primitive number type. Division is not here: an integer divided by 0
+/// throws.
+let private cheapComparisons = set [ "<"; ">"; "<="; ">="; "clr-eq" ]
+let private cheapArithmetic = set [ "+"; "-"; "*" ]
+
+/// What `and` and `or` become, which `Codegen` writes as C#'s `&` and `|`.
+let strictAnd = "bool-and"
+let strictOr = "bool-or"
+
+let rec private settled (t: HMType) : HMType =
+    match t with
+    | TMeta { Value = Some inner } -> settled inner
+    | _ -> t
+
+/// A number type whose operators are C#'s own: they do nothing but compute,
+/// and the ones in `cheapArithmetic` cannot throw. `decimal` is not one: its
+/// addition throws on overflow.
+let private isPrimitiveNumber (t: HMType) : bool =
+    match settled t with
+    | TCon((TypeConstants.Int32Name | TypeConstants.Int64Name | TypeConstants.DoubleName | TypeConstants.SingleName), []) -> true
+    | _ -> false
+
+let private isBool (t: HMType) : bool =
+    match settled t with
+    | TCon(TypeConstants.BooleanName, []) -> true
+    | _ -> false
+
+/// The most nodes a side of an `and` or `or` may have to be evaluated when
+/// it would not have been: a few comparisons, which cost less than the jump.
+[<Literal>]
+let private CheapNodes = 9
+
+/// An expression that cannot throw, has no effect, and costs a few
+/// instructions: variables, literals, and comparisons and arithmetic of them
+/// at primitive number types. Evaluating it when `and` would not have changes
+/// nothing a program can see.
+let private isCheapAndPure (expr: TypedExpr) : bool =
+    let budget = ref CheapNodes
+
+    let rec go (e: TypedExpr) =
+        budget.Value <- budget.Value - 1
+
+        budget.Value >= 0
+        && (match e.Node with
+            | TBool _
+            | TInt _ -> true
+            // A variable or a value of the module. A function is not one: a
+            // reference to one may make a delegate.
+            | TIdent(_, []) ->
+                (match settled e.Type with
+                 | TFun _ -> false
+                 | _ -> true)
+            | TApply({ Node = TIdent(op, _) }, [ a; b ], []) when Set.contains op cheapComparisons ->
+                isPrimitiveNumber a.Type && isPrimitiveNumber b.Type && go a && go b
+            | TApply({ Node = TIdent(op, _) }, [ a; b ], []) when Set.contains op cheapArithmetic ->
+                isPrimitiveNumber e.Type && isPrimitiveNumber a.Type && isPrimitiveNumber b.Type && go a && go b
+            | TApply({ Node = TIdent(op, _) }, [ a; b ], []) when op = strictAnd || op = strictOr -> go a && go b
+            | _ -> false)
+
+    go expr
+
+/// `a & b` or `a | b`, both sides evaluated, and no branch between them.
+let private strictly (op: string) (a: TypedExpr) (b: TypedExpr) (whole: TypedExpr) : TypedExpr =
+    let callee: TypedExpr =
+        { Type = TFun([ a.Type; b.Type ], whole.Type, ESync)
+          Range = whole.Range
+          Node = TIdent(op, []) }
+
+    ({ whole with Node = TApply(callee, [ a; b ], []) }: TypedExpr)
+
 /// A pattern that matches every value of its type: a name, `_`, or a tuple of
 /// such patterns.
 let rec private isIrrefutable (p: TypedPattern) : bool =
@@ -346,6 +421,15 @@ let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     // A constant condition, as the type check of `(:finish test value)` leaves.
     | TIf({ Node = TBool true }, t, _) -> { t with Type = expr.Type }
     | TIf({ Node = TBool false }, _, f) -> { f with Type = expr.Type }
+
+    // `(and a b)` is `(if a b #f)`, and `(or a b)` is `(if a #t b)`. When `b`
+    // is cheap and can neither throw nor do anything, both are evaluated, and
+    // the result is C#'s `a & b` or `a | b`: no jump, which a test that goes
+    // either way at random mispredicts half the time.
+    | TIf(a, b, { Node = TBool false }) when isBool expr.Type && isBool a.Type && isCheapAndPure b ->
+        strictly strictAnd a b expr
+    | TIf(a, { Node = TBool true }, b) when isBool expr.Type && isBool a.Type && isCheapAndPure b ->
+        strictly strictOr a b expr
 
     | _ -> expr
 
