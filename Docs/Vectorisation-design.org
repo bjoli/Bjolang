@@ -1,0 +1,155 @@
+* Design: loops that the compiler vectorizes
+
+Status: a plan. Nothing of it is built.
+
+This document describes how the compiler makes vector code of a simple
+loop: the same loop as the program writes, with 4 or 8 elements a step
+instead of one, and the same answer. A loop that is not of that shape is
+compiled as it is now. The model is what LLVM does for Julia, Rust and C:
+a narrow shape that is recognized, and a scalar loop for everything else.
+
+** Why
+
+.NET's JIT does not vectorize loops. A loop over an array is about one
+element a nanosecond at best, and code that uses ~Vector256~ or
+~TensorPrimitives~ is several times faster. So a library that is fast has a
+second API: arithmetic on whole arrays or columns, beside the loops. The
+second API is the one a program has to learn, and it does less than a loop
+can.
+
+Python libraries have the second API for another reason: a loop in Python
+is about 50 times slower than one in Bjolang, so pandas, NumPy and Polars
+are built so that a program does not write one. Bjolang's loops are
+compiled, as Julia's are. What is missing is what Julia's compiler has, the
+vector code for a simple loop. With it, the loop is the one API, and it is
+fast where its shape allows.
+
+Measured on 1 000 000 rows of a table (bjostat, bench/compare.bjo): the
+product of two columns took 5.7 ms as a loop, 1.9 ms with kernels on whole
+columns, and 0.8 ms in Polars. The kernels' multiplication alone took
+0.7 to 1.0 ms.
+
+** Which loops
+
+The compiler looks at a loop after trait inlining and ~Simplify~, when the
+loop is in the typed tree with its iterables' and collectors' methods
+spliced. A loop is vectorized when all of these hold. A loop that is not
+is compiled as before, and the compiler can say why (see "What the compiler
+says").
+
+*** The drivers
+
+Every ~:for~ walks memory that is contiguous, and all of them walk the same
+number of elements:
+
+- a ~range~, which is the index;
+- an ~Array~ or a span;
+- a value whose type implements ~Contiguous~ (below).
+
+A ~:with~, a ~:while~ or an ~:until~ is not vectorized. A driver of a type
+variable is not either: the type is not known. A copy of a constrained
+generic made at a concrete type (Monomorphise) is checked at its types.
+
+*** The body
+
+Straight-line code, of which each lane is computed from its own elements:
+
+- arithmetic ~+ - *~ and comparisons at the primitive number types, ~int~,
+  ~long~, ~float~ and ~double~; ~/~ at ~float~ and ~double~;
+- ~min~, ~max~, ~abs~, and casts between those types;
+- ~and~ and ~or~ of these, which are already evaluated without a jump
+  (Simplify);
+- an ~if~ whose two arms are of these: a blend, which takes each lane from
+  one arm or the other;
+- ~(:when-let (Some x) x*)~, where ~x*~ is the element of a ~Contiguous~
+  driver with a null bitmap: a mask of the lanes that are not null;
+- ~(:when test)~ before the accumulators: a mask.
+
+Not: a call that is not one of these, a division of integers (it throws at
+0), a ~set!~, a ~:finish~, an ~:abandon~, a nested loop, and a value carried
+from one element to the next other than through an accumulator.
+
+*** The accumulators
+
+Only collectors that have a vector form:
+
+| Collector                     | Vector form                           | Answer               |
+|-------------------------------+---------------------------------------+----------------------|
+| a column or array of values   | a vector computed and stored          | the same             |
+| ~counting~                    | a count a lane, added at the end      | the same             |
+| ~summing~ of integers         | a sum a lane, added at the end        | the same             |
+| ~summing~ of floats, asked for | the same                              | rounded differently  |
+| ~selecting~ (a filter)        | a mask, and the kept rows compacted   | the same             |
+
+A collector says that it has a vector form; the compiler does not find it
+out. How it says so is to be decided with phase 1: a trait beside
+~Collector~, or a vector step in ~Collector~ itself.
+
+*Sums of floats are vectorized only when the program asks*, as Julia's
+~@simd~ asks: lanes add in another order than the scalar loop, and the last
+bits of the sum can differ. ~(summing/fast x)~ is a possible way to ask. A
+map, a count and a sum of integers give the same answer either way, and are
+vectorized without being asked.
+
+** ~Contiguous~: a promise of the implementation
+
+#+BEGIN_SRC scheme
+;; The values are in memory one after another, and reading them has no
+;; effect. A null bitmap is optional.
+(def/trait (Contiguous %s)
+  (type %elem)
+  (: contiguous-values (-> %s (Option (RoSpan %elem))))   ; None: use the scalar loop
+  (: contiguous-valid (-> %s (Option (RoSpan byte)))))     ; the nulls, or None: none
+#+END_SRC
+
+The compiler finds an implementation for each driver's type when it
+compiles, as it finds the ~Iterable~ that a ~:for~ uses. It does not prove
+that the memory is contiguous: the implementation says so, as an ~Iterable~
+says how a walk goes. An implementation that is wrong is a fault of the
+implementation, as a wrong ~Iterable~ is. The prelude implements it for
+~Array~ and the spans; a library implements it for its own types, as
+bjostat would for the cells of a column of numbers.
+
+It is a trait, and not something the compiler finds in an ~Iterable~ with
+an ~int~ cursor, so that a program's speed does not depend on details of
+another's code that the reader cannot see. A type is contiguous because its
+author said so.
+
+** Two loops and a test: what is known only when the program runs
+
+Some of it is known only when the loop runs: a column may have no span (a
+column of strings, or one of several chunks), and two drivers may have
+different lengths. So the compiler makes two loops and a test before them:
+
+#+BEGIN_SRC csharp
+if (every contiguous-values is Some, and the lengths are equal)
+    // the vector loop: Vector256 over whole vectors, masks from the bitmaps,
+    // then the scalar loop for the last elements
+else
+    // the scalar loop, as now
+#+END_SRC
+
+The test is made once a loop, not once an element. The answer of the two
+loops is the same, except for the sums of floats a program asked for.
+
+** What the compiler says
+
+An option, such as ~--report-vectorization~, writes a line for each loop:
+vectorized, or not and why: "~(Cells string)~ is not Contiguous", "the body
+calls ~f~", "~%s~ is a type variable here". Without it, nothing is said: a
+loop that is not vectorized is not an error.
+
+** The order of work
+
+1. *Maps over ranges, arrays and spans*: a loop whose accumulator stores
+   each value, into an array, a builder or a vec of numbers. The answers are
+   exact. Every Bjolang program that maps arrays gains.
+2. *~Contiguous~ and null bitmaps*: loops over a library's values, with
+   ~:when-let~ as masks. A bjostat loop that makes a column is then near
+   Polars on one thread.
+3. *Reductions and filters*: counts and integer sums under masks, sums of
+   floats when asked for, and filters by compaction. A compaction without
+   AVX-512 needs a table of permutations; it may come last for that reason.
+
+Each step is measured against the scalar loop it replaces, in paired
+rounds, and against Polars where there is a comparison to make.
