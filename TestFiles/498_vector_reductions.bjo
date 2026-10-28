@@ -1,0 +1,77 @@
+;; Counts and integer sums that are compiled to vector instructions, with
+;; `:when` tests as masks (see codegen/vector_reduction.bjo). The answers
+;; must be those of the scalar loop for each size, also for the elements that
+;; do not fill a whole vector. A sum of floats is not vectorized, because the
+;; vector adds in another order.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: (-> (Array long) long long int))
+(defun (count-between xs lo hi)
+  (loop (:for x xs) (:when (and (>= x lo) (< x hi))) (:acc (counting x))))
+
+(: (-> (Array long) (Array long) long))
+(defun (sum-where-bigger xs ys)
+  (loop (:for x xs) (:for y ys) (:when (> x y)) (:acc (summing (- x y)))))
+
+(: (-> (Array int) int))
+(defun (sum-outside xs)
+  (loop (:for x xs) (:when (or (< x 10) (not (<= x 90)))) (:acc (summing (* 2 x)))))
+
+(: (-> (Array int) int))
+(defun (sum-all xs)
+  (loop (:for x xs) (:acc (summing x))))
+
+;; A count may test lanes of another type than its own.
+(: (-> (Array double) int))
+(defun (count-positive xs)
+  (loop (:for x xs) (:when (> x 0.0)) (:acc (counting x))))
+
+(: (-> int (-> int long) (Array long)))
+(defun (longs n f)
+  (def a (make-array n #:fill 0L))
+  (loop (:for i (range 0 n)) (:do (array-set! a i (f i))))
+  a)
+
+(: (-> int (-> int int) (Array int)))
+(defun (ints n f)
+  (def a (make-array n #:fill 0))
+  (loop (:for i (range 0 n)) (:do (array-set! a i (f i))))
+  a)
+
+(: (-> int (-> int bool) int))
+(defun (how-many n ok)
+  (loop (:for i (range 0 n)) (:when (ok i)) (:acc (counting i))))
+
+(defun (main)
+  (loop
+    (:for n [0 1 3 4 5 7 8 9 15 16 17 100 1001])
+    (:do
+     (def xs (longs n (fun (i) (cast long (% (* 37 i) 101)))))
+     (def ys (longs (+ n 2) (fun (i) (cast long (% (* 11 i) 53)))))
+     (def x (fun (i) (% (* 37 i) 101)))
+     (def y (fun (i) (% (* 11 i) 53)))
+     (def where (displayed n))
+     (expect (str "count between, " where)
+             (count-between xs 20L 70L)
+             (how-many n (fun (i) (and (>= (x i) 20) (< (x i) 70)))))
+     (expect (str "sum where bigger, " where)
+             (sum-where-bigger xs ys)
+             (loop (:for i (range 0 n)) (:when (> (x i) (y i))) (:acc (summing (cast long (- (x i) (y i)))))))
+     (def is (ints n x))
+     (expect (str "sum outside, " where)
+             (sum-outside is)
+             (loop (:for i (range 0 n)) (:when (or (< (x i) 10) (> (x i) 90))) (:acc (summing (* 2 (x i))))))
+     (expect (str "sum all, " where)
+             (sum-all is)
+             (loop (:for i (range 0 n)) (:acc (summing (x i)))))
+     (def ds (make-array n #:fill 0.0))
+     (loop (:for i (range 0 n)) (:do (array-set! ds i (- (cast double (x i)) 50.0))))
+     (expect (str "count positive, " where)
+             (count-positive ds)
+             (how-many n (fun (i) (> (x i) 50))))))
+  (expect "a sum that wraps"
+          (sum-all (make-array 64 #:fill 2147483647))
+          (* 64 2147483647))
+  0)

@@ -12,6 +12,7 @@
  */
 
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
 
 namespace Bjolang.Runtime;
 
@@ -42,5 +43,25 @@ public static class BjoVectors
         int word = bitmap[at];
         if (at + 1 < bitmap.Length) word |= bitmap[at + 1] << 8;
         return (word >> (index & 7)) & all;
+    }
+
+    /// <summary>
+    /// A vector with all bits set in the lanes whose bit is set in
+    /// <paramref name="bits"/>, and no bits set in the others: bit 0 for lane
+    /// 0. A vector and'ed with it keeps the lanes of the bits.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<T> Lanes<T>(int bits)
+    {
+        if (Vector256<T>.Count == 4)
+        {
+            var lanes = Vector256.Create(1L, 2L, 4L, 8L);
+            return Vector256.Equals(Vector256.Create((long)bits) & lanes, lanes).As<long, T>();
+        }
+        else
+        {
+            var lanes = Vector256.Create(1, 2, 4, 8, 16, 32, 64, 128);
+            return Vector256.Equals(Vector256.Create(bits) & lanes, lanes).As<int, T>();
+        }
     }
 }

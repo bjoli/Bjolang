@@ -175,7 +175,7 @@ loop that is not vectorized is not an error.
 Each step is measured against the scalar loop it replaces, in paired
 rounds, and against Polars where there is a comparison to make.
 
-** Status of steps 1 and 2
+** Status of steps 1 and 2, and of reductions from step 3
 
 ~VectorMarks~ runs after ~Monomorphise~ and before ~TraitInline~. It marks
 each ~iterable-current~ of a driver whose type implements ~Contiguous~, and
@@ -191,8 +191,12 @@ loop it found. A loop is accepted when:
 
 - each driver walks an int cursor that steps by 1: a ~range~, an ~Array~,
   or a ~Contiguous~ type;
-- the body binds names with ~let~ to lane values, and ends in one
-  ~(array-set! out i x)~ or one step of a ~BlockCollector~;
+- the body binds names with ~let~ to lane values, and puts them in one
+  ~(array-set! out i x)~, one step of a ~BlockCollector~, or accumulators
+  that count or sum integers (~counting~, ~summing~ of ~int~ or ~long~);
+- before the accumulators, ~:when~ and ~:when-let~ make a mask of the lanes
+  that the accumulators take. A ~:when~ test is a comparison of lanes
+  (~<~, ~>~, ~<=~, ~>=~), joined by ~and~, ~or~ and ~not~;
 - a lane value reads arrays at a cursor, uses names and literals that the
   loop does not change, and applies ~+~, ~-~, ~*~, and ~/~ on ~double~ and
   ~float~; casts from ~long~ to ~double~ and from ~int~ to ~float~ are
@@ -209,8 +213,14 @@ checks. Then the scalar loop does the rest from the cursors the vector part
 moved. The environment variable ~BJOLANG_NO_VECTORS~ makes the compiler
 write the scalar loops only.
 
-Not done yet: ~:when~ and ~:when-let~ (masks that skip rows), an ~if~ as a
-blend, ~min~, ~max~ and ~abs~, vecs, and a report of which loops were
+A count adds the number of bits in its mask. A sum adds the lanes of its
+mask to a vector, and the lanes of the vector to the accumulator after the
+loop. An integer sum wraps, so the order of the additions does not change
+it. A sum of floats is not vectorized.
+
+Not done yet: ~:when~ before a column or an array (a filter, which needs
+compaction), ~=~ in a test, an ~if~ as a blend, ~min~, ~max~ and ~abs~,
+~summing/fast~ for floats, vecs, and a report of which loops were
 vectorized.
 
 Measured (Ryzen 9 5900X, AVX2, 1M elements, paired rounds in one process
@@ -222,9 +232,11 @@ for the vector loop, separate processes for the scalar baseline):
 | ~(* (array-ref ps i) (cast double (array-ref qs i)))~ | 344 µs | 270 µs |
 | ~(* x x)~, longs                       | 265 µs  | 158 µs  |
 | ~(+ x x)~, longs                       | 288 µs  | 152 µs  |
-| bjostat ~new column~: two Cells, ~column-building/option~ | 4.17 ms | 0.99–1.38 ms |
+| bjostat ~new column~: two Cells, ~column-building/option~ | 4.11–4.17 ms | 0.99–2.84 ms |
+| bjostat ~filter, count only~: two ~:when-let~, a ~:when~, ~counting~ | 3.53 ms | 0.41 ms |
 
 The conversion from ~long~ to ~double~ has no AVX2 instruction, which is
-why the second loop gains least. The bjostat loop writes a new column of
-8 MB each time; how much of its time that takes is not measured yet. Polars
-takes 0.62 ms on one thread for the same column.
+why the second loop gains least. The bjostat new column is 8 MB each time,
+and its time changes much between processes: 0.99 ms alone, 2.84 ms after
+the other benchmarks of bench/compare.bjo. How much of it is the new memory
+is not measured yet. Polars takes 0.62 ms on one thread for the same column.

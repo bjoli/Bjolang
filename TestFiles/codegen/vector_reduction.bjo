@@ -1,0 +1,27 @@
+;; Counts and integer sums with `:when` tests get a vector part.
+;;
+;; A test is a comparison of lanes: its bits are the most significant bits of
+;; the vector that the comparison gives. A count adds the number of bits set.
+;; A sum adds the lanes of its bits to a vector, whose lanes are added to the
+;; accumulator after the loop. A sum of floats gets no vector part, because
+;; the vector adds in another order. `498_vector_reductions.bjo` is what
+;; checks the answers.
+
+(import (std prelude))
+
+;; EXPECT-CS: loopacc\w* \+= System\.Numerics\.BitOperations\.PopCount\(\(uint\)\(\(\(int\)System\.Runtime\.Intrinsics\.Vector256\.ExtractMostSignificantBits\(System\.Runtime\.Intrinsics\.Vector256\.GreaterThanOrEqual\(
+(: (-> (Array long) long long int))
+(defun (count-between xs lo hi)
+  (loop (:for x xs) (:when (and (>= x lo) (< x hi))) (:acc (counting x))))
+
+;; EXPECT-CS: var __vsum\w* = System\.Runtime\.Intrinsics\.Vector256<long>\.Zero;
+;; EXPECT-CS: __vsum\w* \+= .* & Bjolang\.Runtime\.BjoVectors\.Lanes<long>\(\(int\)System\.Runtime\.Intrinsics\.Vector256\.ExtractMostSignificantBits\(System\.Runtime\.Intrinsics\.Vector256\.GreaterThan\(
+;; EXPECT-CS: loopacc\w* \+= System\.Runtime\.Intrinsics\.Vector256\.Sum\(__vsum\w*\);
+(: (-> (Array long) (Array long) long))
+(defun (sum-where-bigger xs ys)
+  (loop (:for x xs) (:for y ys) (:when (> x y)) (:acc (summing (- x y)))))
+
+;; EXPECT-NO-CS: Vector256<double>\.Zero
+(: (-> (Array double) double))
+(defun (sum-doubles xs)
+  (loop (:for x xs) (:acc (summing x))))

@@ -162,13 +162,25 @@ type VectorExpr =
     /// `Vector256.ConvertToDouble` or `Vector256.ConvertToSingle`.
     | VConvert of string * VectorExpr
 
-/// The lanes of an Option value that are Some.
+/// A set of lanes: those of an Option value that are Some, or those for
+/// which a test is true.
 type VectorMask =
     | MAll
     | MNone
     /// The valid bits of a `Contiguous` driver, by its index.
     | MValid of int
     | MAnd of VectorMask * VectorMask
+    | MOr of VectorMask * VectorMask
+    | MNot of VectorMask
+    /// `<`, `>`, `<=` or `>=` of two vectors.
+    | MCompare of string * VectorExpr * VectorExpr
+
+/// An accumulator that a vector loop adds lanes to.
+type VectorReduction =
+    /// `(counting x)`: the number of lanes.
+    | RCount
+    /// `(summing x)` of integers: the sum of the lanes, of the type.
+    | RSum of VectorExpr * HMType
 
 /// Where a cursor of a vector loop stops.
 type VectorLimit =
@@ -201,10 +213,12 @@ type VectorLoop =
       Drivers: VectorDriver list
       /// The arrays read or written, each with the cursor it is indexed by.
       Arrays: (TypedExpr * string) list
-      Sink: VectorSink
-      Value: VectorExpr
-      Mask: VectorMask
-      /// The type of a lane of the value, which decides the number of lanes.
+      /// Where the values go, and the lanes of them that are Some.
+      Sink: (VectorSink * VectorExpr * VectorMask) option
+      /// The accumulator slots that lanes are added to, each with the lanes
+      /// that it takes.
+      Reductions: (string * VectorReduction * VectorMask) list
+      /// The type of a lane, which decides the number of lanes.
       Lane: HMType }
 
 type CodegenContext = {
@@ -2430,9 +2444,16 @@ type private Lane =
 /// The member must be the lowered form of a loop whose drivers walk an int
 /// cursor that steps by 1: a `range`, an `Array`, or a type that implements
 /// `Contiguous` (see `VectorMarks`). Its test is `cursor >= limit` for each
-/// cursor, joined by `or`. Its body binds names with `let` and ends in one
-/// `(array-set! out i x)`, with `i` a cursor, or in one step of a
-/// `BlockCollector`, and then jumps back with each cursor plus 1.
+/// cursor, joined by `or`. Its body binds names with `let`, and puts the
+/// values in one `(array-set! out i x)`, with `i` a cursor, or in one step of
+/// a `BlockCollector`, or in accumulators that count or sum integers. Then it
+/// jumps back with each cursor plus 1.
+///
+/// Before the accumulators, a `:when` and a `:when-let` leave out elements:
+/// they are a match on Options, or an `if`, whose other arm jumps back with
+/// the accumulators as they were. They make a mask of the lanes that the
+/// accumulators take. A test is a comparison of lanes, joined by `and`, `or`
+/// and `not`.
 ///
 /// The values may read arrays at a cursor, use names and literals that the
 /// loop does not change, and apply `+`, `-`, `*`, and `/` on floating types.
@@ -2459,10 +2480,30 @@ let private vectorLoopOf
         | TIdent(n, _) -> builtinNamed ctx n = Some name
         | _ -> false
 
+    // The tests that end the loop: `cursor >= limit`, joined by `or`.
+    let rec tests (e: TypedExpr) : (string * TypedExpr) list option =
+        match e.Node with
+        | TIf(a, { Node = TBool true }, b) -> Option.map2 (@) (tests a) (tests b)
+        | TApply({ Node = TIdent(op, _) }, [ a; b ], []) when op = Simplify.strictOr ->
+            Option.map2 (@) (tests a) (tests b)
+        | TApply({ Node = TIdent(">=", _) }, [ { Node = TIdent(cur, []) }; limit ], []) when intSlot cur ->
+            Some [ cur, limit ]
+        | _ -> None
+
+    let ends, rest =
+        match member_.Locals = slots, member_.Body.Node with
+        | true, TIf(condition, _, rest) ->
+            match tests condition with
+            | Some ends -> ends, Some rest
+            | None -> [], None
+        | _ -> [], None
+    let cursorSet = ends |> List.map fst |> Set.ofList
+    let isCursor n = Set.contains n cursorSet
+
     let drivers = ResizeArray<VectorDriver>()
     let arrays = ResizeArray<TypedExpr * string>()
-    let mutable sink: (VectorSink * (VectorExpr * VectorMask * HMType)) option = None
-    let mutable newAcc: string option = None
+    let reductions = ResizeArray<string * VectorReduction * VectorMask>()
+    let mutable sink: (VectorSink * VectorExpr * VectorMask * HMType) option = None
     let driverOf cur = drivers |> Seq.tryFindIndex (fun d -> d.Cursor = cur)
 
     // A name or a literal that the loop does not change. The body assigns no
@@ -2475,11 +2516,17 @@ let private vectorLoopOf
 
     let cursorOf (env: Map<string, Lane>) (e: TypedExpr) =
         match e.Node with
-        | TIdent(n, []) when intSlot n -> Some n
+        | TIdent(n, []) when isCursor n -> Some n
         | TIdent(n, []) ->
             match Map.tryFind n env with
             | Some(Index cur) -> Some cur
             | _ -> None
+        | _ -> None
+
+    let somePattern (p: TypedPattern) : string option option =
+        match p.Node with
+        | TPConstruct("Some", [ { Node = TPIdent x } ]) -> Some(Some x)
+        | TPConstruct("Some", [ { Node = TPWildcard } ]) -> Some None
         | _ -> None
 
     let rec lane (env: Map<string, Lane>) (e: TypedExpr) : Lane option =
@@ -2524,27 +2571,35 @@ let private vectorLoopOf
             elif target = TypeConstants.singleType && source = TypeConstants.intType then
                 converted (fun v -> VConvert("ConvertToSingle", v))
             else None
-        | TMatch(scrutinee, clauses) -> matchLane env scrutinee clauses
+        | TMatch(scrutinee, clauses) ->
+            let isNoneArm (c: TMatchClause) =
+                match lane env c.Body with
+                | Some(Optional(_, MNone, _)) -> true
+                | _ -> false
+            match someArm env scrutinee clauses isNoneArm with
+            | Some(env', masks, body) ->
+                match lane env' body with
+                | Some(Optional(bv, bm, bt)) -> Some(Optional(bv, List.fold (fun a m -> MAnd(a, m)) bm masks, bt))
+                | _ -> None
+            | None -> None
         | _ -> None
 
-    // A match whose arm for Some values gives an Option and whose other arm
-    // gives None: the lanes that are Some are those of the scrutinees and
-    // those of the arm.
-    and matchLane (env: Map<string, Lane>) (scrutinee: TypedExpr) (clauses: TMatchClause list) : Lane option =
-        let somePattern (p: TypedPattern) : string option option =
-            match p.Node with
-            | TPConstruct("Some", [ { Node = TPIdent x } ]) -> Some(Some x)
-            | TPConstruct("Some", [ { Node = TPWildcard } ]) -> Some None
-            | _ -> None
-        let isNoneArm (c: TMatchClause) =
+    // A match on Options with an arm for Some values and an other arm that
+    // `isOther` accepts: the names that the Some arm binds, the lanes that
+    // are Some, and the body of the Some arm.
+    and someArm
+        (env: Map<string, Lane>)
+        (scrutinee: TypedExpr)
+        (clauses: TMatchClause list)
+        (isOther: TMatchClause -> bool)
+        : (Map<string, Lane> * VectorMask list * TypedExpr) option =
+        let other (c: TMatchClause) =
             c.Guard.IsNone
             && (match c.Pattern.Node with
                 | TPWildcard
                 | TPConstruct("None", []) -> true
                 | _ -> false)
-            && (match lane env c.Body with
-                | Some(Optional(_, MNone, _)) -> true
-                | _ -> false)
+            && isOther c
         let scrutinees, patternsOf =
             match scrutinee.Node with
             | TTupleMake items ->
@@ -2562,16 +2617,13 @@ let private vectorLoopOf
                 | _ -> None)
         let arms =
             match clauses with
-            | [ a; b ] when isNoneArm b -> Some(a, b)
-            | [ a; b ] when isNoneArm a -> Some(b, a)
+            | [ a; b ] when other b -> Some a
+            | [ a; b ] when other a -> Some b
             | _ -> None
         match arms with
-        | Some(someArm, _) when someArm.Guard.IsNone && List.forall Option.isSome optionals ->
+        | Some arm when arm.Guard.IsNone && List.forall Option.isSome optionals ->
             let optionals = optionals |> List.map Option.get
-            let binders =
-                patternsOf someArm.Pattern
-                |> Option.map (List.map somePattern)
-            match binders with
+            match patternsOf arm.Pattern |> Option.map (List.map somePattern) with
             | Some bs when List.forall Option.isSome bs ->
                 let env' =
                     List.zip (List.map Option.get bs) optionals
@@ -2581,21 +2633,60 @@ let private vectorLoopOf
                             | Some x -> Map.add x (Plain(v, vt)) acc
                             | None -> acc)
                         env
-                let masks = optionals |> List.map (fun (_, m, _) -> m)
-                match lane env' someArm.Body with
-                | Some(Optional(bv, bm, bt)) -> Some(Optional(bv, List.fold (fun a m -> MAnd(a, m)) bm masks, bt))
-                | _ -> None
+                Some(env', optionals |> List.map (fun (_, m, _) -> m), arm.Body)
             | _ -> None
         | _ -> None
 
-    let rec walk (env: Map<string, Lane>) (e: TypedExpr) : bool =
+    // The lanes for which a test is true.
+    let rec mask (env: Map<string, Lane>) (e: TypedExpr) : VectorMask option =
+        match e.Node with
+        | TApply({ Node = TIdent(op, _) }, [ a; b ], []) when
+            (op = "<" || op = ">" || op = "<=" || op = ">=") && sameType a.Type b.Type
+            ->
+            match lane env a, lane env b with
+            | Some(Plain(va, _)), Some(Plain(vb, _)) -> Some(MCompare(op, va, vb))
+            | _ -> None
+        | TApply({ Node = TIdent(op, _) }, [ a; b ], []) when op = Simplify.strictAnd ->
+            Option.map2 (fun x y -> MAnd(x, y)) (mask env a) (mask env b)
+        | TApply({ Node = TIdent(op, _) }, [ a; b ], []) when op = Simplify.strictOr ->
+            Option.map2 (fun x y -> MOr(x, y)) (mask env a) (mask env b)
+        | TIf(a, b, { Node = TBool false }) -> Option.map2 (fun x y -> MAnd(x, y)) (mask env a) (mask env b)
+        | TIf(a, { Node = TBool true }, b) -> Option.map2 (fun x y -> MOr(x, y)) (mask env a) (mask env b)
+        | TIf(a, { Node = TBool false }, { Node = TBool true }) -> mask env a |> Option.map MNot
+        | _ -> None
+
+    // A jump back that leaves out the element: each cursor plus 1, and each
+    // other slot as it was.
+    let isNext (slot: string) (arg: TypedExpr) =
+        match arg.Node with
+        | TApply({ Node = TIdent("+", _) }, [ { Node = TIdent(c, []) }; { Node = TInt "1" } ], []) -> c = slot
+        | _ -> false
+    let isSkip (e: TypedExpr) =
+        match e.Node with
+        | TRecur(0, 0, args) when args.Length = slots.Length ->
+            List.zip slots args
+            |> List.forall (fun (slot, arg) ->
+                if isCursor slot then isNext slot arg
+                else
+                    match arg.Node with
+                    | TIdent(a, []) -> a = slot
+                    | _ -> false)
+        | _ -> false
+
+    // An accumulator slot that this path has not yet given a new value.
+    let freshAcc (updated: Map<string, string>) (e: TypedExpr) =
+        match e.Node with
+        | TIdent(a, []) when isSlot a && not (isCursor a) && not (Map.containsKey a updated) -> Some a
+        | _ -> None
+
+    let rec walk (env: Map<string, Lane>) (guard: VectorMask) (updated: Map<string, string>) (e: TypedExpr) : bool =
         match e.Node with
         | TLet(n, false, p, ({ Node = TLet(n2, false, p2, v2, inner) }), rest) ->
-            walk env { e with Node = TLet(n2, false, p2, v2, { e with Node = TLet(n, false, p, inner, rest) }) }
+            walk env guard updated { e with Node = TLet(n2, false, p2, v2, { e with Node = TLet(n, false, p, inner, rest) }) }
         | TLet(n, false, _, v, rest) ->
             match v.Node with
             | TApply({ Node = TIdent(VectorMarks.ElementMark, _) }, [ seq; { Node = TIdent(cur, []) }; _ ], []) when
-                intSlot cur && invariant env seq && (driverOf cur).IsNone
+                isCursor cur && invariant env seq && (driverOf cur).IsNone
                 ->
                 let optional = optionValue v.Type
                 let value = defaultArg optional (NumericLiteral.settled v.Type)
@@ -2611,109 +2702,183 @@ let private vectorLoopOf
                         match optional with
                         | Some vt -> Optional(VLoadSpan(k, cur), MValid k, vt)
                         | None -> Plain(VLoadSpan(k, cur), value)
-                    walk (Map.add n l env) rest
+                    walk (Map.add n l env) guard updated rest
                 | _ -> false
-            | TIdent(cur, []) when intSlot cur -> walk (Map.add n (Index cur) env) rest
+            | TIdent(cur, []) when isCursor cur -> walk (Map.add n (Index cur) env) guard updated rest
             | TApply(f, [ out; index; value ], []) when
-                n = "_" && builtin f "array-set!" && invariant env out && sink.IsNone
+                n = "_" && builtin f "array-set!" && invariant env out && sink.IsNone && guard = MAll
                 ->
                 match cursorOf env index, lane env value, arrayElement out.Type with
                 | Some cur, Some(Plain(v, vt)), Some element when sameType vt element ->
                     arrays.Add(out, cur)
-                    sink <- Some(SinkArray(out, cur), (v, MAll, vt))
-                    walk env rest
+                    sink <- Some(SinkArray(out, cur), v, MAll, vt)
+                    walk env guard updated rest
                 | _ -> false
-            | TApply({ Node = TIdent(VectorMarks.StepMark, _) }, [ c; { Node = TIdent(acc, []) }; x; _ ], []) when
-                isSlot acc && sink.IsNone && invariant env c
+            | TApply({ Node = TIdent(VectorMarks.StepMark, _) }, [ c; acc; x; _ ], []) when
+                sink.IsNone && guard = MAll && invariant env c
                 ->
-                match evidence "BlockCollector" c, lane env x with
-                | Some dictionary, Some(Plain(v, vt)) ->
-                    sink <- Some(SinkBlock(c, acc, dictionary), (v, MAll, vt))
-                    newAcc <- Some n
-                    walk env rest
-                | Some dictionary, Some(Optional(v, m, vt)) ->
-                    sink <- Some(SinkBlock(c, acc, dictionary), (v, m, vt))
-                    newAcc <- Some n
-                    walk env rest
+                match freshAcc updated acc, evidence "BlockCollector" c, lane env x with
+                | Some slot, Some dictionary, Some(Plain(v, vt)) ->
+                    sink <- Some(SinkBlock(c, slot, dictionary), v, MAll, vt)
+                    walk env guard (Map.add slot n updated) rest
+                | Some slot, Some dictionary, Some(Optional(v, m, vt)) ->
+                    sink <- Some(SinkBlock(c, slot, dictionary), v, m, vt)
+                    walk env guard (Map.add slot n updated) rest
                 | _ -> false
+            // `(+ acc x)`: a count when x is 1, and otherwise a sum of
+            // integers. An integer sum wraps, so the order in which the lanes
+            // are added does not change it.
+            | TApply({ Node = TIdent("+", _) }, [ a; b ], []) when
+                (freshAcc updated a).IsSome || (freshAcc updated b).IsSome
+                ->
+                let slot, x =
+                    match freshAcc updated a with
+                    | Some slot -> slot, b
+                    | None -> (freshAcc updated b).Value, a
+                let accType = NumericLiteral.settled slotTypes[slot]
+                let integer =
+                    accType = TypeConstants.intType || accType = TypeConstants.longType
+                let reduction =
+                    match x.Node with
+                    | TInt "1" when integer -> Some RCount
+                    | _ when integer ->
+                        match lane env x with
+                        | Some(Plain(vx, vt)) when sameType vt accType -> Some(RSum(vx, vt))
+                        | _ -> None
+                    | _ -> None
+                match reduction with
+                | Some r ->
+                    reductions.Add(slot, r, guard)
+                    walk env guard (Map.add slot n updated) rest
+                | None -> false
             | _ ->
                 match lane env v with
-                | Some l -> walk (Map.add n l env) rest
+                | Some l -> walk (Map.add n l env) guard updated rest
                 | None -> false
+        // `(:when-let (Some x) x*)` and the match a `:when` makes of it.
+        | TMatch(scrutinee, clauses) when Map.isEmpty updated ->
+            match someArm env scrutinee clauses (fun c -> isSkip c.Body) with
+            | Some(env', masks, body) -> walk env' (List.fold (fun a m -> MAnd(a, m)) guard masks) updated body
+            | None -> false
+        // `(:when test)`.
+        | TIf(test, a, b) when Map.isEmpty updated && isSkip b ->
+            match mask env test with
+            | Some m -> walk env (MAnd(guard, m)) updated a
+            | None -> false
+        | TIf(test, a, b) when Map.isEmpty updated && isSkip a ->
+            match mask env test with
+            | Some m -> walk env (MAnd(guard, MNot m)) updated b
+            | None -> false
         | TRecur(0, 0, args) when args.Length = slots.Length ->
             List.zip slots args
             |> List.forall (fun (slot, arg) ->
-                match arg.Node with
-                | TApply({ Node = TIdent("+", _) }, [ { Node = TIdent(c, []) }; { Node = TInt "1" } ], []) ->
-                    c = slot && intSlot slot
-                | TIdent(a, []) ->
-                    Some a = newAcc
-                    && (match sink with
-                        | Some(SinkBlock(_, acc, _), _) -> acc = slot
-                        | _ -> false)
-                | _ -> false)
+                if isCursor slot then isNext slot arg
+                else
+                    match arg.Node, Map.tryFind slot updated with
+                    | TIdent(a, []), Some fresh -> a = fresh
+                    | _ -> false)
         | _ -> false
 
-    // The tests that end the loop: `cursor >= limit`, joined by `or`.
-    let rec tests (e: TypedExpr) : (string * TypedExpr) list option =
-        match e.Node with
-        | TIf(a, { Node = TBool true }, b) ->
-            Option.map2 (@) (tests a) (tests b)
-        | TApply({ Node = TIdent(op, _) }, [ a; b ], []) when op = Simplify.strictOr ->
-            Option.map2 (@) (tests a) (tests b)
-        | TApply({ Node = TIdent(">=", _) }, [ { Node = TIdent(cur, []) }; limit ], []) when intSlot cur ->
-            Some [ cur, limit ]
-        | _ -> None
-
-    match member_.Locals = slots, member_.Body.Node with
-    | true, TIf(condition, _, rest) ->
-        match tests condition with
-        | Some ends when walk Map.empty rest ->
-            let limitOf (cur: string, limit: TypedExpr) =
-                match driverOf cur with
-                | Some k -> Some(cur, LimitDriver k)
-                | None ->
-                    match limit.Node with
-                    | TApply(f, [ arr ], []) when builtin f "array-length" && invariant Map.empty arr ->
-                        Some(cur, LimitArray arr)
-                    | TInt _
-                    | TIdent(_, []) when invariant Map.empty limit -> Some(cur, LimitInt limit)
-                    // A field of a name: a range's end. The loop does not
-                    // assign the name, and a range does not change.
-                    | TGetField({ Node = TIdent(n, []) }, _) when not (isSlot n) -> Some(cur, LimitInt limit)
-                    | _ -> None
-            let cursors = ends |> List.map limitOf
-            let cursorSlots = slots |> List.filter intSlot |> Set.ofList
-            let tested = ends |> List.map fst |> Set.ofList
+    match rest with
+    | Some rest when walk Map.empty MAll Map.empty rest ->
+        let limitOf (cur: string, limit: TypedExpr) =
+            match driverOf cur with
+            | Some k -> Some(cur, LimitDriver k)
+            | None ->
+                match limit.Node with
+                | TApply(f, [ arr ], []) when builtin f "array-length" && invariant Map.empty arr ->
+                    Some(cur, LimitArray arr)
+                | TInt _
+                | TIdent(_, []) when invariant Map.empty limit -> Some(cur, LimitInt limit)
+                // A field of a name: a range's end. The loop does not
+                // assign the name, and a range does not change.
+                | TGetField({ Node = TIdent(n, []) }, _) when not (isSlot n) -> Some(cur, LimitInt limit)
+                | _ -> None
+        let cursors = ends |> List.map limitOf
+        let accs =
+            [ for slot, _, _ in reductions do
+                  yield slot
+              match sink with
+              | Some(SinkBlock(_, acc, _), _, _, _) -> yield acc
+              | _ -> () ]
+        // The type of a lane. It decides the number of lanes, so each lane
+        // must have its size.
+        let rec typeOf v =
+            match v with
+            | VLoad(a, _) -> arrayElement a.Type
+            | VLoadSpan(k, _) -> Some drivers[k].Value
+            | VSplat s -> Some(NumericLiteral.settled s.Type)
+            | VBinary(_, a, _) -> typeOf a
+            | VConvert("ConvertToDouble", _) -> Some TypeConstants.doubleType
+            | VConvert(_, _) -> Some TypeConstants.singleType
+        let rec maskExprs m =
+            match m with
+            | MCompare(_, a, b) -> [ a; b ]
+            | MAnd(a, b)
+            | MOr(a, b) -> maskExprs a @ maskExprs b
+            | MNot a -> maskExprs a
+            | MAll
+            | MNone
+            | MValid _ -> []
+        let rec maskDrivers m =
+            match m with
+            | MValid k -> [ k ]
+            | MAnd(a, b)
+            | MOr(a, b) -> maskDrivers a @ maskDrivers b
+            | MNot a -> maskDrivers a
+            | _ -> []
+        let rec subExprs v =
+            v
+            :: (match v with
+                | VBinary(_, a, b) -> subExprs a @ subExprs b
+                | VConvert(_, a) -> subExprs a
+                | _ -> [])
+        let exprs =
+            [ match sink with
+              | Some(_, v, m, _) -> yield v; yield! maskExprs m
+              | None -> ()
+              for _, r, m in reductions do
+                  match r with
+                  | RSum(v, _) -> yield v
+                  | RCount -> ()
+                  yield! maskExprs m ]
+            |> List.collect subExprs
+        let laneType =
             match sink with
-            | Some(sinkKind, (value, mask, laneType)) when
-                List.forall Option.isSome cursors
-                && tested.Count = ends.Length
-                && Set.isSubset tested cursorSlots
-                && drivers |> Seq.forall (fun d -> Set.contains d.Cursor tested)
-                && arrays |> Seq.forall (fun (_, cur) -> Set.contains cur tested)
-                ->
-                // Every lane has the size of the sink's lanes.
-                let rec widthsMatch v =
-                    match v with
-                    | VLoad(a, _) -> arrayElement a.Type |> Option.bind laneWidth = laneWidth laneType
-                    | VLoadSpan(k, _) -> laneWidth drivers[k].Value = laneWidth laneType
-                    | VSplat s -> laneWidth s.Type = laneWidth laneType
-                    | VBinary(_, a, b) -> widthsMatch a && widthsMatch b
-                    | VConvert(_, a) -> widthsMatch a
-                if (laneWidth laneType).IsSome && widthsMatch value then
-                    Some
-                        { Cursors = cursors |> List.map Option.get
-                          Drivers = List.ofSeq drivers
-                          Arrays = List.ofSeq arrays
-                          Sink = sinkKind
-                          Value = value
-                          Mask = mask
-                          Lane = laneType }
-                else
-                    None
+            | Some(_, _, _, t) -> Some t
+            | None ->
+                let fromDrivers =
+                    reductions |> Seq.collect (fun (_, _, m) -> maskDrivers m) |> Seq.tryHead
+                    |> Option.map (fun k -> drivers[k].Value)
+                exprs |> List.tryPick typeOf |> Option.orElse fromDrivers
+        let lanesMatch (t: HMType) =
+            let width = laneWidth t
+            width.IsSome
+            && exprs |> List.forall (fun v ->
+                match v with
+                | VBinary _ -> true
+                | _ -> typeOf v |> Option.bind laneWidth = width)
+            && drivers |> Seq.forall (fun d -> laneWidth d.Value = width)
+        if
+            List.forall Option.isSome cursors
+            && cursorSet.Count = ends.Length
+            && (sink.IsSome || reductions.Count > 0)
+            && slots |> List.forall (fun s -> isCursor s || List.contains s accs)
+            && List.distinct accs = accs
+            && drivers |> Seq.forall (fun d -> isCursor d.Cursor)
+        then
+            match laneType with
+            | Some t when lanesMatch t ->
+                Some
+                    { Cursors = cursors |> List.map Option.get
+                      Drivers = List.ofSeq drivers
+                      Arrays = List.ofSeq arrays
+                      Sink = sink |> Option.map (fun (s, v, m, _) -> s, v, m)
+                      Reductions = List.ofSeq reductions
+                      Lane = t }
             | _ -> None
-        | _ -> None
+        else
+            None
     | _ -> None
 
 /// Does C# widen this type to `int` before applying an operator to it?
@@ -5824,7 +5989,9 @@ and private generateRecur
 ///
 /// A `BlockCollector` gets room for all the elements of the vector part at
 /// once. Each lane that is None is then made None, one at a time; a column
-/// with few nulls has few.
+/// with few nulls has few. A count adds the number of lanes in its mask, and
+/// a sum adds the lanes in its mask to a vector, whose lanes are added to the
+/// accumulator after the loop.
 and private emitVectorLoop (ctx: CodegenContext) (v: VectorLoop) : unit =
     let text (e: TypedExpr) =
         let sb = StringBuilder()
@@ -5833,6 +6000,7 @@ and private emitVectorLoop (ctx: CodegenContext) (v: VectorLoop) : unit =
     let vector = "System.Runtime.Intrinsics.Vector256"
     let marshal = "System.Runtime.InteropServices.MemoryMarshal"
     let count = $"{vector}<{typeToString v.Lane}>.Count"
+    let full = $"((1 << {count}) - 1)"
     let cursor (slot: string) = sanitizeIdent slot
     let call (dictionary: TypedExpr) (methodName: string) (args: string list) =
         let args = String.concat ", " args
@@ -5843,10 +6011,18 @@ and private emitVectorLoop (ctx: CodegenContext) (v: VectorLoop) : unit =
     let rec maskDrivers m =
         match m with
         | MValid k -> Set.singleton k
-        | MAnd(a, b) -> Set.union (maskDrivers a) (maskDrivers b)
+        | MAnd(a, b)
+        | MOr(a, b) -> Set.union (maskDrivers a) (maskDrivers b)
+        | MNot a -> maskDrivers a
         | MAll
-        | MNone -> Set.empty
-    let masked = maskDrivers v.Mask
+        | MNone
+        | MCompare _ -> Set.empty
+    let masks =
+        [ match v.Sink with
+          | Some(_, _, m) -> yield m
+          | None -> ()
+          for _, _, m in v.Reductions -> m ]
+    let masked = masks |> List.map maskDrivers |> Set.unionMany
     let ok = freshName "__vok"
     let n = freshName "__vn"
     let finished = freshName "__vdone"
@@ -5905,12 +6081,51 @@ and private emitVectorLoop (ctx: CodegenContext) (v: VectorLoop) : unit =
                         let b = expr b
                         $"({a} {op} {b})"
                     | VConvert(f, a) -> $"{vector}.{f}({expr a})"
-                let body = expr v.Value
+                let rec maskText m =
+                    match m with
+                    | MAll -> full
+                    | MNone -> "0"
+                    | MValid i -> bits[i]
+                    | MAnd(MAll, a)
+                    | MAnd(a, MAll) -> maskText a
+                    | MAnd(a, b) -> $"({maskText a} & {maskText b})"
+                    | MOr(a, b) -> $"({maskText a} | {maskText b})"
+                    | MNot a -> $"(~{maskText a} & {full})"
+                    | MCompare(op, a, b) ->
+                        let f =
+                            match op with
+                            | "<" -> "LessThan"
+                            | ">" -> "GreaterThan"
+                            | "<=" -> "LessThanOrEqual"
+                            | _ -> "GreaterThanOrEqual"
+                        $"(int){vector}.ExtractMostSignificantBits({vector}.{f}({expr a}, {expr b}))"
+                let rec isAll m =
+                    match m with
+                    | MAll -> true
+                    | MAnd(a, b) -> isAll a && isAll b
+                    | _ -> false
+                // The texts are made before the loop, so that the splats they
+                // need are declared there.
+                let sink =
+                    v.Sink
+                    |> Option.map (fun (kind, value, m) ->
+                        kind, expr value, (if isAll m then None else Some(maskText m)))
+                let reductions =
+                    v.Reductions
+                    |> List.map (fun (slot, r, m) ->
+                        let m = if isAll m then None else Some(maskText m)
+                        match r with
+                        | RCount -> slot, None, m
+                        | RSum(value, t) ->
+                            let sum = freshName "__vsum"
+                            indent c
+                            appendLine c $"var {sum} = {vector}<{typeToString t}>.Zero;"
+                            slot, Some(sum, expr value, typeToString t), m)
                 let store, none =
-                    match v.Sink with
-                    | SinkArray(out, slot) ->
-                        $"ref {marshal}.GetArrayDataReference({text out}), (nuint)({cursor slot} + {k})", None
-                    | SinkBlock(collector, acc, dictionary) ->
+                    match sink with
+                    | Some(SinkArray(out, slot), body, _) ->
+                        Some $"{vector}.StoreUnsafe({body}, ref {marshal}.GetArrayDataReference({text out}), (nuint)({cursor slot} + {k}));", None
+                    | Some(SinkBlock(collector, acc, dictionary), body, _) ->
                         let start = freshName "__vstart"
                         let span = freshName "__vspan"
                         let acc = sanitizeIdent acc
@@ -5919,40 +6134,44 @@ and private emitVectorLoop (ctx: CodegenContext) (v: VectorLoop) : unit =
                         indent c; appendLine c $"""{acc} = {call dictionary "block-grow" [ collector; acc; finished ]};"""
                         indent c
                         appendLine c $"""System.Span<{typeToString v.Lane}> {span} = {call dictionary "block-span" [ collector; acc; start; finished ]};"""
-                        $"ref {marshal}.GetReference({span}), (nuint){k}",
+                        Some $"{vector}.StoreUnsafe({body}, ref {marshal}.GetReference({span}), (nuint){k});",
                         Some(fun (lane: string) -> call dictionary "block-none!" [ collector; acc; $"{start} + {k} + {lane}" ])
+                    | None -> None, None
                 indent c; appendLine c $"for (int {k} = 0; {k} < {finished}; {k} += {count}) {{"
                 withIndent c (fun c ->
                     for i in masked do
                         let d = v.Drivers[i]
                         indent c
                         appendLine c $"int {bits[i]} = Bjolang.Runtime.BjoVectors.Bits({valid[i]}, {cursor d.Cursor} + {k}, {count});"
-                    indent c; appendLine c $"{vector}.StoreUnsafe({body}, {store});"
-                    let rec maskText m =
-                        match m with
-                        | MAll -> None
-                        | MNone -> Some "0"
-                        | MValid i -> Some bits[i]
-                        | MAnd(a, b) ->
-                            match maskText a, maskText b with
-                            | Some x, Some y -> Some $"({x} & {y})"
-                            | Some x, None
-                            | None, Some x -> Some x
-                            | None, None -> None
-                    match maskText v.Mask, none with
-                    | Some m, Some markNone ->
+                    store |> Option.iter (fun s -> indent c; appendLine c s)
+                    match sink, none with
+                    | Some(_, _, Some m), Some markNone ->
                         let mask = freshName "__vmask"
                         let lane = freshName "__vlane"
                         indent c; appendLine c $"int {mask} = {m};"
-                        indent c; appendLine c $"if ({mask} != (1 << {count}) - 1) {{"
+                        indent c; appendLine c $"if ({mask} != {full}) {{"
                         withIndent c (fun c ->
                             indent c; appendLine c $"for (int {lane} = 0; {lane} < {count}; {lane}++) {{"
                             withIndent c (fun c ->
                                 indent c; appendLine c $"if ((({mask} >> {lane}) & 1) == 0) {markNone lane};")
                             indent c; appendLine c "}")
                         indent c; appendLine c "}"
-                    | _ -> ())
+                    | _ -> ()
+                    for slot, sum, m in reductions do
+                        match sum, m with
+                        | None, None -> indent c; appendLine c $"{sanitizeIdent slot} += {count};"
+                        | None, Some m ->
+                            indent c
+                            appendLine c $"{sanitizeIdent slot} += System.Numerics.BitOperations.PopCount((uint)({m}));"
+                        | Some(s, value, _), None -> indent c; appendLine c $"{s} += {value};"
+                        | Some(s, value, t), Some m ->
+                            indent c
+                            appendLine c $"{s} += {value} & Bjolang.Runtime.BjoVectors.Lanes<{t}>({m});")
                 indent c; appendLine c "}"
+                for slot, sum, _ in reductions do
+                    match sum with
+                    | Some(s, _, _) -> indent c; appendLine c $"{sanitizeIdent slot} += {vector}.Sum({s});"
+                    | None -> ()
                 for slot, _ in v.Cursors do
                     indent c; appendLine c $"{cursor slot} += {finished};")
             indent c; appendLine c "}")
