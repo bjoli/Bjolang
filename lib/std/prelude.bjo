@@ -35,6 +35,9 @@
   cursor-start cursor-end cursor-end? cursor-ref cursor-next cursor-prev
   ;; Collector
   collector-init collector-step collector-finish
+  ;; Vector forms
+  contiguous? contiguous-values contiguous-valid
+  block-count block-grow block-span block-none!
   ;; `#:into` on a collector
   collector-into
   ;; Collection
@@ -877,6 +880,45 @@
   (: collector-init (-> %c %acc))
   (: collector-step (-> %c %acc %elem %acc))
   (: collector-finish (-> %c %acc %out)))
+
+;; ---------------------------------------------------------------------------
+;; Vector forms of drivers and collectors
+;; ---------------------------------------------------------------------------
+;;
+;; A loop whose drivers are Contiguous and whose collectors are
+;; BlockCollectors can be compiled to vector instructions. Each implementation
+;; is a promise of its author: the compiler does not prove it. See
+;; Docs/Vectorisation-design.org.
+
+;; An Iterable whose values are in memory one after another. The Iterable's
+;; cursor is an int that starts at 0 and steps by 1, and the walk is done when
+;; the cursor is the length of the values. The element at cursor i is
+;; values[i], or, when the element is an (Option %value), (Some values[i]) if
+;; bit i of the valid bitmap is set and None if it is not.
+(def/trait (Contiguous %s)
+  (type %value)
+  ;; Whether the values are in one span now. If not, the loop walks them one
+  ;; by one.
+  (: contiguous? (-> %s bool))
+  (: contiguous-values (-> %s (RoSpan %value)))
+  ;; The valid bitmap, bit i of byte i/8 for element i, the least
+  ;; significant bit first. Empty when no element is None.
+  (: contiguous-valid (-> %s (RoSpan byte))))
+
+;; A Collector whose accumulator can take a block of elements at a time. The
+;; collector's element is %value or (Option %value).
+(def/trait (BlockCollector %c)
+  (type %value)
+  (type %acc)
+  ;; The number of elements taken in so far.
+  (: block-count (-> %c %acc int))
+  ;; The accumulator with room for n more elements at the end. They are as if
+  ;; taken in: not None, with values that are written next.
+  (: block-grow (-> %c %acc int %acc))
+  ;; The elements from start, n of them, to write.
+  (: block-span (-> %c %acc int int (Span %value)))
+  ;; Makes element i None.
+  (: block-none! (-> %c %acc int void)))
 
 ;; Collectors.
 

@@ -1,0 +1,36 @@
+;; Map loops that get no vector part, because a vector part could change
+;; what they do or could not do it faster.
+
+(import (std prelude))
+
+;; EXPECT-NO-CS: Vector256
+
+;; Integer division throws on zero.
+(: (-> (Array long) (Array long) (Array long) void))
+(defun (quotients! out a b)
+  (loop (:for i (range 0 (array-length out)))
+        (:do (array-set! out i (/ (array-ref a i) (array-ref b i))))))
+
+;; A call can do anything.
+(: (-> (Array double) (-> double double) void))
+(defun (apply! xs f)
+  (loop (:for i (range 0 (array-length xs)))
+        (:do (array-set! xs i (f (array-ref xs i))))))
+
+;; A read at another index than the one written.
+(: (-> (Array double) void))
+(defun (shift! xs)
+  (loop (:for i (range 0 (- (array-length xs) 1)))
+        (:do (array-set! xs i (array-ref xs (+ i 1))))))
+
+;; Lanes of different sizes: an int and a double.
+(: (-> (Array double) (Array int) void))
+(defun (widen! out xs)
+  (loop (:for i (range 0 (array-length out)))
+        (:do (array-set! out i (cast double (array-ref xs i))))))
+
+;; A step that is not 1.
+(: (-> (Array double) void))
+(defun (every-other! xs)
+  (loop (:for i (range-by 0 (array-length xs) 2))
+        (:do (array-set! xs i 0.0))))

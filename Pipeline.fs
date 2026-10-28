@@ -3346,6 +3346,11 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         let env, typedAst =
             Timing.phase "monomorphise" (fun () -> Monomorphise.run env moduleOf letrecifiedDecls typedAst)
 
+        // After `Monomorphise`, so that a copy at a concrete type has its
+        // drivers marked too, and before `TraitInline`, which removes the trait
+        // calls that the marks are found by.
+        let typedAst = Timing.phase "vector marks" (fun () -> VectorMarks.run env typedAst)
+
         Diagnostics.progress "=== Step 4: Trait Inlining ==="
         // Before dictionary lowering, so that the dictionary pass sees the
         // inlined result and handles any interface-trait dispatch inside it with

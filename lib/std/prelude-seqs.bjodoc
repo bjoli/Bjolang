@@ -553,6 +553,71 @@
   (returns "The finished value: a list for listing, a sum for summing, and so on.")
   (see collector-init collector-step))
 
+(:doc contiguous?
+  (summary "Whether the values of a Contiguous sequence are in one span now.")
+  (arg s "The sequence.")
+  (returns "#t when @code{contiguous-values} and @code{contiguous-valid} give all the elements. When #f, a loop walks the elements one by one.")
+  (reference """
+    @code{Contiguous} is a promise of the implementation: the
+    @code{Iterable} cursor of the type is an int that starts at 0 and steps
+    by 1, and the walk is done when the cursor is the length of the values.
+    The element at cursor i is values[i]. When the element is an
+    @code{(Option %value)}, it is @code{(Some values[i])} if bit i of the
+    valid bitmap is set, and None if it is not. A loop over Contiguous
+    sequences into BlockCollectors can be compiled to vector instructions.
+    The compiler does not prove the promise.
+    """)
+  (see contiguous-values contiguous-valid block-span))
+
+(:doc contiguous-values
+  (summary "The values of a Contiguous sequence, in the order of its walk.")
+  (arg s "The sequence. @code{contiguous?} answered #t for it.")
+  (returns "The values. Under a None element the value is unspecified.")
+  (see contiguous? contiguous-valid))
+
+(:doc contiguous-valid
+  (summary "The valid bitmap of a Contiguous sequence.")
+  (arg s "The sequence. @code{contiguous?} answered #t for it.")
+  (returns "Bit i of byte i/8, the least significant bit first, is set when element i is not None. Empty when no element is None.")
+  (see contiguous? contiguous-values))
+
+(:doc block-count
+  (summary "How many elements a BlockCollector's accumulator has taken in.")
+  (arg c "The collector.")
+  (arg acc "The accumulator.")
+  (returns "The number of elements.")
+  (reference """
+    @code{BlockCollector} is a promise of the implementation: the
+    accumulator takes elements a block at a time with the same result as one
+    @code{collector-step} for each. The collector's element is
+    @code{%value} or @code{(Option %value)}.
+    """)
+  (see block-grow block-span block-none! contiguous?))
+
+(:doc block-grow
+  (summary "An accumulator with room for more elements at the end.")
+  (arg c "The collector.")
+  (arg acc "The accumulator.")
+  (arg n "How many elements to add.")
+  (returns "The accumulator with n more elements, as if taken in: not None, with values that are written next through @code{block-span}.")
+  (see block-span block-none!))
+
+(:doc block-span
+  (summary "Elements of a BlockCollector's accumulator, to write.")
+  (arg c "The collector.")
+  (arg acc "The accumulator.")
+  (arg start "The first element.")
+  (arg n "How many elements.")
+  (returns "The elements from start, n of them.")
+  (see block-grow block-none!))
+
+(:doc block-none!
+  (summary "Makes an element of a BlockCollector's accumulator None.")
+  (arg c "The collector.")
+  (arg acc "The accumulator.")
+  (arg i "The element.")
+  (see block-grow block-span))
+
 (:doc Summing
   (summary "The collector that adds up numbers.")
   (tparam %a "The type of the numbers, and of the sum.")

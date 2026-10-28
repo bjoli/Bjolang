@@ -1,0 +1,144 @@
+;; Loops over Contiguous drivers into a BlockCollector, which are compiled to
+;; vector instructions (see codegen/vector_collector.bjo). The answers must be
+;; those of the scalar loop: with None elements, with sizes that are not a
+;; whole number of vectors, and when a driver is not contiguous.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; Numbers, each Some or None: values, and a valid bitmap, empty when each
+;; is Some. `split` makes contiguous? false, so that the loop is scalar.
+(type (: Numbers (Struct (: values (Array double))
+                         (: valid (Array byte))
+                         (: split bool))))
+
+(: (-> Numbers int bool))
+(defun (numbers-some? s i)
+  (def valid (record-ref s valid))
+  (or (= (array-length valid) 0)
+      (not (= (bitwise-and (cast int (array-ref valid (shift-right i 3))) (shift-left 1 (bitwise-and i 7))) 0))))
+
+(impl (Iterable Numbers)
+  (type %elem (Option double))
+  (type %cursor int)
+  (defun (iterable-start s) 0)
+  (defun (iterable-done? s i) (>= i (array-length (record-ref s values))))
+  (defun (iterable-current s i)
+    (if (numbers-some? s i) (Some (array-ref (record-ref s values) i)) None))
+  (defun (iterable-next s i) (+ i 1))
+  (defun (count s) (array-length (record-ref s values))))
+
+(impl (Contiguous Numbers)
+  (type %value double)
+  (defun (contiguous? s) (not (record-ref s split)))
+  (defun (contiguous-values s) (array->ro-span (record-ref s values)))
+  (defun (contiguous-valid s) (array->ro-span (record-ref s valid))))
+
+;; n numbers, i + 0.5, None where `none?` says so.
+(: (-> int (-> int bool) bool Numbers))
+(defun (numbers n none? split)
+  (def values (make-array n #:fill 0.0))
+  (def any-none (loop (:for i (range 0 n)) (:acc (counting (none? i)))))
+  (def valid (make-array (if (= any-none 0) 0 (+ (/ n 8) 1)) #:fill (cast byte 0)))
+  (loop (:for i (range 0 n))
+        (:do (array-set! values i (+ (cast double i) 0.5))
+             (when (and (> (array-length valid) 0) (not (none? i)))
+               (def at (shift-right i 3))
+               (array-set! valid at (cast byte (bitwise-ior (cast int (array-ref valid at))
+                                                             (shift-left 1 (bitwise-and i 7))))))))
+  (Numbers (values values) (valid valid) (split split)))
+
+;; A growable column of Options: the collector, and its accumulator.
+(type (: Building (Union building)))
+(type (: Column (Record (: values (Array double) #:mutable)
+                        (: some (Array bool) #:mutable)
+                        (: count int #:mutable))))
+
+(: (-> Column int void))
+(defun (make-room! acc n)
+  (def wanted (+ (record-ref acc count) n))
+  (when (> wanted (array-length (record-ref acc values)))
+    (def size (max wanted (* 2 (array-length (record-ref acc values)))))
+    (record-set! acc
+                 (values (array-resize (record-ref acc values) size))
+                 (some (array-resize (record-ref acc some) size)))))
+
+(impl (Collector Building)
+  (type %elem (Option double))
+  (type %acc Column)
+  (type %out (Vec (Option double)))
+  (defun (collector-init c)
+    (Column (values (make-array 4 #:fill 0.0)) (some (make-array 4 #:fill #f)) (count 0)))
+  (defun (collector-step c acc x)
+    (make-room! acc 1)
+    (def i (record-ref acc count))
+    (match x
+      ((Some v) (array-set! (record-ref acc values) i v) (array-set! (record-ref acc some) i #t))
+      (None (array-set! (record-ref acc values) i 0.0) (array-set! (record-ref acc some) i #f)))
+    (record-set! acc (count (+ i 1)))
+    acc)
+  (defun (collector-finish c acc)
+    {vecing (if (array-ref (record-ref acc some) i) (Some (array-ref (record-ref acc values) i)) None)
+            (:for i (range 0 (record-ref acc count)))}))
+
+(impl (BlockCollector Building)
+  (type %value double)
+  (type %acc Column)
+  (defun (block-count c acc) (record-ref acc count))
+  (defun (block-grow c acc n)
+    (make-room! acc n)
+    (def start (record-ref acc count))
+    (loop (:for i (range start (+ start n))) (:do (array-set! (record-ref acc some) i #t)))
+    (record-set! acc (count (+ start n)))
+    acc)
+  (defun (block-span c acc start n)
+    (array->span (record-ref acc values) #:from start #:to (+ start n)))
+  (defun (block-none! c acc i)
+    (array-set! (record-ref acc values) i 0.0)
+    (array-set! (record-ref acc some) i #f)))
+
+(: (-> Numbers Numbers (Vec (Option double))))
+(defun (products xs ys)
+  (loop (:for x* xs) (:for y* ys)
+        (:acc (building (match (Tuple x* y*)
+                          ((Tuple (Some x) (Some y)) (Some (* x y)))
+                          (_ None))))))
+
+(: (-> Numbers double (Vec (Option double))))
+(defun (scaled xs k)
+  (loop (:for x* xs)
+        (:acc (building (match x* ((Some x) (Some (/ x k))) (None None))))))
+
+;; The positions where `got` is not what `want` says.
+(: (-> (Vec (Option double)) (-> int (Option double)) int))
+(defun (wrong got want)
+  (loop (:for i (range 0 (vec-length got)))
+        (:when (not (= (vec-ref got i) (want i))))
+        (:acc (counting i))))
+
+(defun (main)
+  (loop
+    (:for n [0 1 3 4 5 8 9 15 16 17 100 1001])
+    (:do
+     (def none-at-3 (fun (i) (= (% i 5) 3)))
+     (def none-at-2 (fun (i) (= (% i 7) 2)))
+     (def never (fun (i) #f))
+     (def x (fun (i) (+ (cast double i) 0.5)))
+     (loop
+       (:for split [#f #t])
+       (:do
+        (def where (str (displayed n) (if split ", scalar" ", vector")))
+        (def ps (products (numbers n none-at-3 split) (numbers (+ n 3) none-at-2 #f)))
+        (expect (str "products, length, " where) (vec-length ps) n)
+        (expect (str "products, " where)
+                (wrong ps (fun (i) (if (or (none-at-3 i) (none-at-2 i)) None (Some (* (x i) (x i))))))
+                0)
+        (def ss (scaled (numbers n never split) 2.0))
+        (expect (str "scaled, " where)
+                (wrong ss (fun (i) (Some (/ (x i) 2.0))))
+                0)
+        (def us (scaled (numbers n none-at-2 split) 4.0))
+        (expect (str "scaled with None, " where)
+                (wrong us (fun (i) (if (none-at-2 i) None (Some (/ (x i) 4.0)))))
+                0)))))
+  0)

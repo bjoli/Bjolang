@@ -1,0 +1,28 @@
+;; A map loop over a range is given a vector part before the scalar loop.
+;;
+;; The vector part does as many whole vectors as each array and the range
+;; hold. Loads and stores are at the cursor, and a value that the loop does
+;; not change is put in all lanes once, before the loop. Then the cursor is
+;; moved past the elements done, and the scalar loop does the rest.
+;; `496_vector_maps.bjo` is what checks the answers.
+
+(import (std prelude))
+
+;; EXPECT-CS: bool __vok\w* = System\.Runtime\.Intrinsics\.Vector256\.IsHardwareAccelerated && loopcur\w* >= 0;
+;; EXPECT-CS: __vn\w* = System\.Math\.Min\(__vn\w*, loopseq\w*\.hi - loopcur\w*\);
+;; EXPECT-CS: __vn\w* = System\.Math\.Min\(__vn\w*, \(qs\)\.Length - loopcur\w*\);
+;; EXPECT-CS: __vn\w* = System\.Math\.Min\(__vn\w*, \(@out\)\.Length - loopcur\w*\);
+;; EXPECT-CS: Vector256\.ConvertToDouble\(System\.Runtime\.Intrinsics\.Vector256\.LoadUnsafe\(ref System\.Runtime\.InteropServices\.MemoryMarshal\.GetArrayDataReference\(qs\), \(nuint\)\(loopcur\w* \+ __vk\w*\)\)
+;; EXPECT-CS: Vector256\.StoreUnsafe\(.*GetArrayDataReference\(@out\), \(nuint\)\(loopcur\w* \+ __vk\w*\)\);
+;; EXPECT-CS: loopcur\w* \+= __vdone\w*;
+(: (-> (Array double) (Array double) (Array long) void))
+(defun (revenue! out ps qs)
+  (loop (:for i (range 0 (array-length out)))
+        (:do (array-set! out i (* (array-ref ps i) (cast double (array-ref qs i)))))))
+
+;; EXPECT-CS: var __vsplat\w* = System\.Runtime\.Intrinsics\.Vector256\.Create<int>\(k\);
+;; EXPECT-CS: for \(int __vk\w* = 0; __vk\w* < __vdone\w*; __vk\w* \+= System\.Runtime\.Intrinsics\.Vector256<int>\.Count\)
+(: (-> (Array int) (Array int) int void))
+(defun (scale! out xs k)
+  (loop (:for i (range 0 (array-length out)))
+        (:do (array-set! out i (* k (array-ref xs i))))))

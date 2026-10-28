@@ -148,6 +148,65 @@ type LiteralTable = {
 /// the name ambiguous.
 let literalHolderClass = "__Literals"
 
+/// The element of a vector loop's lane, as vector operations. See
+/// `vectorLoopOf`.
+type VectorExpr =
+    /// The elements of an array at a cursor.
+    | VLoad of array: TypedExpr * cursor: string
+    /// The values of a `Contiguous` driver, by its index, at a cursor.
+    | VLoadSpan of driver: int * cursor: string
+    /// A value that the loop does not change, in all lanes.
+    | VSplat of TypedExpr
+    /// `+`, `-`, `*` or `/` of two vectors.
+    | VBinary of string * VectorExpr * VectorExpr
+    /// `Vector256.ConvertToDouble` or `Vector256.ConvertToSingle`.
+    | VConvert of string * VectorExpr
+
+/// The lanes of an Option value that are Some.
+type VectorMask =
+    | MAll
+    | MNone
+    /// The valid bits of a `Contiguous` driver, by its index.
+    | MValid of int
+    | MAnd of VectorMask * VectorMask
+
+/// Where a cursor of a vector loop stops.
+type VectorLimit =
+    /// An int that the loop does not change: a range's end.
+    | LimitInt of TypedExpr
+    /// The length of an array.
+    | LimitArray of TypedExpr
+    /// The length of the values of a `Contiguous` driver, by its index.
+    | LimitDriver of int
+
+/// A driver whose type implements `Contiguous`.
+type VectorDriver =
+    { Seq: TypedExpr
+      Cursor: string
+      /// The `Contiguous` dictionary of the driver's type.
+      Dictionary: TypedExpr
+      Value: HMType }
+
+/// Where a vector loop puts its lanes.
+type VectorSink =
+    /// `(array-set! out i x)`, with `i` a cursor.
+    | SinkArray of out: TypedExpr * cursor: string
+    /// The step of a `BlockCollector`: the collector, the accumulator slot,
+    /// and the collector's `BlockCollector` dictionary.
+    | SinkBlock of collector: TypedExpr * acc: string * dictionary: TypedExpr
+
+/// A loop that `Codegen` writes a vector part for. See `vectorLoopOf`.
+type VectorLoop =
+    { Cursors: (string * VectorLimit) list
+      Drivers: VectorDriver list
+      /// The arrays read or written, each with the cursor it is indexed by.
+      Arrays: (TypedExpr * string) list
+      Sink: VectorSink
+      Value: VectorExpr
+      Mask: VectorMask
+      /// The type of a lane of the value, which decides the number of lanes.
+      Lane: HMType }
+
 type CodegenContext = {
     Builder: StringBuilder
     /// The directive owed to the next line written to `Builder`.
@@ -226,6 +285,9 @@ type CodegenContext = {
     /// `InSeq`, it is a property of the method, and every construct opening a
     /// new one sets it afresh.
     ReturnsVoid: bool
+    /// The loops that get a vector part, by the name of their loop member.
+    /// Found before the code is written: see `findVectorLoops`.
+    VectorLoops: System.Collections.Generic.Dictionary<string, VectorLoop>
 }
 
 let inline append (ctx: CodegenContext) (s: string) =
@@ -2324,6 +2386,336 @@ let private isZeroLiteral (e: TypedExpr) =
         d.Length > 0 && Seq.forall (fun c -> c = '0') d
     | _ -> false
 
+/// The size in bytes of a lane of type `t`, for the types that a vector loop
+/// supports. All lanes of one loop have the same size, so that each vector has
+/// the same number of lanes.
+let private laneWidth (t: HMType) : int option =
+    match NumericLiteral.settled t with
+    | TCon((TypeConstants.DoubleName | TypeConstants.Int64Name), []) -> Some 8
+    | TCon((TypeConstants.SingleName | TypeConstants.Int32Name), []) -> Some 4
+    | _ -> None
+
+let private isFloating (t: HMType) =
+    match NumericLiteral.settled t with
+    | TCon((TypeConstants.DoubleName | TypeConstants.SingleName), []) -> true
+    | _ -> false
+
+let private sameType (a: HMType) (b: HMType) =
+    NumericLiteral.settled a = NumericLiteral.settled b
+
+/// The element type of an array type.
+let private arrayElement (t: HMType) : HMType option =
+    match NumericLiteral.settled t with
+    | TCon("Array", [ e ]) -> Some(NumericLiteral.settled e)
+    | _ -> None
+
+/// `a` in `(Option a)`.
+let private optionValue (t: HMType) : HMType option =
+    match NumericLiteral.settled t with
+    | TCon("Option", [ e ]) -> Some(NumericLiteral.settled e)
+    | _ -> None
+
+/// What a name in the body of a vector loop stands for.
+type private Lane =
+    /// A vector of values of the type.
+    | Plain of VectorExpr * HMType
+    /// A vector of Options: the values, the lanes that are Some, and the type
+    /// of a value. The values in the lanes that are None are unspecified.
+    | Optional of VectorExpr * VectorMask * HMType
+    /// A cursor, by its slot.
+    | Index of string
+
+/// The vector loop that a flat loop member is, or None.
+///
+/// The member must be the lowered form of a loop whose drivers walk an int
+/// cursor that steps by 1: a `range`, an `Array`, or a type that implements
+/// `Contiguous` (see `VectorMarks`). Its test is `cursor >= limit` for each
+/// cursor, joined by `or`. Its body binds names with `let` and ends in one
+/// `(array-set! out i x)`, with `i` a cursor, or in one step of a
+/// `BlockCollector`, and then jumps back with each cursor plus 1.
+///
+/// The values may read arrays at a cursor, use names and literals that the
+/// loop does not change, and apply `+`, `-`, `*`, and `/` on floating types.
+/// A cast from `long` to `double` or from `int` to `float` is permitted.
+/// Integer division is not, because it can throw. A value may be an Option:
+/// `Some`, `None`, and a `match` whose arm for Some values gives an Option and
+/// whose other arm gives None. The lanes that are None are then a mask.
+///
+/// Each element is written from elements at the same position only. Thus the
+/// vector loop gives the same result as the scalar loop, also when `out` is
+/// one of the arrays that are read.
+let private vectorLoopOf
+    (ctx: CodegenContext)
+    (evidence: string -> TypedExpr -> TypedExpr option)
+    (member_: TLoopMember)
+    : VectorLoop option =
+    let slots = member_.Slots |> List.map fst
+    let slotTypes = Map.ofList member_.Slots
+    let isSlot n = Map.containsKey n slotTypes
+    let intSlot n =
+        Map.tryFind n slotTypes |> Option.exists (fun t -> sameType t TypeConstants.intType)
+    let builtin (f: TypedExpr) (name: string) =
+        match f.Node with
+        | TIdent(n, _) -> builtinNamed ctx n = Some name
+        | _ -> false
+
+    let drivers = ResizeArray<VectorDriver>()
+    let arrays = ResizeArray<TypedExpr * string>()
+    let mutable sink: (VectorSink * (VectorExpr * VectorMask * HMType)) option = None
+    let mutable newAcc: string option = None
+    let driverOf cur = drivers |> Seq.tryFindIndex (fun d -> d.Cursor = cur)
+
+    // A name or a literal that the loop does not change. The body assigns no
+    // name, so a name that it does not bind keeps its value.
+    let invariant (env: Map<string, Lane>) (e: TypedExpr) =
+        match e.Node with
+        | TInt _ -> true
+        | TIdent(n, []) -> not (isSlot n) && not (Map.containsKey n env) && builtinNamed ctx n = None
+        | _ -> false
+
+    let cursorOf (env: Map<string, Lane>) (e: TypedExpr) =
+        match e.Node with
+        | TIdent(n, []) when intSlot n -> Some n
+        | TIdent(n, []) ->
+            match Map.tryFind n env with
+            | Some(Index cur) -> Some cur
+            | _ -> None
+        | _ -> None
+
+    let rec lane (env: Map<string, Lane>) (e: TypedExpr) : Lane option =
+        let t = NumericLiteral.settled e.Type
+        match e.Node with
+        | TIdent(n, []) when Map.containsKey n env ->
+            match env[n] with
+            | Index _ -> None
+            | l -> Some l
+        | TIdent("None", _) ->
+            optionValue t
+            |> Option.map (fun v -> Optional(VSplat { e with Type = v; Node = TInt "0" }, MNone, v))
+        | (TIdent _ | TInt _) when invariant env e && (laneWidth t).IsSome -> Some(Plain(VSplat e, t))
+        | TApply(f, [ arr; index ], []) when builtin f "array-ref" && invariant env arr ->
+            match cursorOf env index, arrayElement arr.Type with
+            | Some cur, Some element when (laneWidth element).IsSome ->
+                arrays.Add(arr, cur)
+                Some(Plain(VLoad(arr, cur), element))
+            | _ -> None
+        | TApply({ Node = TIdent("Some", _) }, [ x ], []) ->
+            match lane env x with
+            | Some(Plain(v, vt)) -> Some(Optional(v, MAll, vt))
+            | _ -> None
+        | TApply({ Node = TIdent(op, _) }, [ a; b ], []) when
+            (op = "+" || op = "-" || op = "*" || (op = "/" && isFloating t))
+            && builtinNamed ctx op = Some op
+            && sameType a.Type t && sameType b.Type t
+            ->
+            match lane env a, lane env b with
+            | Some(Plain(va, _)), Some(Plain(vb, _)) -> Some(Plain(VBinary(op, va, vb), t))
+            | _ -> None
+        | TCast(inner, target) ->
+            let source = NumericLiteral.settled inner.Type
+            let target = NumericLiteral.settled target
+            let converted f =
+                match lane env inner with
+                | Some(Plain(v, _)) -> Some(Plain(f v, target))
+                | _ -> None
+            if sameType source target then lane env inner
+            elif target = TypeConstants.doubleType && source = TypeConstants.longType then
+                converted (fun v -> VConvert("ConvertToDouble", v))
+            elif target = TypeConstants.singleType && source = TypeConstants.intType then
+                converted (fun v -> VConvert("ConvertToSingle", v))
+            else None
+        | TMatch(scrutinee, clauses) -> matchLane env scrutinee clauses
+        | _ -> None
+
+    // A match whose arm for Some values gives an Option and whose other arm
+    // gives None: the lanes that are Some are those of the scrutinees and
+    // those of the arm.
+    and matchLane (env: Map<string, Lane>) (scrutinee: TypedExpr) (clauses: TMatchClause list) : Lane option =
+        let somePattern (p: TypedPattern) : string option option =
+            match p.Node with
+            | TPConstruct("Some", [ { Node = TPIdent x } ]) -> Some(Some x)
+            | TPConstruct("Some", [ { Node = TPWildcard } ]) -> Some None
+            | _ -> None
+        let isNoneArm (c: TMatchClause) =
+            c.Guard.IsNone
+            && (match c.Pattern.Node with
+                | TPWildcard
+                | TPConstruct("None", []) -> true
+                | _ -> false)
+            && (match lane env c.Body with
+                | Some(Optional(_, MNone, _)) -> true
+                | _ -> false)
+        let scrutinees, patternsOf =
+            match scrutinee.Node with
+            | TTupleMake items ->
+                items,
+                (fun (p: TypedPattern) ->
+                    match p.Node with
+                    | TPTuple ps when ps.Length = items.Length -> Some ps
+                    | _ -> None)
+            | _ -> [ scrutinee ], (fun p -> Some [ p ])
+        let optionals =
+            scrutinees
+            |> List.map (fun s ->
+                match lane env s with
+                | Some(Optional(v, m, vt)) -> Some(v, m, vt)
+                | _ -> None)
+        let arms =
+            match clauses with
+            | [ a; b ] when isNoneArm b -> Some(a, b)
+            | [ a; b ] when isNoneArm a -> Some(b, a)
+            | _ -> None
+        match arms with
+        | Some(someArm, _) when someArm.Guard.IsNone && List.forall Option.isSome optionals ->
+            let optionals = optionals |> List.map Option.get
+            let binders =
+                patternsOf someArm.Pattern
+                |> Option.map (List.map somePattern)
+            match binders with
+            | Some bs when List.forall Option.isSome bs ->
+                let env' =
+                    List.zip (List.map Option.get bs) optionals
+                    |> List.fold
+                        (fun acc (binder, (v, _, vt)) ->
+                            match binder with
+                            | Some x -> Map.add x (Plain(v, vt)) acc
+                            | None -> acc)
+                        env
+                let masks = optionals |> List.map (fun (_, m, _) -> m)
+                match lane env' someArm.Body with
+                | Some(Optional(bv, bm, bt)) -> Some(Optional(bv, List.fold (fun a m -> MAnd(a, m)) bm masks, bt))
+                | _ -> None
+            | _ -> None
+        | _ -> None
+
+    let rec walk (env: Map<string, Lane>) (e: TypedExpr) : bool =
+        match e.Node with
+        | TLet(n, false, p, ({ Node = TLet(n2, false, p2, v2, inner) }), rest) ->
+            walk env { e with Node = TLet(n2, false, p2, v2, { e with Node = TLet(n, false, p, inner, rest) }) }
+        | TLet(n, false, _, v, rest) ->
+            match v.Node with
+            | TApply({ Node = TIdent(VectorMarks.ElementMark, _) }, [ seq; { Node = TIdent(cur, []) }; _ ], []) when
+                intSlot cur && invariant env seq && (driverOf cur).IsNone
+                ->
+                let optional = optionValue v.Type
+                let value = defaultArg optional (NumericLiteral.settled v.Type)
+                match evidence "Contiguous" seq with
+                | Some dictionary when (laneWidth value).IsSome ->
+                    drivers.Add
+                        { Seq = seq
+                          Cursor = cur
+                          Dictionary = dictionary
+                          Value = value }
+                    let k = drivers.Count - 1
+                    let l =
+                        match optional with
+                        | Some vt -> Optional(VLoadSpan(k, cur), MValid k, vt)
+                        | None -> Plain(VLoadSpan(k, cur), value)
+                    walk (Map.add n l env) rest
+                | _ -> false
+            | TIdent(cur, []) when intSlot cur -> walk (Map.add n (Index cur) env) rest
+            | TApply(f, [ out; index; value ], []) when
+                n = "_" && builtin f "array-set!" && invariant env out && sink.IsNone
+                ->
+                match cursorOf env index, lane env value, arrayElement out.Type with
+                | Some cur, Some(Plain(v, vt)), Some element when sameType vt element ->
+                    arrays.Add(out, cur)
+                    sink <- Some(SinkArray(out, cur), (v, MAll, vt))
+                    walk env rest
+                | _ -> false
+            | TApply({ Node = TIdent(VectorMarks.StepMark, _) }, [ c; { Node = TIdent(acc, []) }; x; _ ], []) when
+                isSlot acc && sink.IsNone && invariant env c
+                ->
+                match evidence "BlockCollector" c, lane env x with
+                | Some dictionary, Some(Plain(v, vt)) ->
+                    sink <- Some(SinkBlock(c, acc, dictionary), (v, MAll, vt))
+                    newAcc <- Some n
+                    walk env rest
+                | Some dictionary, Some(Optional(v, m, vt)) ->
+                    sink <- Some(SinkBlock(c, acc, dictionary), (v, m, vt))
+                    newAcc <- Some n
+                    walk env rest
+                | _ -> false
+            | _ ->
+                match lane env v with
+                | Some l -> walk (Map.add n l env) rest
+                | None -> false
+        | TRecur(0, 0, args) when args.Length = slots.Length ->
+            List.zip slots args
+            |> List.forall (fun (slot, arg) ->
+                match arg.Node with
+                | TApply({ Node = TIdent("+", _) }, [ { Node = TIdent(c, []) }; { Node = TInt "1" } ], []) ->
+                    c = slot && intSlot slot
+                | TIdent(a, []) ->
+                    Some a = newAcc
+                    && (match sink with
+                        | Some(SinkBlock(_, acc, _), _) -> acc = slot
+                        | _ -> false)
+                | _ -> false)
+        | _ -> false
+
+    // The tests that end the loop: `cursor >= limit`, joined by `or`.
+    let rec tests (e: TypedExpr) : (string * TypedExpr) list option =
+        match e.Node with
+        | TIf(a, { Node = TBool true }, b) ->
+            Option.map2 (@) (tests a) (tests b)
+        | TApply({ Node = TIdent(op, _) }, [ a; b ], []) when op = Simplify.strictOr ->
+            Option.map2 (@) (tests a) (tests b)
+        | TApply({ Node = TIdent(">=", _) }, [ { Node = TIdent(cur, []) }; limit ], []) when intSlot cur ->
+            Some [ cur, limit ]
+        | _ -> None
+
+    match member_.Locals = slots, member_.Body.Node with
+    | true, TIf(condition, _, rest) ->
+        match tests condition with
+        | Some ends when walk Map.empty rest ->
+            let limitOf (cur: string, limit: TypedExpr) =
+                match driverOf cur with
+                | Some k -> Some(cur, LimitDriver k)
+                | None ->
+                    match limit.Node with
+                    | TApply(f, [ arr ], []) when builtin f "array-length" && invariant Map.empty arr ->
+                        Some(cur, LimitArray arr)
+                    | TInt _
+                    | TIdent(_, []) when invariant Map.empty limit -> Some(cur, LimitInt limit)
+                    // A field of a name: a range's end. The loop does not
+                    // assign the name, and a range does not change.
+                    | TGetField({ Node = TIdent(n, []) }, _) when not (isSlot n) -> Some(cur, LimitInt limit)
+                    | _ -> None
+            let cursors = ends |> List.map limitOf
+            let cursorSlots = slots |> List.filter intSlot |> Set.ofList
+            let tested = ends |> List.map fst |> Set.ofList
+            match sink with
+            | Some(sinkKind, (value, mask, laneType)) when
+                List.forall Option.isSome cursors
+                && tested.Count = ends.Length
+                && Set.isSubset tested cursorSlots
+                && drivers |> Seq.forall (fun d -> Set.contains d.Cursor tested)
+                && arrays |> Seq.forall (fun (_, cur) -> Set.contains cur tested)
+                ->
+                // Every lane has the size of the sink's lanes.
+                let rec widthsMatch v =
+                    match v with
+                    | VLoad(a, _) -> arrayElement a.Type |> Option.bind laneWidth = laneWidth laneType
+                    | VLoadSpan(k, _) -> laneWidth drivers[k].Value = laneWidth laneType
+                    | VSplat s -> laneWidth s.Type = laneWidth laneType
+                    | VBinary(_, a, b) -> widthsMatch a && widthsMatch b
+                    | VConvert(_, a) -> widthsMatch a
+                if (laneWidth laneType).IsSome && widthsMatch value then
+                    Some
+                        { Cursors = cursors |> List.map Option.get
+                          Drivers = List.ofSeq drivers
+                          Arrays = List.ofSeq arrays
+                          Sink = sinkKind
+                          Value = value
+                          Mask = mask
+                          Lane = laneType }
+                else
+                    None
+            | _ -> None
+        | _ -> None
+    | _ -> None
+
 /// Does C# widen this type to `int` before applying an operator to it?
 ///
 /// If we encounter a solved type variable, we just follow its pointer directly
@@ -4125,6 +4517,12 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                 for slot, tmp in List.zip slots temps do
                     indent ctx; appendLine ctx $"{slot} = {tmp};"
 
+                // A vector part before the scalar loop, if the loop has one:
+                // see `findVectorLoops`.
+                match ctx.VectorLoops.TryGetValue member_.LoopName with
+                | true, v -> emitVectorLoop ctx v
+                | _ -> ()
+
                 let loopTarget =
                     match target with
                     | DeclareAndAssign (varType, varName) ->
@@ -5413,6 +5811,153 @@ and private generateRecur
             indent ctx; appendLine ctx "continue;"
     else
         indent ctx; appendLine ctx "continue;"
+
+/// The vector part of a loop (see `vectorLoopOf`). It is written before the
+/// scalar loop, and moves the cursors forward one vector at a time while a
+/// full vector remains. The scalar loop then does the remaining elements.
+///
+/// The vector part runs only if the hardware accelerates `Vector256`, if each
+/// `Contiguous` driver has its values in one span, and if each array holds the
+/// elements the vector part reads or writes. Thus the loads and stores need no
+/// bounds checks. If a test fails, the scalar loop does all the elements, and
+/// does the same bounds checks as before.
+///
+/// A `BlockCollector` gets room for all the elements of the vector part at
+/// once. Each lane that is None is then made None, one at a time; a column
+/// with few nulls has few.
+and private emitVectorLoop (ctx: CodegenContext) (v: VectorLoop) : unit =
+    let text (e: TypedExpr) =
+        let sb = StringBuilder()
+        generateExpr { ctx with Builder = sb } e
+        sb.ToString()
+    let vector = "System.Runtime.Intrinsics.Vector256"
+    let marshal = "System.Runtime.InteropServices.MemoryMarshal"
+    let count = $"{vector}<{typeToString v.Lane}>.Count"
+    let cursor (slot: string) = sanitizeIdent slot
+    let call (dictionary: TypedExpr) (methodName: string) (args: string list) =
+        let args = String.concat ", " args
+        $"{text dictionary}.{sanitizeIdent methodName}({args})"
+    let values = v.Drivers |> List.map (fun _ -> freshName "__vvalues")
+    let valid = v.Drivers |> List.map (fun _ -> freshName "__vvalid")
+    let bits = v.Drivers |> List.map (fun _ -> freshName "__vbits")
+    let rec maskDrivers m =
+        match m with
+        | MValid k -> Set.singleton k
+        | MAnd(a, b) -> Set.union (maskDrivers a) (maskDrivers b)
+        | MAll
+        | MNone -> Set.empty
+    let masked = maskDrivers v.Mask
+    let ok = freshName "__vok"
+    let n = freshName "__vn"
+    let finished = freshName "__vdone"
+    let k = freshName "__vk"
+
+    indent ctx; appendLine ctx "{"
+    withIndent ctx (fun c ->
+        let tests =
+            [ yield $"{vector}.IsHardwareAccelerated"
+              for slot, _ in v.Cursors do
+                  yield $"{cursor slot} >= 0"
+              for d in v.Drivers do
+                  yield call d.Dictionary "contiguous?" [ text d.Seq ] ]
+        indent c; appendLine c $"""bool {ok} = {String.concat " && " tests};"""
+        indent c; appendLine c $"if ({ok}) {{"
+        withIndent c (fun c ->
+            v.Drivers
+            |> List.iteri (fun i d ->
+                indent c
+                appendLine c $"""System.ReadOnlySpan<{typeToString d.Value}> {values[i]} = {call d.Dictionary "contiguous-values" [ text d.Seq ]};"""
+                if Set.contains i masked then
+                    indent c
+                    appendLine c $"""System.ReadOnlySpan<byte> {valid[i]} = {call d.Dictionary "contiguous-valid" [ text d.Seq ]};""")
+            indent c; appendLine c $"int {n} = int.MaxValue;"
+            let bound (limit: string) (slot: string) =
+                indent c; appendLine c $"{n} = System.Math.Min({n}, {limit} - {cursor slot});"
+            for slot, limit in v.Cursors do
+                match limit with
+                | LimitInt e -> bound (text e) slot
+                | LimitArray a -> bound $"({text a}).Length" slot
+                | LimitDriver i -> bound $"{values[i]}.Length" slot
+            for a, slot in v.Arrays |> List.distinctBy (fun (a, s) -> text a, s) do
+                bound $"({text a}).Length" slot
+            for i in masked do
+                // A bitmap must hold a bit for each value.
+                indent c
+                appendLine c $"if ({valid[i]}.Length != 0 && (long){valid[i]}.Length * 8 < {values[i]}.Length) {n} = 0;"
+            indent c; appendLine c $"if ({n} >= {count}) {{"
+            withIndent c (fun c ->
+                indent c; appendLine c $"int {finished} = {n} - {n} %% {count};"
+                // Values that do not change are put in all lanes once, before
+                // the loop.
+                let rec expr e =
+                    match e with
+                    | VLoad(a, slot) ->
+                        $"{vector}.LoadUnsafe(ref {marshal}.GetArrayDataReference({text a}), (nuint)({cursor slot} + {k}))"
+                    | VLoadSpan(i, slot) ->
+                        $"{vector}.LoadUnsafe(ref {marshal}.GetReference({values[i]}), (nuint)({cursor slot} + {k}))"
+                    | VSplat s ->
+                        let name = freshName "__vsplat"
+                        indent c
+                        appendLine c $"var {name} = {vector}.Create<{typeToString (NumericLiteral.settled s.Type)}>({text s});"
+                        name
+                    | VBinary(op, a, b) ->
+                        let a = expr a
+                        let b = expr b
+                        $"({a} {op} {b})"
+                    | VConvert(f, a) -> $"{vector}.{f}({expr a})"
+                let body = expr v.Value
+                let store, none =
+                    match v.Sink with
+                    | SinkArray(out, slot) ->
+                        $"ref {marshal}.GetArrayDataReference({text out}), (nuint)({cursor slot} + {k})", None
+                    | SinkBlock(collector, acc, dictionary) ->
+                        let start = freshName "__vstart"
+                        let span = freshName "__vspan"
+                        let acc = sanitizeIdent acc
+                        let collector = text collector
+                        indent c; appendLine c $"""int {start} = {call dictionary "block-count" [ collector; acc ]};"""
+                        indent c; appendLine c $"""{acc} = {call dictionary "block-grow" [ collector; acc; finished ]};"""
+                        indent c
+                        appendLine c $"""System.Span<{typeToString v.Lane}> {span} = {call dictionary "block-span" [ collector; acc; start; finished ]};"""
+                        $"ref {marshal}.GetReference({span}), (nuint){k}",
+                        Some(fun (lane: string) -> call dictionary "block-none!" [ collector; acc; $"{start} + {k} + {lane}" ])
+                indent c; appendLine c $"for (int {k} = 0; {k} < {finished}; {k} += {count}) {{"
+                withIndent c (fun c ->
+                    for i in masked do
+                        let d = v.Drivers[i]
+                        indent c
+                        appendLine c $"int {bits[i]} = Bjolang.Runtime.BjoVectors.Bits({valid[i]}, {cursor d.Cursor} + {k}, {count});"
+                    indent c; appendLine c $"{vector}.StoreUnsafe({body}, {store});"
+                    let rec maskText m =
+                        match m with
+                        | MAll -> None
+                        | MNone -> Some "0"
+                        | MValid i -> Some bits[i]
+                        | MAnd(a, b) ->
+                            match maskText a, maskText b with
+                            | Some x, Some y -> Some $"({x} & {y})"
+                            | Some x, None
+                            | None, Some x -> Some x
+                            | None, None -> None
+                    match maskText v.Mask, none with
+                    | Some m, Some markNone ->
+                        let mask = freshName "__vmask"
+                        let lane = freshName "__vlane"
+                        indent c; appendLine c $"int {mask} = {m};"
+                        indent c; appendLine c $"if ({mask} != (1 << {count}) - 1) {{"
+                        withIndent c (fun c ->
+                            indent c; appendLine c $"for (int {lane} = 0; {lane} < {count}; {lane}++) {{"
+                            withIndent c (fun c ->
+                                indent c; appendLine c $"if ((({mask} >> {lane}) & 1) == 0) {markNone lane};")
+                            indent c; appendLine c "}")
+                        indent c; appendLine c "}"
+                    | _ -> ())
+                indent c; appendLine c "}"
+                for slot, _ in v.Cursors do
+                    indent c; appendLine c $"{cursor slot} += {finished};")
+            indent c; appendLine c "}")
+        indent c; appendLine c "}")
+    indent ctx; appendLine ctx "}"
 
 /// Copies each slot into its per-iteration local. A local with the slot's own
 /// name needs no copy: `LoopLowering` gives it that name when the body forms no
@@ -7692,6 +8237,41 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 /// handle them exactly as they handle a union the program declared —
 /// `Bjolang.Runtime.Syntax.SList(var xs)` and `new Bjolang.Runtime.Syntax.SList(xs)`
 /// — and no special case is needed.
+/// Finds the loops of `decl` that get a vector part (see `vectorLoopOf`), and
+/// puts them in `ctx.VectorLoops`. Returns `decl` without the marks of
+/// `VectorMarks`: each mark is replaced by the call that it marks.
+///
+/// Set the environment variable BJOLANG_NO_VECTORS to find no loops. The
+/// compiler then writes the scalar loops only, which is the baseline that a
+/// benchmark of the vector parts needs.
+let private findVectorLoops (ctx: CodegenContext) (env: Env) (decl: TDecl) : TDecl =
+    let evidence (traitName: string) (e: TypedExpr) =
+        try
+            Some(Lowering.buildEvidence env Lowering.Scope.Empty traitName e.Type e.Range "for a vector loop")
+        with _ ->
+            None
+
+    if isNull (Environment.GetEnvironmentVariable "BJOLANG_NO_VECTORS") then
+        decl
+        |> TypeVisitor.foldDecl
+            (fun () e ->
+                match e.Node with
+                | TLoop(members, Some body) ->
+                    match LoopLowering.flatLoopEntry members body with
+                    | Some(member_, _) ->
+                        vectorLoopOf ctx evidence member_
+                        |> Option.iter (fun v -> ctx.VectorLoops[member_.LoopName] <- v)
+                    | None -> ()
+                | _ -> ())
+            ()
+
+    let unmark (e: TypedExpr) =
+        match e.Node with
+        | TApply({ Node = TIdent((VectorMarks.ElementMark | VectorMarks.StepMark), _) }, args, []) -> List.last args
+        | _ -> e
+
+    TypeVisitor.mapDecl (TypeVisitor.mapExpr unmark) decl
+
 let builtinUnionCases: Map<string, UnionCaseInfo> =
     let syntaxCases =
         [ "SSym"; "SDatum"; "SInt"; "SStr"; "SChar"; "SKey"; "SList"; "SPunct" ]
@@ -8021,7 +8601,8 @@ let generateProgram
           Registry = registry
           ClrConstraints = clrConstraintClauses env decls
           FunMetas = Map.fold (fun acc k v -> Map.add k v acc) env.ResolvedFunMetas env.FunMetas
-          ReturnsVoid = false }
+          ReturnsVoid = false
+          VectorLoops = System.Collections.Generic.Dictionary() }
 
     appendLine ctx "using System;"
     appendLine ctx "using static BjolangRuntime;"
@@ -8082,7 +8663,7 @@ let generateProgram
     // Only generate code for the main module (the last one).
     // The modules are namespaced according to folder. Classes and types are not renamed
     if not decls.IsEmpty then
-        let mainModule = List.last decls
+        let mainModule = findVectorLoops ctx env (List.last decls)
         appendLine ctx $"namespace %s{Naming.moduleNamespace mainModulePath} {{"
         withIndent ctx (fun ctx -> generateDecl ctx mainModule)
 

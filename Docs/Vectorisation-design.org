@@ -82,8 +82,23 @@ Only collectors that have a vector form:
 | ~selecting~ (a filter)        | a mask, and the kept rows compacted   | the same             |
 
 A collector says that it has a vector form; the compiler does not find it
-out. How it says so is to be decided with phase 1: a trait beside
-~Collector~, or a vector step in ~Collector~ itself.
+out. A collector that makes a column or an array says so with the trait
+~BlockCollector~, beside ~Collector~:
+
+#+BEGIN_SRC scheme
+;; The collector's element is %value or (Option %value).
+(def/trait (BlockCollector %c)
+  (type %value)
+  (type %acc)
+  (: block-count (-> %c %acc int))                    ; elements so far
+  (: block-grow (-> %c %acc int %acc))                ; n more, not None
+  (: block-span (-> %c %acc int int (Span %value)))   ; elements to write
+  (: block-none! (-> %c %acc int void)))              ; element i is None
+#+END_SRC
+
+The vector loop grows the accumulator once for all its elements, stores the
+vectors into the span, and makes each lane that is None None. The other
+collectors of the table get vector forms in phase 3.
 
 *Sums of floats are vectorized only when the program asks*, as Julia's
 ~@simd~ asks: lanes add in another order than the scalar loop, and the last
@@ -94,21 +109,27 @@ vectorized without being asked.
 ** ~Contiguous~: a promise of the implementation
 
 #+BEGIN_SRC scheme
-;; The values are in memory one after another, and reading them has no
-;; effect. A null bitmap is optional.
+;; The Iterable's cursor is an int from 0, stepping by 1, done at the length
+;; of the values. The element at cursor i is values[i], or, when the element
+;; is an (Option %value), (Some values[i]) if bit i of the valid bitmap is set
+;; and None if it is not.
 (def/trait (Contiguous %s)
-  (type %elem)
-  (: contiguous-values (-> %s (Option (RoSpan %elem))))   ; None: use the scalar loop
-  (: contiguous-valid (-> %s (Option (RoSpan byte)))))     ; the nulls, or None: none
+  (type %value)
+  (: contiguous? (-> %s bool))                     ; #f: use the scalar loop
+  (: contiguous-values (-> %s (RoSpan %value)))
+  (: contiguous-valid (-> %s (RoSpan byte))))      ; empty: no element is None
 #+END_SRC
+
+A span cannot be in an ~Option~ (see ~SpanCheck~), so ~contiguous?~ says
+whether the other two give all the elements.
 
 The compiler finds an implementation for each driver's type when it
 compiles, as it finds the ~Iterable~ that a ~:for~ uses. It does not prove
 that the memory is contiguous: the implementation says so, as an ~Iterable~
 says how a walk goes. An implementation that is wrong is a fault of the
-implementation, as a wrong ~Iterable~ is. The prelude implements it for
-~Array~ and the spans; a library implements it for its own types, as
-bjostat would for the cells of a column of numbers.
+implementation, as a wrong ~Iterable~ is. An ~Array~ needs no
+implementation: the compiler knows ~array-ref~. A library implements it for
+its own types, as bjostat does for the cells of a column of numbers.
 
 It is a trait, and not something the compiler finds in an ~Iterable~ with
 an ~int~ cursor, so that a program's speed does not depend on details of
@@ -153,3 +174,57 @@ loop that is not vectorized is not an error.
 
 Each step is measured against the scalar loop it replaces, in paired
 rounds, and against Polars where there is a comparison to make.
+
+** Status of steps 1 and 2
+
+~VectorMarks~ runs after ~Monomorphise~ and before ~TraitInline~. It marks
+each ~iterable-current~ of a driver whose type implements ~Contiguous~, and
+each ~collector-step~ of a collector that implements ~BlockCollector~: after
+~TraitInline~ these are only the bodies of the implementations. A mark is a
+call of a name no program can write, with the marked call as its last
+argument.
+
+Before the code is written, ~Codegen.findVectorLoops~ finds the flat loops
+that ~vectorLoopOf~ accepts, and replaces each mark by the call it marks.
+~emitVectorLoop~ writes a ~Vector256~ part before the scalar loop of each
+loop it found. A loop is accepted when:
+
+- each driver walks an int cursor that steps by 1: a ~range~, an ~Array~,
+  or a ~Contiguous~ type;
+- the body binds names with ~let~ to lane values, and ends in one
+  ~(array-set! out i x)~ or one step of a ~BlockCollector~;
+- a lane value reads arrays at a cursor, uses names and literals that the
+  loop does not change, and applies ~+~, ~-~, ~*~, and ~/~ on ~double~ and
+  ~float~; casts from ~long~ to ~double~ and from ~int~ to ~float~ are
+  permitted;
+- a lane value of Options is ~Some~, ~None~, or a ~match~ on Options whose
+  arm for Some values gives an Option and whose other arm gives None. The
+  lanes that are Some are a mask, from the valid bitmaps of the drivers;
+- all lanes have the same size: ~double~ and ~long~, or ~float~ and ~int~.
+
+The vector part runs if the hardware accelerates ~Vector256~ and each
+~Contiguous~ driver says ~contiguous?~. It does as many whole vectors as
+each driver, range and array holds, so its loads and stores need no bounds
+checks. Then the scalar loop does the rest from the cursors the vector part
+moved. The environment variable ~BJOLANG_NO_VECTORS~ makes the compiler
+write the scalar loops only.
+
+Not done yet: ~:when~ and ~:when-let~ (masks that skip rows), an ~if~ as a
+blend, ~min~, ~max~ and ~abs~, vecs, and a report of which loops were
+vectorized.
+
+Measured (Ryzen 9 5900X, AVX2, 1M elements, paired rounds in one process
+for the vector loop, separate processes for the scalar baseline):
+
+| loop                                   | scalar  | vector  |
+|----------------------------------------+---------+---------|
+| ~(+ (array-ref xs i) (* 3 (array-ref ys i)))~, ints | 374 µs | 111 µs |
+| ~(* (array-ref ps i) (cast double (array-ref qs i)))~ | 344 µs | 270 µs |
+| ~(* x x)~, longs                       | 265 µs  | 158 µs  |
+| ~(+ x x)~, longs                       | 288 µs  | 152 µs  |
+| bjostat ~new column~: two Cells, ~column-building/option~ | 4.17 ms | 0.99–1.38 ms |
+
+The conversion from ~long~ to ~double~ has no AVX2 instruction, which is
+why the second loop gains least. The bjostat loop writes a new column of
+8 MB each time; how much of its time that takes is not measured yet. Polars
+takes 0.62 ms on one thread for the same column.
