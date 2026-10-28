@@ -38,6 +38,30 @@
   (loop (:for i (range 0 (array-length out)))
         (:do (array-set! out i (* (cast float (array-ref a i)) k)))))
 
+;; Each element is written from the one before it, which the loop wrote: the
+;; vector part must not run, for one name and for two names of one array.
+(: (-> (Array long) (Array long) void))
+(defun (shift! out src)
+  (loop (:for i (range 1 (array-length out))) (:for x src)
+        (:do (array-set! out i x))))
+
+;; A sum of the values that the loop wrote.
+(: (-> (Array long) long))
+(defun (double-and-sum! a)
+  (loop (:for i (range 0 (array-length a)))
+        (:do (array-set! a i (* (array-ref a i) 2L)))
+        (:acc (summing (array-ref a i)))))
+
+;; A running sum, summed: the second accumulator adds the new value of the
+;; first.
+(: (-> (Array long) long))
+(defun (prefix-total xs)
+  (let loop ((i 0) (s 0L) (m 0L))
+    (if (>= i (array-length xs)) m
+        (let* ((s2 (+ s (array-ref xs i)))
+               (m2 (+ m s2)))
+          (loop (+ i 1) s2 m2)))))
+
 ;; Inputs longer than the range: only the elements in the range are written.
 (: (-> (Array double) (Array double) int void))
 (defun (copy-prefix! out xs n)
@@ -109,6 +133,23 @@
              (wrong n (fun (i) (= (array-ref fs i) (* (cast float (* i i)) (cast float 0.5)))))
              0)
 
+     (def shifted (longs n (fun (i) (cast long i))))
+     (shift! shifted shifted)
+     (expect (str "shift in place, " (displayed n))
+             (wrong n (fun (i) (= (array-ref shifted i) 0L)))
+             0)
+     (def other (longs n (fun (i) (cast long i))))
+     (def copy (longs n (fun (i) -1L)))
+     (shift! copy other)
+     (expect (str "shift to another array, " (displayed n))
+             (wrong n (fun (i) (= (array-ref copy i) (if (= i 0) -1L (cast long (- i 1))))))
+             0)
+     (expect (str "sum of written, " (displayed n))
+             (double-and-sum! (longs n (fun (i) (cast long i))))
+             (cast long (* n (- n 1))))
+     (expect (str "running sum, " (displayed n))
+             (prefix-total (longs n (fun (i) 1L)))
+             (cast long (/ (* n (+ n 1)) 2)))
      (def prefix (make-array (+ n 5) #:fill -1.0))
      (copy-prefix! prefix (doubles (+ n 7) (fun (i) (cast double i))) n)
      (expect (str "prefix, " (displayed n))
