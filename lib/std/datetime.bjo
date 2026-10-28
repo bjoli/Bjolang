@@ -123,6 +123,8 @@
   instant->utc-datetime utc-datetime->instant
   instant->unix-seconds unix-seconds->instant
   instant->unix-milliseconds unix-milliseconds->instant ->unix
+  instant->unix-microseconds unix-microseconds->instant
+  date->unix-days unix-days->date
   ;; The clock
   system-clock-in clock-in fixed-clock manual-clock clock-advance!
   clock-timezone now now/moment today
@@ -555,6 +557,29 @@
   (if (and (>= ms -62135596800000L) (<= ms 253402300799999L))
       (Some (Instant (ticks (+ (* ms ticks-per-millisecond) unix-epoch-ticks))))
       None))
+
+(: (-> Instant long))
+(defun (instant->unix-microseconds i)
+  (floor-div (- (instant-ticks i) unix-epoch-ticks) 10L))
+
+(: (-> long (Option Instant)))
+(defun (unix-microseconds->instant us)
+  (if (and (>= us -62135596800000000L) (<= us 253402300799999999L))
+      (Some (Instant (ticks (+ (* us 10L) unix-epoch-ticks))))
+      None))
+
+;; Days since 1970-01-01, which is day number 719 162. A column of dates in
+;; Apache Arrow, Polars and R holds these.
+(: long)
+(def unix-epoch-day-number 719162L)
+
+(: (-> Date long))
+(defun (date->unix-days d) (- (day-number d) unix-epoch-day-number))
+
+(: (-> long (Option Date)))
+(defun (unix-days->date n)
+  (def dn (+ n unix-epoch-day-number))
+  (if (and (>= dn 0L) (<= dn max-day-number)) (Some (day-number->date dn)) None))
 
 ;; Unix seconds of an instant or a moment, rounded as instant->unix-seconds
 ;; rounds, which it calls because an importer copies this body.
