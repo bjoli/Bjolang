@@ -1,0 +1,22 @@
+(import (std prelude))
+
+(export Twice twice)
+
+;; A collector that steps the inner one twice with each value. Its
+;; implementation is conditional, and in a module of its own, so that a loop
+;; elsewhere calls it through its dictionary rather than a copy of its body.
+(type (: (Twice %c) #:opaque (Struct (: inner %c))))
+
+(: (-> %c (Twice %c)))
+(defun (twice c) (Twice (inner c)))
+
+(impl (Collector (Twice %c))
+  (where (Collector %c))
+  (type %elem (assoc Collector elem %c))
+  (type %acc (assoc Collector acc %c))
+  (type %out (assoc Collector out %c))
+  (defun (collector-init t) (collector-init (record-ref t inner)))
+  (defun (collector-step t acc x)
+    (def inner (record-ref t inner))
+    (collector-step inner (collector-step inner acc x) x))
+  (defun (collector-finish t acc) (collector-finish (record-ref t inner) acc)))

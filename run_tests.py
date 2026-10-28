@@ -978,6 +978,11 @@ def run_codegen_tests():
 
         out_cs = bjo_file.with_suffix(".out.cs")
         out_cs_content = out_cs.read_text() if out_cs.exists() else ""
+        # The `[assembly: ...]` lines hold the module's metadata: serialized
+        # Bjolang, published bodies among it, on one line. They are not the
+        # generated code, and a pattern must not match in them.
+        out_cs_content = "\n".join(
+            line for line in out_cs_content.splitlines() if not line.startswith("[assembly:"))
         remove_artifacts(bjo_file, extra=(".out.cs",))
 
         if entry["status"] != 0:

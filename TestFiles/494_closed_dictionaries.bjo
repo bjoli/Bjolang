@@ -1,0 +1,44 @@
+;; A conditional implementation has no singleton, and its dictionary is built
+;; from the dictionaries of its where clause. When those are all singletons,
+;; the dictionary is the same at every use, and it is built once, in a field.
+;; It was built at each use, so a loop that steps such a collector made a new
+;; dictionary at each element.
+;;
+;; The collector is in another module: in this one its step would be copied
+;; into the loop, and no dictionary would be used.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/twice_lib.bjo")
+
+(import/extern (allocated (: System.GC.GetAllocatedBytesForCurrentThread (-> long))))
+
+(: (-> int long))
+(defun (sum-twice n)
+  (loop (:for i (range 0 n))
+        (:acc (twice summing (cast long i)))))
+
+;; A dictionary built of a dictionary built of a singleton.
+(: (-> int long))
+(defun (sum-four-times n)
+  (loop (:for i (range 0 n))
+        (:acc (twice (twice summing) (cast long i)))))
+
+;; The bytes a call allocates, after one call to warm it up.
+(: (-> (-> long) long))
+(defun (bytes-of f)
+  (ignore (f))
+  (def before (allocated))
+  (ignore (f))
+  (- (allocated) before))
+
+(defun (main)
+  (expect "a conditional collector" (sum-twice 10) 90L)
+  (expect "a nested one" (sum-four-times 10) 180L)
+  (expect "no dictionary at each element"
+          (< (bytes-of (fun () (sum-twice 100000))) 10000L)
+          #t)
+  (expect "nor a nested one"
+          (< (bytes-of (fun () (sum-four-times 100000))) 10000L)
+          #t)
+  0)

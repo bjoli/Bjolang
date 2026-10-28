@@ -563,6 +563,26 @@ let private isGroundType (t: HMType) =
 
     List.isEmpty (foldType leaf t)
 
+/// Is this dictionary the same value wherever it is built?
+///
+/// A conditional implementation has no singleton, so `Lowering` builds its
+/// dictionary with the factory, `X::Make`, where it is used. When every
+/// dictionary the factory is given is a singleton or such a factory call in
+/// turn, and every type argument is ground, the result is the same at every
+/// evaluation: a dictionary holds only other dictionaries, and a type has one
+/// implementation of a trait. Such a dictionary is built once, in a field.
+/// One that reads a dictionary parameter, or the implementation's own `self`,
+/// depends on the caller and is built where it is used, as before.
+let rec private isClosedEvidence (e: TypedExpr) =
+    match e.Node with
+    | TIdent (name, tArgs) -> name.EndsWith "::Instance" && List.forall isGroundType tArgs
+    | TApply ({ Node = TIdent (name, tArgs) }, args, []) ->
+        name.EndsWith "::Make"
+        && not tArgs.IsEmpty
+        && List.forall isGroundType tArgs
+        && List.forall isClosedEvidence args
+    | _ -> false
+
 /// Is this expression a literal whose value is fixed at compile time?
 ///
 /// Deliberately short. It answers a question about *sharing*: may one instance
@@ -2563,6 +2583,12 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             | _ ->
                 append ctx targetName
 
+    // A conditional implementation's dictionary that is the same at every
+    // evaluation, built once. Built where it is used, a loop that calls such a
+    // collector or iterable made one at each step. See `isClosedEvidence`.
+    | TApply ({ Node = TIdent (name, _) } as target, args, []) when name.EndsWith "::Make" && isClosedEvidence expr ->
+        append ctx (hoistDictionary ctx expr target args)
+
     | TApply (target, args, kwArgs) ->
         generateApply ctx expr target args kwArgs
 
@@ -3367,6 +3393,36 @@ and private qualifiedName (ctx: CodegenContext) (name: string) =
             let cls = moduleClassReference (name.Substring(0, i))
             $"%s{cls}.%s{Prelude.moduleMemberName (name.Substring(i + 2))}"
         | _ -> sanitizeIdent (Naming.emittedTypeName name)
+
+/// A closed dictionary as a field of the literal holder, and the name the use
+/// site reads it by.
+///
+/// The factory call is written as `generateApply` writes it anywhere else, into
+/// a scratch builder, and that text is the field's initializer and the key
+/// that two uses share it by. A factory among the arguments is hoisted by the
+/// same arm, first, so its field is declared earlier in the holder, and C#
+/// runs the initializers of a class in the order they are written. The field
+/// has the implementation's class type, not the trait's interface, so that a
+/// call on it is a call on a sealed class, as the call on `Make(...)` was.
+and private hoistDictionary (ctx: CodegenContext) (expr: TypedExpr) (target: TypedExpr) (args: TypedExpr list) : string =
+    let name, tArgs =
+        match target.Node with
+        | TIdent (n, t) -> n, t
+        | _ -> failwith "internal error: a dictionary factory is not named"
+
+    let scratch = StringBuilder()
+    let inner = { ctx with Builder = scratch; Prelude = None }
+
+    // A field initializer has no line of its own to map, as in `hoistToTemp`.
+    let pendingHere = ctx.Line.Pending
+    ctx.Line.Pending <- None
+    generateApply inner expr target args []
+    ctx.Line.Pending <- pendingHere
+
+    let classPart = name.Substring(0, name.IndexOf "::")
+    let tyArgsStr = tArgs |> List.map typeToString |> String.concat ", "
+    let csType = $"%s{sanitizeIdent classPart}<%s{tyArgsStr}>"
+    hoistLiteral ctx "Dict" classPart csType (scratch.ToString())
 
 /// Evaluates a statement-shaped node into a temporary in the enclosing statement
 /// position and yields the temporary's name.

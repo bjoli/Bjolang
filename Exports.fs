@@ -393,23 +393,19 @@ let metadata
     // imports it then calls the landing pad, which is always correct and
     // is emitted for every impl method regardless.
     //
-    // An impl of this module for a trait of another module publishes only the
-    // templates whose body does nothing, such as the default `iterable-end`.
-    // An importer that splices one sees that the call does nothing, and
-    // `Simplify` can then remove the loop guard that calls it.
-    let isNoopBody (body: Ast.Expr) =
-        match body with
-        | Ast.EWhen(Ast.EBool(false, _), _, false, _) -> true
-        | _ -> false
-
+    // An impl of this module for a trait of another module publishes its
+    // templates too, so that an importer splices its methods as it splices
+    // those of an impl in its own module. Otherwise a call reached it through
+    // its dictionary: a loop over a collector of a library built a conditional
+    // impl's dictionary at each step, and called each step through an
+    // interface. A splice of a method that does nothing, such as the default
+    // `iterable-end`, also lets `Simplify` remove the loop guard that calls it.
     let inlineTemplatesToExport =
         env.Registry.InlineMethods
         |> Map.toList
         |> List.filter (fun ((traitName, _, implKey), (tpl: TypedAST.InlineTemplate)) ->
             (Map.containsKey traitName exportedTraits
-             || (Set.contains (traitName, implKey) ownImplKeys
-                 && not (Set.contains traitName ownTraitNames)
-                 && isNoopBody tpl.Body.Value))
+             || Set.contains (traitName, implKey) ownImplKeys)
             && publishableBody tpl)
 
     // The body of every exported constrained generic, so that an importer can
