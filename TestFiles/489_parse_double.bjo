@@ -1,0 +1,36 @@
+;; string->double on the cases where a fast parser goes wrong: halfway between
+;; two doubles, the limits, subnormals, more digits than a long holds, and
+;; text that is only valid for the slower path. FastDouble answers the plain
+;; ones, and the rest fall through to .NET's parser; both have to agree with it.
+
+(import (std prelude))
+(import (std simpletest))
+
+(defun (main)
+  (expect "a plain one" (string->double "-65.613616999999977") -65.613616999999977)
+  (expect "0.1" (string->double "0.1") 0.1)
+  (expect "an integer" (string->double "42") 42.0)
+  (expect "an exponent" (string->double "1.5e3") 1500.0)
+  (expect "a capital exponent with a sign" (string->double "25E-1") 2.5)
+  (expect "a leading plus" (string->double "+3.25") 3.25)
+  (expect "no digits before the point" (string->double ".5") 0.5)
+  (expect "no digits after it" (string->double "5.") 5.0)
+  (expect "negative zero is negative" (double->string (string->double "-0.0")) "-0")
+
+  ;; 2^53 + 1 is halfway between two doubles, and rounds to the even one.
+  (expect "halfway, to even" (string->double "9007199254740993") 9007199254740992.0)
+  (expect "just above halfway" (string->double "9007199254740993.0000000001") 9007199254740994.0)
+  (expect "halfway, the other even" (string->double "9007199254740995") 9007199254740996.0)
+
+  (expect "the largest double" (string->double "1.7976931348623157e308") 1.7976931348623157e308)
+  (expect "the smallest normal" (string->double "2.2250738585072014e-308") 2.2250738585072014e-308)
+  (expect "a subnormal" (string->double "4.9e-324") 4.9e-324)
+  (expect "too small is zero" (string->double "1e-400") 0.0)
+  (expect "too large is infinity" (> (string->double "1e400") 1.7976931348623157e308) #t)
+
+  (expect "twenty digits" (string->double "12345678901234567890") 1.2345678901234567e19)
+  (expect "a long fraction"
+          (string->double "0.30000000000000000000000000000001")
+          0.3)
+  (expect "white space around it" (string->double " 1.25 ") 1.25)
+  0)

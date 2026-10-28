@@ -7,7 +7,10 @@
 (import (std simpletest))
 
 (import/extern
-  (as-span (: System.MemoryExtensions.AsSpan (-> (Array %a) int int (System.Span %a)))))
+  (as-span (: System.MemoryExtensions.AsSpan (-> (Array %a) int int (System.Span %a))))
+  ;; Not generic: ReadOnlySpan<byte> and ReadOnlySpan<char>. A span passes as
+  ;; it is where an array would be made into one.
+  (ascii? (: System.Text.Ascii.IsValid (-> (RoSpan byte) bool))))
 
 (: (-> (Span long) long))
 (defun (sum s)
@@ -53,6 +56,10 @@
             (array-set! copy 0 0L)
             (span-ref s 0))
           10L)
+
+  (def text (vec->array [104uy 105uy 200uy]))
+  (expect "a span to an ordinary span parameter" (ascii? (array->ro-span text #:to 2)) #t)
+  (expect "and the rest" (ascii? (array->ro-span text #:from 1)) #f)
 
   (expect "a loop variable's member" (sum-by-member (array->span xs)) 19L)
   (expect "a loop variable from a call with keywords"

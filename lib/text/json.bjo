@@ -33,7 +33,11 @@
 ;; TODO: use bjolangs builtins: bjolangs builtins uses the invariant culture now.
 (import/extern
   (clr-to-long   (: Bjolang.Runtime.BjoNum.ParseLong))
-  (clr-to-double (: Bjolang.Runtime.BjoNum.ParseDouble)))
+  (clr-to-double (: Bjolang.Runtime.BjoNum.ParseDouble))
+  ;; The same parsers, on the bytes in the reader's buffer: a number that is
+  ;; whole in the chunk is parsed where it is, without a copy.
+  (span->long    (: BjoString.Utf8Number.ParseLong   (-> (RoSpan byte) long)))
+  (span->double  (: BjoString.Utf8Number.ParseDouble (-> (RoSpan byte) double))))
 
 (type
   (: Json (Union
@@ -951,17 +955,18 @@
                   acc)))
      (JsonInt (if (= first start) n (- 0L n))))
     (else
-     (def sb (copy-number rd b start end))
-     (match (try (clr-to-long sb) #:catch (System.OverflowException))
+     (match (try (long-at b start end) #:catch (System.OverflowException))
        ((Ok n) (JsonInt n))
-       ((Err _) (JsonFloat (clr-to-double sb)))))))
+       ((Err _) (JsonFloat (double-at b start end)))))))
 
-;; The number's bytes in the reader's buffer, for the parser, in one piece.
-(: (-> Reader (Array byte) int int StringBuilder))
-(defun (copy-number rd b start end)
-  (def sb (buffer rd))
-  (stringbuilder-add-bytes! sb b start end)
-  sb)
+;; The number from `start` to `end` of the reader's bytes, parsed where it is.
+;; In functions of their own, so that the span is not a local of the readers
+;; that call them.
+(: (-> (Array byte) int int long))
+(defun (long-at b start end) (span->long (array->ro-span b #:from start #:to end)))
+
+(: (-> (Array byte) int int double))
+(defun (double-at b start end) (span->double (array->ro-span b #:from start #:to end)))
 
 (: (-> Reader (Result string Json)))
 (defun (read-number rd)
@@ -979,7 +984,7 @@
                   (col (+ (record-ref rd col) (- end start))))
      (cond
        ((= status num-int) (Ok (integer-of rd b start first end)))
-       ((= status num-frac) (Ok (JsonFloat (clr-to-double (copy-number rd b start end)))))
+       ((= status num-frac) (Ok (JsonFloat (double-at b start end))))
        ((= status num-no-digit)
         (Err (at rd (str "a number needs a digit here, and this is " (found rd)))))
        ((= status num-leading-zero)

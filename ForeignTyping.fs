@@ -381,8 +381,9 @@ let internal reconcileForeignArgs
                 // here; an argument that already is a .NET string passes as it is.
                 unify registry argType wanted
                 toClrString arg paramType
-            | _, Some array ->
-                // A span parameter takes an array.
+            | _, Some array when argType <> paramType ->
+                // A span parameter takes an array, or a span of its own type,
+                // which passes as it is.
                 unify registry argType array
                 toSpan arg paramType
             | _ ->
