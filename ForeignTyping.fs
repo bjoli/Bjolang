@@ -289,17 +289,25 @@ let internal onStringOrClrString
             with _ ->
                 raise own
 
-/// An out-parameter import's arguments, with those its `StringIns` names
-/// converted to the .NET string the method takes.
-let internal convertStringIns (outs: ExternOuts option) (args: TypedExpr list) : TypedExpr list =
+/// The arguments of a resolved import's call, by index among the method's
+/// own, that are Bjolang strings where the method takes .NET ones: an out
+/// import's `StringIns`, or a generic one's.
+let internal stringInsOf (info: ClrExternInfo) (outs: ExternOuts option) : (int * HMType) list =
     match outs with
-    | Some o when not o.StringIns.IsEmpty ->
+    | Some o -> o.StringIns
+    | None -> info.StringIns
+
+/// The method's arguments, with those `stringIns` names converted to the .NET
+/// string the method takes.
+let internal convertStringIns (stringIns: (int * HMType) list) (args: TypedExpr list) : TypedExpr list =
+    if stringIns.IsEmpty then
+        args
+    else
         args
         |> List.mapi (fun i arg ->
-            match List.tryFind (fun (j, _) -> j = i) o.StringIns with
+            match List.tryFind (fun (j, _) -> j = i) stringIns with
             | Some(_, clrType) -> toClrString arg clrType
             | None -> arg)
-    | _ -> args
 
 /// `marshalResult` for an import's property read, unless its declaration keeps
 /// the .NET string. Under `#:copy`, a span is copied into a new array with its
@@ -436,11 +444,26 @@ let internal genericExternMeta
     // the metadata says a span: the emitter reads only that it is one, to
     // copy it with `ToArray`. The import does not record which of the two
     // span types the method answers, so the read-only one stands for both.
+    //
+    // A .NET string the method answers is in the metadata as what it is, so
+    // that the emitter converts it to the Bjolang string `retType` is.
     let methodReturn =
-        match outs, retType with
-        | Some o, _ -> o.MethodReturn
-        | None, TCon("Array", [ elem ]) when info.IsCopy -> TCon("System.ReadOnlySpan", [ elem ])
-        | None, _ -> retType
+        match outs, retType, info.StringResult with
+        | Some o, _, _ -> o.MethodReturn
+        | None, _, Some clrString -> clrString
+        | None, TCon("Array", [ elem ]), None when info.IsCopy -> TCon("System.ReadOnlySpan", [ elem ])
+        | None, _, None -> retType
+
+    // The parameters the arguments are converted to, as the method takes them.
+    let methodParams =
+        match outs with
+        | Some _ -> methodParams
+        | None ->
+            methodParams
+            |> List.mapi (fun i t ->
+                match List.tryFind (fun (j, _) -> j = i) info.StringIns with
+                | Some(_, clrType) -> clrType
+                | None -> t)
 
     { DeclaringType = info.ClrType
       MethodName = info.MemberName

@@ -1163,7 +1163,16 @@ type ResolvedGenericMethod =
       ReturnType: HMType
       DeclaringType: string
       Name: string
-      IsStatic: bool }
+      IsStatic: bool
+      /// The parameters, by index among the method's own, that the method
+      /// takes as a .NET string, or an array of them, where the declaration
+      /// has a Bjolang one. Each with its .NET type, for the call to convert
+      /// the argument to.
+      StringIns: (int * HMType) list
+      /// The method's .NET result, when it is a .NET string or an array of
+      /// them that the declaration has as a Bjolang one. The call converts it.
+      /// `ReturnType` is then the declared Bjolang type.
+      StringResult: HMType option }
 
 /// Every public method of this name that is a generic definition.
 let private genericMethods (t: Type) (name: string) (flags: BindingFlags) =
@@ -1328,11 +1337,29 @@ let resolveGenericMethod
             else
                 declaredReturn
 
+        // A .NET string, or an array of them, is declared as the Bjolang one,
+        // as for an ordinary import, and the call converts it. Only where it is
+        // the whole parameter or the whole result: one inside another type
+        // stays a .NET string, as `bjolangViewOf` has it.
+        let viewed (fromMethod: HMType) (declared: HMType) = clrStringViewOf fromMethod = Some declared
+
+        let stringIns =
+            List.zip methodParams (List.truncate methodParams.Length matchedParams)
+            |> List.indexed
+            |> List.choose (fun (i, (fromMethod, declared)) ->
+                if viewed fromMethod declared then Some(i, fromMethod) else None)
+
+        let stringResult =
+            if viewed methodReturn declaredReturn then Some methodReturn else None
+
         let solved =
             List.zip (methodReturn :: methodParams) (declaredReturn :: matchedParams)
             |> List.fold
                 (fun acc (fromMethod, declared) ->
-                    acc |> Option.bind (fun s -> solveTypeParams typeParams s fromMethod declared))
+                    if viewed fromMethod declared then
+                        acc
+                    else
+                        acc |> Option.bind (fun s -> solveTypeParams typeParams s fromMethod declared))
                 (Some Map.empty)
 
         match solved with
@@ -1343,12 +1370,17 @@ let resolveGenericMethod
                 |> Array.map (fun p -> Map.tryFind ("'" + p.Name) solution)
                 |> Array.toList
 
+            let returnType =
+                match stringResult with
+                | Some _ -> declaredReturn
+                | None -> substTypeVars solution methodReturn
+
             // Every type parameter has to be pinned by the signature. One the
             // signature never mentions is one nothing could write between the
             // angle brackets, and inventing an answer is exactly the guessing
             // this design does not do.
             if ordered |> List.forall Option.isSome then
-                Some(m, ordered |> List.map Option.get, substTypeVars solution methodReturn)
+                Some(m, (ordered |> List.map Option.get, returnType, stringIns, stringResult))
             else
                 None
 
@@ -1385,21 +1417,23 @@ let resolveGenericMethod
         | [] | [ _ ] as few -> few
         | several ->
             let keepCheapest cost candidates =
-                let cheapest = candidates |> List.map (fun (m, _, _) -> cost m) |> List.min
-                candidates |> List.filter (fun (m, _, _) -> cost m = cheapest)
+                let cheapest = candidates |> List.map (fun (m, _) -> cost m) |> List.min
+                candidates |> List.filter (fun (m, _) -> cost m = cheapest)
 
             several
             |> keepCheapest spanCost
             |> keepCheapest (fun (m: MethodInfo) -> m.GetParameters().Length)
 
     match fitting with
-    | [ (_, typeArgs, returnType) ] ->
+    | [ (_, (typeArgs, returnType, stringIns, stringResult)) ] ->
         { TypeArguments = typeArgs
           ParameterTypes = declaredParams
           ReturnType = returnType
           DeclaringType = t.FullName
           Name = name
-          IsStatic = isStatic }
+          IsStatic = isStatic
+          StringIns = stringIns
+          StringResult = stringResult }
     | [] ->
         let declaredShown =
             showType (tfun declaredParams declaredReturn)
@@ -1410,7 +1444,7 @@ let resolveGenericMethod
             $"Type Error at %s{where}: the declared signature %s{declaredShown} does not match '%s{t.FullName}.%s{name}'. Its shape is:\n%s{shapes}\nA generic method's type arguments come from the signature, so the two have to agree exactly — a type variable of the signature stands for one of the method's."
     | several ->
         let shapes =
-            several |> List.map (fun (m, _, _) -> describeMethod m) |> String.concat "\n"
+            several |> List.map (fun (m, _) -> describeMethod m) |> String.concat "\n"
 
         failwithf
             $"Type Error at %s{where}: '%s{t.FullName}.%s{name}' is ambiguous — the declared signature fits more than one of its overloads:\n%s{shapes}"

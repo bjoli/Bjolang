@@ -1,0 +1,39 @@
+;; A generic function that uses its type variable where a .NET generic
+;; constrains it is a C# method with the same constraint, which the compiler
+;; finds: here `where T_a : struct, System.Enum`, from GetValues<TEnum>. A
+;; generic function that calls it has it too, and so does one that only names
+;; a constrained .NET type in its signature.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (DayOfWeek (: System.DayOfWeek))
+  ((Nullable %a) (: System.Nullable)))
+
+(import/extern (enum-values (: System.Enum.GetValues (-> (Array %a)))))
+
+;; GetValues<TEnum> needs TEnum : struct, Enum.
+(: (-> (Array %a)))
+(defun (all-values) (enum-values))
+
+;; Calls the one above with its own type variable, so needs the same.
+(: (-> int (Array %a)))
+(defun (some-values n) (array-resize (all-values) n))
+
+;; Nullable<T> needs T : struct, and this only names it.
+(: (-> (Nullable %a) int))
+(defun (ignore-nullable x) 1)
+
+(: (-> (Array DayOfWeek)))
+(defun (days) (all-values))
+
+(defun (main)
+  (expect "a generic function over an enum" (array-length (days)) 7)
+  (expect "and one that calls it"
+          (array-length (the-days (some-values 3)))
+          3)
+  0)
+
+(: (-> (Array DayOfWeek) (Array DayOfWeek)))
+(defun (the-days xs) xs)

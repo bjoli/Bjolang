@@ -848,7 +848,16 @@ type ClrExternInfo =
       GenericTypeArgs: HMType list option
       /// The `(out T)` parameters. `DeclaredType` is then the binding's type:
       /// the declared arrow without them, answering the declared result.
-      Outs: ExternOuts option }
+      Outs: ExternOuts option
+      /// For a generic method: the parameters, by index among the method's
+      /// own, that it takes as a .NET string or an array of them where the
+      /// declaration has a Bjolang one, each with its .NET type. The call
+      /// converts the argument. An out import has these in `Outs` instead.
+      StringIns: (int * HMType) list
+      /// For a generic method: its .NET result, when that is a .NET string or
+      /// an array of them that the declaration has as a Bjolang one. The call
+      /// converts it.
+      StringResult: HMType option }
 
 /// The overload the type checker selected, carried to the code generator.
 ///

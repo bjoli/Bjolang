@@ -211,6 +211,11 @@ type CodegenContext = {
     /// but not the bindings. We format the type string directly here, because
     /// keeping type-spelling logic centralized makes it easier to maintain.
     ClrConstraints: Map<string, string>
+    /// Which parameters of a module function, this module's or an imported
+    /// one's, are keyword and rest ones, by name. A call is written from it:
+    /// the flat arrow alone cannot tell a rest array from a last parameter
+    /// that is an array.
+    FunMetas: Map<string, FunMeta>
     /// Does the enclosing C# method return `void`?
     ///
     /// Only a function whose *inferred* return type came from a statement-shaped
@@ -1564,11 +1569,19 @@ let rec private funArgTypes (t: HMType) : HMType list option =
 /// has none. Without that, a keyword parameter that comes last and happens to
 /// be an array — `make-array`'s `#:fill`, for an array of arrays — reads as a
 /// rest parameter, and the last mandatory argument is passed as the array.
-let private calleeHasRest (target: TypedExpr) (args: TypedExpr list) : bool =
+///
+/// A module function's `FunMeta` answers it outright, and is asked first: a
+/// function whose last mandatory parameter and last keyword parameter are
+/// both arrays looks, by its type, as if it had a rest parameter.
+let private calleeHasRest (funMetas: Map<string, FunMeta>) (target: TypedExpr) (args: TypedExpr list) : bool =
     let isArray t =
         match t with
         | TCon ("Array", _) -> true
         | _ -> false
+
+    match target.Node with
+    | TIdent(name, _) when funMetas.ContainsKey name -> funMetas[name].RestParam.IsSome
+    | _ ->
 
     match funArgTypes target.Type with
     | Some argTypes when not argTypes.IsEmpty && not args.IsEmpty ->
@@ -3933,7 +3946,7 @@ and private generateApply
             // so the last positional emitter is the array, and the rest are the
             // mandatory arguments.
             let mandatoryEmitters, restEmitters =
-                if calleeHasRest target args && not positionalEmitters.IsEmpty then
+                if calleeHasRest ctx.FunMetas target args && not positionalEmitters.IsEmpty then
                     positionalEmitters |> List.splitAt (positionalEmitters.Length - 1)
                 else
                     positionalEmitters, []
@@ -5861,7 +5874,12 @@ let private generateMethod
 ///
 /// For a constrained function, and for an implementation class with a
 /// `(where (Num %a))`. Other constraints are dictionaries and add nothing here.
-let private clrWhereClauses (registry: TraitRegistry) (constraints: TraitConstraint list) : string =
+let rec private clrWhereClauses (registry: TraitRegistry) (constraints: TraitConstraint list) : string =
+    formatWhere (clrWhereBounds registry constraints)
+
+/// The bounds of `clrWhereClauses`, each a type parameter's name and a bound as
+/// C# writes it.
+and private clrWhereBounds (registry: TraitRegistry) (constraints: TraitConstraint list) : (string * string) list =
     // A superclass of another constraint on the same type is left out: a .NET
     // interface trait's superclasses are the interfaces its own extends, so
     // `INumber` already says `IComparisonOperators`.
@@ -5900,15 +5918,31 @@ let private clrWhereClauses (registry: TraitRegistry) (constraints: TraitConstra
                     | _ -> None)
             | None -> None)
 
-    // Grouped by type parameter, because C# takes one `where` per parameter
-    // with its bounds comma-separated and rejects a second clause for the
-    // same one. A variable under two interfaces that do not imply each
-    // other, such as `INumber` and `IComparable`, is ordinary, so this is
-    // the common case rather than a corner.
+    bounds
+
+/// The C# `where` clauses of these bounds, each a type parameter's name and a
+/// bound as C# writes it.
+///
+/// Grouped by type parameter, because C# takes one `where` per parameter with
+/// its bounds comma-separated and rejects a second clause for the same one. A
+/// variable under two interfaces that do not imply each other, such as
+/// `INumber` and `IComparable`, is ordinary, so this is the common case rather
+/// than a corner.
+///
+/// C# also fixes the order within a clause: `struct` or `class` first, then a
+/// base class, then the interfaces, and `new()` last.
+and private formatWhere (bounds: (string * string) list) : string =
+    let rank (b: string) =
+        match b with
+        | "struct"
+        | "class" -> 0
+        | "new()" -> 3
+        | _ -> 2
+
     bounds
     |> List.groupBy fst
     |> List.map (fun (param, group) ->
-        let all = group |> List.map snd |> List.distinct |> String.concat ", "
+        let all = group |> List.map snd |> List.distinct |> List.sortBy rank |> String.concat ", "
         $" where %s{param} : %s{all}")
     |> String.concat ""
 
@@ -7628,13 +7662,37 @@ let private builtinBindings: Set<string> = Prelude.builtinNames
 /// `""` when it has none, which is every function in a program that never
 /// writes one — so this is also what keeps the emitted C# byte-identical for
 /// everything that came before.
-let private clrConstraintClauses (env: Env) : Map<string, string> =
-    env.Bindings
-    |> Map.toSeq
-    |> Seq.choose (fun (name, binding) ->
-        let (Scheme(_, constraints, _)) = binding.Scheme
-        let clauses = clrWhereClauses env.Registry constraints
-        if clauses = "" then None else Some(name, clauses))
+let private clrConstraintClauses (env: Env) (decls: TDecl list) : Map<string, string> =
+    let fromTraits =
+        env.Bindings
+        |> Map.map (fun _ binding ->
+            let (Scheme(_, constraints, _)) = binding.Scheme
+            clrWhereBounds env.Registry constraints)
+
+    // What a generic function's use of .NET generics requires of its type
+    // parameters. See `ClrConstraints.infer`.
+    let inferred =
+        ClrConstraints.infer env.Registry decls
+        |> Map.map (fun _ bounds ->
+            bounds
+            |> List.map (fun (p, b) ->
+                let text =
+                    match b with
+                    | ClrConstraints.ValueType -> "struct"
+                    | ClrConstraints.ReferenceType -> "class"
+                    | ClrConstraints.Constructor -> "new()"
+                    | ClrConstraints.Implements t -> typeToString t
+
+                typeParamName p, text))
+
+    Seq.append (Map.keys fromTraits) (Map.keys inferred)
+    |> Seq.distinct
+    |> Seq.choose (fun name ->
+        let all =
+            (Map.tryFind name fromTraits |> Option.defaultValue [])
+            @ (Map.tryFind name inferred |> Option.defaultValue [])
+
+        if all.IsEmpty then None else Some(name, formatWhere all))
     |> Map.ofSeq
 
 /// `decl` with each newtype's constructor and pattern taken out: `(Banana x)`
@@ -7902,7 +7960,8 @@ let generateProgram
           TypeParams = Set.empty
           InSeq = false
           Registry = registry
-          ClrConstraints = clrConstraintClauses env
+          ClrConstraints = clrConstraintClauses env decls
+          FunMetas = Map.fold (fun acc k v -> Map.add k v acc) env.ResolvedFunMetas env.FunMetas
           ReturnsVoid = false }
 
     appendLine ctx "using System;"

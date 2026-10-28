@@ -1,0 +1,30 @@
+;; A function whose last positional parameter and last keyword parameter are
+;; both arrays has no rest parameter, though its type alone cannot say so: the
+;; call is written from which parameters are keyword and rest ones. It was
+;; written with the array as the rest argument, which C# refused.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/array_keyword_lib.bjo")
+
+(: (-> (Array %a) (#:valid (Array bool)) int))
+(defun (local-count a #:valid (make-array 0))
+  (+ (array-length a) (array-length valid)))
+
+;; A rest parameter after a keyword one, still a rest parameter.
+(: (-> int (#:scale int) #:rest int int))
+(defun (total n #:scale 1 #:rest more)
+  (* scale (+ n (array-length more))))
+
+(: (-> (Array %a) int))
+(defun (generic-caller a) (local-count a))
+
+(defun (main)
+  (expect "in the module, no keyword" (local-count (vec->array [1 2])) 2)
+  (expect "in the module, the keyword" (local-count (vec->array [1 2]) #:valid (vec->array [#t])) 3)
+  (expect "from a generic function" (generic-caller (vec->array ["a"])) 1)
+  (expect "from another module" (count-with (vec->array [1 2 3])) 3)
+  (expect "from another module, the keyword" (count-with (vec->array [1]) #:valid (vec->array [#t #f])) 3)
+  (expect "a rest parameter" (total 1 2 3) 3)
+  (expect "a rest parameter and a keyword" (total 1 #:scale 10 2) 20)
+  0)

@@ -2196,18 +2196,24 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                         DotNetInterop.tryResolveMixedGenericMethod
                             where (not isInstance) clrType memberName ps declaredReturn awaited threadsToken)
                     |> Option.map (fun resolved ->
-                        Some resolved.TypeArguments, normalize declaredParams declaredReturn resolved.ReturnType)
+                        Some resolved.TypeArguments,
+                        normalize declaredParams declaredReturn resolved.ReturnType,
+                        (resolved.StringIns, resolved.StringResult))
                 | _ -> None
 
-            let genericTypeArgs, declaredType =
+            // The type arguments, the binding's type, and for a generic method
+            // the .NET strings its call converts.
+            let noStrings = ([], None)
+
+            let genericTypeArgs, declaredType, (stringIns, stringResult) =
                 if outImport.IsSome then
-                    outImport |> Option.map (fun (_, typeArgs, _) -> typeArgs), declaredType
+                    outImport |> Option.map (fun (_, typeArgs, _) -> typeArgs), declaredType, noStrings
                 elif kind <> ExternMethod then
-                    None, declaredType
+                    None, declaredType, noStrings
                 elif not (DotNetInterop.isGenericOnlyMethod (not isInstance) clrType memberName) then
                     match mixedGeneric () with
                     | Some resolved -> resolved
-                    | None -> None, declaredType
+                    | None -> None, declaredType, noStrings
                 else
                     match declaredType with
                     | Some(TFun(declaredParams, declaredReturn, _)) ->
@@ -2235,7 +2241,9 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                                 awaited
                                 threadsToken
 
-                        Some resolved.TypeArguments, normalize declaredParams declaredReturn resolved.ReturnType
+                        Some resolved.TypeArguments,
+                        normalize declaredParams declaredReturn resolved.ReturnType,
+                        (resolved.StringIns, resolved.StringResult)
                     | Some _ ->
                         failwithf
                             $"Type Error at %s{where}: '%s{spec.Alias}' names a method, so its declared type has to be a function type."
@@ -2257,6 +2265,8 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
               DeclaredType = declaredType
               GenericTypeArgs = genericTypeArgs
               Outs = outImport |> Option.map (fun (_, _, outs) -> outs)
+              StringIns = stringIns
+              StringResult = stringResult
               Exceptions = spec.Exceptions
               IsAsync = spec.IsAsync
               Uncancellable = spec.Uncancellable

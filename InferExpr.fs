@@ -1694,9 +1694,9 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
 
             let node =
                 if info.IsInstance then
-                    foreignCallNode info.ClrType info.MemberName (Some(List.head argExprs)) (convertStringIns outs (List.tail argExprs)) meta
+                    foreignCallNode info.ClrType info.MemberName (Some(List.head argExprs)) (convertStringIns (stringInsOf info outs) (List.tail argExprs)) meta
                 else
-                    foreignCallNode info.ClrType info.MemberName None (convertStringIns outs argExprs) meta
+                    foreignCallNode info.ClrType info.MemberName None (convertStringIns (stringInsOf info outs) argExprs) meta
 
             let resultType = wrapForeignExceptions info.Exceptions retType
 
@@ -2345,7 +2345,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
         resultType,
         { Type = resultType
           Range = r
-          Node = foreignCallNode info.ClrType info.MemberName receiver (convertStringIns outs methodArgs) meta }
+          Node = foreignCallNode info.ClrType info.MemberName receiver (convertStringIns (stringInsOf info outs) methodArgs) meta }
 
     | ExternMethod ->
         let allTypedArgs = args |> List.map (infer env)

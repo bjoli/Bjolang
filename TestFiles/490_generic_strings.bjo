@@ -1,0 +1,22 @@
+;; A generic .NET method that takes and answers a .NET string, imported with
+;; Bjolang strings in its signature: the call converts the string it passes
+;; and the one it gets, as an ordinary import's call does. Called, used as a
+;; value, and imported from another module.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/generic_strings_lib.bjo")
+
+(import/extern
+  ;; String.Join<T>(string separator, IEnumerable<T> values)
+  (join-with (: System.String.Join (-> string (Seq %a) string))))
+
+(: (-> (-> string (Seq int) string) string))
+(defun (apply-join f) (f "+" (vec->seq [1 2 3])))
+
+(defun (main)
+  (expect "called" (join-with ", " (vec->seq [1 2 3])) "1, 2, 3")
+  (expect "a string of more than ASCII" (join-with " · " (vec->seq ["å" "ö"])) "å · ö")
+  (expect "as a value" (apply-join join-with) "1+2+3")
+  (expect "from another module" (joined-by "-" (vec->seq [4L 5L])) "4-5")
+  0)

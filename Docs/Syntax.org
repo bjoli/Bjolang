@@ -1215,6 +1215,17 @@ A generic method may be imported ~#:async~ and ~#:cancellable~ too. The declared
                 #:async #:uncancellable)))                                     ; WhenAll<T>(Task<T>[])
 #+END_SRC
 
+A ~string~ in the signature of a generic import fits a ~System.String~ parameter or result, and ~(Array string)~ fits ~string[]~. The call converts them, as it does for an ordinary import.
+
+**** Constraints
+A .NET type parameter can have constraints, as ~where T : struct~ or ~where T : System.Enum~. Bjolang checks them at each call of a generic import and at each generic .NET type it uses. A type that breaks one is a type error:
+#+BEGIN_SRC text
+'System.Enum.GetValues' needs its type parameter TEnum to be System.Enum, and here TEnum is int.
+#+END_SRC
+A generic Bjolang function gets the constraints of the .NET generics it uses, in its signature and its body, and those of the generic Bjolang functions it calls in its module. The compiler writes them as ~where~ clauses in the C#, and checks each call of the function against them. Two constraints that cannot both hold on one type variable, as ~struct~ and ~class~, are an error.
+
+A generic function of another module is not looked into. A generic function that calls one does not get its constraints, and if it needs them, the C# compiler refuses the caller. Then write the .NET type that needs them in the caller's signature too, as ~(Column %a)~ for an Arrow column, so the caller gets them from there.
+
 **** What crosses, and how
 | .NET                 | Bjolang            |
 |----------------------+--------------------|

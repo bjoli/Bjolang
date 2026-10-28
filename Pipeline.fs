@@ -3415,6 +3415,11 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         // yield point is decided by the same lowering.
         Timing.phase "span check" (fun () -> SpanCheck.run env.Registry loopLoweredAst)
 
+        // The constraints of .NET generics, at the types Bjolang settled on:
+        // a call or a type that breaks one is found here, not by the C#
+        // compiler.
+        Timing.phase "constraint check" (fun () -> ClrConstraints.run env.Registry loopLoweredAst)
+
         // Beside `ColourCheck` and for the same reason: both are about what a
         // body does with the thread it is on, and both want the program as it
         // will be emitted. This one only warns — parking is legal, and the
