@@ -1168,6 +1168,7 @@ Registers the alias as both a type and a constructor.
 (.-Length sb)                          ;; sb.Length
 FileMode.Open                          ;; System.IO.FileMode.Open
 #+END_SRC
+The receiver's type has to be known where the member is named. A variable of a named let has the type of its initial value before the loop body is checked, when the initial value is a variable, or a call to a named function or an extern whose result its arguments settle. So ~(let loop ((s (array->span xs))) ... (.-Length s) ...)~ resolves.
 
 *** ~#:exceptions~ — failures as values
 A call with ~#:exceptions~ returns ~(Result System.Exception %a)~. Listed types become ~Err~:
@@ -1223,7 +1224,7 @@ A generic method may be imported ~#:async~ and ~#:cancellable~ too. The declared
 | ~T[]~                | ~(Array %a)~       |
 | a ~ReadOnlySpan<T>~ or ~Span<T>~ parameter | ~(Array %a)~ |
 | a ~ReadOnlySpan<T>~ or ~Span<T>~ result, under ~#:copy~ | ~(Array %a)~, a copy |
-| ~ReadOnlySpan<T>~, ~Span<T>~, any ~ref struct~ | ~(System.ReadOnlySpan %a)~, ~(System.Span %a)~, ..., as a local only |
+| ~ReadOnlySpan<T>~, ~Span<T>~, any ~ref struct~ | ~(RoSpan %a)~, ~(Span %a)~, ..., as a local only |
 | a ~ref T~ result, as of ~Span<T>~'s indexer | ~%a~, a copy of the value |
 | ~void~               | ~void~             |
 | a method's own ~T~   | a type variable    |
@@ -1239,20 +1240,29 @@ A generic method may be imported ~#:async~ and ~#:cancellable~ too. The declared
 A span a member *answers* is not an array. Import the member ~#:copy~ to answer a new array with a copy of its elements (see ~#:copy~ above), or use the span in place, as below.
 
 **** Spans as values
-A span is a view of memory that is valid only while the call that made it runs. Its type is the .NET one: ~(System.Span %a)~, ~(System.ReadOnlySpan %a)~, or any other ~ref struct~. A span can be a local, an argument and a result, as in C#. Index it with ~(.get_Item s i)~, write it with ~(.set_Item s i v)~, and use its own members, such as ~(.-Length s)~, ~(.Slice s 1)~ and ~(.ToArray s)~:
+A span is a view of memory that is valid only while the call that made it runs. The prelude names the two span types ~(Span %a)~ (.NET's ~Span<T>~) and ~(RoSpan %a)~ (~ReadOnlySpan<T>~). Any other .NET ~ref struct~ follows the same rules. A span can be a local, an argument and a result, as in C#:
 #+BEGIN_SRC scheme
-(import/extern
-  (as-span (: System.MemoryExtensions.AsSpan (-> (Array %a) int int (System.Span %a)))))
-
-(: (-> (System.Span long) long))
+(: (-> (Span long) long))
 (defun (sum s)
   (let loop ((i 0) (acc 0L))
-    (if (< i (.-Length s))
-        (loop (+ i 1) (+ acc (.get_Item s i)))   ;; s[i]
+    (if (< i (span-length s))
+        (loop (+ i 1) (+ acc (span-ref s i)))
         acc)))
 
-(sum (as-span xs 1 3))                   ;; no copy
+(def xs (vec->array [1L 2L 3L 4L]))
+(sum (array->span xs #:from 1 #:to 3))   ;; 5, and nothing is copied
+(span-set! (array->span xs) 0 10L)       ;; xs[0] = 10
 #+END_SRC
+| ~Span~                       | ~RoSpan~                        |                                    |
+|------------------------------+---------------------------------+------------------------------------|
+| ~(array->span a #:from #:to)~ | ~(array->ro-span a #:from #:to)~ | a view of a, from ~#:from~ up to ~#:to~ |
+| ~(span-length s)~            | ~(ro-span-length s)~            |                                    |
+| ~(span-ref s i)~             | ~(ro-span-ref s i)~             |                                    |
+| ~(span-set! s i x)~          |                                 | writes into the array              |
+| ~(span-slice s #:from #:to)~ | ~(ro-span-slice s #:from #:to)~ | a view of part of s                |
+| ~(span->array s)~            | ~(ro-span->array s)~            | a copy                             |
+| ~(span->ro-span s)~          |                                 |                                    |
+~#:from~ is 0 and ~#:to~ is the length unless given. Neither span type converts to the other implicitly. A span's own .NET members work too: ~(.-Length s)~, ~(.get_Item s i)~ for ~s[i]~, ~(.set_Item s i x)~ for ~s[i] = x~, and ~(.Slice s 1)~.
 A span cannot go where it could outlive the call that made it. The compiler refuses a span:
 - in another value: a vec, a list, a tuple, a record, a union case, an ~Option~ or a ~Result~;
 - as a type argument of a generic function, as in ~(println s)~;

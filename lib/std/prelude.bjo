@@ -100,6 +100,11 @@
   iarray-set iarray-add iarray-map
   subarray->iarray array->iarray iarray->array seq->iarray iarray->seq
   vec->iarray iarray->vec list->iarray iarray->list
+  ;; Spans.
+  Span RoSpan
+  array->span array->ro-span span->ro-span
+  span-length span-ref span-set! span-slice span->array
+  ro-span-length ro-span-ref ro-span-slice ro-span->array
   ;; Transients.
   transientmap-empty map->transientmap transientmap->map
   transientmap-set! transientmap-set-all! transientmap-remove!
@@ -565,6 +570,47 @@
 
 (: (-> (List %a) (IArray %a)))
 (defun (list->iarray xs) (seq->iarray (list->seq xs)))
+
+;; ---------------------------------------------------------------------------
+;; Spans
+;; ---------------------------------------------------------------------------
+;; A view of part of an array, which is valid only while the call that made
+;; it runs. `SpanCheck` refuses one where it could outlive that call. A
+;; `Span` and a `RoSpan` have separate functions, because neither converts to
+;; the other implicitly; `span->ro-span` converts explicitly.
+(import/class
+  ((Span %a)   (: System.Span))
+  ((RoSpan %a) (: System.ReadOnlySpan)))
+
+(import/extern
+  (clr-array->span    (: Bjolang.Runtime.Spans.FromArray         (-> (Array %a) int int (Span %a))))
+  (clr-array->ro-span (: Bjolang.Runtime.Spans.ReadOnlyFromArray (-> (Array %a) int int (RoSpan %a))))
+  (clr-span-slice     (: Bjolang.Runtime.Spans.Slice             (-> (Span %a) int int (Span %a))))
+  (clr-ro-span-slice  (: Bjolang.Runtime.Spans.Slice             (-> (RoSpan %a) int int (RoSpan %a))))
+  (span-length        (: Bjolang.Runtime.Spans.Length            (-> (Span %a) int)))
+  (span-ref           (: Bjolang.Runtime.Spans.Ref               (-> (Span %a) int %a)))
+  (span-set!          (: Bjolang.Runtime.Spans.Set               (-> (Span %a) int %a void)))
+  (span->array        (: Bjolang.Runtime.Spans.ToArray           (-> (Span %a) (Array %a))))
+  (span->ro-span      (: Bjolang.Runtime.Spans.ReadOnly          (-> (Span %a) (RoSpan %a))))
+  (ro-span-length     (: Bjolang.Runtime.Spans.Length            (-> (RoSpan %a) int)))
+  (ro-span-ref        (: Bjolang.Runtime.Spans.Ref               (-> (RoSpan %a) int %a)))
+  (ro-span->array     (: Bjolang.Runtime.Spans.ToArray           (-> (RoSpan %a) (Array %a)))))
+
+(: (-> (Array %a) (#:from int) (#:to int) (Span %a)))
+(defun (array->span a #:from 0 #:to (array-length a))
+  (clr-array->span a from to))
+
+(: (-> (Array %a) (#:from int) (#:to int) (RoSpan %a)))
+(defun (array->ro-span a #:from 0 #:to (array-length a))
+  (clr-array->ro-span a from to))
+
+(: (-> (Span %a) (#:from int) (#:to int) (Span %a)))
+(defun (span-slice s #:from 0 #:to (span-length s))
+  (clr-span-slice s from to))
+
+(: (-> (RoSpan %a) (#:from int) (#:to int) (RoSpan %a)))
+(defun (ro-span-slice s #:from 0 #:to (ro-span-length s))
+  (clr-ro-span-slice s from to))
 
 ;; ---------------------------------------------------------------------------
 ;; Map — the unordered map

@@ -197,7 +197,7 @@ let rec private check (registry: TraitRegistry) (ctx: Ctx) (exempt: bool) (expr:
             refuse
                 expr.Range
                 $"this is a %s{show t}, which holds a %s{shownRef t}. A span cannot be part of another value: a vec, a list, a tuple, a record, an Option or a Result."
-                "Copy the span with (.ToArray s) to keep its elements."
+                "Copy the span with span->array (or ro-span->array) to keep its elements."
 
     // A span in scope of `body` across a yield point.
     let checkLive (name: string) (bindingType: HMType) (body: TypedExpr) (r: Range) =
@@ -253,7 +253,7 @@ let rec private check (registry: TraitRegistry) (ctx: Ctx) (exempt: bool) (expr:
                 refuse
                     lam.Range
                     $"%s{label} suspends and answers a %s{shownRef ret}. What a bjoroutine answers is kept in a heap object, and a span cannot be there."
-                    "Answer an array instead: copy the span with (.ToArray s)."
+                    "Answer an array instead: copy the span with span->array (or ro-span->array)."
         | _ -> ()
 
         closure label ps isAsync false body
@@ -265,7 +265,7 @@ let rec private check (registry: TraitRegistry) (ctx: Ctx) (exempt: bool) (expr:
             refuse
                 expr.Range
                 $"'%s{name}' is generic, and here one of its type variables would be a %s{shownRef (prune arg)}. A span cannot be a type argument: .NET can keep a value of a type argument in the heap."
-                "Use a function that takes the span type itself, or copy the span with (.ToArray s)."
+                "Use a function that takes the span type itself, or copy the span with span->array (or ro-span->array)."
         | None -> ()
 
         match ctx.Closure with
@@ -273,7 +273,7 @@ let rec private check (registry: TraitRegistry) (ctx: Ctx) (exempt: bool) (expr:
             refuse
                 expr.Range
                 $"'%s{name}' is a %s{show (prune t)} bound outside %s{label}, and a span cannot be captured. That is emitted as a member of its own, which can run after the span is gone."
-                "Pass the span to it as an argument, or copy it with (.ToArray s)."
+                "Pass the span to it as an argument, or copy it with span->array (or ro-span->array)."
         | _ -> ()
 
     | TApply(target, args, kwArgs) ->
@@ -387,7 +387,7 @@ let rec private check (registry: TraitRegistry) (ctx: Ctx) (exempt: bool) (expr:
                     refuse
                         a.Range
                         $"(bjo ...) hands its arguments to a new fiber, and this one is a %s{shownRef (prune a.Type)}. The fiber can run after the span is gone."
-                        "Hand it an array: copy the span with (.ToArray s)."
+                        "Hand it an array: copy the span with span->array (or ro-span->array)."
 
             check registry ctx (match target.Node with TIdent _ -> true | _ -> false) target
             args |> List.iter walk
@@ -472,7 +472,7 @@ let rec private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
                 refuse
                     r
                     $"'%s{name}' is a bjoroutine, and it answers a %s{shownRef (prune retType)}. What a bjoroutine answers is kept in a heap object, and a span cannot be there."
-                    "Answer an array instead: copy the span with (.ToArray s)."
+                    "Answer an array instead: copy the span with span->array (or ro-span->array)."
 
         let owned =
             List.map fst args

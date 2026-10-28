@@ -3060,6 +3060,98 @@ and private inferLet (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (name:
       Range = r
       Node = TLet(name, isFun, localFun, typedVal, typedBody) }
 
+/// The type of `e`, where it is known before `e` is checked: a local's type, or
+/// what a named function answers when its type variables are settled by the
+/// known types of its positional arguments. `None` otherwise.
+///
+/// Nothing is unified, so the answer constrains nothing that checking `e`
+/// would not. A type with an associated type in it is not answered, because
+/// it can wait on a variable that this answer would leave unrelated.
+and private initType (env: Env) (e: Expr) : HMType option =
+    let rec tvars (t: HMType) =
+        match t with
+        | TVar v -> [ v ]
+        | TCon(_, ts)
+        | TTuple ts -> List.collect tvars ts
+        | TFun(ps, r, _) -> List.collect tvars (r :: ps)
+        | TAssoc(_, _, i) -> tvars i
+        | _ -> []
+
+    // An `import/extern` alias is not a binding: its declared type is in the
+    // registry, in the type variables of its signature. A call to one with
+    // `#:exceptions` answers a `Result` that the signature does not say.
+    let schemeOf name =
+        match Map.tryFind name env.Bindings with
+        | Some b -> Some b.Scheme
+        | None ->
+            match Map.tryFind name env.Registry.ClrExterns with
+            | Some { DeclaredType = Some t; Exceptions = [] } -> Some(Scheme(List.distinct (tvars t), [], t))
+            | _ -> None
+
+    let rec hasAssoc (t: HMType) =
+        match t with
+        | TAssoc _ -> true
+        | TCon(_, ts)
+        | TTuple ts -> List.exists hasAssoc ts
+        | TFun(ps, r, _) -> List.exists hasAssoc (r :: ps)
+        | _ -> false
+
+    // One-way: only the scheme's own variables are solved, from `actual`.
+    let rec matchType (vars: Set<string>) (sol: Map<string, HMType>) (pattern: HMType) (actual: HMType) =
+        match pattern, actual with
+        | TVar v, _ when vars.Contains v ->
+            match Map.tryFind v sol with
+            | Some known -> if known = actual then Some sol else None
+            | None -> Some(Map.add v actual sol)
+        | TCon(n, ps), TCon(m, xs) when n = m && ps.Length = xs.Length -> matchAll vars sol ps xs
+        | TTuple ps, TTuple xs when ps.Length = xs.Length -> matchAll vars sol ps xs
+        | TFun(ps, r, _), TFun(xs, q, _) when ps.Length = xs.Length -> matchAll vars sol (r :: ps) (q :: xs)
+        | _, TMeta _ -> Some sol
+        | _ -> None
+
+    and matchAll vars sol ps xs =
+        List.fold2 (fun acc p x -> acc |> Option.bind (fun s -> matchType vars s p x)) (Some sol) ps xs
+
+    let answer (t: HMType) =
+        let t = prune env.Registry t
+        if hasAssoc t then None else Some t
+
+    match e with
+    | EIdent(name, _) ->
+        match schemeOf name with
+        | Some(Scheme([], _, t)) -> answer t
+        | _ -> None
+    | EApp(EIdent(f, _), args, _) ->
+        match schemeOf f with
+        | Some(Scheme(vars, _, TFun(ps, ret, _))) ->
+            let vars = Set.ofList vars
+            let positional = args |> List.takeWhile (function EKeyword _ -> false | _ -> true)
+
+            let solution =
+                List.zip (List.truncate positional.Length ps) (List.truncate ps.Length positional)
+                |> List.fold
+                    (fun acc (p, arg) ->
+                        match acc, initType env arg with
+                        | Some s, Some actual -> matchType vars s p actual
+                        | _ -> acc)
+                    (Some Map.empty)
+
+            match solution with
+            | Some s ->
+                let rec unsolved (t: HMType) =
+                    match t with
+                    | TVar v -> vars.Contains v && not (s.ContainsKey v)
+                    | TCon(_, ts)
+                    | TTuple ts -> List.exists unsolved ts
+                    | TFun(qs, r, _) -> List.exists unsolved (r :: qs)
+                    | TAssoc _ -> true
+                    | _ -> false
+
+                if unsolved ret then None else answer (substTypeVars s ret)
+            | None -> None
+        | _ -> None
+    | _ -> None
+
 and private inferLetRec (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (bindings: (string * bool * DefunArg list * FType option * Expr) list) (body: Expr) (r: Range) : HMType * TypedExpr =
     let bindingMetas = bindings |> List.map (fun (n, _, _, _, _) -> n, freshMeta ())
 
@@ -3083,6 +3175,22 @@ and private inferLetRec (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (bi
             | None -> ())
         shapes
         bindingMetas
+
+    // A named let is this group of one, applied to its initial values. The
+    // body is checked before the application, so a member access on a loop
+    // variable, as in `(.-Length s)`, found the variable's type unknown. A
+    // parameter that has no annotation therefore takes the type of its
+    // initial value first, where `initType` knows it without checking it.
+    match bindings, shapes, body with
+    | [ (name, true, args, _, _) ], [ Some s ], EApp(EIdent(callee, _), inits, _) when
+        callee = name && inits.Length = s.Mandatory.Length && inits.Length = args.Length
+        ->
+        List.zip3 args s.Mandatory inits
+        |> List.iter (fun (arg, (_, paramType), init) ->
+            match arg, initType env init with
+            | MandatoryArg(_, None), Some t -> unify env.Registry paramType t
+            | _ -> ())
+    | _ -> ()
 
     let withMetas (start: Env) =
         List.fold2

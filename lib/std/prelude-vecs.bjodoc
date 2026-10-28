@@ -1029,3 +1029,129 @@
   (arg xs "The array.")
   (returns "A list of its elements, in order.")
   (see list->iarray iarray->vec))
+
+;; ---------------------------------------------------------------------------
+;; Spans
+;; ---------------------------------------------------------------------------
+
+(:doc Span
+  (summary "A writable view of part of an array, valid only while the call that made it runs.")
+  (tparam %a "The element type.")
+  (see array->span span-ref span-set! span-slice span->ro-span RoSpan)
+  (example """
+    (: (-> (Span long) long))
+    (defun (sum s)
+      (let loop ((i 0) (acc 0L))
+        (if (< i (span-length s))
+            (loop (+ i 1) (+ acc (span-ref s i)))
+            acc)))
+
+    (def xs (vec->array [1L 2L 3L 4L]))
+    (sum (array->span xs #:from 1 #:to 3))   ; 5, and nothing is copied
+    """)
+  (reference """
+    .NET's @code{Span<T>}. Writes through it change the array it views.
+
+    A span can be a local, an argument and a result. The compiler refuses
+    one where it could outlive the call that made it: in another value, as
+    a type argument of a generic function, captured by a @code{(fun ...)}
+    or a local function, in scope across a yield point, or as a
+    module-level definition. Copy it with @code{span->array} to keep its
+    elements.
+    """))
+
+(:doc RoSpan
+  (summary "A read-only view of part of an array, valid only while the call that made it runs.")
+  (tparam %a "The element type.")
+  (see array->ro-span ro-span-ref ro-span-slice span->ro-span Span)
+  (reference """
+    .NET's @code{ReadOnlySpan<T>}, with the rules of @code{Span}. A
+    @code{Span} is not converted to one implicitly: use
+    @code{span->ro-span}.
+    """))
+
+(:doc array->span
+  (summary "A span over part of an array.")
+  (arg a "The array, which the span views and writes through.")
+  (key #:from "The first element: 0 by default.")
+  (key #:to "One past the last element: the length by default.")
+  (returns "The span, of length to minus from. Nothing is copied.")
+  (raises System.ArgumentOutOfRangeException "When the range is not inside the array.")
+  (see array->ro-span span-slice))
+
+(:doc array->ro-span
+  (summary "A read-only span over part of an array.")
+  (arg a "The array, which the span views.")
+  (key #:from "The first element: 0 by default.")
+  (key #:to "One past the last element: the length by default.")
+  (returns "The span, of length to minus from. Nothing is copied.")
+  (raises System.ArgumentOutOfRangeException "When the range is not inside the array.")
+  (see array->span ro-span-slice))
+
+(:doc span->ro-span
+  (summary "The same view, read-only.")
+  (arg s "The span.")
+  (returns "A read-only span of the same elements."))
+
+(:doc span-length
+  (summary "How many elements a span has.")
+  (arg s "The span.")
+  (returns "Its length."))
+
+(:doc span-ref
+  (summary "The element of a span at an index.")
+  (arg s "The span.")
+  (arg i "From 0. Less than the length.")
+  (returns "The element at i.")
+  (see span-set! array-ref)
+  (reference """
+    @code{s[i]}, with .NET's bounds check.
+    """))
+
+(:doc span-set!
+  (summary "Replaces the element of a span at an index, in the array it views.")
+  (arg s "The span.")
+  (arg i "From 0. Less than the length.")
+  (arg x "The new element.")
+  (see span-ref array-set!)
+  (reference """
+    @code{s[i] = x}, with .NET's bounds check.
+    """))
+
+(:doc span-slice
+  (summary "A span over part of a span.")
+  (arg s "The span.")
+  (key #:from "The first element: 0 by default.")
+  (key #:to "One past the last element: the length by default.")
+  (returns "The span, of length to minus from, over the same array. Nothing is copied.")
+  (raises System.ArgumentOutOfRangeException "When the range is not inside the span."))
+
+(:doc span->array
+  (summary "A new array with a copy of a span's elements.")
+  (arg s "The span.")
+  (returns "The array, which the caller can keep and write."))
+
+(:doc ro-span-length
+  (summary "How many elements a read-only span has.")
+  (arg s "The span.")
+  (returns "Its length."))
+
+(:doc ro-span-ref
+  (summary "The element of a read-only span at an index.")
+  (arg s "The span.")
+  (arg i "From 0. Less than the length.")
+  (returns "The element at i.")
+  (see span-ref))
+
+(:doc ro-span-slice
+  (summary "A read-only span over part of a read-only span.")
+  (arg s "The span.")
+  (key #:from "The first element: 0 by default.")
+  (key #:to "One past the last element: the length by default.")
+  (returns "The span, of length to minus from. Nothing is copied.")
+  (raises System.ArgumentOutOfRangeException "When the range is not inside the span."))
+
+(:doc ro-span->array
+  (summary "A new array with a copy of a read-only span's elements.")
+  (arg s "The span.")
+  (returns "The array, which the caller can keep and write."))
