@@ -1,0 +1,28 @@
+;; A published body that calls a private helper of its module is copied here
+;; with the helper copied into it, by the rules a call in that module meets:
+;; a helper written #:inline whatever its size, and one within the budget
+;; that is given a known function. Before, such a helper's body was not
+;; published, so the call stayed: a collector's step that called one was a
+;; call in each step of the importer's loop.
+
+(export tripled-sum bumped-here plain-here)
+
+(import (std prelude))
+(import "../inc/private_inline.bjo")
+
+;; The step of an imported collector, with its #:inline helper.
+;; EXPECT-NO-CS: addsubtripled\(
+(: (-> (Vec int) int))
+(defun (tripled-sum xs) (loop (:for x xs) (:acc (tripling x))))
+
+;; Two levels of #:inline helpers, and a helper given a lambda.
+;; EXPECT-NO-CS: innersubstep\(
+;; EXPECT-NO-CS: middlesubstep\(
+;; EXPECT-NO-CS: applysubto\(
+(: (-> int int))
+(defun (bumped-here x) (bumped x))
+
+;; A helper not written #:inline that takes no function stays a call.
+;; EXPECT-CS: plainsubhelper\(
+(: (-> int int))
+(defun (plain-here x) (plain-bumped x))

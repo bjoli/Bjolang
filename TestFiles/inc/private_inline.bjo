@@ -1,0 +1,44 @@
+;; For codegen/inline_private_helper.bjo: published bodies that call private
+;; helpers of this module. An importer copies a helper written #:inline, and
+;; one within the size budget that is given a known function, as a call in
+;; this module would; a helper that is neither stays a call.
+
+(export Tripling bumped plain-bumped)
+(import (std prelude))
+
+;; A collector whose step calls a private helper written #:inline.
+(type (: Tripling (Union tripling)))
+
+(: (-> int int int))
+(defun (add-tripled acc x) #:inline (+ acc (* 3 x)))
+
+(impl (Collector Tripling)
+  (type %elem int)
+  (type %acc int)
+  (type %out int)
+  (defun (collector-init c) 0)
+  (defun (collector-step c acc x) (add-tripled acc x))
+  (defun (collector-finish c acc) acc))
+
+;; An exported function written #:inline, whose body calls a private helper
+;; written #:inline, which calls another, and one that takes a function and
+;; is given one.
+(: (-> int int))
+(defun (inner-step x) #:inline (* x 7))
+
+(: (-> int int))
+(defun (middle-step x) #:inline (+ (inner-step x) 1))
+
+(: (-> (-> int int) int int))
+(defun (apply-to f x) (f x))
+
+(: (-> int int))
+(defun (bumped x) #:inline (apply-to (fun (y) (+ y 2)) (middle-step x)))
+
+;; An exported function written #:inline, whose body calls a private helper
+;; that is not written #:inline and takes no function: it stays a call.
+(: (-> int int))
+(defun (plain-helper x) (- x 5))
+
+(: (-> int int))
+(defun (plain-bumped x) #:inline (plain-helper x))

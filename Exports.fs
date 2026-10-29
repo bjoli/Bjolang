@@ -412,17 +412,57 @@ let metadata
     // copy it at a ground instantiation instead of passing a dictionary.
     //
     // Filtered to the exports for the reason `blockingDefs` is: a private
-    // helper is nothing anyone outside can call. A body read back from a
+    // helper is nothing anyone outside can call; but see the `#:inline`
+    // helpers below. A body read back from a
     // dependency is here too when this module re-exports the name — it carries
     // its own `OriginModule`, so it goes on pointing at where it was written.
     //
     // A body that will not serialize is left out. Whoever imports it then calls
     // the generic function, which is always correct.
+    //
+    // A function that a published body names is published too, exported or
+    // not, and so is one that it names in turn, when its own module would
+    // inline it: one written `#:inline`, whatever its size, and one that
+    // `TraitInline.publishBodies` took for a call given a function, which is
+    // within the size budget. The splice of the body in an importer meets
+    // the call, and copies it by the rules it would meet at home, only if
+    // the body is there. A collector's step that called a private helper
+    // written `#:inline` was otherwise a call in the importer's loop, which
+    // .NET inlined only with its dynamic profile. A helper with a
+    // `(where ...)` is not published. The helper is then an implicit export
+    // below, as any name a published body names is.
     let constrainedBodiesToExport =
-        env.Registry.ConstrainedBodies
+        let publishable =
+            env.Registry.ConstrainedBodies
+            |> Map.filter (fun _ (tpl: TypedAST.InlineTemplate) -> publishableBody tpl)
+
+        let exported =
+            publishable |> Map.filter (fun name _ -> List.contains name exports)
+
+        let unconstrainedHere (name: string) =
+            match Map.tryFind name env.Bindings with
+            | Some { Scheme = TypedAST.Scheme(_, [], _) } -> true
+            | _ -> false
+
+        let namedBy (tpls: TypedAST.InlineTemplate list) =
+            tpls |> List.collect (fun tpl -> tpl.Qualification |> Map.toList |> List.map fst) |> List.distinct
+
+        let rec grow (published: Map<string, TypedAST.InlineTemplate>) (frontier: TypedAST.InlineTemplate list) =
+            let found =
+                namedBy frontier
+                |> List.choose (fun name ->
+                    match Map.tryFind name publishable with
+                    | Some tpl when (tpl.Inline || unconstrainedHere name) && not (Map.containsKey name published) ->
+                        Some(name, tpl)
+                    | _ -> None)
+
+            if found.IsEmpty then
+                published
+            else
+                grow (found |> List.fold (fun acc (n, t) -> Map.add n t acc) published) (List.map snd found)
+
+        grow exported ((exported |> Map.toList |> List.map snd) @ (inlineTemplatesToExport |> List.map snd))
         |> Map.toList
-        |> List.filter (fun (name, (tpl: TypedAST.InlineTemplate)) ->
-            List.contains name exports && publishableBody tpl)
 
     // A body's free variables have to be reachable from the
     // importing module, or re-inference at the splice fails and the call
