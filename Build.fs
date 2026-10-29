@@ -1469,7 +1469,15 @@ let compile (options: Options) (inputFilePath: string) : int =
                     |> List.map (fun (key, value) ->
                         $"    <RuntimeHostConfigurationOption Include=\"%s{key}\" Value=\"%s{value}\" />")
 
-                let hostOptions = gcOptions @ switches |> String.concat "\n"
+                // The fiber trace is a feature switch, and ILCompiler reads a
+                // switch set here as a constant, so the trace's hooks are not
+                // compiled in. A field set from the environment is a test at
+                // every rendezvous in a native build, where the JIT, with no
+                // switch, makes it a constant. `FiberTrace.SupportedSwitch`.
+                let noFiberTrace =
+                    "    <RuntimeHostConfigurationOption Include=\"Bjolang.FiberTrace.IsSupported\" Value=\"false\" Trim=\"true\" />"
+
+                let hostOptions = gcOptions @ switches @ [ noFiberTrace ] |> String.concat "\n"
 
                 // Without it ILCompiler targets a baseline CPU: on x86-64 that
                 // has SSE2 and no AVX, so `Vector<T>` is 128 bits wide.
