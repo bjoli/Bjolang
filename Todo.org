@@ -319,6 +319,19 @@ several cores and their ends are events.
   type is compared with ~Task<>~ by identity and the glue's ~Task~ is of
   another load context. The fix: make the generic overloads candidates, and
   a test with the docs' example.
+- *~#:inline~ is not applied to a call inside a step another module's
+  impl gives a loop.* bjostat's ~(Collector Correlation)~ in ~stats~ has
+  ~(collector-step c m xy) (co-moments-add m xy)~. A loop with
+  ~(:acc (correlation (Tuple x y)))~ in another module gets the step
+  copied in, but ~co-moments-add~ stays a call, also when it is written
+  ~#:inline~ (the C# of the loop calls ~stats_Module.cosubmomentssubadd~).
+  It returns a struct of 64 bytes from another assembly, which .NET
+  inlines only with its dynamic profile: with ~DOTNET_TieredPGO=0~ the
+  loop takes 10 ms over 1M rows instead of 2.6. So the speed of such a
+  loop rests on the profile, and on what the function saw first. The fix:
+  publish the templates of ~#:inline~ functions an exported impl calls, or
+  emit ~[MethodImpl(MethodImplOptions.AggressiveInlining)]~ on a function
+  written ~#:inline~, so that .NET inlines it without a profile.
 - *A module-level ~def~ that starts work which reads the module's values
   hangs.* ~(def _check (revenue/parallel 8))~, where ~revenue/parallel~
   starts parts (fibers or Tasks) that read the module-level ~t~ and ~rows~,
