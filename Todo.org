@@ -311,8 +311,10 @@ several cores and their ends are events.
   says that no overload accepts ~((-> double) CancellationToken)~, and lists
   only ~Run(Action, CancellationToken)~ and ~Run(Func<Task>,
   CancellationToken)~: the generic ~Run<T>(Func<T>, CancellationToken)~ is
-  not a candidate. So a library cannot give ~task->event~ a Task of its
-  own, as a pool of threads for work that uses a core would. Either the
+  not a candidate. A method that is not generic and returns a plain ~Task~
+  imports and works (bjostat's ~Workers.Run(Func<Unit>, CancellationToken)~,
+  imported ~(-> (-> Unit) void) #:async~), so the work keeps its value
+  itself; a ~Task<T>~ of a library's own cannot be given to ~task->event~. Either the
   generic overloads are left out when the result is a Task, or the result
   type is compared with ~Task<>~ by identity and the glue's ~Task~ is of
   another load context. The fix: make the generic overloads candidates, and
