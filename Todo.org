@@ -296,6 +296,48 @@ what was meant. Confirmed by running it where it says so.
   The reference parts of it could now be cut down to what the docs do not
   say.
 
+* Found while writing bjostat's parallel loops
+
+Found in ~bench/parallel.bjo~ of bjostat, where the parts of a loop run on
+several cores and their ends are events.
+
+- *A generic ~#:async~ import of a method returning ~Task<T>~ is refused.*
+  In a package's C# glue,
+  ~public static Task<T> Run<T>(Func<T> work, CancellationToken token)~
+  imported as ~(: Bjostat.Workers.Run (-> (-> %a) %a) #:async)~ fails with
+  "is imported #:async, but no overload of it returns a Task or a
+  ValueTask". The example in Docs/Syntax.org fails as well:
+  ~(on-pool (: System.Threading.Tasks.Task.Run (-> (-> %a) %a) #:async))~
+  says that no overload accepts ~((-> double) CancellationToken)~, and lists
+  only ~Run(Action, CancellationToken)~ and ~Run(Func<Task>,
+  CancellationToken)~: the generic ~Run<T>(Func<T>, CancellationToken)~ is
+  not a candidate. So a library cannot give ~task->event~ a Task of its
+  own, as a pool of threads for work that uses a core would. Either the
+  generic overloads are left out when the result is a Task, or the result
+  type is compared with ~Task<>~ by identity and the glue's ~Task~ is of
+  another load context. The fix: make the generic overloads candidates, and
+  a test with the docs' example.
+- *A module-level ~def~ that starts work which reads the module's values
+  hangs.* ~(def _check (revenue/parallel 8))~, where ~revenue/parallel~
+  starts parts (fibers or Tasks) that read the module-level ~t~ and ~rows~,
+  never returns; the same call from ~main~ or a benchmark body works. Most
+  likely the module's values are set in a static constructor, the parts
+  wait for it to finish before they can read ~t~, and it waits for the
+  parts. Not confirmed in the C#. The fix: refuse a module-level ~def~
+  whose value starts a fiber or a thread, or set the module's values before
+  such code runs.
+- *The docs of ~spawn/thread~ may be out of date.* They say that for work
+  that uses a core ~Task.Run~ "buys nothing at all: it is the same pool".
+  Fibers now run on ~Bjoml.Workers~, a pump for each core, so a fiber that
+  computes holds its pump, and ~(sync (blocking thunk))~ does not: the
+  thunk runs on a pool thread while the fiber is suspended. Measured, the
+  sum of 1M rows in 8 parts: 0.52 ms by ~blocking~, 0.49 ms by fibers that
+  compute, 1.25 ms by ~spawn/thread~, which makes a thread for each part.
+  What ~blocking~ does not show is whether the parts delay the pumps,
+  which run on the same pool's threads. If they do not, ~blocking~ (or a
+  function of the same body with a name for computing) is the way to run
+  short parts, and ~spawn/thread~ is for long ones.
+
 * Packages and projects
 
 - *Build output lands beside the source*, also inside ~.bjo/pkg/...~: two
