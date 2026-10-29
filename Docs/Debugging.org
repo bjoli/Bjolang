@@ -120,6 +120,12 @@ it when it recompiles a hot method. On ~bench/bjolang/cmlbench.bjo~ the
 rings, the spawn burst and the chooses run at the same speed and allocate
 the same, with the hooks and without them.
 
+A Native AOT executable has no JIT to remove the test, and the hooks cost
+it 5 to 8 % of a channel rendezvous. So the native build turns the trace
+off when it compiles, and the hooks are not in the executable. A native
+executable has no fiber trace: ~(fiber-trace)~ says so. Run the ~.exe~
+that is built beside it with ~BJO_FIBER_TRACE=1~.
+
 With the trace on, each suspension records the frame in a table, and the
 first suspension at each ~sync~ reads the stack once to find the line.
 The ring of ~cmlbench~ goes from about 70 to about 260 ns a message. Use
@@ -131,7 +137,9 @@ it to find where a program is stuck, not in production.
   "running, or ready to run".
 - A fiber in a pure loop never waits, so the deadlock check sees a
   scheduler with work and says nothing.
-- Without a pdb there are no lines, only method names.
+- Without a pdb there are no lines, only method names. A Native AOT
+  executable has no pdb, so the report of a deadline gives the name of the
+  bjoroutine: ~at worker in app (no line: this build has none)~.
 
 * Setting it up
 

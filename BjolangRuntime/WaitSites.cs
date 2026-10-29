@@ -104,11 +104,70 @@ internal static class WaitSites
     /// Where the fiber that raised <paramref name="e"/> was waiting, read off
     /// the stack the exception was raised with.
     /// </summary>
-    internal static string Of(System.Exception e, Dictionary<string, string[]?> cache)
+    internal static string Of(System.Exception e, Dictionary<string, string[]?> cache) =>
+        Where(new StackTrace(e, fNeedFileInfo: true), cache) ?? "(no Bjolang code on its stack)";
+
+    /// <summary>
+    /// The innermost place in the program on <paramref name="trace"/>: its
+    /// line, or, where the stack has no lines, its function. Null when no frame
+    /// is the program's.
+    /// </summary>
+    internal static string? Where(StackTrace trace, Dictionary<string, string[]?> cache)
     {
-        var frame = UserFrame(new StackTrace(e, fNeedFileInfo: true));
-        if (frame is null) return "(no Bjolang source on its stack)";
-        return Describe(frame.GetFileName()!, frame.GetFileLineNumber(), cache);
+        var frame = UserFrame(trace);
+        if (frame is not null) return Describe(frame.GetFileName()!, frame.GetFileLineNumber(), cache);
+        return ByName(trace);
+    }
+
+    /// <summary>
+    /// The innermost function of the program's modules on the stack, by name.
+    ///
+    /// For a stack with no lines: a Native AOT executable has no pdb, and
+    /// <c>StackFrame.GetMethod</c> answers null there. The name comes from
+    /// <c>DiagnosticMethodInfo</c>, which a Native AOT build keeps.
+    /// </summary>
+    private static string? ByName(StackTrace trace)
+    {
+        string? firstStd = null;
+        foreach (var frame in trace.GetFrames())
+        {
+            var info = DiagnosticMethodInfo.Create(frame);
+            var type = info?.DeclaringTypeName;
+            if (type is null || !type.StartsWith("BjoMod.", System.StringComparison.Ordinal)) continue;
+            var shown = Readable(type, info!.Name);
+            if (!type.StartsWith(StdPrefix, System.StringComparison.Ordinal)) return shown;
+            firstStd ??= shown;
+        }
+        return firstStd;
+    }
+
+    /// <summary>
+    /// "worker in app (no line: this build has none)", from the type
+    /// <c>BjoMod.app_0f3.app_Module+&lt;worker&gt;d__3</c> and the method
+    /// <c>MoveNext</c>, or from <c>app_Module</c> and <c>worker</c>.
+    ///
+    /// The function is its C# name. <c>_BANG</c> and <c>_QMARK</c> are read
+    /// back as <c>!</c> and <c>?</c>; <c>sub</c>, which is <c>-</c>, is not,
+    /// because a name can have those letters of its own.
+    /// </summary>
+    internal static string Readable(string typeName, string method)
+    {
+        var outer = typeName;
+        string? nested = null;
+        int plus = typeName.IndexOf('+');
+        if (plus >= 0) { outer = typeName.Substring(0, plus); nested = typeName.Substring(plus + 1); }
+
+        var module = outer.Substring(outer.LastIndexOf('.') + 1);
+        if (module.EndsWith("_Module", System.StringComparison.Ordinal)) module = module.Substring(0, module.Length - "_Module".Length);
+
+        var function = method;
+        if (nested is not null && nested.StartsWith('<'))
+        {
+            int close = nested.IndexOf('>');
+            if (close > 1) function = nested.Substring(1, close - 1);
+        }
+        function = function.Replace("_BANG", "!").Replace("_QMARK", "?");
+        return $"{function} in {module} (no line: this build has none)";
     }
 
     /// <summary>

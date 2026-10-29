@@ -35,10 +35,16 @@ internal interface ITraceAwaiter
 /// where it waits and on what.
 ///
 /// Off unless <c>BJO_FIBER_TRACE</c> is set in the environment. Every hook
-/// tests <see cref="Enabled"/>, a <c>static readonly</c> field. When the JIT
-/// recompiles a method at tier 1, it reads such a field as a constant, so
-/// with the trace off the test and the call after it are removed from the
-/// hot paths.
+/// tests <see cref="Enabled"/>, which reads two <c>static readonly</c> fields.
+/// When the JIT recompiles a method at tier 1, it reads such a field as a
+/// constant, so with the trace off the test and the call after it are removed
+/// from the hot paths.
+///
+/// Native AOT has no tier 1, and reads a field set from the environment at
+/// every test: 5 to 8 % of a channel rendezvous. So <see cref="IsSupported"/>
+/// is a feature switch, and the Native AOT build sets it to false. ILCompiler
+/// then reads <see cref="Enabled"/> as false and removes the hooks. A native
+/// executable has no fiber trace; the <c>.exe</c> built beside it has.
 ///
 /// # What is recorded
 ///
@@ -57,8 +63,27 @@ internal interface ITraceAwaiter
 [NonUserCode]
 public static class FiberTrace
 {
+    /// The feature switch that a Native AOT build sets to false.
+    public const string SupportedSwitch = "Bjolang.FiberTrace.IsSupported";
+
+    private static readonly bool s_supported =
+        !AppContext.TryGetSwitch(SupportedSwitch, out bool supported) || supported;
+
+    private static readonly bool s_enabled = IsOn(Environment.GetEnvironmentVariable("BJO_FIBER_TRACE"));
+
+    /// <summary>
+    /// Can the trace be turned on in this build? A constant false where the
+    /// switch is set to false at the build, as a Native AOT build sets it.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.FeatureSwitchDefinition(SupportedSwitch)]
+    public static bool IsSupported => s_supported;
+
     /// <summary>Is the trace on? Read once, at start-up.</summary>
-    public static readonly bool Enabled = IsOn(Environment.GetEnvironmentVariable("BJO_FIBER_TRACE"));
+    public static bool Enabled
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => IsSupported && s_enabled;
+    }
 
     private static bool IsOn(string? value) =>
         value is not null && value != "" && value != "0"
@@ -210,10 +235,10 @@ public static class FiberTrace
     public static object ThreadWaiting(object target)
     {
         var key = new object();
-        var user = Bjolang.Runtime.WaitSites.UserFrame(new StackTrace(1, fNeedFileInfo: true));
-        var site = user is null
-            ? new Site("(no Bjolang source on its stack)", false)
-            : new Site(Bjolang.Runtime.WaitSites.Describe(user.GetFileName()!, user.GetFileLineNumber(), new()), true);
+        var where = Bjolang.Runtime.WaitSites.Where(new StackTrace(1, fNeedFileInfo: true), new());
+        var site = where is null
+            ? new Site("(no Bjolang code on its stack)", false)
+            : new Site(where, true);
 
         s_parked[key] = new Frame
         {
@@ -282,7 +307,13 @@ public static class FiberTrace
             bool bjo = file.EndsWith(".bjo", StringComparison.Ordinal);
             return new Site(Bjolang.Runtime.WaitSites.Describe(file, frame.GetFileLineNumber(), new()), bjo);
         }
-        return new Site(MethodName(stateMachine), false);
+
+        // No lines: a build without a pdb, such as a Native AOT executable,
+        // where `GetMethod` answers null too. The state machine's own type
+        // still names the function and its module.
+        var full = stateMachine.FullName ?? stateMachine.Name;
+        bool program = full.StartsWith("BjoMod.", StringComparison.Ordinal);
+        return new Site(program ? Bjolang.Runtime.WaitSites.Readable(full, "MoveNext") : MethodName(stateMachine), program);
     }
 
     /// <summary>

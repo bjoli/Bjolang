@@ -48,9 +48,7 @@ internal static class FiberReport
         Install();
         scope.TraceKind = kind;
         scope.TraceParent = global::BjolangRuntime.Dyn.Current.Scope;
-        var user = WaitSites.UserFrame(new StackTrace(1, fNeedFileInfo: true));
-        if (user is not null)
-            scope.TraceOpenedAt = WaitSites.Describe(user.GetFileName()!, user.GetFileLineNumber(), new());
+        scope.TraceOpenedAt = WaitSites.Where(new StackTrace(1, fNeedFileInfo: true), new());
     }
 
     private static void Install()
@@ -217,7 +215,9 @@ internal static class FiberReport
     internal static string Text() =>
         FiberTrace.Enabled
             ? Text(FiberTrace.Snapshot())
-            : "The fiber trace is off. Set BJO_FIBER_TRACE=1 in the environment to turn it on.";
+            : FiberTrace.IsSupported
+                ? "The fiber trace is off. Set BJO_FIBER_TRACE=1 in the environment to turn it on."
+                : "This build has no fiber trace. A Native AOT executable has none; run the .exe built beside it with BJO_FIBER_TRACE=1.";
 
     /// <summary>One wait, its chain of callers and how long it has lasted.</summary>
     [NonUserCode]
