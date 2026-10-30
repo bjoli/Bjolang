@@ -848,13 +848,24 @@ public static partial class BjolangRuntime {
     /// test of the sign, and no shift. `I` is the low half, which a register
     /// has as it is. A step adds `0x1_0000_0001`: one to each half, with no
     /// carry, since `I` is below `End` and so far below 2^32.
+    ///
+    /// # Relaxed trees
+    ///
+    /// `LeafAt` descends from the root. In a dense tree that is a shift per
+    /// level. In a relaxed tree, as joins make, it is a search of a size table
+    /// per level, for each leaf. So when the walk leaves a leaf of a relaxed
+    /// tree, `AtLeaf` makes a `TreePath`, which steps to the next leaf, and the
+    /// cursor holds it in place of the list. This halved the walk of a vec
+    /// joined from 1000-element pieces. A dense tree pays one test per leaf,
+    /// and a walk that stays in one leaf pays nothing.
     /// </summary>
     [NonUserCode]
     public readonly struct VecCursor<T> {
         private readonly T[] _items;
         /// `I` in the low half, `I - End` in the high half.
         private readonly long _span;
-        private readonly Collections.RrbList<T> _list;
+        /// The list, or a `TreePath` of it once the walk is in a relaxed tree.
+        private readonly object _list;
         /// `NextIndex` in the low half, `Stop` in the high half.
         private readonly long _rest;
 
@@ -879,14 +890,14 @@ public static partial class BjolangRuntime {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static long Pair(int low, int high) => (uint)low | ((long)high << 32);
 
-        private VecCursor(T[] items, long span, Collections.RrbList<T> list, long rest) {
+        private VecCursor(T[] items, long span, object list, long rest) {
             _items = items;
             _span = span;
             _list = list;
             _rest = rest;
         }
 
-        private VecCursor(T[] items, int i, int end, Collections.RrbList<T> list, int nextIndex, int stop)
+        private VecCursor(T[] items, int i, int end, object list, int nextIndex, int stop)
             : this(items, Pair(i, i - end), list, Pair(nextIndex, stop)) { }
 
         /// The walk of `count` elements from `from`.
@@ -920,7 +931,7 @@ public static partial class BjolangRuntime {
         /// The cursor on element `index`, with the part of its leaf the walk
         /// up to `stop` takes. Inlined where a walk starts, so that the walk of
         /// a vec that is all tail makes no call. `AtLeaf` is the same out of
-        /// line, for the next leaf of a walk.
+        /// line, for the next leaf of a walk, and looks for a relaxed tree.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static VecCursor<T> Enter(Collections.RrbList<T> list, int index, int stop) {
             var items = list.LeafAt(index, out var position, out var length);
@@ -929,7 +940,27 @@ public static partial class BjolangRuntime {
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        private static VecCursor<T> AtLeaf(Collections.RrbList<T> list, int index, int stop) => Enter(list, index, stop);
+        private static VecCursor<T> AtLeaf(object owner, int index, int stop) {
+            T[] items;
+            int position, length;
+            if (owner is Collections.TreePath<T> path) {
+                items = path.Step(index, out position, out length)
+                    ?? (path.List.InTree(index)
+                        ? path.Seek(index, out position, out length)
+                        : path.List.LeafAt(index, out position, out length));
+            } else {
+                var list = Unsafe.As<Collections.RrbList<T>>(owner);
+                if (list.TreeIsRelaxed && list.InTree(index)) {
+                    path = new Collections.TreePath<T>(list);
+                    items = path.Seek(index, out position, out length);
+                    owner = path;
+                } else {
+                    items = list.LeafAt(index, out position, out length);
+                }
+            }
+            var take = Math.Min(length - position, stop - index);
+            return new VecCursor<T>(items, position, position + take, owner, index + take, stop);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

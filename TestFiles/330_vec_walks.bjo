@@ -4,7 +4,8 @@
 ;; A vec is walked one leaf array at a time. Each walk here is checked against
 ;; `vec-ref`, on vecs that are only a tail, that have full leaves, and that
 ;; have relaxed nodes from merges and inserts, and on slices that start and
-;; end inside a leaf.
+;; end inside a leaf. "joined" has relaxed nodes on two levels, where a walk
+;; keeps its path down the tree.
 
 (: (-> int (Vec int)))
 (defun (numbers n) {vecing i (:for i (range 0 n))})
@@ -27,6 +28,11 @@
     (loop (:for k (range 0 40))
           (:acc v (folding (numbers 1500) (vec-insert v (+ 7 (* k 29)) (- 0 k))))
           => v))
+  (def all (numbers 40000))
+  (def joined
+    (loop (:for k (range 0 40))
+          (:acc v (folding (numbers 0) (vec-merge v (vec-slice all (* k 997) 997))))
+          => v))
   (list (Tuple "empty" (numbers 0))
         (Tuple "1" (numbers 1))
         (Tuple "31" (numbers 31))
@@ -35,12 +41,13 @@
         (Tuple "100" (numbers 100))
         (Tuple "1056" (numbers 1056))
         (Tuple "merged" merged)
-        (Tuple "inserted" inserted)))
+        (Tuple "inserted" inserted)
+        (Tuple "joined" joined)))
 
 ;; Bounds that start and end at, beside and inside leaves.
 (: (-> int (List (Tuple int int))))
 (defun (bounds n)
-  (def points (list-filter #(<= & n) (list 0 1 5 31 32 33 63 64 65 500 1000 n)))
+  (def points (list-filter #(<= & n) (list 0 1 5 31 32 33 63 64 65 500 1000 1025 20001 n)))
   (loop (:for a points)
         (:subloop)
         (:for b points)
