@@ -654,8 +654,17 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Collections.RrbList<T> vecsubslice<T>(Collections.RrbList<T> list, int start, int count) where T : notnull => Collections.RrbFun.Slice(list, start, count);
 
+    // Two vecs are one Merge. More go to Concat, which copies small vecs into
+    // full leaves and merges big ones: cheaper than a Merge for each.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecsubmerge<T>(Collections.RrbList<T> list, Collections.RrbList<T> other) where T : notnull => Collections.RrbFun.Merge(list, other, false);
+    public static Collections.RrbList<T> vecsubmerge<T>(Collections.RrbList<T> list, Collections.RrbList<T> other, Collections.RrbList<T>[] more) where T : notnull {
+        if (more.Length == 0) return Collections.RrbFun.Merge(list, other, false);
+        var all = new Collections.RrbList<T>[more.Length + 2];
+        all[0] = list;
+        all[1] = other;
+        more.CopyTo(all, 2);
+        return Collections.RrbList<T>.Concat(all);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ValueTuple<Collections.RrbList<T>, Collections.RrbList<T>> vecsubsplit<T>(Collections.RrbList<T> list, int index) where T : notnull => Collections.RrbFun.Split(list, index);

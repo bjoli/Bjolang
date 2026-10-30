@@ -267,9 +267,17 @@
 
 
 ;; List append.
-(: (-> (List %a) (List %a) (List %a)))
-(defun (list-append xs ys)
-  (list-foldr Cons ys xs))
+(: (-> (List %a) (List %a) #:rest (List %a) (List %a)))
+(defun (list-append xs ys #:rest more)
+  ;; Each list but the last is copied, once, and the last is shared: the
+  ;; lists are joined from the right.
+  (def n (array-length more))
+  (if (= n 0)
+      (list-foldr Cons ys xs)
+      (loop (:for i (down-from (- n 2) #:to 0))
+            (:acc acc (folding (array-ref more (- n 1))
+                               (list-foldr Cons acc (array-ref more i))))
+            => (list-foldr Cons (list-foldr Cons acc ys) xs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Written and Displayed

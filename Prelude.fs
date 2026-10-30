@@ -1048,7 +1048,9 @@ let prelude : Env =
         "vec-pop", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a")] (makeVecType (TVar "a"))); IsMutable = false }
         "vec-pop-first", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a")] (makeVecType (TVar "a"))); IsMutable = false }
         "vec-slice", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); intType; intType] (makeVecType (TVar "a"))); IsMutable = false }
-        "vec-merge", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); makeVecType (TVar "a")] (makeVecType (TVar "a"))); IsMutable = false }
+        // Variadic past the first two, through its `FunMeta` below, so its flat
+        // type takes the rest array.
+        "vec-merge", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); makeVecType (TVar "a"); makeArrayType (makeVecType (TVar "a"))] (makeVecType (TVar "a"))); IsMutable = false }
         "vec-split", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); intType] (TTuple [makeVecType (TVar "a"); makeVecType (TVar "a")])); IsMutable = false }
         // The seven `vec-` operations that take a procedure are not here, for
         // the reason the `list-` ones are not: their callbacks are declared
@@ -1266,6 +1268,8 @@ let prelude : Env =
           // `(make-array n #:fill x)`. The runtime has an overload for each:
           // C# picks the filling one only when `__kw_fill:` is passed.
           ("make-array", { MandatoryCount = 1; KeywordParams = [ ("fill", TVar "a") ]; RestParam = None })
+          // `(vec-merge a b c ...)`: two vecs at least, and any more after.
+          ("vec-merge", { MandatoryCount = 2; KeywordParams = []; RestParam = Some (TCon("Vec", [ TVar "a" ])) })
       ]
       CurrentModule = ""
       // A `with-return` is the only thing that puts one of these in scope, and

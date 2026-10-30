@@ -1,0 +1,62 @@
+(import (std prelude))
+(import (std simpletest))
+
+;; `vec-merge` and `list-append` take two or more. Two vecs are one merge;
+;; more go to a concatenation that copies small vecs into full leaves and
+;; merges big ones. Each result is checked against the same elements joined
+;; one at a time.
+
+(: (-> int int (Vec int)))
+(defun (from-to lo hi) {vecing i (:for i (range lo hi))})
+
+;; Vecs of the sizes given, which together count up from 0. `at` is the
+;; sum with this piece's size added.
+(: (-> (List int) (List (Vec int))))
+(defun (pieces sizes)
+  (loop (:for n sizes)
+        (:acc at (folding 0 (+ at n)))
+        (:acc out (listing (from-to (- at n) at)))
+        => out))
+
+;; The same joined one merge at a time.
+(: (-> (List (Vec int)) (Vec int)))
+(defun (two-at-a-time ps)
+  (loop (:for p ps) (:acc acc (folding [] (vec-merge acc p))) => acc))
+
+(: (-> (List int) int))
+(defun (total sizes) (fold + 0 sizes))
+
+(defun (main)
+  (expect "two" (vec-merge [1 2] [3]) [1 2 3])
+  (expect "three" (vec-merge [1] [2] [3 4]) [1 2 3 4])
+  (expect "empty ones" (vec-merge [] [1] [] [2 3] []) [1 2 3])
+
+  ;; Small vecs only, which are copied; big only, which are merged; and the
+  ;; two mixed, with runs of small ones between big ones.
+  (list-for-each
+    (fun (sizes)
+      (def ps (pieces sizes))
+      (def want (from-to 0 (total sizes)))
+      (match ps
+        ((Cons a (Cons b rest))
+         (expect #"apply over ${(list-length sizes)} vecs"
+                 (apply vec-merge a b rest) want)
+         (expect #"as two at a time, over ${(list-length sizes)} vecs"
+                 (apply vec-merge a b rest) (two-at-a-time ps))
+         (expect #"walked, over ${(list-length sizes)} vecs"
+                 {listing x (:for x (apply vec-merge a b rest))}
+                 {listing x (:for x want)}))
+        (_ (expect "two vecs at least" #f #t))))
+    (list {listing (+ 1 (% (* k 7) 40)) (:for k (range 0 500))}
+          (list 3000 5000 300 256 10000)
+          (list 5 1000 20 20 20 4000 1 255 256 257 31 32 33 2000 7)))
+
+  (expect "lists: two" (list-append (list 1 2) (list 3)) (list 1 2 3))
+  (expect "lists: four" (list-append (list 1) (list) (list 2 3) (list 4)) (list 1 2 3 4))
+  (expect "lists: apply"
+          (apply list-append (list 1) (list 2) (list (list 3) (list) (list 4 5)))
+          (list 1 2 3 4 5))
+  (def last (list 9 10))
+  (expect "lists: the last is shared, not copied"
+          (eq? (list-tail (list-tail (list-append (list 1) (list 2) last))) last) #t)
+  0)
