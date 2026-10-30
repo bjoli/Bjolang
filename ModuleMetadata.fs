@@ -110,7 +110,9 @@ open System.Text
 /// under a key no call names.
 /// 25: `WaitingDefs`, the exports whose call waits for another thread, after
 /// `BlockingDefs`. A reader of 24 would read the list as the `defbjouble`s.
-let currentVersion = 25
+/// 26: `RunTimeTypeParams`, the type parameters of each exported generic
+/// function that it uses at run time, after `WaitingDefs`.
+let currentVersion = 26
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -269,6 +271,10 @@ type Metadata = {
     /// subset of `BlockingDefs`. An importer's initialiser that calls one while
     /// a thread uses the importer is a deadlock, which the compiler refuses.
     WaitingDefs: string list
+    /// For each exported generic function that uses type parameters at run
+    /// time (see `ClrConstraints.runTimeParams`): its name, and the index and
+    /// name of each such parameter, written `name|0=a,2=c`.
+    RunTimeTypeParams: string list
     /// Exported definitions written with `defbjouble`, and so having a
     /// suspending copy beside them.
     ///
@@ -312,6 +318,7 @@ let empty = {
     MacroTraitMethods = []
     BlockingDefs = []
     WaitingDefs = []
+    RunTimeTypeParams = []
     DoubleDefs = []
     ConstrainedBodies = []
     Frameworks = []
@@ -523,6 +530,7 @@ let serialize (m: Metadata) : string =
     putList sb putStr m.MacroTraitMethods
     putList sb putStr m.BlockingDefs
     putList sb putStr m.WaitingDefs
+    putList sb putStr m.RunTimeTypeParams
     putList sb putStr m.DoubleDefs
     putList sb putConstrainedBody m.ConstrainedBodies
     putList sb putStr m.Frameworks
@@ -560,6 +568,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     let macroTraitMethods = getList getStr c
     let blockingDefs = getList getStr c
     let waitingDefs = getList getStr c
+    let runTimeTypeParams = getList getStr c
     let doubleDefs = getList getStr c
     let constrainedBodies = getList getConstrainedBody c
     let frameworks = getList getStr c
@@ -581,6 +590,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
       MacroTraitMethods = macroTraitMethods
       BlockingDefs = blockingDefs
       WaitingDefs = waitingDefs
+      RunTimeTypeParams = runTimeTypeParams
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies
       Frameworks = frameworks }

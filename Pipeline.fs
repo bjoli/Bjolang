@@ -1429,6 +1429,9 @@ type private DllFacts =
       /// Exports whose call waits for another thread, each with where it was
       /// defined. A subset of `Blocking`.
       Waiting: (string * (string * string)) list
+      /// The type parameters each exported generic function uses at run
+      /// time, by the function's origin.
+      RunTimeTypeParams: ((string * string) * (int * string) list) list
       /// Exports written with `defbjouble`, each with where it was defined.
       Doubles: (string * (string * string)) list
       /// The bodies of exported constrained generics.
@@ -2129,6 +2132,7 @@ let loadModuleGraph
       * string list
       * Set<string * (string * string)>
       * Set<string * (string * string)>
+      * Map<string * string, (int * string) list>
       * Set<string * (string * string)>
       * Map<string, TypedAST.InlineTemplate>
       * (string * string * string) list
@@ -2165,6 +2169,11 @@ let loadModuleGraph
     /// `blockingDefs` holds them.
     let waitingDefs = System.Collections.Generic.HashSet<string * (string * string)>()
 
+    /// The type parameters imported generic functions use at run time, by
+    /// origin.
+    let runTimeTypeParams =
+        System.Collections.Generic.Dictionary<string * string, (int * string) list>()
+
     /// Imported definitions written with `defbjouble`, under the names their
     /// origin published. The suspending copy is an ordinary imported binding
     /// like any other; what this adds is that the two are a pair.
@@ -2190,6 +2199,9 @@ let loadModuleGraph
 
         for entry in facts.Waiting do
             waitingDefs.Add entry |> ignore
+
+        for (origin, ps) in facts.RunTimeTypeParams do
+            runTimeTypeParams[origin] <- ps
 
         for entry in facts.Doubles do
             doubleDefs.Add entry |> ignore
@@ -2342,6 +2354,20 @@ let loadModuleGraph
                     let facts =
                         { Blocking = meta.BlockingDefs |> List.map (fun name -> name, originOf name)
                           Waiting = meta.WaitingDefs |> List.map (fun name -> name, originOf name)
+                          RunTimeTypeParams =
+                            meta.RunTimeTypeParams
+                            |> List.map (fun entry ->
+                                let bar = entry.IndexOf '|'
+                                let name = entry.Substring(0, bar)
+
+                                let ps =
+                                    entry.Substring(bar + 1).Split(',')
+                                    |> Array.map (fun p ->
+                                        let eq = p.IndexOf '='
+                                        int (p.Substring(0, eq)), p.Substring(eq + 1))
+                                    |> List.ofArray
+
+                                originOf name, ps)
                           Doubles = meta.DoubleDefs |> List.map (fun name -> name, originOf name)
                           // Transitive for the same reason `BlockingDefs` is: a
                           // name re-exported through this DLL is bound here, and
@@ -3055,6 +3081,7 @@ let loadModuleGraph
     dllDeps |> Seq.toList,
     Set.ofSeq blockingDefs,
     Set.ofSeq waitingDefs,
+    runTimeTypeParams |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq,
     Set.ofSeq doubleDefs,
     constrainedBodies |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq,
     List.ofSeq reExportedTraits,
@@ -3168,7 +3195,7 @@ let private importOrigins (decls: Decl list) : Map<string, string * string> =
 let runFrontend (codegen: bool) (mainFilePath: string) =
     try
         Diagnostics.progress "=== Step 1: Parsing & Module Resolution ==="
-        let parsedModuleDecls, dllDeps, importedBlocking, importedWaiting, importedDoubles, importedBodies, reExportedTraits, docEntries =
+        let parsedModuleDecls, dllDeps, importedBlocking, importedWaiting, importedRunTime, importedDoubles, importedBodies, reExportedTraits, docEntries =
             Timing.phase "parse + module graph" (fun () -> loadModuleGraph mainFilePath)
 
         // A dependency compiled while the graph was loaded has published its
@@ -3266,7 +3293,8 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
                             importedWaiting
                             |> Set.filter stillBound
                             |> Set.map fst
-                            |> Set.union Prelude.prelude.Registry.WaitingNames } }
+                            |> Set.union Prelude.prelude.Registry.WaitingNames
+                        RunTimeTypeParams = importedRunTime } }
 
         let env, typedAst =
             Timing.phase "type check" (fun () -> Inference.checkProgram startEnv letrecifiedDecls)
@@ -3442,6 +3470,7 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         // a call or a type that breaks one is found here, not by the C#
         // compiler.
         Timing.phase "constraint check" (fun () -> ClrConstraints.run env.Registry loopLoweredAst)
+        ClrConstraints.checkUndecided env.Registry loopLoweredAst
 
         // Beside `ColourCheck` and for the same reason: both are about what a
         // body does with the thread it is on, and both want the program as it

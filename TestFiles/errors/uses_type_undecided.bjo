@@ -1,0 +1,19 @@
+;; A call that leaves undecided a type that a .NET method imported
+;; #:uses-type acts on. Bjolang would give it as object; the method acts on
+;; the type, so that is another program than the one written. Found at the
+;; call itself and at a call of a function that passes the type on.
+
+;; EXPECT-ERROR: A type argument of this call of 'Empty' is not decided by anything here
+;; EXPECT-ERROR: The type %a of this call of 'wrapped' is not decided by anything here
+;; EXPECT-ERROR: Give the type
+
+(import (std prelude))
+
+(import/extern
+  (array-empty (: System.Array.Empty (-> (Array %a)) #:uses-type)))
+
+(: (-> (Array %a)))
+(defun (wrapped) (array-empty))
+
+(defun (main args)
+  (+ (array-length (array-empty)) (array-length (wrapped))))

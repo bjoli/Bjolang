@@ -918,6 +918,10 @@ let metadata
                 // reports nothing where it should report a parked thread.
                 let blockingStr = if info.IsBlocking then " #:blocking" else ""
 
+                // Without it, the importer's check of undecided types does
+                // not see that the member acts on its type arguments.
+                let usesTypeStr = if info.UsesType then " #:uses-type" else ""
+
                 // Without it, the importing module sees a span answer where
                 // the declared type says array, and refuses the clause.
                 let copyStr = if info.IsCopy then " #:copy" else ""
@@ -933,7 +937,7 @@ let metadata
                     | TypedAST.ExternSet -> " #:set"
                     | TypedAST.ExternMethod -> ""
 
-                $"(import/extern (%s{info.Alias} (: %s{info.ClrType}.%s{info.MemberName}%s{typeStr}%s{exceptionStr}%s{asyncStr}%s{blockingStr}%s{copyStr}%s{uncancellableStr}%s{cancellableStr}%s{accessorStr})))"
+                $"(import/extern (%s{info.Alias} (: %s{info.ClrType}.%s{info.MemberName}%s{typeStr}%s{exceptionStr}%s{asyncStr}%s{blockingStr}%s{usesTypeStr}%s{copyStr}%s{uncancellableStr}%s{cancellableStr}%s{accessorStr})))"
 
             /// `None` for a name with no binding to read a type off, so
             /// that a name which cannot be described is dropped rather
@@ -1579,6 +1583,31 @@ let metadata
         |> Set.filter (fun n -> Set.contains n exportedNames)
         |> Set.toList
 
+    // The type parameters each exported generic function uses at run time,
+    // for the importer's check of calls that leave them undecided.
+    let runTimeTypeParams =
+        let used = ClrConstraints.runTimeParams env.Registry typedAst
+
+        let rec tyArgsOf (decls: TypedAST.TDecl list) =
+            decls
+            |> List.collect (function
+                | TypedAST.TModule(_, inner, _) -> tyArgsOf inner
+                | TypedAST.TDefun(n, tyArgs, _, _, _, _, _, _, _) -> [ n, tyArgs |> List.map Naming.typeParamKey ]
+                | _ -> [])
+
+        tyArgsOf typedAst
+        |> List.choose (fun (n, keys) ->
+            match Map.tryFind n used with
+            | Some ks when Set.contains n exportedNames ->
+                let entries =
+                    keys
+                    |> List.indexed
+                    |> List.filter (fun (_, k) -> ks.Contains k)
+                    |> List.map (fun (i, k) -> $"%d{i}=%s{k}")
+
+                if entries.IsEmpty then None else Some(n + "|" + String.concat "," entries)
+            | _ -> None)
+
     // Which of the exported names have a suspending copy. The copy's own name
     // is derived by the same mangling on the far side rather than published,
     // so this is a list of written names and nothing else.
@@ -1626,6 +1655,7 @@ let metadata
                 | _ -> [ m ])
       BlockingDefs = blockingDefs
       WaitingDefs = waitingDefs
+      RunTimeTypeParams = runTimeTypeParams
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies
       // The driver's to fill in, like `Deps`: which shared frameworks were

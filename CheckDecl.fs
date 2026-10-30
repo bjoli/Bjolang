@@ -2273,6 +2273,7 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
               Uncancellable = spec.Uncancellable
               Cancellable = spec.Cancellable
               IsBlocking = spec.IsBlocking
+              UsesType = spec.UsesType
               IsCopy = spec.IsCopy }
 
     // One clause's failure costs that clause, as one declaration's does in a

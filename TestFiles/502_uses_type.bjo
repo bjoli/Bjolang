@@ -1,0 +1,16 @@
+;; Calls of functions that act on their type arguments compile when the type
+;; is decided, and an undecided type that nothing acts on is not an error
+;; (see errors/uses_type_undecided.bjo for the ones that are).
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/uses_type.bjo")
+
+(import/extern
+  (array-empty (: System.Array.Empty (-> (Array %a)) #:uses-type)))
+
+(defun (main args)
+  (expect "decided by a signature" (array-length (: (array-empty) (Array double))) 0)
+  (expect "decided across modules" (array-length (: (empty-of) (Array string))) 0)
+  (expect "an undecided type that nothing acts on" (vec-length []) 0)
+  0)

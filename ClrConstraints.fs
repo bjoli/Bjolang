@@ -538,3 +538,173 @@ let run (registry: TraitRegistry) (decls: TDecl list) : unit =
           Params = generics decls |> Map.map (fun _ g -> g.Params) }
 
     runIn registry known decls
+
+// ---------------------------------------------------------------------------
+// Type variables used at run time
+// ---------------------------------------------------------------------------
+//
+// Bjolang code cannot ask what a type variable is, but .NET code can: a
+// generic .NET method can test typeof(T), as bjostat's Columns.As<T> does to
+// check the type of a column, and a cast or a type test uses T. A type that
+// nothing in a program decides is given to C# as `object`. For such a type
+// variable that is another program than the one written:
+// `(count-rows t (col "price") (fun (p) #t))` asked for a column of Object.
+
+/// The keys of the variables of `vars` that `t` names.
+let rec private named (vars: Set<string>) (t: HMType) : string list =
+    match t with
+    | TVar v when vars.Contains(Naming.typeParamKey v) -> [ Naming.typeParamKey v ]
+    | TCon(_, args)
+    | TTuple args -> List.collect (named vars) args
+    | TFun(ps, r, _) -> List.collect (named vars) (r :: ps)
+    | _ -> []
+
+/// Whether `t` holds a type that inference left undecided.
+let rec private undecided (registry: TraitRegistry) (t: HMType) : bool =
+    match Unification.prune registry t with
+    | TMeta _ -> true
+    | TCon(_, args)
+    | TTuple args -> List.exists (undecided registry) args
+    | TFun(ps, r, _) -> List.exists (undecided registry) (r :: ps)
+    | _ -> false
+
+/// The types an expression uses at run time: the type arguments of a call of
+/// a .NET method imported `#:uses-type`, and the type of a cast or a type
+/// test.
+///
+/// The signature of a .NET method does not tell whether it acts on its type
+/// arguments: `Columns.As<T>(Table, string)`, which tests `typeof(T)`, has the
+/// shape of `Panic<T>(string)`, which never returns, and of `Empty<T>()`,
+/// which does the same with `object`. Thus the import says it.
+let private runTimeTypes (e: TypedExpr) : HMType list =
+    match e.Node with
+    | TForeignStaticCall(_, _, _, Some meta)
+    | TDotMethodCall(_, _, _, Some meta) when meta.UsesType -> meta.TypeArguments
+    | TCast(_, t)
+    | TIsInst(_, t) -> [ t ]
+    | _ -> []
+
+/// The type parameters of an imported generic function that it uses at run
+/// time, by their index, when the registry knows them.
+let private importedRunTime (registry: TraitRegistry) (name: string) : (int * string) list =
+    match Map.tryFind name registry.ImportAliases with
+    | Some alias -> Map.tryFind (alias.OriginModule, alias.OriginalName) registry.RunTimeTypeParams |> Option.defaultValue []
+    | None -> []
+
+/// For each generic function of the module: the keys of the type parameters
+/// it uses at run time, itself or through the functions it calls.
+let runTimeParams (registry: TraitRegistry) (decls: TDecl list) : Map<string, Set<string>> =
+    let all = generics decls
+
+    let direct (g: Generic) =
+        let vars = Set.ofList g.Params
+        let own = ResizeArray<string>()
+        let calls = ResizeArray<string * HMType list>()
+
+        match g.Decl with
+        | TDefun(_, _, _, _, _, _, _, body, _) ->
+            let rec walk (e: TypedExpr) =
+                for t in runTimeTypes e do
+                    own.AddRange(named vars (Unification.prune registry t))
+
+                match e.Node with
+                | TIdent(name, tArgs) when not tArgs.IsEmpty ->
+                    if all.ContainsKey name then
+                        calls.Add(name, tArgs |> List.map (Unification.prune registry))
+                    else
+                        for (i, _) in importedRunTime registry name do
+                            match List.tryItem i tArgs with
+                            | Some t -> own.AddRange(named vars (Unification.prune registry t))
+                            | None -> ()
+                | _ -> ()
+
+                TypeVisitor.children e |> List.iter walk
+
+            walk body
+        | _ -> ()
+
+        Set.ofSeq own, List.ofSeq calls
+
+    let directs = all |> Map.map (fun _ g -> direct g)
+
+    let rec fixpoint (known: Map<string, Set<string>>) =
+        let next =
+            all
+            |> Map.map (fun name g ->
+                let own, calls = directs[name]
+                let vars = Set.ofList g.Params
+
+                calls
+                |> List.fold
+                    (fun acc (callee, tArgs) ->
+                        let used = Map.tryFind callee known |> Option.defaultValue Set.empty
+                        let ps = all[callee].Params
+
+                        if ps.Length <> tArgs.Length then
+                            acc
+                        else
+                            List.zip ps tArgs
+                            |> List.filter (fun (p, _) -> used.Contains p)
+                            |> List.collect (fun (_, t) -> named vars t)
+                            |> Set.ofList
+                            |> Set.union acc)
+                    own)
+
+        if next = known then known else fixpoint next
+
+    fixpoint (directs |> Map.map (fun _ (own, _) -> own))
+    |> Map.filter (fun _ used -> not used.IsEmpty)
+
+/// The first type parameter that a call leaves undecided and that the callee
+/// uses at run time: its name, or its number when the name is not known.
+let private undecidedRunTime
+    (registry: TraitRegistry)
+    (own: Map<string, Set<string>>)
+    (paramsOf: Map<string, string list>)
+    (name: string)
+    (tArgs: HMType list)
+    : string option =
+    let used =
+        match Map.tryFind name own, Map.tryFind name paramsOf with
+        | Some keys, Some ps -> ps |> List.indexed |> List.filter (fun (_, p) -> keys.Contains p)
+        | _ -> importedRunTime registry name
+
+    used
+    |> List.tryPick (fun (i, p) ->
+        match List.tryItem i tArgs with
+        | Some t when undecided registry t -> Some p
+        | _ -> None)
+
+/// Reports each call that leaves undecided a type that is used at run time.
+/// A type that inference leaves undecided and that nothing uses at run time is
+/// not an error: `(vec-length [])` is the same program at any type.
+let checkUndecided (registry: TraitRegistry) (decls: TDecl list) : unit =
+    let own = runTimeParams registry decls
+    let paramsOf = generics decls |> Map.map (fun _ g -> g.Params)
+
+    let refuse (r: Range) (what: string) =
+        Diagnostics.recover "constraint" (Some r) () (fun () ->
+            failwithf
+                $"Type Error at %s{formatPos r}: %s{what} is not decided by anything here, and the code uses it at run time: a .NET method imported #:uses-type acts on it, or a cast or a type test uses it. Bjolang would give it as object, which is not the type the program means. Give the type: with (: expression type) on a value that has it, or with a signature.")
+
+    let rec walk (e: TypedExpr) =
+        match e.Node with
+        | TIdent(name, tArgs) when not tArgs.IsEmpty ->
+            match undecidedRunTime registry own paramsOf name tArgs with
+            | Some p -> refuse e.Range $"The type %%%s{p} of this call of '%s{Naming.writtenName name}'"
+            | None -> ()
+        | TForeignStaticCall(_, name, _, Some meta)
+        | TDotMethodCall(_, name, _, Some meta) when meta.UsesType && meta.TypeArguments |> List.exists (undecided registry) ->
+            refuse e.Range $"A type argument of this call of '%s{name}'"
+        | _ -> ()
+
+        TypeVisitor.children e |> List.iter walk
+
+    let rec inDecls (ds: TDecl list) =
+        for d in ds do
+            match d with
+            | TModule(_, inner, _) -> inDecls inner
+            | TImpl(_, _, _, _, _, _, methods, _) -> inDecls methods
+            | _ -> TypeVisitor.mapDecl (fun e -> walk e; e) d |> ignore
+
+    inDecls decls

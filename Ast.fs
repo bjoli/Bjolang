@@ -578,6 +578,9 @@ type ExternImportSpec =
       /// fewer. Declared rather than guessed because only the importer knows —
       /// a .NET method's signature says nothing about whether it waits.
       IsBlocking: bool
+      /// `#:uses-type`: the target acts on its type arguments, as one that
+      /// tests `typeof(T)` does. A call that leaves one undecided is an error.
+      UsesType: bool
       /// `#:copy`: the target answers a span, and the alias answers a new
       /// array with a copy of its elements.
       IsCopy: bool

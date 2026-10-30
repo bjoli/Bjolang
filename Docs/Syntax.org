@@ -1067,6 +1067,16 @@ Reported as a lint warning in a bjoroutine. The fix is to wrap it with ~blocking
     ((Err e) (report e))))
 #+END_SRC
 
+**** ~#:uses-type~ — this call acts on its type arguments
+A generic .NET method can act on its type argument, as one that tests ~typeof(T)~ does. Bjolang gives a type that nothing decided as ~object~, and for such a method that is another program than the one written. ~#:uses-type~ says that the method is one. bjostat's method that gives the cells of a column as ~T~ tests ~typeof(T)~ against the type of the column:
+#+BEGIN_SRC scheme
+(import/extern
+  (cells-of (: Bjostat.CellsOps.Of (-> AnyColumn (Option (Cells %a))) #:uses-type)))
+#+END_SRC
+A call that leaves such a type argument undecided is a type error that asks for the type. The compiler follows the type through Bjolang's functions, also across modules: a generic function that gives its type parameter to such a method, or casts or tests a value to it, uses it at run time too, and a call of it that leaves the type undecided is the same error. Give the type with ~(: expression type)~ or with a signature.
+
+The signature of the method cannot say it: ~Columns.As<T>(Table, string)~, which tests ~typeof(T)~, has the shape of ~Panic<T>(string)~, which never returns, and of ~Empty<T>()~, which does the same with ~object~. A type that nothing decides and nothing acts on is not an error: ~(vec-length [])~ is the same program at any type. ~#:uses-type~ is refused on a property and on ~import/class~.
+
 **** ~#:copy~ — a span result, as a new array
 Declares that a member answers a ~ReadOnlySpan<T>~ or a ~Span<T>~, and that the alias answers a new array with a copy of its elements. The declared result is the array.
 #+BEGIN_SRC scheme

@@ -48,6 +48,10 @@ type ForeignImportOptions =
       /// bjoroutine that reaches it holds a pool thread rather than suspending.
       /// Read by the blocking lint and by nothing else.
       IsBlocking: bool
+      /// `#:uses-type` — the target acts on its type arguments, as one that
+      /// tests `typeof(T)` does, so a call that leaves one undecided is an
+      /// error rather than a call at `object`.
+      UsesType: bool
       /// `#:copy` — the target answers a span, and the alias answers a new
       /// array that holds a copy of its elements.
       ///
@@ -81,7 +85,7 @@ let parseForeignImportClause
 
     let malformed () : 'a =
         failwithf
-            $"Syntax error in %s{formName} at %s{Lexer.formatPos r}: expected (alias (: Fully.Qualified.Target type)), the type optionally followed by #:exceptions (ExceptionType ...), #:async, #:blocking, #:uncancellable, #:copy, #:get or #:set."
+            $"Syntax error in %s{formName} at %s{Lexer.formatPos r}: expected (alias (: Fully.Qualified.Target type)), the type optionally followed by #:exceptions (ExceptionType ...), #:async, #:blocking, #:uses-type, #:uncancellable, #:copy, #:get or #:set."
 
     match s with
     // The alias may be written applied — `(Set %a)` — which is how a generic
@@ -130,6 +134,7 @@ let parseForeignImportClause
             | SAtom { Token = Keyword "uncancellable" } :: tail -> readOptions { opts with Uncancellable = true } tail
             | SAtom { Token = Keyword "cancellable" } :: tail -> readOptions { opts with Cancellable = true } tail
             | SAtom { Token = Keyword "blocking" } :: tail -> readOptions { opts with IsBlocking = true } tail
+            | SAtom { Token = Keyword "uses-type" } :: tail -> readOptions { opts with UsesType = true } tail
             | SAtom { Token = Keyword "copy" } :: tail -> readOptions { opts with IsCopy = true } tail
             | SAtom { Token = Keyword "get" } :: tail -> readOptions { opts with IsGet = true } tail
             | SAtom { Token = Keyword "set" } :: tail -> readOptions { opts with IsSet = true } tail
@@ -143,6 +148,7 @@ let parseForeignImportClause
                   Uncancellable = false
                   Cancellable = false
                   IsBlocking = false
+                  UsesType = false
                   IsCopy = false
                   IsGet = false
                   IsSet = false }
@@ -171,6 +177,10 @@ let private checkAccessorOptions (formName: string) (opts: ForeignImportOptions)
         if opts.IsBlocking then
             failwithf
                 $"Syntax error in %s{formName} at %s{where}: #:blocking says a *call* parks the thread it runs on, and reading or writing a property is not a call. A property that does real work behind an accessor is better imported as the method it is."
+
+        if opts.UsesType then
+            failwithf
+                $"Syntax error in %s{formName} at %s{where}: #:uses-type says a generic method acts on its type arguments, and a property has none."
 
         if opts.IsSet && opts.IsCopy then
             failwithf
@@ -511,6 +521,7 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                   Uncancellable = opts.Uncancellable
                   Cancellable = opts.Cancellable
                   IsBlocking = opts.IsBlocking
+                  UsesType = opts.UsesType
                   IsCopy = opts.IsCopy
                   IsGet = opts.IsGet
                   IsSet = opts.IsSet
@@ -541,6 +552,10 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                 if opts.IsBlocking then
                     failwithf
                         $"Syntax error in import/class at %s{Lexer.formatPos cr}: #:blocking marks a call that parks the thread it runs on, and this form declares a type and its constructor. Put it on the import/extern clause for the method that does the waiting."
+
+                if opts.UsesType then
+                    failwithf
+                        $"Syntax error in import/class at %s{Lexer.formatPos cr}: #:uses-type says a generic method acts on its type arguments. Put it on the import/extern clause of such a method."
 
                 // A constructor answers its object, never a span.
                 if opts.IsCopy then

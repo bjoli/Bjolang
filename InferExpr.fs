@@ -2406,7 +2406,8 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
                     ReturnType = callResultType
                     Await = info.IsAsync
                     AmbientToken = threadsToken
-                    Blocking = info.IsBlocking }
+                    Blocking = info.IsBlocking
+                    UsesType = info.UsesType }
 
         retType,
         { Type = retType

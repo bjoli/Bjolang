@@ -334,6 +334,7 @@ let emptyRegistry : TraitRegistry =
       OpaqueCases = Map.empty
       BlockingNames = blockingBuiltins
       WaitingNames = waitingBuiltins
+      RunTimeTypeParams = Map.empty
       DoubleDefs = Map.empty
       GeneratedCopies = Set.empty
       InferredCopies = Set.empty

@@ -828,6 +828,9 @@ type ClrExternInfo =
       /// suspending the fiber. Changes no emitted code — it is read by the
       /// blocking lint, which reports the ones a bjoroutine can reach.
       IsBlocking: bool
+      /// `#:uses-type`: the member acts on its type arguments. See
+      /// `ClrConstraints.runTimeParams`.
+      UsesType: bool
       /// `#:copy`: the member answers a span, and the alias answers a new
       /// array with a copy of its elements. The span itself never becomes a
       /// Bjolang value, because it can point into memory that a later call
@@ -901,6 +904,9 @@ type DotNetMethodMetadata =
       /// False for a bare `(.Method x)`, which came through no import and so
       /// has nowhere the claim could have been written.
       Blocking: bool
+      /// The call acts on its type arguments, as declared by `#:uses-type` on
+      /// the import it came through. False for a bare `(.Method x)`.
+      UsesType: bool
       /// The type arguments a generic method is called at, in order. Empty for
       /// an ordinary one.
       ///
@@ -1905,6 +1911,11 @@ type TraitRegistry =
       /// initialiser that waits for a thread which uses the module is a
       /// deadlock.
       WaitingNames: Set<string>
+
+      /// The type parameters that an imported generic function uses at run
+      /// time, by index and name, keyed by the function's origin module and
+      /// name. See `ClrConstraints.runTimeParams`.
+      RunTimeTypeParams: Map<string * string, (int * string) list>
 
       /// Written name -> the name its suspending copy is emitted under, for
       /// every `defbjouble` in scope.
