@@ -259,22 +259,38 @@
   (see orderedmap-keys orderedmap->seq))
 
 (:doc orderedmap-merge
-  (summary "Merges two maps, with the second map's values winning on collision.")
+  (summary "Merges two maps or more, with the later map's value winning on collision.")
   (arg m "Base map.")
   (arg other "Map overlaid onto base map.")
-  (returns "A new map containing entries from both maps.")
+  (rest more "More maps, each overlaid onto the ones before it.")
+  (returns "A new map containing entries from all the maps.")
   (see orderedmap-merge-with orderedmap-set-all)
+  (example """
+    (orderedmap-merge a b)            ; b's values win
+    (orderedmap-merge a b c)          ; c's win over b's, b's over a's
+    (apply orderedmap-merge a b maps) ; with maps a list of maps
+    """)
   (reference """
-    Entries from @code{other} are inserted into @code{m} using a transient.
-    If either map is empty, the other map is returned directly.
+    The maps are merged at once, in one of two ways. When the maps other
+    than the biggest hold at least 30% of the entries, and there are at most
+    32 maps, they are walked in key order together and the result is built
+    bottom-up, with no sort. Otherwise the other maps' entries are set into a
+    transient of the biggest. On 1M int keys, 10 maps of 100k took 33 ms
+    against 106 ms by merging two at a time, and a map of 1M with 100 maps
+    of 100 after it 7 ms against 67 ms.
+
+    Empty maps are skipped, and if only one map has entries, it is returned
+    directly. Maps ordered by different comparers are merged two at a time,
+    in the order of the first.
     """))
 
 (:doc orderedmap-merge-with
-  (summary "Merges two maps using a resolving function for colliding keys.")
+  (summary "Merges two maps or more using a resolving function for colliding keys.")
   (arg f "Resolution function called as (f key left right), returning resolved value.")
   (arg m "Left map.")
   (arg other "Right map.")
-  (returns "A new map containing entries from both maps.")
+  (rest more "More maps, to the right of the ones before.")
+  (returns "A new map containing entries from all the maps. The values of a key are combined from left to right, as merging two at a time would.")
   (see orderedmap-merge)
   (example """
     (orderedmap-merge-with (fun (k a b) (+ a b))

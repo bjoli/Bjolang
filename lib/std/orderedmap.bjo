@@ -80,9 +80,9 @@
   (orderedmap-clear      (: OrderedMap.OrderedMapModule.Clear       (-> (OrderedMap %k %v) (OrderedMap %k %v))))
   (orderedmap-keys       (: OrderedMap.OrderedMapModule.Keys        (-> (OrderedMap %k %v) (Seq %k))))
   (orderedmap-values     (: OrderedMap.OrderedMapModule.Values      (-> (OrderedMap %k %v) (Seq %v))))
-  ;; Merging.
-  (orderedmap-merge      (: OrderedMap.OrderedMapModule.Merge       (-> (OrderedMap %k %v) (OrderedMap %k %v) (OrderedMap %k %v))))
-  (orderedmap-merge-with (: OrderedMap.OrderedMapModule.MergeWith   (-> (-> %k %v %v %v) (OrderedMap %k %v) (OrderedMap %k %v) (OrderedMap %k %v))))
+  ;; Merging, of two maps or more. See `orderedmap-merge`.
+  (clr-orderedmap-merge      (: OrderedMap.OrderedMapModule.MergeAll     (-> (OrderedMap %k %v) (OrderedMap %k %v) (Array (OrderedMap %k %v)) (OrderedMap %k %v))))
+  (clr-orderedmap-merge-with (: OrderedMap.OrderedMapModule.MergeWithAll (-> (-> %k %v %v %v) (OrderedMap %k %v) (OrderedMap %k %v) (Array (OrderedMap %k %v)) (OrderedMap %k %v))))
 
   ;; Try ref, answering Option.
   (orderedmap-try-ref (: OrderedMap.OrderedMapModule.TryGetValue (-> (OrderedMap %k %v) %k (out %v) (Option %v))))
@@ -123,6 +123,15 @@
 ;; Alias for contains?.
 (: (-> (OrderedMap %k %v) %k bool))
 (defun (orderedmap-has-key? m key) (orderedmap-contains? m key))
+
+;; Two maps or more, each laid over the ones before it. The C# side merges
+;; them at once: by a k-way walk in key order when the keys are spread over
+;; the maps, and else into a transient of the biggest.
+(: (-> (OrderedMap %k %v) (OrderedMap %k %v) #:rest (OrderedMap %k %v) (OrderedMap %k %v)))
+(defun (orderedmap-merge m other #:rest more) (clr-orderedmap-merge m other more))
+
+(: (-> (-> %k %v %v %v) (OrderedMap %k %v) (OrderedMap %k %v) #:rest (OrderedMap %k %v) (OrderedMap %k %v)))
+(defun (orderedmap-merge-with f m other #:rest more) (clr-orderedmap-merge-with f m other more))
 
 ;; ---------------------------------------------------------------------------
 ;; Builders and transients

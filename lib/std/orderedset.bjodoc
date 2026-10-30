@@ -199,36 +199,60 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc orderedset-union
-  (summary "Returns the union of two sets.")
+  (summary "Returns the union of two sets or more.")
   (arg s "The first set.")
   (arg other "The second set.")
-  (returns "A new set containing elements from both sets.")
+  (rest more "More sets.")
+  (returns "A new set containing the elements of all the sets.")
   (see orderedset-add-all orderedset-intersection)
+  (example """
+    (orderedset-union a b c)
+    (apply orderedset-union a b sets)   ; with sets a list of sets
+    """)
   (reference """
-    Elements from @code{other} are added to @code{s} using a transient.
-    If either set is empty, the other set is returned directly.
+    The sets are joined at once, in one of two ways. When the sets other than
+    the biggest hold at least 30% of the elements, and there are at most 32
+    sets, they are walked in order together and the result is built
+    bottom-up, with no sort. Otherwise the other sets' elements are added to
+    a transient of the biggest. On int keys, 10 sets of 100k took 25 ms
+    against 72 ms by taking the union two at a time.
+
+    Empty sets are skipped, and if only one set has elements, it is returned
+    directly. Sets ordered by different comparers are joined two at a time.
     """))
 
 (:doc orderedset-intersection
-  (summary "Returns the intersection of two sets.")
+  (summary "Returns the intersection of two sets or more.")
   (arg s "The first set.")
   (arg other "The second set.")
-  (returns "A new set containing only elements present in both sets, ordered as s is.")
+  (rest more "More sets.")
+  (returns "A new set containing only elements present in every set, ordered as s is.")
   (see orderedset-union orderedset-difference)
   (reference """
-    Traverses both sorted sets in parallel in O(n + m) time. Assumes both
-    sets share identical ordering.
+    Starts from the smallest set, as the result can only shrink, and keeps
+    what each other set also has: by a lookup in that set for each element
+    kept when they are few, and else by walking both in order. On int keys,
+    10 sets of 100k took 6 ms against 28 ms by intersecting two at a time.
+    Sets ordered by different comparers are intersected two at a time.
     """))
 
 (:doc orderedset-difference
-  (summary "Returns the set difference of two sets.")
+  (summary "Returns the elements of a set that none of the other sets has.")
   (arg s "The base set.")
   (arg other "Elements to exclude.")
-  (returns "A new set containing elements of s that are absent from other.")
+  (rest more "More sets of elements to exclude.")
+  (returns "A new set containing the elements of s that are absent from other and from each set in more.")
   (see orderedset-remove-all orderedset-symmetric-difference)
+  (example """
+    (orderedset-difference s a b)   ; s less a, less b
+    """)
   (reference """
-    Traverses both sorted sets in parallel in O(n + m) time. Assumes both
-    sets share identical ordering.
+    When the other sets hold few elements next to s, they are removed from a
+    transient of s. Otherwise each element of s is kept if no other set has
+    it, found by a lookup or by walking both in order, whichever is less. A
+    set of 1M less 100 sets of 100 took 1.6 ms against 1.2 s by taking the
+    difference two at a time. Sets ordered by different comparers are taken
+    two at a time.
     """))
 
 (:doc orderedset-symmetric-difference

@@ -77,9 +77,10 @@
   (orderedset-clear      (: OrderedSet.OrderedSetModule.Clear       (-> (OrderedSet %a) (OrderedSet %a))))
 
   ;; --- Set algebra ---
-  (orderedset-union                (: OrderedSet.OrderedSetModule.Merge (-> (OrderedSet %a) (OrderedSet %a) (OrderedSet %a))))
-  (orderedset-intersection         (: OrderedSet.OrderedSetModule.Intersect (-> (OrderedSet %a) (OrderedSet %a) (OrderedSet %a))))
-  (orderedset-difference           (: OrderedSet.OrderedSetModule.Except (-> (OrderedSet %a) (OrderedSet %a) (OrderedSet %a))))
+  ;; Of two sets or more. See `orderedset-union`.
+  (clr-orderedset-union            (: OrderedSet.OrderedSetModule.UnionAll     (-> (OrderedSet %a) (OrderedSet %a) (Array (OrderedSet %a)) (OrderedSet %a))))
+  (clr-orderedset-intersection     (: OrderedSet.OrderedSetModule.IntersectAll (-> (OrderedSet %a) (OrderedSet %a) (Array (OrderedSet %a)) (OrderedSet %a))))
+  (clr-orderedset-difference       (: OrderedSet.OrderedSetModule.ExceptAll    (-> (OrderedSet %a) (OrderedSet %a) (Array (OrderedSet %a)) (OrderedSet %a))))
   (orderedset-symmetric-difference (: OrderedSet.OrderedSetModule.SymmetricExcept (-> (OrderedSet %a) (OrderedSet %a) (OrderedSet %a))))
 
   ;; --- Order ---
@@ -110,6 +111,19 @@
   (orderedset-cursor-done?   (: OrderedSet.OrderedSetModule.CursorDone    (-> (OrderedSetCursor %a) bool)))
   (orderedset-cursor-current (: OrderedSet.OrderedSetModule.CursorCurrent (-> (OrderedSetCursor %a) %a)))
   (orderedset-cursor-next    (: OrderedSet.OrderedSetModule.CursorNext    (-> (OrderedSetCursor %a) (OrderedSetCursor %a)))))
+
+;; Two sets or more, taken at once on the C# side. A union walks the sets in
+;; key order together when the keys are spread over them, and else adds to a
+;; transient of the biggest. An intersection starts from the smallest set. A
+;; difference keeps what of the first set no other set has.
+(: (-> (OrderedSet %a) (OrderedSet %a) #:rest (OrderedSet %a) (OrderedSet %a)))
+(defun (orderedset-union s other #:rest more) (clr-orderedset-union s other more))
+
+(: (-> (OrderedSet %a) (OrderedSet %a) #:rest (OrderedSet %a) (OrderedSet %a)))
+(defun (orderedset-intersection s other #:rest more) (clr-orderedset-intersection s other more))
+
+(: (-> (OrderedSet %a) (OrderedSet %a) #:rest (OrderedSet %a) (OrderedSet %a)))
+(defun (orderedset-difference s other #:rest more) (clr-orderedset-difference s other more))
 
 ;; ---------------------------------------------------------------------------
 ;; Builders and transients
