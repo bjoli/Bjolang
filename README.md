@@ -1,6 +1,6 @@
-# Bjolang
+# Bjolang - a language
 
-The website, with the documentation: [bjolang.koketteriet.se](https://bjolang.koketteriet.se) - a language
+The website, with the documentation: [bjolang.koketteriet.se](https://bjolang.koketteriet.se)
 
 I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 98% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense. And, oh, it sucks in at least one way.
 
