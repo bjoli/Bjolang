@@ -832,24 +832,62 @@ public static partial class BjolangRuntime {
     /// `Items[I]` up to `Items[End - 1]` are this leaf's part of the walk.
     /// `NextIndex` is the vec index after them, and `Stop` the vec index the
     /// walk ends before.
+    ///
+    /// # Four fields, two of them pairs of ints
+    ///
+    /// The JIT splits a struct of at most four fields into registers whatever
+    /// it knows of the program. A larger one it splits only where it judges the
+    /// copies hot, and that judgement uses profile data. A Native AOT build has
+    /// none, so with six fields a walk there copied the whole cursor through
+    /// memory at every element: 6 ns an element against 0.7 on the JIT.
+    ///
+    /// So `I` and `End` are one `long`, `_span`, and `NextIndex` and `Stop`
+    /// another, `_rest`. `_span` holds `I` in its low half and `I - End` in its
+    /// high half. The high half is negative while the walk is on the leaf, so
+    /// the walk is done on the leaf exactly when `_span` is not negative: one
+    /// test of the sign, and no shift. `I` is the low half, which a register
+    /// has as it is. A step adds `0x1_0000_0001`: one to each half, with no
+    /// carry, since `I` is below `End` and so far below 2^32.
     /// </summary>
     [NonUserCode]
     public readonly struct VecCursor<T> {
         private readonly T[] _items;
-        private readonly int _i;
-        private readonly int _end;
+        /// `I` in the low half, `I - End` in the high half.
+        private readonly long _span;
         private readonly Collections.RrbList<T> _list;
-        private readonly int _nextIndex;
-        private readonly int _stop;
+        /// `NextIndex` in the low half, `Stop` in the high half.
+        private readonly long _rest;
 
-        private VecCursor(T[] items, int i, int end, Collections.RrbList<T> list, int nextIndex, int stop) {
-            _items = items;
-            _i = i;
-            _end = end;
-            _list = list;
-            _nextIndex = nextIndex;
-            _stop = stop;
+        /// One step: one more to `I`, and one more to `I - End`.
+        private const long Step = 0x1_0000_0001L;
+
+        private int I {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => (int)_span;
         }
+
+        private int NextIndex {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => (int)_rest;
+        }
+
+        private int Stop {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => (int)(_rest >> 32);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static long Pair(int low, int high) => (uint)low | ((long)high << 32);
+
+        private VecCursor(T[] items, long span, Collections.RrbList<T> list, long rest) {
+            _items = items;
+            _span = span;
+            _list = list;
+            _rest = rest;
+        }
+
+        private VecCursor(T[] items, int i, int end, Collections.RrbList<T> list, int nextIndex, int stop)
+            : this(items, Pair(i, i - end), list, Pair(nextIndex, stop)) { }
 
         /// The walk of `count` elements from `from`.
         public static VecCursor<T> Start(Collections.RrbList<T> list, int from, int count) {
@@ -861,12 +899,12 @@ public static partial class BjolangRuntime {
 
         public bool Done {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => _i >= _end;
+            get => _span >= 0;
         }
 
         public T Current {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => _items[_i];
+            get => _items[I];
         }
 
         // The slow path takes and answers values. A method called on the
@@ -874,9 +912,9 @@ public static partial class BjolangRuntime {
         // whole cursor in memory rather than in registers.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public VecCursor<T> Next() {
-            var i = _i + 1;
-            if (i < _end || _nextIndex >= _stop) return new VecCursor<T>(_items, i, _end, _list, _nextIndex, _stop);
-            return AtLeaf(_list, _nextIndex, _stop);
+            var span = _span + Step;
+            if (span < 0 || NextIndex >= Stop) return new VecCursor<T>(_items, span, _list, _rest);
+            return AtLeaf(_list, NextIndex, Stop);
         }
 
         /// The cursor on element `index`, with the part of its leaf the walk
