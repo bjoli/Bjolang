@@ -1,0 +1,14 @@
+;; A module-level value whose initialiser starts a fiber in a scope of its
+;; own, for 501_module_init_scope.bjo.
+
+(import (std prelude))
+(export slow-answer)
+
+;; A scope of the initialiser's own: it waits 50 ms for its fiber. The fiber
+;; runs only code of (std prelude), as a fiber that used this module would
+;; wait for the initialiser (the compiler refuses that).
+(: int)
+(def slow-answer
+  (with-scope
+    (promise-join/sync (bjo (sync (timeout (milliseconds 50)))))
+    42))

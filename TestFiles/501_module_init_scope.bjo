@@ -1,0 +1,35 @@
+;; A module's initialiser runs at the first use of the module, but not in the
+;; scope of the code that uses it first: it has no scope and no cancel token.
+;; Before, a with-deadline that only read a value of the module cancelled the
+;; module's fibers, and the same module worked when it was used first from
+;; somewhere else.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/module_init_scope.bjo")
+(import "inc/module_init_bare.bjo")
+
+(defun (main args)
+  ;; The first use is inside a deadline of 10 ms, shorter than the 50 ms the
+  ;; initialiser's own scope waits. The deadline scope raises when it closes,
+  ;; as its body took too long; but the deadline is not the initialiser's.
+  ;; Before, it cancelled the initialiser, and .NET then refused each later
+  ;; use of the module.
+  (ignore (try (with-deadline (milliseconds 10) slow-answer) #:catch (System.Exception)))
+  (expect "a scope of the initialiser's own is not cancelled by the first user's deadline"
+          (match (try slow-answer #:catch (System.Exception))
+            ((Ok v) v)
+            ((Err e) -1))
+          42)
+  ;; A bjo with no scope of the initialiser's own raises, wherever the
+  ;; module is used first.
+  (expect "a bjo in an initialiser with no scope of its own raises"
+          (match (try (with-scope (ignore started-bare) 0) #:catch (System.Exception))
+            ((Ok _) "no error")
+            ;; .NET wraps it in a TypeInitializationException, whose text
+            ;; holds the message of the exception it wraps.
+            ((Err e) (if (string-contains? (.ToString e) "the initialiser of a module-level value has no scope")
+                         "raised"
+                         (.-Message e))))
+          "raised")
+  0)

@@ -8589,7 +8589,25 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 indent ctx
                 appendLine ctx $"static %s{className}() {{"
 
-                withIndent ctx (fun c ->
+                // The initialisers run with no scope and no cancel token, not
+                // in the environment of the code that uses the module first:
+                // see `BjolangRuntime.EnterModuleInit`. Not a REPL entry: the
+                // REPL initialises an entry at once, on purpose, in the
+                // session's scope, which owns what the entry opens.
+                let detached = not TypeEnv.compilingReplEntry
+                let env = freshName "__moduleEnv"
+
+                if detached then
+                    hiddenDirective ctx
+                    indent ctx
+                    appendLine ctx $"    BjolangRuntime.DynEnv %s{env} = BjolangRuntime.EnterModuleInit();"
+                    indent ctx
+                    appendLine ctx "    try {"
+
+                let bodyCtx (f: CodegenContext -> unit) =
+                    if detached then withIndent ctx (fun c -> withIndent c f) else withIndent ctx f
+
+                bodyCtx (fun c ->
                     for d in valueDefs do
                         match d with
                         | Choice1Of4(defName, defValue, _)
@@ -8643,6 +8661,15 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 
                             indent c
                             appendLine c "}")
+
+                if detached then
+                    hiddenDirective ctx
+                    indent ctx
+                    appendLine ctx "    } finally {"
+                    indent ctx
+                    appendLine ctx $"        BjolangRuntime.LeaveModuleInit(%s{env});"
+                    indent ctx
+                    appendLine ctx "    }"
 
                 indent ctx
                 appendLine ctx "}"

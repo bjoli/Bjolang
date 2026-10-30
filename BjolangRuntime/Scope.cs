@@ -1266,6 +1266,39 @@ public static partial class BjolangRuntime {
         return prev;
     }
 
+    /// Installs the environment a module's initialiser runs in, and hands back
+    /// the environment it displaced, for <see cref="LeaveModuleInit"/>.
+    ///
+    /// A module is initialised by its .NET static constructor, at the first
+    /// use of the module, in the environment of the code that uses it first.
+    /// Without this, a fiber that an initialiser starts would be owned by that
+    /// code's scope: a `with-deadline` that only read a value of the module
+    /// would cancel the module's fiber, and a use with no scope would make the
+    /// spawn raise. Which of these occurs would depend on where the module is
+    /// used first. Thus the initialiser has no scope and no cancel token, and
+    /// a `spawn` or `bjo` in it raises, as it does outside every scope. A
+    /// `with-scope` in the initialiser opens a scope of its own and works. The
+    /// ports and the other parameters are kept. A REPL entry does not call
+    /// this: the REPL initialises an entry at once, in the session's scope.
+    public static DynEnv EnterModuleInit() {
+        var prev = Dyn.Current;
+        Dyn.Current = prev.Detached();
+        _moduleInitDepth++;
+        return prev;
+    }
+
+    /// Ends what <see cref="EnterModuleInit"/> began.
+    public static void LeaveModuleInit(DynEnv saved) {
+        _moduleInitDepth--;
+        Dyn.Current = saved;
+    }
+
+    /// How many module initialisers run on this thread now. A static
+    /// constructor runs on the thread that uses the module first, and one can
+    /// start another, so this is a count. Only the message of
+    /// <see cref="RequireScope"/> reads it.
+    [System.ThreadStatic] private static int _moduleInitDepth;
+
     /// `(scope-canceller sc)` — the thunk that fires this scope's token.
     ///
     /// Handed out separately from the scope for the reason `make-cancel` hands
@@ -1316,7 +1349,9 @@ public static partial class BjolangRuntime {
     /// </summary>
     internal static Scope RequireScope(string what) =>
         Dyn.Current.Scope ?? throw new Bjolang.Runtime.ScopeEnded(
-            $"{what} outside a scope: there is nothing here to own it or wait for it. Open one with (with-scope ...), or capture one with (current-scope) and re-enter it with (in-scope ...).");
+            _moduleInitDepth > 0
+                ? $"{what} outside a scope: the initialiser of a module-level value has no scope, as it runs at the first use of the module, wherever that is. Do this work in main or in a function that main calls, or open a scope in the initialiser with (with-scope ...)."
+                : $"{what} outside a scope: there is nothing here to own it or wait for it. Open one with (with-scope ...), or capture one with (current-scope) and re-enter it with (in-scope ...).");
 
     /// `(current-scope)` — the ambient scope as a value.
     public static Scope currentsubscope() => RequireScope("(current-scope)");
