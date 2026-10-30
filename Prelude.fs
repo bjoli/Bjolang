@@ -277,6 +277,11 @@ let blockingBuiltins : Set<string> =
           "reader->list"
           "reader->vec" ]
 
+/// The builtins that wait for another thread or fiber: a subset of
+/// `blockingBuiltins`. The port reads are not in it, because they wait for
+/// input, not for a thread of this program.
+let waitingBuiltins : Set<string> = Set.ofList [ "sync/blocking"; "scope-close!/blocking" ]
+
 /// Builtins that run the function they are given somewhere else.
 ///
 /// The blocking lint walks into a lambda and attributes what it finds to the
@@ -328,6 +333,7 @@ let emptyRegistry : TraitRegistry =
       OpaqueTypes = Map.empty
       OpaqueCases = Map.empty
       BlockingNames = blockingBuiltins
+      WaitingNames = waitingBuiltins
       DoubleDefs = Map.empty
       GeneratedCopies = Set.empty
       InferredCopies = Set.empty

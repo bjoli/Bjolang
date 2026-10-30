@@ -1,0 +1,33 @@
+;; Fibers in the initialisers of module-level values that the compiler must
+;; not refuse, because they do not deadlock (see
+;; errors/module_init_waits_for_own_fiber.bjo for one that does).
+;;
+;; - The operands of `(bjo (f x))` are evaluated before the fiber starts, so
+;;   a value of the module given as an operand is read by the initialiser.
+;; - A fiber that runs only code of other modules does not need this module.
+;; - A function that starts a fiber which uses the module is correct when
+;;   `main` calls it: the module is initialised by then.
+
+(import (std prelude))
+(import (std simpletest))
+
+(def/mutable base 10)
+
+(: (-> int int))
+(defun (plus-base x) (+ x base))
+
+(: (-> int))
+(defun (compute) (with-scope (promise-join/sync (bjo (plus-base 1)))))
+
+(: int)
+(def operand-read-here (with-scope (promise-join/sync (bjo (+ base 1)))))
+
+(: int)
+(def other-modules-only
+  (with-scope (promise-join/sync (bjo (string-length "four")))))
+
+(defun (main args)
+  (expect "an operand of bjo is read by the initialiser" operand-read-here 11)
+  (expect "a fiber that runs code of other modules" other-modules-only 4)
+  (expect "a fiber that uses the module, started from main" (compute) 11)
+  0)

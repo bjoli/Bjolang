@@ -1,0 +1,22 @@
+;; The same deadlock as module_init_waits_for_own_fiber.bjo, through a
+;; function of the module: the initialiser calls `compute`, and `compute`
+;; both starts the fiber and waits for it. The error names the path.
+
+;; EXPECT-ERROR: the initialiser of 'total' waits for another thread
+;; EXPECT-ERROR: total -> compute -> promise-join/sync
+;; EXPECT-ERROR: It gives 'plus-base'
+;; EXPECT-ERROR: total -> compute
+
+(import (std prelude))
+
+(def/mutable base 10)
+
+(: (-> int int))
+(defun (plus-base x) (+ x base))
+
+(: (-> int))
+(defun (compute) (with-scope (promise-join/sync (bjo (plus-base 1)))))
+
+(def total (compute))
+
+(defun (main args) total)

@@ -1426,6 +1426,9 @@ let mutable cacheLoadedModules = false
 type private DllFacts =
     { /// Exports whose call parks a thread, each with where it was defined.
       Blocking: (string * (string * string)) list
+      /// Exports whose call waits for another thread, each with where it was
+      /// defined. A subset of `Blocking`.
+      Waiting: (string * (string * string)) list
       /// Exports written with `defbjouble`, each with where it was defined.
       Doubles: (string * (string * string)) list
       /// The bodies of exported constrained generics.
@@ -2126,6 +2129,7 @@ let loadModuleGraph
       * string list
       * Set<string * (string * string)>
       * Set<string * (string * string)>
+      * Set<string * (string * string)>
       * Map<string, TypedAST.InlineTemplate>
       * (string * string * string) list
       * Docs.Entry list =
@@ -2157,6 +2161,10 @@ let loadModuleGraph
     /// Each with where it was defined, for the reason `doubleDefs` below is.
     let blockingDefs = System.Collections.Generic.HashSet<string * (string * string)>()
 
+    /// Imported definitions whose call waits for another thread, as
+    /// `blockingDefs` holds them.
+    let waitingDefs = System.Collections.Generic.HashSet<string * (string * string)>()
+
     /// Imported definitions written with `defbjouble`, under the names their
     /// origin published. The suspending copy is an ordinary imported binding
     /// like any other; what this adds is that the two are a pair.
@@ -2179,6 +2187,9 @@ let loadModuleGraph
     let noteFacts (facts: DllFacts) =
         for entry in facts.Blocking do
             blockingDefs.Add entry |> ignore
+
+        for entry in facts.Waiting do
+            waitingDefs.Add entry |> ignore
 
         for entry in facts.Doubles do
             doubleDefs.Add entry |> ignore
@@ -2330,6 +2341,7 @@ let loadModuleGraph
                     // parks a thread is a fact about the body it still reaches.
                     let facts =
                         { Blocking = meta.BlockingDefs |> List.map (fun name -> name, originOf name)
+                          Waiting = meta.WaitingDefs |> List.map (fun name -> name, originOf name)
                           Doubles = meta.DoubleDefs |> List.map (fun name -> name, originOf name)
                           // Transitive for the same reason `BlockingDefs` is: a
                           // name re-exported through this DLL is bound here, and
@@ -3042,6 +3054,7 @@ let loadModuleGraph
     allDecls,
     dllDeps |> Seq.toList,
     Set.ofSeq blockingDefs,
+    Set.ofSeq waitingDefs,
     Set.ofSeq doubleDefs,
     constrainedBodies |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq,
     List.ofSeq reExportedTraits,
@@ -3155,7 +3168,7 @@ let private importOrigins (decls: Decl list) : Map<string, string * string> =
 let runFrontend (codegen: bool) (mainFilePath: string) =
     try
         Diagnostics.progress "=== Step 1: Parsing & Module Resolution ==="
-        let parsedModuleDecls, dllDeps, importedBlocking, importedDoubles, importedBodies, reExportedTraits, docEntries =
+        let parsedModuleDecls, dllDeps, importedBlocking, importedWaiting, importedDoubles, importedBodies, reExportedTraits, docEntries =
             Timing.phase "parse + module graph" (fun () -> loadModuleGraph mainFilePath)
 
         // A dependency compiled while the graph was loaded has published its
@@ -3248,7 +3261,12 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
                             importedBlocking
                             |> Set.filter stillBound
                             |> Set.map fst
-                            |> Set.union Prelude.prelude.Registry.BlockingNames } }
+                            |> Set.union Prelude.prelude.Registry.BlockingNames
+                        WaitingNames =
+                            importedWaiting
+                            |> Set.filter stillBound
+                            |> Set.map fst
+                            |> Set.union Prelude.prelude.Registry.WaitingNames } }
 
         let env, typedAst =
             Timing.phase "type check" (fun () -> Inference.checkProgram startEnv letrecifiedDecls)
@@ -3430,6 +3448,11 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         // will be emitted. This one only warns — parking is legal, and the
         // point is that it is otherwise invisible.
         EffectGraph.lint env.Registry loopLoweredAst
+
+        // A module's initialiser that waits for a thread which uses the module
+        // is a deadlock, because .NET stops the thread until the initialiser
+        // ends. An error, not a warning: the program cannot run.
+        EffectGraph.checkInitialisers env.Registry loopLoweredAst
 
         // After inlining, which can leave a lambda as a local's value, and
         // after the checks, so that their messages describe the program as

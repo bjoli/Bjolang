@@ -1898,6 +1898,14 @@ type TraitRegistry =
       /// which is exactly the call worth reporting.
       BlockingNames: Set<string>
 
+      /// The names whose call waits for another thread: the builtins
+      /// `Prelude.waitingBuiltins` names, and the imported definitions a
+      /// dependency published as reaching one of those. A subset of
+      /// `BlockingNames`. The check of module initialisers uses it: a module's
+      /// initialiser that waits for a thread which uses the module is a
+      /// deadlock.
+      WaitingNames: Set<string>
+
       /// Written name -> the name its suspending copy is emitted under, for
       /// every `defbjouble` in scope.
       ///

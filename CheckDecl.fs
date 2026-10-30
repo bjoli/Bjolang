@@ -1694,7 +1694,8 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
                             env.Registry.DoubleDefs
                             |> Map.filter (fun name _ ->
                                 Set.contains name ownDoubles || not (Set.contains name ownDefinitions))
-                        BlockingNames = Set.difference env.Registry.BlockingNames ownDefinitions } }
+                        BlockingNames = Set.difference env.Registry.BlockingNames ownDefinitions
+                        WaitingNames = Set.difference env.Registry.WaitingNames ownDefinitions } }
 
     // The bare names of this module's traits and their methods, before
     // anything is checked: a signature's where clause, a forward declaration
@@ -2323,7 +2324,8 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                                 acc.Registry.ImportAliases
                                 |> Map.filter (fun name alias -> not (alias.Kind = AliasDef && name = info.Alias))
                             DoubleDefs = Map.remove info.Alias acc.Registry.DoubleDefs
-                            BlockingNames = Set.remove info.Alias acc.Registry.BlockingNames } })
+                            BlockingNames = Set.remove info.Alias acc.Registry.BlockingNames
+                            WaitingNames = Set.remove info.Alias acc.Registry.WaitingNames } })
             { env with Registry = newRegistry }
 
     let withPlaceholders =

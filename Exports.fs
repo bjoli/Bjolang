@@ -1572,6 +1572,13 @@ let metadata
         |> Set.filter (fun n -> Set.contains n exportedNames)
         |> Set.toList
 
+    // The exported names whose call waits for another thread, for the check of
+    // an importer's initialisers.
+    let waitingDefs =
+        EffectGraph.waitingDefinitions env.Registry typedAst
+        |> Set.filter (fun n -> Set.contains n exportedNames)
+        |> Set.toList
+
     // Which of the exported names have a suspending copy. The copy's own name
     // is derived by the same mangling on the far side rather than published,
     // so this is a list of written names and nothing else.
@@ -1618,6 +1625,7 @@ let metadata
                 | Some(_, bare) when bare <> m -> [ m; bare ]
                 | _ -> [ m ])
       BlockingDefs = blockingDefs
+      WaitingDefs = waitingDefs
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies
       // The driver's to fill in, like `Deps`: which shared frameworks were

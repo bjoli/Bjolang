@@ -108,7 +108,9 @@ open System.Text
 /// holds the target's arguments where the head alone does not name it:
 /// `List(int)` rather than `List`. A reader of 23 would file such a template
 /// under a key no call names.
-let currentVersion = 24
+/// 25: `WaitingDefs`, the exports whose call waits for another thread, after
+/// `BlockingDefs`. A reader of 24 would read the list as the `defbjouble`s.
+let currentVersion = 25
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -263,6 +265,10 @@ type Metadata = {
     /// signature — a re-exported facade has a signature to publish and no body
     /// to have analysed.
     BlockingDefs: string list
+    /// Exported definitions whose call waits for another thread or fiber: a
+    /// subset of `BlockingDefs`. An importer's initialiser that calls one while
+    /// a thread uses the importer is a deadlock, which the compiler refuses.
+    WaitingDefs: string list
     /// Exported definitions written with `defbjouble`, and so having a
     /// suspending copy beside them.
     ///
@@ -305,6 +311,7 @@ let empty = {
     HashMacros = []
     MacroTraitMethods = []
     BlockingDefs = []
+    WaitingDefs = []
     DoubleDefs = []
     ConstrainedBodies = []
     Frameworks = []
@@ -515,6 +522,7 @@ let serialize (m: Metadata) : string =
     putList sb putMacro m.HashMacros
     putList sb putStr m.MacroTraitMethods
     putList sb putStr m.BlockingDefs
+    putList sb putStr m.WaitingDefs
     putList sb putStr m.DoubleDefs
     putList sb putConstrainedBody m.ConstrainedBodies
     putList sb putStr m.Frameworks
@@ -551,6 +559,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     let hashMacros = getList getMacro c
     let macroTraitMethods = getList getStr c
     let blockingDefs = getList getStr c
+    let waitingDefs = getList getStr c
     let doubleDefs = getList getStr c
     let constrainedBodies = getList getConstrainedBody c
     let frameworks = getList getStr c
@@ -571,6 +580,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
       HashMacros = hashMacros
       MacroTraitMethods = macroTraitMethods
       BlockingDefs = blockingDefs
+      WaitingDefs = waitingDefs
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies
       Frameworks = frameworks }

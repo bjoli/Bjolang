@@ -615,6 +615,15 @@ The scope is the whole run, so a name defined in it is that definition everywher
 
 A use of a later value inside a lambda that is called before that value is defined is not caught, and reads the type's default value.
 
+*** Initialisers of module-level values and threads
+The initialisers of a module's values run in the static constructor of the module's class. Until the constructor ends, .NET stops each other thread that uses the class, its functions included. Thus an initialiser must not wait for a fiber or a thread that uses the module: the two would wait for each other. The compiler refuses such an initialiser:
+#+BEGIN_SRC scheme
+(defun (plus-base x) (+ x base))
+(def total (with-scope (promise-join/sync (bjo (plus-base 1)))))   ;; refused
+(def other (with-scope (promise-join/sync (bjo (+ base 1)))))      ;; correct
+#+END_SRC
+The second is correct because the operands of ~bjo~ are evaluated before the fiber starts, and ~+~ is not of this module. The check is cautious: it does not know where a lambda runs, so a lambda that uses the module counts if the initialiser also waits for a thread (~promise-join/sync~, the close of a ~with-scope~, ~sync/blocking~, or a function that reaches one). Do such work in ~main~, or in a function that ~main~ calls.
+
 *** Mutable bindings
 ~def/mutable~ declares a binding ~set!~ may write, at module level or inside a function.
 #+BEGIN_SRC scheme

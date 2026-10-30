@@ -1,0 +1,32 @@
+;; A module-level value whose initialiser waits for a fiber that calls a
+;; function of the same module.
+;;
+;; The initialiser runs in the static constructor of the module's class. Until
+;; the constructor ends, .NET stops each other thread that uses the class, so
+;; the fiber cannot call `plus-base`, and the constructor waits for the fiber.
+;; The program would stop with no message; the compiler refuses it.
+
+;; EXPECT-ERROR: the initialiser of 'total' waits for another thread, and gives that thread code of this module
+;; EXPECT-ERROR: It waits in 'promise-join/sync'
+;; EXPECT-ERROR: It gives 'plus-base'
+;; EXPECT-ERROR: Do this work in main
+;; EXPECT-ERROR: the initialiser of 'from-lambda' waits for another thread
+
+(import (std prelude))
+
+(def/mutable base 10)
+
+(: (-> int int))
+(defun (plus-base x) (+ x base))
+
+(def total
+  (with-scope
+    (promise-join/sync (bjo (plus-base 1)))))
+
+;; The same with a lambda: the compiler does not know where a lambda runs,
+;; so a lambda that uses the module counts if the initialiser waits.
+(def from-lambda
+  (with-scope
+    (promise-join/sync (spawn-thunk (fun () (plus-base 2))))))
+
+(defun (main args) (+ total from-lambda))

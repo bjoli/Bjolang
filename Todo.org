@@ -319,15 +319,6 @@ several cores and their ends are events.
   type is compared with ~Task<>~ by identity and the glue's ~Task~ is of
   another load context. The fix: make the generic overloads candidates, and
   a test with the docs' example.
-- *A module-level ~def~ that starts work which reads the module's values
-  hangs.* ~(def _check (revenue/parallel 8))~, where ~revenue/parallel~
-  starts parts (fibers or Tasks) that read the module-level ~t~ and ~rows~,
-  never returns; the same call from ~main~ or a benchmark body works. Most
-  likely the module's values are set in a static constructor, the parts
-  wait for it to finish before they can read ~t~, and it waits for the
-  parts. Not confirmed in the C#. The fix: refuse a module-level ~def~
-  whose value starts a fiber or a thread, or set the module's values before
-  such code runs.
 - *The docs of ~spawn/thread~ may be out of date.* They say that for work
   that uses a core ~Task.Run~ "buys nothing at all: it is the same pool".
   Fibers now run on ~Bjoml.Workers~, a pump for each core, so a fiber that

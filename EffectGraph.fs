@@ -269,13 +269,24 @@ let rec private collectNodes (registry: TraitRegistry) (decl: TDecl) : Node list
     | TModule(_, decls, _) -> decls |> List.collect (collectNodes registry)
     | _ -> []
 
-let private analyse (registry: TraitRegistry) (decls: TDecl list) : Node list * Map<string, Witness> =
-    let nodes = decls |> List.collect (collectNodes registry)
+/// Whether calling this name waits for another thread or fiber, as
+/// `isBlocking` asks whether it parks the thread.
+let private isWaiting (registry: TraitRegistry) (name: string) =
+    let name = Naming.writtenName name
 
+    Set.contains name registry.WaitingNames
+    || (match Map.tryFind name registry.ImportAliases with
+        | Some alias -> Set.contains alias.OriginalName registry.WaitingNames
+        | None -> false)
+
+/// The fixpoint over the nodes, from the leaves that `leafCounts` accepts.
+/// The leaves of a scan are the blocking ones; `leafCounts` selects a subset
+/// of them, such as the ones that wait for another thread.
+let private reach (leafCounts: string -> bool) (nodes: Node list) : Map<string, Witness> =
     let mutable blocked =
         nodes
         |> List.choose (fun n ->
-            match n.Scan.Leaves with
+            match n.Scan.Leaves |> List.filter (fun (leaf, _, _) -> leafCounts leaf) with
             | (leaf, where, culprit) :: _ ->
                 Some(
                     n.Name,
@@ -307,7 +318,11 @@ let private analyse (registry: TraitRegistry) (decls: TDecl list) : Node list * 
                     changed <- true
                 | None -> ()
 
-    nodes, blocked
+    blocked
+
+let private analyse (registry: TraitRegistry) (decls: TDecl list) : Node list * Map<string, Witness> =
+    let nodes = decls |> List.collect (collectNodes registry)
+    nodes, reach (fun _ -> true) nodes
 
 /// Every top-level definition in this module whose call can park a thread.
 ///
@@ -318,6 +333,63 @@ let private analyse (registry: TraitRegistry) (decls: TDecl list) : Node list * 
 let blockingDefinitions (registry: TraitRegistry) (decls: TDecl list) : Set<string> =
     let _, blocked = analyse registry decls
     blocked |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+
+/// The waits for another thread that `expr` does itself when it runs, and the
+/// names it calls. Unlike `scanBody`, this does not go into a lambda or into
+/// the part of a `(bjo ...)` that runs in the fiber: a lambda can be kept and
+/// run later, as the body of a `deftest` is, and a fiber that waits does not
+/// make its caller wait. Thus a wait in a lambda that is run at once is not
+/// found; the check this is for refuses programs, so it must not guess.
+let private scanWaits (registry: TraitRegistry) (expr: TypedExpr) : Scan =
+    let leaves = ResizeArray<string * Range * Culprit>()
+    let calls = ResizeArray<string * Range>()
+
+    let rec walk (e: TypedExpr) =
+        match e.Node with
+        | TLambda _ -> ()
+        | TBjo({ Node = TApply(callee, args, kwArgs) }, _) ->
+            match callee.Node with
+            | TIdent _ -> ()
+            | _ -> walk callee
+
+            args |> List.iter walk
+            kwArgs |> List.iter (snd >> walk)
+        | TBjo _ -> ()
+        | TApply({ Node = TIdent(name, _) }, args, kwArgs) ->
+            if isWaiting registry name then
+                leaves.Add(name, e.Range, NoLambda)
+            else
+                calls.Add(name, e.Range)
+
+            args |> List.iter walk
+            kwArgs |> List.iter (snd >> walk)
+        | _ -> TypeVisitor.children e |> List.iter walk
+
+    walk expr
+
+    { Leaves = List.ofSeq leaves
+      Calls = List.ofSeq calls }
+
+/// Every top-level function, as a node whose leaves are the waits for another
+/// thread that its call does (see `scanWaits`).
+let rec private waitNodes (registry: TraitRegistry) (decl: TDecl) : Node list =
+    match decl with
+    | TDefun(name, _, _, kwDefaults, _, _, effect, body, _) ->
+        let scans = scanWaits registry body :: (kwDefaults |> List.map (fun (_, _, e) -> scanWaits registry e))
+
+        [ { Name = name
+            Effect = effect
+            Scan =
+              { Leaves = scans |> List.collect (fun s -> s.Leaves)
+                Calls = scans |> List.collect (fun s -> s.Calls) } } ]
+    | TModule(_, decls, _) -> decls |> List.collect (waitNodes registry)
+    | _ -> []
+
+/// Every top-level definition in this module whose call can wait for another
+/// thread or fiber. Published for the importer's check of its initialisers.
+let waitingDefinitions (registry: TraitRegistry) (decls: TDecl list) : Set<string> =
+    let nodes = decls |> List.collect (waitNodes registry)
+    reach (fun _ -> true) nodes |> Map.toSeq |> Seq.map fst |> Set.ofSeq
 
 // ---------------------------------------------------------------------------
 // Call-site selection
@@ -951,3 +1023,163 @@ let lint (registry: TraitRegistry) (decls: TDecl list) : unit =
 
                 Diagnostics.warn message
             | None -> ()
+
+// ---------------------------------------------------------------------------
+// Module initialisers
+// ---------------------------------------------------------------------------
+
+/// Where code of a module can go to another thread: the first name of the
+/// module found inside a lambda or a `(bjo ...)`, or a function of the module
+/// given as a value, and the path of the module's functions to it.
+type private Handoff =
+    { Name: string
+      Where: Range
+      Path: string list }
+
+/// The first handoff in `expr` itself, and the functions of the module that
+/// `expr` calls outside of a lambda.
+///
+/// `(bjo (f x))` runs `f` in the fiber, but `x` is evaluated by the caller
+/// before the fiber starts, as `Codegen` emits it. Thus only the callee of
+/// such a call is code given to the fiber.
+let private scanHandoff (own: Set<string>) (ownFuns: Set<string>) (expr: TypedExpr) =
+    let mutable found: (string * Range) option = None
+    let calls = ResizeArray<string>()
+
+    let rec walk (inClosure: bool) (e: TypedExpr) =
+        if found.IsNone then
+            match e.Node with
+            | TBjo({ Node = TApply(callee, args, kwArgs) }, _) ->
+                match callee.Node with
+                | TIdent _ -> walk true callee
+                | _ -> walk inClosure callee
+
+                args |> List.iter (walk inClosure)
+                kwArgs |> List.iter (snd >> walk inClosure)
+            | TLambda(_, body)
+            | TBjo(body, _) -> walk true body
+            | TIdent(name, _) when Set.contains name own ->
+                if inClosure || Set.contains name ownFuns then
+                    found <- Some(name, e.Range)
+            | TApply({ Node = TIdent(name, _) }, args, kwArgs) when not inClosure && Set.contains name ownFuns ->
+                calls.Add name
+                args |> List.iter (walk false)
+                kwArgs |> List.iter (snd >> walk false)
+            | _ -> TypeVisitor.children e |> List.iter (walk inClosure)
+
+    walk false expr
+    found, List.ofSeq calls
+
+/// Refuses a module-level definition whose initialiser waits for another
+/// thread or fiber while it gives code of the same module to one.
+///
+/// A module's definitions are initialised in the static constructor of its
+/// C# class. While the constructor runs, .NET stops every other thread that
+/// uses the class, its functions included, until the constructor ends. If
+/// the constructor waits for such a thread, both wait for ever: `with-scope`
+/// waits for its fibers by design, so a scope does not prevent it. A fiber
+/// stopped by .NET is not at a wait of Bjolang, so the fiber trace cannot show
+/// it either; the compiler refuses the program instead.
+///
+/// The two halves are not equally cautious. The initialiser waits only where
+/// it calls a wait itself, outside of lambdas (see `scanWaits`): the body of a
+/// `deftest` is a lambda that is kept, and its waits are not the
+/// initialiser's. But the compiler does not know whether a lambda runs on
+/// another thread, so any lambda that uses the module is code given to one.
+let checkInitialisers (registry: TraitRegistry) (decls: TDecl list) : unit =
+    let nodes = decls |> List.collect (waitNodes registry)
+    let waiting = reach (fun _ -> true) nodes
+
+    let rec inModule (inner: TDecl list) =
+        let ownFuns =
+            inner
+            |> List.choose (function
+                | TDefun(n, _, _, _, _, _, _, _, _) -> Some n
+                | _ -> None)
+            |> Set.ofList
+
+        let own =
+            inner
+            |> List.collect (function
+                | TDef(n, _, _, _)
+                | TDefMutable(n, _, _, _) -> [ n ]
+                | TDefTuple(ns, _, _, _) -> ns
+                | TDefPattern(_, _, binders, _) -> List.map fst binders
+                | _ -> [])
+            |> Set.ofList
+            |> Set.union ownFuns
+
+        let scans =
+            inner
+            |> List.choose (function
+                | TDefun(n, _, _, kwDefaults, _, _, _, body, _) ->
+                    let parts = body :: (kwDefaults |> List.map (fun (_, _, e) -> e))
+                    Some(n, parts |> List.map (scanHandoff own ownFuns))
+                | _ -> None)
+
+        // The functions of the module that hand code to another thread,
+        // directly or through the functions they call.
+        let mutable handing =
+            scans
+            |> List.choose (fun (n, parts) ->
+                parts
+                |> List.tryPick fst
+                |> Option.map (fun (name, where) -> n, { Name = name; Where = where; Path = [ n ] }))
+            |> Map.ofList
+
+        let mutable changed = true
+
+        while changed do
+            changed <- false
+
+            for (n, parts) in scans do
+                if not (Map.containsKey n handing) then
+                    let reached =
+                        parts |> List.collect snd |> List.tryPick (fun callee -> Map.tryFind callee handing)
+
+                    match reached with
+                    | Some h ->
+                        handing <- Map.add n { h with Path = n :: h.Path } handing
+                        changed <- true
+                    | None -> ()
+
+        let check (names: string list) (value: TypedExpr) (r: Range) =
+            let shown = String.concat ", " names
+            let scan = scanWaits registry value
+
+            let wait =
+                match scan.Leaves with
+                | (leaf, where, _) :: _ -> Some(leaf, where, [ shown; leaf ])
+                | [] ->
+                    scan.Calls
+                    |> List.tryPick (fun (callee, _) -> Map.tryFind callee waiting)
+                    |> Option.map (fun w -> w.Leaf, w.Where, shown :: w.Path)
+
+            let handoff =
+                match scanHandoff own ownFuns value with
+                | Some(name, where), _ -> Some { Name = name; Where = where; Path = [ shown ] }
+                | None, calls ->
+                    calls
+                    |> List.tryPick (fun callee -> Map.tryFind callee handing)
+                    |> Option.map (fun h -> { h with Path = shown :: h.Path })
+
+            match wait, handoff with
+            | Some(leaf, waitsAt, waitPath), Some h ->
+                let waitChain = String.concat " -> " waitPath
+                let handChain = String.concat " -> " h.Path
+
+                Diagnostics.recover "module initialisation" (Some r) () (fun () ->
+                    failwithf
+                        $"Error at %s{formatPos r}: the initialiser of '%s{shown}' waits for another thread, and gives that thread code of this module.\n  It waits in '%s{leaf}' at %s{formatPos waitsAt}: %s{waitChain}\n  It gives '%s{h.Name}' at %s{formatPos h.Where}: %s{handChain}\n  A module's definitions are initialised in the module's .NET static constructor. Until the constructor ends, .NET stops each other thread that uses the module. Thus the initialiser waits for the thread and the thread waits for the initialiser, and the program stops. Do this work in main, or in a function that main calls.")
+            | _ -> ()
+
+        for d in inner do
+            match d with
+            | TModule(_, ds, _) -> inModule ds
+            | TDef(n, value, _, r)
+            | TDefMutable(n, value, _, r) -> check [ n ] value r
+            | TDefTuple(ns, value, _, r) -> check ns value r
+            | TDefPattern(_, value, binders, r) -> check (List.map fst binders) value r
+            | _ -> ()
+
+    inModule decls

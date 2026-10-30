@@ -994,6 +994,10 @@ This automatic tracking isn't completely free. Keeping track of cancellation add
 - Two fibers waiting on each other is still a deadlock — now a scope that never closes. When ~with-deadline~ stops the body, its ~Cancelled~ says where every other fiber of the scope was waiting. ~BJO_FIBER_TRACE=1~ shows where every fiber waits, on SIGQUIT and through ~(fiber-trace)~, and reports a deadlock by itself; see [[file:Debugging.org][Debugging.org]], "Where fibers wait".
 - A release that blocks blocks the close, for the same reason.
 
+*** What the compiler refuses
+
+A scope waits for its fibers, and that is a deadlock in one place: the initialiser of a module-level value. The initialiser runs in the module's .NET static constructor, and .NET stops each other thread that uses the module until the constructor ends. A fiber that calls a function of the module then waits for the initialiser, and the initialiser waits for the fiber. The fiber is stopped by .NET, not at a wait of Bjolang, so the fiber trace cannot show it. Thus the compiler refuses an initialiser that waits for a thread and gives code of its module to one; see "Initialisers of module-level values and threads" in [[file:Syntax.org][Syntax.org]].
+
 *** The forms
 
 - ~(with-scope body ...)~ : a scope with no cancel thunk. The one to put around resources.
