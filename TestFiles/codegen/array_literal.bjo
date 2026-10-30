@@ -13,10 +13,20 @@
 (defun (three) #[1 2 3])
 
 ;; The element type comes from the signature, an empty literal having nothing
-;; to say about it.
-;; EXPECT-CS: return new BjoString\.Utf8String\[\] \{  \};
+;; to say about it. An empty array has no elements to change, so it is the
+;; shared `Array.Empty`, and allocates nothing.
+;; EXPECT-CS: return System\.Array\.Empty<BjoString\.Utf8String>\(\);
 (: (-> (Array string)))
 (defun (none) #[])
+
+;; So a call with no rest arguments allocates nothing for them either.
+(: (-> int #:rest int int))
+(defun (plus-all first #:rest more)
+  (+ first (array-length more)))
+
+;; EXPECT-CS: plussuball\(1, System\.Array\.Empty<int>\(\)\)
+(: (-> int))
+(defun (no-rest) (plus-all 1))
 
 ;; An element needing statements of its own is hoisted ahead of the literal,
 ;; exactly as an argument to any other call is: C# has no way to write a `let`

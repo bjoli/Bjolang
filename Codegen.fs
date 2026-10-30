@@ -3666,16 +3666,23 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             append ctx ")"
 
     // `#[1 2 3]`, and the rest array a call packs its trailing arguments into.
+    //
+    // An empty one is `Array.Empty`, which allocates nothing: it has no
+    // elements to change, so one shared array does. A call with no rest
+    // arguments then costs what a call without a rest parameter does.
     | TArrayMake items ->
         let elementTypeStr =
             match expr.Type with
             | TCon ("Array", [ elemT ]) -> typeToString elemT
             | _ -> "object"
-        append ctx $"new %s{elementTypeStr}[] {{ "
-        for i, emit in List.indexed (prepareOperands ctx items) do
-            if i > 0 then append ctx ", "
-            emit ctx
-        append ctx " }"
+        if List.isEmpty items then
+            append ctx $"System.Array.Empty<%s{elementTypeStr}>()"
+        else
+            append ctx $"new %s{elementTypeStr}[] {{ "
+            for i, emit in List.indexed (prepareOperands ctx items) do
+                if i > 0 then append ctx ", "
+                emit ctx
+            append ctx " }"
 
     // `[1 2 3]`, as the array it already is.
     //
