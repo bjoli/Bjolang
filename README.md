@@ -10,7 +10,7 @@ Bjolang is a scheme-inspired eager language with local HM type inference that bj
 
 Inlineable traits gives us brand-like types that enable things like functors and do-notation.
 
-It has concurrentML, which means we shake break the shackles of goroutines and go channels, in favour of the amazing expressiveness of bjoroutines and bjo channels.
+It has concurrentML, which is like go’s CSP channels, but better in every way.
 
 ## Greatest hits
 
@@ -24,7 +24,7 @@ It is fully cooperative, and yields control when calling other bjoroutines or wh
 
 But here is the part that is actually worth waking up for. “within” is a deadline, written once, as an ordinary function — and it works on every event there will ever be, because an event is a **value** and not a statement.
 
-```scheme
+```bjolang
 (: within (-> Duration (Event %a) (Event (Option %a))))
 (defun (within d ev)
   (choose (wrap ev #(Some &))
@@ -86,7 +86,7 @@ The whole program, report included, is in Examples/events_are_values.bjo.
 
 Bjolang supports hygienic macros based on implicit-renaming. Together with syntax-match, thing brings about 90% of what syntax-case brings: An anaphoric if could look like this, for example:
 
-```scheme
+```bjolang
 (def/macro (aif form compare inject)
   (syntax-match form
     ((_ test true-branch false-branch)
@@ -151,8 +151,6 @@ and it is extensible.
 ## Examples
 
 Have a look inte the Examples directory. Or at the code in [the json module](lib/text/json.bjo). It is a decently fast json reader, that reaches a between 150 and 380MB/s on jsonbench. That code is written to be fast, and while a lot of it is idiomatic, there are some things that are not really pretty. For the love of god, do not look at the json-coder.bjo. That is half AI-translated from guile code I wrote a long time ago, and AI does NOT write good bjolang code.
-
-## Further code
 
 ### Do notation
 
