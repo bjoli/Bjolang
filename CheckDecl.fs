@@ -919,6 +919,7 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
     // beside this, and `#:sync` is read off the declaration list by
     // `checkDeclGroup` before any body is looked at.
     | DMacro _
+    | DClauseMacro _
     | DPatternMacro _
     | DHashMacro _
     | DSyncOnly _
@@ -1624,6 +1625,7 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
                 | DDefMutable(n, _, _)
                 | DDefun(n, _, _, _, _)
                 | DMacro(n, _)
+                | DClauseMacro(n, _)
                 | DPatternMacro(n, _) -> [ n ]
                 | DDefTuple(ns, _, _) -> ns
                 | DDefPattern(pattern, _, _) -> patternBinders pattern

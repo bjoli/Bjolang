@@ -128,6 +128,7 @@ let rec warn (topLevel: bool) (decls: Decl list) : unit =
             | DReExport(names, _) -> names
             | DAlias(_, original, _) -> [ original ]
             | DMacro(name, _)
+            | DClauseMacro(name, _)
             | DPatternMacro(name, _)
             | DHashMacro(name, _) -> [ name ]
             | _ -> [])

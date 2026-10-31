@@ -319,6 +319,7 @@ let declKindName (d: Decl) : string =
     | DInlineImpl _ -> "an inline method body"
     | DMacro _ -> "a macro"
     | DPatternMacro _ -> "a pattern macro"
+    | DClauseMacro _ -> "a clause macro"
     | DHashMacro _ -> "a hash macro"
     | DSyncOnly _ -> "a #:sync marker"
     | DNoInline _ -> "a #:no-inline marker"
@@ -1149,7 +1150,7 @@ and parseDeclForms (s: SExpr) : Decl list =
     // `#name` — a spelling no source identifier can have, so the prelude's
     // `#map` sits beside its `map`. `DHashMacro` carries the bare name, which
     // is what the table is keyed on and what an import modifier prefixes.
-    | SList(SAtom { Token = Symbol(("def/macro" | "def/pattern" | "def/hash-extend") as definer) } :: SList(head, _) :: body,
+    | SList(SAtom { Token = Symbol(("def/macro" | "def/pattern" | "def/loop-clause" | "def/hash-extend") as definer) } :: SList(head, _) :: body,
             r) ->
         let name, argNames =
             match head with
@@ -1178,6 +1179,7 @@ and parseDeclForms (s: SExpr) : Decl list =
             match definer with
             | "def/macro" -> name, DMacro(name, r)
             | "def/pattern" -> name, DPatternMacro(name, r)
+            | "def/loop-clause" -> name, DClauseMacro(name, r)
             | _ -> "#" + name, DHashMacro(name, r)
 
         [ DSignature(transformerName, macroTransformerType r, [], r)
@@ -1190,7 +1192,7 @@ and parseDeclForms (s: SExpr) : Decl list =
           )
           marker ]
 
-    | SList(SAtom { Token = Symbol(("def/macro" | "def/pattern" | "def/hash-extend") as definer) } :: _, r) ->
+    | SList(SAtom { Token = Symbol(("def/macro" | "def/pattern" | "def/loop-clause" | "def/hash-extend") as definer) } :: _, r) ->
         failwithf
             $"Invalid %s{definer} at %s{Lexer.formatPos r}. Expected (%s{definer} (name form inject compare) body...)"
 

@@ -118,6 +118,13 @@ let private patternTable = Dictionary<string, MacroBinding>()
 /// spelling is its own namespace — `#map` beside the prelude's `map`.
 let private hashTable = Dictionary<string, MacroBinding>()
 
+/// The same, for `def/loop-clause`: a macro for the sequence of a loop's `:for`.
+///
+/// A table of its own because it is asked in one position only, the head of
+/// the sequence in `(:for pat (head ...))`, and is called with the whole
+/// clause rather than the sequence form: what it returns is loop clauses.
+let private clauseTable = Dictionary<string, MacroBinding>()
+
 /// Macros defined by the module currently being parsed.
 ///
 /// They are not in `table` and cannot be: the transformer would have to be
@@ -126,10 +133,12 @@ let private hashTable = Dictionary<string, MacroBinding>()
 let mutable private localMacros: Set<string> = Set.empty
 let mutable private localPatternMacros: Set<string> = Set.empty
 let mutable private localHashMacros: Set<string> = Set.empty
+let mutable private localClauseMacros: Set<string> = Set.empty
 
 let setLocalMacros (names: Set<string>) = localMacros <- names
 let setLocalPatternMacros (names: Set<string>) = localPatternMacros <- names
 let setLocalHashMacros (names: Set<string>) = localHashMacros <- names
+let setLocalClauseMacros (names: Set<string>) = localClauseMacros <- names
 
 /// Registers the macros an imported assembly publishes.
 ///
@@ -141,6 +150,8 @@ let register (binding: MacroBinding) = table[binding.Name] <- binding
 let registerPattern (binding: MacroBinding) = patternTable[binding.Name] <- binding
 
 let registerHash (binding: MacroBinding) = hashTable[binding.Name] <- binding
+
+let registerClause (binding: MacroBinding) = clauseTable[binding.Name] <- binding
 
 /// A second spelling of a macro already in the table.
 ///
@@ -165,6 +176,8 @@ let aliasPattern (newName: string) (oldName: string) : bool = aliasIn patternTab
 
 let aliasHash (newName: string) (oldName: string) : bool = aliasIn hashTable newName oldName
 
+let aliasClause (newName: string) (oldName: string) : bool = aliasIn clauseTable newName oldName
+
 /// Whether a head symbol names a macro — including one a macro wrote.
 ///
 /// The mark is stripped for the same reason `expand` strips it: a recursive
@@ -178,6 +191,12 @@ let isMacro (name: string) =
 let isPatternMacro (name: string) =
     let known (n: string) =
         patternTable.ContainsKey n || Set.contains n localPatternMacros
+
+    known name || known (Hygiene.headName name)
+
+let isClauseMacro (name: string) =
+    let known (n: string) =
+        clauseTable.ContainsKey n || Set.contains n localClauseMacros
 
     known name || known (Hygiene.headName name)
 
@@ -264,6 +283,8 @@ let rec private ofSExpr (s: SExpr) : Syn =
 ///   * `#t` and `#f` are the boolean literals, and any other `#name` is the
 ///     head of a hash macro call, looked up by that spelling where the
 ///     expansion lands.
+///   * `=>` separates a loop's clauses from its result, and a `:subloop`
+///     form's from its export: a loop a template writes needs it as written.
 ///
 /// Neither a head symbol nor a pattern's constructor needs an entry here:
 /// `Hygiene.headName` strips the mark wherever one is dispatched on, which is
@@ -271,6 +292,7 @@ let rec private ofSExpr (s: SExpr) : Syn =
 /// call to the macro module's own helper keeps the mark that resolves it.
 let private neverRenamed (name: string) =
     not (AlphaRename.isRenamable name)
+    || name = "=>"
     || name.StartsWith "#"
     || name.StartsWith "&"
 
@@ -579,11 +601,23 @@ let expandHash (form: SExpr) : Expansion option =
         expandIn hashTable localHashMacros "hash macro" form (head.Substring 1) callSite
     | _ -> None
 
+/// Expands one loop clause `(:for pat (head ...))`, if `head` is a clause
+/// macro. Installed as `Hygiene.clauseExpandHook`. The transformer gets the
+/// whole clause, so that it sees the pattern it is to bind; the call site is
+/// the clause's range. A head a template wrote arrives renamed, and
+/// `expandIn` strips the mark.
+let expandClause (form: SExpr) : Expansion option =
+    match form with
+    | SList([ SAtom { Token = Keyword "for" }; _; SList(SAtom { Token = Symbol head } :: _, _) ], callSite) ->
+        expandIn clauseTable localClauseMacros "clause macro" form head callSite
+    | _ -> None
+
 /// Installs the expander into the parser. Idempotent.
 let install () =
     Hygiene.expandHook <- expand
     Hygiene.patternExpandHook <- expandPattern
     Hygiene.hashExpandHook <- expandHash
+    Hygiene.clauseExpandHook <- expandClause
     Hygiene.isMacroName <- isMacro
 
 // ---------------------------------------------------------------------------
@@ -606,27 +640,33 @@ type State =
     { Bindings: (string * MacroBinding) list
       PatternBindings: (string * MacroBinding) list
       HashBindings: (string * MacroBinding) list
+      ClauseBindings: (string * MacroBinding) list
       Local: Set<string>
       LocalPatterns: Set<string>
       LocalHashes: Set<string>
+      LocalClauses: Set<string>
       Expansions: ((string * Range) * int) list }
 
 let emptyState =
     { Bindings = []
       PatternBindings = []
       HashBindings = []
+      ClauseBindings = []
       Local = Set.empty
       LocalPatterns = Set.empty
       LocalHashes = Set.empty
+      LocalClauses = Set.empty
       Expansions = [] }
 
 let snapshot () : State =
     { Bindings = table |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
       PatternBindings = patternTable |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
       HashBindings = hashTable |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
+      ClauseBindings = clauseTable |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
       Local = localMacros
       LocalPatterns = localPatternMacros
       LocalHashes = localHashMacros
+      LocalClauses = localClauseMacros
       Expansions = expansions |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq }
 
 let restore (state: State) : unit =
@@ -645,9 +685,15 @@ let restore (state: State) : unit =
     for (name, binding) in state.HashBindings do
         hashTable[name] <- binding
 
+    clauseTable.Clear()
+
+    for (name, binding) in state.ClauseBindings do
+        clauseTable[name] <- binding
+
     localMacros <- state.Local
     localPatternMacros <- state.LocalPatterns
     localHashMacros <- state.LocalHashes
+    localClauseMacros <- state.LocalClauses
     expansions.Clear()
 
     for (site, count) in state.Expansions do

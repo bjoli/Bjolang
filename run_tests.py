@@ -256,7 +256,7 @@ def fixture_modules():
     modules = []
     for f in sorted(INC_DIR.glob("*.bjo")):
         content = f.read_text()
-        if re.search(r'^[ \t]*\((export|def/macro|def/pattern|def/hash-extend)', content, re.MULTILINE):
+        if re.search(r'^[ \t]*\((export|def/macro|def/pattern|def/loop-clause|def/hash-extend)', content, re.MULTILINE):
             modules.append(f)
     return modules
 

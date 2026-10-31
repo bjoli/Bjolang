@@ -188,7 +188,12 @@ expansions of the same macro never share one. A renamed identifier is then an
 1. If the expansion binds it, ordinary scoping does the work.
 2. Otherwise, if the macro's module exports it, it resolves to that module —
    spelled ~Module_Module::name~, which no local at the call site can shadow.
-   This is what lets a template call a helper of its own module.
+   This is what lets a template call a helper of its own module. A value the
+   macro's module imports from a module other than the prelude counts as well,
+   when one of its templates names it: the module publishes it as an implicit
+   export, under the module that defines it, so the template reaches the
+   binding its own module sees, also where that module is not imported and
+   where the using module binds the name itself.
 3. Otherwise the rename is stripped: a prelude binding, a data constructor, or a
    special form. Rule three is what lets a template write ~let~, ~if~ and ~->~
    unchanged. A *called* trait method is the one exception: it is resolved
@@ -474,6 +479,100 @@ exhaustiveness check: one that rewrites to a covering set covers, and one that
 rewrites to a ~(:view ...)~ covers nothing. A counterexample is printed in
 expanded form, and the macro's name cannot be recovered from it.
 
+** ~def/loop-clause~: a macro for a loop's ~:for~
+
+~def/loop-clause~ writes the same three declarations into a fourth table. Its
+transformer runs when the name heads the *sequence* of a loop's ~:for~, and it
+is handed the whole clause, pattern included. What it answers is loop clauses:
+one, or several in a ~(begin ...)~.
+
+#+BEGIN_SRC scheme
+;; In a module of its own:
+(def/loop-clause (in-evens form inject compare)
+  (syntax-match form
+    ((_ pat (_ seq))
+     #'(begin
+         (:for e ,seq)
+         (:with k 0 (+ k 1))
+         (:when (= (% k 2) 0))
+         (:let ,pat e)))
+    (bad (syntax-error bad "(:for x (in-evens seq))"))))
+
+;; Anywhere that imports it:
+{listing x (:for x (in-evens [10 11 12 13]))}             ;; (10 12)
+{listing (Tuple x i) (:for x (in-evens v)) (:for i (range 0 100))}
+#+END_SRC
+
+*Where the clauses go.* The clauses up to the first one that is not a driver
+(~:for~, ~:with~, ~:while~, ~:until~) stay where the macro clause was, and are
+drivers of the same group as the drivers beside it: they step together. The
+clauses from the first non-driver on are moved, in the order written, to the
+end of that driver group, after the user's own drivers. So in the second loop
+above, ~i~ steps once for each element of ~v~, the skipped ones too, and the
+macro's ~:when~ runs after both drivers have stepped: ~((10 0) (12 2) ...)~.
+Written where the macro stood, the ~:when~ would have ended the group, and
+~(:for i ...)~ would have opened a nested level.
+
+Several macros in one group: each one's drivers stay where it stands, and the
+moved clauses follow each other in the order the macros were written, before
+the first clause of the user's that is not a driver. A macro may answer a
+clause macro; what that one answers is placed the same way inside the first's
+clauses.
+
+*They may not open a level.* A driver or a bare ~(:subloop)~ among the moved
+clauses is refused, naming the macro: it would put the user's clauses in a
+level of the macro's, in which the drivers beside the macro no longer step
+once for each of its elements. A ~(:subloop ...)~ form is allowed, since it
+runs to its end where it stands. A walk that needs two levels, such as words
+of a bitmap and the bits of each, is one driver whose step does the inner
+part.
+
+*The prologue.* A driver's start cannot read another driver of its group, so
+a macro cannot start a driver from a ~:with~ of its own. ~(:prologue pat
+expr)~, which only a clause macro answers, binds before the group starts, once
+each time the level is entered, and the drivers' starts and everything after
+them read it. At the loop's outermost level it is a binding before the loop;
+in a nested level, a ~:let~ just before the group, in the level above; for a
+~(:subloop ...)~ form, a ~:let~ just before the form. A macro's prologue
+clauses, and those of the macros it answers, keep the order they were written
+in.
+
+#+BEGIN_SRC scheme
+(def/loop-clause (in-countdown form inject compare)
+  (syntax-match form
+    ((_ pat (_ seq))
+     #'(begin
+         (:prologue s ,seq)
+         (:prologue n (vec-length s))
+         (:for e s)
+         (:with left n (- left 1))
+         (:let ,pat (Tuple left e))))))
+
+{listing p (:for p (in-countdown [7 8 9]))}   ;; ((3 7) (2 8) (1 9))
+#+END_SRC
+
+*Steps that are not elements.* A macro whose driver has to pass over
+something, such as the empty windows of a bitmap, does it in the driver's
+update, so that the driver steps once for each element and nothing else: a
+driver beside it steps with the elements. A ~:when~ among the moved clauses
+skips a step of every driver in the group, which is right only when every
+step is an element, as in ~in-evens~.
+
+*Names.* Hygiene is as for any macro: everything the template binds is
+renamed, freshly for each expansion, so two uses in one loop do not collide and
+the user cannot read or rebind the macro's variables. The names in the
+caller's pattern come through as written, and follow the rules of the clause
+that binds them: a ~:let~'s may be shadowed later, a driver's are carried and
+may not be bound again in the loop. A free name in the template, such as a
+helper the macro's module exports, resolves by rules 2 and 3, as in an
+expression macro: it reaches the macro module's binding whatever the loop's
+module binds by that name.
+
+Two consequences of the moved clauses being after the group: a ~:while~ or
+~:until~ beside the macro cannot test the caller's pattern, which is bound
+after it, and the macro's ~:when~ skips a step of every driver in the group,
+which is what keeps zipped columns on one row.
+
 ** ~def/hash-extend~: a macro spelled ~#name(...)~
 
 #+BEGIN_SRC scheme
@@ -557,9 +656,9 @@ Colour.
 - *Appear anywhere but where a whole expression or declaration is expected.* Not
   as a ~loop~ clause, a ~match~ arm, a ~let~ binding or a type: those are read
   structurally by their parent and never reach the point where a head symbol is
-  dispatched. A *pattern* is the exception, and has a table of its own:
-  ~def/pattern~ above. A *hash macro* is narrower still: expression position
-  only.
+  dispatched. Two positions are the exception, each with a table of its own: a
+  *pattern* (~def/pattern~ above), and the sequence of a loop's ~:for~
+  (~def/loop-clause~). A *hash macro* is narrower still: expression position only.
 - *Shadow a special form.* Expansion is tried after every special form has
   failed to match, so a macro named ~if~ is never reached.
 - *Be shadowed by a local binding at a call.* A macro is chosen by its name,
@@ -590,7 +689,8 @@ which is what the hundred-level expansion limit is for.
 |--------------------------------+---------------------------------|
 | the ~Syntax~ type              | ~BjolangRuntime/Syntax.cs~      |
 | ~#'~, ~,@~ and the desugaring  | ~Lexer.fs~, ~Pipeline.read~, ~Parser.desugarSyntaxQuote~ |
-| ~def/macro~ and ~def/pattern~  | ~Parser.parseDeclForms~         |
+| ~def/macro~, ~def/pattern~, ~def/loop-clause~ | ~DeclParser.parseDeclForms~ |
+| where clause macros' clauses go | ~LoopDesugar.placeClauseMacros~ |
 | marshalling, renaming, the call | ~Macro.fs~                     |
 | the ~BjolangMacros~ metadata   | ~Program.fs~, ~Pipeline.parseMacroEntries~ |
 | ~begin~ splicing               | ~Parser.parseDeclForms~, ~Parser.parseBody~ |
@@ -599,6 +699,7 @@ which is what the hundred-level expansion limit is for.
 | worked examples                | ~TestFiles/inc/macros.bjo~, ~TestFiles/091_macros.bjo~ |
 | ~#"..."~ across a macro        | ~TestFiles/inc/interp_macros.bjo~, ~TestFiles/099_interpolation.bjo~ |
 | pattern macros                 | ~TestFiles/inc/pattern_macros.bjo~, ~TestFiles/201_pattern_macros.bjo~ |
+| clause macros                  | ~TestFiles/inc/clause_macros.bjo~, ~TestFiles/505_clause_macros.bjo~ |
 | hash macros                    | ~TestFiles/inc/hashmacros.bjo~, ~TestFiles/215_hash_macros.bjo~, the prelude's ~#fl~ ~#fr~ ~#ch~ ~#map~ |
 | splicing examples              | ~TestFiles/122_splice.bjo~, ~TestFiles/123_begin.bjo~ |
     | ~TestFiles/122_splice.bjo~, ~TestFiles/123_begin.bjo~ |

@@ -1,0 +1,108 @@
+(import (std prelude))
+(import (std simpletest))
+(import "inc/clause_macros.bjo")
+
+;; Clause macros: a :for whose sequence is a def/loop-clause macro becomes the
+;; clauses the macro answers. Its drivers stay where it stands and step with
+;; the drivers beside it; its other clauses go, in order, to the end of the
+;; driver group.
+
+;; A function of the user's named as the macro's helper is: the template's
+;; call still reaches the macro module's.
+(: (-> int int))
+(defun (twice n) (* 100 n))
+
+;; The same for a helper the macro's module imports from a third module,
+;; which this module does not import.
+(: (-> int int))
+(defun (thrice n) (* 1000 n))
+
+(defun (main)
+  (def v [10 11 12 13 14 15])
+
+  (expect "the elements at even positions"
+          {listing x (:for x (in-evens v))}
+          (list 10 12 14))
+
+  ;; A driver after the macro clause steps once for each element of v, the
+  ;; skipped ones too: the macro's :when is after both drivers.
+  (expect "a driver beside it steps with it"
+          {listing (Tuple x i) (:for x (in-evens v)) (:for i (range 0 100))}
+          (list (Tuple 10 0) (Tuple 12 2) (Tuple 14 4)))
+
+  ;; The driver beside it ends the level too, as any zipped driver does.
+  (expect "the shorter driver ends the level"
+          {listing (Tuple x i) (:for x (in-evens v)) (:for i (range 0 3))}
+          (list (Tuple 10 0) (Tuple 12 2)))
+
+  ;; Two macros in one group: each one's :when tests its own counter.
+  (expect "two macros side by side"
+          {listing (Tuple a b) (:for a (in-evens v)) (:for b (in-evens [1 2 3 4 5 6]))}
+          (list (Tuple 10 1) (Tuple 12 3) (Tuple 14 5)))
+
+  ;; The macro's names are its own. The user has an `e` and a `k` too.
+  (expect "the user's e and k are not the macro's"
+          (loop (:for x (in-evens v))
+                (:with k 1000 (+ k 1))
+                (:let e (+ x k))
+                (:acc out (listing e))
+                => out)
+          (list 1010 1014 1018))
+
+  (expect "a macro that answers another"
+          {listing x (:for x (in-evens-squared [1 2 3 4 5]))}
+          (list 1 9 25))
+
+  (expect "the user's pattern, and the helper of the macro's module"
+          {listing (Tuple i i2 x) (:for (Tuple i i2 x) (in-indexed [7 8 9]))}
+          (list (Tuple 0 0 7) (Tuple 1 2 8) (Tuple 2 4 9)))
+
+  ;; In a nested level and in a :subloop form.
+  (expect "in a nested level"
+          {listing (Tuple r x) (:for r (range 0 2)) (:subloop) (:for x (in-evens v)) (:when (> x r))}
+          (list (Tuple 0 10) (Tuple 0 12) (Tuple 0 14) (Tuple 1 10) (Tuple 1 12) (Tuple 1 14)))
+  (expect "in a :subloop form"
+          (loop (:for row [[1 2 3] [4 5 6 7]])
+                (:subloop (:for x (in-evens row)) (:acc s (summing x)))
+                (:acc out (listing s))
+                => out)
+          (list 4 10))
+  (expect "with :abandon at its level"
+          (loop (:for row [[1 2 3] [4 5 6 7]])
+                (:subloop)
+                (:for x (in-evens row))
+                (:abandon (> x 4))
+                (:acc out (listing x))
+                => out)
+          (list 1 3 4))
+  (expect "the module's own twice" (twice 1) 100)
+  (expect "the module's own thrice" (thrice 1) 1000)
+
+  ;; A prologue binds what a driver starts from: before the loop at the
+  ;; outermost level, once for each entry of a nested level, and before a
+  ;; :subloop form.
+  (expect "a prologue before the loop"
+          {listing p (:for p (in-countdown [7 8 9]))}
+          (list (Tuple 3 7) (Tuple 2 8) (Tuple 1 9)))
+  (expect "a prologue for each entry of a nested level"
+          {listing (Tuple r left) (:for row [[1 2] [3 4 5]]) (:let r (vec-length row)) (:for (Tuple left _) (in-countdown row))}
+          (list (Tuple 2 2) (Tuple 2 1) (Tuple 3 3) (Tuple 3 2) (Tuple 3 1)))
+  (expect "a prologue before a :subloop form"
+          (loop (:for row [[1 2] [3 4 5]])
+                (:subloop (:for (Tuple left x) (in-countdown row)) (:acc s (summing (* left x))))
+                (:acc out (listing s))
+                => out)
+          (list 4 22))
+  (expect "two prologues in one group"
+          {listing (Tuple a b) (:for (Tuple a _) (in-countdown [1 2 3])) (:for (Tuple b _) (in-countdown [4 5 6 7]))}
+          (list (Tuple 3 4) (Tuple 2 3) (Tuple 1 2)))
+  (expect "a named loop with a prologue"
+          (loop lp (:for (Tuple left x) (in-countdown [5 6])) (:acc out (listing (* left x))) => out)
+          (list 10 6))
+  (expect "a helper the macro's module imports"
+          {listing x (:for x (in-tripled [1 2]))}
+          (list 3 6))
+  (expect "a template's => and Tuple"
+          {listing p (:for p (in-running [1 2 3]))}
+          (list (Tuple 0 0 6) (Tuple 1 1 5) (Tuple 2 3 3)))
+  0)

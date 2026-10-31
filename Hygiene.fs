@@ -42,6 +42,11 @@ let mutable patternExpandHook: SExpr -> Expansion option = fun _ -> None
 /// quoted list refuses one.
 let mutable hashExpandHook: SExpr -> Expansion option = fun _ -> None
 
+/// Expands one loop clause `(:for pat (head ...))` whose `head` is a clause
+/// macro (`def/loop-clause`), handed the whole clause. Installed by `Macro.install`;
+/// `LoopDesugar` asks it for each `:for` before the clauses are read.
+let mutable clauseExpandHook: SExpr -> Expansion option = fun _ -> None
+
 /// Whether a head symbol names a macro, without running the transformer.
 ///
 /// `parseBody` needs to know before it decides how to read a form, because a

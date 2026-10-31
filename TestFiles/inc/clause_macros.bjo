@@ -1,0 +1,90 @@
+;; Clause macros for 505_clause_macros.bjo.
+(import (std syntax-match))
+(import "clause_helpers.bjo")
+
+(export twice)
+
+;; A helper the templates call. A template's call to it reaches it whatever
+;; the loop's module binds by that name.
+(: (-> int int))
+(defun (twice n) (* 2 n))
+
+;; The elements at even positions. `e` and `k` are the macro's own: the user
+;; can have an `e` and a `k` of their own in the same loop.
+(def/loop-clause (in-evens form inject compare)
+  (syntax-match form
+    ((_ pat (_ seq))
+     #'(begin
+         (:for e ,seq)
+         (:with k 0 (+ k 1))
+         (:when (= (% k 2) 0))
+         (:let ,pat e)))
+    (bad (syntax-error bad "(:for x (in-evens seq))"))))
+
+;; A clause macro that answers another.
+(def/loop-clause (in-evens-squared form inject compare)
+  (syntax-match form
+    ((_ pat (_ seq))
+     #'(begin
+         (:for y (in-evens ,seq))
+         (:let ,pat (* y y))))
+    (bad (syntax-error bad "(:for x (in-evens-squared seq))"))))
+
+;; Each element with its position, and the position doubled by the helper.
+(def/loop-clause (in-indexed form inject compare)
+  (syntax-match form
+    ((_ pat (_ seq))
+     #'(begin
+         (:for e ,seq)
+         (:with i 0 (+ i 1))
+         (:let ,pat (Tuple i (twice i) e))))
+    (bad (syntax-error bad "(:for (Tuple i i2 x) (in-indexed seq))"))))
+
+;; A macro that would open a level: refused at its use.
+(def/loop-clause (in-nested form inject compare)
+  (syntax-match form
+    ((_ pat (_ rows))
+     #'(begin
+         (:for row ,rows)
+         (:let n (length row))
+         (:for ,pat row)))
+    (bad (syntax-error bad "(:for x (in-nested rows))"))))
+
+;; Each element with how many are left from it on. The count starts from the
+;; length, which the prologue binds: a driver's start cannot read another
+;; driver of its group, and a prologue runs before the group starts.
+(def/loop-clause (in-countdown form inject compare)
+  (syntax-match form
+    ((_ pat (_ seq))
+     #'(begin
+         (:prologue s ,seq)
+         (:prologue n (vec-length s))
+         (:for e s)
+         (:with left n (- left 1))
+         (:let ,pat (Tuple left e))))
+    (bad (syntax-error bad "(:for (Tuple left x) (in-countdown vec))"))))
+
+;; Each element with its position, the sum before it and the sum after it.
+;; The template writes a loop with `=>` and a :with over a Tuple: neither
+;; `=>` nor the `Tuple` of a loop pattern is a name, so both are read as
+;; written.
+(def/loop-clause (in-running form inject compare)
+  (syntax-match form
+    ((_ pat (_ seq))
+     #'(begin
+         (:prologue s ,seq)
+         (:prologue total (loop (:for x s) (:acc t (summing x)) => t))
+         (:for e s)
+         (:with (Tuple before k) (Tuple 0 0) (Tuple (+ before e) (+ k 1)))
+         (:let ,pat (Tuple k before (- total before)))))
+    (bad (syntax-error bad "(:for (Tuple k before after) (in-running vec))"))))
+
+;; Each element tripled by a helper this module imports, and the user's
+;; module does not.
+(def/loop-clause (in-tripled form inject compare)
+  (syntax-match form
+    ((_ pat (_ seq))
+     #'(begin
+         (:for e ,seq)
+         (:let ,pat (thrice e))))
+    (bad (syntax-error bad "(:for x (in-tripled seq))"))))

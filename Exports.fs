@@ -103,9 +103,51 @@ let metadata
     (declaredMacros: string list)
     (declaredPatternMacros: string list)
     (declaredHashMacros: string list)
+    (declaredClauseMacros: string list)
     (inputFilePath: string)
     (isLibrary: bool)
     : ModuleMetadata.Metadata =
+    // The values this module imports and its macros' templates name: a
+    // template's name is a quoted symbol in the transformer's code. Each is
+    // published as an implicit export below, with the module that defines it,
+    // so rule 2 resolves the name to that binding wherever a macro of this
+    // module is used: also where its module is not imported, and where the
+    // using module binds the name itself. The prelude's are left to rule 3:
+    // every module sees the prelude.
+    let macroScope =
+        let publishesMacros =
+            not (
+                declaredMacros.IsEmpty
+                && declaredPatternMacros.IsEmpty
+                && declaredHashMacros.IsEmpty
+                && declaredClauseMacros.IsEmpty
+            )
+
+        if not (isLibrary && publishesMacros) then
+            []
+        else
+            let written =
+                typedAst
+                |> List.fold
+                    (TypeVisitor.foldDecl (fun acc (e: TypedAST.TypedExpr) ->
+                        match e.Node with
+                        | TypedAST.TSymbol s -> Set.add s acc
+                        | _ -> acc))
+                    Set.empty
+
+            let prelude = Naming.moduleKeyOfPath (System.IO.Path.Combine(Paths.libDir, "std", "prelude.bjo"))
+
+            env.Registry.ImportAliases
+            |> Map.toList
+            |> List.choose (fun (visible, alias) ->
+                if alias.Kind = Bjolang.Ast.AliasDef
+                   && alias.OriginModule <> ""
+                   && alias.OriginModule <> prelude
+                   && Set.contains visible written then
+                    Some(visible, alias.OriginModule, alias.OriginalName)
+                else
+                    None)
+
     let exports =
         typedAst
         |> TypedAST.collectDecls (function
@@ -485,6 +527,7 @@ let metadata
          |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) -> Map.toList tpl.Qualification))
         @ (constrainedBodiesToExport
            |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) -> Map.toList tpl.Qualification))
+        @ (macroScope |> List.map (fun (visible, home, original) -> visible, Naming.qualifiedBinding home original))
         |> List.filter (fun (n, _) ->
             not (List.contains n exports) && not (Set.contains n exportedTraitMethods))
         |> List.choose (fun (n, qualified) ->
@@ -1544,6 +1587,14 @@ let metadata
     let macros = publish declaredMacros
     let patternMacros = publish declaredPatternMacros
     let hashMacros = publish declaredHashMacros
+    let clauseMacros = publish declaredClauseMacros
+
+    if isLibrary && not declaredClauseMacros.IsEmpty then
+        Diagnostics.progress (
+            sprintf
+                "Publishing %d clause macro(s): %s"
+                declaredClauseMacros.Length
+                (String.concat ", " declaredClauseMacros))
 
     if isLibrary && not declaredMacros.IsEmpty then
         Diagnostics.progress (
@@ -1642,8 +1693,9 @@ let metadata
       Macros = macros
       PatternMacros = patternMacros
       HashMacros = hashMacros
+      ClauseMacros = clauseMacros
       MacroTraitMethods =
-        if macros.IsEmpty && patternMacros.IsEmpty && hashMacros.IsEmpty then []
+        if macros.IsEmpty && patternMacros.IsEmpty && hashMacros.IsEmpty && clauseMacros.IsEmpty then []
         // The key a method is bound under, and the bare name a template
         // writes.
         else

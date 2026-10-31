@@ -294,6 +294,172 @@ let private guardLoop (guards: (string * string * string * string) list) (loop: 
 // n-ary arithmetic and comparison
 // ---------------------------------------------------------------------------
 
+/// The `Resolve` of each clause-macro expansion read for the loop being
+/// desugared. A clause macro's clauses are parsed one by one in `buildGroup`,
+/// not as one form, so each expansion's rules for its free names (a helper
+/// its module exports, a trait method) are applied to the finished loop
+/// instead. `desugarLoop` saves the list and puts it back, since a clause's
+/// expression may hold another loop.
+let mutable private clauseResolves: (Set<string> -> Expr -> Expr) list = []
+
+/// Whether a clause is a driver: one that belongs to a level's driver group.
+let private isDriverForm (s: SExpr) =
+    match s with
+    | SList(SAtom { Token = Keyword("for" | "with" | "while" | "until") } :: _, _) -> true
+    | _ -> false
+
+/// The clauses of one expansion: a `(begin ...)` spliced, nested ones too, and
+/// any other form as one clause. A `begin` a template wrote arrives renamed.
+let rec private spliceBegin (s: SExpr) : SExpr list =
+    match s with
+    | SList(SAtom { Token = Symbol h } :: inner, _) when headName h = "begin" -> List.collect spliceBegin inner
+    | other -> [ other ]
+
+/// Whether a clause is `(:prologue pat expr)`, which only a clause macro answers.
+let private isPrologueForm (s: SExpr) =
+    match s with
+    | SList(SAtom { Token = Keyword "prologue" } :: _, _) -> true
+    | _ -> false
+
+/// A prologue binding as the `:let` that makes it, where a `:let` runs once for
+/// each entry of the level after it.
+let private prologueAsLet (s: SExpr) : SExpr =
+    match s with
+    | SList([ SAtom({ Token = Keyword "prologue" } as k); pat; value ], r) ->
+        SList([ SAtom { k with Token = Keyword "let" }; pat; value ], r)
+    | other ->
+        failwithf $"Invalid (:prologue ...) at %s{Lexer.formatPos (getRange other)}. Expected: (:prologue pattern expr)"
+
+/// Expands the clause macros of a clause list, and places what they give.
+///
+/// A `(:for pat (head ...))` whose `head` is a clause macro (`def/loop-clause`) is
+/// replaced by the clauses its transformer answers, expanded again until none
+/// is left. Those clauses are not all put where the macro clause was: its
+/// drivers are, so that they step with the drivers beside it, and the clauses
+/// from its first non-driver on are moved, as written, to the end of the
+/// driver group the macro clause stands in. A non-driver at the macro's place
+/// would end the group, and a driver written after the macro clause would open
+/// a level instead of stepping with it. Several macros' moved clauses follow
+/// each other in the order the macros were written, before the clause that
+/// ends the group.
+///
+/// So the moved clauses may not open a level themselves: a driver or a bare
+/// `(:subloop)` among them would put the user's clauses after it in a level of
+/// the macro's, in which the drivers beside the macro no longer step once per
+/// element. A `(:subloop ...)` form is allowed: it runs where it stands.
+///
+/// A macro's `(:prologue pat expr)` clauses, in the order written, nested
+/// macros' included, bind what its drivers start from: they run once each time
+/// the level is entered, before the drivers of the group start. For a group
+/// with a clause before it, that is a `:let` just before the group's first
+/// driver, which the level above runs once for each entry. For the first group
+/// of the list there is no clause before it, and its prologue is answered
+/// instead: `desugarLoop` binds it before the loop, and a `(:subloop ...)`
+/// form's is put before the form.
+///
+/// `inExpansion` is for a macro's own clauses: every prologue among them, the
+/// nested macros' too, is answered as the macro's, wherever it stands.
+let rec private placeClauses (inExpansion: bool) (forms: SExpr list) : SExpr list * SExpr list =
+    let out = ResizeArray<SExpr>()
+    let moved = ResizeArray<SExpr>()
+    // The prologue of the group being read, and where in `out` its first
+    // driver is.
+    let groupPrologue = ResizeArray<SExpr>()
+    let mutable groupStart: int option = None
+    // What is answered: the first group's prologue, or, in an expansion, all.
+    let answered = ResizeArray<SExpr>()
+
+    let startGroup () =
+        if groupStart.IsNone then
+            groupStart <- Some out.Count
+
+    let flush () =
+        out.AddRange moved
+        moved.Clear()
+
+        if groupPrologue.Count > 0 then
+            match groupStart with
+            | Some k when k > 0 -> out.InsertRange(k, groupPrologue |> Seq.map prologueAsLet |> List.ofSeq)
+            | _ -> answered.AddRange groupPrologue
+
+            groupPrologue.Clear()
+
+        groupStart <- None
+
+    let macroName (form: SExpr) =
+        match form with
+        | SList([ _; _; SList(SAtom { Token = Symbol h } :: _, _) ], _) -> headName h
+        | _ -> "?"
+
+    for form in forms do
+        let expansion =
+            match form with
+            | SList([ SAtom { Token = Keyword "for" }; _; SList(SAtom { Token = Symbol _ } :: _, _) ], _) -> clauseExpandHook form
+            | _ -> None
+
+        match expansion with
+        | Some expansion ->
+            clauseResolves <- expansion.Resolve :: clauseResolves
+            let prologue, placed = placeClauses true (spliceBegin expansion.Form)
+            let drivers = placed |> List.takeWhile isDriverForm
+            let rest = placed |> List.skipWhile isDriverForm
+
+            let opensLevel =
+                rest
+                |> List.tryFind (fun c ->
+                    isDriverForm c
+                    || (match c with
+                        | SList([ SAtom { Token = Keyword "subloop" } ], _) -> true
+                        | _ -> false))
+
+            match opensLevel with
+            | Some _ ->
+                failwithf
+                    $"The clause macro '%s{macroName form}' at %s{Lexer.formatPos (getRange form)} answers a driver or a (:subloop) after a clause that is not a driver. That would open a level of the loop inside the level the macro stands in, and the drivers beside the macro would no longer step once for each of its elements. A clause macro's drivers come first, and its other clauses after them; for a nested loop, answer a (:subloop ...) form."
+            | None -> ()
+
+            startGroup ()
+
+            if inExpansion then answered.AddRange prologue else groupPrologue.AddRange prologue
+
+            out.AddRange drivers
+            moved.AddRange rest
+        | None ->
+            match form with
+            | f when isPrologueForm f ->
+                if not inExpansion then
+                    failwithf
+                        $"(:prologue ...) at %s{Lexer.formatPos (getRange f)} is for a clause macro to answer: it binds what the macro's drivers start from. In a loop, write a (:let ...) before the drivers, or a def before the loop."
+
+                prologueAsLet f |> ignore
+                answered.Add f
+            // A `(:subloop ...)` form's clauses are placed here, so that the
+            // prologue of its first group can go before it, where it runs once
+            // for each run of the form.
+            | SList((SAtom { Token = Keyword "subloop" } as head) :: (_ :: _ as inner), r) ->
+                flush ()
+                let isArrow = function SAtom { Token = Symbol "=>" } -> true | _ -> false
+
+                let clauses, export =
+                    match inner |> List.tryFindIndex isArrow with
+                    | Some i -> List.take i inner, List.skip i inner
+                    | None -> inner, []
+
+                let prologue, placed = placeClauses false clauses
+
+                if inExpansion then answered.AddRange prologue else out.AddRange(prologue |> List.map prologueAsLet)
+
+                out.Add(SList(head :: placed @ export, r))
+            | f when isDriverForm f ->
+                startGroup ()
+                out.Add f
+            | f ->
+                flush ()
+                out.Add f
+
+    flush ()
+    List.ofSeq answered, List.ofSeq out
+
 /// Whether `(loop ...)` is the loop facility rather than a call to something
 /// named `loop`.
 ///
@@ -399,6 +565,7 @@ and private parseLoopClause (s: SExpr) : LoopClause =
         if clauseForms.IsEmpty then
             failwithf $"Invalid (:subloop ...) at %s{Lexer.formatPos r}: it has no clauses."
 
+        // Placed already, with the loop's clauses: see `placeClauses`.
         let clauses = expandUntilCancelled clauseForms |> List.map parseLoopClause
 
         if clauses |> List.exists (function LFinal _ -> true | _ -> false) then
@@ -479,8 +646,10 @@ and private bindLoopPattern (pat: SExpr) (value: Expr) (body: Expr) (r: Range) :
     | SAtom { Token = Symbol "_" } -> ELet(Gensym.fresh "unused", false, [], None, value, body, r)
     | SAtom { Token = Symbol name } -> ELet(name, false, [], None, value, body, r)
 
-    | SList(SAtom { Token = Symbol "Tuple" } :: parts, pr) when
-        not parts.IsEmpty
+    // `Tuple` a template wrote arrives renamed, and is dispatched on.
+    | SList(SAtom { Token = Symbol t } :: parts, pr) when
+        headName t = "Tuple"
+        && not parts.IsEmpty
         && parts
            |> List.forall (function
                | SAtom { Token = Symbol _ }
@@ -877,9 +1046,57 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
     if clauseForms.IsEmpty then
         failwithf $"Invalid loop at %s{Lexer.formatPos r}: it has no clauses"
 
-    let clauseForms = expandUntilCancelled clauseForms
+    // Clause macros first, so that what they answer is read as written clauses
+    // are, `:until-cancelled` included. Their `Resolve`s, those of the
+    // `:subloop` forms' macros too, are this loop's; a loop in a clause's
+    // expression is desugared later, in `buildGroup`, and keeps its own.
+    let outerResolves = clauseResolves
+    clauseResolves <- []
 
-    let clauses = clauseForms |> List.map parseLoopClause
+    let prologue, placed, resolves =
+        try
+            let prologue, placed = placeClauses false clauseForms
+            prologue, placed, List.rev clauseResolves
+        finally
+            clauseResolves <- outerResolves
+
+    let resolved (e: Expr) =
+        resolves |> List.fold (fun e resolve -> resolve Set.empty e) e
+
+    match prologue with
+    | [] -> resolved (desugarPlaced fns userLoopName finishForm placed r)
+    | _ ->
+        // The prologue of the first group binds before the loop: the loop is
+        // read again as a body of a def for each binding, then the loop with
+        // the clauses as placed, which have no macro and no prologue left.
+        let at t = SAtom { Token = t; Range = r }
+
+        let defs =
+            prologue
+            |> List.map (function
+                | SList([ _; pat; value ], pr) -> SList([ at (Symbol "def"); pat; value ], pr)
+                | other -> prologueAsLet other)
+
+        let loopForm =
+            SList(
+                at (Symbol "loop")
+                :: (userLoopName |> Option.map (fun n -> at (Symbol n)) |> Option.toList)
+                @ placed
+                @ (finishForm |> Option.map (fun f -> [ at (Symbol "=>"); f ]) |> Option.defaultValue []),
+                r
+            )
+
+        resolved (fns.Body (defs @ [ loopForm ]) r)
+
+/// The loop of `desugarLoop`, its clauses placed.
+and private desugarPlaced
+    (fns: ParseFns)
+    (userLoopName: string option)
+    (finishForm: SExpr option)
+    (placed: SExpr list)
+    (r: Range)
+    : Expr =
+    let clauses = expandUntilCancelled placed |> List.map parseLoopClause
 
     let guards = ResizeArray()
 
@@ -967,7 +1184,7 @@ and private buildGroup
     let patternNames (pat: SExpr) =
         match pat with
         | SAtom { Token = Symbol n } -> [ n ]
-        | SList(SAtom { Token = Symbol "Tuple" } :: parts, _) ->
+        | SList(SAtom { Token = Symbol t } :: parts, _) when headName t = "Tuple" ->
             parts
             |> List.choose (function
                 | SAtom { Token = Symbol n } -> Some n

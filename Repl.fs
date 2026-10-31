@@ -756,7 +756,7 @@ let rec private evaluate (replaying: bool) (state: State) (text: string) : State
         else
             match check false [] with
             | None -> None
-            | Some(env, _, _, _, _, _) -> check true (unsigned |> List.choose (Exports.signatureForm env))
+            | Some(env, _, _, _, _, _, _) -> check true (unsigned |> List.choose (Exports.signatureForm env))
 
     match compiled with
     | None ->
@@ -798,9 +798,9 @@ let rec private evaluate (replaying: bool) (state: State) (text: string) : State
 
         let replayed = definitions |> List.fold (fun s e -> evaluate true s e.Text) fresh
         evaluate false replayed text
-    | Some(env, typedAst, dllDeps, declaredMacros, declaredPatternMacros, declaredHashMacros) ->
+    | Some(env, typedAst, dllDeps, declaredMacros, declaredPatternMacros, declaredHashMacros, declaredClauseMacros) ->
         let source =
-            Build.generateSource env typedAst dllDeps declaredMacros declaredPatternMacros declaredHashMacros sourcePath true
+            Build.generateSource env typedAst dllDeps declaredMacros declaredPatternMacros declaredHashMacros declaredClauseMacros sourcePath true
 
         let references =
             (Paths.runtimeAssemblies @ dllDeps @ NuGetRefs.compileReferences ())
@@ -945,7 +945,7 @@ let private visibleNames (state: State) : Visible list =
         try
             Session.replEntry (fun () ->
                 Pipeline.runFullFrontendPipeline sourcePath
-                |> Option.map (fun (env, _, dllDeps, _, _, _) -> env, dllDeps, Macro.snapshot ()))
+                |> Option.map (fun (env, _, dllDeps, _, _, _, _) -> env, dllDeps, Macro.snapshot ()))
         finally
             Macro.restore macros
 

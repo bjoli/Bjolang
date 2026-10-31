@@ -356,6 +356,7 @@ let rec normalizeDecl (decl: Decl) : Decl =
     | DImportExtern _
     | DImportClass _
     | DMacro _
+    | DClauseMacro _
     | DPatternMacro _
     | DHashMacro _
     | DSyncOnly _

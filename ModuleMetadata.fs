@@ -112,7 +112,9 @@ open System.Text
 /// `BlockingDefs`. A reader of 24 would read the list as the `defbjouble`s.
 /// 26: `RunTimeTypeParams`, the type parameters of each exported generic
 /// function that it uses at run time, after `WaitingDefs`.
-let currentVersion = 26
+/// 27: `ClauseMacros`, the `def/loop-clause`s, after `HashMacros`. A reader of 26
+/// would read the list as the trait methods a macro sees.
+let currentVersion = 27
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -256,6 +258,8 @@ type Metadata = {
     PatternMacros: MacroEntry list
     /// The `def/hash-extend`s, by bare name: `fl` for `#fl(...)`.
     HashMacros: MacroEntry list
+    /// The `def/loop-clause`s: macros for the sequence of a loop's `:for`.
+    ClauseMacros: MacroEntry list
     /// The trait methods the module sees, its own and those it imports, when it
     /// publishes a macro. A template's call to one dispatches on the trait where
     /// it expands, rather than reaching whatever the caller binds by that name.
@@ -315,6 +319,7 @@ let empty = {
     Macros = []
     PatternMacros = []
     HashMacros = []
+    ClauseMacros = []
     MacroTraitMethods = []
     BlockingDefs = []
     WaitingDefs = []
@@ -340,6 +345,7 @@ let isEmpty (m: Metadata) =
     && m.Macros.IsEmpty
     && m.PatternMacros.IsEmpty
     && m.HashMacros.IsEmpty
+    && m.ClauseMacros.IsEmpty
     // A library that exports nothing but uses ASP.NET still has to say so: the
     // set travels to whatever links it, and an attribute that was never emitted
     // says nothing at all.
@@ -527,6 +533,7 @@ let serialize (m: Metadata) : string =
     putList sb putMacro m.Macros
     putList sb putMacro m.PatternMacros
     putList sb putMacro m.HashMacros
+    putList sb putMacro m.ClauseMacros
     putList sb putStr m.MacroTraitMethods
     putList sb putStr m.BlockingDefs
     putList sb putStr m.WaitingDefs
@@ -565,6 +572,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     let macros = getList getMacro c
     let patternMacros = getList getMacro c
     let hashMacros = getList getMacro c
+    let clauseMacros = getList getMacro c
     let macroTraitMethods = getList getStr c
     let blockingDefs = getList getStr c
     let waitingDefs = getList getStr c
@@ -587,6 +595,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
       Macros = macros
       PatternMacros = patternMacros
       HashMacros = hashMacros
+      ClauseMacros = clauseMacros
       MacroTraitMethods = macroTraitMethods
       BlockingDefs = blockingDefs
       WaitingDefs = waitingDefs

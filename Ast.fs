@@ -746,6 +746,11 @@ type Decl =
     /// position and a pattern macro in pattern position.
     | DPatternMacro of string * Range
 
+    // `(def/loop-clause (name form inject compare) body...)`: a macro for the
+    // sequence of a loop's `:for`. Called with the whole `(:for pat (name ...))`
+    // clause, it answers loop clauses. A table of its own, as for patterns.
+    | DClauseMacro of string * Range
+
     // `(def/hash-extend (name form inject compare) body...)`, registered as
     // `#name(...)`. The name is the bare one; the transformer `defun` beside it
     // is spelled `#name`, which no source identifier can be.
@@ -834,7 +839,7 @@ let rec declRange (decl: Decl) : Range =
     | DImplExtern(_, _, _, _, r) | DImplVia(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
     | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
     | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
-    | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DPatternMacro(_, r) | DHashMacro(_, r)
+    | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DPatternMacro(_, r) | DClauseMacro(_, r) | DHashMacro(_, r)
     | DSyncOnly(_, r) -> r
     | DNoInline(_, r) -> r
     | DInline(_, r) -> r
@@ -1456,6 +1461,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DReExport _
         | DGrammar _
         | DMacro _
+        | DClauseMacro _
         | DPatternMacro _
         | DHashMacro _
         | DSyncOnly _
@@ -1520,6 +1526,7 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DImportExtern _
     | DImportClass _
     | DMacro _
+    | DClauseMacro _
     | DPatternMacro _
     | DHashMacro _
     | DSyncOnly _

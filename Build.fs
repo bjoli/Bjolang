@@ -568,6 +568,7 @@ let generateSource
     (declaredMacros: string list)
     (declaredPatternMacros: string list)
     (declaredHashMacros: string list)
+    (declaredClauseMacros: string list)
     (inputFilePath: string)
     (isLibrary: bool)
     : string =
@@ -575,7 +576,7 @@ let generateSource
     // chain: nothing imports it, so nothing needs to find the assemblies
     // behind it.
     let metadata =
-        { Exports.metadata env typedAst declaredMacros declaredPatternMacros declaredHashMacros inputFilePath isLibrary with
+        { Exports.metadata env typedAst declaredMacros declaredPatternMacros declaredHashMacros declaredClauseMacros inputFilePath isLibrary with
             Deps = if isLibrary then dllDeps |> List.map Pipeline.dependencyEntry else []
             // The shared frameworks a type was actually resolved from while
             // this module was compiled, plus what its imports recorded. An
@@ -589,7 +590,7 @@ let generateSource
     // C# compiler copies into its call sites. See `BuildRecord.Record.Interface`
     // for why a library with macros has none.
     lastInterface <-
-        if isLibrary && metadata.Macros.IsEmpty && metadata.PatternMacros.IsEmpty && metadata.HashMacros.IsEmpty then
+        if isLibrary && metadata.Macros.IsEmpty && metadata.PatternMacros.IsEmpty && metadata.HashMacros.IsEmpty && metadata.ClauseMacros.IsEmpty then
             let defaults = List.rev Codegen.emittedConstantDefaults
             Some(BuildRecord.digest (String.concat "\n" (ModuleMetadata.serialize metadata :: defaults)))
         else
@@ -660,7 +661,7 @@ let compile (options: Options) (inputFilePath: string) : int =
         | Some _ when Diagnostics.hasErrors () ->
             printfn "Compilation failed."
             1
-        | Some (env, typedAst, dllDeps, declaredMacros, declaredPatternMacros, declaredHashMacros) ->
+        | Some (env, typedAst, dllDeps, declaredMacros, declaredPatternMacros, declaredHashMacros, declaredClauseMacros) ->
             // A source file with no `main` is a library whether or not `--lib`
             // was passed: an entry point would call a method that does not
             // exist, and a C# `Exe` without a `Main` does not link at all.
@@ -682,7 +683,7 @@ let compile (options: Options) (inputFilePath: string) : int =
             Diagnostics.progress (sprintf "Compilation succeeded. %d declarations." typedAst.Length)
             
             let csCode =
-                generateSource env typedAst dllDeps declaredMacros declaredPatternMacros declaredHashMacros inputFilePath isLibrary
+                generateSource env typedAst dllDeps declaredMacros declaredPatternMacros declaredHashMacros declaredClauseMacros inputFilePath isLibrary
 
             // `--emit-cs-beside` on its own, without a batch to turn it into a
             // path, is the same for one input.
