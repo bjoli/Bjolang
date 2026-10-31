@@ -11,7 +11,6 @@
  * availability requirements or notice obligations of Section 3 of the MPL 2.0.
  */
 
-using System.Reflection;
 using System.Runtime.CompilerServices;
 
 namespace Bjolang.Runtime;
@@ -191,34 +190,39 @@ public sealed class AtomicUInt64 : Atomic<ulong>
 }
 
 /// A reference type. Compare-and-swap compares by identity.
+///
+/// T has no `class` constraint, so that `AtomicModule.Make` can name this
+/// type from an unconstrained T without reflection, which a Native AOT build
+/// cannot do for a T it did not compile. The value is held as an `object`,
+/// which the interlocked operations take, and is read back as a T by
+/// reinterpreting the reference: `Make` makes this only for a reference type.
 [NonUserCode]
-public sealed class AtomicBox<T> : Atomic<T> where T : class
+public sealed class AtomicBox<T> : Atomic<T>
 {
-    private T _value;
+    private object? _value;
 
-    private AtomicBox(T value) => _value = value;
+    internal AtomicBox(T value) => _value = value;
 
-    // Called through reflection by AtomicModule.Factory, which cannot name
-    // `where T : class` from an unconstrained T.
-    internal static Atomic<T> Create(T value) => new AtomicBox<T>(value);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static T AsT(object? o) => Unsafe.As<object?, T>(ref o);
 
-    public override T Ref() => Volatile.Read(ref _value);
+    public override T Ref() => AsT(Volatile.Read(ref _value));
 
     // Interlocked.Exchange and not Volatile.Write: a full fence, so a store is
     // ordered with the loads and stores after it too.
     public override void Set(T value) => Interlocked.Exchange(ref _value, value);
-    public override T Swap(T value) => Interlocked.Exchange(ref _value, value);
+    public override T Swap(T value) => AsT(Interlocked.Exchange(ref _value, value));
     public override T CompareAndSwap(T expected, T desired) =>
-        Interlocked.CompareExchange(ref _value, desired, expected);
+        AsT(Interlocked.CompareExchange(ref _value, desired, expected));
 
     public override T Update(Func<T, T> f)
     {
         var seen = Volatile.Read(ref _value);
         while (true)
         {
-            var next = f(seen);
+            object? next = f(AsT(seen));
             var found = Interlocked.CompareExchange(ref _value, next, seen);
-            if (ReferenceEquals(found, seen)) return next;
+            if (ReferenceEquals(found, seen)) return AsT(next);
             seen = found;
         }
     }
@@ -228,7 +232,7 @@ public sealed class AtomicBox<T> : Atomic<T> where T : class
 /// cell. Compare-and-swap compares the values with
 /// `EqualityComparer<T>.Default`.
 [NonUserCode]
-public sealed class AtomicStructBox<T> : Atomic<T> where T : struct
+public sealed class AtomicStructBox<T> : Atomic<T>
 {
     [NonUserCode]
     private sealed class Cell
@@ -239,11 +243,7 @@ public sealed class AtomicStructBox<T> : Atomic<T> where T : struct
 
     private Cell _cell;
 
-    private AtomicStructBox(T value) => _cell = new Cell(value);
-
-    // Called through reflection by AtomicModule.Factory, which cannot name
-    // `where T : struct` from an unconstrained T.
-    internal static Atomic<T> Create(T value) => new AtomicStructBox<T>(value);
+    internal AtomicStructBox(T value) => _cell = new Cell(value);
 
     public override T Ref() => Volatile.Read(ref _cell).V;
     public override void Set(T value) => Interlocked.Exchange(ref _cell, new Cell(value));
@@ -294,23 +294,9 @@ public static class AtomicModule
         if (typeof(T) == typeof(uint)) return (Atomic<T>)(object)new AtomicUInt32((uint)(object)value!);
         if (typeof(T) == typeof(long)) return (Atomic<T>)(object)new AtomicInt64((long)(object)value!);
         if (typeof(T) == typeof(ulong)) return (Atomic<T>)(object)new AtomicUInt64((ulong)(object)value!);
-        return Factory<T>.Create(value);
-    }
-
-    // The constructor of AtomicBox<T> or AtomicStructBox<T>, found once for
-    // each T.
-    [NonUserCode]
-    private static class Factory<T>
-    {
-        internal static readonly Func<T, Atomic<T>> Create = Find();
-
-        private static Func<T, Atomic<T>> Find()
-        {
-            var open = typeof(T).IsValueType ? typeof(AtomicStructBox<>) : typeof(AtomicBox<>);
-            var create = open.MakeGenericType(typeof(T))
-                .GetMethod("Create", BindingFlags.NonPublic | BindingFlags.Static)!;
-            return create.CreateDelegate<Func<T, Atomic<T>>>();
-        }
+        // A constant in each copy of this method, as the tests above are.
+        if (typeof(T).IsValueType) return new AtomicStructBox<T>(value);
+        return new AtomicBox<T>(value);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

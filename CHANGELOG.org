@@ -3,6 +3,42 @@
 
 What each change guarantees, and what it leaves open.
 
+* Native AOT: two crashes fixed, vec loops at JIT speed, no fiber trace
+
+- ~(make-atomic x)~ of a record or union stopped a native executable with
+  "A type initializer threw an exception". The atomic boxes found their
+  class by reflection, which Native AOT cannot do for a generic type it
+  did not compile. ~Make<T>~ now picks the class with ~typeof(T).IsValueType~,
+  and the reference box keeps an ~object~ that it reads back as ~T~.
+- ~up-from~ and ~down-from~ without ~#:to~ stopped a native executable the
+  same way: they read ~MaxValue~ and ~MinValue~ by reflection. The bounds
+  are now a chain of ~typeof(T)~ tests, which the compiler folds to one
+  constant per type.
+- A walk over a vec took 8 times as long native as on .NET: 6.0 ns an
+  element against 0.74. Its cursor had six fields. The JIT keeps a struct of
+  at most four fields in registers. With more, it uses the profile of the
+  running program to choose, and Native AOT has no profile, so the cursor
+  went through memory at each element. The cursor now has four fields: the
+  index and its distance to the end of the leaf are the two halves of one
+  ~long~, and the next leaf's start and the stop are another. Native, a vec
+  walk is now 0.73 ns an element, and a loop over ~dyn~ values in a vec
+  went from 8.5 to 5.1 ns.
+- The fiber trace hooks test a ~static readonly~ field. The JIT reads it as a
+  constant at tier 1; Native AOT reads it at each test, 5 to 8 % of a
+  channel rendezvous. ~FiberTrace.IsSupported~ is now a feature switch, and
+  the native build sets it to false, so ILCompiler removes the hooks. A
+  native executable has no fiber trace, and ~(fiber-trace)~ says so.
+- Without a pdb, the report of a deadline said the fibers had no Bjolang
+  code on their stacks. It now names the bjoroutine from the stack frame:
+  ~at worker in probe (no line: this build has none)~.
+- The native AOT test of ~run_bjo_tests.py~ runs an atomic record,
+  ~up-from~, ~down-from~ and a vec slice walk in the native executable.
+- Not here: a ~Seq~ pipeline still takes about 1.5 times as long native, and
+  a generic method of a ~dyn~ trait about 1.8 times, since both gain from
+  the JIT's profile. The scheduler's ~Workers.Enabled~ test is read from the
+  environment the same way as the trace's was, and still costs a native
+  executable at each test.
+
 * add never fails; add-new refuses; try-add-new answers a Result
 
 - ~add~ and ~add!~ mean one thing everywhere: afterwards the collection holds

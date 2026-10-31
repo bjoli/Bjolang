@@ -60,35 +60,46 @@ public static class NullCase<T> {
 }
 
 /// The largest and the smallest value of a number type, which is where
-/// `up-from` and `down-from` stop when no `#:to` says otherwise. Read once per
-/// type, so a walk pays a static field — which the JIT reads as a constant —
-/// and not a lookup.
+/// `up-from` and `down-from` stop when no `#:to` says otherwise.
 ///
-/// `MaxValue` and `MinValue`, which every number type has but `BigInteger`. A
-/// `double` runs to its infinities instead, past its `MaxValue`, which is
-/// where a walk with no end is going anyway. A
-/// `BigInteger` has no end, so it gets one no count can reach: 2^(2^20), a
-/// number of 128 KiB, made once. `BigInteger` compares lengths before digits,
-/// so a walk's test against it is as cheap as against a small one.
+/// One `typeof` test per type, not a lookup of `MaxValue` by reflection: a
+/// Native AOT build has no metadata for those fields, so the lookup fails
+/// there. Each test is a constant in the copy of the method for one type, under
+/// the JIT and under Native AOT, so a walk pays nothing for it.
+///
+/// A `double` runs to its infinities, past its `MaxValue`, which is where a
+/// walk with no end is going anyway. A `BigInteger` has no end, so it gets one
+/// no count can reach: 2^(2^20), a number of 128 KiB, made once.
+/// `BigInteger` compares lengths before digits, so a walk's test against it
+/// is as cheap as against a small one.
 [NonUserCode]
-public static class NumBounds<T> {
-    public static readonly T Top = Find(true);
-    public static readonly T Bottom = Find(false);
+public static class NumBounds {
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static T Bound<T>(bool top) {
+        if (typeof(T) == typeof(int)) return (T)(object)(top ? int.MaxValue : int.MinValue);
+        if (typeof(T) == typeof(long)) return (T)(object)(top ? long.MaxValue : long.MinValue);
+        if (typeof(T) == typeof(double)) return (T)(object)(top ? double.PositiveInfinity : double.NegativeInfinity);
+        if (typeof(T) == typeof(float)) return (T)(object)(top ? float.PositiveInfinity : float.NegativeInfinity);
+        if (typeof(T) == typeof(short)) return (T)(object)(top ? short.MaxValue : short.MinValue);
+        if (typeof(T) == typeof(sbyte)) return (T)(object)(top ? sbyte.MaxValue : sbyte.MinValue);
+        if (typeof(T) == typeof(byte)) return (T)(object)(top ? byte.MaxValue : byte.MinValue);
+        if (typeof(T) == typeof(ushort)) return (T)(object)(top ? ushort.MaxValue : ushort.MinValue);
+        if (typeof(T) == typeof(uint)) return (T)(object)(top ? uint.MaxValue : uint.MinValue);
+        if (typeof(T) == typeof(ulong)) return (T)(object)(top ? ulong.MaxValue : ulong.MinValue);
+        if (typeof(T) == typeof(nint)) return (T)(object)(top ? nint.MaxValue : nint.MinValue);
+        if (typeof(T) == typeof(nuint)) return (T)(object)(top ? nuint.MaxValue : nuint.MinValue);
+        if (typeof(T) == typeof(Int128)) return (T)(object)(top ? Int128.MaxValue : Int128.MinValue);
+        if (typeof(T) == typeof(UInt128)) return (T)(object)(top ? UInt128.MaxValue : UInt128.MinValue);
+        if (typeof(T) == typeof(decimal)) return (T)(object)(top ? decimal.MaxValue : decimal.MinValue);
+        if (typeof(T) == typeof(Half)) return (T)(object)(top ? Half.PositiveInfinity : Half.NegativeInfinity);
+        if (typeof(T) == typeof(System.Numerics.BigInteger)) return (T)(object)(top ? FarBigInteger.Top : FarBigInteger.Bottom);
+        throw new InvalidOperationException($"{typeof(T)} has no {(top ? "largest" : "smallest")} value to count to.");
+    }
 
-    static T Find(bool top) {
-        var t = typeof(T);
-        if (t == typeof(double)) return (T)(object)(top ? double.PositiveInfinity : double.NegativeInfinity);
-        if (t == typeof(float)) return (T)(object)(top ? float.PositiveInfinity : float.NegativeInfinity);
-        if (t == typeof(System.Numerics.BigInteger)) {
-            var far = System.Numerics.BigInteger.One << (1 << 20);
-            return (T)(object)(top ? far : -far);
-        }
-        var bound = t.GetField(top ? "MaxValue" : "MinValue",
-                               System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
-                    ?? throw new InvalidOperationException($"{t} has no {(top ? "largest" : "smallest")} value to count to.");
-        // A `const` on the primitives, and a `static readonly` on `Int128`,
-        // `UInt128` and `decimal`: `GetValue` reads either.
-        return (T)bound.GetValue(null)!;
+    [NonUserCode]
+    private static class FarBigInteger {
+        internal static readonly System.Numerics.BigInteger Top = System.Numerics.BigInteger.One << (1 << 20);
+        internal static readonly System.Numerics.BigInteger Bottom = -Top;
     }
 }
 
@@ -96,10 +107,10 @@ public static class NumBounds<T> {
 public static class BjoNum {
     // The ends of a number type: see `NumBounds`.
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static T Top<T>() => NumBounds<T>.Top;
+    public static T Top<T>() => NumBounds.Bound<T>(true);
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static T Bottom<T>() => NumBounds<T>.Bottom;
+    public static T Bottom<T>() => NumBounds.Bound<T>(false);
 
     public static double ParseDouble(Utf8String s) => Utf8Number.ParseDouble(s);
 

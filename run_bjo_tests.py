@@ -1733,11 +1733,25 @@ def test_runtime(work, c):
 # Native AOT
 # ---------------------------------------------------------------------------
 
+# The second line uses runtime parts that once read types by reflection, which
+# a native executable cannot do: an atomic of a record, and the bounds of
+# up-from and down-from without #:to. The vec walk crosses leaves.
 AOT_MAIN = '''(import (std prelude))
+(import (std atomic))
+(type (: Named (Record (: name string))))
 (import/extern (process-path (: System.Environment.ProcessPath string #:get)))
 (import/extern (server-gc? (: System.Runtime.GCSettings.IsServerGC bool #:get)))
-(defun (main) (println (str process-path " " (if server-gc? "server" "workstation"))) 0)
+(defun (main)
+  (def v (->vec (range 0 100)))
+  (def named (record-ref (atomic-ref (make-atomic (Named (name "n")))) name))
+  (def up (->list (take 3 (up-from 2147483645))))
+  (def down (->list (take 2 (down-from -9223372036854775807L))))
+  (def walked (loop (:for x (in-vec v #:from 3 #:to 70)) (:acc s (summing x))))
+  (println #"checks ${named} ${up} ${down} ${walked}")
+  (println (str process-path " " (if server-gc? "server" "workstation")))
+  0)
 '''
+AOT_CHECKS = "checks n (2147483645 2147483646) (-9223372036854775807 -9223372036854775808) 2412"
 
 
 def aot_manifest(app, aot, runtime="", cpu=""):
@@ -1759,6 +1773,7 @@ def test_native_aot(work, c):
     c.that("the native executable is beside the source", native.exists())
     c.says("bjo run starts the native executable", ran, str(native))
     c.says("which has the manifest's runtime settings", ran, "server")
+    c.says("and needs no reflection the native executable lacks", ran, AOT_CHECKS)
     c.says("a build after that has nothing to do", run_bjo(app, "build"), "Up to date")
 
     native.unlink()
