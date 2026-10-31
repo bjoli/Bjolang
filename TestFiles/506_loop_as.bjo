@@ -1,0 +1,54 @@
+(import (std prelude))
+(import (std simpletest))
+(import "inc/clause_macros.bjo")
+
+;; (:as pat expr) binds in a group of drivers: each step, after the drivers
+;; before it, once. The tests and drivers after it and the level's clauses
+;; read it, and it opens no level, as a :let between drivers does.
+
+(def/mutable calls 0)
+
+(: (-> int int))
+(defun (counted x)
+  (set! calls (+ calls 1))
+  (* 10 x))
+
+(defun (main)
+  (expect "an :until reads it"
+          {listing y (:for x [1 2 3 4 5]) (:as y (* x x)) (:until (> y 10))}
+          (list 1 4 9))
+
+  (expect "a driver after it steps with the ones before it"
+          {listing (Tuple y z) (:for x [1 2 3 4]) (:as y (+ x 1)) (:for z [10 20 30])}
+          (list (Tuple 2 10) (Tuple 3 20) (Tuple 4 30)))
+
+  (set! calls 0)
+  (def made {listing y (:for x [1 2 3]) (:as y (counted x))})
+  (expect "evaluated once a step" (Tuple made calls) (Tuple (list 10 20 30) 3))
+
+  (expect "a tuple pattern"
+          {listing (+ a b) (:for x [1 2 3]) (:as (Tuple a b) (Tuple x (* 2 x)))}
+          (list 3 6 9))
+
+  (expect "an inner level reads it"
+          {listing (* n x) (:for row [[1 2] [3 4 5]]) (:as n (vec-length row)) (:subloop) (:for x row)}
+          (list 2 4 9 12 15))
+
+  (expect "a :subloop form reads it"
+          (loop (:for row [[1 2] [3 4 5]])
+                (:as n (vec-length row))
+                (:subloop (:for x row) (:acc s (summing (* n x))))
+                (:acc out (listing s))
+                => out)
+          (list 6 36))
+
+  (expect "a named loop"
+          (loop lp (:for x [1 2 3]) (:as y (* 3 x)) (:acc out (listing y)) (:do (lp)) => out)
+          (list 3 6 9))
+
+  ;; A clause macro binds the pattern with :as among its drivers, so a test
+  ;; beside it reads it.
+  (expect "an :until beside a clause macro"
+          {listing p (:for p (in-squares [1 2 3 4])) (:until (> p 5))}
+          (list 1 4))
+  0)

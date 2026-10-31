@@ -49,6 +49,10 @@ type private LoopClause =
     /// termination tests. `true` is `:until`, which ends the level when the
     /// test holds.
     | LTestDriver of SExpr * bool * Range
+    /// `(:as pat expr)`: a binding of the driver group, evaluated each step
+    /// after the drivers before it, which the tests and drivers after it and
+    /// the level's clauses read. It does not end the group, as a `:let` does.
+    | LAs of SExpr * SExpr * Range
     | LLet of SExpr * SExpr * Range
     /// `(:when-let pat expr)` and `(:finish-let pat expr)`. A `:let` whose
     /// pattern is allowed to fail, and which says where the failure goes: the
@@ -137,6 +141,8 @@ type private Driver =
     /// The test, whether it is `:until`, and how many of the level's `:for`s
     /// come before it.
     | DTest of SExpr * bool * int * Range
+    /// An `(:as pat expr)`, and how many of the level's `:for`s come before it.
+    | DAs of SExpr * SExpr * int * Range
 
 /// Where a group of loop members sits. The group of a `(loop ...)` has nothing
 /// around it. The group of a `:subloop` form is merged into its loop's group,
@@ -189,6 +195,7 @@ let private loopClauseRange (c: LoopClause) : Range =
     | LFor(_, _, r)
     | LWith(_, _, _, _, r)
     | LTestDriver(_, _, r)
+    | LAs(_, _, r)
     | LLet(_, _, r)
     | LRefutableLet(_, _, _, r)
     | LDo(_, r)
@@ -305,7 +312,7 @@ let mutable private clauseResolves: (Set<string> -> Expr -> Expr) list = []
 /// Whether a clause is a driver: one that belongs to a level's driver group.
 let private isDriverForm (s: SExpr) =
     match s with
-    | SList(SAtom { Token = Keyword("for" | "with" | "while" | "until") } :: _, _) -> true
+    | SList(SAtom { Token = Keyword("for" | "with" | "while" | "until" | "as") } :: _, _) -> true
     | _ -> false
 
 /// The clauses of one expansion: a `(begin ...)` spliced, nested ones too, and
@@ -511,6 +518,11 @@ and private parseLoopClause (s: SExpr) : LoopClause =
         match rest with
         | [ test ] -> LTestDriver(test, (k = "until"), r)
         | _ -> failwithf $"Invalid (:%s{k} ...) at %s{Lexer.formatPos r}. Expected: (:%s{k} test)"
+
+    | SList(SAtom { Token = Keyword "as" } :: rest, r) ->
+        match rest with
+        | [ pat; value ] -> LAs(pat, value, r)
+        | _ -> failwithf $"Invalid (:as ...) at %s{Lexer.formatPos r}. Expected: (:as pattern expr)"
 
     | SList(SAtom { Token = Keyword "let" } :: rest, r) ->
         match rest with
@@ -1172,6 +1184,14 @@ and private buildGroup
                 if not prevWasIter then current <- current + 1
                 prevWasIter <- true
                 current
+            // A binding of the group the drivers before it make: it opens
+            // nothing and ends nothing.
+            | LAs(_, _, ar) ->
+                if not prevWasIter then
+                    failwithf
+                        $"(:as ...) at %s{Lexer.formatPos ar} binds in a group of drivers, after a (:for ...), (:with ...), (:while ...), (:until ...) or another (:as ...). Here there is none before it: use (:let ...)."
+
+                current
             | _ ->
                 prevWasIter <- false
                 current)
@@ -1244,6 +1264,7 @@ and private buildGroup
                         wi <- wi + 1
                         Some(DWith wi)
                     | LTestDriver(test, isUntil, cr) -> Some(DTest(test, isUntil, fi + 1, cr))
+                    | LAs(pat, value, cr) -> Some(DAs(pat, value, fi + 1, cr))
                     | _ -> None)
 
             // `:subloop` emits nothing. Its only role is to have not been an
@@ -1255,6 +1276,7 @@ and private buildGroup
                     | LFor _
                     | LWith _
                     | LTestDriver _
+                    | LAs _
                     | LSubloop _ -> false
                     | _ -> true)
 
@@ -1265,6 +1287,7 @@ and private buildGroup
                 mine
                 |> List.collect (function
                     | LFor(p, _, _) -> patternNames p
+                    | LAs(p, _, _) -> patternNames p
                     | LLet(p, _, _) -> patternNames p
                     | LRefutableLet(p, _, _, _) -> refutableNames p
                     | LSubloopForm(cs, export, _) -> subloopExports cs export
@@ -1564,38 +1587,44 @@ and private buildGroup
     // variables might shadow. The body reads `current` again in `bindCurrents`.
     // Each test's node carries its clause's range, so a test that is not a
     // bool is reported at the clause.
+    // The `:for` variables of level `i` that `form` names, among the first
+    // `forsBefore`, bound around `inner` from `iterable-current`.
+    let bindForsNamed (i: int) (forsBefore: int) (form: SExpr) (inner: Expr) =
+        let mentioned = sexprSymbols form
+
+        let named =
+            List.zip3 levels[i].Fors levels[i].SeqNames levels[i].CurNames
+            |> List.take forsBefore
+            |> List.filter (fun ((pat, _, _), _, _) ->
+                // A pattern macro's names are not known before
+                // expansion, so such a pattern is always bound.
+                match patternNames pat with
+                | [] -> true
+                | names -> names |> List.exists (fun n -> Set.contains n mentioned))
+
+        List.foldBack
+            (fun ((pat, _, fr), sn, cn) acc ->
+                bindLoopPattern pat (call "iterable-current" [ EIdent(sn, fr); EIdent(cn, fr) ] fr) acc fr)
+            named
+            inner
+
+    // Whether a driver ends level `i`: `None` for a `:with` with no `end` and
+    // for an `:as`, which end nothing.
+    let driverEnds (i: int) (d: Driver) : (Expr * Range) option =
+        match d with
+        | DFor fi ->
+            Some(call "iterable-done?" [ EIdent(levels[i].SeqNames[fi], r); EIdent(levels[i].CurNames[fi], r) ] r, r)
+        | DWith wi ->
+            let (_, _, _, endCond, wr) = levels[i].Withs[wi]
+            endCond |> Option.map (fun e -> fns.Expr e, wr)
+        | DTest(test, isUntil, forsBefore, cr) ->
+            let t = fns.Expr test
+            let ends = if isUntil then t else EIf(t, EBool(false, cr), EBool(true, cr), cr)
+            Some(bindForsNamed i forsBefore test ends, cr)
+        | DAs _ -> None
+
     let exhausted (i: int) =
-        let tests =
-            levels[i].IterOrder
-            |> List.choose (function
-                | DFor fi ->
-                    Some(call "iterable-done?" [ EIdent(levels[i].SeqNames[fi], r); EIdent(levels[i].CurNames[fi], r) ] r, r)
-                | DWith wi ->
-                    let (_, _, _, endCond, wr) = levels[i].Withs[wi]
-                    endCond |> Option.map (fun e -> fns.Expr e, wr)
-                | DTest(test, isUntil, forsBefore, cr) ->
-                    let t = fns.Expr test
-                    let ends = if isUntil then t else EIf(t, EBool(false, cr), EBool(true, cr), cr)
-                    let mentioned = sexprSymbols test
-
-                    let named =
-                        List.zip3 levels[i].Fors levels[i].SeqNames levels[i].CurNames
-                        |> List.take forsBefore
-                        |> List.filter (fun ((pat, _, _), _, _) ->
-                            // A pattern macro's names are not known before
-                            // expansion, so such a pattern is always bound.
-                            match patternNames pat with
-                            | [] -> true
-                            | names -> names |> List.exists (fun n -> Set.contains n mentioned))
-
-                    let bound =
-                        List.foldBack
-                            (fun ((pat, _, fr), sn, cn) acc ->
-                                bindLoopPattern pat (call "iterable-current" [ EIdent(sn, fr); EIdent(cn, fr) ] fr) acc fr)
-                            named
-                            ends
-
-                    Some(bound, cr))
+        let tests = levels[i].IterOrder |> List.choose (driverEnds i)
 
         let rec anyOf ts =
             match ts with
@@ -1808,6 +1837,7 @@ and private buildGroup
     /// carries.
     let levelLocals (i: int) =
         (levels[i].Fors |> List.collect (fun (p, _, _) -> patternNames p))
+        @ (levels[i].IterOrder |> List.collect (function DAs(p, _, _, _) -> patternNames p | _ -> []))
         @ [ for j in 0..i do
                 for (p, _, _, _, _) in levels[j].Withs do
                     match p with
@@ -1996,7 +2026,7 @@ and private buildGroup
             | slot :: restAcc -> stepAcc slot (buildClauses level tl restAcc locals)
             | [] -> failwith "internal error: accumulator clause without its info"
 
-        | (LFor _ | LWith _ | LTestDriver _ | LSubloop _) :: _ -> failwith "internal error: clause should have been rejected"
+        | (LFor _ | LWith _ | LTestDriver _ | LAs _ | LSubloop _) :: _ -> failwith "internal error: clause should have been rejected"
 
     /// Rewrites the tail positions of a named loop's final `:do`.
     ///
@@ -2136,7 +2166,8 @@ and private buildGroup
                         let (_, _, _, endCond, _) = lvl.Withs[wi]
                         endCond.IsSome
                     | DFor _
-                    | DTest _ -> true)
+                    | DTest _ -> true
+                    | DAs _ -> false)
                 |> List.length
 
             // With one driver, its cursor is exhausted and only its guard cell
@@ -2147,13 +2178,29 @@ and private buildGroup
                 else
                     List.foldBack (fun cn acc -> released cn r acc) lvl.CurNames (exitLevel lvl.Index r)
 
+            let body =
+                bindCurrents lvl.Index (buildClauses lvl.Index lvl.Others accsHere (levelLocals lvl.Index))
+
+            // A group with an `(:as ...)` is a chain in clause order: each
+            // driver's end, and each binding around what comes after it, so
+            // that the tests after a binding and the level's clauses read it,
+            // and it is evaluated once a step. A group without one keeps the
+            // one test of all its ends.
             let iteration =
-                EIf(
-                    exhausted lvl.Index,
-                    exhaustedExit,
-                    bindCurrents lvl.Index (buildClauses lvl.Index lvl.Others accsHere (levelLocals lvl.Index)),
-                    r
-                )
+                if lvl.IterOrder |> List.exists (function DAs _ -> true | _ -> false) then
+                    let rec chain (ds: Driver list) =
+                        match ds with
+                        | [] -> body
+                        | DAs(pat, value, forsBefore, ar) :: rest ->
+                            bindForsNamed lvl.Index forsBefore value (bindLoopPattern pat (fns.Expr value) (chain rest) ar)
+                        | d :: rest ->
+                            match driverEnds lvl.Index d with
+                            | Some(ends, er) -> EIf(ends, exhaustedExit, chain rest, er)
+                            | None -> chain rest
+
+                    chain lvl.IterOrder
+                else
+                    EIf(exhausted lvl.Index, exhaustedExit, body, r)
 
             // `(:final test)` ends the loop after the iteration in which the
             // test held. So its verdict is read here, at the head of the next

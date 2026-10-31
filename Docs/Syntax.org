@@ -2079,6 +2079,7 @@ A macro is a function the compiler runs while parsing. It takes the form written
 | `(:with pat start update end)`  | Maintains state across iterations.                 |
 | `(:while test)`                 | Keeps the level iterating while `test` holds. Binds nothing. |
 | `(:until test)`                 | Keeps the level iterating until `test` holds. Binds nothing. |
+| `(:as pat expr)`                | A binding of the driver group: each step, after the drivers before it. Opens no level. |
 | `(:let pat expr)`               | Per-iteration local binding. The pattern must always match. |
 | `(:when-let pat expr)`          | The same, for a pattern that may fail: skips the rest of the iteration when it does not match. |
 | `(:finish-let pat expr)`        | The same, but a pattern that does not match ends the loop. |
@@ -2205,6 +2206,22 @@ A collector given `#:into` starts from that collection instead of from empty:
 - The collection is not changed: the builder is made from it, once, where the loop makes its collectors. Each step costs what it does without `#:into`. A vec's builder starts from the vec's own tree; a list is copied, since a list only grows at the front; a map's entries are copied into the builder. `listing/reverse` copies nothing.
 - In a `:subloop` form the collectors are made on every run, so each run starts from the collection again.
 - A collector takes `#:into` by implementing `CollectorInto`, which names what it starts from (`%seed`) and the collector that makes (`%into`). One that does not, such as `summing`, is a type error naming it.
+
+**** `:as` — a binding of the drivers
+A `:let` between two drivers ends their group, and the driver after it opens a nested level. `(:as pat expr)` binds without ending the group: each step, after the drivers before it have stepped, once.
+
+#+BEGIN_SRC scheme
+(loop (:for x xs)
+      (:as y (* x x))
+      (:until (> y 100))        ;; tests y, before the body
+      (:for i (range 0 n))      ;; still steps with x
+      (:acc out (listing (Tuple i y))))
+#+END_SRC
+
+- The `:while`, `:until` and drivers after it, and the clauses of the level, read it; an inner level and a `:subloop` form read it as they read the level's `:for` variables.
+- It follows a driver or another `:as`. After any other clause there is no group to bind in, and it is refused: write a `:let`.
+- If a driver after it ends the level, it was evaluated for that last step too.
+- A clause macro binds the caller's pattern with it among its drivers, so that a `:while` or `:until` beside the macro can test it.
 
 **** `:when-let` and `:finish-let`
 A `:let` binds by destructuring and its pattern must always match — a pattern that could fail has nowhere to go. These two say where it goes.
