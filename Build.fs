@@ -163,10 +163,11 @@ type Options =
       /// as `x86-64-v3`. `None` is ILCompiler's baseline CPU. Only `--aot`
       /// reads it.
       AotCpu: string option
-      /// `--emit-cs`: where the generated C# is written, or nowhere. Apart
-      /// from `Debug`, which only decides how the C# is compiled: reading the
-      /// C# of an optimized build is as useful as of a debug one, and a debug
-      /// build to step through wants no files left in the working directory.
+      /// `--emit-cs`: where the generated C# is written, or nowhere. Unlike
+      /// `Debug`, which only changes how the C# is compiled: the C# of an
+      /// optimized build is as readable as that of a debug one, so this is for
+      /// when you mean to read it. A build you step through usually wants no
+      /// files left in the working directory.
       EmitCs: string option
       /// `--dump-ast`: where the typed AST that code generation was given is
       /// written, or nowhere.
@@ -232,9 +233,9 @@ let besidePath (inputFilePath: string) = Path.ChangeExtension(Path.GetFullPath i
 ///              longer there — a missing method rather than a failed build
 ///     roots    the roots file the build resolved module paths against, when
 ///              one was given. It says which directory each package name means,
-///              so editing it compiles the same source against other code —
-///              and the dependency paths already in this record are the ones it
-///              chose last time, which say nothing about the change
+///              so editing it compiles the same source against other code. The
+///              `dep` paths in the record do not show that: they are the ones
+///              it chose last time, and they still exist
 ///     link     for an executable: `link <assembly name> <path>`, one per
 ///              assembly the program loads through its resolver — modules,
 ///              runtime assemblies and NuGet assemblies. `bjo publish` copies
@@ -253,13 +254,16 @@ let besidePath (inputFilePath: string) = Path.ChangeExtension(Path.GetFullPath i
 ///     interface  for a library: a digest of what an importer is compiled
 ///              against. See `BuildRecord`
 ///     interface-of  `interface-of <digest> <path>`, one per linked module, as
-///              this build saw it. The compiler's early cutoff
+///              this build saw it. This is the compiler's early cutoff: a
+///              module whose interface did not change does not make its
+///              importers stale, even though its code did
 ///     facts    alone on its line, and then `fact-source <path>` for each file
 ///              the module itself is made of and `fact-import <form>` for each
-///              import form it writes, on one line. What the staleness check
-///              otherwise tokenizes the source for: while no `fact-source` is
-///              newer than the output, the source cannot say anything else.
-///              Absent when an import form cannot be written on one line
+///              import form it writes, on one line. These save the staleness
+///              check from tokenizing the source: while no `fact-source` is
+///              newer than the output, the module's own text cannot have
+///              changed in a way that matters. Absent when an import form
+///              cannot be written on one line
 ///
 /// The mode is first and alone on its line so that reading just the head of the
 /// file answers the cheapest question.
@@ -273,12 +277,12 @@ let private writeBuildRecord
     (iface: string option)
     =
     try
-        // The module half of `linked` is already transitive — a dependency's own
-        // dependencies are linked, not imported, and are added to the same set —
-        // so the sources behind it need no walk of their own here. Each
-        // contributes the closure of the `.bjo` beside it, when there is one; a
-        // runtime assembly or a prebuilt `.dll` has no source and is judged by
-        // its own timestamp.
+        // The modules in `linked` are already transitive: a dependency's own
+        // dependencies are linked rather than imported, and are added to the
+        // same set. So the sources behind each one need no walk of their own.
+        // Each contributes the closure of the `.bjo` beside it, when there is
+        // one; a runtime assembly or a prebuilt `.dll` has no source and is
+        // judged by its own timestamp.
         let sources =
             linked
             |> List.collect (fun dll ->
@@ -497,9 +501,9 @@ let private crossgen2: Lazy<string option> =
              |> List.map (fun name -> Path.Combine(d, "tools", name))
              |> List.tryFind File.Exists))
 
-/// Precompiles `dll` in place, against `references` and the shared framework.
-/// A failure leaves the IL assembly as it is, which runs the same, and says
-/// why.
+/// Precompiles `dll` in place, with crossgen2, against `references` and the
+/// shared framework. A failure leaves the IL assembly as it is, which runs the
+/// same, and says why.
 let private precompile (dll: string) (references: string list) : unit =
     match crossgen2.Value with
     | None -> ()
@@ -695,16 +699,15 @@ let compile (options: Options) (inputFilePath: string) : int =
 
             options.DumpAst |> Option.iter (fun path -> File.WriteAllText(path, sprintf "%A" typedAst))
             
-            /// Does the entry point have to drive a fiber to call `main`?
-            ///
-            /// `main` is allowed to be a bjoroutine, which is one of the two
-            /// ways a program gets into fiber-land — the other being `bjo`,
-            /// which is colourless and so may be written in a plain `main`.
-            ///
-            /// Its parameter is a `(Vec string)`, given to the module rather
-            /// than read off it (`Pipeline.shapeEntryPoint`) and checked
-            /// afterwards (`Pipeline.checkEntryPoint`). Its result is inferred,
-            /// and is asked about below.
+            // Whether `main` is a bjoroutine, in which case the entry point has
+            // to drive a fiber to call it. There are two ways a program starts
+            // fibers: this one, and `bjo`, which does not suspend and so can be
+            // called from an ordinary `main`.
+            //
+            // `main` takes the arguments as a `(Vec string)`, shaped by
+            // `Pipeline.shapeEntryPoint` and checked by
+            // `Pipeline.checkEntryPoint`. Its result is inferred, and is asked
+            // about below.
             let mainIsBjoroutine =
                 match Map.tryFind "main" env.Bindings with
                 | Some b ->
@@ -884,42 +887,30 @@ let compile (options: Options) (inputFilePath: string) : int =
                     nativeResolverCode +
                     "    }\n"
 
-            // `Main` itself must not touch a single type from a linked
-            // assembly: the JIT would then have to load that assembly before
-            // the resolver is in place. All real work lives in `Run`, which is
-            // not compiled until it is called.
-            // A bjoroutine `main` returns a `Fiber<T>`, which is a description of
-            // work rather than the work's result, so the entry point has to
-            // drive it. `RunToCompletion` starts the body on *this* thread and
-            // blocks until it lands — which is safe here and nowhere else: the
-            // rule it documents is never to call it from a pool thread, and the
-            // thread `Main` runs on is the one thread in the process that is
-            // certainly not one.
+            // `Main` must not mention a single type from a linked assembly:
+            // the JIT would then load that assembly before the resolver is in
+            // place. All real work is in `Run`, which is not compiled until it
+            // is called.
             //
-            // `main` is wrapped in a root cancellation scope, so a `(spawn ...)`
-            // written at the top level of `main` is a child of something. Without
-            // it the outermost spawn in a program would be the one spawn nothing
-            // waited for, and the process could exit with fibers still running —
-            // which is the opposite of the rule everywhere else in the language.
+            // A bjoroutine `main` returns a `Fiber<T>`, a description of work
+            // rather than its result, so the entry point has to run it.
+            // `RunToCompletion` starts the body on this thread and blocks until
+            // it finishes. That is safe here and nowhere else: it may not be
+            // called from a pool thread, and the thread `Main` runs on is the
+            // one thread in the process that is certainly not one.
+            //
+            // `main` runs inside a root cancellation scope, so a `(spawn ...)`
+            // at the top level of `main` has a parent. Without it the outermost
+            // spawn in a program would be one that nothing waits for, and the
+            // process could exit with fibers still running.
             //
             // Two wrappers rather than one, because an ordinary `main` cannot
-            // suspend and so only the *drain* needs a fiber. Overloading the one
+            // suspend, so only the drain needs a fiber. Overloading the one
             // name would be ambiguous at a `main` that returns a `Fiber<T>`:
-            // both would apply.
-            // What `main` answered is the process's exit code. Both runtime
-            // entry points hand the value back, and it used to be dropped here:
-            // every program exited 0, including one whose `main` ended in 1, so
-            // `(-> (Vec string) int)` was a type nothing read. Anything driving
-            // a Bjolang program — a shell, a test runner, `bjo` — asks this way
-            // and no other.
+            // both would fit.
             //
-            // A `main` that answered 0 defers to `Environment.ExitCode`, which
-            // .NET ignores once `Main` returns an int: it is how code that is
-            // not `main` — a failed `expect` in `(std simpletest)` — says the
-            // program failed.
-            //
-            // A `main` that returns anything but an int exits with 0: the
-            // entry point calls it for its effect and answers 0 itself.
+            // Whether `main` answers an `int`, which is the exit code; the rest
+            // of the exit code rules are beside `callMain` below.
             let mainReturnsInt =
                 match Map.tryFind "main" env.Bindings with
                 | Some b ->
@@ -946,6 +937,10 @@ let compile (options: Options) (inputFilePath: string) : int =
                     else "<" + (vars |> List.map (fun _ -> "object") |> String.concat ", ") + ">"
                 | None -> ""
 
+            // The value `main` answered is the exit code. A 0 defers to
+            // `Environment.ExitCode`, which .NET ignores once `Main` returns an
+            // int: that is how code which is not `main`, a failed `expect` in
+            // `(std simpletest)` for instance, reports that the program failed.
             let callMain (argExpr: string) =
                 let main = $"%s{mainModuleClass}.main%s{mainTypeArgs}(%s{argExpr})"
 
@@ -999,8 +994,10 @@ let compile (options: Options) (inputFilePath: string) : int =
             // be spelled here as well, which is how a newly added one — Bjoml —
             // could be on the resolver's probe path and still not be referenced
             // at compile time.
-            // En modul refereras vid sitt assemblynamn, körtidens vid sitt
-            // Map dependencies by their file paths so that multiple files with the same name (like `utils.dll` from different directories) aren't accidentally merged into a single entry.
+            // A module is referenced by its assembly name, and the C# compiler
+            // resolves a name to one file. Keyed by path, so that two
+            // dependencies which both produce `utils.dll` stay two entries;
+            // `assemblyNameOf` maps each path back to its own name.
             let moduleAssemblyNames =
                 moduleAssemblyPairs |> List.map (fun (name, path) -> path, name) |> Map.ofList
 
@@ -1056,8 +1053,9 @@ let compile (options: Options) (inputFilePath: string) : int =
             
             let outDir = Path.GetFullPath(if System.String.IsNullOrWhiteSpace(Path.GetDirectoryName(outputFilePath)) then "." else Path.GetDirectoryName(outputFilePath))
 
-            // If we are building a library, we use the hashed module key as the assembly name to guarantee it's globally unique.
-            // If we are building an executable, we just use the filename since no other project will import it.
+            // A library is named by its hashed module key, which is unique
+            // across the tree. An executable is named after its file: nothing
+            // imports it, so nothing can collide with it.
             let assemblyName =
                 if isLibrary then
                     Naming.assemblyName outputFilePath
@@ -1066,24 +1064,25 @@ let compile (options: Options) (inputFilePath: string) : int =
             
             Diagnostics.progress "Invoking C# Compiler..."
 
-            /// The two files the host needs beside an executable.
-            ///
-            /// Written by whichever backend produced the assembly, so the C#
-            /// build being a process, a library call or MSBuild is not
-            /// something the resulting program can tell apart.
+            // The two files the host needs beside an executable.
+            //
+            // Written by whichever backend produced the assembly, so a program
+            // cannot tell whether a process, an in-process library or MSBuild
+            // built it.
             let writeHostFiles (targetPath: string) =
                 if not isLibrary then
                     let assemblyBaseName = Path.GetFileNameWithoutExtension(targetPath)
                     let runtimeConfigPath = Path.ChangeExtension(targetPath, ".runtimeconfig.json")
 
-                    // One framework is written the way it always was, so that
-                    // every program that needs nothing else is byte-for-byte
-                    // the file it was before shared frameworks existed. Two or
-                    // more is the plural form, which is a different key rather
-                    // than a repetition of the same one.
-                    // What the program's host has to load: the core framework,
-                    // plus whatever the entry module turned out to use — its
-                    // own resolutions and everything its imports recorded.
+                    // What the program's host has to load: the core
+                    // framework, plus whatever the entry module turned out to
+                    // use, its own resolutions and everything its imports
+                    // recorded.
+                    //
+                    // One framework is written as `framework`, which keeps the
+                    // file byte-for-byte what it was before shared frameworks
+                    // existed. Two or more use `frameworks`, a different key and
+                    // not a repetition of the same one.
                     let frameworkPart =
                         match Frameworks.usedHere () with
                         | [] ->
@@ -1138,15 +1137,15 @@ let compile (options: Options) (inputFilePath: string) : int =
                     let depsJsonPath = Path.ChangeExtension(targetPath, ".deps.json")
                     AtomicFile.writeText depsJsonPath depsJson
 
-            /// Roslyn as a library, in this process.
-            ///
-            /// Only when something has committed the process to it — see
-            /// `CSharpEmit.preferInProcess`. A batch build has not, because
-            /// `csc -shared` beats a cold in-process Roslyn and the two do not
-            /// produce the same bytes, so mixing them within one build would
-            /// make a module's assembly depend on how it was reached.
-            ///
-            /// `None` falls through to `csc`, which falls through to MSBuild.
+            // Roslyn as a library, in this process.
+            //
+            // Only when something has committed the process to it; see
+            // `CSharpEmit.preferInProcess`. A single-file build has not,
+            // because `csc -shared` beats a cold in-process Roslyn, and the two
+            // do not produce the same bytes, so mixing them in one build would
+            // make a module's assembly depend on how it was reached.
+            //
+            // `None` falls through to `csc`, which falls through to MSBuild.
             let tryInProcessCompile () =
                 if not (CSharpEmit.inProcessPreferred ()) then
                     None
@@ -1188,7 +1187,8 @@ let compile (options: Options) (inputFilePath: string) : int =
                         printfn $"In-process C# compilation unavailable (%s{ex.Message}); falling back."
                         None
 
-            // This does a fast compilation using the C# dll instead of the dotnet exe.
+            // `csc` itself, run from the SDK's `csc.dll`: a process, but not an
+            // MSBuild evaluation.
             let tryFastCompile () =
                 try
                     let loc = typeof<obj>.Assembly.Location
@@ -1250,8 +1250,11 @@ let compile (options: Options) (inputFilePath: string) : int =
                             let csFile = Path.Combine(tmpDir, "Program.cs")
                             let targetPath = Path.GetFullPath(outputFilePath)
 
-                            // csc namnger assemblyn efter utfilen. Ett bibliotek
-                            // Because `csc.exe` forces the output filename to match the assembly name, we compile the library into a temporary folder using its unique assembly name, and then copy it to the final destination.
+                            // csc names the assembly after the output file. A
+                            // library is named by its hashed module key and its
+                            // file is not, so the library is compiled into the
+                            // temporary directory under the assembly name and
+                            // copied to its destination afterwards.
                             let cscOutPath =
                                 if isLibrary then
                                     Path.Combine(tmpDir, assemblyName + ".dll")
@@ -1295,27 +1298,24 @@ let compile (options: Options) (inputFilePath: string) : int =
                             // `-deterministic`, without which unchanged source
                             // does not produce an unchanged `.dll`: Roslyn
                             // stamps a fresh MVID and a timestamp into every
-                            // assembly it emits unless told not to. Two
-                            // consecutive builds of the same file differed, and
-                            // had always differed — so the property a process
-                            // per module was thought to guarantee was never
-                            // actually there to lose. It is here now, which is
-                            // what makes "the same module compiles to the same
-                            // bytes however it was reached" a thing that can be
-                            // tested rather than assumed.
-                            // The generated C# lives in a temp directory named
-                            // after a fresh GUID, and `-debug:portable` records
-                            // the path of the source it came from. So
-                            // `-deterministic` alone changes nothing: the
-                            // filename it is being deterministic about is
-                            // different every build. Mapped to a fixed
-                            // spelling, which is also the one the in-process
-                            // path uses.
-                            // The replacement has to be non-empty. csc rejects
+                            // assembly it emits unless told not to. Without it,
+                            // two builds of the same file differed, so "the same
+                            // module compiles to the same bytes however it was
+                            // reached" could not be tested.
+                            //
+                            // On its own it changes nothing here. The generated
+                            // C# lives in a temporary directory named after a
+                            // fresh GUID, and `-debug:portable` records the path
+                            // of the source it came from, so the file it is
+                            // deterministic about is different every build.
+                            // `-pathmap` maps that directory to a fixed spelling,
+                            // the same one the in-process path uses.
+                            //
+                            // The replacement has to be non-empty: csc rejects
                             // `-pathmap:x=` as a bad argument, and a rejected
-                            // argument here is not an error the user sees: it
-                            // fails the whole `csc` attempt, which falls back
-                            // to MSBuild, which builds successfully and
+                            // argument is not an error the user sees. It fails
+                            // the whole `csc` attempt, which falls back to
+                            // MSBuild, which builds successfully and
                             // non-deterministically.
                             let pathMap =
                                 $"-pathmap:\"{tmpDir}{Path.DirectorySeparatorChar}={CSharpEmit.generatedSourceRoot}\""
@@ -1346,8 +1346,9 @@ let compile (options: Options) (inputFilePath: string) : int =
                                 if not (System.String.IsNullOrWhiteSpace stderr) then printfn "%s" (stderr.TrimEnd())
 
                             if exitCode = 0 then
-                                // Copy both the `.dll` and the `.pdb` (debug symbols) to the final output directory.
-                                // modulen.
+                                // Both the `.dll` and the `.pdb` go to the
+                                // final output directory: the pdb carries the
+                                // `#line` mapping a stack trace needs.
                                 if cscOutPath <> targetPath then
                                     AtomicFile.copy cscOutPath targetPath
                                     let builtPdb = Path.ChangeExtension(cscOutPath, ".pdb")
@@ -1368,8 +1369,8 @@ let compile (options: Options) (inputFilePath: string) : int =
                                 None
                 with _ -> None
 
-            // One record for all three backends: which one produced the
-            // assembly is not something the build was built from.
+            // One record whichever backend produced the assembly: which of the
+            // three it was is not an input of the build.
             let buildStatus =
                 match tryInProcessCompile () |> Option.orElseWith tryFastCompile with
                 | Some code -> code
@@ -1409,14 +1410,14 @@ let compile (options: Options) (inputFilePath: string) : int =
                         printfn $"Temp directory: %s{tmpDir}"
                         1
 
-            /// `--aot`: the same C#, published as a Native AOT executable at
-            /// `nativePath`. After the ordinary build, which stays: the build
-            /// record, `bjo publish` and a debugger all use the `.exe`.
-            ///
-            /// ILCompiler compiles the program and every assembly it links
-            /// into one native file, so nothing is resolved at run time and
-            /// the generated resolver is never called. A runtime setting is
-            /// built into the file, because there is no runtimeconfig.
+            // `--aot`: the same C#, published as a Native AOT executable at
+            // `nativePath`, after the ordinary build, which stays because the
+            // build record, `bjo publish` and a debugger all use the `.exe`.
+            //
+            // ILCompiler compiles the program and every assembly it links into
+            // one native file, so nothing is resolved at run time and the
+            // generated resolver is never called. A runtime setting is built
+            // into the file, because there is no runtimeconfig.
             let publishNative () =
                 let aotDir = Path.Combine(Path.GetTempPath(), "Bjolang_aot_" + System.Guid.NewGuid().ToString("N"))
                 Directory.CreateDirectory aotDir |> ignore
@@ -1691,10 +1692,9 @@ let private compileDependencyOutOfProcess (bjoPath: string) : string =
 /// however much was built before it, which is what a timestamp-based staleness
 /// cache is worth anything on top of.
 ///
-/// When a dependency builds successfully, we intentionally hide its build logs
-/// to keep the console clean. If it fails, we still print the error messages
-/// so you can debug it (via `Diagnostics`), naming the
-/// dependency's own file and lines.
+/// A dependency that builds successfully says nothing: its logs are hidden so
+/// that the console holds the module the user asked for. If it fails, its
+/// diagnostics are printed, naming the dependency's own file and lines.
 ///
 /// The C# backend is not changed by any of this. A dependency emits the way
 /// everything else in the process emits — see `CSharpEmit.preferInProcess` —
@@ -1760,28 +1760,28 @@ let installDependencyBackend () =
     Pipeline.compileLibrary <- underModuleLock backend
 
 // ---------------------------------------------------------------------------
-// Många rotfiler i en process
+// Several root files in one process
 // ---------------------------------------------------------------------------
 
-/// Vad en av batchens indatafiler blev.
+/// What one of a batch's input files became.
 type BatchResult =
-    { /// Absolut sökväg. Den som beställde batchen skrev kanske något annat —
-      /// en relativ sökväg, en med `..` i — och ska ändå kunna para ihop svaret
-      /// med sin fråga.
+    { /// The full path. The caller may have written a relative path, or one
+      /// with `..` in it, and still has to match the answer to the file it
+      /// asked about.
       File: string
-      /// Utgångskoden filen skulle ha gett som ensam kompilering.
+      /// The exit code this file would have had if it had been compiled alone.
       Status: int
-      /// Den byggda `.exe`:n eller `.dll`:en, eller tomt om ingen blev till.
+      /// The `.exe` or `.dll` that was built, or "" if none was.
       Artifact: string
-      /// Allt filen skrev, stdout och stderr sammanslagna. Det här är vad ett
-      /// testfall som förväntar sig ett visst felmeddelande läser.
+      /// Everything the file wrote, stdout and stderr together. A test that
+      /// expects a particular error message reads this.
       Output: string }
 
-/// En sträng som JSON.
+/// A string as JSON.
 ///
-/// Handskrivet snarare än `System.Text.Json`, eftersom det enda som ska ut är
-/// fyra fält och det enda som är svårt är citeringen. Icke-ASCII lämnas som det
-/// är: rapporten skrivs och läses som UTF-8.
+/// Written by hand rather than with `System.Text.Json`: four fields go out and
+/// quoting is the only part that takes any care. Non-ASCII characters are left
+/// as they are, because the report is written and read as UTF-8.
 let private jsonString (s: string) : string =
     let sb = System.Text.StringBuilder()
     sb.Append '"' |> ignore
@@ -1799,11 +1799,11 @@ let private jsonString (s: string) : string =
     sb.Append '"' |> ignore
     sb.ToString()
 
-/// En JSON-rad per fil, i den ordning de kompilerades.
+/// One JSON line per file, in the order the files were compiled.
 ///
-/// Rader snarare än en array, så att en läsare kan ta emot det som blev klart
-/// av en batch som dog på mitten. Den som beställde vet vilka filer den bad om
-/// och kan bygga om de som saknas var för sig.
+/// Lines rather than an array, so that a reader can take what a batch finished
+/// before it died halfway. The caller knows which files it asked for, so it can
+/// build the missing ones itself.
 let private writeReport (path: string) (results: BatchResult list) : unit =
     let line (r: BatchResult) =
         "{\"file\":" + jsonString r.File
@@ -1819,21 +1819,21 @@ let private writeReport (path: string) (results: BatchResult list) : unit =
     else
         File.WriteAllText(path, text)
 
-/// Hur många filer en batch måste ha för att det ska löna sig att emitta
-/// in-process istället för att lämna över till `csc`.
+/// How many files a batch needs before emitting in-process is cheaper than
+/// handing each one to `csc`.
 ///
-/// Uppmätt på den här kompilatorn: Roslyns föruppvärmning kostar omkring 810 ms
-/// och den första emitten väntar in ~354 ms av den, plus ~215 ms för sig själv.
-/// Varje emit därefter kostar ~15 ms. `csc -shared` kostar ~80 ms varje gång,
-/// hur många de än är. Jämnt skägg strax under tio filer, och en batch under
-/// den gränsen förlorar på att gå in-process.
+/// Measured on this compiler: Roslyn's warm-up costs about 810 ms, and the
+/// first emit waits for ~354 ms of that plus ~215 ms of its own. Each emit
+/// after it costs ~15 ms. `csc -shared` costs ~80 ms every time, whatever the
+/// number of files. The two are close just under ten files, and a batch smaller
+/// than that loses by going in-process.
 let private inProcessThreshold = 10
 
-/// Vad kompileringen av `inputFilePath` lämnade efter sig.
+/// What compiling `inputFilePath` left behind.
 ///
-/// En rotfil blir antingen det ena eller det andra: utan `main` byggs den som
-/// bibliotek. `.exe` frågas ändå om först, så att en `.dll` som ligger kvar
-/// sedan tidigare inte svarar i ett programs ställe.
+/// A root file becomes one or the other: with no `main` it is built as a
+/// library. `.exe` is asked about first, so that a `.dll` left by an earlier
+/// build does not answer for a program.
 let private artifactOf (inputFilePath: string) : string =
     let candidates =
         [ Path.ChangeExtension(inputFilePath, ".exe")
@@ -1843,37 +1843,36 @@ let private artifactOf (inputFilePath: string) : string =
     | Some path -> Path.GetFullPath path
     | None -> ""
 
-/// Kompilerar många rotfiler i en och samma process.
+/// Compiles many root files in one process.
 ///
-/// Vad det sparar är inte kodgenereringen utan allt runt omkring den. Mätt på
-/// den här kompilatorn kostar en kall process omkring 490 ms innan den har
-/// gjort något alls — värdstart, JIT av hela frontenden, reflektionen över
-/// körtidens assemblies — och varje modul därefter omkring 70 ms. En svit som
-/// startar en kompilator per fil betalar det första talet per fil.
+/// What this saves is not code generation but everything around it. Measured on
+/// this compiler, a cold process costs about 490 ms before it does anything
+/// (host start-up, JIT of the whole frontend, the reflection over the runtime
+/// assemblies), and each module after that about 70 ms. A suite that starts a
+/// compiler per file pays the first figure per file.
 ///
-/// Varje fil körs i `Session.isolated`, av samma skäl som ett beroende gör det:
-/// den ska kompilera som om den vore det första processen såg. Det är den enda
-/// anledningen till att det här får finnas — utan `Session` vore en batch bara
-/// ett sätt att låta fil 3 ärva fil 2:s makrotabell.
+/// Each file runs in `Session.isolated`, for the same reason a dependency does:
+/// it has to compile as if it were the first thing the process saw. That is the
+/// only reason a batch is allowed to exist. Without `Session` it would be a way
+/// for file 3 to inherit file 2's macro table.
 ///
-/// Vad som *inte* nollställs mellan filerna är det `Session` avsiktligt lämnar
-/// utanför: laddade assemblies och `DotNetInterop`s typcache. En fil som drar
-/// in en `.NET`-assembly gör den därför synlig för resten av batchen. Det är
-/// samma sak som redan gäller mellan en modul och dess beroenden, men här kan
-/// den nå filer som inte har med varandra att göra.
+/// What is not reset between files is what `Session` deliberately leaves alone:
+/// loaded assemblies and `DotNetInterop`'s type cache. A file that pulls in a
+/// .NET assembly therefore makes it visible to the rest of the batch. That
+/// already happens between a module and its dependencies, but here it can reach
+/// files that have nothing to do with each other.
 let batch (options: Options) (ifStale: bool) (files: string list) : BatchResult list =
-    // Roslyn in-process, men bara om det finns nog med filer att dela
-    // uppstarten på. `CSharpEmit.preferInProcess` varnar för att blanda
-    // backendar inom ett bygge — här blandas ingenting, valet görs före första
-    // filen och gäller hela batchen.
-    // Inte under `--check`, som inte lämnar ifrån sig någon assembly att
-    // generera: att förvärma Roslyn där vore att ladda in en kompilator som
-    // aldrig anropas.
+    // Roslyn in-process, but only when there are enough files to share its
+    // start-up cost. `CSharpEmit.preferInProcess` warns against mixing backends
+    // within one build; nothing is mixed here, because the choice is made before
+    // the first file and holds for all of them. Not under `--check`, which
+    // leaves no assembly to generate: warming Roslyn up there would load a
+    // compiler that is never called.
     if files.Length >= inProcessThreshold && not options.Check then
         CSharpEmit.preferInProcess ()
 
-    // En gång för hela batchen. `compile` gör om det per fil, men anropet är
-    // idempotent och det som kostar är första varvet.
+    // Once for the whole batch. `compile` does it again for each file, but the
+    // call is idempotent and only the first one costs anything.
     loadReferencedAssemblies ()
 
     files
@@ -1885,26 +1884,26 @@ let batch (options: Options) (ifStale: bool) (files: string list) : BatchResult 
         let fileOptions = options
 
         let compileOne () =
-            // Varje fil börjar med en tom uppsamlare. Den är processglobal och
-            // en batch återanvänder processen, så utan det här är fil 3:s fel
-            // fortfarande registrerade när fil 4 bedöms — och fil 4 stoppas före
-            // kodgenereringen av något som inte står i den.
+            // Each file starts with an empty collector. It is process-global
+            // and a batch reuses the process, so without this file 3's errors
+            // are still recorded when file 4 is judged, and something that is
+            // not in file 4 stops it before code generation.
             Diagnostics.reset ()
 
             try
                 if ifStale then
-                    // Frågan är "finns en aktuell `.dll`", inte "kompilera".
-                    // Den som redan är aktuell rör vi inte, och den som är ett
-                    // beroende till en senare fil i listan byggs här och är
-                    // aktuell när turen kommer till den.
+                    // The question is whether a current `.dll` exists, not
+                    // whether to compile. One that is current is left alone, and
+                    // one that a later file in the list imports is built here and
+                    // is current by the time its turn comes.
                     Pipeline.ensureLibrary fullPath |> ignore
                     0
                 else
                     compile fileOptions fullPath
             with ex ->
-                // `compile` fångar sitt eget, men `ensureLibrary` kastar. En
-                // fil som inte gick att bygga är ett svar om den filen, inte
-                // slutet på batchen.
+                // `compile` catches its own exceptions; `ensureLibrary`
+                // throws. A file that could not be built is an answer about
+                // that file, not the end of the batch.
                 Diagnostics.reportFailure ex
                 1
 
@@ -1915,11 +1914,11 @@ let batch (options: Options) (ifStale: bool) (files: string list) : BatchResult 
           Artifact = artifactOf fullPath
           Output = output })
 
-/// Kör en batch, skriver rapporten och svarar med processens utgångskod.
+/// Runs a batch, writes the report and answers with the process's exit code.
 ///
-/// Utgångskoden säger bara om allt gick igenom. Vilken fil som inte gjorde det,
-/// och vad den sade, står i rapporten — en batch av feltester förväntar sig att
-/// koden är skild från noll och bryr sig inte om den.
+/// The exit code says only whether everything passed. Which file did not, and
+/// what it said, is in the report; a batch of error tests expects a non-zero
+/// code and does not care which file gave it.
 let runBatch (options: Options) (ifStale: bool) (reportPath: string option) (files: string list) : int =
     let results = batch options ifStale files
 
@@ -1936,7 +1935,7 @@ let runBatch (options: Options) (ifStale: bool) (reportPath: string option) (fil
 
     let failed = results |> List.filter (fun r -> r.Status <> 0)
 
-    // Till stderr, så att `--report -` kan lägga beslag på stdout.
+    // To stderr, so that `--report -` can take stdout.
     eprintfn "Batch: %d files, %d failed." results.Length failed.Length
 
     if failed.IsEmpty then 0 else 1
