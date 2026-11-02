@@ -309,24 +309,24 @@
           (:acc interface (folding "" (if (= key "interface") value interface)))
           (:acc interface-of (listing (pair-of value)) #:when (= key "interface-of"))
           (:acc sources (listing value) #:when (= key "source"))
-          => (if (= artefact "")
-                 None
-                 (Some (BuildRecord (mode mode)
-                                    (output artefact)
-                                    (inputs inputs)
-                                    (compiler compiler)
-                                    (frameworks (list-sort frameworks))
-                                    (declaration-file declarations)
-                                    (nuget nuget)
-                                    (runtime (list-sort runtime))
-                                    (aot aot)
-                                    (aot-cpu aot-cpu)
-                                    (links links)
-                                    (natives natives)
-                                    (written written)
-                                    (interface interface)
-                                    (interface-of interface-of)
-                                    (sources sources)))))))
+      => (if (= artefact "")
+             None
+             (Some (BuildRecord (mode mode)
+                                (output artefact)
+                                (inputs inputs)
+                                (compiler compiler)
+                                (frameworks (list-sort frameworks))
+                                (declaration-file declarations)
+                                (nuget nuget)
+                                (runtime (list-sort runtime))
+                                (aot aot)
+                                (aot-cpu aot-cpu)
+                                (links links)
+                                (natives natives)
+                                (written written)
+                                (interface interface)
+                                (interface-of interface-of)
+                                (sources sources)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Compiling
@@ -404,6 +404,7 @@
 ;; the same comparison every other change is.
 (: (-> Against (List string)))
 (defun (against-flags a)
+  ;; TODO list-append*.
   (list-append (flag-for "--roots" (record-ref a roots))
                (list-append (flag-for "--frameworks" (record-ref a frameworks))
                             (list-append (flag-for "--nuget" (record-ref a nuget))
@@ -417,41 +418,34 @@
 ;; dependency fetched into `.bjo/pkg` lives *under* the root project.
 (: (-> Against string (List string)))
 (defun (declared-for against file)
-  (match (record-ref against frameworks)
-    (None Nil)
-    ((Some path)
-     (if (not (file-exists? path))
-         Nil
-         (let ((full (path-absolute file))
-               (lines (string-split (file-read-text path) "\n")))
-           ;; Two passes rather than one: the package a file belongs to is the
-           ;; longest directory containing it, and which that is cannot be known
-           ;; until every line has been seen.
-           (def owner
-             (loop (:for line lines)
-                   (:when-let (Some (Tuple dir name)) (split-tab (string-trim line)))
-                   (:acc out (folding "" (if (and (string-starts-with? full (str dir "/"))
-                                                  (> (string-length dir) (string-length out)))
-                                             dir
-                                             out)))
-                   => out))
-           (if (= owner "")
-               Nil
-               (list-sort
-                 (loop (:for line lines)
-                       (:when-let (Some (Tuple dir name)) (split-tab (string-trim line)))
-                       (:acc out (listing name) #:when (= dir owner))
-                       => out))))))))
+  (def (Some path) (get against .frameworks) :leave-with Nil)
+  (cond
+    ((not (file-exists? path)) Nil)
+    (:def full (path-absolute file))
+    (:def lines (string-split (file-read-text path) "\n"))
+    ;; Two passes rather than one: the package a file belongs to is the
+    ;; longest directory containing it, and which that is cannot be known
+    ;; until every line has been seen.
+    (:def owner
+          (loop (:for line lines)
+                (:when-let (Some (Tuple dir name)) (split-tab (string-trim line)))
+                (:acc out (folding "" (if (and (string-starts-with? full (str dir "/"))
+                                               (> (string-length dir) (string-length out)))
+                                          dir  
+                                          out)))))
+    ((= owner "") Nil)
+    (else (list-sort
+           (loop (:for line lines)
+                 (:when-let (Some (Tuple dir name)) (split-tab (string-trim line)))
+                 (:acc out (listing name) #:when (= dir owner)))))))
 
 ;; A frameworks-file line: a directory, a tab, a framework name.
 (: (-> string (Option (Tuple string string))))
 (defun (split-tab line)
-  (match (string-index #(char=? & #\tab) line)
-    ((Some tab)
-     (Some (Tuple (substring line (string-cursor-start line) tab)
-                  (substring line (string-cursor-next line tab)
-                             (string-cursor-end line)))))
-    (None None)))
+  (def (Some tab) (string-index #(char=? & #\tab) line) :propagate)
+  (Some (Tuple (substring line (string-cursor-start line) tab)
+               (substring line (string-cursor-next line tab)
+                          (string-cursor-end line)))))
 
 ;; Is there anything to do before the artefact can be used?
 (: (-> string string Against bool))
@@ -460,7 +454,7 @@
   ;; the artefact was built from, so the only safe answer is to build it. `#f`
   ;; here makes `ensure-built` serve a record that is not there, and fail with
   ;; an exit code and no message.
-  (def* ((Some rec) (read-record file) :leave-with #t))
+  (def (Some rec) (read-record file) :leave-with #t)
   (or (built-otherwise? rec wanted against file)
       (any? #(newer? & (record-ref rec output)) (record-ref rec inputs))))
 
@@ -512,13 +506,11 @@
 (: (-> (Tuple string string) (List string)))
 (defun (interface-kept entry)
   (def (Tuple digest dll) entry)
-  (match (read-record dll)
-    ((Some dep)
-     (if (and (= (record-ref dep written) (mtime dll))
-              (= (record-ref dep interface) digest))
-         (Cons dll (record-ref dep sources))
-         Nil))
-    (None Nil)))
+  (def (Some dep) (read-record dll) :leave-with Nil)
+  (if (and (= (record-ref dep written) (mtime dll))
+           (= (record-ref dep interface) digest))
+      (cons dll (record-ref dep sources))
+      Nil))
 
 ;; Early cutoff, for an artefact whose imports have just been built: current if
 ;; everything newer than it is a linked module whose interface is the one it was
@@ -531,7 +523,7 @@
   (def excused
     (loop (:for entry (record-ref rec interface-of))
           (:acc out (folding Nil (list-append (interface-kept entry) out)))
-          => out))
+      => out))
   (and (not (built-otherwise? rec wanted against file))
        (file-exists? artefact)
        (= (record-ref rec written) (mtime artefact))
@@ -566,7 +558,7 @@
   (def flags (list-append (Cons "--batch" (Cons "--if-stale" Nil))
                           (list-append (if debug? (Cons "-d" Nil) Nil)
                                        (against-flags roots))))
-  (exec "dotnet" (list->vec (Cons compiler-dll (list-append flags files)))))
+  (exec "dotnet" (list->vec (cons compiler-dll (list-append flags files)))))
 
 ;; The artefact as it already stands, for a file that needs no building.
 ;;
@@ -626,9 +618,8 @@
     ;; The compiler said it succeeded and left no record. It writes one after
     ;; every build that did, so this is a compiler too old for this `bjo`.
     (def (Some built) (read-record file)
-      :leave (None
-              (println #"bjo: ${file} compiled, but left no build record.")
-              (Err 1)))
+      :leave (None (println #"bjo: ${file} compiled, but left no build record.")
+                   (Err 1)))
 
     (Ok (Tuple built #t))))
 
@@ -677,17 +668,18 @@
 ;; before it does anything, and `--batch` pays that once instead of per file.
 (: cmd-check #:sync (-> (List string) Against int))
 (defun (cmd-check files roots)
-  (if (not (have-compiler?))
-      1
-      (let ((batch (match files
-                     ((Cons _ (Cons _ _)) (Cons "--batch" Nil))
-                     (_ Nil))))
-        (exec "dotnet"
-              (list->vec (Cons compiler-dll
-                               (Cons "--check"
-                                     (list-append (against-flags roots)
-                                                  (list-append batch files)))))))))
-  
+  (cond
+    ((not (have-compiler?)) 1)
+    (else
+     (def batch
+       (match files
+         ((Cons _ (Cons _ _)) (Cons "--batch" Nil))
+         (_ Nil)))
+     (exec "dotnet"
+           (list->vec #fr(cons compiler-dll "--check"
+                               (list-append (against-flags roots)
+                                            (list-append batch files))))))))
+
 ;; `bjo test`: builds each test file and runs it, with `filters` as its
 ;; arguments, so that a test file ending in `(run-tests)` runs the tests whose
 ;; names contain one of them. A test file prints its failures and one line,
@@ -699,20 +691,20 @@
 ;; fixture, and is not run. A named file without a main is an error.
 (: cmd-test #:sync (-> (List string) bool (List string) bool bool bool int))
 (defun (cmd-test files named? filters debug? force? locked?)
+  (defun (destructure-roots file)
+    (def (Ok roots) (roots-for-file file locked?)
+      :leave ((Err why) (Some (fail why))))
+    (match (ensure-built file debug? #f force? roots)
+      ((Err status) (Some status))
+      ((Ok (Tuple rec _)) #:when (string-ends-with? (record-ref rec output) ".dll")
+       (if named?
+           (Some (fail #"bjo test: ${file} has no main. End a test file with (run-tests)."))
+           None))
+      ((Ok (Tuple rec _))
+       (Some (exec "dotnet" (list->vec (Cons (record-ref rec output) filters)))))))
   (def statuses
     (loop (:for file files)
-          (:let status
-                (match (roots-for-file file locked?)
-                  ((Err why) (Some (fail why)))
-                  ((Ok roots)
-                   (match (ensure-built file debug? #f force? roots)
-                     ((Err status) (Some status))
-                     ((Ok (Tuple rec _)) #:when (string-ends-with? (record-ref rec output) ".dll")
-                      (if named?
-                          (Some (fail #"bjo test: ${file} has no main. End a test file with (run-tests)."))
-                          None))
-                     ((Ok (Tuple rec _))
-                      (Some (exec "dotnet" (list->vec (Cons (record-ref rec output) filters)))))))))
+          (:let status (destructure-roots file))
           (:when-let (Some code) status)
           (:do (unless (= code 0) (println #"bjo test: ${file} failed.")))
           (:acc out (listing code))))
@@ -941,7 +933,7 @@
                                              (dir dir)
                                              (resources resources)
                                              (own (= (root-name r) own-name)))))
-        => out))
+    => out))
 
 ;; Publishes a program that has been built, and says where to.
 (: publish-built #:sync (-> BuildRecord (List PublishedPackage) Cmdline string int))
@@ -961,13 +953,11 @@
         ((Err why) (fail why))
         ((Ok n)
          (def dir (path-absolute out))
-         (def name (match (path-filename program)
-                     ((Some name) name)
-                     (None program)))
+         (def (Some name) (path-filename program)
+           :default program)
          (println #"Published ${program} to ${dir}: ${n} files.")
-         (def native (match (path-filename (record-ref rec aot))
-                       ((Some native) native)
-                       (None "")))
+         (def (Some native) (path-filename (record-ref rec aot))
+           :default "")
          (if (= native "")
              (println #"Run it with: dotnet ${(path-combine dir name)}")
              (println #"Run it with: ${(path-combine dir native)}"))
@@ -1113,7 +1103,7 @@
 ;; is wrong goes to standard error, and nothing to standard output.
 (: (-> bool int))
 (defun (fmt-stdin diff?)
-  (def input (parameter-ref current-input-port))
+  (def input (get current-input-port))
   (def lines
     (let go ((acc Nil))
       (match (read-line/opt input)
@@ -1136,22 +1126,22 @@
 (defun (fmt-targets named)
   (match named
     (Nil
-     (match (project-here "fmt")
-       ((Err why) (Err why))
-       ((Ok project)
-        (Ok (loop (:for dir (list "src" "tests" "benches"))
-                  (:acc out (folding Nil (list-append out (sources-under (path-combine (project-dir project) dir)))))
-              => out)))))
+     (def (Ok project) (project-here "fmt")
+       :propagate)
+     ;; TODO: this is not how to build a list :( 
+     (Ok (loop (:for dir (list "src" "tests" "benches"))
+               (:acc out (folding Nil (list-append out (sources-under (path-combine (project-dir project) dir)))))
+           => out)))
     (_
+     (defun (do-it name out)
+       (def (Ok so-far) out :propagate)
+       (cond
+         ((directory-exists? name) (Ok (list-append so-far (sources-under name))))
+         ((file-exists? name) (Ok (list-append so-far (list name))))
+         (else (Err #"bjo fmt: no such file or directory '${name}'."))))
+     
      (loop (:for name named)
-           (:acc out (folding (Ok Nil)
-                              (match out
-                                ((Err why) (Err why))
-                                ((Ok so-far)
-                                 (cond
-                                   ((directory-exists? name) (Ok (list-append so-far (sources-under name))))
-                                   ((file-exists? name) (Ok (list-append so-far (list name))))
-                                   (else (Err #"bjo fmt: no such file or directory '${name}'.")))))))
+           (:acc out (folding (Ok Nil) (do-it name  out)))
        => out))))
 
 (: (-> void))
@@ -1238,7 +1228,7 @@
                      (ret (Err #"bjo ${command}: no such file '${name}'."))))
               (:when-let (Some file) resolved)
               (:acc out (listing file))
-              => out))))
+          => out))))
 
 (: dispatch #:sync (-> string Cmdline int))
 (defun (dispatch command line)
@@ -1344,7 +1334,7 @@
          (ret (fail "bjo test: there are no test files. Put them under tests/, or name them.")))
        (cmd-test files (not (empty? named)) filters debug? force? locked?)))
 
-;; The benchmark files named, or every one under the project's benches/.
+    ;; The benchmark files named, or every one under the project's benches/.
     ;; Always a Release build: a Debug one measures code the JIT did not
     ;; optimise.
     ("bench"
