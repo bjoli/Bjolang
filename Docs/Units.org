@@ -51,7 +51,10 @@ units with the same name are /the same/.
   removed by ~in~. ~as~ converts within a dimension only.
 
 Literals settling at SI means that code which writes only ~<…>~ literals and
-~double~ works in SI throughout, and never sees a unit it did not write.
+~double~ works in SI throughout. It also means that the unit written in a
+literal is not the unit of the value: ~(def x <1 ft>)~ is a ~(double m)~,
+0.3048, and prints as ~0.3048 m~. To keep feet, say so: ~(: x (double ft))~,
+or ~(as <1 ft> ft)~.
 
 *** Type syntax
 
@@ -61,6 +64,16 @@ Literals settling at SI means that code which writes only ~<…>~ literals and
 - Unit variables appear in unit expressions: ~(double %u^2)~,
   ~(num %c %r %v^2)~. The grammar accepts ~%name~ as an atom and the resolver
   returns it as a variable.
+- ~%~ followed by a name is a variable, as the lexer reads a type variable
+  (~Lexer.fs:544~); ~%~ alone is the unit percent. ~(double %)~ is a
+  percentage, ~(double %u)~ a number at any unit. A quantity literal has no
+  variables: ~<5 %>~ is percent, ~<5 %u>~ is an error.
+- In a type the unit expression is read by the S-expression reader, so it
+  has no parentheses. A rational exponent is written with ~|~, which the
+  grammar reads before anything else: ~(double Hz^-1|2)~, ~(double kg^1|2)~.
+  A denominator of several units is written by juxtaposition, which binds
+  tighter than ~/~: ~(double m/s kg)~ is m/(s·kg). Inside ~<…>~ the text is
+  read as written, and parentheses are allowed: ~<1 Hz^(-1/2)>~.
 
 *** Dimensions and units are declarations
 
@@ -142,8 +155,9 @@ module):
 #+BEGIN_SRC scheme
 (def/unit-resolver resolve)
 
-(: (-> UnitTable string (Result string Resolved)))
-(defun (resolve table text) ...)
+(: (-> Syntax string (Result string Syntax)))
+(defun (resolve table text)
+  (result-map resolved->syntax (resolve-unit (syntax->unit-table table) text)))
 #+END_SRC
 
 - The compiler hands it the table in scope at the use and the expression as
@@ -152,9 +166,17 @@ module):
   first time something says ~km~ — or a message: "unknown unit ~meeter~; did
   you mean ~meter~?".
 - The table and the result cross as ~Syntax~, as a macro's form does, so the
-  marshalling in ~Macro.fs~ is reused.
-- ~(std units)~ declares the resolver. One resolver per program, found among
-  the linked modules: see "The resolver is linked, not imported".
+  marshalling in ~Macro.fs~ is reused. The signature says so:
+  ~(-> Syntax string (Result string Syntax))~, checked at the declaration.
+  The resolver reads the table into a ~UnitTable~ and writes the ~Resolved~
+  back; ~resolve-unit~ itself stays ~(-> UnitTable string (Result string
+  Resolved))~, the function run-time parsing calls.
+- ~(std units resolve)~ declares the resolver, not ~(std units)~. A resolver
+  cannot be used in the module that defines it, as a macro cannot
+  (~Docs/MACROS.org~), and ~(std units)~ is made of unit declarations. So the
+  parser, the factors, the terms and the resolver are one module, and the
+  table that uses them is another, which links it. One resolver per program,
+  found among the linked modules: see "The resolver is linked, not imported".
 - It runs at parse time, for the literal and the conversions as for the types:
   ~TypeSyntax.parseType~ (117) calls it on the unit of a number type.
 - An atom made twice with the same dimension and factor is one atom; with a
@@ -171,13 +193,15 @@ own, and a fixed signature checked at the declaration.
 - *~(std rational)~* — exact fractions over ~bigint~. Std has no rational
   type; this one is not only for units.
 - *Unit terms* — maps from atoms to rational exponents, multiply, divide,
-  power.
+  power. In ~(std units resolve)~.
 - *The parser* — GNU's grammar (below), with prefixes, plurals, and nearest-
   name suggestions by edit distance. A port of Umits' FParsec parser to plain
-  Bjolang.
-- *The resolver* — the parser, against the table it is handed.
-- *The table* — the SI base dimensions and ~bit~, the coherent and derived
-  units, Umits' ~200 units ported to ~def/unit~, the prefixes, the constants.
+  Bjolang. In ~(std units resolve)~.
+- *The resolver* — the parser, against the table it is handed. In
+  ~(std units resolve)~, which declares it.
+- *The table* — in ~(std units)~: the SI base dimensions and ~bit~, the
+  coherent and derived units, Umits' ~200 units ported to ~def/unit~, the
+  prefixes, the constants.
 - *Temperatures* — newtypes ~Celsius~ and ~Fahrenheit~ over ~double~,
   ~celsius->kelvin~ and back, with CSV and JSON codecs. No ~degC~ or ~degF~
   unit: with factor 1, ~(double degC)~ would be ~(double K)~.
@@ -194,11 +218,11 @@ reads it from a text field at run time are one function.
 
 GNU's. Juxtaposition binds tighter than ~/~, so ~kg m/s^2~ is kg·m/s² and
 ~m/s kg~ is m/(s·kg); ~*~ and ~/~ are left to right; ~^~ and a trailing digit
-raise (~m2~), with a rational exponent in parentheses (~Hz^(-1/2)~); ~|~
-divides two numbers before anything else, which is how a fraction of a unit is
-written: ~1|60 deg~. Prefixes are tried longest first (~MiB~ before ~M~), after
-an exact name: ~min~ is a minute, not milli-inch. Plurals are declared, not
-guessed.
+raise (~m2~), with a rational exponent in parentheses (~Hz^(-1/2)~) or with
+~|~ (~Hz^-1|2~); ~|~ divides two numbers before anything else, which is how
+a fraction of a unit is written: ~1|60 deg~. Prefixes are tried longest
+first (~MiB~ before ~M~), after an exact name: ~min~ is a minute, not
+milli-inch. Plurals are declared, not guessed.
 
 Umits has the same precedence but no ~|~, so its table's ~1/60 deg~ means
 ~1/(60 deg)~.
@@ -231,9 +255,12 @@ The compiler can say which module, because it is linked.
 - Unit names are exported by name, in a namespace of their own: a unit ~m~
   and a variable ~m~ do not clash.
 - They can be re-exported, ~(re-export m s kg)~, and renamed by ~prefix~ and
-  ~only~ as types are: ~(prefix (std units) "u/")~ gives ~<1 u/m>~. The key
-  stays the declaring module's, so ~u/m~ and ~m~ from two imports are one
+  ~only~ as types are: ~(prefix (std units) "si_")~ gives ~<1 si_m>~. The key
+  stays the declaring module's, so ~si_m~ and ~m~ from two imports are one
   unit.
+- A prefix given to unit names is made of name characters — letters, digits,
+  ~_~ — and is an error otherwise. The grammar's operators cannot be in a
+  name: with ~"u/"~, ~<1 u/m>~ would be the atomic mass unit per metre.
 - A unit belongs to the module that declares it. A module that declares an
   ~m~ of its own has a different unit, not convertible to ~(std units)~'s
   ~m~ — two types named ~Point~ in two modules are two types.
@@ -245,8 +272,8 @@ The compiler can say which module, because it is linked.
 
 If library C imports ~(std units)~ and declares ~furlong~, and D imports only
 C, D writes ~<1 furlong>~: the name comes from C by import, the resolver from
-~(std units)~ by linking. Making D import ~(std units)~ for the parser alone
-would bring no name D needs.
+~(std units resolve)~ by linking. Making D import ~(std units)~ for the
+parser alone would bring no name D needs.
 
 - The resolver is the one declared by a module the program is linked
   against.
@@ -261,7 +288,7 @@ would bring no name D needs.
 | B writes ~<1 m>~ without importing                      | error: ~m~ is not in scope, and where it is     |
 | D writes ~<1 furlong>~, ~furlong~ from C                | works: the name by import, the resolver by link |
 | A module declares its own ~m~                           | a unit of its own, not ~(std units)~'s          |
-| ~(prefix (std units) "u/")~                             | ~<1 u/m>~, the same unit as ~m~                 |
+| ~(prefix (std units) "si_")~                            | ~<1 si_m>~, the same unit as ~m~                |
 | Two resolvers linked into one program                   | error, naming both                              |
 
 ** Decisions made, and why
@@ -297,7 +324,9 @@ would bring no name D needs.
 ** Open questions
 
 1. How an inferred type with units is printed in an error about code that
-   uses none. Proposal: a ~%u~ that is unconstrained prints as nothing.
+   uses none. Proposal: an unsolved unit metavariable prints as nothing in an
+   error message. A generalized unit variable always prints: ~(-> (double
+   %u) (double %u))~ is not ~(-> double double)~.
 2. Whether a unit-generic impl may constrain its unit: ~(impl (Foo (double
    %u)) (where (Length %u)))~. Not needed for the first version.
 3. Quantity kinds (torque against energy, width against height), as mp-units
@@ -310,6 +339,11 @@ would bring no name D needs.
 6. Factor-1 names are lost in printing: ~Sv~ and ~Gy~ are both ~m^2/s^2~,
    ~Hz~ and ~Bq~ both ~1/s~. A value prints as its dimension's preferred
    unit unless ~#:in~ says otherwise. Quantity kinds (3) would fix it.
+7. Metric prefixes on a renamed unit. With ~(prefix (std units) "si_")~, a
+   kilometre is ~ksi_m~ if prefixes are not renamed, ~si_ksi_m~ if they are.
+   Proposal: an import's prefix renames units and not ~def/prefix~ names, so
+   ~ksi_m~; or a renamed import does not take metric prefixes, and ~si_km~ is
+   the renamed ~km~ that ~(std units)~ made.
 
 ** Implementation plan
 
@@ -448,9 +482,10 @@ The suite passes unchanged, codegen tests included.
 F#.
 
 - ~def/unit-resolver~: the declaration, its signature check, its entry in the
-  metadata beside ~BjolangMacros~ (~Program.fs~, ~Pipeline.parseMacroEntries~),
-  and the call, through ~Macro.fs~'s marshalling. The table and the result as
-  ~Syntax~.
+  metadata beside ~Macros~, ~PatternMacros~, ~HashMacros~ and ~ClauseMacros~
+  (~ModuleMetadata.fs~, a ~MacroEntry~ list), and the call, through
+  ~Macro.fs~'s marshalling. The table and the result as ~Syntax~.
+  ~currentVersion~ 28 → 29.
 - The module's unit table: ~def/dimension~, ~def/unit~, ~def/prefix~ become
   declarations, each resolved through the hook in the order written; the
   atoms the resolver makes are kept; exported as source.
@@ -461,12 +496,19 @@ F#.
 - The resolver found among the linked modules, not the imported ones; two is
   an error, none is "unit expressions need (std units)".
 - Number types with a unit in ~TypeSyntax.parseType~ and
-  ~Annotations.resolveTypeAnnotation~ (287).
+  ~Annotations.resolveTypeAnnotation~ (295). The unit is the type's
+  remaining atoms joined by spaces, so it has no parentheses (see "Type
+  syntax").
 - ~as~ and ~in~ as special forms: the dimension of ~x~'s unit must be the
   target's; ~as~ emits ~x~ times a constant, ~in~ is ~as~ and then unit 1. A
   factor that is not exact in a ~decimal~ (the parsec has π in it) is a
   warning. ~as~ from unit 1 to a unit with a dimension is an error that
   suggests ~(* x <1 m>)~. A multiplication by exactly 1 is not emitted.
+  Being special forms, a local binding named ~in~ or ~as~ can no longer be
+  called as a head (~Parser.parseHeadedChecked~). The bindings of those names
+  today (~lib/std/run.bjo:388~, ~bjo/bench.bjo:615~, ~TestFiles/317~, the
+  clbg ~revcomp~) are not called, and a record field named ~in~ still reads
+  as a field (~processConstructorArgs~).
 - ~cast~ between number types keeps the unit: ~(-> (decimal %u) (double %u))~.
 - The quantity literal: the reader (~Lexer.fs~, number reading at 564) reads
   ~<~ directly followed by a digit, ~.~, or ~-~ and a digit as a quantity, to
@@ -484,7 +526,9 @@ F#.
   - ~*~ and ~/~: ~(-> (TNum %c %u) (TNum %c %v) (TNum %c %u·%v))~ with ~Num %c~.
     At unit 1 this is today's ~(-> %a %a %a)~.
   - ~sqrt~, ~cbrt~: ~%u^2 → %u~, ~%u^3 → %u~. ~expt~ with a literal
-    exponent: ~%u^n~; with any other, unit 1.
+    exponent: ~%u^n~; with any other, unit 1. No scheme says this, since
+    the type depends on the literal's value: a call of ~expt~ is typed by
+    inference reading the exponent's literal, as a special case.
   - ~sin~, ~exp~, ~log~, ~floor~, ~round~: unit 1.
   - A zero literal, ~0~, ~0.0~ or ~0M~: a number of any unit.
   - Any other plain literal where a unit is expected: an error suggesting
@@ -492,6 +536,14 @@ F#.
 - ~(num %c %u)~ and unit variables in type syntax.
 - ~Num~ at a unit other than 1 is an error that says why: "metres are not a
   Num: (* x x) on them is m²; this function does not know that".
+- What Phase 4 left for here:
+  - impl lookup at a ~TNum~: ~implKey~, and ~Holes.meet~, which takes equal
+    units only;
+  - literals at a ~TNum~ (~Traits~), and unit cells held where literal cells
+    are (~heldMetaIds~);
+  - an ~import/extern~ that returns a quantity: its declared type with
+    units, checked against .NET with them erased, and the call typed by the
+    declaration rather than by .NET.
 
 Tests: a resolver of a few units in ~TestFiles/inc~, so the compiler is
 tested apart from ~(std units)~; error tests for every mismatch and for the
@@ -502,8 +554,12 @@ as one multiplication.
 
 Bjolang.
 
-- ~(std units)~ declares its resolver, the Phase 2 parser, and turns its
-  table into ~def/dimension~, ~def/unit~ and ~def/prefix~ declarations.
+- ~lib/std/units.bjo~ splits in two. ~(std units resolve)~: factors, terms,
+  the Phase 2 parser and ~resolve-unit~, the ~Syntax~ codec for ~UnitTable~
+  and ~Resolved~, and the ~def/unit-resolver~ declaration. ~(std units)~:
+  imports it, re-exports what a program uses, and turns the table into
+  ~def/dimension~, ~def/unit~ and ~def/prefix~ declarations, which the
+  resolver it links resolves.
 - The constants as units: ~<1 c>~ is a ~(double m/s)~.
 - Unit-generic impls for what is correct at any unit: ~Eq~, ~Ord~, hashing.
 - From ~Num~ to ~Measure~: the ~summing~ collector, ~positive?~,
@@ -522,7 +578,8 @@ compiled and run.
   printing.
 - Default output: the unit in the type; for a coherent SI unit the preferred
   name for its dimension with a prefix chosen by magnitude: ~3.6 MJ~.
-- ~(quantity->string q #:in ft,in)~: mixed output.
+- ~(quantity->string q #:in "ft,in")~: mixed output. A string, since ~,~
+  is unquote to the reader.
 - ~(string->quantity s)~: at the unit the caller expects, ~None~ if the
   dimension is wrong.
 
