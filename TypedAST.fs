@@ -54,6 +54,8 @@ and HMType =
     | TMeta of MetaVar
     // TraitName * AssociatedTypeName * Implementor
     | TAssoc of string * string * HMType
+    /// A number type with a unit other than 1. Built only by `tnum`.
+    | TNum of HMType * Units.UnitTerm
 
 /// Whether calling a function can suspend the fiber it runs on.
 ///
@@ -110,6 +112,43 @@ and [<CustomEquality; NoComparison>] EffectCell =
 
 /// `(-> ...)` as written in every signature that exists today.
 let tfun (args: HMType list) (ret: HMType) : HMType = TFun(args, ret, ESync)
+
+/// A number type with a unit: the carrier itself when the unit is 1, so
+/// that `double` is `(double 1)` and has one representation.
+let tnum (carrier: HMType) (unit: Units.UnitTerm) : HMType =
+    let unit = Units.prune unit
+
+    if Units.isOne unit then
+        carrier
+    else
+        match carrier with
+        | TNum(inner, u) -> TNum(inner, Units.mul u unit)
+        | _ -> TNum(carrier, unit)
+
+/// The unit variables a type mentions.
+let rec unitVarsOf (t: HMType) : string list =
+    match t with
+    | TNum(carrier, unit) -> Units.vars (Units.prune unit) @ unitVarsOf carrier
+    | TCon(_, args)
+    | TTuple args -> List.collect unitVarsOf args
+    | TFun(args, ret, _) -> List.collect unitVarsOf (ret :: args)
+    | TAssoc(_, _, implementor) -> unitVarsOf implementor
+    | TMeta { Value = Some inner } -> unitVarsOf inner
+    | TVar _
+    | TMeta _ -> []
+
+/// What a value of the type is at run time: the carrier without its unit,
+/// recursively.
+let rec eraseUnits (t: HMType) : HMType =
+    match t with
+    | TNum(carrier, _) -> eraseUnits carrier
+    | TCon(name, args) -> TCon(name, List.map eraseUnits args)
+    | TFun(args, ret, eff) -> TFun(List.map eraseUnits args, eraseUnits ret, eff)
+    | TTuple args -> TTuple(List.map eraseUnits args)
+    | TAssoc(traitName, assocName, implementor) -> TAssoc(traitName, assocName, eraseUnits implementor)
+    | TMeta { Value = Some inner } -> eraseUnits inner
+    | TVar _
+    | TMeta _ -> t
 
 /// How an arrow of this effect is spelled, in diagnostics and in published
 /// module metadata alike.
@@ -2557,6 +2596,7 @@ let rec foldType (leaf: HMType -> 'a list) (t: HMType) : 'a list =
     | TFun(args, ret, _) -> (List.collect (foldType leaf) args) @ foldType leaf ret
     | TTuple args -> List.collect (foldType leaf) args
     | TAssoc(_, _, impl) -> foldType leaf impl
+    | TNum(carrier, _) -> foldType leaf carrier
 
 /// Every type variable a type mentions, in order of first appearance.
 let typeVarsOf (t: HMType) : string list =
@@ -2578,6 +2618,7 @@ let rec substTypeVars (subst: Map<string, HMType>) (t: HMType) : HMType =
     | TFun(args, ret, eff) -> TFun(List.map (substTypeVars subst) args, substTypeVars subst ret, eff)
     | TTuple args -> TTuple(List.map (substTypeVars subst) args)
     | TAssoc(tn, an, impl) -> TAssoc(tn, an, substTypeVars subst impl)
+    | TNum(carrier, unit) -> TNum(substTypeVars subst carrier, unit)
     | other -> other
 
 /// `t` with each newtype in it replaced by what it wraps, at its arguments,
@@ -2595,6 +2636,7 @@ let rec eraseNewtypesIn (newtypes: Map<string, string list * HMType>) (t: HMType
     | TTuple args -> TTuple(List.map erase args)
     | TMeta { Value = Some inner } -> erase inner
     | TAssoc(traitName, assocName, implementor) -> TAssoc(traitName, assocName, erase implementor)
+    | TNum(carrier, _) -> erase carrier
     | other -> other
 
 /// `constraints` and the superclasses of each, transitively: `(Ord %a)` gives

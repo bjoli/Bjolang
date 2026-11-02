@@ -3076,6 +3076,7 @@ and private initType (env: Env) (e: Expr) : HMType option =
         | TTuple ts -> List.collect tvars ts
         | TFun(ps, r, _) -> List.collect tvars (r :: ps)
         | TAssoc(_, _, i) -> tvars i
+        | TNum(c, _) -> tvars c
         | _ -> []
 
     // An `import/extern` alias is not a binding: its declared type is in the
@@ -3095,6 +3096,7 @@ and private initType (env: Env) (e: Expr) : HMType option =
         | TCon(_, ts)
         | TTuple ts -> List.exists hasAssoc ts
         | TFun(ps, r, _) -> List.exists hasAssoc (r :: ps)
+        | TNum(c, _) -> hasAssoc c
         | _ -> false
 
     // One-way: only the scheme's own variables are solved, from `actual`.
@@ -3146,6 +3148,7 @@ and private initType (env: Env) (e: Expr) : HMType option =
                     | TTuple ts -> List.exists unsolved ts
                     | TFun(qs, r, _) -> List.exists unsolved (r :: qs)
                     | TAssoc _ -> true
+                    | TNum(c, _) -> unsolved c
                     | _ -> false
 
                 if unsolved ret then None else answer (substTypeVars s ret)

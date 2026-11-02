@@ -1605,7 +1605,13 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
                     $"'%s{name}' declares its parameter '%s{paramName}' as -?->, which says it will be given a function of either colour — but the body neither calls it nor hands it to another -?->. Both copies of '%s{name}' would be identical. Write the parameter -> if it is an ordinary function, or use it if the body meant to.\n  at %s{Lexer.formatPos r}"
             | _ -> ()
 
-    let decl = TDefun(name, vars, mandatoryTypes, typedKeywordArgs, restArgInfo, expectedRetType, effect, typedBody, r)
+    // Unit variables are quantified by the scheme and are no type arguments.
+    let typeArgs =
+        match unitVarsOf schemeType with
+        | [] -> vars
+        | unitVars -> vars |> List.filter (fun v -> not (List.contains v unitVars))
+
+    let decl = TDefun(name, typeArgs, mandatoryTypes, typedKeywordArgs, restArgInfo, expectedRetType, effect, typedBody, r)
     finalEnv, Map.remove name sigs, [ decl ]
 
 and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Decl list) (r: Range) : Env * Sigs * TDecl list =
@@ -3616,6 +3622,7 @@ and private checkImplMethod
                         | TTuple args2 -> TTuple(List.map settle args2)
                         | TFun(args2, ret2, eff2) -> TFun(List.map settle args2, settle ret2, eff2)
                         | TAssoc(tn, an, inner) -> TAssoc(tn, an, settle inner)
+                        | TNum(carrier, unit) -> TNum(settle carrier, unit)
                         | other -> other
 
                     let dictParams = dictParams |> List.map (fun (dn, t) -> dn, settle t)

@@ -157,6 +157,14 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
     // It is also what `serializeHMType` writes for a `TTuple`, so without this
     // no exported signature mentioning a tuple could be read back.
     | TApp("Tuple", args, _) -> TTuple(args |> List.map (resolveWith checkNames registry))
+    // `(units double key^1 'u^1/2)`: a number type with a unit, as
+    // `serializeHMType` writes it. Atoms are keys.
+    | TApp("units", carrier :: parts, r) when parts |> List.forall (function TName _ -> true | _ -> false) ->
+        let texts = parts |> List.map (function TName(n, _) -> n | _ -> "")
+
+        match Units.ofMetadataParts texts with
+        | Ok unit -> tnum (resolveWith checkNames registry carrier) unit
+        | Error e -> failwithf $"Type Error at %s{Lexer.formatPos r}: (units ...) %s{e}."
     //
     // A program writes it too, in an impl's associated type:
     // `(type %elem (assoc Iterable elem %s))` is the `%elem` of the `Iterable`

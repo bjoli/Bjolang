@@ -3409,6 +3409,9 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         let env, typedAst =
             Timing.phase "monomorphise" (fun () -> Monomorphise.run env moduleOf letrecifiedDecls typedAst)
 
+        // Units end here: nothing after this emits or optimizes by them.
+        let typedAst = Timing.phase "erase units" (fun () -> EraseUnits.run typedAst)
+
         // After `Monomorphise`, so that a copy at a concrete type has its
         // drivers marked too, and before `TraitInline`, which removes the trait
         // calls that the marks are found by.

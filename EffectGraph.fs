@@ -433,6 +433,7 @@ let rec private ground (allowed: bool) (t: HMType) : unit =
     | TCon(_, args)
     | TTuple args -> args |> List.iter (ground allowed)
     | TAssoc(_, _, implementor) -> ground allowed implementor
+    | TNum(carrier, _) -> ground allowed carrier
     | TMeta { Value = Some inner } -> ground allowed inner
     | _ -> ()
 

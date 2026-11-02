@@ -206,6 +206,7 @@ let rec private checkType (t: HMType) : string option =
     | TCon(_, args)
     | TTuple args -> List.tryPick checkType args
     | TFun(ps, r, _) -> List.tryPick checkType (r :: ps)
+    | TNum(carrier, _) -> checkType carrier
     | _ -> None
 
 // ---------------------------------------------------------------------------
@@ -283,6 +284,7 @@ let rec private typeBounds (vars: Set<string>) (t: HMType) : (string * Bound) li
     | TCon(_, args)
     | TTuple args -> List.collect (typeBounds vars) args
     | TFun(ps, r, _) -> List.collect (typeBounds vars) (r :: ps)
+    | TNum(carrier, _) -> typeBounds vars carrier
     | _ -> []
 
 /// The bounds a call of a generic .NET method at `typeArgs` puts on `vars`.
@@ -312,6 +314,7 @@ let rec private substituteKeys (m: Map<string, HMType>) (t: HMType) : HMType =
     | TCon(n, args) -> TCon(n, List.map (substituteKeys m) args)
     | TTuple ts -> TTuple(List.map (substituteKeys m) ts)
     | TFun(ps, r, e) -> TFun(List.map (substituteKeys m) ps, substituteKeys m r, e)
+    | TNum(carrier, unit) -> TNum(substituteKeys m carrier, unit)
     | other -> other
 
 /// A generic function of the module: its type parameters, by key, and the
@@ -557,6 +560,7 @@ let rec private named (vars: Set<string>) (t: HMType) : string list =
     | TCon(_, args)
     | TTuple args -> List.collect (named vars) args
     | TFun(ps, r, _) -> List.collect (named vars) (r :: ps)
+    | TNum(carrier, _) -> named vars carrier
     | _ -> []
 
 /// Whether `t` holds a type that inference left undecided.
@@ -566,6 +570,7 @@ let rec private undecided (registry: TraitRegistry) (t: HMType) : bool =
     | TCon(_, args)
     | TTuple args -> List.exists (undecided registry) args
     | TFun(ps, r, _) -> List.exists (undecided registry) (r :: ps)
+    | TNum(carrier, _) -> undecided registry carrier
     | _ -> false
 
 /// The types an expression uses at run time: the type arguments of a call of

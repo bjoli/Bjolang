@@ -158,6 +158,7 @@ let rec private typeVarsOf (t: HMType) : Set<string> =
         | Some inner -> typeVarsOf inner
         | None -> Set.empty
     | TAssoc(_, _, implementor) -> typeVarsOf implementor
+    | TNum(carrier, _) -> typeVarsOf carrier
 
 /// The type variables C# can infer from an argument of type `t`. A newtype is
 /// its representation in C#, so a variable that only a newtype's type
@@ -183,6 +184,7 @@ let rec private inferableTypeVarsOf (registry: TraitRegistry) (t: HMType) : Set<
         | Some inner -> recur inner
         | None -> Set.empty
     | TAssoc(_, _, implementor) -> recur implementor
+    | TNum(carrier, _) -> recur carrier
 
 /// The bindings whose scheme quantifies a variable that none of the parameters
 /// `inferableFrom` picks out of the flat parameter list mentions. A binding it

@@ -287,6 +287,7 @@ let rec buildEvidence
                 | TVar v -> [ v ]
                 | TCon(_, args) | TTuple args -> args |> List.collect varsOf
                 | TFun(args, ret, _) -> (args |> List.collect varsOf) @ varsOf ret
+                | TNum(carrier, _) -> varsOf carrier
                 | _ -> []
 
             let vars = target.FixedPrefix |> List.collect varsOf |> List.distinct

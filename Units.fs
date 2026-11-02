@@ -239,7 +239,7 @@ let toStringWith (name: string -> string) (meta: UnitCell -> string) (t: UnitTer
     let atomText a =
         match a with
         | UName n -> name n
-        | UVar v -> v
+        | UVar v -> "%" + v.TrimStart '\''
         | UMeta c -> meta c
 
     let part (a, q: Rational) =
@@ -265,6 +265,39 @@ let toStringWith (name: string -> string) (meta: UnitCell -> string) (t: UnitTer
 let toString (t: UnitTerm) : string =
     toStringWith id (fun c -> $"?%d{c.UId}") t
 
+/// The term as metadata symbols: `key^exp` for a name, `'u^exp` for a unit
+/// variable. An unsolved metavariable is dropped: it is 1 by then.
+/// Unit variables are spelled as type variables are internally: `'u`.
+let toMetadataParts (t: UnitTerm) : string list =
+    (prune t).Exps
+    |> Map.toList
+    |> List.choose (fun (a, q) ->
+        match a with
+        | UName n -> Some $"%s{n}^%s{Rational.toString q}"
+        | UVar v -> Some $"%s{v}^%s{Rational.toString q}"
+        | UMeta _ -> None)
+
+/// Reads `toMetadataParts`'s symbols back. A part starting with ' is a unit
+/// variable.
+let ofMetadataParts (parts: string list) : Result<UnitTerm, string> =
+    parts
+    |> List.fold
+        (fun acc part ->
+            match acc with
+            | Error e -> Error e
+            | Ok t ->
+                match part.LastIndexOf '^' with
+                | i when i > 0 ->
+                    let name = part.Substring(0, i)
+
+                    match Rational.tryParse (part.Substring(i + 1)) with
+                    | Some q ->
+                        let atom = if name.StartsWith "'" then UVar name else UName name
+                        Ok(mul t (atomPow atom q))
+                    | None -> Error $"'%s{part}' has an exponent that is not a rational"
+                | _ -> Error $"'%s{part}' is not a unit atom with an exponent")
+        (Ok one)
+
 // ---------------------------------------------------------------------------
 // The test driver: --solve-units <file>
 // ---------------------------------------------------------------------------
@@ -288,7 +321,7 @@ let parseTestTerm (meta: string -> UnitCell) (text: string) : Result<UnitTerm, s
         | Some _ when name = "" -> Error $"'%s{token}' has no name"
         | Some _ when name = "1" -> Ok one
         | Some q when name.StartsWith "?" -> Ok(atomPow (UMeta(meta name)) q)
-        | Some q when name.StartsWith "%" -> Ok(atomPow (UVar name) q)
+        | Some q when name.StartsWith "%" -> Ok(atomPow (UVar("'" + name.Substring 1)) q)
         | Some q -> Ok(atomPow (UName name) q)
 
     let tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries) |> Array.toList

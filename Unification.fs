@@ -227,6 +227,8 @@ let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
             match pinned with
             | Some rhs -> prune registry rhs
             | None -> TAssoc(traitName, assocName, prunedImpl)
+    // A unit solved to 1 leaves the carrier.
+    | TNum(carrier, unit) -> tnum (prune registry carrier) unit
     | _ -> t
 
 /// The implementations of `traitName` at the head `ctor` that a type with the
@@ -379,6 +381,7 @@ let patternsOverlap (a: HMType) (b: HMType) : HMType option =
         | TCon(n, xs) -> TCon(n, List.map (resolve s) xs)
         | TTuple xs -> TTuple(List.map (resolve s) xs)
         | TFun(xs, r, e) -> TFun(List.map (resolve s) xs, resolve s r, e)
+        | TNum(c, u) -> TNum(resolve s c, u)
         | other -> other
 
     let rec occurs (v: string) (t: HMType) =
@@ -400,6 +403,7 @@ let patternsOverlap (a: HMType) (b: HMType) : HMType option =
             | TCon(n, xs), TCon(m, ys) when n = m && xs.Length = ys.Length -> List.fold2 unifyInto s xs ys
             | TTuple xs, TTuple ys when xs.Length = ys.Length -> List.fold2 unifyInto s xs ys
             | TFun(xs, r, _), TFun(ys, q, _) when xs.Length = ys.Length -> unifyInto (List.fold2 unifyInto s xs ys) r q
+            | TNum(c, u), TNum(d, v) when Units.prune u = Units.prune v -> unifyInto s c d
             | p, q -> if p = q then s else None
 
     let a, b = rename "l" a, rename "r" b
@@ -473,7 +477,21 @@ let instantiate
     // dictionary a trait constraint requires is chosen by that answer. Taking
     // them out of the map instead ordered them alphabetically, so `fold`'s
     // ['col; 'acc] came back as ['acc; 'col].
-    let boundFreshTypes = boundVars |> List.map (fun name -> Map.find name boundSubst)
+    // A bound variable that stands for a unit becomes a fresh unit cell. It
+    // is no type argument: `boundFreshTypes` leaves it out, as a `TDefun`'s
+    // type arguments do.
+    let unitVars = unitVarsOf t
+
+    let unitSubst =
+        boundVars
+        |> List.filter (fun v -> List.contains v unitVars)
+        |> List.map (fun v -> v, Units.ofAtom (Units.UMeta(Units.freshCell currentLevel)))
+        |> Map.ofList
+
+    let boundFreshTypes =
+        boundVars
+        |> List.filter (fun v -> not (unitSubst.ContainsKey v))
+        |> List.map (fun name -> Map.find name boundSubst)
 
     /// The one cell every `EPoly` in this signature becomes, made on demand.
     ///
@@ -509,6 +527,7 @@ let instantiate
         | TCon(name, args) -> TCon(name, List.map walk args)
         | TTuple args -> TTuple(List.map walk args)
         | TAssoc(tName, aName, impl) -> TAssoc(tName, aName, walk impl)
+        | TNum(carrier, unit) -> tnum (walk carrier) (Units.substVars unitSubst unit)
         | _ -> node
 
     let instantiatedType = walk t
@@ -551,6 +570,12 @@ let rec private occursAndLower (registry: TraitRegistry) (m: MetaVar) (t: HMType
     | TFun(args, ret, _) -> anyOf (ret :: args)
     | TTuple args -> anyOf args
     | TAssoc(_, _, impl) -> occursAndLower registry m impl
+    | TNum(carrier, unit) ->
+        for (cell, _) in Units.metas (Units.prune unit) do
+            if cell.ULevel > m.Level then
+                cell.ULevel <- m.Level
+
+        occursAndLower registry m carrier
     | TVar _ -> false
 
 let bindMeta (registry: TraitRegistry) (m: MetaVar) (t: HMType) =
@@ -749,6 +774,23 @@ let private within (step: string) (f: unit -> unit) =
     with :? MismatchException as e ->
         raise (MismatchException { e.Mismatch with Steps = step :: e.Mismatch.Steps })
 
+/// The units of two number types, which differ only there if they differ.
+let private unitsMeet (t1: HMType) (t2: HMType) (u1: Units.UnitTerm) (u2: Units.UnitTerm) =
+    match Units.unify u1 u2 with
+    | Ok() -> ()
+    | Error m ->
+        let show (u: Units.UnitTerm) =
+            if Units.isOne u then "1" else Units.toStringWith Naming.showTypeName (fun c -> "%?" + string c.UId) u
+
+        raise (
+            MismatchException
+                { Steps = []
+                  Left = t1
+                  Right = t2
+                  Arity = None
+                  Note = $"\n  Their units differ: %s{show m.Left} and %s{show m.Right}." }
+        )
+
 let rec private unifyIn (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
     let t1, t2 = prune registry t1, prune registry t2
 
@@ -819,6 +861,16 @@ let rec private unifyIn (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
     | TTuple args1, TTuple args2 when args1.Length = args2.Length ->
         List.iteri2 (fun i a b -> within $"in the %s{ordinal (i + 1)} element of the tuple" (fun () -> unifyIn registry a b)) args1 args2
     | TAssoc(tn1, an1, impl1), TAssoc(tn2, an2, impl2) when tn1 = tn2 && an1 = an2 -> unifyIn registry impl1 impl2
+    // Carriers as types, units as units. A type without a unit has unit 1.
+    | TNum(c1, u1), TNum(c2, u2) ->
+        unifyIn registry c1 c2
+        unitsMeet t1 t2 u1 u2
+    | TNum(c, u), other ->
+        unifyIn registry c other
+        unitsMeet t1 t2 u Units.one
+    | other, TNum(c, u) ->
+        unifyIn registry other c
+        unitsMeet t1 t2 Units.one u
     // A projection whose implementor is not known yet can not be compared now.
     // The equation waits; see `deferredProjections`.
     | TAssoc _, _ when projectionWaits registry t1 -> deferredProjections.Add(t1, t2, inferenceSite)
@@ -920,6 +972,17 @@ let unifyLabelled (registry: TraitRegistry) (header: string) (label1: string, t1
 let unifyExpecting (registry: TraitRegistry) (expected: HMType) (found: HMType) (what: string) =
     unifyLabelled registry $"%s{what} has the wrong type." ("expected", expected) ("found", found)
 
+/// The unsolved unit cells of a type.
+let rec unitCellsOf (registry: TraitRegistry) (t: HMType) : Units.UnitCell list =
+    match prune registry t with
+    | TNum(carrier, unit) -> (Units.metas (Units.prune unit) |> List.map fst) @ unitCellsOf registry carrier
+    | TCon(_, args)
+    | TTuple args -> List.collect (unitCellsOf registry) args
+    | TFun(args, ret, _) -> List.collect (unitCellsOf registry) (ret :: args)
+    | TAssoc(_, _, implementor) -> unitCellsOf registry implementor
+    | TVar _
+    | TMeta _ -> []
+
 /// `prune` is deep and leaves no bound metavariable behind, so pruning once at
 /// the top is what makes the survivors exactly the free ones.
 let freeVars (registry: TraitRegistry) (t: HMType) : MetaVar list =
@@ -938,6 +1001,10 @@ let demote (registry: TraitRegistry) (t: HMType) : unit =
     for m in freeVars registry t do
         if m.Level > currentLevel then
             m.Level <- currentLevel
+
+    for c in unitCellsOf registry t do
+        if c.ULevel > currentLevel then
+            c.ULevel <- currentLevel
 
 let freeTVars (registry: TraitRegistry) (t: HMType) : string list =
     prune registry t
@@ -1028,7 +1095,20 @@ let private generalizeWith (held: Set<int>) (scoped: Set<string>) (env: Env) (t:
     
     List.iter2 (fun (m: MetaVar) name -> m.Value <- Some(TVar name)) generalizable generatedNames
 
-    let allVars = (explicitTVars @ generatedNames) |> List.distinct
+    // Unit cells as type cells: deeper than the binding, a unit variable.
+    // Unit variables are in the scheme's list with the type variables, and
+    // erasure removes them from what C# sees.
+    let unitCells =
+        unitCellsOf env.Registry t |> List.distinctBy (fun c -> c.UId) |> List.filter (fun c -> c.ULevel > currentLevel)
+
+    let unitNames = unitCells |> List.map (fun _ -> Gensym.fresh "'u")
+
+    List.iter2 (fun (c: Units.UnitCell) name -> c.UValue <- Some(Units.ofAtom (Units.UVar name))) unitCells unitNames
+
+    let explicitUnitVars =
+        unitVarsOf (prune env.Registry t) |> List.filter (fun v -> not (Set.contains v scoped))
+
+    let allVars = (explicitTVars @ generatedNames @ explicitUnitVars @ unitNames) |> List.distinct
 
     // Default to empty constraints for now; gathering happens during inference
     Scheme(allVars, [], t)

@@ -106,6 +106,7 @@ let rec private applied (s: Map<string, HMType>) (t: HMType) : HMType =
     | TTuple xs -> TTuple(List.map (applied s) xs)
     | TFun(xs, r, e) -> TFun(List.map (applied s) xs, applied s r, e)
     | TAssoc(tn, an, impl) -> TAssoc(tn, an, applied s impl)
+    | TNum(carrier, unit) -> TNum(applied s carrier, unit)
     | other -> other
 
 let rec private mentions (key: string) (t: HMType) : bool =
@@ -115,6 +116,7 @@ let rec private mentions (key: string) (t: HMType) : bool =
     | TTuple xs -> List.exists (mentions key) xs
     | TFun(xs, r, _) -> List.exists (mentions key) xs || mentions key r
     | TAssoc(_, _, impl) -> mentions key impl
+    | TNum(carrier, _) -> mentions key carrier
     | _ -> false
 
 let rec private settledEffect (e: Effect) : Effect =
@@ -137,6 +139,7 @@ let rec private hasAssoc (t: HMType) : bool =
     | TCon(_, xs)
     | TTuple xs -> List.exists hasAssoc xs
     | TFun(xs, r, _) -> List.exists hasAssoc xs || hasAssoc r
+    | TNum(carrier, _) -> hasAssoc carrier
     | _ -> false
 
 /// An associated type whose implementor `s` has made known, as that
@@ -178,6 +181,7 @@ let rec private meet (registry: TraitRegistry) (s: Map<string, HMType> option) (
                 (ready @ waiting) |> List.fold (fun s (x, y) -> meet s x y) s
             | TVar v, TVar w when v = w -> s
             | TAssoc(tn, an, i), TAssoc(tm, am, j) when tn = tm && an = am -> meet s i j
+            | TNum(c, u), TNum(d, v) when Units.prune u = Units.prune v -> meet s c d
             | _ -> None
 
 let private isOpen (t: HMType) : bool =

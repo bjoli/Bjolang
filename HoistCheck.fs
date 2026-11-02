@@ -134,6 +134,7 @@ let rec private typeVars (registry: TraitRegistry) (t: HMType) : string list =
     | TTuple args -> List.collect (typeVars registry) args
     | TFun(args, ret, _) -> List.collect (typeVars registry) args @ typeVars registry ret
     | TAssoc(_, _, impl) -> typeVars registry impl
+    | TNum(carrier, _) -> typeVars registry carrier
     | TMeta _ -> []
 
 let private show (t: HMType) = DotNetInterop.showType t

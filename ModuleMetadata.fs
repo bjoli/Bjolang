@@ -114,7 +114,9 @@ open System.Text
 /// function that it uses at run time, after `WaitingDefs`.
 /// 27: `ClauseMacros`, the `def/loop-clause`s, after `HashMacros`. A reader of 26
 /// would read the list as the trait methods a macro sees.
-let currentVersion = 27
+/// 28: a number type with a unit is written `(units double key^1 'u^1/2)`. A
+/// reader of 27 would read it as a type constructor named `units`.
+let currentVersion = 28
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {

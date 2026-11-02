@@ -759,6 +759,7 @@ let rec typeToString (hm: HMType) : string =
         else
             let argsStr = args |> List.map typeToString |> String.concat ", "
             $"%s{baseName}<%s{argsStr}>"
+    | TNum (carrier, _) -> typeToString carrier
     | TVar name -> typeParamName name
     // A function *value*. `Action` only for the interop void — a Bjolang
     // `(-> %a void)` is `(-> %a Unit)` and comes out as `Func<T_a, Bjoml.Unit>`.
@@ -976,6 +977,7 @@ let rec collectTypeVars (t: HMType) : string list =
     // function that uses it must not redeclare it.
     | TAssoc (_, assocName, TVar implVar) -> [ assocTypeVar implVar assocName ]
     | TAssoc (_, _, implType) -> collectTypeVars implType
+    | TNum (carrier, _) -> collectTypeVars carrier
 
 /// What is to become of the value a block produces.
 ///
@@ -1042,6 +1044,10 @@ let rec serializeHMType (t: HMType) : string =
     // not unify with the `int` the caller actually has.
     | TAssoc (traitName, assocName, implType) ->
         $"(assoc %s{traitName} %s{assocName} %s{serializeHMType implType})"
+    // `(units double key^1 key^-2 'u^1/2)`: unit atoms by key, read back by
+    // `Annotations.resolveWith`.
+    | TNum (carrier, unit) ->
+        "(units " + String.concat " " (serializeHMType carrier :: Units.toMetadataParts unit) + ")"
 
 
 /// A trait signature that mentions the implementor applied.
@@ -8160,6 +8166,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
             | TFun(args, ret, _) -> (List.collect collectTVars args) @ collectTVars ret
             | TTuple args -> List.collect collectTVars args
             | TAssoc(_, _, impl) -> collectTVars impl
+            | TNum(carrier, _) -> collectTVars carrier
             | _ -> []
 
         indent ctx

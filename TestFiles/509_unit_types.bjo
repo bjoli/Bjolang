@@ -1,0 +1,33 @@
+;; Number types with units, before anything can write a unit value: the types
+;; are written in the metadata form, cross a module boundary, unify, generalize
+;; and are erased. The program only has to compile and run.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/unit_types.bjo")
+
+;; A local function inferred at (double m), and one generic in the unit used
+;; at m and at s.
+(: both (-> (units double m^1) (units double s^1) (Tuple (units double m^1) (units double s^1))))
+(defun (both a b)
+  (defun (twice x) (same (same x)))
+  (defun (self x) (pick x x))
+  (Tuple (twice (self a)) (self (sec b))))
+
+;; A unit inside a tuple, and a product of two atoms.
+(: second-of (-> (Tuple (units double m^1) (units double m^1 s^-1)) (units double m^1 s^-1)))
+(defun (second-of t) (match t ((Tuple _ v) (ratio (pick v v)))))
+
+;; The same atoms in another order are the same unit.
+(: reordered (-> (units double s^-1 m^1) (units double m^1 s^-1)))
+(defun (reordered v) (ratio v))
+
+;; A unit variable of this module's own signature.
+(: keep (-> (units double %v^1) (units double %v^1)))
+(defun (keep x) (pick x x))
+
+(defun (main)
+  (expect-true "both is a function" (not (= (written both) "")))
+  (expect-true "second-of is a function" (not (= (written second-of) "")))
+  (expect-true "reordered is a function" (not (= (written reordered) "")))
+  (expect-true "keep is a function" (not (= (written keep) "")))
+  0)

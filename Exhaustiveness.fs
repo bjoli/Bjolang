@@ -156,6 +156,7 @@ let private substitute (typeParams: string list) (typeArgs: HMType list) (t: HMT
         | TCon(n, args) -> TCon(n, List.map go args)
         | TFun(args, ret, eff) -> TFun(List.map go args, go ret, eff)
         | TTuple args -> TTuple(List.map go args)
+        | TNum(carrier, unit) -> TNum(go carrier, unit)
         | _ -> t
 
     go t

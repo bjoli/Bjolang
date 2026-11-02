@@ -687,6 +687,7 @@ let private solvePinEquations (env: Env) : unit =
         | TCon(_, args) -> List.exists blocked args
         | TTuple args -> List.exists blocked args
         | TFun(args, ret, _) -> List.exists blocked args || blocked ret
+        | TNum(carrier, _) -> blocked carrier
         | _ -> false
 
     let pending = List.ofSeq pinEquations
