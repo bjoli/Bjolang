@@ -1061,6 +1061,27 @@ def run_repl_tests():
                     
     return "repl", r_total, r_failed, r_failures
 
+def run_unit_solver_tests():
+    UNITS_DIR = Path("TestFiles/units")
+    u_total, u_failed = 0, 0
+    u_failures = []
+
+    for script in sorted(UNITS_DIR.glob("*.units")) if UNITS_DIR.exists() else []:
+        u_total += 1
+        res = subprocess.run(["dotnet", COMPILER_DLL, "--solve-units", str(script)],
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        expected = script.with_suffix(".expected")
+        if not expected.exists():
+            u_failed += 1
+            u_failures.append(f"{script.stem}: no recorded transcript")
+        elif res.stdout != expected.read_text():
+            u_failed += 1
+            u_failures.append(f"{script.stem}: the solver no longer matches its transcript")
+            with open(LOG_DIR / f"units_{script.stem}.diff", "w") as df:
+                df.write("EXPECTED:\n" + expected.read_text() + "\nGOT:\n" + res.stdout)
+
+    return "units", u_total, u_failed, u_failures
+
 def run_reproducibility():
     # Enstaka kompileringar med flit. Det som mäts är att samma källa ger samma
     # byte, och batchläget emitterar med en annan C#-backend än en ensam
@@ -1650,6 +1671,11 @@ with ThreadPoolExecutor(max_workers=6) as executor:
         print_color(BLUE, "Running REPL sessions...")
         phases.append(executor.submit(run_repl_tests))
         
+    if list(Path("TestFiles/units").glob("*.units")) if Path("TestFiles/units").exists() else []:
+        print("-" * 50)
+        print_color(BLUE, "Running unit solver scripts...")
+        phases.append(executor.submit(run_unit_solver_tests))
+
     print("-" * 50)
     print_color(BLUE, "Checking that a build reproduces...")
     phases.append(executor.submit(run_reproducibility))
@@ -1680,6 +1706,8 @@ with ThreadPoolExecutor(max_workers=6) as executor:
     graph_failures = []
     codegen_total = codegen_failed = 0
     repl_total = repl_failed = 0
+    units_total = units_failed = 0
+    units_failures = []
     repro_total = repro_failed = 0
     stale_total = stale_failed = 0
     check_total = check_failed = 0
@@ -1706,6 +1734,13 @@ with ThreadPoolExecutor(max_workers=6) as executor:
                     print(f"  [{RED}FAIL{NC}] {repl_name}")
                 else:
                     print(f"  [{GREEN}PASS{NC}] {repl_name}")
+        elif name == "units":
+            units_total, units_failed, units_failures = total, failed, failures
+            if failed == 0:
+                print(f"  [{GREEN}PASS{NC}] unit solver scripts")
+            else:
+                for f in units_failures:
+                    print(f"  [{RED}FAIL{NC}] {f}")
         elif name == "repro":
             repro_total, repro_failed, repro_failures = total, failed, failures
             if failed == 0:
@@ -1768,6 +1803,8 @@ if codegen_total > 0:
     print(f"Codegen tests:      {codegen_total - codegen_failed}/{codegen_total} emitted as expected")
 if repl_total > 0:
     print(f"REPL sessions:      {repl_total - repl_failed}/{repl_total} match their transcript")
+if units_total > 0:
+    print(f"Unit solver:        {units_total - units_failed}/{units_total} match their transcript")
 if stale_total > 0:
     print(f"Staleness:          {stale_total - stale_failed}/{stale_total} rebuilt as expected")
 if check_total > 0:
@@ -1791,6 +1828,7 @@ def print_failures(title, failures):
 print_failures("Error Test Failures", error_failures)
 print_failures("Warning Test Failures", warning_failures)
 print_failures("REPL Session Failures", repl_failures)
+print_failures("Unit Solver Failures", units_failures)
 print_failures("Reproducibility Failures", repro_failures)
 print_failures("Staleness Failures", stale_failures)
 print_failures("Codegen Test Failures", codegen_failures)
@@ -1799,7 +1837,7 @@ print_failures("Debug Symbol Failures", pdb_failures)
 print_failures("Package Failures", package_failures)
 print_failures("Graph Build Failures", graph_failures)
 
-if (error_failed or codegen_failed or repl_failed or repro_failed or stale_failed or warning_failed or check_failed or pdb_failed or package_failed or graph_failed) and not compiled_failed and not run_failed:
+if (error_failed or codegen_failed or repl_failed or units_failed or repro_failed or stale_failed or warning_failed or check_failed or pdb_failed or package_failed or graph_failed) and not compiled_failed and not run_failed:
     sys.exit(1)
     
 if compiled_failed or run_failed:
