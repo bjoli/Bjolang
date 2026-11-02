@@ -1588,15 +1588,15 @@
 (: (-> %a %b (Chained %a %b)) (where (Iterable %a #:elem %e) (Iterable %b #:elem %e)))
 (defun (chain a b) (Chained (first a) (second b)))
 
-;; The cursor is a flag, which says the walk is on the second, and a cursor
-;; for each side. A first's `done?` that answers true moves the walk to the
-;; second, which a `done?` of this adapter cannot do, since it answers no
-;; cursor: so the first's is asked where the cursor is made, by `start` and
-;; by `next`, once for each of its cursors, and on the first side this
-;; `done?` answers false without asking. So `next` reads the element after
-;; the current one before a loop does, as `in-cycle` does. The second side's
-;; cursor is made at the start, and its `done?` is the one a loop asks. The
-;; pin is what lets `current` answer either side's element as one type.
+;; The cursor is `(Tuple on-second? cur-a cur-b)`.
+;;
+;; Because `iterable-done?` cannot mutate the cursor, transitions from `first` to
+;; `second` are determined ahead of time:
+;; - `iterable-start` and `iterable-next` eagerly check if `first` has finished,
+;;   setting `on-second?` to `#t` when moving to `second`.
+;; - `iterable-done?` only checks completion of the active side (via `cur-b` once
+;;   `on-second?` is true).
+;; - `iterable-cleanup` safely cleans up both iterables when the walk terminates.
 (impl (Iterable (Chained %a %b))
   (where (Iterable %a) (Iterable %b #:elem (assoc Iterable elem %a)))
   (type %elem (assoc Iterable elem %a))
@@ -1911,8 +1911,8 @@
   (loop (:for kvp v)
         (:acc map (mapping kvp))))
 
-;; This can actually be faster than the loop, since list-for-each
-;; uses internal iteration.
+;; Faster than a loop over the indices: `vec-for-each` walks the vec itself,
+;; and the builder adds in place.
 (: (-> (Vec %a) (List %a)))
 (defun (vec->list v)
   (def b (listbuilder-empty))
@@ -1942,7 +1942,7 @@
     ((Ok v) #f)
     ((Err e) #t)))
 
-;; If Err, return the same value, otherwise return Ok (f unwrapped-ok-value)
+;; The `Ok` value through `f`, which may suspend; an `Err` answers itself.
 (: (-> (-?-> %a %b) (Result %e %a) (Result %e %b)))
 (defun (result-map f r)
   (match r
@@ -2011,8 +2011,8 @@
   (: ref (-> %c %index %out))
   (: try-ref (-> %c %index (Option %out)))
 
-  ;; For things like arrays, a ref with index out of bounds should fail
-  ;; regardless of Option, so this is here to not have to write those impls
+  ;; The default: `ref`'s answer as a `Some`, so an impl whose `ref` raises out
+  ;; of bounds needs no `try-ref` of its own.
   (defun (try-ref coll i)
     (Some (ref coll i))))
 
@@ -3004,22 +3004,20 @@
 
 ;; --- The filesystem is an effect ---
 ;;
-;; Everything in this file that reaches the disk goes through these operations,
-;; so a handler can answer for the disk: a test runs against a fake, a sandbox
-;; refuses writes, a build step records what it read. With no handler installed
-;; each is its `/raw` default, which does what the .NET call does.
+;; All filesystem operations route through the `FS` algebraic effect, allowing
+;; callers to intercept disk operations (e.g., in-memory mocks for tests, sandbox
+;; write restrictions, or build dependency tracking). When unhandled, operations
+;; fall back to their `/raw` defaults using standard .NET calls.
 ;;
-;; The openers answer a `Stream` rather than a port. The port over it is built
-;; and registered on the ambient scope by `open-input-file` and its neighbours -
-;; and by `(std ports)`' byte openers - so one handler serves text and bytes
-;; alike, and a stream a handler made in memory is owned exactly as a file is.
-;;
-;; All of them are synchronous. Reading and writing are what wait, and those are
-;; the ports' own suspending methods. None is performed in a loop, so all are
-;; `#:cold`.
-;;
-;; The operations answer a `Result`. The functions above over them raise, as the
-;; .NET methods they replaced do.
+;; Design:
+;; - Openers return raw CLR `Stream`s rather than ports. Higher-level functions
+;;   (like `open-input-file` or `(std ports)` byte openers) construct ports and
+;;   register them in the ambient scope, allowing mock handlers to work uniformly
+;;   across text and byte I/O.
+;; - Effect operations are synchronous; coroutine suspension occurs only when reading
+;;   or writing through the underlying streams/ports.
+;; - Effect operations return `(Result Exception %a)` values, whereas higher-level
+;;   prelude wrappers unwrap them and raise exceptions on error.
 
 (import/class
   (DirectoryInfo (: System.IO.DirectoryInfo (-> string DirectoryInfo)))
@@ -3217,15 +3215,14 @@
   (ignore (current-scope))
   (stream->output-port (open-write-stream/raw path mode)))
 
-;; `(call-with-input-file path proc)` - open, hand the port to `proc`, close.
+;; Opens a file, passes the open port to `proc`, and guarantees port closure
+;; on normal return or exception via `with-open`.
 ;;
-;; The port is closed however the body ends, through the owner handle, so the
-;; scope's list comes back to the length it had. `with-open` and not
-;; `with-scope`: the guarantee is the same and this one neither suspends nor
-;; allocates a scope, so an ordinary `defun` can still call it.
+;; Unlike `with-scope`, `with-open` avoids allocating a new fiber scope, allowing
+;; synchronous functions to call it without requiring a coroutine context.
 ;;
-;; `proc` is `-?->`, so it may be either colour and both copies are generated.
-;; A suspending body gets the same closing.
+;; `proc` is suspension-polymorphic (`-?->`): both synchronous and async/suspending
+;; variants are compiled, ensuring suspending bodies receive identical cleanup.
 (: (-> string (-?-> InputPort %a) (Result Exception %a)))
 (defun (call-with-input-file path proc)
   (match (open-input-file path)
@@ -3240,12 +3237,14 @@
 
 ;; --- Bytes, copies and lines ---
 ;;
-;; Bytes and copies go over the streams the `FS` openers answer, since the
-;; prelude has no byte port. Each has a suspending copy through the streams'
-;; own async methods, as the text functions have through the ports'. A stream
-;; is disposed by `with-open` however the body ends; it is flushed first, so
-;; that the suspending copy awaits the write rather than leaving it to a
-;; synchronous dispose.
+;; Because the prelude has no byte port type, byte I/O and file copying operate
+;; directly on CLR `Stream`s returned by the `FS` effect openers (`open-read-stream`
+;; and `open-write-stream`).
+;;
+;; Like the text port functions, these helpers provide both sync and suspending
+;; (async) variants backed by the streams' async methods. When used in `with-open`,
+;; a stream is explicitly flushed before exiting so pending writes are awaited
+;; asynchronously rather than blocking during synchronous disposal.
 
 (import/class
   (MemoryStream (: System.IO.MemoryStream (-> MemoryStream)))
@@ -3287,18 +3286,22 @@
   (#:sync (clr-copy-count from to count))
   (#:bjo  (clr-copy-count-await from to count)))
 
-;; Copies a file. `#:mode` is how `to` is written: `CreateNew`, the default,
-;; fails if it exists, so a copy never loses a file by accident; `Truncate`
-;; replaces it and `Append` adds to it. The source is opened first, so a
-;; missing one leaves `to` as it was. A copy onto its own path is refused.
+;; Copies a file from `from` to `to`.
 ;;
-;; `to` may be the source under another name - a link, or a path the
-;; filesystem folds to the same file - and the path's text cannot tell. So
-;; nothing is ever opened that could empty the source: `Truncate` copies into a
-;; new file beside `to` and moves it over `to`, and `Append` copies the length
-;; the source had when it was opened, so that appending a file to itself ends.
-;; Replacing by a move means a link at `to` is replaced, not written through.
-;; The copy is a new file, with a modified time of its own.
+;; `#:mode` controls destination behavior:
+;; - `CreateNew` (default): Fails if `to` exists, preventing accidental overwrite.
+;; - `Truncate`: Overwrites `to` via an atomic replace.
+;; - `Append`: Appends to `to`.
+;;
+;; Safety & Aliasing:
+;; - Direct self-copies are rejected.
+;; - The source is opened first; a missing source leaves `to` untouched.
+;; - If `to` is an alias or symlink to `from`, in-place truncation could empty
+;;   the source before copying. To prevent this:
+;;   * `Truncate` copies to a temporary sibling file and moves it over `to`
+;;     (replacing any symlink rather than writing through it).
+;;   * `Append` copies only the source's initial byte length, preventing an
+;;     infinite loop when appending a file to itself.
 (: (-> string string (#:mode WriteMode) void))
 (defun (file-copy from to #:mode CreateNew)
   (when (= (path-absolute from) (path-absolute to))
@@ -3370,14 +3373,15 @@
                    (flush-port p)))
     ((Err e) (raise e))))
  
-;; The items `reader` reads, pulled lazily. The file is opened inside the `seq`,
-;; so every walk opens it afresh and reads from the start, and closed when the
-;; walk ends - at the end of the file, when a loop walking it stops early,
-;; through `iterable-end`, or when an exception leaves the loop, through
-;; `iterable-cleanup`. A walk that is never ended stays open until the scope
-;; that was ambient at the first pull ends, because `open-input-file`
-;; registers the port there. A missing file raises on the first pull;
-;; `(std ports)`' `file->seq` reports it at the call instead.
+;; Returns a lazy `Seq` of items produced by repeatedly calling `(reader port)`.
+;;
+;; The file is opened inside the `seq`, meaning each iteration re-opens the file
+;; from the start. The file is closed when iteration reaches EOF, stops early,
+;; or encounters an exception. If an iterator is abandoned without cleanup, the
+;; port remains open until the ambient scope ends.
+;;
+;; Because opening happens inside the sequence, open errors (such as a missing
+;; file) raise on the first pull rather than when `file-read/seq` is called.
 (: file-read/seq #:sync (-> (-> InputPort %a) string (Seq %a)))
 (defun (file-read/seq reader path)
   (seq
@@ -3392,22 +3396,19 @@
 (defun (file-read-lines/seq path #:mode Any)
   (file-read/seq (fun (p) (read-line p #:mode mode)) path))
 
-;; The files under `dir`, depth first, pulled lazily.
-;;
-;; Each directory's entries are taken in ordinal order, so a walk is the same
-;; on every OS and on a fake: a tool that hashes the files in walk order gets
-;; the same hash everywhere. `into?` is asked about each directory before the
-;; walk goes into it, which is how `.git` is left out. A directory that is a
-;; symbolic link is never entered, so a link back up the tree cannot loop the
-;; walk. Listing happens when the sequence is walked, so the handler installed
-;; at the walk answers, and a walk that stops early lists nothing more. An
-;; error on the way raises, as `directory-files` does.
-;;
-;; A `seq` body is one iterator, so the walk keeps its own list of what is
-;; left rather than recursing: a directory's entries go in front of the rest.
 (: (-> string (List string)))
 (defun (sorted-entries dir) (list-sort (vec->list (raise-err (fs-list dir)))))
 
+;; Lazily yields all files under `dir` in depth-first order.
+;;
+;; Behavior & Guarantees:
+;; - Deterministic: Directory entries are sorted ordinally, guaranteeing identical
+;;   traversal order across all operating systems and virtual filesystems.
+;; - Filtering (`#:into?`): Called on each directory before entering; return `#f`
+;;   to skip a subtree (e.g. `.git`).
+;; - Cycle Prevention: Directory symlinks are never followed.
+;; - Lazy Traversal: Subdirectories are listed on demand using the ambient `FS`
+;;   handler, so stopping iteration early avoids unneeded filesystem I/O.
 (: directory-walk #:sync (-> string (#:into? (-> string bool)) (Seq string)))
 (defun (directory-walk dir #:into? (fun (d) #t))
   (seq
@@ -3528,16 +3529,15 @@
 
 ;; --- Output ---
 
-;; Output bindings with synchronous and asynchronous (bjoroutine) pairs.
-;; 
-;; It is crucial to have asynchronous variants for writes. Even though writes 
-;; are buffered, a write that fills the buffer will trigger a drain (syscall).
-;; The async variant ensures this drain suspends rather than blocking a thread.
+;; Port write operations provide both synchronous (`#:sync`) and suspending (`#:async`)
+;; implementations via `defbjouble`.
 ;;
-;; Note that output functions carry a colour (effect). Because `write-string` 
-;; has an async twin, any function that uses it will also become async. For this 
-;; reason, string building operations like `written` use a `StringBuilder` 
-;; instead of a string port to ensure string formatting remains pure and synchronous.
+;; Writes are buffered in memory and non-blocking until the buffer fills. When a buffer
+;; drains (triggering a syscall), the async variant suspends the coroutine rather than
+;; blocking the host thread.
+;;
+;; In contrast, pure string formatters (`written` and `displayed`) output to a
+;; thread-local `StringBuilder`, remaining strictly synchronous and side-effect free.
 (import/extern
   (clr-write         (: Bjolang.Runtime.OutputPorts.Write          (-> OutputPort string void) #:blocking))
   (clr-write-await   (: Bjolang.Runtime.OutputPorts.WriteAsync     (-> OutputPort string void) #:async))
@@ -3602,9 +3602,8 @@
 ;;
 ;; (log "...") - a line of diagnostics, and nobody's decision.
 ;;
-;; Both are sync. If you want a -bjo-> effect, the best course of action
-;; is to return a promise or something that is acted on using the parallell
-;; facilities.
+;; Both are synchronous. A diagnostic that suspends is a promise answered here,
+;; and acted on wherever it is awaited.
 (defeffect Diagnostics
   (warn (-> string void))
   (log (-> string void))
@@ -4030,7 +4029,7 @@
 
 ;; `(if-let ((name expr)) then else)`
 ;;
-;; binds name to whatever is in ,value if it is some, otherwise run the None branch.
+;; `name` bound to the `Some` value of `expr`, or `else` on a `None`.
 (def/macro (if-let form inject compare)
   (syntax-match form
     ((_ (name value) then else)
@@ -4038,7 +4037,7 @@
     (bad (syntax-error bad "if-let takes one binding, a then and an else: (if-let (name expr) then else)"))))
 
 ;; `(when-let (name expr) body ...)`
-;; tests an option result. if it is some, unwraps it and bind the result to name
+;; The body run with `name` bound to a `Some` value, and nothing on `None`.
 (def/macro (when-let form inject compare)
   (syntax-match form
     ((_ (name value) first body ...)
@@ -4097,36 +4096,26 @@
 ;; Paths: get, try-get, set, update and set!
 ;; ---------------------------------------------------------------------------
 ;;
-;; `(get target step ...)` reads along a path. `(set target step ... value)` and
-;; `(update target step ... f)` answer a copy of `target` in which the value at
-;; the end of the path is replaced, and leave `target` alone.
+;; Path navigation for nested data structures:
+;; - `(get target step ...)`: Reads a nested value along a path.
+;; - `(set target step ... value)`: Returns a copy of `target` with the nested value
+;;   replaced (leaving the original untouched).
+;; - `(update target step ... f)`: Returns a copy of `target` with the nested value
+;;   updated via `(f current-value)`.
 ;;
-;; A step is a field step, `.name`, or a key, which is any other expression.
-;; These expand before anything has a type, so which kind a step is depends
-;; only on how it is written:
+;; Steps are resolved purely by syntactic form before type checking:
+;; - Field step (`.name`): Accesses record/struct fields or .NET members via `(.name x)`
+;;   and writes via `record-set`.
+;; - Key step (any other expression): Accesses keyed collections (`Refable`) via `ref`
+;;   and writes (`Settable`) via `ref-set`.
 ;;
-;;   * A field step reads with `(.name x)`, so it means whatever `.name` means
-;;     on that value: a record or struct field, or a .NET member. It writes
-;;     with `record-set`, so only a field can be written through one.
-;;   * A key step reads with `ref` (`Refable`) and writes with `ref-set`
-;;     (`Settable`).
-;;
-;; `try-get` answers an Option, which is `None` at the first key that is
-;; missing; the keys after it are not evaluated. Missing is what `try-ref`
-;; says it is: a Map key that is absent, or a Vec index out of range. A field
-;; step cannot be missing. A field that holds an Option is answered as one, inside the `Some`.
-;;
-;; `set` and `update` evaluate the target, then each key from left to right,
-;; then the value or the function, each exactly once. A key that is missing
-;; before the last step throws, as `ref` does. `set` does not read the last
-;; key, so on a Map it adds a key that was not there.
-;;
-;; `set!` with a path is `set` in place: nothing is copied, the steps before
-;; the last are read, and the last is written with `ref-set!` (`Settable!`) or
-;; `record-set!`. See `#set!` below.
-;;
-;; Each step's code carries that step's source position, so an error in it is
-;; reported at the step rather than at the whole form.
+;; Semantics:
+;; - `try-get`: Returns `(Some value)` or `None` if any key in the path is missing
+;;   (evaluating keys lazily from left to right and stopping at the first `None`).
+;; - `set` and `update`: Evaluate target, path keys (left-to-right), and value/fn
+;;   exactly once. Missing intermediate keys raise an error; `set` on the final key
+;;   adds it if absent on maps.
+;; - `set!`: In-place mutation along the path via `ref-set!` (`Settable!`) or `record-set!`.
 
 ;; `(get target step ...)`, and `(get target)`, which is `(deref target)`.
 (def/macro (get form inject compare)
@@ -4631,51 +4620,27 @@
     (bad (syntax-error bad "with-shield takes a body and an optional deadline: (with-shield #:within (seconds 5) body ...)"))))
 
 ;; ---------------------------------------------------------------------------
-;; What a scope owns besides fibers
+;; Scope Resource Management
 ;; ---------------------------------------------------------------------------
 ;;
-;; Own things the GC cannot price: OS handles, permits, subscriptions, state
-;; that has to be put back. Do not own memory - that is what the GC is for.
+;; Scopes manage unmanaged resources (OS handles, file descriptors, network connections)
+;; whose lifetimes must be strictly bound rather than left to garbage collection.
 ;;
-;;     (with-scope
-;;       (match (open-input-file "notes.txt")
-;;         ((Ok p) (read-all p))
-;;         ((Err e) "")))
+;; Cleanup Lifecycle:
+;; - Registered cleanup thunks run when the scope exits, after all spawned fibers
+;;   have completed.
+;; - Cleanup runs in LIFO order (newest first), ensuring wrappers (e.g., buffered ports)
+;;   close before their underlying resources (e.g., streams).
+;; - Cleanup thunks are synchronous and non-suspending. If a cleanup callback throws,
+;;   the exception is recorded and remaining cleanup thunks continue to run.
 ;;
-;; Releases run when the scope returns, after every fiber has landed, newest
-;; first - so a port wrapped around a stream closes before the stream. A release
-;; that throws is recorded and the walk carries on.
-;;
-;; A release is a plain thunk. It cannot suspend, so it cannot be abandoned, so
-;; a release that blocks blocks the close. That is the same trade `with-cancel`
-;; makes for a child that never lands: a hang says where it is.
-;;
-;; A closing scope ignores `spawn`, and a finished one refuses `own!`. The two
-;; differ because the consequences do: a fiber that was never started leaks
-;; nothing, but a resource that was opened and then not registered is a leak
-;; with nobody to release it, so the only safe answer is to refuse before the
-;; caller lets go. They also differ in when: a spawn is refused once closing
-;; begins, an `own!` only once the releases have run - a child still running
-;; during the drain can open a file, and the walk will close it.
-;;
-;; **Fibers are not scopes.** A file opened inside `(spawn ...)` or `(bjo ...)`
-;; belongs to the enclosing scope, not to the fiber, and outlives it:
-;;
-;;     (with-scope
-;;       (spawn (fetch-into "a.txt"))    ;; the port it opens lives until
-;;       (spawn (fetch-into "b.txt")))   ;; this form returns, not until the
-;;                                       ;; fiber lands
-;;
-;; That is deliberate - a scope per spawn would be an allocation per spawn - and
-;; it is the reason for the advice below.
-;;
-;; For many short-lived resources under one long-lived scope, open a child scope
-;; per unit of work rather than `own!`/`release!` into the parent. The parent
-;; then holds a count and not a list, and the close is a drain rather than a
-;; walk. See the scale rows in bench/BASELINE.md.
-;;
-;; A handle returned out of the block that owned it is dangling. Nothing checks
-;; that; what makes it harmless is that there is nothing to read off it.
+;; Scope Boundaries & Fibers:
+;; - Fibers do NOT introduce their own scopes. A resource opened inside `(spawn ...)`
+;;   or `(bjo ...)` belongs to the ambient enclosing scope and outlives the spawned fiber.
+;; - For workloads that create many short-lived resources within a long-lived operation,
+;;   use nested child scopes (`(with-scope ...)`) per work unit to reclaim resources promptly.
+;; - A closing scope refuses new fibers (`spawn`), and a closed scope refuses new resource
+;;   registrations (`own!`).
 
 ;; `(in-scope s body ...)` - run the body with `s` as the ambient scope.
 ;;
@@ -5365,7 +5330,8 @@
 
 ;; Pattern matching thingies
 ;;
-;; Has is useful when matching against Refable. It matches they key and binds the key if it exists
+;; `Has` matches a `Refable`: the key is read with `try-ref`, and the pattern is
+;; matched against the value when the key is there.
 ;; (match my-map
 ;; ((Has :my-key pat) (println #"The value of :my-key is ${pat}"))
 ;; (_ (panic! "it didn't have it")))
