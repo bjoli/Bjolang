@@ -1,0 +1,55 @@
+;; Paper program: the planets in decimal au.
+;; In m, a decimal holds up to 7.9e28: an au^3 is 3.3e33 m^3, and the Sun is
+;; 2.0e30 kg. The types keep the numbers in au and solar masses.
+
+(import (std units))
+
+(def/unit Msun <1.98847e30 kg>)            ; a unit of the program's own
+
+(type (: Body (Record (: name string)
+                      (: a (decimal au))   ; semi-major axis
+                      (: mass (decimal Msun)))))
+
+(def mars (Body (name "Mars") (a 1.523679) (mass 3.227e-7)))
+;; 1.523679 is unit 1: a plain literal is dimensionless.
+;; error: cannot use 1 as au.
+;;   Write <1.523679 au>.
+(def mars (Body (name "Mars") (a <1.523679 au>) (mass <3.227e-7 Msun>)))
+
+(* (.a mars) (.a mars) (.a mars))          ; (decimal au^3), 3.5374
+(as (.a mars) km)                          ; (decimal km), 227939366.0, exact factor
+
+;; Kepler: T = 2 pi sqrt(a^3 / GM).
+;; decimal has no sqrt, so the cube goes to double, unit and all.
+(: gm-sun (double au^3/yr^2))
+(def gm-sun <1.32712440018e20 m^3/s^2>)    ; converted at compile time: 39.4769
+
+(: period (-> Body (double yr)))
+(defun (period b)
+  (def a3 (cast System.Double (* (.a b) (.a b) (.a b))))   ; (double au^3): cast keeps the unit
+  (* 2 pi (sqrt (/ a3 gm-sun))))                           ; (double yr)
+
+(period mars)                              ; (double yr), 1.8808
+
+;; Without the annotation on gm-sun the literal settles at m^3/s^2, and
+;; (/ a3 gm-sun) is (double au^3 s^2/m^3). Its sqrt is not yr:
+;; error: expected yr, got au^(3/2) s/m^(3/2).
+;;   Both are time. Write (as ... yr) or annotate gm-sun.
+;; With the annotation on period but not on gm-sun, inside one definition,
+;; the literal's unit is solved from the result instead:
+(: period* (-> Body (double yr)))
+(defun (period* b)
+  (def a3 (cast System.Double (* (.a b) (.a b) (.a b))))
+  (* 2 pi (sqrt (/ a3 <1.32712440018e20 m^3/s^2>))))      ; literal solved as au^3/yr^2
+
+;; A literal with nothing to say otherwise is SI, and in a decimal that can
+;; overflow at compile time:
+(: big (decimal m^3))
+(def big <1 au^3>)
+;; error: <1 au^3> is 3.35e33 m^3, too large for a decimal.
+
+;; An inexact factor. pc is 648000/pi au, so the factor has pi in it:
+(as (.a mars) pc)                          ; (decimal pc), 7.387e-6
+;; warning: the factor from au to pc is not exact in a decimal.
+
+;; Count: 3 field units, 2 annotations, 1 as, 1 unit declaration.

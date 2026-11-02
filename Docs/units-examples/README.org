@@ -1,0 +1,74 @@
+* Units: paper programs (Phase 0)
+
+Programs written against the design in ~../Units.org~, before any of it
+exists. Each file gives the expected types, values and errors in comments.
+
+| File             | What                                   | Annotations | ~as~ | ~in~ | Other                          |
+|------------------+----------------------------------------+-------------+------+------+--------------------------------|
+| ~umits.bjo~      | Umits README: drag, dilution, Co-60    |           1 |    0 |    4 |                                |
+| ~sensors.bjo~    | CSV readings, filtered and printed     |           1 |    1 |    0 | 3 field units, 1 ~cast~        |
+| ~projectile.bjo~ | Euler steps on a struct; RK4 on a vec  |       3 / 2 |    0 |  0 / 4 | vec version: 1 attaching literal |
+| ~stats.bjo~      | mean and standard deviation            |           2 |    0 |    0 |                                |
+| ~astronomy.bjo~  | planets in ~decimal au~                |           2 |    1 |    0 | 3 field units, 1 ~def/unit~    |
+
+None needs more than one ~as~. The cost is in the field and signature types,
+which carry the information the program is about.
+
+** Findings
+
+Changes to the design, now in ~../Units.org~:
+
+1. *~Measure~ is a trait with methods.* ~abs~, ~sign~, ~min~, ~max~,
+   ~clamp~ and ~zero?~ are methods of ~Num~ (~lib/std/maths.bjo~). All are
+   correct at any unit. ~Measure~ takes them, with ~+ - % negate~; ~Num~ is
+   ~Measure~ at unit 1 plus ~* /~. Same CLR constraint, ~INumber~ on the
+   erased type.
+2. *Std functions that are correct at any unit move from ~Num~ to
+   ~Measure~.* ~summing~ (~stats.bjo~, ~sensors.bjo~), ~positive?~,
+   ~negative?~, array ~sum~. ~sqr~ gets a unit-aware type, ~%u → %u^2~.
+   Phase 6 lists them all.
+3. *Syntax for a generic carrier:* ~(num %c %u)~. ~(double m)~ is short
+   for ~(num double m)~.
+4. *Unit variables in unit expressions:* ~(double %u^2)~,
+   ~(num %c %r %v^2)~. The grammar accepts ~%name~ atoms; the resolver
+   returns them as variables.
+5. *Attaching a unit is multiplication:* ~(* x <1 m>)~. ~as~ only converts
+   within a dimension, so ~(as x m)~ on a ~double~ is an error. Codegen
+   omits a multiplication by exactly 1.
+6. *No ~degC~ or ~degF~ unit.* With factor 1, ~(double degC)~ is
+   ~(double K)~, and 21.5 read from a CSV is 21.5 K. Absolute temperatures
+   are newtypes ~Celsius~ and ~Fahrenheit~ in ~(std units)~, with
+   ~celsius->kelvin~ and back, and CSV and JSON codecs. Differences are
+   ~K~, or ~degR~ (5/9 K).
+7. *Errors name dimensions as formulas over base dimensions:*
+   "~km/h~ is length/time, ~hPa~ is mass/(length time^2)". No names for
+   derived dimensions.
+8. *Constants are units:* ~<1 c>~, ~(in v c)~. The "constants as typed
+   values" item in Phase 6 is dropped.
+9. *Every zero literal is a number of every unit:* ~0~, ~0.0~, ~0M~.
+   ~(State (x 0) ...)~ and ~(:with t 0 ...)~ need it.
+10. *~cast~ between number types keeps the unit:* ~(cast System.Double a)~
+    on a ~(decimal au^3)~ is a ~(double au^3)~. ~decimal~ has no ~sqrt~.
+11. *A factor is a rational times a power of pi.* ~deg~, ~rev~, ~rpm~,
+    ~hbar~ and the IAU parsec need pi. Factors stay exact in the solver and
+    are rounded once at emission.
+12. *A plain literal where a unit is expected is an error that suggests the
+    quantity literal:* "Write ~<1.523679 au>~". Except zero.
+
+Confirmed, no change:
+
+- A literal's unit is solved from what surrounds it before it settles at SI:
+  ~period*~ in ~astronomy.bjo~ gets ~au^3/yr^2~ through ~/~ and ~sqrt~
+  from the result type.
+- A state vector of mixed units is checked only at its edges
+  (~projectile.bjo~, RK4 version). A struct per state and per derivative is
+  checked throughout and needs no ~as~.
+
+Open:
+
+- *Factor-1 names are lost in printing.* ~Sv~ and ~Gy~ are both ~m^2/s^2~,
+  ~Hz~ and ~Bq~ both ~1/s~, ~J~ and ~N m~ the same. A dose prints as the
+  dimension's preferred unit; ~(in dose Sv)~ or ~#:in "Sv"~ chooses.
+  Quantity kinds would fix it (~Units.org~, open question 3).
+- *Converting an ~int~ to a generic carrier ~%c~* (~mean*~ in
+  ~stats.bjo~). Not specific to units.

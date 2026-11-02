@@ -1,0 +1,515 @@
+* Units of measure
+
+A number can carry a unit in its type: ~(double m/s)~, ~(decimal au)~,
+~(int px)~. The type checker checks the units, the compiler converts literals
+and ~as~ at compile time, and nothing of the unit is left at run time: a
+~(double m/s)~ is a C# ~double~.
+
+#+BEGIN_SRC scheme
+(import (std units))
+
+(+ <1 m> <1 ft>)                          ; (double m), 1.3048
+(+ <1 m> <1 s>)                           ; type error: a length (m) and a time (s)
+(sqrt (/ (* 2 <100 ft>) <9.80665 m/s^2>)) ; (double s), 2.4735
+(in <60 mph> km/h)                        ; double, 96.56064
+
+(: orbit (decimal au))
+(def orbit <1.523679 au>)
+(* orbit orbit orbit)                     ; (decimal au^3), no overflow
+(as orbit km)                             ; (decimal km), an exact factor
+#+END_SRC
+
+What it is for: GNU units' model — a large table of units, conversion by name,
+values that print with their units — checked at compile time and free at run
+time. What it is not: F#'s units of measure, where conversion factors are the
+user's job and a unit is gone once the program runs.
+
+** The model
+
+*** A type carries a unit, and the unit has a dimension
+
+A unit is a product of named units with rational exponents: ~m~, ~m/s^2~,
+~au^3~, ~kg^(1/2)~. Every named unit has a *dimension*, a product of named base
+dimensions, and a *factor* to the coherent unit of that dimension: ~ft~ is
+length, 0.3048. A factor is a rational times an integer power of pi, so ~deg~
+(pi/180) and ~hbar~ are exact too. Units of one dimension are /convertible/;
+units with the same name are /the same/.
+
+- Two values may be added, compared or unified only if their units are the
+  same. ~(double km)~ and ~(double m)~ are different types: ~as~ converts.
+- A literal takes whatever unit of the right dimension is expected where it
+  stands, and is converted to it at compile time. With nothing to say otherwise
+  it is the coherent SI unit. So ~(+ <1 m> <1 ft>)~ is ~(double m)~ and never
+  needs an ~as~.
+- A unit whose factor is exactly 1 is a name for its definition: ~J~ is
+  ~kg m^2/s^2~, and ~(double J)~ and ~(double N*m)~ are one type. A unit with
+  another factor, ~km~ or ~au~, is a unit of its own.
+- A plain literal is unit 1. Where a unit is expected it is an error that
+  suggests the quantity literal: "write ~<1.523679 au>~". A zero literal,
+  ~0~, ~0.0~ or ~0M~, is a number of every unit.
+- A unit is attached to a plain number by multiplication, ~(* x <1 m>)~, and
+  removed by ~in~. ~as~ converts within a dimension only.
+
+Literals settling at SI means that code which writes only ~<…>~ literals and
+~double~ works in SI throughout, and never sees a unit it did not write.
+
+*** Type syntax
+
+- ~(double m/s)~, ~(decimal kg m^2/s^2)~: a carrier and a unit expression.
+- ~(num %c %u)~: a number type with a generic carrier. ~(double m)~ is short
+  for ~(num double m)~.
+- Unit variables appear in unit expressions: ~(double %u^2)~,
+  ~(num %c %r %v^2)~. The grammar accepts ~%name~ as an atom and the resolver
+  returns it as a variable.
+
+*** Dimensions and units are declarations
+
+Nothing about SI is built into the compiler. ~(std units)~ declares the seven
+SI base dimensions, ~bit~, and the units, and a program declares its own the
+same way:
+
+#+BEGIN_SRC scheme
+(def/dimension length #:unit m)
+(def/dimension money  #:unit EUR)
+(def/unit ft <0.3048 m>)
+(def/unit cent <1|100 EUR>)
+(def/prefix k 1000)
+#+END_SRC
+
+They belong to the module that declares them, are exported and imported like
+types, and travel in the metadata as source, as trait declarations do
+(~ModuleMetadata.TraitDecls~).
+
+*** Dimensionless is unit 1, and unit 1 is spelled as today
+
+~double~ is ~(double 1)~, and is represented exactly as now:
+~TCon(DoubleName, [])~. A unit is attached only when it is not 1. Every
+annotation, impl, import and inferred type that exists today keeps its meaning,
+and its representation.
+
+*** Num stays dimensionless
+
+~Num~ is .NET's ~INumber~, which a ~(double m)~ erases to — but ~(sqr x)~, at
+~(-> %a %a)~ with ~(* x x)~ inside, is wrong for metres, which square to m².
+So ~Num~ holds only at unit 1, and existing generic code neither changes nor
+accepts quantities. What is correct at any unit moves to a new trait,
+~Measure~: ~+ - % negate~, and the ~Num~ methods ~abs sign min max clamp
+zero?~. ~Num~ is ~Measure~ at unit 1 plus ~* /~. See Phase 5.
+
+*** What is erased, and where
+
+Units exist from inference to the end of type checking. ~Monomorphise~ and
+everything after it see the erased type, so there is no copy of a function per
+unit, and the CLR-constraint checks (~ClrConstraints.fs~) ask about the erased
+type — except ~Num~, above.
+
+** What the compiler does, and what Bjolang does
+
+The compiler knows how units behave and nothing about which units there are.
+Everything that names a unit, reads one or prints one is Bjolang, in
+~(std units)~, and much of it is ported from Umits.
+
+*** The compiler: atoms, the solver, and four forms
+
+The compiler sees units only as /atoms/ — a name, a dimension, an exact factor
+— and terms over them. It owns:
+
+- the solver and ~TNum~ (Phases 3 and 4): unification, generalization,
+  erasure, metadata;
+- the unit table of a module: the atoms, names and prefixes declared in it and
+  imported into it;
+- four forms that carry a unit expression, which it resolves through the hook
+  and then checks and emits:
+
+| Form                            | Written as                     | What the compiler does                                   |
+|---------------------------------+--------------------------------+----------------------------------------------------------|
+| a unit declaration              | ~def/dimension~, ~def/unit~, ~def/prefix~ | resolves the definition, adds it to the table   |
+| a quantity literal              | ~<9.81 m/s^2>~                 | resolves the unit, settles it against what is expected, emits one constant |
+| a conversion                    | ~(as x km)~, ~(in x km)~       | checks the dimension, emits one multiplication           |
+| a number type with a unit       | ~(double m/s)~                 | resolves the unit, builds the ~TNum~                     |
+
+None of them is a macro. A macro runs in the module that defines it and cannot
+see a ~furlong~ declared three lines above the literal that uses it, nor can
+it appear in a type (~Docs/MACROS.org~, "What a macro cannot do"). The table is
+the compiler's, so the compiler has to be the one asking.
+
+*** The hook: the resolver is Bjolang
+
+A unit expression is read by a Bjolang function, which the compiler calls the
+way it calls a macro transformer (~Macro.fs~, by reflection on the compiled
+module):
+
+#+BEGIN_SRC scheme
+(def/unit-resolver resolve)
+
+(: (-> UnitTable string (Result string Resolved)))
+(defun (resolve table text) ...)
+#+END_SRC
+
+- The compiler hands it the table in scope at the use and the expression as
+  written; it returns the expression as atoms and exponents, an exact factor,
+  and the atoms it had to make — ~km~ is made from the prefix ~k~ and ~m~ the
+  first time something says ~km~ — or a message: "unknown unit ~meeter~; did
+  you mean ~meter~?".
+- The table and the result cross as ~Syntax~, as a macro's form does, so the
+  marshalling in ~Macro.fs~ is reused.
+- ~(std units)~ declares the resolver. One resolver per program, found among
+  the linked modules: see "The resolver is linked, not imported".
+- It runs at parse time, for the literal and the conversions as for the types:
+  ~TypeSyntax.parseType~ (117) calls it on the unit of a number type.
+- An atom made twice with the same dimension and factor is one atom; with a
+  different one it is an error, since then two tables disagree.
+
+The registration is new; the call is not. It is a sibling of ~def/pattern~ and
+~def/loop-clause~: a position the parser reads structurally, with a table of its
+own, and a fixed signature checked at the declaration.
+
+*** Bjolang: everything that names a unit
+
+~(std units)~ and the modules under it:
+
+- *~(std rational)~* — exact fractions over ~bigint~. Std has no rational
+  type; this one is not only for units.
+- *Unit terms* — maps from atoms to rational exponents, multiply, divide,
+  power.
+- *The parser* — GNU's grammar (below), with prefixes, plurals, and nearest-
+  name suggestions by edit distance. A port of Umits' FParsec parser to plain
+  Bjolang.
+- *The resolver* — the parser, against the table it is handed.
+- *The table* — the SI base dimensions and ~bit~, the coherent and derived
+  units, Umits' ~200 units ported to ~def/unit~, the prefixes, the constants.
+- *Temperatures* — newtypes ~Celsius~ and ~Fahrenheit~ over ~double~,
+  ~celsius->kelvin~ and back, with CSV and JSON codecs. No ~degC~ or ~degF~
+  unit: with factor 1, ~(double degC)~ would be ~(double K)~.
+- *Functions* — ~dB~, ~dBm~, ~dBW~, ~dBSPL~; ~conformable~, GNU's ~?~.
+- *Printing* — preferred names, prefixes by magnitude, mixed output.
+- *Parsing at run time* — ~string->quantity~, with the same parser the
+  resolver uses. The compiler emits the table a module can see as a constant,
+  so a unit a program declared parses at run time too.
+
+The parser that reads ~<1 furlong/fortnight>~ while compiling and the one that
+reads it from a text field at run time are one function.
+
+*** The unit grammar
+
+GNU's. Juxtaposition binds tighter than ~/~, so ~kg m/s^2~ is kg·m/s² and
+~m/s kg~ is m/(s·kg); ~*~ and ~/~ are left to right; ~^~ and a trailing digit
+raise (~m2~), with a rational exponent in parentheses (~Hz^(-1/2)~); ~|~
+divides two numbers before anything else, which is how a fraction of a unit is
+written: ~1|60 deg~. Prefixes are tried longest first (~MiB~ before ~M~), after
+an exact name: ~min~ is a minute, not milli-inch. Plurals are declared, not
+guessed.
+
+Umits has the same precedence but no ~|~, so its table's ~1/60 deg~ means
+~1/(60 deg)~.
+
+** Where units are visible
+
+Unit names follow the rules for types, and the resolver follows the rules for
+impls (~Docs/MODULES.org~). Nothing new is needed beyond that.
+
+*** A unit in a type is a key; a unit name is an export
+
+A unit in a type is stored in the metadata as its atom — the declaring
+module, the name, the dimension, the factor — as a type name is stored as a
+key that resolves to itself. So a module that never imported ~(std units)~ can
+hold, pass and return a ~(double m/s)~ it got from a module that did:
+unification, inference, errors that say "a speed (m/s) and a time (s)", and
+exports of its own inferred types all work.
+
+Writing a unit name needs the name in scope, as writing a type name does:
+~<1 m>~, ~(double m/s)~, ~(as x km)~ and ~def/unit~'s definition. Without it:
+
+#+BEGIN_SRC text
+error: the unit 'm' is not in scope here.
+It is declared in (std units), which this module does not import:
+write (import (std units)).
+#+END_SRC
+
+The compiler can say which module, because it is linked.
+
+- Unit names are exported by name, in a namespace of their own: a unit ~m~
+  and a variable ~m~ do not clash.
+- They can be re-exported, ~(re-export m s kg)~, and renamed by ~prefix~ and
+  ~only~ as types are: ~(prefix (std units) "u/")~ gives ~<1 u/m>~. The key
+  stays the declaring module's, so ~u/m~ and ~m~ from two imports are one
+  unit.
+- A unit belongs to the module that declares it. A module that declares an
+  ~m~ of its own has a different unit, not convertible to ~(std units)~'s
+  ~m~ — two types named ~Point~ in two modules are two types.
+- Printing needs no import: a program sees the implementations of every
+  module it is linked against, so ~(display v)~ in a module that only received
+  a quantity finds ~(std units)~'s ~Displayed~.
+
+*** The resolver is linked, not imported
+
+If library C imports ~(std units)~ and declares ~furlong~, and D imports only
+C, D writes ~<1 furlong>~: the name comes from C by import, the resolver from
+~(std units)~ by linking. Making D import ~(std units)~ for the parser alone
+would bring no name D needs.
+
+- The resolver is the one declared by a module the program is linked
+  against.
+- Two different resolvers linked into one program is an error naming both:
+  units resolved two ways cannot be promised to agree.
+- A unit expression, or a ~def/unit~ or ~def/dimension~, with no resolver
+  linked at all: "unit expressions need (std units)".
+
+| Case                                                    | Result                                          |
+|---------------------------------------------------------+-------------------------------------------------|
+| B receives a ~(double m)~ without importing ~(std units)~ | works: types, errors, inference, printing     |
+| B writes ~<1 m>~ without importing                      | error: ~m~ is not in scope, and where it is     |
+| D writes ~<1 furlong>~, ~furlong~ from C                | works: the name by import, the resolver by link |
+| A module declares its own ~m~                           | a unit of its own, not ~(std units)~'s          |
+| ~(prefix (std units) "u/")~                             | ~<1 u/m>~, the same unit as ~m~                 |
+| Two resolvers linked into one program                   | error, naming both                              |
+
+** Decisions made, and why
+
+- *Rational exponents.* Noise in V/√Hz is real, and unification over the
+  rationals is Gaussian elimination, simpler than over the integers. ~sqrt~
+  of ~m~ is ~m^(1/2)~, not an error.
+- *Units, not dimensions, in types.* A ~decimal~ in SI cannot hold an au³
+  (3.3e33 m³ overflows) or Planck's constant (6.6e-34 underflows). The type
+  says what the number is stored in.
+- *~0~ is a number of every unit; other literals are dimensionless.*
+  Kennedy's rule, so that ~(> x 0)~ works for lengths. ~(> x 1)~ does not.
+- *An impl for ~double~ is an impl for ~(double 1)~.* An impl for every unit
+  says so: ~(impl (Eq (double %u)))~. Read the other way, an existing impl
+  whose body is ~(* x x)~ would stop type-checking. Overlap between the two is
+  rejected.
+- *Absolute temperatures are newtypes, not units.* ~(Celsius 20)~ converts
+  to 293.15 K. A unit is a factor and nothing else. Differences are ~K~ or
+  ~degR~.
+- *Constants are units.* ~<1 c>~ is a ~(double m/s)~; ~(in v c)~ divides by
+  it.
+- *Errors name dimensions as formulas over base dimensions.* "~km/h~ is
+  length/time". Derived dimensions have no names.
+- *Logarithmic units are functions.* ~(dBm <1 W>)~, as Umits' macros do.
+- *Units are resolved by Bjolang, through a hook, never by the compiler.* One
+  parser for compile time and run time, and the compiler stays free of unit
+  names.
+
+** Open questions
+
+1. How an inferred type with units is printed in an error about code that
+   uses none. Proposal: a ~%u~ that is unconstrained prints as nothing.
+2. Whether a unit-generic impl may constrain its unit: ~(impl (Foo (double
+   %u)) (where (Length %u)))~. Not needed for the first version.
+3. Quantity kinds (torque against energy, width against height), as mp-units
+   has. A later layer; nothing here prevents it.
+4. Integers with units beyond ~int px~ and ~long byte~. Allowed by the
+   representation, untested by the plan.
+5. What a resolver that fails to terminate costs. The same as a macro: the
+   build hangs, and the expansion limit does not help, since there is no
+   expansion. A step limit on the call, or nothing.
+6. Factor-1 names are lost in printing: ~Sv~ and ~Gy~ are both ~m^2/s^2~,
+   ~Hz~ and ~Bq~ both ~1/s~. A value prints as its dimension's preferred
+   unit unless ~#:in~ says otherwise. Quantity kinds (3) would fix it.
+
+** Implementation plan
+
+Each phase ends with its tests, the full suite green, and a commit. Phases 1
+and 2 are Bjolang and need no compiler change; Phases 3 and 4 change nothing a
+program can observe.
+
+*** DONE Phase 0 — paper programs
+
+Results and findings: ~Docs/units-examples/README.org~. The findings are
+folded into this file.
+
+Before code: five programs written as if the feature existed, in
+~Docs/units-examples/~, each with the types and errors it should give.
+
+- The Umits README examples: drag, dilution, cobalt-60.
+- CSV sensor data, read, filtered, printed.
+- A projectile with a state vector — the case units do badly at.
+- One statistics function: mean and standard deviation.
+- Astronomy in ~decimal au~.
+
+Count the annotations, ~as~ and ~in~ each needs. If a program is unpleasant,
+the design changes here and not after Phase 5.
+
+*** Phase 1 — (std rational)
+
+Bjolang. Exact fractions over ~bigint~: normalized, arithmetic, comparison,
+~Eq~, ~Ord~, ~Written~, ~Displayed~, ~rational->double~ and ~rational->decimal~
+rounding once, ~string->rational~ for ~0.3048~, ~1e-3~ and ~1|60~. Tests in
+~TestFiles~.
+
+*** Phase 2 — (std units) at run time
+
+Bjolang, no compiler change. What the compiler will later call, built and
+tested on its own first.
+
+- Factors: a rational times an integer power of pi.
+- Unit terms over atoms; the table as a value; ~def/dimension~, ~def/unit~
+  and ~def/prefix~ as plain functions that add to a table, for now.
+- The parser and the resolver, ~(-> UnitTable string (Result string Resolved))~,
+  ported from Umits' ~Parsers.fs~ and ~Library.fs~.
+- The table: Umits' units, fixed on the way — ~arcmin~, ~fl_dr~ and ~gr~
+  written ~1/60 deg~ where ~1|60 deg~ was meant, the röntgen ~2.58e-4 C/kg~
+  rather than degC/kg — and the preferred name for each dimension declared, so
+  that 1/s prints as Hz and not as whichever of Hz and Bq came first. Not GNU's
+  ~definitions.units~: it is GPLv3. Umits is Linus's, so its table can be
+  relicensed to MPL.
+- A run-time value, a number with a unit term, with ~convert~,
+  ~string->measurement~ and printing: Umits as a library. It stays after the
+  typed version exists — a calculator does not know the dimension of what is
+  typed into it.
+- ~Celsius~, ~Fahrenheit~, the dB functions, ~conformable~.
+
+Tests: the Umits README's queries give its results, without its four bugs.
+
+*** Phase 3 — the solver
+
+F#. ~Units.fs~, before ~Unification.fs~, pure: no registry, no types.
+
+- ~UnitAtom~: a named atom (module-qualified), a unit variable, a unit
+  metavariable. ~UnitTerm~: atoms to nonzero rational exponents; 1 is empty.
+- ~unifyUnits~: move everything to one side, solve for a metavariable with a
+  nonzero exponent, substitute, repeat. Over the rationals every equation with
+  a metavariable in it has a solution; what fails is one left with atoms only,
+  ~m = s~ or ~d·m = d~, which gives an error naming both sides as written.
+
+Tests through a hidden compiler flag that solves equations given as text,
+driven from ~run_tests.py~ as the REPL sessions are.
+
+*** Phase 4 — a unit on the number types
+
+F#. Invisible: nothing can write a unit yet.
+
+- ~HMType~ (~TypedAST.fs:48~) gains ~TNum of carrier: HMType * unit: UnitTerm~,
+  only ever built through a smart constructor that returns the carrier itself
+  when the unit is 1. Every ~TCon(DoubleName, [])~ stays as it is.
+- ~prune~ (~Unification.fs:174~) normalizes: a ~TNum~ whose unit
+  metavariables solve to 1 becomes its carrier.
+- ~unify~ (~Unification.fs:888~): ~TNum~ against ~TNum~ unifies carriers as
+  types and units with ~Units.unifyUnits~; ~TNum~ against a plain number type
+  unifies the unit with 1. The effect on ~TFun~ (~unifyEffect~, 632) is the
+  precedent for a second kind of term inside a type.
+- Unit variables generalize and instantiate beside type variables; unit
+  metavariables are held back where numeric literals are (~heldMetaIds~).
+- Erasure: ~TNum(c, _)~ is ~c~ for ~Monomorphise~, ~Codegen~, ~PdbNames~ and
+  the CLR checks. The 26 files that match ~HMType~ exhaustively get a ~TNum~
+  arm, in most the carrier's.
+- Printing ~(double m/s)~; ~Exports~ and ~ModuleMetadata~ serialize it as its
+  syntax. ~currentVersion~ 27 → 28, and one ~./build_std.sh~.
+
+The suite passes unchanged, codegen tests included.
+
+*** Phase 5 — the hook, the forms, the operators
+
+F#.
+
+- ~def/unit-resolver~: the declaration, its signature check, its entry in the
+  metadata beside ~BjolangMacros~ (~Program.fs~, ~Pipeline.parseMacroEntries~),
+  and the call, through ~Macro.fs~'s marshalling. The table and the result as
+  ~Syntax~.
+- The module's unit table: ~def/dimension~, ~def/unit~, ~def/prefix~ become
+  declarations, each resolved through the hook in the order written; the
+  atoms the resolver makes are kept; exported as source.
+- Unit names in the module machinery, as types are: a namespace of their own
+  in ~(export ...)~, ~(re-export ...)~, ~prefix~, ~only~ and ~except~; atoms as
+  keys in the metadata; the "not in scope" error naming the linked module that
+  declares the unit.
+- The resolver found among the linked modules, not the imported ones; two is
+  an error, none is "unit expressions need (std units)".
+- Number types with a unit in ~TypeSyntax.parseType~ and
+  ~Annotations.resolveTypeAnnotation~ (287).
+- ~as~ and ~in~ as special forms: the dimension of ~x~'s unit must be the
+  target's; ~as~ emits ~x~ times a constant, ~in~ is ~as~ and then unit 1. A
+  factor that is not exact in a ~decimal~ (the parsec has π in it) is a
+  warning. ~as~ from unit 1 to a unit with a dimension is an error that
+  suggests ~(* x <1 m>)~. A multiplication by exactly 1 is not emitted.
+- ~cast~ between number types keeps the unit: ~(-> (decimal %u) (double %u))~.
+- The quantity literal: the reader (~Lexer.fs~, number reading at 564) reads
+  ~<~ directly followed by a digit, ~.~, or ~-~ and a digit as a quantity, to
+  the matching ~>~ — ~(< 1 2)~, ~<=~ and ~<-~ are untouched — as
+  ~(quantity "9.81" "m/s^2")~, a form that can also be written. Its type is
+  ~(TNum %c %u)~ with ~Num %c~ and the obligation "~%u~ has the dimension of
+  ~m/s^2~", settled in ~solvePending~ as numeric literals are: ~%u~ at the SI
+  unit, ~%c~ at ~double~. Codegen emits the value converted, exactly, rounded
+  once into the carrier.
+- The operators (~Prelude.fs:381~ and on):
+  - ~+ - % negate~ and the comparisons: one type, any unit, under a new
+    trait ~Measure %a~: a number type at any unit, CLR constraint ~INumber~
+    on the erased type. ~abs sign min max clamp zero?~ move from ~Num~ to
+    ~Measure~ (~lib/std/maths.bjo~). ~Num %a~ is ~Measure %a~ at unit 1.
+  - ~*~ and ~/~: ~(-> (TNum %c %u) (TNum %c %v) (TNum %c %u·%v))~ with ~Num %c~.
+    At unit 1 this is today's ~(-> %a %a %a)~.
+  - ~sqrt~, ~cbrt~: ~%u^2 → %u~, ~%u^3 → %u~. ~expt~ with a literal
+    exponent: ~%u^n~; with any other, unit 1.
+  - ~sin~, ~exp~, ~log~, ~floor~, ~round~: unit 1.
+  - A zero literal, ~0~, ~0.0~ or ~0M~: a number of any unit.
+  - Any other plain literal where a unit is expected: an error suggesting
+    ~<1.5 m>~.
+- ~(num %c %u)~ and unit variables in type syntax.
+- ~Num~ at a unit other than 1 is an error that says why: "metres are not a
+  Num: (* x x) on them is m²; this function does not know that".
+
+Tests: a resolver of a few units in ~TestFiles/inc~, so the compiler is
+tested apart from ~(std units)~; error tests for every mismatch and for the
+resolver's messages; codegen tests showing a literal as one constant and ~as~
+as one multiplication.
+
+*** Phase 6 — (std units) on the hook
+
+Bjolang.
+
+- ~(std units)~ declares its resolver, the Phase 2 parser, and turns its
+  table into ~def/dimension~, ~def/unit~ and ~def/prefix~ declarations.
+- The constants as units: ~<1 c>~ is a ~(double m/s)~.
+- Unit-generic impls for what is correct at any unit: ~Eq~, ~Ord~, hashing.
+- From ~Num~ to ~Measure~: the ~summing~ collector, ~positive?~,
+  ~negative?~, array ~sum~, and the rest of the 18 ~Num~-generic functions
+  that are correct at any unit. Unit-aware types: ~sqr~ (~%u → %u^2~),
+  ~sqrt~, ~cbrt~.
+
+From here ~(+ <1 m> <1 s>)~ is a compile error. Tests: the Phase 0 programs,
+compiled and run.
+
+*** Phase 7 — printing and parsing typed quantities
+
+- A synthesized trait, ~Measured %a~, whose one method returns the unit of a
+  ~(TNum c u)~: a constant where ~u~ is known, a dictionary where it is
+  generic. ~Displayed~ and ~Written~ for quantities use it, and the Phase 2
+  printing.
+- Default output: the unit in the type; for a coherent SI unit the preferred
+  name for its dimension with a prefix chosen by magnitude: ~3.6 MJ~.
+- ~(quantity->string q #:in ft,in)~: mixed output.
+- ~(string->quantity s)~: at the unit the caller expects, ~None~ if the
+  dimension is wrong.
+
+*** Phase 8 — the edges
+
+- ~(std datetime)~: ~Duration~ to and from ~(double s)~.
+- ~fmt~ and ~scan~: format specs for quantities.
+- bjosql ~def/table~: a column of type ~(double m)~ stores the number in the
+  type's unit.
+- ~(text json)~, ~(text csv-codec)~: fields with units.
+
+*** Phase 9 — documentation
+
+~Docs/Syntax.org~ (literals, ~as~, ~in~, type syntax), ~Docs/MACROS.org~ (the
+resolver beside ~def/pattern~ and ~def/loop-clause~), the bjodoc of ~(std
+units)~ and ~(std rational)~, ~CHANGELOG.org~, and this file's phases marked
+DONE with what the implementation turned up.
+
+** Size and risk
+
+| Phase | Language | Size                         | Risk                                           |
+|-------+----------+------------------------------+------------------------------------------------|
+|     1 | Bjolang  | 300–400                      | low                                            |
+|     2 | Bjolang  | 1 500–2 000, with the table  | low: Umits shows it works                      |
+|     3 | F#       | 400–600                      | low: the algorithm is Kennedy's                |
+|     4 | F#       | 300–500 over ~26 files       | medium: wide, and must change nothing          |
+|     5 | F#       | 1 100–1 500                  | medium: the hook, the literal, the operators, unit names in the module machinery |
+|     6 | Bjolang  | 300–500                      | low                                            |
+|     7 | both     | 400–600                      | low to medium: the dictionary                  |
+|     8 | Bjolang  | 300–500 over several libraries | low                                          |
+
+Phases 4 and 5 are where it can go wrong, and both have the same test: the
+existing suite, unchanged, must pass after each. Phases 1 and 2 are useful on
+their own, and if Phase 0 says the typed version is not worth it, they are
+where the work stops.

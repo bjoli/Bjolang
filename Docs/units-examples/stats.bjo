@@ -1,0 +1,40 @@
+;; Paper program: mean and standard deviation, generic in the unit.
+
+(import (std units))
+
+(: mean (-> (Vec (double %u)) (double %u)))
+(defun (mean xs)
+  (/ (loop (:for x xs) (:acc s (summing x)))
+     (cast System.Double (length xs))))
+
+(: stddev (-> (Vec (double %u)) (double %u)))
+(defun (stddev xs)
+  (def m (mean xs))
+  (def ss (loop (:for x xs) (:acc s (summing (sqr (- x m))))))   ; (double %u^2)
+  (sqrt (/ ss (cast System.Double (- (length xs) 1)))))           ; (double %u)
+
+(mean (vec <1.80 m> <1.65 m> <1.72 m>))     ; (double m), 1.7233
+(stddev (vec <1.80 m> <1.65 m> <1.72 m>))   ; (double m), 0.0751
+(stddev (vec 1.0 2.0 3.0))                  ; double, 1.0
+(stddev (vec <1 m> <1 ft>))                 ; (double m): the literals settle at one unit
+
+;; What each step needs:
+;;   summing x          Collector (Summing %a) under Measure, not Num.
+;;   (- x m)            Measure.
+;;   (sqr d)            (-> (num %c %u) (num %c %u^2)). Today sqr is Num: (-> %a %a).
+;;   (sqrt v)           (-> (double %u^2) (double %u)).
+;;   (/ ss n)           ss is (double %u^2), n is double: %u^2.
+;;
+;; Without the annotations both functions infer the same types, with
+;; (Vec (double %u)) on the argument.
+;;
+;; With today's sqr (Num %a), at %u = m:
+;; error: (sqr d) needs Num of (double m).
+;;   Num holds only for unit 1: (* x x) on (double m) is (double m^2).
+
+;; Generic in the carrier as well:
+(: mean* (-> (Vec (num %c %u)) (num %c %u)) (where (Num %c)))
+;; This needs a way to turn an int into a %c: (cast %c n) does not exist.
+;; Not attempted.
+
+;; Count: 2 annotations, 0 as/in.
