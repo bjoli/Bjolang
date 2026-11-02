@@ -268,7 +268,11 @@ would bring no name D needs.
 
 - *Rational exponents.* Noise in V/√Hz is real, and unification over the
   rationals is Gaussian elimination, simpler than over the integers. ~sqrt~
-  of ~m~ is ~m^(1/2)~, not an error.
+  of ~m~ is ~m^(1/2)~, not an error. ~km^(1/2)~ is a valid unit, but a
+  conversion whose factor is irrational, ~km^(1/2)~ to ~m^(1/2)~ (√1000), is
+  an error, as is a literal that would need one.
+- *Non-linear conversions are outside the unit system.* Temperatures and
+  logarithmic units are newtypes and functions.
 - *Units, not dimensions, in types.* A ~decimal~ in SI cannot hold an au³
   (3.3e33 m³ overflows) or Planck's constant (6.6e-34 underflows). The type
   says what the number is stored in.
@@ -330,14 +334,26 @@ Before code: five programs written as if the feature existed, in
 Count the annotations, ~as~ and ~in~ each needs. If a program is unpleasant,
 the design changes here and not after Phase 5.
 
-*** Phase 1 — (std rational)
+*** DONE Phase 1 — (std rational)
 
 Bjolang. Exact fractions over ~bigint~: normalized, arithmetic, comparison,
 ~Eq~, ~Ord~, ~Written~, ~Displayed~, ~rational->double~ and ~rational->decimal~
 rounding once, ~string->rational~ for ~0.3048~, ~1e-3~ and ~1|60~. Tests in
 ~TestFiles~.
 
-*** Phase 2 — (std units) at run time
+*** DONE Phase 2 — (std units) at run time
+
+Done in ~lib/std/units.bjo~, tests in ~TestFiles/508_units.bjo~. Notes:
+
+- A definition with coefficient 1 is an alias (~N~, ~hour~); any other is
+  an atom (~ft~, ~h~). A prefixed name (~km~) is an atom made at lookup.
+- Lookup order: exact name, trailing power (~m2~), longest prefix.
+- ~pi~ is a number in the grammar, not a unit.
+- ~convert-query~ divides when the target has another dimension, as Umits
+  does: ~65 mi in 12 mi/h~ is ~19500 s~. ~measurement-in~ returns an error
+  instead.
+- Exact definitions where Umits rounded: ~lb~, ~gal~, ~acre~, ~mHg~, and
+  ~pc~ as ~648000 au/pi~.
 
 Bjolang, no compiler change. What the compiler will later call, built and
 tested on its own first.

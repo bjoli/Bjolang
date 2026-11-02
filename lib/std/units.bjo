@@ -1,0 +1,1245 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/units.bjo — units of measure: unit tables, the unit expression parser,
+;; and measurements at run time.
+
+(import (std prelude) (std maths) (std rational) (std orderedmap))
+
+(:doc #:file "units.bjodoc")
+
+(export
+  ;; Factors
+  Factor factor factor-rational factor-pi factor-one factor-one?
+  factor* factor/ factor-expt factor->double
+  ;; Atoms and resolved unit expressions
+  Atom atom atom-name atom-dims atom-factor
+  Resolved resolved-coeff resolved-term resolved-atoms
+  resolved-dims resolved-factor
+  ;; Tables
+  UnitTable PrefixUse
+  empty-unit-table def-dimension def-unit def-prefix def-preferred
+  unit-table-names standard-units
+  ;; Resolving
+  resolve-unit conformable-units
+  ;; Measurements
+  Measurement measurement measurement-value measurement-dims
+  string->measurement measurement+ measurement- measurement* measurement/
+  measurement-scale measurement-expt measurement-sqrt conformable?
+  measurement-in measurement->string measurement->string/mixed
+  convert-query dims->string
+  ;; Temperatures
+  Celsius Fahrenheit celsius->kelvin kelvin->celsius
+  fahrenheit->kelvin kelvin->fahrenheit
+  ;; Logarithmic
+  dBW dBm dBV dBSPL dBW->power dBm->power dBV->voltage dBSPL->pressure)
+
+(import/class
+  (Exception (: System.Exception))
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+(import/extern
+  (clr-invariant (: System.Globalization.CultureInfo.InvariantCulture #:get)))
+
+(: (-> string %a))
+(defun (argument-error what)
+  (raise (cast Exception (ArgumentException. (str "(std units): " what)))))
+
+;; A Result's value, or ArgumentException with its message.
+(: (-> (Result string %a) %a))
+(defun (ok-or-raise r)
+  (match r
+    ((Ok v) v)
+    ((Err e) (argument-error e))))
+
+(: (-> int bigint))
+(defun (int->bigint n) (cast System.Numerics.BigInteger n))
+
+(def rational-one (rational 1 1))
+
+(: (-> (Tuple %a %b) %a))
+(defun (fst t) (match t ((Tuple a _) a)))
+
+(: (-> (Tuple %a %b) %b))
+(defun (snd t) (match t ((Tuple _ b) b)))
+
+;; ---------------------------------------------------------------------------
+;; Factors
+;; ---------------------------------------------------------------------------
+
+;; rat × pi^pi-power.
+(type (: Factor #:opaque (Struct (: rat Rational) (: pi-power int))))
+
+(: (-> Rational int Factor))
+(defun (factor r k) (Factor (rat r) (pi-power k)))
+
+(: (-> Factor Rational))
+(defun (factor-rational f) (struct-ref f rat))
+
+(: (-> Factor int))
+(defun (factor-pi f) (struct-ref f pi-power))
+
+(: factor-one Factor)
+(def factor-one (factor rational-one 0))
+
+(: (-> Factor bool))
+(defun (factor-one? f) (= f factor-one))
+
+(: (-> Factor Factor Factor))
+(defun (factor* a b)
+  (factor (rational* (factor-rational a) (factor-rational b)) (+ (factor-pi a) (factor-pi b))))
+
+(: (-> Factor Factor Factor))
+(defun (factor/ a b)
+  (factor (rational/ (factor-rational a) (factor-rational b)) (- (factor-pi a) (factor-pi b))))
+
+(: (-> Factor double))
+(defun (factor->double f)
+  (* (rational->double (factor-rational f)) (pow pi (cast System.Double (factor-pi f)))))
+
+(: (-> bigint int))
+(defun (bit-count n)
+  (let go ((n n) (k 0))
+    (if (zero? n) k (go (shift-right n 1) (+ k 1)))))
+
+;; The exact b-th root of n >= 0, or None.
+(: (-> bigint int (Option bigint)))
+(defun (exact-root n b)
+  (if (or (< n 2I) (= b 1))
+      (Some n)
+      (let* ((bb (int->bigint b))
+             (start (shift-left 1I (+ (/ (bit-count n) b) 1)))
+             (r (let go ((x start))
+                  (def y (/ (+ (* (- bb 1I) x) (/ n (expt x (- b 1)))) bb))
+                  (if (>= y x) x (go y)))))
+        (if (= (expt r b) n) (Some r) None))))
+
+;; f^q, or None when the result is irrational, or q is negative and f zero.
+(: (-> Factor Rational (Option Factor)))
+(defun (factor-expt f q)
+  (def p (cast System.Int32 (rational-num q)))
+  (def s (cast System.Int32 (rational-den q)))
+  (def k (* (factor-pi f) p))
+  (def n (rational-num (factor-rational f)))
+  (def d (rational-den (factor-rational f)))
+  (cond
+    ((not (= 0 (% k s))) None)
+    ((and (zero? n) (< p 0)) None)
+    ((and (< n 0I) (even? s)) None)
+    (else
+     (match (Tuple (exact-root (abs n) s) (exact-root d s))
+       ((Tuple (Some a) (Some b))
+        (Some (factor (rational-expt (rational (if (< n 0I) (- 0I a) a) b) p) (/ k s))))
+       (_ None)))))
+
+;; ---------------------------------------------------------------------------
+;; Exponent maps: dimensions and unit terms
+;; ---------------------------------------------------------------------------
+;; A map from a name to a nonzero rational exponent. Empty is 1.
+
+(: (-> (OrderedMap string Rational) (OrderedMap string Rational) (OrderedMap string Rational)))
+(defun (exps* a b)
+  (orderedmap-filter (fun (k v) (not (rational-zero? v)))
+                     (orderedmap-merge-with (fun (k x y) (rational+ x y)) a b)))
+
+(: (-> (OrderedMap string Rational) Rational (OrderedMap string Rational)))
+(defun (exps-scale m q)
+  (if (rational-zero? q)
+      (orderedmap-empty)
+      (orderedmap-map-values (fun (v) (rational* v q)) m)))
+
+(: (-> (OrderedMap string Rational) (OrderedMap string Rational)))
+(defun (exps-invert m) (exps-scale m (rational -1 1)))
+
+(: (-> string Rational string))
+(defun (exp-part name q)
+  (cond
+    ((= q rational-one) name)
+    ((rational-integer? q) (str name "^" (rational->string q)))
+    (else (str name "^(" (rational->string q) ")"))))
+
+;; "kg m^2/(s^3 A)", "1/s", "1" for the empty map.
+(: (-> (OrderedMap string Rational) string))
+(defun (exps->string m)
+  (def entries (orderedmap->list m))
+  (def pos (list-filter (fun (e) (> (rational-sign (snd e)) 0)) entries))
+  (def neg (list-filter (fun (e) (< (rational-sign (snd e)) 0)) entries))
+  (: (-> (List (Tuple string Rational)) bool string))
+  (defun (parts es negate?)
+    (string-join (list->vec (list-map (fun (e) (exp-part (fst e) (if negate? (rational-negate (snd e)) (snd e)))) es))
+                 " "))
+  (def numer (if (list-empty? pos) "1" (parts pos #f)))
+  (cond
+    ((list-empty? neg) numer)
+    ((= (list-length neg) 1) (str numer "/" (parts neg #t)))
+    (else (str numer "/(" (parts neg #t) ")"))))
+
+;; A dimension as text: "length/time", "mass/(length time^2)", "dimensionless".
+(: (-> (OrderedMap string Rational) string))
+(defun (dims->string d)
+  (if (orderedmap-empty? d) "dimensionless" (exps->string d)))
+
+;; ---------------------------------------------------------------------------
+;; Atoms and resolved expressions
+;; ---------------------------------------------------------------------------
+
+;; A named unit with its dimension and its factor to the coherent unit of
+;; that dimension.
+(type (: Atom #:opaque (Struct (: name string)
+                               (: dims (OrderedMap string Rational))
+                               (: factor Factor))))
+
+(: (-> string (OrderedMap string Rational) Factor Atom))
+(defun (atom name dims f) (Atom (name name) (dims dims) (factor f)))
+
+(: (-> Atom string))
+(defun (atom-name a) (struct-ref a name))
+
+(: (-> Atom (OrderedMap string Rational)))
+(defun (atom-dims a) (struct-ref a dims))
+
+(: (-> Atom Factor))
+(defun (atom-factor a) (struct-ref a factor))
+
+;; coeff × the product of atoms to their exponents. atoms holds every atom
+;; the term names.
+(type (: Resolved #:opaque (Struct (: coeff Factor)
+                                   (: term (OrderedMap string Rational))
+                                   (: atoms (OrderedMap string Atom)))))
+
+(: (-> Resolved Factor))
+(defun (resolved-coeff r) (struct-ref r coeff))
+
+(: (-> Resolved (OrderedMap string Rational)))
+(defun (resolved-term r) (struct-ref r term))
+
+(: (-> Resolved (OrderedMap string Atom)))
+(defun (resolved-atoms r) (struct-ref r atoms))
+
+(: (-> Factor Resolved))
+(defun (resolved-number f) (Resolved (coeff f) (term (orderedmap-empty)) (atoms (orderedmap-empty))))
+
+(: (-> Atom Resolved))
+(defun (resolved-atom a)
+  (Resolved (coeff factor-one)
+            (term (orderedmap-set (orderedmap-empty) (atom-name a) rational-one))
+            (atoms (orderedmap-set (orderedmap-empty) (atom-name a) a))))
+
+(: (-> Resolved Resolved Resolved))
+(defun (resolved* a b)
+  (Resolved (coeff (factor* (resolved-coeff a) (resolved-coeff b)))
+            (term (exps* (resolved-term a) (resolved-term b)))
+            (atoms (orderedmap-merge-with (fun (k x y) x) (resolved-atoms a) (resolved-atoms b)))))
+
+;; a/b, or None when b's coefficient is zero.
+(: (-> Resolved Resolved (Option Resolved)))
+(defun (resolved/ a b)
+  (match (factor-expt (resolved-coeff b) (rational -1 1))
+    ((Some inv)
+     (Some (resolved* a (Resolved (coeff inv) (term (exps-invert (resolved-term b))) (atoms (resolved-atoms b))))))
+    (None None)))
+
+;; r^q, or None when the coefficient's power is irrational.
+(: (-> Resolved Rational (Option Resolved)))
+(defun (resolved-expt r q)
+  (match (factor-expt (resolved-coeff r) q)
+    ((Some c) (Some (Resolved (coeff c) (term (exps-scale (resolved-term r) q)) (atoms (resolved-atoms r)))))
+    (None None)))
+
+(: (-> Resolved (OrderedMap string Rational)))
+(defun (resolved-dims r)
+  (orderedmap-fold (fun (name q acc) (exps* acc (exps-scale (atom-dims (orderedmap-ref (resolved-atoms r) name)) q)))
+                   (orderedmap-empty)
+                   (resolved-term r)))
+
+;; The exact factor from r to the coherent unit of its dimension.
+(: (-> Resolved (Result string Factor)))
+(defun (resolved-factor r)
+  (orderedmap-fold
+   (fun (name q acc)
+     (match acc
+       ((Ok f)
+        (match (factor-expt (atom-factor (orderedmap-ref (resolved-atoms r) name)) q)
+          ((Some g) (Ok (factor* f g)))
+          (None (Err (str "the factor of " (exp-part name q) " is irrational")))))
+       (e e)))
+   (Ok (resolved-coeff r))
+   (resolved-term r)))
+
+;; The factor as a double, rational powers included.
+(: (-> Resolved double))
+(defun (resolved-double r)
+  (orderedmap-fold (fun (name q acc)
+                     (* acc (pow (factor->double (atom-factor (orderedmap-ref (resolved-atoms r) name)))
+                                 (rational->double q))))
+                   (factor->double (resolved-coeff r))
+                   (resolved-term r)))
+
+;; ---------------------------------------------------------------------------
+;; Tables
+;; ---------------------------------------------------------------------------
+
+;; Which prefixes printing may put on a preferred unit.
+(type (: PrefixUse (Union NoPrefix SmallPrefixes AllPrefixes)))
+
+(type (: UnitDef (Union (: UnitAtom Atom) (: UnitAlias Resolved))))
+
+(type (: UnitTable #:opaque
+         (Record (: dimensions (OrderedMap string string))
+                 (: units (OrderedMap string UnitDef))
+                 (: prefixes (OrderedMap string Rational))
+                 (: preferred (OrderedMap string (Tuple string PrefixUse))))))
+
+(: empty-unit-table UnitTable)
+(def empty-unit-table
+  (UnitTable (dimensions (orderedmap-empty)) (units (orderedmap-empty))
+             (prefixes (orderedmap-empty)) (preferred (orderedmap-empty))))
+
+(: (-> UnitTable (List string)))
+(defun (unit-table-names t)
+  (orderedmap-fold (fun (k v acc) (Cons k acc)) Nil (record-ref t units)))
+
+(: (-> char bool))
+(defun (name-start? c)
+  (or (char-alphabetic? c) (char=? c #\_) (char=? c #\%)))
+
+(: (-> char bool))
+(defun (name-char? c)
+  (or (name-start? c) (char-numeric? c)))
+
+(: (-> string bool))
+(defun (valid-name? s)
+  (match (string->list s)
+    ((Cons c rest) (and (name-start? c) (list-all? name-char? rest) (not (= s "pi"))))
+    (Nil #f)))
+
+(: (-> (-> char bool) (List char) bool))
+(defun (list-all? ok? cs)
+  (match cs
+    (Nil #t)
+    ((Cons c rest) (and (ok? c) (list-all? ok? rest)))))
+
+(: (-> UnitTable string (Result string UnitTable)))
+(defun (check-new-name t name)
+  (cond
+    ((not (valid-name? name)) (Err (str "'" name "' is not a valid unit name")))
+    ((orderedmap-has-key? (record-ref t units) name) (Err (str "the unit '" name "' is already defined")))
+    (else (Ok t))))
+
+;; A base dimension and its coherent unit: (def-dimension t "length" "m").
+(: (-> UnitTable string string (Result string UnitTable)))
+(defun (def-dimension t dim unit)
+  (def (Ok _) (check-new-name t unit) :propagate)
+  (if (orderedmap-has-key? (record-ref t dimensions) dim)
+      (Err (str "the dimension '" dim "' is already defined"))
+      (Ok (record-set t
+            (dimensions (orderedmap-set (record-ref t dimensions) dim unit))
+            (units (orderedmap-set (record-ref t units) unit
+                                   (UnitAtom (atom unit (orderedmap-set (orderedmap-empty) dim rational-one) factor-one))))))))
+
+;; A unit defined by a unit expression: (def-unit t "ft" "12 in").
+;; A definition with coefficient 1 makes an alias: "N" is "kg m/s^2". Any
+;; other makes a unit of its own.
+(: (-> UnitTable string string (Result string UnitTable)))
+(defun (def-unit t name definition)
+  (def (Ok _) (check-new-name t name) :propagate)
+  (def (Ok r) (map-err (fun (e) (str name ": " e)) (resolve-unit t definition)) :propagate)
+  (def (Ok f) (map-err (fun (e) (str name ": " e)) (resolved-factor r)) :propagate)
+  (def entry
+    (if (factor-one? (resolved-coeff r))
+        (UnitAlias r)
+        (UnitAtom (atom name (resolved-dims r) f))))
+  (Ok (record-set t (units (orderedmap-set (record-ref t units) name entry)))))
+
+(: (-> (-> %e %f) (Result %e %a) (Result %f %a)))
+(defun (map-err f r)
+  (match r
+    ((Ok v) (Ok v))
+    ((Err e) (Err (f e)))))
+
+;; A prefix and its value: (def-prefix t "k" "1000"), (def-prefix t "m" "1|1000").
+(: (-> UnitTable string string (Result string UnitTable)))
+(defun (def-prefix t name value)
+  (match (string->rational value)
+    ((Some q) #:when (valid-name? name)
+     (Ok (record-set t (prefixes (orderedmap-set (record-ref t prefixes) name q)))))
+    ((Some q) (Err (str "'" name "' is not a valid prefix")))
+    (None (Err (str "the value of the prefix '" name "' is not a number: " value)))))
+
+;; The unit printing uses for its dimension, and which prefixes it may take.
+(: (-> UnitTable string PrefixUse (Result string UnitTable)))
+(defun (def-preferred t unit use)
+  (def (Ok r) (resolve-unit t unit) :propagate)
+  (Ok (record-set t (preferred (orderedmap-set (record-ref t preferred)
+                                               (exps->string (resolved-dims r))
+                                               (Tuple unit use))))))
+
+;; ---------------------------------------------------------------------------
+;; Lookup
+;; ---------------------------------------------------------------------------
+
+(: (-> UnitDef Resolved))
+(defun (def->resolved d)
+  (match d
+    ((UnitAtom a) (resolved-atom a))
+    ((UnitAlias r) r)))
+
+;; name as base and a trailing power: "m2" is (Tuple "m" 2).
+(: (-> string (Option (Tuple string int))))
+(defun (split-power name)
+  (def cs (list-reverse (string->list name)))
+  (let go ((cs cs) (digits Nil))
+    (match cs
+      ((Cons c rest) #:when (char-numeric? c) (go rest (Cons c digits)))
+      ((Cons c rest) #:when (not (list-empty? digits))
+       (Some (Tuple (list->string (list-reverse cs)) (string->int (list->string digits)))))
+      (_ None))))
+
+;; The longest prefix p with name = p ++ rest, rest a unit of the table.
+(: (-> UnitTable string (Option (Tuple Rational string))))
+(defun (find-prefix t name)
+  (orderedmap-fold
+   (fun (p q best)
+     (if (and (string-starts-with? name p) (< (string-length p) (string-length name)))
+         (let ((rest (string-drop name (string-length p))))
+           (if (and (orderedmap-has-key? (record-ref t units) rest)
+                    (match best
+                      ((Some (Tuple _ r)) (< (string-length rest) (string-length r)))
+                      (None #t)))
+               (Some (Tuple q rest))
+               best))
+         best))
+   None
+   (record-ref t prefixes)))
+
+;; A unit by name: the exact name, then a trailing power ("m2"), then a
+;; prefix on a unit of the table ("km"). A prefixed unit is a new atom.
+(: (-> UnitTable string (Option Resolved)))
+(defun (lookup t name)
+  (match (orderedmap-try-ref (record-ref t units) name)
+    ((Some d) (Some (def->resolved d)))
+    (None
+     (match (split-power name)
+       ((Some (Tuple base n)) #:when (> n 0)
+        (match (lookup t base)
+          ((Some r) (resolved-expt r (int->rational n)))
+          (None None)))
+       (_
+        (match (find-prefix t name)
+          ((Some (Tuple q rest))
+           (def r (def->resolved (orderedmap-ref (record-ref t units) rest)))
+           (match (resolved-factor r)
+             ((Ok f) (Some (resolved-atom (atom name (resolved-dims r) (factor* (factor q 0) f)))))
+             ((Err _) None)))
+          (None None)))))))
+
+(: (-> char char int))
+(defun (char-cost a b) (if (char=? a b) 0 1))
+
+;; Levenshtein distance.
+(: (-> string string int))
+(defun (edit-distance a b)
+  (def bcs (string->list b))
+  (def first-row (let go ((j (list-length bcs)) (acc Nil))
+                   (if (< j 0) acc (go (- j 1) (Cons j acc)))))
+  (: (-> char (List int) (List int)))
+  (defun (next-row ca prev)
+    (match prev
+      ((Cons p0 _)
+       (let go ((bs bcs) (prev prev) (left (+ p0 1)) (acc (Cons (+ p0 1) Nil)))
+         (match (Tuple bs prev)
+           ((Tuple (Cons cb more) (Cons diag (Cons up rest)))
+            (def v (min (+ up 1) (min (+ left 1) (+ diag (char-cost ca cb)))))
+            (go more (Cons up rest) v (Cons v acc)))
+           (_ (list-reverse acc)))))
+      (Nil Nil)))
+  (def last-row (list-foldl next-row first-row (string->list a)))
+  (match (list-reverse last-row)
+    ((Cons d _) d)
+    (Nil 0)))
+
+(: (-> UnitTable string string))
+(defun (unknown-unit t name)
+  (def limit (max 1 (/ (string-length name) 3)))
+  (def best
+    (list-foldl (fun (candidate best)
+                  (def d (edit-distance name candidate))
+                  (match best
+                    ((Some (Tuple bd _)) #:when (<= bd d) best)
+                    (_ (if (<= d limit) (Some (Tuple d candidate)) best))))
+                None
+                (list-reverse (unit-table-names t))))
+  (match best
+    ((Some (Tuple _ c)) (str "unknown unit '" name "'. Did you mean '" c "'?"))
+    (None (str "unknown unit '" name "'"))))
+
+;; ---------------------------------------------------------------------------
+;; The unit expression grammar
+;; ---------------------------------------------------------------------------
+;; Tightest first:
+;;   a|b    a number divided by a number, inside the number token
+;;   ^      a power with a rational exponent: m^2, Hz^(-1/2), s^-1
+;;   juxtaposition, a product: kg m
+;;   * /    left to right: kg m/s^2 is kg·m/s², m/s kg is m/(s·kg)
+;;   + -    measurements only
+;; A trailing number on a name is a power: m2. pi is the number.
+
+(type (: Token (Union (: TNum Rational) (: TName string) (: TOp char))))
+
+(type (: Expr (Union (: ENum Rational)
+                     EPi
+                     (: EUnit string)
+                     (: EMul Expr Expr)
+                     (: EDiv Expr Expr)
+                     (: EPow Expr Rational)
+                     (: ENeg Expr)
+                     (: EAdd Expr Expr)
+                     (: ESub Expr Expr)
+                     (: ECall string Expr))))
+
+(: (-> char bool))
+(defun (number-char? c) (or (char-numeric? c) (char=? c #\.)))
+
+;; Chars of a number from the front of cs: digits and points, an exponent
+;; when digits follow the e, and a |-quotient.
+(: (-> (List char) (Tuple (List char) (List char))))
+(defun (take-number cs)
+  (: (-> (List char) (List char) (Tuple (List char) (List char))))
+  (defun (mantissa cs acc)
+    (match cs
+      ((Cons c rest) #:when (number-char? c) (mantissa rest (Cons c acc)))
+      ((Cons e rest) #:when (or (char=? e #\e) (char=? e #\E))
+       (match rest
+         ((Cons s (Cons d more)) #:when (and (or (char=? s #\-) (char=? s #\+)) (char-numeric? d))
+          (digits more (Cons d (Cons s (Cons e acc)))))
+         ((Cons d more) #:when (char-numeric? d) (digits more (Cons d (Cons e acc))))
+         (_ (Tuple acc cs))))
+      (_ (Tuple acc cs))))
+  (: (-> (List char) (List char) (Tuple (List char) (List char))))
+  (defun (digits cs acc)
+    (match cs
+      ((Cons c rest) #:when (char-numeric? c) (digits rest (Cons c acc)))
+      (_ (Tuple acc cs))))
+  (def (acc rest) (mantissa cs Nil))
+  (match rest
+    ((Cons bar (Cons c more)) #:when (and (char=? bar #\|) (number-char? c))
+     (def (acc2 rest2) (mantissa (Cons c more) (Cons bar acc)))
+     (Tuple (list-reverse acc2) rest2))
+    (_ (Tuple (list-reverse acc) rest))))
+
+(: (-> (List char) (Tuple (List char) (List char))))
+(defun (take-name cs)
+  (let go ((cs cs) (acc Nil))
+    (match cs
+      ((Cons c rest) #:when (name-char? c) (go rest (Cons c acc)))
+      (_ (Tuple (list-reverse acc) cs)))))
+
+(: (-> string (Result string (List Token))))
+(defun (tokenize text)
+  (let go ((cs (string->list text)) (acc Nil))
+    (match cs
+      (Nil (Ok (list-reverse acc)))
+      ((Cons c rest) #:when (char-whitespace? c) (go rest acc))
+      ((Cons #\* (Cons #\* rest)) (go rest (Cons (TOp #\^) acc)))
+      ((Cons c rest) #:when (number-char? c)
+       (def (chars more) (take-number cs))
+       (match (string->rational (list->string chars))
+         ((Some q) (go more (Cons (TNum q) acc)))
+         (None (Err (str "'" (list->string chars) "' is not a number")))))
+      ((Cons c rest) #:when (name-start? c)
+       (def (chars more) (take-name cs))
+       (go more (Cons (TName (list->string chars)) acc)))
+      ((Cons c rest) #:when (string-contains? "*/^+-()" (char->string c))
+       (go rest (Cons (TOp c) acc)))
+      ((Cons c rest) (Err (str "unexpected '" (char->string c) "'"))))))
+
+(: (-> (List Token) bool))
+(defun (starts-factor? ts)
+  (match ts
+    ((Cons (TNum _) _) #t)
+    ((Cons (TName _) _) #t)
+    ((Cons (TOp #\() _) #t)
+    (_ #f)))
+
+(: (-> (List Token) string))
+(defun (describe-next ts)
+  (match ts
+    (Nil "the end")
+    ((Cons (TNum q) _) (str "'" (rational->string q) "'"))
+    ((Cons (TName n) _) (str "'" n "'"))
+    ((Cons (TOp c) _) (str "'" (char->string c) "'"))))
+
+(: (-> (List Token) (Result string (Tuple Expr (List Token)))))
+(defun (parse-sum ts)
+  (def (Ok (Tuple first rest)) (parse-product ts) :propagate)
+  (let go ((e first) (ts rest))
+    (match ts
+      ((Cons (TOp #\+) more)
+       (def (Ok (Tuple r after)) (parse-product more) :propagate)
+       (go (EAdd e r) after))
+      ((Cons (TOp #\-) more)
+       (def (Ok (Tuple r after)) (parse-product more) :propagate)
+       (go (ESub e r) after))
+      (_ (Ok (Tuple e ts))))))
+
+(: (-> (List Token) (Result string (Tuple Expr (List Token)))))
+(defun (parse-product ts)
+  (def (Ok (Tuple first rest)) (parse-juxt ts) :propagate)
+  (let go ((e first) (ts rest))
+    (match ts
+      ((Cons (TOp #\*) more)
+       (def (Ok (Tuple r after)) (parse-juxt more) :propagate)
+       (go (EMul e r) after))
+      ((Cons (TOp #\/) more)
+       (def (Ok (Tuple r after)) (parse-juxt more) :propagate)
+       (go (EDiv e r) after))
+      (_ (Ok (Tuple e ts))))))
+
+(: (-> (List Token) (Result string (Tuple Expr (List Token)))))
+(defun (parse-juxt ts)
+  (def (Ok (Tuple first rest)) (parse-unary ts) :propagate)
+  (let go ((e first) (ts rest))
+    (if (starts-factor? ts)
+        (let ()
+          (def (Ok (Tuple r after)) (parse-power ts) :propagate)
+          (go (EMul e r) after))
+        (Ok (Tuple e ts)))))
+
+(: (-> (List Token) (Result string (Tuple Expr (List Token)))))
+(defun (parse-unary ts)
+  (match ts
+    ((Cons (TOp #\-) more)
+     (def (Ok (Tuple e after)) (parse-unary more) :propagate)
+     (Ok (Tuple (ENeg e) after)))
+    (_ (parse-power ts))))
+
+(: (-> (List Token) (Result string (Tuple Expr (List Token)))))
+(defun (parse-power ts)
+  (def (Ok (Tuple base rest)) (parse-atom ts) :propagate)
+  (match rest
+    ((Cons (TOp #\^) more)
+     (def (Ok (Tuple q after)) (parse-exponent more) :propagate)
+     (Ok (Tuple (EPow base q) after)))
+    (_ (Ok (Tuple base rest)))))
+
+(: (-> (List Token) (Result string (Tuple Rational (List Token)))))
+(defun (parse-signed ts)
+  (match ts
+    ((Cons (TOp #\-) (Cons (TNum q) rest)) (Ok (Tuple (rational-negate q) rest)))
+    ((Cons (TOp #\+) (Cons (TNum q) rest)) (Ok (Tuple q rest)))
+    ((Cons (TNum q) rest) (Ok (Tuple q rest)))
+    (_ (Err (str "expected an exponent, got " (describe-next ts))))))
+
+;; 2, -1, 0.5, (1/2), (-1|2).
+(: (-> (List Token) (Result string (Tuple Rational (List Token)))))
+(defun (parse-exponent ts)
+  (match ts
+    ((Cons (TOp #\() more)
+     (def (Ok (Tuple q rest)) (parse-signed more) :propagate)
+     (match rest
+       ((Cons (TOp #\)) after) (Ok (Tuple q after)))
+       ((Cons (TOp #\/) (Cons (TNum d) (Cons (TOp #\)) after))) #:when (not (rational-zero? d))
+        (Ok (Tuple (rational/ q d) after)))
+       (_ (Err (str "expected ')' in an exponent, got " (describe-next rest))))))
+    (_ (parse-signed ts))))
+
+(: (-> (List Token) (Result string (Tuple Expr (List Token)))))
+(defun (parse-atom ts)
+  (match ts
+    ((Cons (TNum q) rest) (Ok (Tuple (ENum q) rest)))
+    ((Cons (TName "pi") rest) (Ok (Tuple EPi rest)))
+    ((Cons (TName f) (Cons (TOp #\() rest)) #:when (or (= f "sqrt") (= f "cbrt"))
+     (def (Ok (Tuple e after)) (parse-sum rest) :propagate)
+     (match after
+       ((Cons (TOp #\)) more) (Ok (Tuple (ECall f e) more)))
+       (_ (Err (str "expected ')', got " (describe-next after))))))
+    ((Cons (TName n) rest) (Ok (Tuple (EUnit n) rest)))
+    ((Cons (TOp #\() rest)
+     (def (Ok (Tuple e after)) (parse-sum rest) :propagate)
+     (match after
+       ((Cons (TOp #\)) more) (Ok (Tuple e more)))
+       (_ (Err (str "expected ')', got " (describe-next after))))))
+    (_ (Err (str "expected a number or a unit, got " (describe-next ts))))))
+
+(: (-> string (Result string Expr)))
+(defun (parse-expression text)
+  (def (Ok ts) (tokenize text) :propagate)
+  (def (Ok (Tuple e rest)) (parse-sum ts) :propagate)
+  (match rest
+    (Nil (Ok e))
+    (_ (Err (str "unexpected " (describe-next rest))))))
+
+;; ---------------------------------------------------------------------------
+;; Resolving: exact
+;; ---------------------------------------------------------------------------
+
+(: (-> UnitTable Expr (Result string Resolved)))
+(defun (resolve-expr t e)
+  (match e
+    ((ENum q) (Ok (resolved-number (factor q 0))))
+    (EPi (Ok (resolved-number (factor rational-one 1))))
+    ((EUnit n)
+     (match (lookup t n)
+       ((Some r) (Ok r))
+       (None (Err (unknown-unit t n)))))
+    ((EMul a b)
+     (def (Ok x) (resolve-expr t a) :propagate)
+     (def (Ok y) (resolve-expr t b) :propagate)
+     (Ok (resolved* x y)))
+    ((EDiv a b)
+     (def (Ok x) (resolve-expr t a) :propagate)
+     (def (Ok y) (resolve-expr t b) :propagate)
+     (match (resolved/ x y)
+       ((Some r) (Ok r))
+       (None (Err "division by zero"))))
+    ((EPow a q)
+     (def (Ok x) (resolve-expr t a) :propagate)
+     (match (resolved-expt x q)
+       ((Some r) (Ok r))
+       (None (Err (str "a power " (exp-part "x" q) " with an irrational factor")))))
+    ((ENeg a)
+     (def (Ok x) (resolve-expr t a) :propagate)
+     (Ok (resolved* (resolved-number (factor (rational -1 1) 0)) x)))
+    ((EAdd _ _) (Err "+ is not allowed in a unit expression"))
+    ((ESub _ _) (Err "- is not allowed in a unit expression"))
+    ((ECall f _) (Err (str f " is not allowed in a unit expression")))))
+
+;; A unit expression against a table: "km/h", "1|60 deg", "kg m^2/s^2".
+(: (-> UnitTable string (Result string Resolved)))
+(defun (resolve-unit t text)
+  (def (Ok e) (parse-expression text) :propagate)
+  (resolve-expr t e))
+
+;; The names in the table whose dimension is that of text: GNU's ?.
+(: (-> UnitTable string (Result string (List string))))
+(defun (conformable-units t text)
+  (def (Ok r) (resolve-unit t text) :propagate)
+  (def d (resolved-dims r))
+  (Ok (list-filter (fun (n) (match (lookup t n)
+                              ((Some u) (= (resolved-dims u) d))
+                              (None #f)))
+                   (list-reverse (unit-table-names t)))))
+
+;; ---------------------------------------------------------------------------
+;; The standard table
+;; ---------------------------------------------------------------------------
+
+(def si-prefixes
+  (list (list "Q" "1e30") (list "R" "1e27") (list "Y" "1e24") (list "Z" "1e21") (list "E" "1e18") (list "P" "1e15")
+    (list "T" "1e12") (list "G" "1e9") (list "M" "1e6") (list "k" "1e3") (list "h" "1e2") (list "da" "1e1")
+    (list "d" "1e-1") (list "c" "1e-2") (list "m" "1e-3") (list "u" "1e-6") (list "µ" "1e-6") (list "n" "1e-9")
+    (list "p" "1e-12") (list "f" "1e-15") (list "a" "1e-18") (list "z" "1e-21") (list "y" "1e-24")
+    (list "r" "1e-27") (list "q" "1e-30")
+    (list "Ki" "1024") (list "ki" "1024") (list "Mi" "1048576") (list "Gi" "1073741824")
+    (list "Ti" "1099511627776") (list "Pi" "1125899906842624") (list "Ei" "1152921504606846976")
+    (list "Zi" "1180591620717411303424") (list "Yi" "1208925819614629174706176")))
+
+(def si-dimensions
+  (list (list "length" "m") (list "mass" "kg") (list "time" "s") (list "current" "A") (list "temperature" "K")
+    (list "amount" "mol") (list "luminosity" "cd") (list "information" "b")))
+
+;; (name definition alias ...), in order: a definition uses only names above it.
+(def standard-definitions
+  (list ;; Aliases of the base units
+    (list "m" "m" "meter" "meters" "metre" "metres")
+    (list "s" "s" "sec" "second" "seconds")
+    (list "b" "b" "bit" "bits")
+    (list "A" "A" "amp" "Amp" "ampere")
+    ;; Constants
+    (list "c" "299792458 m/s")
+    (list "gn" "9.80665 m/s^2")
+    ;; Time
+    (list "min" "60 s" "minute" "minutes")
+    (list "h" "60 min" "hr" "hour" "hours")
+    (list "d" "24 h" "day" "days")
+    (list "wk" "7 d" "week" "weeks")
+    (list "fortnight" "14 d" "fortnights")
+    (list "yr" "31557600 s" "year" "years")
+    ;; Length
+    (list "in" "0.0254 m" "inch" "inches")
+    (list "ft" "12 in" "foot" "feet")
+    (list "yd" "3 ft" "yard" "yards")
+    (list "mi" "5280 ft" "mile" "miles")
+    (list "nmi" "1852 m")
+    (list "fath" "6 ft" "fathom" "fathoms")
+    (list "fur" "660 ft" "furlong" "furlongs")
+    (list "au" "149597870700 m")
+    (list "ly" "c yr" "lightyear" "lightyears")
+    (list "pc" "648000 au/pi" "parsec" "parsecs")
+    ;; Area
+    (list "ha" "10000 m2" "hectare" "hectares")
+    (list "are" "100 m2" "ares")
+    (list "acre" "4046.8564224 m2" "acres")
+    ;; Volume
+    (list "l" "0.001 m3" "L" "litre" "litres" "liter" "liters")
+    (list "gal" "3.785411784 l" "gallon" "gallons")
+    (list "qt" "1|4 gal" "quart" "quarts")
+    (list "pt" "1|2 qt" "pint" "pints")
+    (list "fl_oz" "1|16 pt" "fluid_ounce" "fluid_ounces")
+    (list "fl_dr" "1|8 fl_oz")
+    (list "gi" "4 fl_oz")
+    (list "tsp" "5 ml" "teaspoon" "teaspoons")
+    (list "tbsp" "15 ml" "tablespoon" "tablespoons")
+    (list "cup" "250 ml" "cups")
+    (list "us_tsp" "4.92892159375 ml")
+    (list "us_tbsp" "3 us_tsp")
+    (list "us_cup" "16 us_tbsp" "us_cups")
+    ;; Mass
+    (list "g" "0.001 kg" "gram" "grams")
+    (list "t" "1000 kg" "ton" "tons" "tonne" "tonnes")
+    (list "u" "1.66053906660e-27 kg" "amu")
+    (list "slug" "14.5939029 kg")
+    (list "lb" "0.45359237 kg" "pound" "pounds")
+    (list "oz" "1|16 lb" "ounce" "ounces")
+    (list "gr" "1|7000 lb" "grain" "grains")
+    (list "st" "14 lb" "stone")
+    (list "short_ton" "2000 lb" "short_tons")
+    (list "long_ton" "2240 lb" "long_tons")
+    ;; Force and pressure
+    (list "N" "kg m/s^2" "newton" "newtons")
+    (list "lbf" "lb gn")
+    (list "kgf" "kg gn")
+    (list "dyn" "1e-5 N")
+    (list "Pa" "N/m^2" "pascal")
+    (list "bar" "100000 Pa")
+    (list "atm" "101325 Pa" "atmosphere" "atmospheres")
+    (list "psi" "lbf/in^2")
+    (list "mHg" "133322.387415 Pa" "mhg")
+    (list "mH2O" "9806.65 Pa" "mh2o")
+    ;; Energy and power
+    (list "J" "N m" "joule" "joules" "Nm")
+    (list "W" "J/s" "watt" "watts" "Watt" "Watts")
+    (list "Wh" "W h")
+    (list "hp" "745.6998715822702 W" "horsepower")
+    (list "cal" "4.184 J" "calorie" "calories")
+    (list "BTU" "1055.05585262 J")
+    (list "eV" "1.602176634e-19 J")
+    (list "erg" "1e-7 J")
+    ;; Electricity and magnetism
+    (list "C" "A s" "coulomb")
+    (list "V" "W/A" "volt" "volts")
+    (list "ohm" "V/A" "ohms")
+    (list "S" "1/ohm" "siemens")
+    (list "F" "C/V" "farad")
+    (list "H" "V s/A" "henry")
+    (list "Wb" "V s" "weber")
+    (list "T" "Wb/m^2" "tesla" "T_tesla")
+    (list "gauss" "1e-4 T")
+    (list "Mx" "1e-8 Wb" "maxwell")
+    (list "Oe" "1000/(4 pi) * A/m" "oersted")
+    ;; Viscosity
+    (list "poise" "0.1 Pa s")
+    (list "St" "1e-4 m^2/s" "stokes")
+    ;; Information
+    (list "B" "8 b" "byte" "bytes")
+    (list "bps" "b/s")
+    (list "Bps" "B/s")
+    ;; Photometry
+    (list "sr" "1" "steradian")
+    (list "lm" "cd sr" "lumen")
+    (list "lx" "lm/m^2" "lux")
+    ;; Frequency and radioactivity
+    (list "Hz" "1/s" "hertz" "Hertz" "hz")
+    (list "Bq" "1/s" "becquerel")
+    (list "Ci" "3.7e10 Bq" "curie")
+    (list "Gy" "J/kg" "gray")
+    (list "Sv" "J/kg" "sievert")
+    (list "rem" "0.01 Sv")
+    (list "rad_dose" "0.01 Gy")
+    (list "R" "2.58e-4 C/kg" "roentgen")
+    ;; Temperature differences
+    (list "degR" "5|9 K" "rankine")
+    ;; Angles
+    (list "rad" "1" "radian" "radians")
+    (list "deg" "pi/180" "degree" "degrees")
+    (list "grad" "pi/200")
+    (list "rev" "2 pi" "revolution" "revolutions")
+    (list "rpm" "rev/min")
+    (list "arcmin" "1|60 deg")
+    (list "arcsec" "1|3600 deg")
+    ;; Ratios
+    (list "%" "0.01" "percent")
+    (list "ppm" "1e-6")
+    (list "ppb" "1e-9")
+    (list "ppt" "1e-12")
+    ;; Physical constants
+    (list "planck" "6.62607015e-34 J s")
+    (list "hbar" "planck/(2 pi)")
+    ;; Rates
+    (list "kph" "km/h")
+    (list "mph" "mi/h")
+    (list "kn" "nmi/h" "knot" "knots")))
+
+(def standard-preferred
+  (list (Tuple "m" AllPrefixes) (Tuple "g" AllPrefixes) (Tuple "s" SmallPrefixes)
+        (Tuple "A" AllPrefixes) (Tuple "K" SmallPrefixes) (Tuple "mol" AllPrefixes)
+        (Tuple "cd" AllPrefixes) (Tuple "b" AllPrefixes)
+        (Tuple "N" AllPrefixes) (Tuple "Pa" AllPrefixes) (Tuple "J" AllPrefixes)
+        (Tuple "W" AllPrefixes) (Tuple "C" AllPrefixes) (Tuple "V" AllPrefixes)
+        (Tuple "ohm" AllPrefixes) (Tuple "S" AllPrefixes) (Tuple "F" AllPrefixes)
+        (Tuple "H" AllPrefixes) (Tuple "Wb" AllPrefixes) (Tuple "T" AllPrefixes)
+        (Tuple "lx" AllPrefixes) (Tuple "Hz" AllPrefixes) (Tuple "Gy" AllPrefixes)))
+
+(: (-> UnitTable (List string) UnitTable))
+(defun (add-definition t entry)
+  (match entry
+    ((Cons name (Cons definition aliases))
+     (list-foldl (fun (alias t) (ok-or-raise (def-unit t alias (str "1 " name))))
+                 (if (orderedmap-has-key? (record-ref t units) name)
+                     t
+                     (ok-or-raise (def-unit t name definition)))
+                 aliases))
+    (_ (argument-error "a definition needs a name and a definition"))))
+
+(: standard-units UnitTable)
+(def standard-units
+  (let* ((t (list-foldl (fun (d t) (ok-or-raise (def-dimension t (first-of-2 d) (second-of-2 d))))
+                        empty-unit-table si-dimensions))
+         (t (list-foldl (fun (p t) (ok-or-raise (def-prefix t (first-of-2 p) (second-of-2 p))))
+                        t si-prefixes))
+         (t (list-foldl (fun (e t) (add-definition t e)) t standard-definitions)))
+    (list-foldl (fun (p t) (ok-or-raise (def-preferred t (fst p) (snd p))))
+                t standard-preferred)))
+
+(: (-> (List string) string))
+(defun (first-of-2 xs)
+  (match xs
+    ((Cons a _) a)
+    (Nil "")))
+
+(: (-> (List string) string))
+(defun (second-of-2 xs)
+  (match xs
+    ((Cons _ (Cons b _)) b)
+    (_ "")))
+
+;; ---------------------------------------------------------------------------
+;; Measurements
+;; ---------------------------------------------------------------------------
+
+;; A value in the coherent unit of its dimension.
+(type (: Measurement (Struct (: value double) (: dims (OrderedMap string Rational)))))
+
+(: (-> double (OrderedMap string Rational) Measurement))
+(defun (measurement v d) (Measurement (value v) (dims d)))
+
+(: (-> Measurement double))
+(defun (measurement-value m) (struct-ref m value))
+
+(: (-> Measurement (OrderedMap string Rational)))
+(defun (measurement-dims m) (struct-ref m dims))
+
+(def no-dims (orderedmap-empty))
+
+(: (-> string Measurement Measurement (Result string Measurement)))
+(defun (same-dims what a b)
+  (if (= (measurement-dims a) (measurement-dims b))
+      (Ok a)
+      (Err (str "cannot " what " " (dims->string (measurement-dims a))
+                " and " (dims->string (measurement-dims b))))))
+
+(: (-> UnitTable Expr (Result string Measurement)))
+(defun (eval-measure t e)
+  (match e
+    ((ENum q) (Ok (measurement (rational->double q) no-dims)))
+    (EPi (Ok (measurement pi no-dims)))
+    ((EUnit n)
+     (match (lookup t n)
+       ((Some r) (Ok (measurement (resolved-double r) (resolved-dims r))))
+       (None (Err (unknown-unit t n)))))
+    ((EMul a b)
+     (def (Ok x) (eval-measure t a) :propagate)
+     (def (Ok y) (eval-measure t b) :propagate)
+     (Ok (measurement* x y)))
+    ((EDiv a b)
+     (def (Ok x) (eval-measure t a) :propagate)
+     (def (Ok y) (eval-measure t b) :propagate)
+     (Ok (measurement/ x y)))
+    ((EPow a q)
+     (def (Ok x) (eval-measure t a) :propagate)
+     (Ok (measurement-expt x q)))
+    ((ENeg a)
+     (def (Ok x) (eval-measure t a) :propagate)
+     (Ok (measurement-scale -1.0 x)))
+    ((EAdd a b)
+     (def (Ok x) (eval-measure t a) :propagate)
+     (def (Ok y) (eval-measure t b) :propagate)
+     (def (Ok _) (same-dims "add" x y) :propagate)
+     (Ok (measurement (+ (measurement-value x) (measurement-value y)) (measurement-dims x))))
+    ((ESub a b)
+     (def (Ok x) (eval-measure t a) :propagate)
+     (def (Ok y) (eval-measure t b) :propagate)
+     (def (Ok _) (same-dims "subtract" x y) :propagate)
+     (Ok (measurement (- (measurement-value x) (measurement-value y)) (measurement-dims x))))
+    ((ECall f a)
+     (def (Ok x) (eval-measure t a) :propagate)
+     (Ok (measurement-expt x (if (= f "sqrt") (rational 1 2) (rational 1 3)))))))
+
+;; "6000 m + 50 ft", "0.5 * 1.225 kg/m^3 * (120 km/h)^2", "sqrt(2 m^2)".
+(: (-> string (#:table UnitTable) (Result string Measurement)))
+(defun (string->measurement text #:table standard-units)
+  (def (Ok e) (parse-expression text) :propagate)
+  (eval-measure table e))
+
+(: (-> string Measurement Measurement Measurement))
+(defun (checked what a b)
+  (match (same-dims what a b)
+    ((Ok _) a)
+    ((Err e) (argument-error e))))
+
+;; Raises ArgumentException when the dimensions differ.
+(: (-> Measurement Measurement Measurement))
+(defun (measurement+ a b)
+  (ignore (checked "add" a b))
+  (measurement (+ (measurement-value a) (measurement-value b)) (measurement-dims a)))
+
+;; Raises ArgumentException when the dimensions differ.
+(: (-> Measurement Measurement Measurement))
+(defun (measurement- a b)
+  (ignore (checked "subtract" a b))
+  (measurement (- (measurement-value a) (measurement-value b)) (measurement-dims a)))
+
+(: (-> Measurement Measurement Measurement))
+(defun (measurement* a b)
+  (measurement (* (measurement-value a) (measurement-value b))
+               (exps* (measurement-dims a) (measurement-dims b))))
+
+(: (-> Measurement Measurement Measurement))
+(defun (measurement/ a b)
+  (measurement (/ (measurement-value a) (measurement-value b))
+               (exps* (measurement-dims a) (exps-invert (measurement-dims b)))))
+
+(: (-> double Measurement Measurement))
+(defun (measurement-scale k m)
+  (measurement (* k (measurement-value m)) (measurement-dims m)))
+
+(: (-> Measurement Rational Measurement))
+(defun (measurement-expt m q)
+  (measurement (pow (measurement-value m) (rational->double q))
+               (exps-scale (measurement-dims m) q)))
+
+(: (-> Measurement Measurement))
+(defun (measurement-sqrt m) (measurement-expt m (rational 1 2)))
+
+(: (-> Measurement Measurement bool))
+(defun (conformable? a b) (= (measurement-dims a) (measurement-dims b)))
+
+;; m as a number of target: (measurement-in m "ft"), (measurement-in m "12 mi/h").
+(: (-> Measurement string (#:table UnitTable) (Result string double)))
+(defun (measurement-in m target #:table standard-units)
+  (def (Ok u) (string->measurement target #:table table) :propagate)
+  (if (conformable? m u)
+      (Ok (/ (measurement-value m) (measurement-value u)))
+      (Err (str "cannot convert " (dims->string (measurement-dims m))
+                " to " target ", which is " (dims->string (measurement-dims u))))))
+
+;; ---------------------------------------------------------------------------
+;; Printing
+;; ---------------------------------------------------------------------------
+
+;; 7 significant digits, invariant culture.
+(: (-> double string))
+(defun (format-number x)
+  (string-replace (.ToString x "G7" clr-invariant) "−" "-"))
+
+(def print-prefixes
+  (list "Q" "R" "Y" "Z" "E" "P" "T" "G" "M" "k" "m" "u" "n" "p" "f" "a" "z" "y" "r" "q"))
+
+;; The prefix for x in a unit: the largest power of 1000 at most |x|, or the
+;; smallest when |x| is below all.
+(: (-> UnitTable double PrefixUse (Tuple string double)))
+(defun (choose-prefix t x use)
+  (def a (abs x))
+  (def candidates
+    (match use
+      (NoPrefix Nil)
+      (_ (list-filter (fun (p) (match use
+                                 (SmallPrefixes (< (snd p) 1.0))
+                                 (_ #t)))
+                      (list-map (fun (p) (Tuple p (rational->double (orderedmap-ref (record-ref t prefixes) p))))
+                                (list-filter (fun (p) (orderedmap-has-key? (record-ref t prefixes) p)) print-prefixes))))))
+  (def all (Cons (Tuple "" 1.0) candidates))
+  (def fitting (list-filter (fun (p) (<= (snd p) a)) all))
+  (cond
+    ((= a 0.0) (Tuple "" 1.0))
+    ((list-empty? fitting)
+     (list-foldl (fun (p best) (if (< (snd p) (snd best)) p best)) (Tuple "" 1.0) all))
+    (else
+     (list-foldl (fun (p best) (if (> (snd p) (snd best)) p best)) (Tuple "" 0.0) fitting))))
+
+;; In the dimension's preferred unit with a prefix by magnitude, or else in
+;; the coherent unit written with the base units: "3.6 MJ", "33.33333 m/s".
+(: (-> Measurement (#:table UnitTable) string))
+(defun (measurement->string m #:table standard-units)
+  (def d (measurement-dims m))
+  (def v (measurement-value m))
+  (cond
+    ((orderedmap-empty? d) (format-number v))
+    (:match (Some (Tuple unit use)) (orderedmap-try-ref (record-ref table preferred) (exps->string d))
+     (def u (match (lookup table unit)
+              ((Some r) (resolved-double r))
+              (None 1.0)))
+     (def x (/ v u))
+     (def (p pv) (choose-prefix table x use))
+     (str (format-number (/ x pv)) " " p unit))
+    (else
+     (def names (orderedmap-fold (fun (dim q acc)
+                                   (orderedmap-set acc (orderedmap-ref-or (record-ref table dimensions) dim dim) q))
+                                 (orderedmap-empty) d))
+     (str (format-number v) " " (exps->string names)))))
+
+;; Mixed output: (measurement->string/mixed m (list "h" "min")) is "5 h 25 min".
+;; Each unit but the last takes a whole number, the last the rest.
+(: (-> Measurement (List string) (#:table UnitTable) (Result string string)))
+(defun (measurement->string/mixed m units #:table standard-units)
+  (def (Ok targets)
+    (list-foldl (fun (u acc)
+                  (match acc
+                    ((Ok xs)
+                     (match (string->measurement u #:table table)
+                       ((Ok v) #:when (conformable? v m) (Ok (Cons (Tuple u (measurement-value v)) xs)))
+                       ((Ok v) (Err (str "cannot convert " (dims->string (measurement-dims m)) " to " u)))
+                       ((Err e) (Err e))))
+                    (e e)))
+                (Ok Nil) units)
+    :propagate)
+  (let go ((ts (list-reverse targets)) (remaining (measurement-value m)) (parts Nil))
+    (match ts
+      (Nil (Ok (string-join (list->vec (list-reverse parts)) " ")))
+      ((Cons (Tuple u scale) Nil)
+       (def x (/ remaining scale))
+       (go Nil 0.0 (if (or (> (abs x) 1e-9) (list-empty? parts))
+                       (Cons (str (format-number x) " " u) parts)
+                       parts)))
+      ((Cons (Tuple u scale) more)
+       (def whole (truncate (round-to (/ remaining scale) 9)))
+       (go more (- remaining (* whole scale))
+           (if (= whole 0.0) parts (Cons (str (format-number whole) " " u) parts)))))))
+
+(import/extern
+  (clr-round-digits (: System.Math.Round (-> double int double))))
+
+(: (-> double int double))
+(defun (round-to x digits) (clr-round-digits x digits))
+
+;; A query as Umits takes it: "12 h in s", "65 mi/(12 mi/h) in h,min",
+;; "6 ft, 2 in in m", or an expression alone, printed by measurement->string.
+;; A single target of another dimension divides: "65 mi in 12 mi/h" is
+;; "19500 s".
+(: (-> string (#:table UnitTable) (Result string string)))
+(defun (convert-query query #:table standard-units)
+  (def (lhs rhs)
+    (match (string-search-backward query " in ")
+      ((Some at) (Tuple (substring query (string-cursor-start query) at)
+                        (Some (substring query (string-cursor-forward query at 4) (string-cursor-end query)))))
+      (None (Tuple query None))))
+  (def (Ok m) (string->measurement (string-replace lhs "," " + ") #:table table) :propagate)
+  (match rhs
+    (None (Ok (measurement->string m #:table table)))
+    ((Some targets)
+     (def units (list-map string-trim (vec->list (string-split targets ","))))
+     (match units
+       ((Cons u Nil)
+        (def (Ok target) (string->measurement u #:table table) :propagate)
+        (if (conformable? m target)
+            (Ok (str (format-number (/ (measurement-value m) (measurement-value target))) " " u))
+            (Ok (measurement->string (measurement/ m target) #:table table))))
+       (_ (measurement->string/mixed m units #:table table))))))
+
+(impl (Written Measurement)
+  (defun (written m) (str "(string->measurement \"" (measurement->string m) "\")"))
+  (defun (write-into m b) (stringbuilder-add-string! b (written m))))
+
+(impl (Displayed Measurement)
+  (defun (displayed m) (measurement->string m))
+  (defun (display-into m b) (stringbuilder-add-string! b (measurement->string m))))
+
+;; ---------------------------------------------------------------------------
+;; Temperatures
+;; ---------------------------------------------------------------------------
+;; Absolute temperatures. Differences are measured in K or degR.
+
+(type (: Celsius (Newtype double)))
+(type (: Fahrenheit (Newtype double)))
+
+(: (-> Celsius Measurement))
+(defun (celsius->kelvin c)
+  (def (Celsius x) c)
+  (measurement (+ x 273.15) (measurement-dims (ok-or-raise (string->measurement "K")))))
+
+;; Raises ArgumentException when k is not a temperature.
+(: (-> Measurement Celsius))
+(defun (kelvin->celsius k)
+  (Celsius (- (ok-or-raise (measurement-in k "K")) 273.15)))
+
+(: (-> Fahrenheit Measurement))
+(defun (fahrenheit->kelvin f)
+  (def (Fahrenheit x) f)
+  (measurement (* (+ x 459.67) (/ 5.0 9.0)) (measurement-dims (ok-or-raise (string->measurement "K")))))
+
+;; Raises ArgumentException when k is not a temperature.
+(: (-> Measurement Fahrenheit))
+(defun (kelvin->fahrenheit k)
+  (Fahrenheit (- (* (ok-or-raise (measurement-in k "K")) (/ 9.0 5.0)) 459.67)))
+
+(impl (Written Celsius)
+  (defun (written c) (def (Celsius x) c) (str "(Celsius " (written x) ")"))
+  (defun (write-into c b) (stringbuilder-add-string! b (written c))))
+
+(impl (Displayed Celsius)
+  (defun (displayed c) (def (Celsius x) c) (str (format-number x) " °C"))
+  (defun (display-into c b) (stringbuilder-add-string! b (displayed c))))
+
+(impl (Written Fahrenheit)
+  (defun (written f) (def (Fahrenheit x) f) (str "(Fahrenheit " (written x) ")"))
+  (defun (write-into f b) (stringbuilder-add-string! b (written f))))
+
+(impl (Displayed Fahrenheit)
+  (defun (displayed f) (def (Fahrenheit x) f) (str (format-number x) " °F"))
+  (defun (display-into f b) (stringbuilder-add-string! b (displayed f))))
+
+;; ---------------------------------------------------------------------------
+;; Logarithmic
+;; ---------------------------------------------------------------------------
+;; Each raises ArgumentException when the measurement has the wrong dimension.
+
+(: (-> double Measurement string double))
+(defun (decibels k m reference)
+  (* k (log10 (ok-or-raise (measurement-in m reference)))))
+
+(: (-> double double string Measurement))
+(defun (from-decibels k x reference)
+  (measurement-scale (pow 10.0 (/ x k)) (ok-or-raise (string->measurement reference))))
+
+(: (-> Measurement double))
+(defun (dBW p) (decibels 10.0 p "1 W"))
+
+(: (-> Measurement double))
+(defun (dBm p) (decibels 10.0 p "1 mW"))
+
+(: (-> Measurement double))
+(defun (dBV v) (decibels 20.0 v "1 V"))
+
+(: (-> Measurement double))
+(defun (dBSPL p) (decibels 20.0 p "20 uPa"))
+
+(: (-> double Measurement))
+(defun (dBW->power x) (from-decibels 10.0 x "1 W"))
+
+(: (-> double Measurement))
+(defun (dBm->power x) (from-decibels 10.0 x "1 mW"))
+
+(: (-> double Measurement))
+(defun (dBV->voltage x) (from-decibels 20.0 x "1 V"))
+
+(: (-> double Measurement))
+(defun (dBSPL->pressure x) (from-decibels 20.0 x "20 uPa"))
