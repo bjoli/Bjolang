@@ -1,0 +1,334 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/rational.bjo — exact fractions over bigint.
+
+(import (std prelude) (std maths))
+
+(:doc #:file "rational.bjodoc")
+
+(export
+  Rational
+  ;; Construction and parts
+  rational int->rational bigint->rational
+  rational-num rational-den
+  ;; Arithmetic
+  rational+ rational- rational* rational/
+  rational-negate rational-recip rational-abs rational-expt
+  ;; Predicates
+  rational-zero? rational-integer? rational-sign
+  ;; Rounding to a bigint
+  rational-floor rational-ceiling rational-truncate rational-round
+  ;; Conversions
+  rational->double rational->decimal
+  rational->string string->rational)
+
+(import/class
+  (Exception (: System.Exception))
+  (DivideByZeroException (: System.DivideByZeroException (-> string DivideByZeroException)))
+  (OverflowException (: System.OverflowException (-> string OverflowException))))
+
+(import/extern
+  (clr-bit-length (: System.Numerics.BigInteger.GetBitLength (-> bigint long)))
+  (clr-scale-b (: System.Math.ScaleB (-> double int double))))
+
+;; Invariant: den > 0, gcd(num, den) = 1. Zero is 0/1.
+(type (: Rational #:opaque (Struct (: num bigint) (: den bigint))))
+
+(: (-> string %a))
+(defun (divide-by-zero what)
+  (raise (cast Exception (DivideByZeroException. (str "(std rational): " what)))))
+
+;; ---------------------------------------------------------------------------
+;; Construction
+;; ---------------------------------------------------------------------------
+
+;; Normalizes sign and common factors.
+(: (-> bigint bigint Rational))
+(defun (rational n d)
+  (when (zero? d)
+    (divide-by-zero "the denominator is zero."))
+  (def g (gcd n d))
+  (def s (if (< d 0) -1I 1I))
+  (Rational (num (* s (/ n g))) (den (* s (/ d g)))))
+
+(: (-> bigint Rational))
+(defun (bigint->rational n) (Rational (num n) (den 1I)))
+
+(: (-> int Rational))
+(defun (int->rational n) (bigint->rational (cast System.Numerics.BigInteger n)))
+
+(: (-> Rational bigint))
+(defun (rational-num x) (struct-ref x num))
+
+(: (-> Rational bigint))
+(defun (rational-den x) (struct-ref x den))
+
+;; ---------------------------------------------------------------------------
+;; Arithmetic
+;; ---------------------------------------------------------------------------
+
+(: (-> Rational Rational Rational))
+(defun (rational+ a b)
+  (rational (+ (* (rational-num a) (rational-den b)) (* (rational-num b) (rational-den a)))
+            (* (rational-den a) (rational-den b))))
+
+(: (-> Rational Rational Rational))
+(defun (rational- a b) (rational+ a (rational-negate b)))
+
+(: (-> Rational Rational Rational))
+(defun (rational* a b)
+  (rational (* (rational-num a) (rational-num b))
+            (* (rational-den a) (rational-den b))))
+
+;; Raises DivideByZeroException when b is zero.
+(: (-> Rational Rational Rational))
+(defun (rational/ a b) (rational* a (rational-recip b)))
+
+(: (-> Rational Rational))
+(defun (rational-negate x)
+  (Rational (num (- 0I (rational-num x))) (den (rational-den x))))
+
+;; Raises DivideByZeroException for zero.
+(: (-> Rational Rational))
+(defun (rational-recip x)
+  (when (rational-zero? x)
+    (divide-by-zero "the reciprocal of zero."))
+  (rational (rational-den x) (rational-num x)))
+
+(: (-> Rational Rational))
+(defun (rational-abs x)
+  (if (< (rational-num x) 0) (rational-negate x) x))
+
+;; Any int exponent. A negative one takes the reciprocal; zero to a negative
+;; power raises DivideByZeroException.
+(: (-> Rational int Rational))
+(defun (rational-expt x n)
+  (if (< n 0)
+      (rational-recip (rational-expt x (- 0 n)))
+      (Rational (num (expt (rational-num x) n)) (den (expt (rational-den x) n)))))
+
+;; ---------------------------------------------------------------------------
+;; Predicates
+;; ---------------------------------------------------------------------------
+
+(: (-> Rational bool))
+(defun (rational-zero? x) (zero? (rational-num x)))
+
+(: (-> Rational bool))
+(defun (rational-integer? x) (= (rational-den x) 1I))
+
+;; -1, 0 or 1.
+(: (-> Rational int))
+(defun (rational-sign x) (sign (rational-num x)))
+
+;; ---------------------------------------------------------------------------
+;; Comparison
+;; ---------------------------------------------------------------------------
+
+;; Eq is the struct's: the representation is canonical.
+(impl (Ord Rational)
+  (defun (compare a b)
+    (compare (* (rational-num a) (rational-den b))
+             (* (rational-num b) (rational-den a)))))
+
+;; ---------------------------------------------------------------------------
+;; Rounding to a bigint
+;; ---------------------------------------------------------------------------
+
+(: (-> Rational bigint))
+(defun (rational-floor x)
+  (def n (rational-num x))
+  (def d (rational-den x))
+  (def q (/ n d))
+  (if (< (% n d) 0) (- q 1I) q))
+
+(: (-> Rational bigint))
+(defun (rational-ceiling x)
+  (- 0I (rational-floor (rational-negate x))))
+
+(: (-> Rational bigint))
+(defun (rational-truncate x)
+  (/ (rational-num x) (rational-den x)))
+
+;; Ties to even.
+(: (-> Rational bigint))
+(defun (rational-round x)
+  (def f (rational-floor x))
+  (def twice-frac (* 2I (- (rational-num x) (* f (rational-den x)))))
+  (def c (compare twice-frac (rational-den x)))
+  (if (or (> c 0) (and (= c 0) (odd? f))) (+ f 1I) f))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(: (-> bigint int))
+(defun (bit-length n) (cast System.Int32 (clr-bit-length n)))
+
+;; q/d rounded to an integer, ties to even, given q = floor(x) and r its remainder.
+(: (-> bigint bigint bigint bigint))
+(defun (round-quotient q r d)
+  (def c (compare (* 2I r) d))
+  (if (or (> c 0) (and (= c 0) (odd? q))) (+ q 1I) q))
+
+;; Nearest double, ties to even, subnormals included. Rounds once.
+;; Too large for a double: infinity.
+(: (-> Rational double))
+(defun (rational->double x)
+  (def n (abs (rational-num x)))
+  (def d (rational-den x))
+  (def mag
+    (if (zero? n)
+        0.0
+        (let* ((e (- (bit-length n) (bit-length d)))  ; n/d in [2^(e-1), 2^(e+1))
+               (k (max (- e 54) -1074))               ; exponent of q's last bit
+               (num (if (< k 0) (shift-left n (- 0 k)) n))
+               (den (if (< k 0) d (shift-left d k)))
+               (q (/ num den))
+               (r (% num den))
+               (extra (max 0 (- (bit-length q) 53))))
+          (if (= extra 0)
+              (clr-scale-b (cast System.Double (round-quotient q r den)) k)
+              (let* ((unit (shift-left 1I extra))
+                     (low (% q unit))
+                     (high (shift-right q extra))
+                     (half (shift-right unit 1))
+                     (c (compare low half))
+                     (up (or (> c 0)
+                             (and (= c 0) (not (zero? r)))
+                             (and (= c 0) (zero? r) (odd? high)))))
+                (clr-scale-b (cast System.Double (if up (+ high 1I) high)) (+ k extra)))))))
+  (if (< (rational-num x) 0) (- 0.0 mag) mag))
+
+(def decimal-limit (shift-left 1I 96))
+
+;; The digits of q with a point before the last s of them.
+(: (-> bigint int string))
+(defun (point-digits q s)
+  (def digits (string-pad-left (bigint->string q) (+ s 1) #:with #\0))
+  (if (= s 0)
+      digits
+      (str (string-drop-right digits s) "." (string-take-right digits s))))
+
+;; Nearest decimal, ties to even, at the largest scale that fits, with
+;; trailing zeros removed. Rounds once.
+;; Raises OverflowException when the integer part does not fit.
+(: (-> Rational decimal))
+(defun (rational->decimal x)
+  (def n (abs (rational-num x)))
+  (def d (rational-den x))
+  (def (q s)
+    (let down ((s 28))
+      (def scaled (* n (expt 10I s)))
+      (def q (round-quotient (/ scaled d) (% scaled d) d))
+      (cond
+        ((< q decimal-limit) (Tuple q s))
+        ((= s 0) (raise (cast Exception (OverflowException.
+                                         (str "(std rational): " (rational->string x)
+                                              " is too large for a decimal.")))))
+        (else (down (- s 1))))))
+  (def (q* s*)
+    (let strip ((q q) (s s))
+      (if (and (> s 0) (zero? (% q 10I)))
+          (strip (/ q 10I) (- s 1))
+          (Tuple q s))))
+  (string->decimal (str (if (< (rational-num x) 0) "-" "") (point-digits q* s*))))
+
+;; "3", "-1/3".
+(: (-> Rational string))
+(defun (rational->string x)
+  (if (rational-integer? x)
+      (bigint->string (rational-num x))
+      (str (bigint->string (rational-num x)) "/" (bigint->string (rational-den x)))))
+
+(impl (Written Rational)
+  (defun (written x)
+    (str "(rational " (bigint->string (rational-num x)) " " (bigint->string (rational-den x)) ")"))
+  (defun (write-into x b) (stringbuilder-add-string! b (written x))))
+
+(impl (Displayed Rational)
+  (defun (displayed x) (rational->string x))
+  (defun (display-into x b) (stringbuilder-add-string! b (rational->string x))))
+
+;; ---------------------------------------------------------------------------
+;; Parsing
+;; ---------------------------------------------------------------------------
+
+(: (-> char bool))
+(defun (digit? c) (and (char>=? c #\0) (char<=? c #\9)))
+
+(: (-> char bigint))
+(defun (digit-value c) (cast System.Numerics.BigInteger (- (char->int c) 48)))
+
+;; Digits from the front of cs: (Tuple value count rest).
+(: (-> (List char) (Tuple bigint int (List char))))
+(defun (read-digits cs)
+  (let go ((cs cs) (v 0I) (k 0))
+    (match cs
+      ((Cons c rest) #:when (digit? c) (go rest (+ (* v 10I) (digit-value c)) (+ k 1)))
+      (_ (Tuple v k cs)))))
+
+;; An optional sign: (Tuple negative? rest).
+(: (-> (List char) (Tuple bool (List char))))
+(defun (read-sign cs)
+  (match cs
+    ((Cons c rest) #:when (char=? c #\-) (Tuple #t rest))
+    ((Cons c rest) #:when (char=? c #\+) (Tuple #f rest))
+    (_ (Tuple #f cs))))
+
+;; sign? digits ("." digits)? (("e" | "E") sign? digits)?, at least one
+;; mantissa digit, and nothing after.
+(: (-> (List char) (Option Rational)))
+(defun (read-decimal cs)
+  (def (neg? cs1) (read-sign cs))
+  (def (int-part int-count cs2) (read-digits cs1))
+  (def (frac-part frac-count cs3)
+    (match cs2
+      ((Cons c rest) #:when (char=? c #\.) (read-digits rest))
+      (_ (Tuple 0I 0 cs2))))
+  (def exponent
+    (match cs3
+      (Nil (Some 0))
+      ((Cons c rest) #:when (or (char=? c #\e) (char=? c #\E))
+       (def (eneg? cs4) (read-sign rest))
+       (def (ev ecount cs5) (read-digits cs4))
+       (if (and (> ecount 0) (list-empty? cs5) (< ev 100000I))
+           (Some (* (if eneg? -1 1) (cast System.Int32 ev)))
+           None))
+      (_ None)))
+  (match exponent
+    ((Some ex) #:when (> (+ int-count frac-count) 0)
+     (def mantissa (rational (+ (* int-part (expt 10I frac-count)) frac-part)
+                             (expt 10I frac-count)))
+     (def scaled (rational* mantissa (rational-expt (bigint->rational 10I) ex)))
+     (Some (if neg? (rational-negate scaled) scaled)))
+    (_ None)))
+
+;; "3", "-0.3048", "1e-3", "2.5E+10", "1|60", "1/3". The two sides of | or /
+;; are decimals; no space anywhere. None for anything else, and for a zero
+;; denominator.
+(: (-> string (Option Rational)))
+(defun (string->rational s)
+  (def (a b)
+    (match (string-split-once s "|")
+      ((Some (Tuple x y)) (Tuple x (Some y)))
+      (None (match (string-split-once s "/")
+              ((Some (Tuple x y)) (Tuple x (Some y)))
+              (None (Tuple s None))))))
+  (match (Tuple (read-decimal (string->list a)) b)
+    ((Tuple (Some x) None) (Some x))
+    ((Tuple (Some x) (Some text))
+     (match (read-decimal (string->list text))
+       ((Some y) #:when (not (rational-zero? y)) (Some (rational/ x y)))
+       (_ None)))
+    (_ None)))
