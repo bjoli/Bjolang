@@ -195,7 +195,7 @@ let internal openNumbers = ResizeArray<HMType>()
 let internal quantityDefaults = ResizeArray<HMType * HMType>()
 
 /// What to say when an open literal with a fraction settles at a whole-number
-/// type, for the literals the compiler wrote: the factor of an `in`.
+/// type, for the literals the compiler wrote: the factor of a `number-in`.
 let internal fractionNotes = System.Collections.Generic.Dictionary<Range * string, unit -> string>()
 
 /// A use of a case name that cases of several unions in scope have, where the

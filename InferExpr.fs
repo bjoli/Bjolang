@@ -716,9 +716,9 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         ->
         inferQuantity env number unitText r
 
-    // `(in x km/h)`: the number x is in km/h.
-    | EApp(EIdent("in", _), x :: (_ :: _ as unitWords), r) when
-        not (Map.containsKey "in" env.Bindings)
+    // `(number-in x km/h)`: the number x is in km/h.
+    | EApp(EIdent("number-in", _), x :: (_ :: _ as unitWords), r) when
+        not (Map.containsKey "number-in" env.Bindings)
         && unitWords |> List.forall (function EIdent _ | EString _ | EInt _ -> true | _ -> false)
         ->
         // `1/s` is read as the number 1 and the symbol `/s`.
@@ -3140,7 +3140,8 @@ and private inferQuantity (env: Env) (number: string) (unitText: string) (r: Ran
         let t = tnum carrier q.Term
         t, ({ Type = t; Range = r; Node = TInt text }: TypedExpr)
 
-/// `(in x km/h)`: x, whose term must be the unit's, as a number in that unit.
+/// `(number-in x km/h)`: x, whose term must be the unit's, as a number in that
+/// unit.
 /// One multiplication by the factor's reciprocal, at x's carrier, or none.
 and private inferIn (env: Env) (x: Expr) (unitText: string) (r: Range) : HMType * TypedExpr =
     let table = env.Registry.UnitTable
@@ -3148,7 +3149,7 @@ and private inferIn (env: Env) (x: Expr) (unitText: string) (r: Range) : HMType 
     let q =
         match UnitTable.parse { Table = table; Module = table.Current; AllowVariables = false } unitText with
         | Ok q -> q
-        | Error e -> failwithf $"Type Error at %s{Lexer.formatPos r}: in (in ... %s{unitText}): %s{sentence e}"
+        | Error e -> failwithf $"Type Error at %s{Lexer.formatPos r}: in (number-in ... %s{unitText}): %s{sentence e}"
 
     let xType, typedX = infer env x
     let carrier = freshMeta ()
@@ -3168,7 +3169,7 @@ and private inferIn (env: Env) (x: Expr) (unitText: string) (r: Range) : HMType 
             | t when NumericLiteral.isNumeric t -> describe Units.one
             | t -> $"a %s{DotNetInterop.showType t}"
 
-        failwithf $"Type Error at %s{Lexer.formatPos r}: (in x %s{unitText}) takes %s{describe q.Term}, and x is %s{found}."
+        failwithf $"Type Error at %s{Lexer.formatPos r}: (number-in x %s{unitText}) takes %s{describe q.Term}, and x is %s{found}."
 
     let factor = UnitTable.scale Units.Rational.one (UnitTable.Factor.inv q.Factor)
     let plainX: TypedExpr = { typedX with Type = carrier }
@@ -3182,7 +3183,7 @@ and private inferIn (env: Env) (x: Expr) (unitText: string) (r: Range) : HMType 
             NumericLiteral.exactValues[text] <- (factor.Num, factor.Den)
 
         let wholeOnly (t: HMType) =
-            $"(in x %s{unitText}) multiplies x by %s{Units.Rational.toString factor}, and x is a %s{DotNetInterop.showType t}, which holds whole numbers only. Make x a double, a decimal or a rational first."
+            $"(number-in x %s{unitText}) multiplies x by %s{Units.Rational.toString factor}, and x is a %s{DotNetInterop.showType t}, which holds whole numbers only. Make x a double, a decimal or a rational first."
 
         match prune env.Registry carrier with
         | TMeta _ ->

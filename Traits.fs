@@ -253,13 +253,18 @@ let rec checkClrConstraint
 
         match clr.InterfaceName with
         | _ when ownMethod -> checkClrConstraint env clr traitName carrier range describe
+        // A unit nothing has said yet can be 1, which `Num` asks of it: the
+        // count of a `(counting x)`.
+        | "System.Numerics.INumber"
+        | "System.Numerics.IBinaryInteger" when Units.unify unit Units.one = Ok() ->
+            checkClrConstraint env clr traitName carrier range describe
         | "System.Numerics.INumber"
         | "System.Numerics.IBinaryInteger" ->
             let shown = DotNetInterop.showType (TNum(carrier, unit))
             let unitText = UnitTable.showTerm unit
 
             failwithf
-                $"Type Error at %s{Lexer.formatPos range}: '%s{shown}' does not satisfy '%s{traitName}', needed %s{describe}. A number with a unit is not a %s{traitName}: (* x x) on %s{unitText} is %s{unitText}^2, and a function generic over %s{traitName} says it is %s{unitText}. Write the function over (double %%u), or take the number out with (in x %s{unitText})."
+                $"Type Error at %s{Lexer.formatPos range}: '%s{shown}' does not satisfy '%s{traitName}', needed %s{describe}. A number with a unit is not a %s{traitName}: (* x x) on %s{unitText} is %s{unitText}^2, and a function generic over %s{traitName} says it is %s{unitText}. Write the function over (double %%u), or take the number out with (number-in x %s{unitText})."
         | _ -> checkClrConstraint env clr traitName carrier range describe
     | resolved ->
         // The interface is written over the trait's own implementor variable,

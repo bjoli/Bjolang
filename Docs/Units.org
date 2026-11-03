@@ -3,7 +3,7 @@
 A number can carry a dimension in its type: ~(double m/s)~, ~(rational m)~,
 ~(long cent)~. A dimension has one base unit, and every value of it is stored
 in that base. Other units — ~km~, ~ft~, ~km/h~ — exist only at the edges: in
-literals, in ~in~, in parsing and printing. The compiler converts at compile
+literals, in ~number-in~, in parsing and printing. The compiler converts at compile
 time, exactly, and nothing of the unit is left at run time: a ~(double m/s)~
 is a C# ~double~.
 
@@ -17,7 +17,7 @@ is a C# ~double~.
 (+ <1 m> <1 ft>)                    ; (double m), 1.3048
 (+ <1 km> <1 s>)                    ; type error: length and time
 (/ <100 km> <2 h>)                  ; (double m/s), 13.888…
-(in (/ <100 km> <2 h>) km/h)        ; double, 50
+(number-in (/ <100 km> <2 h>) km/h)        ; double, 50
 (: v (rational m/s))
 (def v <1 km/h>)                    ; 5/18, exactly
 #+END_SRC
@@ -43,7 +43,7 @@ into a carrier.
 - A unit whose factor is 1 is a name for its term: ~N~ is ~kg m/s^2~, and may
   be written in a type: ~(double N)~ is ~(double kg m/s^2)~.
 - A unit with another factor, ~km~, may not be written in a type: "types use
-  base units: write ~(double m)~, and ~(in x km)~ where a number in km is
+  base units: write ~(double m)~, and ~(number-in x km)~ where a number in km is
   needed".
 - A dimensionless unit has the empty term: ~(def/unit deg <1|180 pi>)~,
   ~(def/unit % <1|100>)~. ~<45 deg>~ is a plain number, 0.785….
@@ -114,11 +114,11 @@ the matching ~>~. ~(< 1 2)~, ~<=~ and ~<-~ are untouched. The reader gives
 
 *** Leaving and attaching
 
-- ~(in x km/h)~: the number ~x~ is in km/h. ~x~'s term and the unit's must
+- ~(number-in x km/h)~: the number ~x~ is in km/h. ~x~'s term and the unit's must
   be equal; the result is the carrier, unit 1. Emitted as one multiplication
   by a constant, or none when the factor is 1. On an integer carrier the
-  factor's reciprocal must be an integer: ~(in x mm)~ on a ~(long m)~ is
-  ×1000; ~(in x km)~ is an error that suggests a ~double~ or ~rational~.
+  factor's reciprocal must be an integer: ~(number-in x mm)~ on a ~(long m)~ is
+  ×1000; ~(number-in x km)~ is an error that suggests a ~double~ or ~rational~.
 - Attaching is multiplication: ~(* n <1 km>)~ is a length.
 - There is no ~as~: there is only one unit per dimension in a type.
 
@@ -185,7 +185,7 @@ modules it imports. ~(import (std units))~ brings SI; no import brings none.
 - A unit in a type is stored in the metadata by its key, as a type is, so a
   module that never imported ~(std units)~ can hold, pass and return a
   ~(double m/s)~ it got from one that did.
-- Writing a unit name — in a literal, a type, ~in~ or a definition — needs it
+- Writing a unit name — in a literal, a type, ~number-in~ or a definition — needs it
   in scope: "the unit 'm' is not in scope here. It is declared in
   (std units): write (import (std units))".
 - The same name from two imports, with different keys, is ambiguous where it
@@ -203,7 +203,7 @@ modules it imports. ~(import (std units))~ brings SI; no import brings none.
   everywhere would be exact and slow, and ~sqrt~, ~sin~, sensor data and π
   factors are not rational anyway.
 - *Conversions are exact until the carrier.* Factors are rational × π^k in
-  the compiler, and a literal or ~in~ is rounded once.
+  the compiler, and a literal or ~number-in~ is rounded once.
 - *No unit is built in.* A program can do without ~(std units)~ and declare its
   own ~m~, as an int, with its own table.
 - *The compiler parses unit expressions.* The earlier design called a
@@ -426,8 +426,9 @@ crossing a module boundary into a module without the import.
 Done. Tests: ~513_quantity_literals~, ~codegen/quantities~,
 ~errors/units_literal_*~, ~errors/units_in_*~. Notes:
 
-- ~quantity~ and ~in~ are forms only where nothing binds the name, so a local
-  ~in~ (~with-open~'s) is untouched.
+- The form is ~number-in~, not GNU's ~in~: ~in~ is a name a program wants for
+  itself (~with-open~ binds one). ~quantity~ and ~number-in~ are forms only
+  where nothing binds the name.
 - The literal is a ~TInt~ whose text is the converted value: the integer when
   it is one, otherwise 40 significant digits with an exponent, which each
   carrier rounds once. π is taken to 60 places.
@@ -442,10 +443,10 @@ Done. Tests: ~513_quantity_literals~, ~codegen/quantities~,
   as a bare number's is, defaulting to the dimensions' carrier or ~double~.
 - The converted value is kept exact in the node; codegen spells it in the
   carrier: rounded for reals, checked for integers.
-- ~in~ as a special form: term check, one multiplication, the integer rule.
-  A local called ~in~ can no longer be called as a head.
+- ~number-in~ as a special form: term check, one multiplication, the integer rule.
+  A local called ~number-in~ can no longer be called as a head.
 
-Tests: literal values per carrier, ~in~, the integer errors, a literal of a
+Tests: literal values per carrier, ~number-in~, the integer errors, a literal of a
 unit the module does not see.
 
 *** DONE Phase 8 — the operators
@@ -496,7 +497,7 @@ Done. Tests: ~515_rational_carrier~, ~codegen/quantities~. Notes:
   .NET number it is a ~Num~ and an ~Ordered~ with no compiler support beyond
   its name, and a literal at it is spelled by the general path for .NET
   numbers: from a ~long~, or ~Parse~ of the exact decimal.
-- A quantity literal or an ~in~ factor whose text rounds its value records the
+- A quantity literal or a ~number-in~ factor whose text rounds its value records the
   exact value in ~NumericLiteral.exactValues~; at ~rational~ it is spelled
   ~new BjoRational(5L, 18L)~.
 - Written ~(: <5|18> rational)~, which reads back; displayed ~5/18~. ~Ord~

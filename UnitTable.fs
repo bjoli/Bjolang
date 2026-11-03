@@ -608,7 +608,7 @@ let resolveTypeUnit (table: Table) (text: string) : Result<UnitTerm, string> =
         let carrierHint = if Units.isOne q.Term then "double" else $"(double %s{bases})"
 
         Error
-            $"'%s{text}' is %s{Factor.toString q.Factor} %s{bases}, and a type names base units only: write %s{carrierHint}, and (in x %s{text}) where a number in %s{text} is needed"
+            $"'%s{text}' is %s{Factor.toString q.Factor} %s{bases}, and a type names base units only: write %s{carrierHint}, and (number-in x %s{text}) where a number in %s{text} is needed"
     | Error e -> Error e
 
 /// The number of a quantity literal: "9.81", "1e-3", "-2", "1|3".
