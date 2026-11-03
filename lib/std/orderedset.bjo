@@ -112,7 +112,7 @@
   (orderedset-cursor-current (: OrderedSet.OrderedSetModule.CursorCurrent (-> (OrderedSetCursor %a) %a)))
   (orderedset-cursor-next    (: OrderedSet.OrderedSetModule.CursorNext    (-> (OrderedSetCursor %a) (OrderedSetCursor %a)))))
 
-;; Two sets or more, taken at once on the C# side. A union walks the sets in
+;;  A union walks the sets in
 ;; key order together when the keys are spread over them, and else adds to a
 ;; transient of the biggest. An intersection starts from the smallest set. A
 ;; difference keeps what of the first set no other set has.
@@ -153,12 +153,9 @@
   (transientorderedset-max         (: OrderedSet.TransientOrderedSetModule.TryGetMax      (-> (TransientOrderedSet %a) (out %a) (Option %a)))))
 
 ;; ---------------------------------------------------------------------------
-;; Where a set comes from
+;; Constructors
 ;; ---------------------------------------------------------------------------
 
-;; What makes a set out of nothing asks for the element's Ord, and the tree
-;; orders elements by it — the order `compare` gives, also where the type has
-;; no CompareTo of its own. One made from a set keeps that set's.
 (: (-> (OrderedSet %a)) (where (Ord %a)))
 (defun (orderedset-empty) (clr-orderedset-empty (ord-comparer)))
 
@@ -184,8 +181,8 @@
       (cond
         ((orderedset-cursor-done? c) (orderedsetbuilder->orderedset b))
         (else
-          (orderedsetbuilder-add! b (f (orderedset-cursor-current c)))
-          (go (orderedset-cursor-next c)))))))
+         (orderedsetbuilder-add! b (f (orderedset-cursor-current c)))
+         (go (orderedset-cursor-next c)))))))
 
 (: (-> (-?-> %a bool) (OrderedSet %a) (OrderedSet %a)))
 (defbjouble (orderedset-filter keep? s)
@@ -197,9 +194,9 @@
         ((orderedset-cursor-done? c) (orderedsetbuilder->orderedset b))
         (:def x (orderedset-cursor-current c))
         (else
-          (when (keep? x)
-            (orderedsetbuilder-add! b x))
-          (go (orderedset-cursor-next c)))))))
+         (when (keep? x)
+           (orderedsetbuilder-add! b x))
+         (go (orderedset-cursor-next c)))))))
 
 (: (-> (-?-> %a %s %s) %s (OrderedSet %a) %s))
 (defbjouble (orderedset-fold f init s)
@@ -273,8 +270,8 @@
     (cond
       ((orderedset-cursor-done? c) unit)
       (else
-        (f (orderedset-cursor-current c))
-        (go (orderedset-cursor-next c))))))
+       (f (orderedset-cursor-current c))
+       (go (orderedset-cursor-next c))))))
 
 (impl (Collection (OrderedSet %a))
   (type %content %a)
@@ -293,8 +290,7 @@
   (defun (collector-step c acc x) (orderedsetbuilder-add! acc x) acc)
   (defun (collector-finish c acc) (orderedsetbuilder->orderedset acc)))
 
-;; The mutable sinks, one element at a time. `Addable!` is the prelude's
-;; trait; this module owns the types, which is what licenses the impls.
+;; `Addable!`, adds an element at a time.
 (impl (Addable! (OrderedSetBuilder %a))
   (type %elem %a)
   (defun (add! sb elem)
@@ -305,7 +301,7 @@
   (defun (add! ts elem)
     (transientorderedset-add! ts elem)))
 
-;; And the persistent set itself.
+;; ´Addable` adds an element immutably.
 (impl (Addable (OrderedSet %a))
   (type %elem %a)
   (defun (add s elem)
