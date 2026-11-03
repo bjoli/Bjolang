@@ -7,52 +7,38 @@
 
 (import (std units) (text csv) (text csv-codec))
 
-;; A field with a unit reads and writes the number in the type's unit.
-;; Needs (impl (CsvField (double %u))) in csv-codec.
+;; A field's type is its dimension, in base units. The unit the file has it in
+;; is the codec's to say (Phase 12): #:unit is not there yet.
 (def/csv-type
   (: Reading (Record (: sensor string)
                      (: temp Celsius #:csv "temp_c")
-                     (: pressure (double hPa) #:csv "pressure_hpa")
-                     (: wind (double km/h) #:csv "wind_kmh"))))
+                     (: pressure (double Pa) #:csv "pressure_hpa" #:unit "hPa")
+                     (: wind (double m/s) #:csv "wind_kmh" #:unit "km/h"))))
 
 (: windy? (-> Reading bool))
 (defun (windy? r)
-  (> (.wind r) <50 km/h>))                ; literal stays 50, in km/h
+  (> (.wind r) <50 km/h>))                ; 13.889 m/s, at compile time
 
 (: low-pressure? (-> Reading bool))
 (defun (low-pressure? r)
-  (< (.pressure r) <1 atm>))              ; literal becomes 1013.25 hPa
-
-(: mean-wind (-> (Vec Reading) (double km/h)))
-(defun (mean-wind rs)
-  (/ (loop (:for r rs) (:acc s (summing (.wind r))))   ; summing at km/h: Measure, not Num
-     (cast System.Double (length rs))))
+  (< (.pressure r) <1 atm>))              ; 101325 Pa
 
 (defun (main args)
   (match (parse-csv-records (csv-file "readings.csv"))
     ((Ok rs)
      (loop (:for r rs)
            (:when (or (windy? r) (low-pressure? r)))
-           (:do (println (.sensor r) ": " (.wind r) ", " (as (.wind r) m/s))))
-     ;; mast: 61.5 km/h, 17.083 m/s
-     (println "mean: " (mean-wind rs)))   ; mean: 36.75 km/h
+           (:do (println (.sensor r) ": " (in (.wind r) km/h) " km/h"))))
+     ;; mast: 61.5 km/h
     ((Err e) (println e)))
   0)
 
-;; Temperature.
-;; (.temp r) is a Celsius, a newtype over double from (std units), and not
-;; a (double degC). Arithmetic on it is a type error: 20 °C + 20 °C is not
-;; 40 °C. Conversions:
-(celsius->kelvin (.temp r))               ; (double K), 294.65
-(- (celsius->kelvin a) (celsius->kelvin b))   ; (double K), a difference
-
 ;; Errors.
 (+ (.wind r) (.pressure r))
-;; error: cannot add km/h and hPa.
-;;   km/h is length/time, hPa is mass/(length time^2).
+;; error: the units differ: m/s and kg/(m s^2).
 
 (> (.wind r) 50)
-;; error: cannot compare km/h and 1.
-;;   Write <50 km/h>.
+;; error: '50' is a plain number, and it is being used where a (double m/s)
+;;   is wanted. Write <50 m/s>, or a unit of the same dimension.
 
-;; Count: 3 field units, 1 annotation (mean-wind), 1 as, 1 cast.
+;; Count: 2 field units, 1 annotation, 2 in.

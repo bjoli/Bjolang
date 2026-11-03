@@ -241,7 +241,18 @@ let rec checkClrConstraint
     // A number with a unit is no `Num`: a function generic over `Num` may
     // multiply, and its type says the unit stays. Comparing is the carrier's.
     | TNum(carrier, unit) ->
+        // A method of the trait itself is .NET's (`#:clr-member`), and none of
+        // `Num`'s multiplies: `abs`, `min`, `max`, `clamp` keep the unit and
+        // `sign`, `zero?` drop it. The call is the carrier's.
+        let ownMethod =
+            match describe.IndexOf "call '" with
+            | i when i >= 0 ->
+                let rest = describe.Substring(i + 6)
+                Map.containsKey (rest.Substring(0, max 0 (rest.IndexOf '\''))) clr.Members
+            | _ -> false
+
         match clr.InterfaceName with
+        | _ when ownMethod -> checkClrConstraint env clr traitName carrier range describe
         | "System.Numerics.INumber"
         | "System.Numerics.IBinaryInteger" ->
             let shown = DotNetInterop.showType (TNum(carrier, unit))

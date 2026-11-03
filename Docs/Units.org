@@ -230,8 +230,7 @@ modules it imports. ~(import (std units))~ brings SI; no import brings none.
 4. Quantity kinds (torque against energy). A later layer.
 5. A dimension whose carrier is a requirement, not a default
    (~#:carrier-only long~ for money).
-6. ~(num %c %u)~, a type generic in the carrier as well. Not needed for the
-   first version: ~(double %u)~ is.
+6. Done in Phase 10: ~(num %c %u)~.
 
 ** Implementation plan
 
@@ -511,7 +510,24 @@ C#, in ~BjolangRuntime~: a ~Rational~ struct over ~BigInteger~ implementing
 literals emitted as ~new Rational(n, d)~; ~(std rational)~ moved onto it or
 kept beside it.
 
-*** Phase 10 — (std units) as declarations
+*** DONE Phase 10 — (std units) as declarations
+
+Done. Tests: ~516_std_units~ (the paper programs, compiled and run), and
+the Umits README queries give its results. Notes:
+
+- ~lib/std/units.bjo~ declares the eight dimensions, the prefixes and 270
+  units and aliases, generated from the Phase 2 table, which stays as the
+  run-time one: the two are one list written twice, until Phase 11 emits the
+  compile-time table for run-time parsing. ~information~ has ~#:carrier long~.
+- A call to a method of a CLR trait itself (~abs~, ~min~, ~max~, ~clamp~,
+  ~sign~, ~zero?~) is checked at the carrier: those are .NET's members, and
+  none multiplies. A function generic over ~Num~ is still refused.
+- ~(num %c %u)~ in types (open question 6), and ~sqr~, ~positive?~ and
+  ~negative?~ in ~(std maths)~ over it. Printed ~(num %a %u)~.
+- Not done: ~summing~ and array ~sum~ at a unit. Their bodies add at a type
+  variable, which asks ~Num~ of it; a constraint that holds at any unit and
+  lets ~+~ through is what they need.
+- ~(std rational)~ is not moved onto ~rational~ yet.
 
 ~lib/std/units.bjo~'s table becomes ~def/dimension~, ~def/unit~, ~def/prefix~.
 The run-time library stays: ~Measurement~, ~string->measurement~, the

@@ -110,6 +110,17 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
         let term = unitTermAt registry r (name.Substring(1, name.Length - 2))
         let carrier = UnitTable.defaultCarrier registry.UnitTable term |> Option.defaultValue "double"
         tnum (resolveWith checkNames registry (TName(carrier, r))) term
+    // `(num %c %u)`, `(num %c %u^2)`: a number of any carrier at a unit.
+    | TApp("num", carrier :: (_ :: _ as args), r) when args |> List.forall (function TName _ -> true | _ -> false) ->
+        let text =
+            args
+            |> List.map (function
+                | TName(n, _) when n.StartsWith "'" -> "%" + n.Substring 1
+                | TName(n, _) -> n
+                | _ -> "")
+            |> String.concat " "
+
+        tnum (resolveWith checkNames registry carrier) (unitTermAt registry r text)
     // `(double m/s)`, `(long kg m^2/s^2)`, `(double %u)`: a number type and
     // a unit. The symbols are the expression, joined by spaces.
     | TApp(carrier, args, r) when

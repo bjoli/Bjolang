@@ -5,7 +5,7 @@
 
 (def g <9.80665 m/s^2>)                   ; (double m/s^2)
 
-;; 1. A struct per state and per derivative.
+;; 1. A struct per state.
 
 (type (: State (Struct (: x (double m)) (: y (double m))
                        (: vx (double m/s)) (: vy (double m/s)))))
@@ -17,41 +17,32 @@
          (vx (.vx s))
          (vy (- (.vy s) (* g dt)))))
 
-(: flight (-> (double m/s) (double rad) (double s) (Tuple (double s) (double m))))
+(: flight (-> (double m/s) double (double s) (double m)))
 (defun (flight speed angle dt)
-  (def start (State (x 0) (y 0)
+  (def start (State (x 0) (y 0)           ; 0 is a number of every unit
                     (vx (* speed (cos angle)))
                     (vy (* speed (sin angle)))))
-  (loop (:with s start (step dt s))
-        (:with t 0 (+ t dt))              ; 0 is a number of every unit
-        (:until (< (.y s) 0))
-        => (Tuple t (.x s))))
+  (let go ((s start))
+    (if (< (.y s) 0) (.x s) (go (step dt s)))))
 
-(flight <30 m/s> <45 deg> <1 ms>)         ; (Tuple (double s) (double m)), ~3.06 s, ~91.8 m
-;; <45 deg> is 0.7854: rad is unit 1, so (double rad) is double, and cos takes it.
+(flight <30 m/s> <45 deg> <1 ms>)         ; (double m), ~91.8
+;; <45 deg> is 0.7854: deg is dimensionless, so cos takes it.
 
 ;; An error the types catch:
 ;;   (vy (- (.vy s) (* g dt dt)))
-;; error: cannot subtract m/s and m.
-;;   In (- (.vy s) (* g dt dt)): m/s is length/time, m is length.
+;; error: the units differ: m/s and m.
 
-;; 2. A generic integrator over a vector.
-;; RK4 from a library, (-> (-> double (Vec double) (Vec double)) double (Vec double) (Vec double)).
-;; The vector holds x, y, vx, vy. Units are removed going in and put back coming out.
+;; 2. A generic integrator over a vector: units off going in, on coming out.
 
 (: deriv (-> double (Vec double) (Vec double)))
 (defun (deriv t v)
-  (vec (ref v 2) (ref v 3) 0.0 (in (- g) m/s^2)))
+  [(ref v 2) (ref v 3) 0.0 (in (- g) m/s^2)])
 
-(: flight-rk4 (-> (double m/s) (double rad) (double s) (double m)))
+(: flight-rk4 (-> (double m/s) double (double s) (double m)))
 (defun (flight-rk4 speed angle dt)
-  (def v0 (vec 0.0 0.0 (in (* speed (cos angle)) m/s) (in (* speed (sin angle)) m/s)))
+  (def v0 [0.0 0.0 (in (* speed (cos angle)) m/s) (in (* speed (sin angle)) m/s)])
   (def end (rk4-until deriv (in dt s) v0 (fun (v) (< (ref v 1) 0.0))))
   (* (ref end 0) <1 m>))                  ; attaches m; the 1 is not emitted
 
-;; (as (ref end 0) m) is an error: as converts within a dimension, and
-;; double is dimensionless.
-;; Checked inside: nothing. Checked at the edges: 4 in, 1 literal.
-
-;; Count: 3 annotations and 0 as/in for the struct version.
+;; Count: 3 annotations and 0 in for the struct version.
 ;; 2 annotations, 4 in and 1 attaching literal for the vector version.

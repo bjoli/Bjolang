@@ -984,7 +984,9 @@ let showTypesTogether (ts: HMType list) : string list =
         | TAssoc(tn, an, impl) -> $"(assoc %s{tn} %s{an} %s{go impl})"
         | TNum(carrier, unit) ->
             let unitMeta (c: Units.UnitCell) = "%?" + string c.UId
-            $"(%s{go carrier} %s{Units.toStringWith UnitTable.nameOfKey unitMeta unit})"
+            // A carrier that is a variable is spelled as it is written.
+            let head = match carrier with TVar _ -> "num " | _ -> ""
+            $"(%s{head}%s{go carrier} %s{Units.toStringWith UnitTable.nameOfKey unitMeta unit})"
 
     ts |> List.map go
 
