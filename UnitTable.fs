@@ -611,6 +611,76 @@ let resolveTypeUnit (table: Table) (text: string) : Result<UnitTerm, string> =
             $"'%s{text}' is %s{Factor.toString q.Factor} %s{bases}, and a type names base units only: write %s{carrierHint}, and (in x %s{text}) where a number in %s{text} is needed"
     | Error e -> Error e
 
+/// The number of a quantity literal: "9.81", "1e-3", "-2", "1|3".
+let parseNumber (text: string) : Rational option =
+    match text.Split '|' with
+    | [| n |] -> parseDecimal n
+    | [| n; d |] ->
+        match parseDecimal n, parseDecimal d with
+        | Some a, Some b when not (Rational.isZero b) -> Some(Rational.div a b)
+        | _ -> None
+    | _ -> None
+
+/// pi to 60 places.
+let private piApprox =
+    Rational.make
+        (BigInteger.Parse "3141592653589793238462643383279502884197169399375105820974944")
+        (BigInteger.Pow(BigInteger 10, 60))
+
+/// n × f, exact when f has no pi, and to 60 places of pi when it has.
+let scale (n: Rational) (f: Factor) : Rational =
+    let piPart =
+        if f.Pi >= 0 then
+            Seq.replicate f.Pi piApprox |> Seq.fold Rational.mul Rational.one
+        else
+            Rational.div Rational.one (Seq.replicate -f.Pi piApprox |> Seq.fold Rational.mul Rational.one)
+
+    Rational.mul (Rational.mul n f.Rat) piPart
+
+/// A value as a literal's text: the integer when it is one, otherwise 40
+/// significant digits with an exponent, which every carrier rounds once.
+let literalText (q: Rational) : string =
+    if Rational.isInteger q then
+        q.Num.ToString()
+    else
+        let negative = q.Num.Sign < 0
+        let num = BigInteger.Abs q.Num
+        let ten = BigInteger 10
+        let digits = 40
+
+        // k with 10^(digits-1) <= num/den × 10^k < 10^digits.
+        let mutable k = digits - 1 - int (Math.Floor(BigInteger.Log10 num - BigInteger.Log10 q.Den))
+
+        let scaled (k: int) =
+            if k >= 0 then
+                num * BigInteger.Pow(ten, k), q.Den
+            else
+                num, q.Den * BigInteger.Pow(ten, -k)
+
+        let mutable n, d = scaled k
+
+        while n / d >= BigInteger.Pow(ten, digits) do
+            k <- k - 1
+            let n', d' = scaled k
+            n <- n'
+            d <- d'
+
+        while n / d < BigInteger.Pow(ten, digits - 1) do
+            k <- k + 1
+            let n', d' = scaled k
+            n <- n'
+            d <- d'
+
+        let rounded = (n + d / BigInteger 2) / d
+        // 9.99…9 rounds up to 10.00…0, one digit more.
+        let rounded, k = if rounded = BigInteger.Pow(ten, digits) then rounded / ten, k - 1 else rounded, k
+        let text = rounded.ToString().TrimEnd '0'
+        let text = if text = "" then "0" else text
+        // rounded is d.ddd × 10^(digits-1-k).
+        let exponent = digits - 1 - k
+        let mantissa = if text.Length = 1 then text + ".0" else text.Substring(0, 1) + "." + text.Substring 1
+        (if negative then "-" else "") + mantissa + "e" + string exponent
+
 /// The carrier a term's dimensions agree on, if they declare one.
 let defaultCarrier (table: Table) (t: UnitTerm) : string option =
     let carriers =

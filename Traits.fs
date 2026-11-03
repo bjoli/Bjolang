@@ -619,6 +619,14 @@ let private settleOpenCases (env: Env) (final: bool) : bool =
 /// The check has to be here rather than left to unification: a bare literal is
 /// a metavariable, so `(: greeting string) (def greeting 5)` unified rather
 /// than failing, and the mismatch surfaced as C# that would not compile.
+/// A literal the compiler wrote, with a fraction, at a whole-number type: the
+/// message `fractionNotes` holds for it.
+let private checkNotedFraction (t: HMType) (text: string) (r: Lexer.Range) : unit =
+    if NumericLiteral.isReal text && not (NumericLiteral.holdsFraction t) then
+        match fractionNotes.TryGetValue((r, text)) with
+        | true, note -> failwithf $"Type Error at %s{Lexer.formatPos r}: %s{note ()}"
+        | _ -> ()
+
 let private defaultNumericLiterals (env: Env) : unit =
     for (t, text, r) in openLiterals do
         match prune env.Registry t with
@@ -628,7 +636,11 @@ let private defaultNumericLiterals (env: Env) : unit =
         | TMeta m ->
             let settled = literalDefault m.Id
             m.Value <- Some settled
+            checkNotedFraction settled text r
             checkLiteralFits settled text r |> ignore
+        | numeric when NumericLiteral.isNumeric numeric && fractionNotes.ContainsKey((r, text)) ->
+            checkNotedFraction numeric text r
+            checkLiteralFits numeric text r |> ignore
         // A real literal at a type variable: `Num` does not say the type has
         // fractions, and `CreateChecked` would cut the fraction off.
         | TVar _ as v when NumericLiteral.isReal text ->
@@ -653,6 +665,8 @@ let private defaultNumericLiterals (env: Env) : unit =
                 $"Type Error at %s{Lexer.formatPos r}: these types do not match. '%s{text}' is a number, and it is being used where a '%s{DotNetInterop.showType other}' is wanted.%s{dynPackHintFor other}"
 
     openLiterals.Clear()
+    quantityDefaults.Clear()
+    fractionNotes.Clear()
 
     for t in openNumbers do
         match prune env.Registry t with

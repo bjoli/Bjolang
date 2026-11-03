@@ -356,6 +356,11 @@ module Lexer =
         not (Char.IsWhiteSpace c)
         && not (List.contains c [ '('; ')'; '['; ']'; '{'; '}'; ','; ':'; '"'; ';'; '\'' ])
 
+    /// The number at the start of a quantity literal: `9.81`, `-2`, `1e-3`,
+    /// `1|3`, `.5`.
+    let private quantityNumber =
+        System.Text.RegularExpressions.Regex(@"^-?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?(\|\d+)?")
+
     /// What a number literal may be spelled as: the shapes and suffixes
     /// `TypedAST.NumericLiteral` reads.
     ///
@@ -460,6 +465,50 @@ module Lexer =
                     let endLine, endCol = advance text line col
                     loop nextPos endLine endCol tokens
 
+
+                // `<9.81 m/s^2>`: a quantity literal, read as
+                // `(quantity "9.81" "m/s^2")`. `<` followed by a digit, or by
+                // `.` or `-` and a digit; `(< 1 2)` and `<=` are untouched.
+                | '<' when
+                    pos + 1 < length
+                    && (Char.IsDigit input[pos + 1]
+                        || ((input[pos + 1] = '.' || input[pos + 1] = '-')
+                            && pos + 2 < length
+                            && Char.IsDigit input[pos + 2]))
+                    ->
+                    let close = input.IndexOf('>', pos + 1)
+                    let lineEnd = input.IndexOf('\n', pos + 1)
+
+                    if close < 0 || (lineEnd >= 0 && lineEnd < close) then
+                        failwithf
+                            $"Syntax error at %s{formatAt file line col}: a quantity literal starting with '<' has no '>' on its line. Write it as <9.81 m/s^2>; a comparison is (< a b), with a space."
+
+                    let body = input.Substring(pos + 1, close - pos - 1)
+                    let numberMatch = quantityNumber.Match body
+                    let number = numberMatch.Value
+                    let unitText = body.Substring(number.Length).Trim()
+                    let len = close + 1 - pos
+                    let text = input.Substring(pos, len)
+                    let endLine, endCol = advance text line col
+
+                    let range =
+                        { Start = { Line = line; Column = col }
+                          End = { Line = endLine; Column = endCol }
+                          File = file
+                          Module = "" }
+
+                    let token t = { Token = t; Range = range }
+
+                    loop
+                        (pos + len)
+                        endLine
+                        endCol
+                        (token RParen
+                         :: token (StringLit unitText)
+                         :: token (StringLit number)
+                         :: token (Symbol "quantity")
+                         :: token LParen
+                         :: tokens)
 
                 // Delimiters
                 | '(' -> emit LParen 1

@@ -188,6 +188,15 @@ let internal openLiterals = ResizeArray<HMType * string * Range>()
 /// constraint itself, which names the constraint.
 let internal openNumbers = ResizeArray<HMType>()
 
+/// The open carriers of quantity literals, each with the type it settles at
+/// when nothing says otherwise: its dimensions' `#:carrier`, or `double`.
+/// Each carrier is in `openLiterals` too.
+let internal quantityDefaults = ResizeArray<HMType * HMType>()
+
+/// What to say when an open literal with a fraction settles at a whole-number
+/// type, for the literals the compiler wrote: the factor of an `in`.
+let internal fractionNotes = System.Collections.Generic.Dictionary<Range * string, unit -> string>()
+
 /// A use of a case name that cases of several unions in scope have, where the
 /// type does not yet say which union it is.
 ///
@@ -353,6 +362,8 @@ let mutable compilingReplEntry = false
 let clearNumericLiterals () : unit =
     openLiterals.Clear()
     openNumbers.Clear()
+    quantityDefaults.Clear()
+    fractionNotes.Clear()
     openCases.Clear()
 
 /// Refuses a literal the type it has ended up at cannot hold.
@@ -405,6 +416,17 @@ let rec internal metaIdsOf (t: HMType) : int list =
 /// it is: `double` if a real literal shares it, as in `(+ 1 2.5)`, and `int`
 /// otherwise.
 let internal literalDefault (metaId: int) : HMType =
+    let quantity =
+        quantityDefaults
+        |> Seq.tryPick (fun (carrier, settled) ->
+            match followMeta carrier with
+            | TMeta c when c.Id = metaId -> Some settled
+            | _ -> None)
+
+    match quantity with
+    | Some settled -> settled
+    | None ->
+
     let real =
         openLiterals
         |> Seq.exists (fun (lit, text, _) ->
