@@ -32,6 +32,7 @@ let private typeNameMap =
         "decimal", TypeConstants.decimalType
         "float", TypeConstants.singleType
         "bigint", TypeConstants.bigintType
+        "rational", TypeConstants.rationalType
         "int128", TypeConstants.int128Type
         "uint128", TypeConstants.uint128Type
         "string", TypeConstants.stringType
@@ -94,7 +95,7 @@ let private unknownType (registry: TraitRegistry) (r: Range) (name: string) : 'a
 /// one — everything else is a Bjolang type, an alias, or a primitive.
 /// The number types a unit may be put on.
 let private carrierNames =
-    set [ "int"; "byte"; "short"; "ushort"; "uint"; "long"; "ulong"; "double"; "decimal"; "float"; "bigint"; "int128"; "uint128" ]
+    set [ "int"; "byte"; "short"; "ushort"; "uint"; "long"; "ulong"; "double"; "decimal"; "float"; "bigint"; "int128"; "uint128"; "rational" ]
 
 /// A unit expression in a type, over the table.
 let private unitTermAt (registry: TraitRegistry) (r: Range) (text: string) : Units.UnitTerm =

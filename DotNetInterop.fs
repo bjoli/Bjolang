@@ -961,6 +961,7 @@ let showTypesTogether (ts: HMType list) : string list =
             | "System.Single" -> "float"
             | "System.Decimal" -> "decimal"
             | "System.Numerics.BigInteger" -> "bigint"
+            | "Bjolang.Runtime.BjoRational" -> "rational"
             | "System.Int128" -> "int128"
             | "System.UInt128" -> "uint128"
             | "String" -> "string"

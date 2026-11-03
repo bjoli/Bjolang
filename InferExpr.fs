@@ -3123,9 +3123,12 @@ and private inferQuantity (env: Env) (number: string) (unitText: string) (r: Ran
         let carrier = freshMeta ()
 
         if not (Units.Rational.isInteger value) then
+            NumericLiteral.exactValues[text] <- (value.Num, value.Den)
+
+        if not (Units.Rational.isInteger value) then
             fractionNotes[(r, text)] <-
                 fun () ->
-                    $"<%s{number} %s{unitText}> is %s{Units.Rational.toString value} %s{UnitTable.showTerm q.Term}, and a %s{DotNetInterop.showType (prune env.Registry carrier)} holds whole numbers only. Give it a double or a decimal carrier, or declare a smaller base unit."
+                    $"<%s{number} %s{unitText}> is %s{Units.Rational.toString value} %s{UnitTable.showTerm q.Term}, and a %s{DotNetInterop.showType (prune env.Registry carrier)} holds whole numbers only. Give it a double, a decimal or a rational carrier, or declare a smaller base unit."
 
         let settled =
             match UnitTable.defaultCarrier table q.Term with
@@ -3175,8 +3178,11 @@ and private inferIn (env: Env) (x: Expr) (unitText: string) (r: Range) : HMType 
     else
         let text = UnitTable.literalText factor
 
+        if not (Units.Rational.isInteger factor) then
+            NumericLiteral.exactValues[text] <- (factor.Num, factor.Den)
+
         let wholeOnly (t: HMType) =
-            $"(in x %s{unitText}) multiplies x by %s{Units.Rational.toString factor}, and x is a %s{DotNetInterop.showType t}, which holds whole numbers only. Make x a double or a decimal first."
+            $"(in x %s{unitText}) multiplies x by %s{Units.Rational.toString factor}, and x is a %s{DotNetInterop.showType t}, which holds whole numbers only. Make x a double, a decimal or a rational first."
 
         match prune env.Registry carrier with
         | TMeta _ ->
