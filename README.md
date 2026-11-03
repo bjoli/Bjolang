@@ -252,6 +252,31 @@ Have the same syntax, and both are constructed by naming the type — there is n
 (def megaripe-banana (record-set banana (colour Brown))
 ```
 
+### Units of measure
+
+Like f#, bjolang supports units of measure. Unlike f# it supports dimensions, and units defined in terms of other units. `(std units)` contains definitions of all SI units, but you can also define your own. The SI units are all defined as doubles, but if you define your own you can use any numeric type. In this example, `drag` computes the air drag of a car with the front area 2.2 square meters driving at 120km/h. It replies in Newton. To get a regular double out of it, you need to do (number-in \[drag-result\] N)
+
+```scheme
+(import (std units))
+
+(: drag (-> (double kg/m^3) (double m/s) double (double m^2) (double N)))
+(defun (drag rho v cd area)
+  (* 0.5 rho v v cd area))
+
+(drag <1.225 kg/m^3> <120 km/h> 0.28 <2.2 m^2>)  ; 419.22, in N
+(number-in (+ <6000 m> <50 ft>) mi)               ; 3.737697: both are lengths
+(+ <1 m> <1 s>)                                   ; type error: m against s
+```
+
+Nothing about SI is built in: `(std units)` is a few hundred `def/unit`s, and a program can declare dimensions of its own, with the number type they are kept in.
+
+```scheme
+(def/dimension money #:base cent #:carrier long)
+(def/unit EUR <100 cent>)
+
+<1.50 EUR>                     ; 150L, a long number of cents
+```
+
 ### A proper looping facility
 
 I got tired of shitty looping facilities a long time ago. I took Alex Shinn’s (chibi loop) and made (goof loop) for guile scheme. Not only was it extensible and much more flexible than most looping facilities, it also had the fantastic feature that the code it produced was as fast as a hand-rolled loop (looking at you, python’s for loop).

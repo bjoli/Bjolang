@@ -2,11 +2,19 @@
 ;; The texts are samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
-  (summary "Units of measure: unit tables, unit expressions, and measurements at run time.")
+  (summary "Units of measure: SI declared for typed quantities, and measurements at run time.")
   (see convert-query string->measurement resolve-unit standard-units)
   (example """
     (import (std units))
 
+    ;; Typed: the units are checked at compile time and gone at run time.
+    (: drag (-> (double kg/m^3) (double m/s) double (double m^2) (double N)))
+    (defun (drag rho v cd area) (* 0.5 rho v v cd area))
+
+    (number-in (drag <1.225 kg/m^3> <120 km/h> 0.28 <2.2 m^2>) N)   ; 419.2222
+    (number-in (+ <6000 m> <50 ft>) mi)                             ; 3.737697
+
+    ;; At run time: a unit read from text, which no type knows.
     (convert-query "6000 m + 50 ft in mi")         ; (Ok "3.737697 mi")
     (convert-query "65 mi/(12 mi/h) in h,min")     ; (Ok "5 h 25 min")
     (convert-query "(2 kg/yr)/(3 m3/s) in ng/l")   ; (Ok "21.12539 ng/l")
@@ -16,7 +24,35 @@
       ((Err e) (Err e)))
     """)
   (reference """
-    @strong{Model.} A dimension is a product of base dimensions with
+    The module is two things. It declares SI with @code{def/dimension},
+    @code{def/prefix} and @code{def/unit}, which is what a quantity literal
+    such as @code{<120 km/h>}, a type such as @code{(double m/s)} and
+    @code{number-in} read units from: the manual's section on units of
+    measure says how those work. And it is a library for units at run time,
+    for a unit the program reads as text: a calculator, a configuration file.
+
+    @strong{The declarations.} The dimensions and their base units:
+    @code{length} (@code{m}), @code{mass} (@code{kg}), @code{time}
+    (@code{s}), @code{current} (@code{A}), @code{temperature} (@code{K}),
+    @code{amount} (@code{mol}), @code{luminosity} (@code{cd}) and
+    @code{information} (@code{b}, bits, kept in a @code{long}). The SI
+    prefixes from @code{q} to @code{Q}, and the binary ones from @code{Ki} to
+    @code{Yi}. About 270 units and their spellings: time (@code{min},
+    @code{h}, @code{d}, @code{yr}), length (@code{in}, @code{ft}, @code{mi},
+    @code{nmi}, @code{au}, @code{ly}, @code{pc}), area, volume (@code{l},
+    @code{gal}, @code{cup}), mass (@code{g}, @code{t}, @code{lb},
+    @code{oz}), force, pressure (@code{N}, @code{Pa}, @code{bar},
+    @code{atm}, @code{psi}), energy and power (@code{J}, @code{W}, @code{Wh},
+    @code{cal}, @code{eV}), electricity, information (@code{B}),
+    radiation (@code{Bq}, @code{Gy}, @code{Sv}), angles (@code{deg},
+    @code{rev}, @code{rpm}, which are plain numbers: @code{rad} is 1), ratios
+    (@code{%}, @code{ppm}) and the constants @code{c}, @code{gn} and
+    @code{planck}, which are units: @code{(number-in v c)} is a speed as a
+    fraction of light's. A program that wants other units declares them; a
+    program that wants other bases declares dimensions of its own, and does
+    not import this module.
+
+    @strong{At run time.} A dimension is a product of base dimensions with
     rational exponents. A unit is an atom with a dimension and an exact
     factor to the coherent unit of that dimension, or an alias for a unit
     expression. A @code{Measurement} is a double in the coherent unit and its
