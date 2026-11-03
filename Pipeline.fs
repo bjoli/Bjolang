@@ -353,7 +353,7 @@ let tokenizeMetadata (source: string) (text: string) : Lexer.LexedToken list =
 
         tokens
     else
-        let tokens = Lexer.tokenize source text
+        let tokens = Lexer.tokenize source text |> Lexer.joinQualified
         metadataTokens[struct (source, text)] <- tokens
         tokens
 

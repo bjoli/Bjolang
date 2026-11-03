@@ -955,3 +955,23 @@ module Lexer =
 
     /// The tokens of a file's text, or of any text read as one.
     let tokenize (file: string) (input: string) : LexedToken list = tokenizeFrom file input 0
+
+    /// `A::b` as one symbol, for text the compiler wrote: a qualified binding
+    /// (`Naming.qualifiedBinding`) in a published body. The lexer reads it as
+    /// `A`, `:` and the keyword `:b`; written with nothing between them, the
+    /// three are joined. Source never spells `::`, and keeps not reading it.
+    let joinQualified (tokens: LexedToken list) : LexedToken list =
+        let rec go (acc: LexedToken list) (rest: LexedToken list) =
+            match rest with
+            | ({ Token = Symbol a } as first) :: { Token = Colon; Range = colon } :: ({ Token = Keyword b } as last) :: tail when
+                first.Range.End = colon.Start && colon.End = last.Range.Start
+                ->
+                let joined =
+                    { Token = Symbol(a + "::" + b)
+                      Range = { first.Range with End = last.Range.End } }
+
+                go acc (joined :: tail)
+            | t :: tail -> go (t :: acc) tail
+            | [] -> List.rev acc
+
+        go [] tokens
