@@ -59,7 +59,7 @@
   ;; An output port joined to an input port. See `BjolangRuntime/BjoProcess.cs`.
   (BjoPipe (: BjoPipe))
   (InvalidOperationException
-    (: System.InvalidOperationException (-> string InvalidOperationException))))
+   (: System.InvalidOperationException (-> string InvalidOperationException))))
 
 (import/extern
   (settings-program!  (: System.Diagnostics.ProcessStartInfo.FileName
@@ -466,13 +466,13 @@
            (Err e))
           ((Ok link)
            (join-onto
-             (record-set joined
-                         (source (record-ref w source))
-                         (children (vec-merge (record-ref joined children) (record-ref w children)))
-                         (exits (vec-merge (record-ref joined exits) (record-ref w exits)))
-                         (waits (vec-add (vec-merge (record-ref joined waits) (record-ref w waits)) link)))
-             more
-             errors))))))))
+            (record-set joined
+                        (source (record-ref w source))
+                        (children (vec-merge (record-ref joined children) (record-ref w children)))
+                        (exits (vec-merge (record-ref joined exits) (record-ref w exits)))
+                        (waits (vec-add (vec-merge (record-ref joined waits) (record-ref w waits)) link)))
+            more
+            errors))))))))
 
 ;; Creates stream junction.
 (: (-> (Option InputPort) (Option OutputPort) (Result Exception (Promise Unit))))
@@ -635,7 +635,7 @@
   (Ok (vec-map (fun (c) (process-code c)) (record-ref p children))))
 
 ;; Gets blocking result.
-(: (-> (Promise (Result Exception %a)) (Result Exception %a)))
+(: blocking-result #:sync (-> (Promise (Result Exception %a)) (Result Exception %a)))
 (defun (blocking-result p)
   (match (sync/blocking (promise-join p))
     ((Err e) (Err e))
@@ -811,15 +811,15 @@
 (: (-> Form (Event (Result Exception string))))
 (defun (running form)
   (with-nack
-   (fun (nack)
-     (match (run form)
-       ((Err e) (always (Err e)))
-       ((Ok p)
-        (close-input p)
-        (let ((done (bjo (collecting p))))
-          (ignore (bjo (reap-on-loss nack p done)))
-          (wrap (promise-join done)
-                (fun (r) (match r ((Err e) (Err e)) ((Ok answer) answer))))))))))
+    (fun (nack)
+      (match (run form)
+        ((Err e) (always (Err e)))
+        ((Ok p)
+         (close-input p)
+         (let ((done (bjo (collecting p))))
+           (ignore (bjo (reap-on-loss nack p done)))
+           (wrap (promise-join done)
+                 (fun (r) (match r ((Err e) (Err e)) ((Ok answer) answer))))))))))
 
 
 ;; ===========================================================================
@@ -835,9 +835,9 @@
      #'(let ()
          (def started (run ,spec))
          (try
-             (let ((,name started))
-               ,first
-               ,@body)
+           (let ((,name started))
+             ,first
+             ,@body)
            #:finally (match started
                        ((Ok p) (kill p))
                        ((Err e) unit)))))

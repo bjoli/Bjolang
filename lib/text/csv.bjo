@@ -114,7 +114,7 @@
     (argument-error "#:separator has to be an ASCII character that does not end a line"))
   (when (or (>= q 128) (= q 10) (= q 13) (= q sep))
     (argument-error
-      "#:quote-char has to be an ASCII character that does not end a line and is not the separator"))
+     "#:quote-char has to be an ASCII character that does not end a line and is not the separator"))
   (Options (sep-code sep) (quote-code q) (strict strict)))
 
 ;; ===========================================================================
@@ -211,7 +211,7 @@
 ;; say which field it is.
 (: (-> CsvReader void))
 (defun (check-chunk! rd)
-  (record-set! rd (chunk (bytes->utf8-chunk (record-ref rd bytes) #:end (record-ref rd limit)))))
+  (set! rd .chunk (bytes->utf8-chunk (get rd .bytes) #:end (get rd .limit))))
 
 ;; Whether there are at least `n` bytes from `next` on. Reads from the port
 ;; until there are or the port ends. The bytes from `next` on are kept, and
@@ -219,46 +219,44 @@
 (: (-> CsvReader int bool))
 (defun (ensure! rd n)
   (let go ()
-    (def have (- (record-ref rd limit) (record-ref rd next)))
+    (def have (- (get rd .limit) (get rd .next)))
     (cond
       ((>= have n) #t)
       (else
-       (match (record-ref rd port)
-         (None #f)
-         ((Some p)
-          (def ask (record-ref rd ask))
-          (match (read-bytes p (if (> n ask) n ask))
-            (None
-             (record-set! rd (port None))
-             #f)
-            ((Some more)
-             (record-set! rd
-                          (bytes (join-bytes (record-ref rd bytes) (record-ref rd next) have more))
-                          (next 0)
-                          (limit (+ have (array-length more)))
-                          (ask (if (< ask read-most) (* ask 2) read-most)))
-             (check-chunk! rd)
-             (go)))))))))
+       (def (Some p) (get rd .port) :leave-with #f)
+       (def ask (get rd .ask))
+       (match (read-bytes p (if (> n ask) n ask))
+         (None
+          (set! rd .port None)
+          #f)
+         ((Some more)
+          (record-set! rd
+                       (bytes (join-bytes (get rd .bytes) (get rd .next) have more))
+                       (next 0)
+                       (limit (+ have (length more)))
+                       (ask (if (< ask read-most) (* ask 2) read-most)))
+          (check-chunk! rd)
+          (go)))))))
 
 ;; At least one byte more than the chunk has now, with the bytes from `next`
 ;; on kept. #f when the input has no more. A scan at index `i` continues at
 ;; `(+ next (- i start))` afterwards, where `start` was `next` before the call.
 (: (-> CsvReader bool))
 (defun (more! rd)
-  (ensure! rd (+ (- (record-ref rd limit) (record-ref rd next)) 1)))
+  (ensure! rd (+ (- (get rd .limit) (get rd .next)) 1)))
 
 ;; The byte at `next`, or `spent` at the end of the input.
 (: (-> CsvReader int))
 (defun (held-code rd)
-  (def i (record-ref rd next))
+  (def i (get rd .next))
   (cond
-    ((< i (record-ref rd limit)) (cast int (array-ref (record-ref rd bytes) i)))
-    ((ensure! rd 1) (cast int (array-ref (record-ref rd bytes) (record-ref rd next))))
+    ((< i (get rd .limit)) (cast int (get (get rd .bytes) i)))
+    ((ensure! rd 1) (cast int (get (get rd .bytes) (get rd .next))))
     (else spent)))
 
 (: (-> CsvReader void))
 (defun (step! rd)
-  (record-set! rd (next (+ (record-ref rd next) 1))))
+  (set! rd .next (+ (get rd .next) 1)))
 
 ;; Past one line end: LF, CR LF, or CR alone.
 (: (-> CsvReader void))
@@ -374,25 +372,25 @@
 ;; else the quote is part of the field.
 (: (-> CsvReader int (Result CsvError string)))
 (defun (read-plain rd field)
-  (def opts (record-ref rd options))
-  (def sep (record-ref opts sep-code))
-  (def q (record-ref opts quote-code))
-  (let go ((from (record-ref rd next)))
-    (def b (record-ref rd bytes))
-    (def start (record-ref rd next))
-    (def limit (record-ref rd limit))
-    (def i (plain-end b from limit sep q))
+  (def* (opts (.options rd))
+        (sep  (.sep-code opts))
+        (q    (.quote-code opts)))
+  (let go ((from (get rd .next)))
+    (def* (b     (.bytes rd))
+          (start (.next rd))
+          (limit (.limit rd))
+          (i     (plain-end b from limit sep q)))
     (cond
       ((and (< i limit) (= (cast int (array-ref b i)) q))
-       (if (record-ref opts strict)
+       (if (get opts .strict)
            (Err (csv-error rd field "a quote inside a field that does not start with one"))
            (go (+ i 1))))
       ((< i limit)
-       (record-set! rd (next i))
+       (set! rd .next i)
        (field-string rd field b start i))
-      ((more! rd) (go (+ (record-ref rd next) (- i start))))
+      ((more! rd) (go (+ (get rd .next) (- i start))))
       (else
-       (record-set! rd (next i))
+       (set! rd .next i)
        (field-string rd field b start i)))))
 
 ;; The first index from `from` that holds the quote, CR or LF, or `limit` if
@@ -443,7 +441,7 @@
 ;; quote in it is the first of a doubled pair, and the second is dropped.
 (: (-> CsvReader int (Array byte) int int bool (Result CsvError string)))
 (defun (quoted-string rd field b start end escaped)
-  (def q (record-ref (record-ref rd options) quote-code))
+  (def q (get rd .options .quote-code))
   (cond
     ((not escaped) (field-string rd field b start end))
     ((not (utf-8? rd b start end)) (Err (csv-error rd field not-utf-8)))
@@ -488,38 +486,42 @@
 ;; when that byte is not in the chunk, the chunk is made longer first.
 (: (-> CsvReader int (Result CsvError string)))
 (defun (read-quoted rd field)
-  (def opts (record-ref rd options))
-  (def q (record-ref opts quote-code))
-  (def first-line (record-ref rd line))
-  (let go ((from (+ (record-ref rd next) 1)) (escaped #f) (lines 0))
-    (def b (record-ref rd bytes))
-    (def start (record-ref rd next))
-    (def limit (record-ref rd limit))
-    (def i (quoted-end b from limit q))
-    (def c (if (< i limit) (cast int (array-ref b i)) spent))
-    (def after (if (< (+ i 1) limit) (cast int (array-ref b (+ i 1))) spent))
+  (def* (opts       (.options rd))
+        (q          (.quote-code opts))
+        (first-line (.line rd)))
+  (let go ((from (+ (.next rd) 1)) (escaped #f) (lines 0))
+    (def* (b     (.bytes rd))
+          (start (.next rd))
+          (limit (.limit rd))
+          (i     (quoted-end b from limit q))
+          (c     (if (< i limit)
+                     (cast int (array-ref b i))
+                     spent))
+          (after (if (< (+ i 1) limit)
+                     (cast int (array-ref b (+ i 1)))
+                     spent)))
     (cond
       ((and (or (= c spent) (and (or (= c q) (= c 13)) (= after spent)))
             (more! rd))
-       (go (+ (record-ref rd next) (- i start)) escaped lines))
+       (go (+ (.next rd) (- i start)) escaped lines))
       ((= c 10) (go (+ i 1) escaped (+ lines 1)))
       ((= c 13) (go (if (= after 10) (+ i 2) (+ i 1)) escaped (+ lines 1)))
       ((and (= c q) (= after q)) (go (+ i 2) #t lines))
       ((= c q)
-       (record-set! rd (next (+ i 1)) (line (+ (record-ref rd line) lines)))
+       (record-set! rd (next (+ i 1)) (line (+ (.line rd) lines)))
        (match (quoted-string rd field b (+ start 1) i escaped)
          ((Ok content) (after-quote rd field content))
          ((Err e) (Err e))))
       ;; The input ended inside the quotes.
-      ((record-ref opts strict)
+      ((.strict opts)
        (Err (error-at rd field first-line "the input ends inside a quoted field that starts on this line")))
       (else
-       (record-set! rd (next i) (line (+ (record-ref rd line) lines)))
+       (record-set! rd (next i) (line (+ (.line rd) lines)))
        (quoted-string rd field b (+ start 1) i escaped)))))
 
 (: (-> CsvReader int (Result CsvError string)))
 (defun (read-field rd field)
-  (if (= (held-code rd) (record-ref (record-ref rd options) quote-code))
+  (if (= (held-code rd) (get rd .options .quote-code))
       (read-quoted rd field)
       (read-plain rd field)))
 
@@ -535,7 +537,7 @@
     (record-set! rd (started #t))
     (when (at-mark? rd)
       (record-set! rd (next (+ (record-ref rd next) 3)))))
-  (def sep (record-ref (record-ref rd options) sep-code))
+  (def sep (get rd .options .sep-code))
   (let skip ()
     (def c (held-code rd))
     (cond
@@ -547,10 +549,10 @@
        (record-set! rd (row-line (record-ref rd line)))
        (def q (record-ref (record-ref rd options) quote-code))
        (let go ((field 1))
-         (def b (record-ref rd bytes))
-         (def start (record-ref rd next))
-         (def limit (record-ref rd limit))
-         (def i (plain-end b start limit sep q))
+         (def* (b     (.bytes rd))
+               (start (.next rd))
+               (limit (.limit rd))
+               (i (plain-end b start limit sep q)))
          ;; At the end of the chunk, `c` is the quote, so that read-field
          ;; reads the field and the chunk after it.
          (def c (if (< i limit) (cast int (array-ref b i)) q))
@@ -592,8 +594,8 @@
 ;; Adds a field to the row being read, growing the array when it is full.
 (: (-> CsvReader string void))
 (defun (push-field! rd s)
-  (def a (record-ref rd fields))
-  (def n (record-ref rd count))
+  (def a (.fields rd))
+  (def n (.count rd))
   (cond
     ((< n (array-length a)) (array-set! a n s))
     (else
@@ -780,7 +782,7 @@
     ((string-empty? s) unit)
     (else
      (argument-error
-       (str "the field " (written s) " needs quotes, and there is no #:quote-char")))))
+      (str "the field " (written s) " needs quotes, and there is no #:quote-char")))))
 
 ;; Without the line end. The fields are walked once, so the row can be any
 ;; Iterable; a row of one empty field is known only after it.

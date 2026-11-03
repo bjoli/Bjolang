@@ -124,8 +124,8 @@
 (: (-> (OrderedMap %k %v) %k bool))
 (defun (orderedmap-has-key? m key) (orderedmap-contains? m key))
 
-;; Two maps or more, each laid over the ones before it. The C# side merges
-;; them at once: by a k-way walk in key order when the keys are spread over
+;; The library for the ordered mad  merges
+;; them  by a k-way walk in key order when the keys are spread over
 ;; the maps, and else into a transient of the biggest.
 (: (-> (OrderedMap %k %v) (OrderedMap %k %v) #:rest (OrderedMap %k %v) (OrderedMap %k %v)))
 (defun (orderedmap-merge m other #:rest more) (clr-orderedmap-merge m other more))
@@ -193,9 +193,9 @@
       (cond
         ((orderedmap-cursor-done? c) (orderedmapbuilder->orderedmap b))
         (else
-          (def (k v) (orderedmap-cursor-current c))
-          (orderedmapbuilder-add! b k (f k v))
-          (go (orderedmap-cursor-next c)))))))
+         (def (k v) (orderedmap-cursor-current c))
+         (orderedmapbuilder-add! b k (f k v))
+         (go (orderedmap-cursor-next c)))))))
 
 (: (-> (-?-> %v %w) (OrderedMap %k %v) (OrderedMap %k %w)))
 (defbjouble (orderedmap-map-values f m)
@@ -206,9 +206,9 @@
       (cond
         ((orderedmap-cursor-done? c) (orderedmapbuilder->orderedmap b))
         (else
-          (def (k v) (orderedmap-cursor-current c))
-          (orderedmapbuilder-add! b k (f v))
-          (go (orderedmap-cursor-next c)))))))
+         (def (k v) (orderedmap-cursor-current c))
+         (orderedmapbuilder-add! b k (f v))
+         (go (orderedmap-cursor-next c)))))))
 
 (: (-> (-?-> %k %v bool) (OrderedMap %k %v) (OrderedMap %k %v)))
 (defbjouble (orderedmap-filter keep? m)
@@ -219,10 +219,10 @@
       (cond
         ((orderedmap-cursor-done? c) (orderedmapbuilder->orderedmap b))
         (else
-          (def (k v) (orderedmap-cursor-current c))
-          (when (keep? k v)
-            (orderedmapbuilder-add! b k v))
-          (go (orderedmap-cursor-next c)))))))
+         (def (k v) (orderedmap-cursor-current c))
+         (when (keep? k v)
+           (orderedmapbuilder-add! b k v))
+         (go (orderedmap-cursor-next c)))))))
 
 (: (-> (-?-> %k %v %s %s) %s (OrderedMap %k %v) %s))
 (defbjouble (orderedmap-fold f init m)
@@ -233,8 +233,8 @@
       (cond
         ((orderedmap-cursor-done? c) acc)
         (else
-          (def (k v) (orderedmap-cursor-current c))
-          (go (f k v acc) (orderedmap-cursor-next c)))))))
+         (def (k v) (orderedmap-cursor-current c))
+         (go (f k v acc) (orderedmap-cursor-next c)))))))
 
 (: (-> (-?-> %k %v bool) (OrderedMap %k %v) bool))
 (defbjouble (orderedmap-iter f m)
@@ -251,7 +251,7 @@
 ;; Conversions
 ;; ---------------------------------------------------------------------------
 ;; TODO: currently orderedmap-for-each goes through the enumerator,
-;;       when internal iteration would be a lot faster. 
+;;       when internal iteration might be faster.
 (: (-> (List (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
 (defun (list->orderedmap xs)
   (def om (orderedmapbuilder-empty))
@@ -350,8 +350,7 @@
     acc)
   (defun (collector-finish c acc) (orderedmapbuilder->orderedmap acc)))
 
-;; The mutable sinks, one entry at a time. `Addable!` is the prelude's trait;
-;; this module owns the types, which is what licenses the impls.
+;; Mutable add! trait
 (impl (Addable! (OrderedMapBuilder %k %v))
   (type %elem (%k . %v))
   (defun (add! mb tup)
@@ -364,8 +363,7 @@
     (def (k v) tup)
     (transientorderedmap-set! tm k v)))
 
-;; And the persistent map itself. Set semantics on a duplicate key, as the
-;; prelude's `(Addable (Map %k %v))` explains.
+;; Persistend add trait
 (impl (Addable (OrderedMap %k %v))
   (type %elem (%k . %v))
   (defun (add m tup)

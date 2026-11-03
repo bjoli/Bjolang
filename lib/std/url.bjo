@@ -28,7 +28,7 @@
   authority-userinfo authority-host authority-port
   url-host url-port url-absolute?
 
-  ;; Text, both ways.
+  ;; To and from readable forms
   parse-url url->string
 
   ;; A reference against a base.
@@ -361,30 +361,30 @@
   (def at (find-any bytes i end (fun (b) (= b 64))))
   (def host-start (if (< at end) (+ at 1) i))
   (def (Ok userinfo)
-       (if (< at end)
-           (result-map (fun (_) (Some (slice bytes i at)))
-                       (check-part bytes i at userinfo-char? "user info"))
-           (Ok None))
-       :propagate)
+    (if (< at end)
+        (result-map (fun (_) (Some (slice bytes i at)))
+                    (check-part bytes i at userinfo-char? "user info"))
+        (Ok None))
+    :propagate)
   (def (Ok host-end)
+    (cond
+      ((and (< host-start end) (= (byte-at bytes host-start) 91))
+       (def close (find-any bytes host-start end (fun (b) (= b 93))))
        (cond
-         ((and (< host-start end) (= (byte-at bytes host-start) 91))
-          (def close (find-any bytes host-start end (fun (b) (= b 93))))
-          (cond
-            ((>= close end) (refuse-at host-start "a '[' begins an IP address, and there is no ']'"))
-            (else
-             (def (Ok _) (check-ip-literal bytes (+ host-start 1) close) :propagate)
-             (if (or (= (+ close 1) end) (= (byte-at bytes (+ close 1)) 58))
-                 (Ok (+ close 1))
-                 (refuse-at (+ close 1) "after ']' comes ':' and the port, or the end of the host")))))
+         ((>= close end) (refuse-at host-start "a '[' begins an IP address, and there is no ']'"))
          (else
-          (def colon (find-any bytes host-start end (fun (b) (= b 58))))
-          (result-map (fun (_) colon)
-                      (check-part bytes host-start colon reg-name-char? "host"))))
-       :propagate)
+          (def (Ok _) (check-ip-literal bytes (+ host-start 1) close) :propagate)
+          (if (or (= (+ close 1) end) (= (byte-at bytes (+ close 1)) 58))
+              (Ok (+ close 1))
+              (refuse-at (+ close 1) "after ']' comes ':' and the port, or the end of the host")))))
+      (else
+       (def colon (find-any bytes host-start end (fun (b) (= b 58))))
+       (result-map (fun (_) colon)
+                   (check-part bytes host-start colon reg-name-char? "host"))))
+    :propagate)
   (def (Ok port)
-       (if (< host-end end) (read-port bytes (+ host-end 1) end) (Ok None))
-       :propagate)
+    (if (< host-end end) (read-port bytes (+ host-end 1) end) (Ok None))
+    :propagate)
   (Ok (Authority (userinfo userinfo) (host (slice bytes host-start host-end)) (port port))))
 
 ;; A URL, or a relative reference, read by RFC 3986. What the grammar does not
@@ -412,10 +412,10 @@
         (find-any bytes (+ after-scheme 2) n (fun (b) (or (= b 47) (= b 63) (= b 35))))
         after-scheme))
   (def (Ok authority)
-       (if has-authority?
-           (result-map Some (read-authority bytes (+ after-scheme 2) authority-end))
-           (Ok None))
-       :propagate)
+    (if has-authority?
+        (result-map Some (read-authority bytes (+ after-scheme 2) authority-end))
+        (Ok None))
+    :propagate)
   (def path-end (find-any bytes authority-end n (fun (b) (or (= b 63) (= b 35)))))
   (def (Ok _) (check-part bytes authority-end path-end path-char? "path") :propagate)
   ;; `a:b` is the scheme `a`. A relative reference whose first segment has a
@@ -423,26 +423,26 @@
   (def first-slash (find-any bytes authority-end path-end (fun (b) (= b 47))))
   (def first-colon (find-any bytes authority-end first-slash (fun (b) (= b 58))))
   (def (Ok _)
-       (if (and (none? scheme) (not has-authority?) (< first-colon first-slash))
-           (refuse-at first-colon
-                      "a relative reference cannot have a ':' in its first segment; write './' before it")
-           (Ok #t))
-       :propagate)
+    (if (and (none? scheme) (not has-authority?) (< first-colon first-slash))
+        (refuse-at first-colon
+                   "a relative reference cannot have a ':' in its first segment; write './' before it")
+        (Ok #t))
+    :propagate)
   (def has-query? (and (< path-end n) (= (byte-at bytes path-end) 63)))
   (def query-end
     (if has-query? (find-any bytes (+ path-end 1) n (fun (b) (= b 35))) path-end))
   (def (Ok query)
-       (if has-query?
-           (result-map (fun (_) (Some (slice bytes (+ path-end 1) query-end)))
-                       (check-part bytes (+ path-end 1) query-end query-char? "query"))
-           (Ok None))
-       :propagate)
+    (if has-query?
+        (result-map (fun (_) (Some (slice bytes (+ path-end 1) query-end)))
+                    (check-part bytes (+ path-end 1) query-end query-char? "query"))
+        (Ok None))
+    :propagate)
   (def (Ok fragment)
-       (if (< query-end n)
-           (result-map (fun (_) (Some (slice bytes (+ query-end 1) n)))
-                       (check-part bytes (+ query-end 1) n query-char? "fragment"))
-           (Ok None))
-       :propagate)
+    (if (< query-end n)
+        (result-map (fun (_) (Some (slice bytes (+ query-end 1) n)))
+                    (check-part bytes (+ query-end 1) n query-char? "fragment"))
+        (Ok None))
+    :propagate)
   (Ok (Url (scheme scheme)
            (authority authority)
            (path (slice bytes authority-end path-end))
@@ -585,8 +585,8 @@
                             (def eq (find-any bytes 0 n (fun (b) (= b 61))))
                             (def (Ok k) (form-decode (slice bytes 0 eq)) :propagate)
                             (def (Ok v)
-                                 (if (< eq n) (form-decode (slice bytes (+ eq 1) n)) (Ok ""))
-                                 :propagate)
+                              (if (< eq n) (form-decode (slice bytes (+ eq 1) n)) (Ok ""))
+                              :propagate)
                             (Ok (Cons (Tuple k v) done)))
                           (Ok (list))
                           pieces)))
@@ -797,7 +797,7 @@
      (Url (scheme (Some (scheme->string s)))
           (authority (Some (Authority
                             (userinfo (opt-map (fun (t) (encode-userinfo (text-of t)))
-                                                  (record-ref parts user)))
+                                               (record-ref parts user)))
                             (host (host->string h))
                             (port (opt-map port->int (record-ref parts port))))))
           (path (match (record-ref parts path)
