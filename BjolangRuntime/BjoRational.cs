@@ -43,6 +43,9 @@ public readonly struct BjoRational : INumber<BjoRational>, ISignedNumber<BjoRati
     public BigInteger Numerator => _num;
     public BigInteger Denominator => _den.IsZero ? BigInteger.One : _den;
 
+    public static BigInteger NumeratorOf(BjoRational r) => r.Numerator;
+    public static BigInteger DenominatorOf(BjoRational r) => r.Denominator;
+
     public BjoRational(BigInteger numerator, BigInteger denominator)
     {
         if (denominator.IsZero)
