@@ -340,7 +340,8 @@ let emptyRegistry : TraitRegistry =
       InferredCopies = Set.empty
       ColourDeclared = Set.empty
       ReturnOnlyGenerics = Set.empty
-      KeywordOnlyGenerics = Set.empty }
+      KeywordOnlyGenerics = Set.empty
+      UnitTable = UnitTable.empty }
 
 /// Builtins that stay for one release under their old names. A use of one
 /// warns and says what to write in its place.

@@ -785,6 +785,28 @@ type Sigs = Map<string, Signature>
 /// (such as parsing signatures or checking trait implementations). If an error 
 /// doesn't already have a specific source location (`needsLocation`), we attach 
 /// the location of the entire declaration to provide context to the user.
+/// Adds a `def/dimension`, `def/unit` or `def/prefix` to the unit table,
+/// under the module being checked.
+let private registerUnitDecl (env: Env) (unitDecl: UnitDecl) (r: Range) : Env =
+    let table = env.Registry.UnitTable
+    let current = env.CurrentModule
+
+    let result =
+        match unitDecl with
+        | UDimension(name, baseUnit, carrier) ->
+            let carrierText = carrier |> Option.map (fun c -> " #:carrier " + c) |> Option.defaultValue ""
+            let source = $"(def/dimension %s{name} #:base %s{baseUnit}%s{carrierText})"
+            UnitTable.declareDimension table current name baseUnit carrier source
+        | UUnit(name, definition) ->
+            UnitTable.declareUnit table current name definition $"(def/unit %s{name} \"%s{definition}\")"
+        | UPrefix(name, value) -> UnitTable.declarePrefix table current name value $"(def/prefix %s{name} \"%s{value}\")"
+
+    match result with
+    | Ok table -> { env with Registry = { env.Registry with UnitTable = table } }
+    | Error e ->
+        let stop = if e.EndsWith "?" then "" else "."
+        failwithf $"Unit Error at %s{Lexer.formatPos r}: %s{e}%s{stop}"
+
 let rec checkDecl (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TDecl list =
     try
         checkDeclNode env sigs decl
@@ -907,6 +929,9 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
 
 
     | DImport(paths, r) -> env, sigs, [ TImport(paths, r) ]
+
+    // Registered by `checkDeclGroup` before anything in the group.
+    | DUnitDecl _ -> env, sigs, []
 
     | DAlias(newName, oldName, r) ->
         checkAlias env sigs newName oldName r
@@ -3869,6 +3894,17 @@ and internal checkDeclGroup
                         |> Seq.map snd
                         |> Set.ofSeq
                         |> Set.union env.Registry.InferredCopies } }
+
+    // Units first, in the order written: a signature, a type and a body may
+    // all name one.
+    let env =
+        decls
+        |> List.fold
+            (fun (acc: Env) d ->
+                match d with
+                | DUnitDecl(unitDecl, r) -> registerUnitDecl acc unitDecl r
+                | _ -> acc)
+            env
 
     /// The registry a signature is *read* with: this one, plus the group's own
     /// type declarations.

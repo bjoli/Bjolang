@@ -2018,7 +2018,10 @@ type TraitRegistry =
       /// `Option` that an argument reaches through an implicit conversion,
       /// which C# type inference does not look through, and an omitted one is
       /// no argument at all. `Codegen` emits their type arguments explicitly.
-      KeywordOnlyGenerics: Set<string> }
+      KeywordOnlyGenerics: Set<string>
+      /// The dimensions, units and prefixes declared so far, by every module
+      /// checked: `def/dimension`, `def/unit`, `def/prefix`. See Docs/Units.org.
+      UnitTable: UnitTable.Table }
 
 type Env =
     { Bindings: Map<string, Binding>

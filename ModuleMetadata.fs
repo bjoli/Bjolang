@@ -116,7 +116,9 @@ open System.Text
 /// would read the list as the trait methods a macro sees.
 /// 28: a number type with a unit is written `(units double key^1 'u^1/2)`. A
 /// reader of 27 would read it as a type constructor named `units`.
-let currentVersion = 28
+/// 29: `UnitDecls`, the module's `def/dimension`, `def/unit` and `def/prefix`
+/// as source, after `Frameworks`.
+let currentVersion = 29
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -304,6 +306,9 @@ type Metadata = {
     /// a command-line tool importing only the router runs on a machine with no
     /// ASP.NET runtime installed.
     Frameworks: string list
+    /// The module's `def/dimension`, `def/unit` and `def/prefix`, as source,
+    /// in the order written. An importer checks them as its own.
+    UnitDecls: string list
 }
 
 let empty = {
@@ -329,6 +334,7 @@ let empty = {
     DoubleDefs = []
     ConstrainedBodies = []
     Frameworks = []
+    UnitDecls = []
 }
 
 /// Nothing worth writing: an executable, or a library that exports nothing.
@@ -352,6 +358,7 @@ let isEmpty (m: Metadata) =
     // set travels to whatever links it, and an attribute that was never emitted
     // says nothing at all.
     && m.Frameworks.IsEmpty
+    && m.UnitDecls.IsEmpty
 
 
 // ---------------------------------------------------------------------------
@@ -543,6 +550,7 @@ let serialize (m: Metadata) : string =
     putList sb putStr m.DoubleDefs
     putList sb putConstrainedBody m.ConstrainedBodies
     putList sb putStr m.Frameworks
+    putList sb putStr m.UnitDecls
     sb.ToString()
 
 /// `assemblyPath` names the dependency in the error, because the fix is to
@@ -582,6 +590,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     let doubleDefs = getList getStr c
     let constrainedBodies = getList getConstrainedBody c
     let frameworks = getList getStr c
+    let unitDecls = getList getStr c
 
     { Version = version
       Deps = deps
@@ -604,4 +613,5 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
       RunTimeTypeParams = runTimeTypeParams
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies
-      Frameworks = frameworks }
+      Frameworks = frameworks
+      UnitDecls = unitDecls }

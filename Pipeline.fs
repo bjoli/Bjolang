@@ -2405,7 +2405,7 @@ let loadModuleGraph
                     // `import/extern` one. Impls follow the traits they belong
                     // to, because reading one back needs the trait registered.
                     let declText =
-                        meta.TypeDecls @ meta.ExternDecls @ meta.TraitDecls @ meta.ImplDecls
+                        meta.UnitDecls @ meta.TypeDecls @ meta.ExternDecls @ meta.TraitDecls @ meta.ImplDecls
                         |> String.concat "\n"
 
                     let declsFromText =
