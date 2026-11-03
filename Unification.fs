@@ -622,7 +622,9 @@ let rec private projectionWaits (registry: TraitRegistry) (t: HMType) : bool =
         | TMeta _
         | TCon _
         | TTuple _
-        | TFun _ -> true
+        | TFun _
+        // A number with a unit has its carrier's implementations.
+        | TNum _ -> true
         | TAssoc _ as inner -> projectionWaits registry inner
         | _ -> false
     | _ -> false
@@ -1031,6 +1033,10 @@ let freeTVars (registry: TraitRegistry) (t: HMType) : string list =
 /// places that have no business knowing a constraint queue exists.
 let mutable heldMetaIds: unit -> Set<int> = fun () -> Set.empty
 
+/// Unit cells held back as `heldMetaIds` holds type cells: those of the open
+/// numeric literals, which defaulting settles at 1.
+let mutable heldUnitIds: unit -> Set<int> = fun () -> Set.empty
+
 /// Metavariables held back for a binding that is *local* to a function body.
 ///
 /// An unresolved interface-trait obligation may be generalized at the top
@@ -1100,8 +1106,12 @@ let private generalizeWith (held: Set<int>) (scoped: Set<string>) (env: Env) (t:
     // Unit cells as type cells: deeper than the binding, a unit variable.
     // Unit variables are in the scheme's list with the type variables, and
     // erasure removes them from what C# sees.
+    let heldUnits = heldUnitIds ()
+
     let unitCells =
-        unitCellsOf env.Registry t |> List.distinctBy (fun c -> c.UId) |> List.filter (fun c -> c.ULevel > currentLevel)
+        unitCellsOf env.Registry t
+        |> List.distinctBy (fun c -> c.UId)
+        |> List.filter (fun c -> c.ULevel > currentLevel && not (Set.contains c.UId heldUnits))
 
     let unitNames = unitCells |> List.map (fun _ -> Gensym.fresh "'u")
 

@@ -1597,6 +1597,13 @@ type FunMeta = {
 
 type Scheme = Scheme of string list * TraitConstraint list * HMType
 
+/// A scheme's variables that are types: a call's type arguments, in order.
+/// Its unit variables are quantified beside them and are no type arguments.
+let schemeTypeVars (Scheme(vars, _, t)) : string list =
+    match unitVarsOf t with
+    | [] -> vars
+    | unitVars -> vars |> List.filter (fun v -> not (List.contains v unitVars))
+
 type Binding = { Scheme: Scheme; IsMutable: bool }
 
 /// The body of one `impl` method, kept for splicing into call sites.

@@ -117,7 +117,8 @@ let collectTraitConstraints (env: Env) (body: TypedExpr) : TraitConstraint list 
             // at this call site.
             match Map.tryFind calleeName env.Bindings with
             | Some binding ->
-                let (Scheme(schemeVars, constraints, _)) = binding.Scheme
+                let (Scheme(_, constraints, _)) = binding.Scheme
+                let schemeVars = schemeTypeVars binding.Scheme
 
                 if constraints.IsEmpty || schemeVars.Length <> tArgs.Length then
                     acc
@@ -399,6 +400,13 @@ let rec private followMeta (t: HMType) : HMType =
     | TMeta { Value = Some inner } -> followMeta inner
     | _ -> t
 
+/// What an open literal's type comes down to: its carrier, when arithmetic has
+/// given it a unit.
+let private literalCarrier (t: HMType) : HMType =
+    match followMeta t with
+    | TNum(carrier, _) -> followMeta carrier
+    | other -> other
+
 /// The metavariables a type is still waiting on.
 ///
 /// Deliberately registry-free: this is consulted from `generalize`, which has no
@@ -431,7 +439,7 @@ let internal literalDefault (metaId: int) : HMType =
         openLiterals
         |> Seq.exists (fun (lit, text, _) ->
             NumericLiteral.isReal text
-            && (match followMeta lit with
+            && (match literalCarrier lit with
                 | TMeta l -> l.Id = metaId
                 | _ -> false))
 
@@ -448,11 +456,24 @@ let internal literalDefault (metaId: int) : HMType =
 /// one a `double`, as they always were; C#'s own widening is what takes them
 /// the rest of the way.
 let internal settleLiterals (types: HMType list) : unit =
+    // .NET takes plain numbers: a unit nothing has said yet is 1.
+    let rec settleUnits (t: HMType) =
+        match followMeta t with
+        | TNum(carrier, unit) ->
+            for (cell, _) in Units.metas (Units.prune unit) do
+                cell.UValue <- Some Units.one
+
+            settleUnits carrier
+        | TCon(_, args)
+        | TTuple args -> List.iter settleUnits args
+        | _ -> ()
+
+    List.iter settleUnits types
     let waiting = types |> List.collect metaIdsOf |> Set.ofList
 
     if not (Set.isEmpty waiting) then
         for (t, _, _) in openLiterals do
-            match followMeta t with
+            match literalCarrier t with
             | TMeta m when Set.contains m.Id waiting -> m.Value <- Some(literalDefault m.Id)
             | _ -> ()
 
@@ -462,11 +483,11 @@ let internal settleLiterals (types: HMType list) : unit =
 /// member. A literal is never a record, so it stays a .NET receiver and is
 /// settled at `int` there, as it was before records could be read with `.x`.
 let internal isOpenLiteral (t: HMType) : bool =
-    match followMeta t with
+    match literalCarrier t with
     | TMeta m ->
         openLiterals
         |> Seq.exists (fun (lit, _, _) ->
-            match followMeta lit with
+            match literalCarrier lit with
             | TMeta l -> l.Id = m.Id
             | _ -> false)
     | _ -> false
@@ -474,7 +495,7 @@ let internal isOpenLiteral (t: HMType) : bool =
 /// Whether `t` is an open numeric literal that a real literal, such as `2.5`,
 /// shares, so that it can take only a type that has fractions.
 let internal isOpenRealLiteral (t: HMType) : bool =
-    match followMeta t with
+    match literalCarrier t with
     | TMeta m -> isOpenLiteral t && literalDefault m.Id = TypeConstants.doubleType
     | _ -> false
 

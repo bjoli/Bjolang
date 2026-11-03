@@ -487,7 +487,8 @@ let private demandOf (env: Env) (cands: Map<string, Candidate>) (name: string) (
 
     match Map.tryFind key env.Bindings with
     | Some binding ->
-        let (Scheme(schemeVars, constraints, _)) = binding.Scheme
+        let (Scheme(_, constraints, _)) = binding.Scheme
+        let schemeVars = schemeTypeVars binding.Scheme
 
         // Every type argument, not only the constrained ones: a copy with no
         // type parameters left needs no type arguments at the call site, and so

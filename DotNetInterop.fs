@@ -534,6 +534,8 @@ let interfaceMemberNames (iface: Type) : string list =
 let rec private pruneLocal (t: HMType) : HMType =
     match t with
     | TMeta { Value = Some inner } -> pruneLocal inner
+    // A unit solved to 1 leaves the carrier, as `Unification.prune` has it.
+    | TNum(carrier, unit) when Units.isOne (Units.prune unit) -> pruneLocal carrier
     | other -> other
 
 // ---------------------------------------------------------------------------

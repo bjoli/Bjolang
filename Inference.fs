@@ -193,7 +193,9 @@ let private genericsNotInferableFrom (env: Env) (inferableFrom: string -> HMType
     env.Bindings
     |> Map.toSeq
     |> Seq.choose (fun (name, binding) ->
-        let (Scheme(vars, constraints, scheme)) = binding.Scheme
+        let (Scheme(_, constraints, scheme)) = binding.Scheme
+        // Unit variables are no type arguments: C# infers nothing of them.
+        let vars = schemeTypeVars binding.Scheme
 
         // A pin is in the type of a dictionary parameter, and C# infers a
         // variable from that argument as from any other: the `%k` and `%v`

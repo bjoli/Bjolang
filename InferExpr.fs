@@ -719,13 +719,15 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // `(in x km/h)`: the number x is in km/h.
     | EApp(EIdent("in", _), x :: (_ :: _ as unitWords), r) when
         not (Map.containsKey "in" env.Bindings)
-        && unitWords |> List.forall (function EIdent _ | EString _ -> true | _ -> false)
+        && unitWords |> List.forall (function EIdent _ | EString _ | EInt _ -> true | _ -> false)
         ->
+        // `1/s` is read as the number 1 and the symbol `/s`.
         let unitText =
             unitWords
             |> List.map (function
                 | EIdent(n, _)
-                | EString(n, _) -> n
+                | EString(n, _)
+                | EInt(n, _) -> n
                 | _ -> "")
             |> String.concat " "
 
@@ -2654,6 +2656,9 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
 
         match declared with
         | Some(TMeta _)
+        // An arithmetic builtin's operand: a number of a carrier nothing has
+        // said yet, which says no more than a bare metavariable does.
+        | Some(TNum(TMeta _, _))
         | None -> None
         | Some paramTy -> Some paramTy
 

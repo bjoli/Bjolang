@@ -130,6 +130,20 @@ do
                   Holes.heldMetaIds () ]
 do Unification.heldLocalMetaIds <- heldWanteds InterfaceTrait
 
+/// The unsolved unit cells in a type, without a registry, as `metaIdsOf`.
+let rec private unitIdsOf (t: HMType) : int list =
+    match t with
+    | TMeta { Value = Some inner } -> unitIdsOf inner
+    | TNum(carrier, unit) -> (Units.metas (Units.prune unit) |> List.map (fun (c, _) -> c.UId)) @ unitIdsOf carrier
+    | TCon(_, args)
+    | TTuple args -> List.collect unitIdsOf args
+    | TFun(args, ret, _) -> List.collect unitIdsOf (ret :: args)
+    | _ -> []
+
+do
+    Unification.heldUnitIds <-
+        fun () -> openLiterals |> Seq.collect (fun (t, _, _) -> unitIdsOf t) |> Set.ofSeq
+
 let internal pushWanted (w: Wanted) = wantedQueue.Add w
 
 /// Detaches everything raised so far. Callers solve what they take.
@@ -224,6 +238,18 @@ let rec checkClrConstraint
 
             failwithf
                 $"Type Error at %s{Lexer.formatPos range}: '%s{shown}' does not satisfy '%s{traitName}', needed %s{describe}. A newtype has only what is implemented for it, and this is not: write (impl (%s{traitName} %s{target}) #:via %s{wrapped})."
+    // A number with a unit is no `Num`: a function generic over `Num` may
+    // multiply, and its type says the unit stays. Comparing is the carrier's.
+    | TNum(carrier, unit) ->
+        match clr.InterfaceName with
+        | "System.Numerics.INumber"
+        | "System.Numerics.IBinaryInteger" ->
+            let shown = DotNetInterop.showType (TNum(carrier, unit))
+            let unitText = UnitTable.showTerm unit
+
+            failwithf
+                $"Type Error at %s{Lexer.formatPos range}: '%s{shown}' does not satisfy '%s{traitName}', needed %s{describe}. A number with a unit is not a %s{traitName}: (* x x) on %s{unitText} is %s{unitText}^2, and a function generic over %s{traitName} says it is %s{unitText}. Write the function over (double %%u), or take the number out with (in x %s{unitText})."
+        | _ -> checkClrConstraint env clr traitName carrier range describe
     | resolved ->
         // The interface is written over the trait's own implementor variable,
         // so putting the actual implementor in is what turns
@@ -627,8 +653,30 @@ let private checkNotedFraction (t: HMType) (text: string) (r: Lexer.Range) : uni
         | true, note -> failwithf $"Type Error at %s{Lexer.formatPos r}: %s{note ()}"
         | _ -> ()
 
+/// Whether a literal's text is zero: `0`, `0.0`, `0M`, `-0.0e5`.
+let private isZeroLiteral (text: string) : bool =
+    let digits = NumericLiteral.digits text
+    let mantissa = digits.Split([| 'e'; 'E' |]).[0]
+    mantissa |> Seq.exists ((=) '0') && mantissa |> Seq.forall (fun c -> c = '0' || c = '.' || c = '-' || c = '+')
+
 let private defaultNumericLiterals (env: Env) : unit =
     for (t, text, r) in openLiterals do
+        // A plain literal is a number of unit 1, except zero, which is a
+        // number of every unit (Docs/Units.org).
+        let t =
+            match prune env.Registry t with
+            | TNum(carrier, unit) ->
+                match Units.unify unit Units.one with
+                | Ok() -> carrier
+                | Error _ when isZeroLiteral text -> carrier
+                | Error _ ->
+                    let shown = DotNetInterop.showType (prune env.Registry t)
+                    let unitText = UnitTable.showTerm unit
+
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: '%s{text}' is a plain number, and it is being used where a %s{shown} is wanted. Write <%s{text} %s{unitText}>, or a unit of the same dimension."
+            | _ -> t
+
         match prune env.Registry t with
         // Nothing said what it is, so it is an `int`, or a `double` if a real
         // literal shares it (`literalDefault`). It has to fit there too, or C#

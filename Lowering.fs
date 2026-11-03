@@ -621,7 +621,8 @@ module DictionaryLowering =
                     | TIdent(calleeName, tArgs) ->
                         match bindingOf env calleeName with
                         | Some binding ->
-                            let (Scheme(schemeVars, constraints, _)) = binding.Scheme
+                            let (Scheme(_, constraints, _)) = binding.Scheme
+                            let schemeVars = schemeTypeVars binding.Scheme
 
                             if not constraints.IsEmpty && not tArgs.IsEmpty then
                                 // Build a substitution from scheme vars to instantiated types

@@ -931,7 +931,7 @@ let compile (options: Options) (inputFilePath: string) : int =
             let mainTypeArgs =
                 match Map.tryFind "main" env.Bindings with
                 | Some b ->
-                    let (TypedAST.Scheme(vars, _, _)) = b.Scheme
+                    let vars = TypedAST.schemeTypeVars b.Scheme
 
                     if vars.IsEmpty then ""
                     else "<" + (vars |> List.map (fun _ -> "object") |> String.concat ", ") + ">"

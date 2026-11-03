@@ -124,22 +124,25 @@ the matching ~>~. ~(< 1 2)~, ~<=~ and ~<-~ are untouched. The reader gives
 
 *** Arithmetic
 
-- ~+ - %~, ~negate~, the comparisons, ~min~, ~max~, ~abs~: both sides one
-  type, any unit.
+- ~+ - %~ and ~negate~: ~(-> (num %a %u) (num %a %u) (num %a %u))~ with
+  ~Num %a~. One unit, any unit.
 - ~*~ and ~/~: the units multiply and divide. ~(* <2 m> <3 m>)~ is
-  ~(double m^2)~. At unit 1 this is today's ~(-> %a %a %a)~.
-- ~sqrt~, ~cbrt~: ~%u^2 → %u~, ~%u^3 → %u~. ~expt~ with a literal integer
-  exponent: ~%u^n~; any other exponent wants unit 1.
-- ~sin~, ~exp~, ~log~, ~floor~, ~round~ and the rest: unit 1.
-- A zero literal, ~0~, ~0.0~, ~0M~, is a number of every unit, so
-  ~(> x 0)~ works for lengths. ~(> x 1)~ does not: "write ~<1 m>~".
+  ~(double m^2)~. ~recip~ inverts the unit.
+- The comparisons: ~(-> %a %a bool)~ with ~Ordered %a~, which a number with a
+  unit has: its carrier's.
+- ~sqrt~, ~cbrt~: ~(double %u^2) → (double %u)~, ~(double %u^3) → (double %u)~.
+- ~sin~, ~exp~, ~log~, ~floor~, ~round~ and every other .NET method: unit 1.
+- A plain literal is a number of unit 1, except zero, ~0~, ~0.0~, ~0M~,
+  which is a number of every unit: ~(> x 0)~ works for lengths. ~(> x 1)~
+  does not: "write ~<1 m>~".
 
-~Num~ holds only at unit 1. ~(sqr x)~ at ~(-> %a %a)~ with ~(* x x)~ inside is
-wrong for metres, which square to m², so existing generic code neither changes
-nor accepts quantities. What is correct at any unit is a new constraint,
-~Measure~: ~+ - %~, ~negate~, the comparisons. ~Num~ is ~Measure~ at unit 1. Std
-functions that are correct at any unit (~summing~, ~min~, ~max~, ~abs~,
-~positive?~, array ~sum~) move to ~Measure~ in Phase 10.
+~Num~ is asked of the carrier, never of the number with its unit, and ~Num~
+itself does not hold at a unit other than 1. ~(sqr x)~ at ~(-> %a %a)~ with
+~(* x x)~ inside is wrong for metres, which square to m², so a function
+generic over ~Num~ neither changes nor accepts quantities: "a number with a
+unit is not a Num". A function that is correct at any unit says so with a
+unit variable: ~(-> (double %u) (double %u) (double %u))~. ~abs~, ~min~,
+~max~ and the other ~Num~ methods stay at unit 1 until Phase 10.
 
 *** Declarations
 
@@ -446,7 +449,33 @@ Done. Tests: ~513_quantity_literals~, ~codegen/quantities~,
 Tests: literal values per carrier, ~in~, the integer errors, a literal of a
 unit the module does not see.
 
-*** Phase 8 — the operators
+*** DONE Phase 8 — the operators
+
+Done. Tests: ~514_unit_arithmetic~ (the projectile of ~projectile.bjo~ on a
+struct among them), ~errors/units_*~. The existing suite passes unchanged.
+Notes:
+
+- No ~Measure~ trait: ~Num~ is asked of the carrier, so ~(+ "a" "b")~ says
+  what it said before. A CLR trait over ~INumber~ or ~IBinaryInteger~
+  refuses a ~TNum~; one over another interface (~Ordered~) is the carrier's.
+- Unit variables are in a scheme's variable list but are no type arguments.
+  ~schemeTypeVars~ is what may be zipped with a call's type arguments
+  (~Lowering~, ~Monomorphise~, ~TypeEnv~, ~Inference.genericsNotInferableFrom~,
+  ~Build~). Without it ~+~ counted as a function that never returns.
+- A literal's unit cells are held from generalization, as its type cells
+  are (~Unification.heldUnitIds~), and defaulting settles them at 1; a zero
+  keeps what the context gave it.
+- At a .NET call a unit nothing has said is 1 (~settleLiterals~), and
+  ~DotNetInterop~ reads a ~TNum~ at unit 1 as its carrier.
+- ~expectedParam~ reads ~(num ?a %u)~ as a bare metavariable, so a mismatch
+  at an arithmetic builtin is still reported for the whole call.
+- ~sqrt~ (prelude) and ~cbrt~ (~(std maths)~) are Bjolang functions around
+  the .NET ones, with unit types.
+- ~TraitInline~ binds a template's parameters at erased types: a record's
+  field types in the registry keep their units.
+- Not done: ~expt~ with a literal exponent; the ~Num~ methods (~abs~, ~min~,
+  ~max~) at any unit, which is Phase 10. A mismatch of two literals' units
+  shows their open carrier: ~(?a m)~ against ~(?a s)~.
 
 - ~*~ and ~/~: ~(-> (num %c %u) (num %c %v) (num %c %u·%v))~, ~Num %c~.
 - ~+ - %~, ~negate~, ~recip~ (unit inverted), comparisons: ~Measure~.
