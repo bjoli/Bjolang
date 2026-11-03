@@ -1752,7 +1752,12 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
                     env.Registry }
 
     let finalEnv, finalSigs, typedDecls =
-        checkDeclGroup { env with CurrentModule = moduleName } sigs decls
+        checkDeclGroup
+            { env with
+                CurrentModule = moduleName
+                Registry = { env.Registry with UnitTable = { env.Registry.UnitTable with Current = moduleName } } }
+            sigs
+            decls
 
     // Every name this module defines is also reachable as
     // `Module_Module::name`.

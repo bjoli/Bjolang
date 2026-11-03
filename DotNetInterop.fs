@@ -981,7 +981,7 @@ let showTypesTogether (ts: HMType list) : string list =
         | TAssoc(tn, an, impl) -> $"(assoc %s{tn} %s{an} %s{go impl})"
         | TNum(carrier, unit) ->
             let unitMeta (c: Units.UnitCell) = "%?" + string c.UId
-            $"(%s{go carrier} %s{Units.toStringWith Naming.showTypeName unitMeta unit})"
+            $"(%s{go carrier} %s{Units.toStringWith UnitTable.nameOfKey unitMeta unit})"
 
     ts |> List.map go
 

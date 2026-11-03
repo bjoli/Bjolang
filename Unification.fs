@@ -261,6 +261,7 @@ and implsMatching
                 | Some earlier -> if sameType earlier a then subst else None
             | p, (TMeta _ as open') ->
                 if literalTakes open' p then subst else None
+            | p, TNum(carrier, _) -> matchInto subst p carrier
             | TCon(p, ps), TCon(a, as') when p = a && ps.Length = as'.Length -> List.fold2 matchInto subst ps as'
             | TTuple ps, TTuple as' when ps.Length = as'.Length -> List.fold2 matchInto subst ps as'
             | TFun(ps, pr, _), TFun(as', ar, _) when ps.Length = as'.Length ->
@@ -275,6 +276,7 @@ and implsMatching
         | TCon(x, xs), TCon(y, ys) -> x = y && xs.Length = ys.Length && List.forall2 sameType xs ys
         | TTuple xs, TTuple ys -> xs.Length = ys.Length && List.forall2 sameType xs ys
         | TFun(xs, x, _), TFun(ys, y, _) -> xs.Length = ys.Length && List.forall2 sameType xs ys && sameType x y
+        | TNum(x, u), TNum(y, v) -> sameType x y && Units.prune u = Units.prune v
         | x, y -> x = y
 
     implsAtHead registry traitName ctor
@@ -780,7 +782,7 @@ let private unitsMeet (t1: HMType) (t2: HMType) (u1: Units.UnitTerm) (u2: Units.
     | Ok() -> ()
     | Error m ->
         let show (u: Units.UnitTerm) =
-            if Units.isOne u then "1" else Units.toStringWith Naming.showTypeName (fun c -> "%?" + string c.UId) u
+            if Units.isOne u then "1" else Units.toStringWith UnitTable.nameOfKey (fun c -> "%?" + string c.UId) u
 
         raise (
             MismatchException

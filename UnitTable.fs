@@ -128,14 +128,18 @@ type Table =
       Prefixes: Map<string, PrefixEntry list>
       /// Each module's declarations as source, in the order written: what
       /// its metadata publishes.
-      Sources: (string * string) list }
+      Sources: (string * string) list
+      /// The module being checked: whose names win where several modules
+      /// declare one.
+      Current: string }
 
 let empty: Table =
     { Dimensions = Map.empty
       Bases = Map.empty
       Units = Map.empty
       Prefixes = Map.empty
-      Sources = [] }
+      Sources = []
+      Current = "" }
 
 /// The atom of a base unit declared in a module.
 let baseKey (moduleKey: string) (name: string) = moduleKey + "/" + name
@@ -593,6 +597,19 @@ let declarePrefix (table: Table) (current: string) (name: string) (value: string
 /// The declarations a module published, in order.
 let sourcesOf (table: Table) (moduleKey: string) : string list =
     table.Sources |> List.filter (fun (m, _) -> m = moduleKey) |> List.map snd
+
+/// A unit expression in a type: a term over base units and unit variables,
+/// whose factor must be 1.
+let resolveTypeUnit (table: Table) (text: string) : Result<UnitTerm, string> =
+    match parse { Table = table; Module = table.Current; AllowVariables = true } text with
+    | Ok q when Factor.isOne q.Factor -> Ok q.Term
+    | Ok q ->
+        let bases = showTerm q.Term
+        let carrierHint = if Units.isOne q.Term then "double" else $"(double %s{bases})"
+
+        Error
+            $"'%s{text}' is %s{Factor.toString q.Factor} %s{bases}, and a type names base units only: write %s{carrierHint}, and (in x %s{text}) where a number in %s{text} is needed"
+    | Error e -> Error e
 
 /// The carrier a term's dimensions agree on, if they declare one.
 let defaultCarrier (table: Table) (t: UnitTerm) : string option =

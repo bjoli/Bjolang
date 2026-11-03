@@ -1512,8 +1512,11 @@ let implTargetType (ctor: string) (args: HMType list) : HMType =
 /// The head implementations are looked up by at `t`, a pruned type, and the
 /// arguments it is applied to: a tuple's arity key, and `Procedure` applied to
 /// the function type for a function type. `None` for a type with no head yet.
-let implHeadOf (t: HMType) : (string * HMType list) option =
+///
+/// A number type with a unit has its carrier's implementations.
+let rec implHeadOf (t: HMType) : (string * HMType list) option =
     match t with
+    | TNum(carrier, _) -> implHeadOf carrier
     | TCon(ctor, args) -> Some(ctor, args)
     | TTuple args -> Some(tupleCtor args.Length, args)
     | TFun _ -> Some(ProcedureCtor, [ t ])

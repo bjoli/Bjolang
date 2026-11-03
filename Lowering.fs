@@ -223,6 +223,10 @@ let rec buildEvidence
           Range = range
           Node = TIdent(name, []) }
 
+    // A number type with a unit has its carrier's implementations, and is
+    // its carrier at run time.
+    | TNum(carrier, _) -> buildEvidence env scope traitName carrier range describe
+
     // A tuple dispatches under its synthetic arity key, and a function type
     // under `Procedure`; each is otherwise an ordinary head applied to its
     // arguments.

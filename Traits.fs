@@ -335,7 +335,13 @@ let private settleOn
     let prefix, classTypeArgs, subst = instantiateImplPrefix target
 
     for (m, occArgs) in holes do
-        unify registry m (implTargetType ctor (prefix @ occArgs))
+        // A number type with a unit has its carrier's implementations.
+        let hole =
+            match prune registry m with
+            | TNum(carrier, _) -> carrier
+            | _ -> m
+
+        unify registry hole (implTargetType ctor (prefix @ occArgs))
 
     let describe =
         $"by the implementation of '%s{Naming.showTraitName traitName}' for '%s{Naming.showTypeName ctor}', which %s{user}"

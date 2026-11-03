@@ -363,7 +363,20 @@ F#. Invisible: nothing can write a unit yet.
 
 The suite passes unchanged, codegen tests included.
 
-*** Phase 5 — the unit table and declarations
+*** DONE Phase 5 — the unit table and declarations
+
+Done. Tests: ~510_unit_decls~ with ~inc/unit_table.bjo~, ~errors/units_*~.
+Notes:
+
+- The table is a field of ~TraitRegistry~, which every module of a
+  compilation shares. A module sees its own declarations and those of the
+  modules it imports: an imported module's declarations are read back from
+  its metadata (~UnitDecls~, as source) and checked as its own, and a ~.dll~'s
+  own imports are not read.
+- Declarations are registered at the start of their group, in order, before
+  signatures and types are resolved.
+- The table's ~Current~ is the module being checked: its own name wins where
+  several modules declare one.
 
 F#. ~UnitTable.fs~ after ~Units.fs~.
 
@@ -382,7 +395,19 @@ F#. ~UnitTable.fs~ after ~Units.fs~.
 Tests: declarations in ~TestFiles/inc~, errors for a unit declared twice,
 an unknown unit, a definition over an undeclared unit.
 
-*** Phase 6 — unit types
+*** DONE Phase 6 — unit types
+
+Done. Tests: ~509~, ~511_unit_relay~ (a module with no units holds one),
+~512_unit_records~, ~errors/units_*~. Notes:
+
+- A number type with a unit has its carrier's implementations, of every
+  trait: ~implHeadOf~ looks through ~TNum~, and ~settleOn~ unifies the
+  carrier with the implementation's target. Records with unit fields derive
+  ~Eq~ and ~Written~ that way. An implementation whose body computes with
+  ~*~ at the carrier is then wrong at a unit; Phase 8 decides whether a
+  trait has to say it holds at any unit.
+- ~cast~ to a unit type is allowed: it is the escape hatch, and the tests use
+  it before literals exist.
 
 - ~(double m/s)~ and ~<m/s>~ in ~TypeSyntax~ and ~Annotations~: resolved through
   the table to a ~TNum~ over base keys. A factor other than 1 is the "types
