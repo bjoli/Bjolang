@@ -1713,4 +1713,5 @@ let metadata
       // The driver's to fill in, like `Deps`: which shared frameworks were
       // resolved from is a fact about the compilation rather than about the
       // declarations this module exports.
-      Frameworks = [] }
+      Frameworks = []
+      UnitDecls = UnitTable.sourcesOf env.Registry.UnitTable (Naming.moduleKeyOfPath inputFilePath) }

@@ -130,6 +130,20 @@ do
                   Holes.heldMetaIds () ]
 do Unification.heldLocalMetaIds <- heldWanteds InterfaceTrait
 
+/// The unsolved unit cells in a type, without a registry, as `metaIdsOf`.
+let rec private unitIdsOf (t: HMType) : int list =
+    match t with
+    | TMeta { Value = Some inner } -> unitIdsOf inner
+    | TNum(carrier, unit) -> (Units.metas (Units.prune unit) |> List.map (fun (c, _) -> c.UId)) @ unitIdsOf carrier
+    | TCon(_, args)
+    | TTuple args -> List.collect unitIdsOf args
+    | TFun(args, ret, _) -> List.collect unitIdsOf (ret :: args)
+    | _ -> []
+
+do
+    Unification.heldUnitIds <-
+        fun () -> openLiterals |> Seq.collect (fun (t, _, _) -> unitIdsOf t) |> Set.ofSeq
+
 let internal pushWanted (w: Wanted) = wantedQueue.Add w
 
 /// Detaches everything raised so far. Callers solve what they take.
@@ -224,6 +238,29 @@ let rec checkClrConstraint
 
             failwithf
                 $"Type Error at %s{Lexer.formatPos range}: '%s{shown}' does not satisfy '%s{traitName}', needed %s{describe}. A newtype has only what is implemented for it, and this is not: write (impl (%s{traitName} %s{target}) #:via %s{wrapped})."
+    // A number with a unit is no `Num`: a function generic over `Num` may
+    // multiply, and its type says the unit stays. Comparing is the carrier's.
+    | TNum(carrier, unit) ->
+        // A method of the trait itself is .NET's (`#:clr-member`), and none of
+        // `Num`'s multiplies: `abs`, `min`, `max`, `clamp` keep the unit and
+        // `sign`, `zero?` drop it. The call is the carrier's.
+        let ownMethod =
+            match describe.IndexOf "call '" with
+            | i when i >= 0 ->
+                let rest = describe.Substring(i + 6)
+                Map.containsKey (rest.Substring(0, max 0 (rest.IndexOf '\''))) clr.Members
+            | _ -> false
+
+        match clr.InterfaceName with
+        | _ when ownMethod -> checkClrConstraint env clr traitName carrier range describe
+        | "System.Numerics.INumber"
+        | "System.Numerics.IBinaryInteger" ->
+            let shown = DotNetInterop.showType (TNum(carrier, unit))
+            let unitText = UnitTable.showTerm unit
+
+            failwithf
+                $"Type Error at %s{Lexer.formatPos range}: '%s{shown}' does not satisfy '%s{traitName}', needed %s{describe}. A number with a unit is not a %s{traitName}: (* x x) on %s{unitText} is %s{unitText}^2, and a function generic over %s{traitName} says it is %s{unitText}. Write the function over (double %%u), or take the number out with (in x %s{unitText})."
+        | _ -> checkClrConstraint env clr traitName carrier range describe
     | resolved ->
         // The interface is written over the trait's own implementor variable,
         // so putting the actual implementor in is what turns
@@ -335,7 +372,13 @@ let private settleOn
     let prefix, classTypeArgs, subst = instantiateImplPrefix target
 
     for (m, occArgs) in holes do
-        unify registry m (implTargetType ctor (prefix @ occArgs))
+        // A number type with a unit has its carrier's implementations.
+        let hole =
+            match prune registry m with
+            | TNum(carrier, _) -> carrier
+            | _ -> m
+
+        unify registry hole (implTargetType ctor (prefix @ occArgs))
 
     let describe =
         $"by the implementation of '%s{Naming.showTraitName traitName}' for '%s{Naming.showTypeName ctor}', which %s{user}"
@@ -613,8 +656,38 @@ let private settleOpenCases (env: Env) (final: bool) : bool =
 /// The check has to be here rather than left to unification: a bare literal is
 /// a metavariable, so `(: greeting string) (def greeting 5)` unified rather
 /// than failing, and the mismatch surfaced as C# that would not compile.
+/// A literal the compiler wrote, with a fraction, at a whole-number type: the
+/// message `fractionNotes` holds for it.
+let private checkNotedFraction (t: HMType) (text: string) (r: Lexer.Range) : unit =
+    if NumericLiteral.isReal text && not (NumericLiteral.holdsFraction t) then
+        match fractionNotes.TryGetValue((r, text)) with
+        | true, note -> failwithf $"Type Error at %s{Lexer.formatPos r}: %s{note ()}"
+        | _ -> ()
+
+/// Whether a literal's text is zero: `0`, `0.0`, `0M`, `-0.0e5`.
+let private isZeroLiteral (text: string) : bool =
+    let digits = NumericLiteral.digits text
+    let mantissa = digits.Split([| 'e'; 'E' |]).[0]
+    mantissa |> Seq.exists ((=) '0') && mantissa |> Seq.forall (fun c -> c = '0' || c = '.' || c = '-' || c = '+')
+
 let private defaultNumericLiterals (env: Env) : unit =
     for (t, text, r) in openLiterals do
+        // A plain literal is a number of unit 1, except zero, which is a
+        // number of every unit (Docs/Units.org).
+        let t =
+            match prune env.Registry t with
+            | TNum(carrier, unit) ->
+                match Units.unify unit Units.one with
+                | Ok() -> carrier
+                | Error _ when isZeroLiteral text -> carrier
+                | Error _ ->
+                    let shown = DotNetInterop.showType (prune env.Registry t)
+                    let unitText = UnitTable.showTerm unit
+
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: '%s{text}' is a plain number, and it is being used where a %s{shown} is wanted. Write <%s{text} %s{unitText}>, or a unit of the same dimension."
+            | _ -> t
+
         match prune env.Registry t with
         // Nothing said what it is, so it is an `int`, or a `double` if a real
         // literal shares it (`literalDefault`). It has to fit there too, or C#
@@ -622,7 +695,11 @@ let private defaultNumericLiterals (env: Env) : unit =
         | TMeta m ->
             let settled = literalDefault m.Id
             m.Value <- Some settled
+            checkNotedFraction settled text r
             checkLiteralFits settled text r |> ignore
+        | numeric when NumericLiteral.isNumeric numeric && fractionNotes.ContainsKey((r, text)) ->
+            checkNotedFraction numeric text r
+            checkLiteralFits numeric text r |> ignore
         // A real literal at a type variable: `Num` does not say the type has
         // fractions, and `CreateChecked` would cut the fraction off.
         | TVar _ as v when NumericLiteral.isReal text ->
@@ -647,6 +724,8 @@ let private defaultNumericLiterals (env: Env) : unit =
                 $"Type Error at %s{Lexer.formatPos r}: these types do not match. '%s{text}' is a number, and it is being used where a '%s{DotNetInterop.showType other}' is wanted.%s{dynPackHintFor other}"
 
     openLiterals.Clear()
+    quantityDefaults.Clear()
+    fractionNotes.Clear()
 
     for t in openNumbers do
         match prune env.Registry t with
@@ -687,6 +766,7 @@ let private solvePinEquations (env: Env) : unit =
         | TCon(_, args) -> List.exists blocked args
         | TTuple args -> List.exists blocked args
         | TFun(args, ret, _) -> List.exists blocked args || blocked ret
+        | TNum(carrier, _) -> blocked carrier
         | _ -> false
 
     let pending = List.ofSeq pinEquations

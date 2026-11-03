@@ -32,6 +32,7 @@ let private typeNameMap =
         "decimal", TypeConstants.decimalType
         "float", TypeConstants.singleType
         "bigint", TypeConstants.bigintType
+        "rational", TypeConstants.rationalType
         "int128", TypeConstants.int128Type
         "uint128", TypeConstants.uint128Type
         "string", TypeConstants.stringType
@@ -92,8 +93,50 @@ let private unknownType (registry: TraitRegistry) (r: Range) (name: string) : 'a
 /// subject to the same rule an `import/class` is: the package writing it has to
 /// have declared the shared framework it comes from. Only a dotted name can be
 /// one — everything else is a Bjolang type, an alias, or a primitive.
+/// The number types a unit may be put on.
+let private carrierNames =
+    set [ "int"; "byte"; "short"; "ushort"; "uint"; "long"; "ulong"; "double"; "decimal"; "float"; "bigint"; "int128"; "uint128"; "rational" ]
+
+/// A unit expression in a type, over the table.
+let private unitTermAt (registry: TraitRegistry) (r: Range) (text: string) : Units.UnitTerm =
+    match UnitTable.resolveTypeUnit registry.UnitTable text with
+    | Ok t -> t
+    | Error e -> failwithf $"Type Error at %s{Lexer.formatPos r}: %s{e}."
+
 let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype: FType) : HMType =
     match ptype with
+    // `<m/s>`: the unit with its dimensions' carrier, or double.
+    | TName(name, r) when name.Length > 2 && name.StartsWith "<" && name.EndsWith ">" ->
+        let term = unitTermAt registry r (name.Substring(1, name.Length - 2))
+        let carrier = UnitTable.defaultCarrier registry.UnitTable term |> Option.defaultValue "double"
+        tnum (resolveWith checkNames registry (TName(carrier, r))) term
+    // `(num %c %u)`, `(num %c %u^2)`: a number of any carrier at a unit.
+    | TApp("num", carrier :: (_ :: _ as args), r) when args |> List.forall (function TName _ -> true | _ -> false) ->
+        let text =
+            args
+            |> List.map (function
+                | TName(n, _) when n.StartsWith "'" -> "%" + n.Substring 1
+                | TName(n, _) -> n
+                | _ -> "")
+            |> String.concat " "
+
+        tnum (resolveWith checkNames registry carrier) (unitTermAt registry r text)
+    // `(double m/s)`, `(long kg m^2/s^2)`, `(double %u)`: a number type and
+    // a unit. The symbols are the expression, joined by spaces.
+    | TApp(carrier, args, r) when
+        Set.contains carrier carrierNames
+        && not args.IsEmpty
+        && args |> List.forall (function TName _ -> true | _ -> false)
+        ->
+        let text =
+            args
+            |> List.map (function
+                | TName(n, _) when n.StartsWith "'" -> "%" + n.Substring 1
+                | TName(n, _) -> n
+                | _ -> "")
+            |> String.concat " "
+
+        tnum (resolveWith checkNames registry (TName(carrier, r))) (unitTermAt registry r text)
     | TName(name, nameRange) ->
         if name.StartsWith("'") then
             TVar name
@@ -157,6 +200,14 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
     // It is also what `serializeHMType` writes for a `TTuple`, so without this
     // no exported signature mentioning a tuple could be read back.
     | TApp("Tuple", args, _) -> TTuple(args |> List.map (resolveWith checkNames registry))
+    // `(units double key^1 'u^1/2)`: a number type with a unit, as
+    // `serializeHMType` writes it. Atoms are keys.
+    | TApp("units", carrier :: parts, r) when parts |> List.forall (function TName _ -> true | _ -> false) ->
+        let texts = parts |> List.map (function TName(n, _) -> n | _ -> "")
+
+        match Units.ofMetadataParts texts with
+        | Ok unit -> tnum (resolveWith checkNames registry carrier) unit
+        | Error e -> failwithf $"Type Error at %s{Lexer.formatPos r}: (units ...) %s{e}."
     //
     // A program writes it too, in an impl's associated type:
     // `(type %elem (assoc Iterable elem %s))` is the `%elem` of the `Iterable`

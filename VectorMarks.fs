@@ -50,6 +50,7 @@ let rec private isGround (t: HMType) : bool =
     | TCon(_, args)
     | TTuple args -> List.forall isGround args
     | TFun(args, ret, _) -> List.forall isGround args && isGround ret
+    | TNum(carrier, _) -> isGround carrier
 
 let private hasImpl (env: Env) (traitName: string) (t: HMType) : bool =
     let t = prune env.Registry t

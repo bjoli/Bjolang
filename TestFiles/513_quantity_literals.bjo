@@ -1,0 +1,52 @@
+;; Quantity literals and in: values converted to the base exactly and put
+;; into the carrier once, with the carrier from the context or the
+;; dimension's default.
+(import (std prelude))
+(import (std simpletest))
+
+(def/dimension length #:base m)
+(def/dimension time #:base s)
+(def/dimension money #:base cent #:carrier long)
+(def/prefix k 1000)
+(def/prefix m "1|1000")
+(def/unit ft <3048|10000 m>)
+(def/unit h <3600 s>)
+(def/unit min <60 s>)
+(def/unit EUR <100 cent>)
+(def/unit deg <1|180 pi>)
+(def/unit % <1|100>)
+
+(: speed (double m/s))
+(def speed <100 km/h>)
+
+(: exact (decimal m))
+(def exact <1 ft>)
+
+(: narrow (float m))
+(def narrow <1 ft>)
+
+(: whole (int m))
+(def whole <2 km>)
+
+(defun (main)
+  (expect "km/h into m/s" (written speed) "27.77777777777778")
+  (expect "a double by default" (written <1 ft>) "0.3048")
+  (expect "a decimal, exact" (written exact) "0.3048M")
+  (expect "a float" (written narrow) "(: 0.3048 float)")
+  (expect "an int where it is whole" (written whole) "2000")
+  (expect "money is long cents" (written <1.50 EUR>) "150L")
+  (expect "no space before the unit" (written <2km>) "2000.0")
+  (expect "a fraction in the number" (written <1|4 h>) "900.0")
+  (expect "an exponent in the number" (written <1e-3 km>) "1.0")
+  (expect "a negative number" (written <-2 min>) "-120.0")
+  (expect "a prefix on its own" (written <5 mm>) "0.005")
+  (expect "a power" (written <1 km^2>) "1000000.0")
+  (expect "a dimensionless unit is a plain number" (written <180 deg>) "3.141592653589793")
+  (expect "percent" (written <50 %>) "0.5")
+  (expect "in: back to km/h" (written (in speed km/h)) "100.0")
+  (expect "in: ft, round trip" (written (in <1 ft> ft)) "1.0")
+  (expect "in: the base unit, no multiplication" (written (in <3 m> m)) "3.0")
+  (expect "in: a whole factor on a long" (written (in <2 EUR> cent)) "200L")
+  (expect "in: a dimensionless unit" (written (in <90 deg> deg)) "90.0")
+  (expect "in: a compound unit" (written (in <36 km/h> m/s)) "10.0")
+  0)

@@ -2405,7 +2405,7 @@ let loadModuleGraph
                     // `import/extern` one. Impls follow the traits they belong
                     // to, because reading one back needs the trait registered.
                     let declText =
-                        meta.TypeDecls @ meta.ExternDecls @ meta.TraitDecls @ meta.ImplDecls
+                        meta.UnitDecls @ meta.TypeDecls @ meta.ExternDecls @ meta.TraitDecls @ meta.ImplDecls
                         |> String.concat "\n"
 
                     let declsFromText =
@@ -3408,6 +3408,9 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         // because the copy is generated as source. See the module docstring.
         let env, typedAst =
             Timing.phase "monomorphise" (fun () -> Monomorphise.run env moduleOf letrecifiedDecls typedAst)
+
+        // Units end here: nothing after this emits or optimizes by them.
+        let typedAst = Timing.phase "erase units" (fun () -> EraseUnits.run typedAst)
 
         // After `Monomorphise`, so that a copy at a concrete type has its
         // drivers marked too, and before `TraitInline`, which removes the trait

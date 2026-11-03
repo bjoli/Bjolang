@@ -54,6 +54,8 @@ and HMType =
     | TMeta of MetaVar
     // TraitName * AssociatedTypeName * Implementor
     | TAssoc of string * string * HMType
+    /// A number type with a unit other than 1. Built only by `tnum`.
+    | TNum of HMType * Units.UnitTerm
 
 /// Whether calling a function can suspend the fiber it runs on.
 ///
@@ -110,6 +112,43 @@ and [<CustomEquality; NoComparison>] EffectCell =
 
 /// `(-> ...)` as written in every signature that exists today.
 let tfun (args: HMType list) (ret: HMType) : HMType = TFun(args, ret, ESync)
+
+/// A number type with a unit: the carrier itself when the unit is 1, so
+/// that `double` is `(double 1)` and has one representation.
+let tnum (carrier: HMType) (unit: Units.UnitTerm) : HMType =
+    let unit = Units.prune unit
+
+    if Units.isOne unit then
+        carrier
+    else
+        match carrier with
+        | TNum(inner, u) -> TNum(inner, Units.mul u unit)
+        | _ -> TNum(carrier, unit)
+
+/// The unit variables a type mentions.
+let rec unitVarsOf (t: HMType) : string list =
+    match t with
+    | TNum(carrier, unit) -> Units.vars (Units.prune unit) @ unitVarsOf carrier
+    | TCon(_, args)
+    | TTuple args -> List.collect unitVarsOf args
+    | TFun(args, ret, _) -> List.collect unitVarsOf (ret :: args)
+    | TAssoc(_, _, implementor) -> unitVarsOf implementor
+    | TMeta { Value = Some inner } -> unitVarsOf inner
+    | TVar _
+    | TMeta _ -> []
+
+/// What a value of the type is at run time: the carrier without its unit,
+/// recursively.
+let rec eraseUnits (t: HMType) : HMType =
+    match t with
+    | TNum(carrier, _) -> eraseUnits carrier
+    | TCon(name, args) -> TCon(name, List.map eraseUnits args)
+    | TFun(args, ret, eff) -> TFun(List.map eraseUnits args, eraseUnits ret, eff)
+    | TTuple args -> TTuple(List.map eraseUnits args)
+    | TAssoc(traitName, assocName, implementor) -> TAssoc(traitName, assocName, eraseUnits implementor)
+    | TMeta { Value = Some inner } -> eraseUnits inner
+    | TVar _
+    | TMeta _ -> t
 
 /// How an arrow of this effect is spelled, in diagnostics and in published
 /// module metadata alike.
@@ -329,6 +368,9 @@ module TypeConstants =
     let Int128Name = "System.Int128"
     [<Literal>]
     let UInt128Name = "System.UInt128"
+    /// `rational`, an exact fraction: the runtime's own `INumber`.
+    [<Literal>]
+    let RationalName = "Bjolang.Runtime.BjoRational"
     /// `float`, a 32-bit floating-point number.
     [<Literal>]
     let SingleName = "System.Single"
@@ -392,6 +434,7 @@ module TypeConstants =
     let bigintType = TCon(BigIntegerName, [])
     let int128Type = TCon(Int128Name, [])
     let uint128Type = TCon(UInt128Name, [])
+    let rationalType = TCon(RationalName, [])
     let singleType = TCon(SingleName, [])
 
 /// A number as it is written, and as C# has to read it back.
@@ -485,7 +528,8 @@ module NumericLiteral =
     /// `decimal` and `System.Half`. A real literal can take only these.
     let holdsFraction (t: HMType) : bool =
         match settled t with
-        | TCon((TypeConstants.DoubleName | TypeConstants.DecimalName | TypeConstants.SingleName | TypeConstants.HalfName), []) -> true
+        | TCon((TypeConstants.DoubleName | TypeConstants.DecimalName | TypeConstants.SingleName | TypeConstants.HalfName
+               | TypeConstants.RationalName), []) -> true
         | _ -> false
 
     /// The literal without whatever suffix Bjolang wrote on it.
@@ -541,6 +585,11 @@ module NumericLiteral =
     /// Answered by `DotNetInterop`, which can ask .NET and is compiled after
     /// this file; it sets this when it is loaded.
     let mutable isClrNumber: HMType -> bool = fun _ -> false
+
+    /// The exact values of the literals the compiler wrote whose text rounds
+    /// them, by text: a quantity literal's `5/18` is `2.77…78e-1`. A
+    /// `rational` is spelled from this; every other carrier from the text.
+    let exactValues = System.Collections.Generic.Dictionary<string, System.Numerics.BigInteger * System.Numerics.BigInteger>()
 
     let private bounds (t: HMType) =
         let range (lo: System.Numerics.BigInteger) (hi: System.Numerics.BigInteger) = Some(lo, hi)
@@ -669,6 +718,15 @@ module NumericLiteral =
         // or a `ulong` is converted from one, which every such type allows and
         // the JIT folds. A larger one is parsed, once per evaluation: C# has
         // no other way to write it.
+        | TCon(TypeConstants.RationalName, []) when exactValues.ContainsKey text ->
+            let n, d = exactValues[text]
+            let inLong (v: System.Numerics.BigInteger) =
+                v >= System.Numerics.BigInteger System.Int64.MinValue && v <= System.Numerics.BigInteger System.Int64.MaxValue
+
+            if inLong n && inLong d then
+                Some $"new %s{TypeConstants.RationalName}(%s{n.ToString()}L, %s{d.ToString()}L)"
+            else
+                Some $"new %s{TypeConstants.RationalName}(System.Numerics.BigInteger.Parse(\"%s{n.ToString()}\"), System.Numerics.BigInteger.Parse(\"%s{d.ToString()}\"))"
         | TCon(name, []) as t when isClrNumber t ->
             let invariant = "System.Globalization.CultureInfo.InvariantCulture"
 
@@ -1473,8 +1531,11 @@ let implTargetType (ctor: string) (args: HMType list) : HMType =
 /// The head implementations are looked up by at `t`, a pruned type, and the
 /// arguments it is applied to: a tuple's arity key, and `Procedure` applied to
 /// the function type for a function type. `None` for a type with no head yet.
-let implHeadOf (t: HMType) : (string * HMType list) option =
+///
+/// A number type with a unit has its carrier's implementations.
+let rec implHeadOf (t: HMType) : (string * HMType list) option =
     match t with
+    | TNum(carrier, _) -> implHeadOf carrier
     | TCon(ctor, args) -> Some(ctor, args)
     | TTuple args -> Some(tupleCtor args.Length, args)
     | TFun _ -> Some(ProcedureCtor, [ t ])
@@ -1554,6 +1615,13 @@ type FunMeta = {
 }
 
 type Scheme = Scheme of string list * TraitConstraint list * HMType
+
+/// A scheme's variables that are types: a call's type arguments, in order.
+/// Its unit variables are quantified beside them and are no type arguments.
+let schemeTypeVars (Scheme(vars, _, t)) : string list =
+    match unitVarsOf t with
+    | [] -> vars
+    | unitVars -> vars |> List.filter (fun v -> not (List.contains v unitVars))
 
 type Binding = { Scheme: Scheme; IsMutable: bool }
 
@@ -1979,7 +2047,10 @@ type TraitRegistry =
       /// `Option` that an argument reaches through an implicit conversion,
       /// which C# type inference does not look through, and an omitted one is
       /// no argument at all. `Codegen` emits their type arguments explicitly.
-      KeywordOnlyGenerics: Set<string> }
+      KeywordOnlyGenerics: Set<string>
+      /// The dimensions, units and prefixes declared so far, by every module
+      /// checked: `def/dimension`, `def/unit`, `def/prefix`. See Docs/Units.org.
+      UnitTable: UnitTable.Table }
 
 type Env =
     { Bindings: Map<string, Binding>
@@ -2557,6 +2628,7 @@ let rec foldType (leaf: HMType -> 'a list) (t: HMType) : 'a list =
     | TFun(args, ret, _) -> (List.collect (foldType leaf) args) @ foldType leaf ret
     | TTuple args -> List.collect (foldType leaf) args
     | TAssoc(_, _, impl) -> foldType leaf impl
+    | TNum(carrier, _) -> foldType leaf carrier
 
 /// Every type variable a type mentions, in order of first appearance.
 let typeVarsOf (t: HMType) : string list =
@@ -2578,6 +2650,7 @@ let rec substTypeVars (subst: Map<string, HMType>) (t: HMType) : HMType =
     | TFun(args, ret, eff) -> TFun(List.map (substTypeVars subst) args, substTypeVars subst ret, eff)
     | TTuple args -> TTuple(List.map (substTypeVars subst) args)
     | TAssoc(tn, an, impl) -> TAssoc(tn, an, substTypeVars subst impl)
+    | TNum(carrier, unit) -> TNum(substTypeVars subst carrier, unit)
     | other -> other
 
 /// `t` with each newtype in it replaced by what it wraps, at its arguments,
@@ -2595,6 +2668,7 @@ let rec eraseNewtypesIn (newtypes: Map<string, string list * HMType>) (t: HMType
     | TTuple args -> TTuple(List.map erase args)
     | TMeta { Value = Some inner } -> erase inner
     | TAssoc(traitName, assocName, implementor) -> TAssoc(traitName, assocName, erase implementor)
+    | TNum(carrier, _) -> erase carrier
     | other -> other
 
 /// `constraints` and the superclasses of each, transitively: `(Ord %a)` gives

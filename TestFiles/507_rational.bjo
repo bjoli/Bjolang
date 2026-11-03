@@ -1,0 +1,127 @@
+(import (std prelude))
+(import (std rational))
+(import (std simpletest))
+
+(: (-> string Rational))
+(defun (r s)
+  (match (string->rational s)
+    ((Some x) x)
+    (None (fail #"not a rational: ${s}") (rational 0 1))))
+
+(: (-> string (Result Exception %a) void))
+(defun (expect-raised label res)
+  (match res
+    ((Ok _) (fail #"${label}: did not raise"))
+    ((Err _) (expect-true label #t))))
+
+(defun (main)
+  ;; Normal form.
+  (expect "sign on the numerator" (rational 6 -4) (rational -3 2))
+  (expect "lowest terms" (rational-num (rational 10 4)) 5I)
+  (expect "den" (rational-den (rational 10 -4)) 2I)
+  (expect "zero is 0/1" (rational-den (rational 0 -7)) 1I)
+  (expect "= across forms" (= (rational 2 4) (rational 1 2)) #t)
+  (expect "eq-hash across forms" (eq-hash (rational 2 4)) (eq-hash (rational 1 2)))
+  (expect "int->rational" (int->rational -3) (rational -3 1))
+
+  ;; Arithmetic.
+  (expect "+" (rational+ (rational 1 3) (rational 1 3)) (rational 2 3))
+  (expect "-" (rational- (rational 1 2) (rational 1 3)) (rational 1 6))
+  (expect "*" (rational* (rational 3 4) (rational 2 3)) (rational 1 2))
+  (expect "/" (rational/ (rational 1 2) (rational 1 4)) (rational 2 1))
+  (expect "negate" (rational-negate (rational 1 2)) (rational -1 2))
+  (expect "recip of negative" (rational-recip (rational -2 3)) (rational -3 2))
+  (expect "abs" (rational-abs (rational -2 3)) (rational 2 3))
+  (expect "expt" (rational-expt (rational 2 3) 3) (rational 8 27))
+  (expect "expt negative" (rational-expt (rational 2 3) -2) (rational 9 4))
+  (expect "expt 0" (rational-expt (rational 2 3) 0) (rational 1 1))
+
+  ;; Errors.
+  (expect-raised "zero denominator"
+    (try (rational 1 0) #:catch (System.DivideByZeroException)))
+  (expect-raised "divide by zero"
+    (try (rational/ (rational 1 2) (rational 0 1)) #:catch (System.DivideByZeroException)))
+  (expect-raised "zero to a negative power"
+    (try (rational-expt (rational 0 1) -1) #:catch (System.DivideByZeroException)))
+
+  ;; Predicates and order.
+  (expect "zero?" (rational-zero? (rational 0 5)) #t)
+  (expect "integer?" (rational-integer? (rational 6 3)) #t)
+  (expect "not integer?" (rational-integer? (rational 1 3)) #f)
+  (expect "sign" (rational-sign (rational -1 3)) -1)
+  (expect "less?" (less? (rational 1 3) (rational 1 2)) #t)
+  (expect "less? negative" (less? (rational -1 2) (rational -1 3)) #t)
+  (expect "compare equal" (compare (rational 2 6) (rational 1 3)) 0)
+
+  ;; Rounding.
+  (expect "floor -7/2" (rational-floor (rational -7 2)) -4I)
+  (expect "ceiling -7/2" (rational-ceiling (rational -7 2)) -3I)
+  (expect "truncate -7/2" (rational-truncate (rational -7 2)) -3I)
+  (expect "round -7/2" (rational-round (rational -7 2)) -4I)
+  (expect "round 5/2" (rational-round (rational 5 2)) 2I)
+  (expect "round 7/2" (rational-round (rational 7 2)) 4I)
+  (expect "round 1/3" (rational-round (rational 1 3)) 0I)
+  (expect "round 2/3" (rational-round (rational 2 3)) 1I)
+  (expect "floor integer" (rational-floor (rational 4 1)) 4I)
+
+  ;; Doubles.
+  (expect "double 1/3" (rational->double (rational 1 3)) (/ 1.0 3.0))
+  (expect "double 0.1" (rational->double (r "0.1")) 0.1)
+  (expect "double 0.3048" (rational->double (r "0.3048")) 0.3048)
+  (expect "double 1e23" (rational->double (r "1e23")) 1e23)
+  (expect "double negative" (rational->double (rational -5 4)) -1.25)
+  (expect "double zero" (rational->double (rational 0 1)) 0.0)
+  (expect "double 2^53+1 ties to even" (rational->double (r "9007199254740993")) 9007199254740992.0)
+  (expect "double 2^53+3 ties to even" (rational->double (r "9007199254740995")) 9007199254740996.0)
+  (expect "double smallest subnormal"
+          (rational->double (rational-expt (rational 2 1) -1074)) 5e-324)
+  (expect "double 3*2^-1075 ties to even"
+          (rational->double (rational* (rational 3 1) (rational-expt (rational 2 1) -1075))) 1e-323)
+  (expect "double below half the smallest subnormal"
+          (rational->double (rational-expt (rational 2 1) -1076)) 0.0)
+  (expect "double largest"
+          (rational->double (r "1.7976931348623157e308")) 1.7976931348623157e308)
+  (expect "double too large" (rational->double (r "1e400")) (/ 1.0 0.0))
+  (expect "double too large negative" (rational->double (r "-1e400")) (/ -1.0 0.0))
+  (expect "double 6.62607015e-34" (rational->double (r "6.62607015e-34")) 6.62607015e-34)
+  (expect "double 1|60" (rational->double (r "1|60")) (/ 1.0 60.0))
+
+  ;; Decimals.
+  (expect "decimal 1/8" (decimal->string (rational->decimal (rational 1 8))) "0.125")
+  (expect "decimal 2/3" (rational->decimal (rational 2 3)) 0.6666666666666666666666666667M)
+  (expect "decimal 1/3" (rational->decimal (rational 1 3)) 0.3333333333333333333333333333M)
+  (expect "decimal -5/2" (decimal->string (rational->decimal (rational -5 2))) "-2.5")
+  (expect "decimal integer" (decimal->string (rational->decimal (rational 300 1))) "300")
+  (expect "decimal au" (rational->decimal (r "149597870700")) 149597870700M)
+  (expect "decimal 1e28" (rational->decimal (r "1e28")) 10000000000000000000000000000M)
+  (expect "decimal 10/3" (rational->decimal (rational 10 3)) 3.3333333333333333333333333333M)
+  (expect "decimal 100/3" (rational->decimal (rational 100 3)) 33.333333333333333333333333333M)
+  (expect-raised "decimal overflow"
+    (try (rational->decimal (r "1e29")) #:catch (System.OverflowException)))
+
+  ;; Parsing.
+  (expect "0.3048" (string->rational "0.3048") (Some (rational 381 1250)))
+  (expect "1e-3" (string->rational "1e-3") (Some (rational 1 1000)))
+  (expect "-2.5E+10" (string->rational "-2.5E+10") (Some (rational -25000000000 1)))
+  (expect "1|60" (string->rational "1|60") (Some (rational 1 60)))
+  (expect "1/3" (string->rational "1/3") (Some (rational 1 3)))
+  (expect "0.5|1.5" (string->rational "0.5|1.5") (Some (rational 1 3)))
+  (expect ".5" (string->rational ".5") (Some (rational 1 2)))
+  (expect "5." (string->rational "5.") (Some (rational 5 1)))
+  (expect "+3" (string->rational "+3") (Some (rational 3 1)))
+  (expect "1/0" (string->rational "1/0") None)
+  (expect "1 m" (string->rational "1 m") None)
+  (expect "empty" (string->rational "") None)
+  (expect "." (string->rational ".") None)
+  (expect "e5" (string->rational "e5") None)
+  (expect "1e" (string->rational "1e") None)
+  (expect "--1" (string->rational "--1") None)
+  (expect "1|" (string->rational "1|") None)
+
+  ;; Text.
+  (expect "rational->string" (rational->string (rational -1 3)) "-1/3")
+  (expect "rational->string integer" (rational->string (rational 6 2)) "3")
+  (expect "displayed" (displayed (rational 1 3)) "1/3")
+  (expect "written" (written (rational -1 3)) "(: <-1|3> rational)")
+  (expect "round trip" (string->rational (rational->string (rational -22 7))) (Some (rational -22 7)))
+  0)

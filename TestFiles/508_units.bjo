@@ -1,0 +1,204 @@
+(import (std prelude))
+(import (std maths))
+(import (std rational))
+(import (std orderedmap))
+(import (std units))
+(import (std simpletest))
+
+(: (-> string string void))
+(defun (query s wanted)
+  (expect s (convert-query s) (Ok wanted)))
+
+(: (-> string string void))
+(defun (query-error s wanted)
+  (expect s (convert-query s) (Err wanted)))
+
+(: (-> string Measurement))
+(defun (m s)
+  (match (string->measurement s)
+    ((Ok v) v)
+    ((Err e) (fail #"${s}: ${e}") (measurement 0.0 (orderedmap-empty)))))
+
+(: (-> string Resolved))
+(defun (r s)
+  (match (resolve-unit standard-units s)
+    ((Ok v) v)
+    ((Err e) (fail #"${s}: ${e}") (ok-or-fail (resolve-unit standard-units "1")))))
+
+(: (-> (Result string Resolved) Resolved))
+(defun (ok-or-fail x)
+  (match x
+    ((Ok v) v)
+    ((Err e) (panic! e))))
+
+(: (-> Resolved (Option (Tuple Rational int))))
+(defun (factor-of x)
+  (match (resolved-factor x)
+    ((Ok f) (Some (Tuple (factor-rational f) (factor-pi f))))
+    ((Err _) None)))
+
+(: (-> string (Result Exception %a) void))
+(defun (expect-raised label res)
+  (match res
+    ((Ok _) (fail #"${label}: did not raise"))
+    ((Err _) (expect-true label #t))))
+
+(: (-> double double double bool))
+(defun (near? a b tolerance) (<= (abs (- a b)) tolerance))
+
+(defun (main)
+  ;; The Umits README.
+  (query "12h in s" "43200 s")
+  (query "6000m + 50ft in mi" "3.737697 mi")
+  (query "65mi in 12mi/h" "19500 s")
+  (query "65mi/(12mi/h) in h,min" "5 h 25 min")
+  (query "12km/h/(12km/h)" "1")
+  (query "0.5 * 1.225 kg / m3 * (120 km / h)^2 * 0.28 * 2.2 m2 in N" "419.2222 N")
+  (query "(2kg/yr)/(3m3/s) in ng/l" "21.12539 ng/l")
+  (query "5 Sv * (4 m)^2 / (0.351 mSv * m2 / (GBq * h) * 4.19e7 GBq) in s" "19.58264 s")
+  (query "12h - 45min" "40500 s")
+  (query "6 ft, 2 in in m" "1.8796 m")
+  (query "1.8796 m in ft,in" "6 ft 2 in")
+
+  ;; The four Umits bugs.
+  (query "1 arcmin in deg" "0.01666667 deg")
+  (query "1 fl_dr in fl_oz" "0.125 fl_oz")
+  (query "7000 gr in lb" "1 lb")
+  (query "1 R in C/kg" "0.000258 C/kg")
+  (query "1/s" "1 Hz")
+  (query "1 Bq" "1 Hz")
+  (query "1 Sv" "1 Gy")
+
+  ;; Grammar.
+  (query "kg m/s^2" "1 N")
+  (query "1 m/s kg in m/(s kg)" "1 m/(s kg)")
+  (query "2 m^2 in m2" "2 m2")
+  (query "1 Hz^(-1/2) in s^(1/2)" "1 s^(1/2)")
+  (query "1 km^-1 in 1/m" "0.001 1/m")
+  (query "1|8 in in mm" "3.175 mm")
+  (query "2 ** 3 m in m" "8 m")
+  (query "sqrt(4 m2)" "2 m")
+  (query "cbrt(27 m3)" "3 m")
+  (query "1 pc in au" "206264.8 au")
+  (query "360 deg in rev" "1 rev")
+  (query "1 min in s" "60 s")
+  (query "1 MiB in b" "8388608 b")
+  (query "1 kWh in J" "3600000 J")
+  (query "1 mH2O in Pa" "9806.65 Pa")
+  (query "60 mph in km/h" "96.56064 km/h")
+  (query "1 furlong/fortnight in m/s" "0.0001663095 m/s")
+  (query "1 c" "2.997925E+08 m/s")
+
+  ;; Printing.
+  (query "3600000 J" "3.6 MJ")
+  (query "5 kg" "5 kg")
+  (query "0.005 s" "5 ms")
+  (query "43200 s" "43200 s")
+  (query "2 m * 3 m" "6 m^2")
+  (query "100 km/h" "27.77778 m/s")
+  (query "2" "2")
+
+  ;; Errors.
+  (query-error "1 meeter" "unknown unit 'meeter'. Did you mean 'meter'?")
+  (query-error "1 qwzx" "unknown unit 'qwzx'")
+  (query-error "1 m + 1 s" "cannot add length and time")
+  (query-error "1 kg in m, cm" "cannot convert mass to m")
+  (query-error "1 (m" "expected ')', got the end")
+  (query-error "1 m ^" "expected an exponent, got the end")
+  (query-error "1 $" "unexpected '$'")
+  (expect "measurement-in mismatch" (measurement-in (m "1 kg") "m")
+          (Err "cannot convert mass to m, which is length"))
+  (expect-raised "measurement+ mismatch"
+    (try (measurement+ (m "1 m") (m "1 s")) #:catch (System.ArgumentException)))
+
+  ;; The resolver.
+  (expect "km/h term" (orderedmap->list (resolved-term (r "km/h")))
+          (list (Tuple "h" (rational -1 1)) (Tuple "km" (rational 1 1))))
+  (expect "km/h factor" (factor-of (r "km/h")) (Some (Tuple (rational 5 18) 0)))
+  (expect "km/h dims" (dims->string (resolved-dims (r "km/h"))) "length/time")
+  (expect "km atom" (factor-rational (atom-factor (orderedmap-ref (resolved-atoms (r "km")) "km")))
+          (rational 1000 1))
+  (expect "alias N" (orderedmap->list (resolved-term (r "N")))
+          (list (Tuple "kg" (rational 1 1)) (Tuple "m" (rational 1 1)) (Tuple "s" (rational -2 1))))
+  (expect "1|60 deg coefficient" (factor-rational (resolved-coeff (r "1|60 deg"))) (rational 1 60))
+  (expect "1|60 deg factor" (factor-of (r "1|60 deg")) (Some (Tuple (rational 1 10800) 1)))
+  (expect "hbar factor pi" (factor-pi (resolved-coeff (r "hbar"))) 0)
+  (expect "hbar factor" (factor-of (r "hbar")) (Some (Tuple (rational 132521403 (* 4I (expt 10I 41))) -1)))
+  (expect "kg^(1/2) is fine" (factor-of (r "kg^(1/2)")) (Some (Tuple (rational 1 1) 0)))
+  (expect "km^(1/2) is a unit" (dims->string (resolved-dims (r "km^(1/2)"))) "length^(1/2)")
+  (expect "km^(1/2) factor is irrational" (factor-of (r "km^(1/2)")) None)
+  (expect "km^(1/2) message" (resolved-factor (r "km^(1/2)"))
+          (Err "the factor of km^(1/2) is irrational"))
+  (expect "(100 m2)^(1/2) is exact" (factor-of (r "(100 m2)^(1/2)")) (Some (Tuple (rational 10 1) 0)))
+  (expect "2^(1/2) rejected" (resolve-unit standard-units "2^(1/2) m")
+          (Err "a power x^(1/2) with an irrational factor"))
+  (expect "+ rejected" (resolve-unit standard-units "m + m")
+          (Err "+ is not allowed in a unit expression"))
+  (expect "sqrt rejected" (resolve-unit standard-units "sqrt(m2)")
+          (Err "sqrt is not allowed in a unit expression"))
+  (expect "min is a minute" (factor-of (r "min")) (Some (Tuple (rational 60 1) 0)))
+  (expect "conformable" (list-length (ok-or-empty (conformable-units standard-units "Hz"))) 9)
+
+  ;; A table of one's own.
+  (def t (ok-or-panic
+          (match (def-dimension empty-unit-table "money" "EUR")
+            ((Ok t) (match (def-unit t "cent" "1|100 EUR")
+                      ((Ok t) (def-prefix t "k" "1000"))
+                      (e e)))
+            (e e))))
+  (expect "own table" (factor-of (ok-or-fail (resolve-unit t "kcent"))) (Some (Tuple (rational 10 1) 0)))
+  (expect "own table is separate" (resolve-unit t "m") (Err "unknown unit 'm'"))
+  (expect "redefinition" (map-ok (def-unit t "cent" "2 EUR")) (Err "the unit 'cent' is already defined"))
+  (expect "bad name" (map-ok (def-unit t "2x" "1 EUR")) (Err "'2x' is not a valid unit name"))
+  (expect "bad definition" (map-ok (def-unit t "x" "1 USD")) (Err "x: unknown unit 'USD'"))
+  (expect "measurement in own table"
+          (map-ok-string (convert-query "250 cent in EUR" #:table t)) (Ok "2.5 EUR"))
+
+  ;; Measurements.
+  (expect "conformable?" (conformable? (m "1 ft") (m "1 m")) #t)
+  (expect "not conformable?" (conformable? (m "1 ft") (m "1 s")) #f)
+  (expect "measurement*" (displayed (measurement* (m "2 m") (m "3 N"))) "6 J")
+  (expect "measurement/" (displayed (measurement/ (m "10 m") (m "2 s"))) "5 m/s")
+  (expect "measurement-sqrt" (displayed (measurement-sqrt (m "9 m2"))) "3 m")
+  (expect "measurement-in" (measurement-in (m "1 mi") "km") (Ok 1.609344))
+
+  ;; Temperatures.
+  (expect "celsius->kelvin" (displayed (celsius->kelvin (Celsius 20.0))) "293.15 K")
+  (expect "fahrenheit->kelvin" (near? (measurement-value (fahrenheit->kelvin (Fahrenheit 32.0))) 273.15 1e-9) #t)
+  (expect "kelvin->celsius" (displayed (kelvin->celsius (m "300 K"))) "26.85 °C")
+  (expect "kelvin->fahrenheit" (displayed (kelvin->fahrenheit (m "373.15 K"))) "212 °F")
+  (expect "degR" (measurement-in (m "9 degR") "K") (Ok 5.0))
+  (expect-raised "kelvin->celsius of a length"
+    (try (kelvin->celsius (m "1 m")) #:catch (System.ArgumentException)))
+
+  ;; Logarithmic.
+  (expect "dBm of 1 W" (dBm (m "1 W")) 30.0)
+  (expect "dBW of 100 W" (dBW (m "100 W")) 20.0)
+  (expect "dBV of 10 V" (dBV (m "10 V")) 20.0)
+  (expect "dBSPL of 1 Pa" (near? (dBSPL (m "1 Pa")) 93.9794 1e-4) #t)
+  (expect "dBm->power" (displayed (dBm->power 30.0)) "1 W")
+  (expect "dBV->voltage" (displayed (dBV->voltage 20.0)) "10 V")
+  (expect-raised "dBm of a length"
+    (try (dBm (m "1 m")) #:catch (System.ArgumentException)))
+  0)
+
+(: (-> (Result string (List string)) (List string)))
+(defun (ok-or-empty x)
+  (match x
+    ((Ok v) v)
+    ((Err _) Nil)))
+
+(: (-> (Result string UnitTable) UnitTable))
+(defun (ok-or-panic x)
+  (match x
+    ((Ok v) v)
+    ((Err e) (panic! e))))
+
+(: (-> (Result string UnitTable) (Result string string)))
+(defun (map-ok x)
+  (match x
+    ((Ok _) (Ok "ok"))
+    ((Err e) (Err e))))
+
+(: (-> (Result string string) (Result string string)))
+(defun (map-ok-string x) x)

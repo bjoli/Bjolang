@@ -320,6 +320,7 @@ let declKindName (d: Decl) : string =
     | DMacro _ -> "a macro"
     | DPatternMacro _ -> "a pattern macro"
     | DClauseMacro _ -> "a clause macro"
+    | DUnitDecl _ -> "a unit declaration"
     | DHashMacro _ -> "a hash macro"
     | DSyncOnly _ -> "a #:sync marker"
     | DNoInline _ -> "a #:no-inline marker"
@@ -458,6 +459,38 @@ let private parseWhereConstraints (what: string) (constraintExprs: SExpr list) (
               MCRange = cr }
         | SList(_, cr) -> refuse cr
         | _ -> refuse wr)
+
+/// `(def/dimension name #:base unit #:carrier type)`, `(def/unit name def)`,
+/// `(def/prefix name number)`. A definition is a string or a quantity
+/// literal, `(quantity "1000" "m")`.
+let private parseUnitDecl (form: string) (rest: SExpr list) (r: Range) : UnitDecl =
+    let fail what =
+        failwithf $"Syntax error at %s{Lexer.formatPos r}: %s{what}"
+
+    let text (s: SExpr) =
+        match s with
+        | SAtom { Token = StringLit t } -> t
+        | SAtom { Token = NumberLit t } -> t
+        | SList([ SAtom { Token = Symbol "quantity" }; SAtom { Token = StringLit n }; SAtom { Token = StringLit u } ], _) -> n + " " + u
+        | _ -> fail $"(%s{form} ...) takes a string or a quantity literal, as <1000 m>"
+
+    match form, rest with
+    | "def/dimension", SAtom { Token = Symbol name } :: options ->
+        let rec read (baseUnit, carrier) options =
+            match options with
+            | [] -> baseUnit, carrier
+            | SAtom { Token = Keyword "base" } :: SAtom { Token = Symbol b } :: tail -> read (Some b, carrier) tail
+            | SAtom { Token = Keyword "carrier" } :: SAtom { Token = Symbol c } :: tail -> read (baseUnit, Some c) tail
+            | _ -> fail $"(def/dimension %s{name} ...) takes #:base unit and, optionally, #:carrier type"
+
+        match read (None, None) options with
+        | Some b, carrier -> UDimension(name, b, carrier)
+        | None, _ -> fail $"(def/dimension %s{name} ...) has no #:base: write the base unit, as (def/dimension length #:base m)"
+    | "def/unit", [ SAtom { Token = Symbol name }; definition ] -> UUnit(name, text definition)
+    | "def/prefix", [ SAtom { Token = Symbol name }; value ] -> UPrefix(name, text value)
+    | "def/dimension", _ -> fail "(def/dimension name #:base unit) names the dimension and its base unit"
+    | "def/unit", _ -> fail "(def/unit name <value unit>) names the unit and what it is, as (def/unit km <1000 m>)"
+    | _ -> fail "(def/prefix name number) names the prefix and its value, as (def/prefix k 1000)"
 
 let rec tryParseDecl (s: SExpr) : Decl option =
     let r = getRange s
@@ -698,6 +731,9 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                 $"Syntax error in defbjouble '%s{name}' at %s{where}: it has no (#:bjo ...) body. A defbjouble is written when the two colours call *different* .NET methods, so both halves have to be here. If there is only one implementation, this is a defun."
 
     | SList(SAtom { Token = Symbol "type" } :: typeDefs, _) -> Some(DType(List.map parseTypeDef typeDefs, r))
+
+    | SList(SAtom { Token = Symbol("def/dimension" | "def/unit" | "def/prefix" as form) } :: rest, _) ->
+        Some(DUnitDecl(parseUnitDecl form rest r, r))
 
     | SList(SAtom { Token = Symbol "type-rec" } :: typeDefs, _) -> Some(DTypeRec(List.map parseTypeDef typeDefs, r))
 

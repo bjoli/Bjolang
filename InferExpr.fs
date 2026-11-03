@@ -710,6 +710,29 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     | EApp(EResolved(marker, _), _, r) when marker = byColourMarker ->
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: (by-colour ...) chooses a body by the colour of the definition it is in, and this one is not in a definition, or is in a body spliced from another module. Write it in a defun, a defbjo or a defbjouble."
+    // `<9.81 m/s^2>`, which the reader gives as `(quantity "9.81" "m/s^2")`.
+    | EApp(EIdent("quantity", _), [ EString(number, _); EString(unitText, _) ], r) when
+        not (Map.containsKey "quantity" env.Bindings)
+        ->
+        inferQuantity env number unitText r
+
+    // `(in x km/h)`: the number x is in km/h.
+    | EApp(EIdent("in", _), x :: (_ :: _ as unitWords), r) when
+        not (Map.containsKey "in" env.Bindings)
+        && unitWords |> List.forall (function EIdent _ | EString _ | EInt _ -> true | _ -> false)
+        ->
+        // `1/s` is read as the number 1 and the symbol `/s`.
+        let unitText =
+            unitWords
+            |> List.map (function
+                | EIdent(n, _)
+                | EString(n, _)
+                | EInt(n, _) -> n
+                | _ -> "")
+            |> String.concat " "
+
+        inferIn env x unitText r
+
     | EInt(value, r) ->
         let inferredType = numericLiteralType value r
 
@@ -2633,6 +2656,9 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
 
         match declared with
         | Some(TMeta _)
+        // An arithmetic builtin's operand: a number of a carrier nothing has
+        // said yet, which says no more than a bare metavariable does.
+        | Some(TNum(TMeta _, _))
         | None -> None
         | Some paramTy -> Some paramTy
 
@@ -3068,6 +3094,116 @@ and private inferLet (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (name:
 /// Nothing is unified, so the answer constrains nothing that checking `e`
 /// would not. A type with an associated type in it is not answered, because
 /// it can wait on a variable that this answer would leave unrelated.
+/// A message as a sentence: a full stop unless it ends in a question.
+and private sentence (message: string) : string =
+    if message.EndsWith "?" || message.EndsWith "." then message else message + "."
+
+/// `(quantity "9.81" "m/s^2")`: the number times the unit's factor, at the
+/// unit's base term. The carrier is open, as a bare literal's type is, and
+/// settles at the dimensions' `#:carrier`, or `double`.
+and private inferQuantity (env: Env) (number: string) (unitText: string) (r: Range) : HMType * TypedExpr =
+    let table = env.Registry.UnitTable
+
+    let n =
+        match UnitTable.parseNumber number with
+        | Some n -> n
+        | None -> failwithf $"Syntax error at %s{Lexer.formatPos r}: '%s{number}' is not the number of a quantity literal."
+
+    let q =
+        if unitText.Trim() = "" then
+            Ok UnitTable.Quantity.one
+        else
+            UnitTable.parse { Table = table; Module = table.Current; AllowVariables = false } unitText
+
+    match q with
+    | Error e -> failwithf $"Type Error at %s{Lexer.formatPos r}: in <%s{number} %s{unitText}>: %s{sentence e}"
+    | Ok q ->
+        let value = UnitTable.scale n q.Factor
+        let text = UnitTable.literalText value
+        let carrier = freshMeta ()
+
+        if not (Units.Rational.isInteger value) then
+            NumericLiteral.exactValues[text] <- (value.Num, value.Den)
+
+        if not (Units.Rational.isInteger value) then
+            fractionNotes[(r, text)] <-
+                fun () ->
+                    $"<%s{number} %s{unitText}> is %s{Units.Rational.toString value} %s{UnitTable.showTerm q.Term}, and a %s{DotNetInterop.showType (prune env.Registry carrier)} holds whole numbers only. Give it a double, a decimal or a rational carrier, or declare a smaller base unit."
+
+        let settled =
+            match UnitTable.defaultCarrier table q.Term with
+            | Some c -> resolveTypeAnnotation env.Registry (TName(c, r))
+            | None -> TypeConstants.doubleType
+
+        openLiterals.Add(carrier, text, r)
+        quantityDefaults.Add(carrier, settled)
+        let t = tnum carrier q.Term
+        t, ({ Type = t; Range = r; Node = TInt text }: TypedExpr)
+
+/// `(in x km/h)`: x, whose term must be the unit's, as a number in that unit.
+/// One multiplication by the factor's reciprocal, at x's carrier, or none.
+and private inferIn (env: Env) (x: Expr) (unitText: string) (r: Range) : HMType * TypedExpr =
+    let table = env.Registry.UnitTable
+
+    let q =
+        match UnitTable.parse { Table = table; Module = table.Current; AllowVariables = false } unitText with
+        | Ok q -> q
+        | Error e -> failwithf $"Type Error at %s{Lexer.formatPos r}: in (in ... %s{unitText}): %s{sentence e}"
+
+    let xType, typedX = infer env x
+    let carrier = freshMeta ()
+
+    try
+        unify env.Registry xType (tnum carrier q.Term)
+    with _ ->
+        let describe (term: Units.UnitTerm) =
+            if Units.isOne term then
+                "a plain number"
+            else
+                $"a %s{UnitTable.showDimension table term} (%s{UnitTable.showTerm term})"
+
+        let found =
+            match prune env.Registry xType with
+            | TNum(_, term) -> describe term
+            | t when NumericLiteral.isNumeric t -> describe Units.one
+            | t -> $"a %s{DotNetInterop.showType t}"
+
+        failwithf $"Type Error at %s{Lexer.formatPos r}: (in x %s{unitText}) takes %s{describe q.Term}, and x is %s{found}."
+
+    let factor = UnitTable.scale Units.Rational.one (UnitTable.Factor.inv q.Factor)
+    let plainX: TypedExpr = { typedX with Type = carrier }
+
+    if factor = Units.Rational.one then
+        carrier, plainX
+    else
+        let text = UnitTable.literalText factor
+
+        if not (Units.Rational.isInteger factor) then
+            NumericLiteral.exactValues[text] <- (factor.Num, factor.Den)
+
+        let wholeOnly (t: HMType) =
+            $"(in x %s{unitText}) multiplies x by %s{Units.Rational.toString factor}, and x is a %s{DotNetInterop.showType t}, which holds whole numbers only. Make x a double, a decimal or a rational first."
+
+        match prune env.Registry carrier with
+        | TMeta _ ->
+            openLiterals.Add(carrier, text, r)
+            fractionNotes[(r, text)] <- fun () -> wholeOnly (prune env.Registry (tnum carrier q.Term))
+        | settled when not (Units.Rational.isInteger factor) && not (NumericLiteral.holdsFraction settled) ->
+            failwithf $"Type Error at %s{Lexer.formatPos r}: %s{wholeOnly (prune env.Registry xType)}"
+        | settled -> checkLiteralFits settled text r |> ignore
+
+        let k: TypedExpr = { Type = carrier; Range = r; Node = TInt text }
+
+        let times: TypedExpr =
+            { Type = tfun [ carrier; carrier ] carrier
+              Range = r
+              Node = TIdent("*", []) }
+
+        carrier,
+        ({ Type = carrier
+           Range = r
+           Node = TApply(times, [ plainX; k ], []) }: TypedExpr)
+
 and private initType (env: Env) (e: Expr) : HMType option =
     let rec tvars (t: HMType) =
         match t with
@@ -3076,6 +3212,7 @@ and private initType (env: Env) (e: Expr) : HMType option =
         | TTuple ts -> List.collect tvars ts
         | TFun(ps, r, _) -> List.collect tvars (r :: ps)
         | TAssoc(_, _, i) -> tvars i
+        | TNum(c, _) -> tvars c
         | _ -> []
 
     // An `import/extern` alias is not a binding: its declared type is in the
@@ -3095,6 +3232,7 @@ and private initType (env: Env) (e: Expr) : HMType option =
         | TCon(_, ts)
         | TTuple ts -> List.exists hasAssoc ts
         | TFun(ps, r, _) -> List.exists hasAssoc (r :: ps)
+        | TNum(c, _) -> hasAssoc c
         | _ -> false
 
     // One-way: only the scheme's own variables are solved, from `actual`.
@@ -3146,6 +3284,7 @@ and private initType (env: Env) (e: Expr) : HMType option =
                     | TTuple ts -> List.exists unsolved ts
                     | TFun(qs, r, _) -> List.exists unsolved (r :: qs)
                     | TAssoc _ -> true
+                    | TNum(c, _) -> unsolved c
                     | _ -> false
 
                 if unsolved ret then None else answer (substTypeVars s ret)

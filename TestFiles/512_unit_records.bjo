@@ -1,0 +1,31 @@
+;; Unit types in records and signatures: the default carrier, <unit>, units
+;; with factor 1 in a type, and the derived implementations of a record whose
+;; fields have units.
+(import (std prelude))
+(import (std simpletest))
+
+(def/dimension length #:base m)
+(def/dimension time #:base s)
+(def/dimension mass #:base kg)
+(def/dimension money #:base cent #:carrier long)
+(def/unit N "1 kg m/s^2")
+
+(type (: Leg (Record (: distance (double m))
+                     (: speed <m/s>)
+                     (: cost <cent>))))
+
+(: force (-> (double N) (double kg m/s^2)))
+(defun (force f) f)
+
+(: cost-of (-> Leg (long cent)))
+(defun (cost-of l) (.cost l))
+
+(defun (main)
+  (def leg (Leg (distance (cast (double m) 100.0))
+                (speed (cast (double m/s) 5.0))
+                (cost (cast (long cent) 250L))))
+  (expect "a record with unit fields compares" leg leg)
+  (expect "and is written" (written leg) "(Leg (distance 100.0) (speed 5.0) (cost 250L))")
+  (expect "a field of the default carrier" (written (cost-of leg)) "250L")
+  (expect "N is kg m/s^2" (written (force (cast (double N) 3.0))) "3.0")
+  0)

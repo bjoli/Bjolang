@@ -60,14 +60,16 @@
 
 ;; Todo: `min`/`max` over a sequence.
 
-(: (-> %a %a) (where (Num %a)))
+;; At any unit: the square of a length is an area.
+(: (-> (num %a %u) (num %a %u^2)) (where (Num %a)))
 (defun (sqr x) (* x x))
 
-;; Not `INumber.IsPositive`, which holds for zero.
-(: (-> %a bool) (where (Num %a)))
+;; Not `INumber.IsPositive`, which holds for zero. At any unit: zero is a
+;; number of every unit.
+(: (-> (num %a %u) bool) (where (Num %a)))
 (defun (positive? x) (> x 0))
 
-(: (-> %a bool) (where (Num %a)))
+(: (-> (num %a %u) bool) (where (Num %a)))
 (defun (negative? x) (< x 0))
 
 ;; ---------------------------------------------------------------------------
@@ -179,13 +181,17 @@
 ;; call happened to pass. `loge` completes `log2` and `log10`, and `log-base`
 ;; says what its second argument is.
 (import/extern
-  (cbrt     (: System.Math.Cbrt))
+  (clr-cbrt (: System.Math.Cbrt (-> double double)))
   (exp      (: System.Math.Exp))
   (pow      (: System.Math.Pow))
   (loge     (: System.Math.Log (-> double double)))
   (log-base (: System.Math.Log (-> double double double)))
   (log2     (: System.Math.Log2))
   (log10    (: System.Math.Log10)))
+
+;; The cube root of a number in m^3 is in m.
+(: cbrt (-> (double %u^3) (double %u)))
+(defun (cbrt x) (cast (double %u) (clr-cbrt (cast double x))))
 
 ;; Rounding.
 (import/extern

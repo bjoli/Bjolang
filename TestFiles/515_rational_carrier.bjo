@@ -1,0 +1,43 @@
+;; rational: an exact fraction that is a number like the others, and a
+;; carrier of units with which every conversion stays exact.
+(import (std prelude))
+(import (std simpletest))
+
+(def/dimension length #:base m #:carrier rational)
+(def/dimension time #:base s #:carrier rational)
+(def/prefix k 1000)
+(def/unit h <3600 s>)
+(def/unit min <60 s>)
+(def/unit ft <3048|10000 m>)
+(def/unit mi <5280 ft>)
+
+(: third rational)
+(def third (/ 1 3))
+
+;; Generic over Num, at rational.
+(: mean (-> %a %a %a) (where (Num %a)))
+(defun (mean a b) (/ (+ a b) 2))
+
+(: pace (-> (rational m) (rational s) (rational s/m)))
+(defun (pace d t) (/ t d))
+
+(defun (main)
+  (expect "written" (written third) "(: <1|3> rational)")
+  (expect "written, whole" (written (+ third third third)) "(: 1 rational)")
+  (expect "displayed" (displayed third) "1/3")
+  (expect "a real literal is exact" (displayed (* third 0.3)) "1/10")
+  (expect "subtraction" (displayed (- third (/ 1 2))) "-1/6")
+  (expect "remainder" (displayed (% (: (/ 7 2) rational) 1)) "1/2")
+  (expect "negate" (displayed (- third)) "-1/3")
+  (expect "comparison" (< third (/ 1 2)) #t)
+  (expect "equality" (= (* third 3) 1) #t)
+  (expect "order" (compare (/ 2 3) third) 1)
+  (expect "generic over Num" (displayed (mean third (/ 2 3))) "1/2")
+  (expect "to a double" (written (cast double third)) "0.3333333333333333")
+  (expect "km/h in m/s, exactly" (written <1 km/h>) "(: <5|18> rational)")
+  (expect "and back" (displayed (in <1 km/h> km/h)) "1")
+  (expect "a mile in feet" (displayed (in <1 mi> ft)) "5280")
+  (expect "m and ft" (displayed (+ <1 m> <1 ft>)) "1631/1250")
+  (expect "in ft" (displayed (in (+ <1 m> <1 ft>) ft)) "1631/381")
+  (expect "a pace" (displayed (in (pace <10 km> <50 min>) s/m)) "3/10")
+  0)

@@ -239,6 +239,13 @@ let private bootstrapIntegral : TraitInfo =
 /// own variable list, which is how `Lowering` and `collectTraitConstraints`
 /// both read a constraint back out.
 let private numeric = [ { TraitName = "Num"; TargetType = TVar "a"; Pins = [] } ]
+
+/// A unit variable of a builtin's scheme.
+let private unitVar (name: string) : Units.UnitTerm = Units.ofAtom (Units.UVar name)
+
+/// The carrier `%a` at a unit: what the arithmetic builtins take and give.
+let private quantityOf (unit: Units.UnitTerm) : HMType = TNum(TVar "a", unit)
+let private quantity (name: string) : HMType = quantityOf (unitVar name)
 let private ordered = [ { TraitName = "Ordered"; TargetType = TVar "a"; Pins = [] } ]
 let private integral = [ { TraitName = "Integral"; TargetType = TVar "a"; Pins = [] } ]
 
@@ -340,7 +347,8 @@ let emptyRegistry : TraitRegistry =
       InferredCopies = Set.empty
       ColourDeclared = Set.empty
       ReturnOnlyGenerics = Set.empty
-      KeywordOnlyGenerics = Set.empty }
+      KeywordOnlyGenerics = Set.empty
+      UnitTable = UnitTable.empty }
 
 /// Builtins that stay for one release under their old names. A use of one
 /// warns and says what to write in its place.
@@ -378,11 +386,16 @@ let prelude : Env =
         // The constraint is `System.Numerics.INumber`, so it is a C# `where`
         // clause and costs nothing: no dictionary is passed, and the runtime
         // specializes the function at each type it is used at.
-        "+", {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
-        "-", {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
-        "*", {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
-        "/", {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
-        "%", {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
+        //
+        // Units (Docs/Units.org): `Num` is asked of the carrier, `%a`, and the
+        // unit rides beside it. `+ - %` keep one unit; `*` and `/` multiply and
+        // divide them. With no unit anywhere, `%u` and `%v` are 1 and each of
+        // these is `(-> %a %a %a)`.
+        "+", {Scheme = Scheme(["a"; "u"], numeric, makeFunType [quantity "u"; quantity "u"] (quantity "u")); IsMutable = false }
+        "-", {Scheme = Scheme(["a"; "u"], numeric, makeFunType [quantity "u"; quantity "u"] (quantity "u")); IsMutable = false }
+        "*", {Scheme = Scheme(["a"; "u"; "v"], numeric, makeFunType [quantity "u"; quantity "v"] (quantityOf (Units.mul (unitVar "u") (unitVar "v")))); IsMutable = false }
+        "/", {Scheme = Scheme(["a"; "u"; "v"], numeric, makeFunType [quantity "u"; quantity "v"] (quantityOf (Units.div (unitVar "u") (unitVar "v")))); IsMutable = false }
+        "%", {Scheme = Scheme(["a"; "u"], numeric, makeFunType [quantity "u"; quantity "u"] (quantity "u")); IsMutable = false }
 
         // Unary arithmetic, which `(- x)` and `(/ x)` desugar to.
         //
@@ -390,8 +403,8 @@ let prelude : Env =
         // as `(- 0 x)` unifies the literal's `int` with `x`, so negating a
         // double is a type error. A primitive keeps the operand's own type,
         // and codegen emits C#'s unary minus rather than a subtraction.
-        "negate", {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"] (TVar "a")); IsMutable = false }
-        "recip",  {Scheme = Scheme(["a"], numeric, makeFunType [TVar "a"] (TVar "a")); IsMutable = false }
+        "negate", {Scheme = Scheme(["a"; "u"], numeric, makeFunType [quantity "u"] (quantity "u")); IsMutable = false }
+        "recip",  {Scheme = Scheme(["a"; "u"], numeric, makeFunType [quantity "u"] (quantityOf (Units.inv (unitVar "u")))); IsMutable = false }
 
         // Bitwise operators, typed and emitted exactly as the arithmetic ones
         // are: C# resolves each from the operand type, so they work on every

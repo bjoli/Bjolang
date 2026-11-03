@@ -1,0 +1,462 @@
+;; Docs for std/units.bjo, read through (:doc #:file "units.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Units of measure: unit tables, unit expressions, and measurements at run time.")
+  (see convert-query string->measurement resolve-unit standard-units)
+  (example """
+    (import (std units))
+
+    (convert-query "6000 m + 50 ft in mi")         ; (Ok "3.737697 mi")
+    (convert-query "65 mi/(12 mi/h) in h,min")     ; (Ok "5 h 25 min")
+    (convert-query "(2 kg/yr)/(3 m3/s) in ng/l")   ; (Ok "21.12539 ng/l")
+
+    (match (string->measurement "120 km/h")
+      ((Ok v) (measurement-in v "mph"))            ; (Ok 74.56454)
+      ((Err e) (Err e)))
+    """)
+  (reference """
+    @strong{Model.} A dimension is a product of base dimensions with
+    rational exponents. A unit is an atom with a dimension and an exact
+    factor to the coherent unit of that dimension, or an alias for a unit
+    expression. A @code{Measurement} is a double in the coherent unit and its
+    dimension.
+
+    @strong{Grammar.} Tightest first: @code{a|b} divides two numbers; @code{^}
+    (or @code{**}) raises to a rational exponent, as in @code{m^2},
+    @code{Hz^(-1/2)} and @code{s^-1}; juxtaposition multiplies; @code{*} and
+    @code{/} go left to right; @code{+} and @code{-} add measurements. So
+    @code{kg m/s^2} is kg·m/s² and @code{m/s kg} is m/(s·kg). A name ending in
+    digits is a power, @code{m2}, unless the whole name is a unit.
+    @code{pi} is the number. @code{sqrt(...)} and @code{cbrt(...)} take roots
+    of measurements.
+
+    @strong{Names.} A name is looked up as written, then as a name with a
+    trailing power, then as a prefix on a unit, the longest prefix first:
+    @code{min} is a minute, @code{MiB} is 2^20 bytes. Plurals are aliases in
+    the table, not guessed.
+
+    @strong{The standard table.} The SI base dimensions and information
+    (@code{b}), the SI and binary prefixes, and about 200 units. There is no
+    @code{degC} or @code{degF}: absolute temperatures are @code{Celsius} and
+    @code{Fahrenheit}, and differences are @code{K} or @code{degR}.
+
+    @strong{Errors.} Functions that read text return
+    @code{(Result string ...)}. Arithmetic on measurements of different
+    dimensions, and the temperature and decibel functions on the wrong
+    dimension, raise @code{ArgumentException}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Factors
+;; ---------------------------------------------------------------------------
+
+(:doc Factor
+  (summary "An exact conversion factor: a rational times an integer power of pi."))
+
+(:doc factor
+  (summary "A factor.")
+  (arg r "The rational part.")
+  (arg k "The power of pi.")
+  (returns "r × pi^k."))
+
+(:doc factor-rational
+  (summary "The rational part of a factor.")
+  (arg f "The factor.")
+  (returns "r in r × pi^k."))
+
+(:doc factor-pi
+  (summary "The power of pi in a factor.")
+  (arg f "The factor.")
+  (returns "k in r × pi^k."))
+
+(:doc factor-one
+  (summary "The factor 1."))
+
+(:doc factor-one?
+  (summary "Whether a factor is 1.")
+  (arg f "The factor.")
+  (returns "#t for 1 × pi^0."))
+
+(:doc factor*
+  (summary "The product of two factors.")
+  (arg a "The first factor.")
+  (arg b "The second factor.")
+  (returns "a × b."))
+
+(:doc factor/
+  (summary "The quotient of two factors.")
+  (arg a "The dividend.")
+  (arg b "The divisor. Raises DivideByZeroException when its rational part is zero.")
+  (returns "a / b."))
+
+(:doc factor-expt
+  (summary "A factor to a rational power, when the result is exact.")
+  (arg f "The factor.")
+  (arg q "The exponent.")
+  (returns "(Some f^q), or None when f^q is irrational, or f is zero and q negative.")
+  (example """
+    (factor-expt (factor (rational 100 1) 0) (rational 1 2))   ; (Some 10)
+    (factor-expt (factor (rational 1000 1) 0) (rational 1 2))  ; None
+    """))
+
+(:doc factor->double
+  (summary "A factor as a double.")
+  (arg f "The factor.")
+  (returns "The nearest double to the rational part, times pi^k."))
+
+;; ---------------------------------------------------------------------------
+;; Atoms and resolved expressions
+;; ---------------------------------------------------------------------------
+
+(:doc Atom
+  (summary "A named unit with its dimension and its exact factor to the coherent unit of that dimension."))
+
+(:doc atom
+  (summary "An atom.")
+  (arg name "The unit's name.")
+  (arg dims "Its dimension: base dimension names to exponents.")
+  (arg f "Its factor to the coherent unit of dims.")
+  (returns "The atom."))
+
+(:doc atom-name
+  (summary "The name of an atom.")
+  (arg a "The atom.")
+  (returns "The name."))
+
+(:doc atom-dims
+  (summary "The dimension of an atom.")
+  (arg a "The atom.")
+  (returns "Base dimension names to nonzero exponents."))
+
+(:doc atom-factor
+  (summary "The factor of an atom.")
+  (arg a "The atom.")
+  (returns "Its factor to the coherent unit of its dimension."))
+
+(:doc Resolved
+  (summary "A resolved unit expression: a coefficient times atoms to rational powers.")
+  (reference """
+    @code{resolve-unit} returns one. The term maps atom names to their
+    exponents, and the atoms map holds every atom the term names, so a
+    @code{Resolved} needs no table to be converted. @code{3 km/h} is the
+    coefficient 3 and the term km·h⁻¹.
+    """))
+
+(:doc resolved-coeff
+  (summary "The coefficient of a resolved expression.")
+  (arg r "The resolved expression.")
+  (returns "The number the expression multiplies its atoms by."))
+
+(:doc resolved-term
+  (summary "The atoms of a resolved expression and their exponents.")
+  (arg r "The resolved expression.")
+  (returns "Atom names to nonzero rational exponents."))
+
+(:doc resolved-atoms
+  (summary "The atoms a resolved expression names.")
+  (arg r "The resolved expression.")
+  (returns "Atom names to atoms, one for each name in the term."))
+
+(:doc resolved-dims
+  (summary "The dimension of a resolved expression.")
+  (arg r "The resolved expression.")
+  (returns "Base dimension names to nonzero exponents."))
+
+(:doc resolved-factor
+  (summary "The exact factor from a resolved expression to the coherent unit of its dimension.")
+  (arg r "The resolved expression.")
+  (returns "(Ok factor), or (Err message) when the factor is irrational.")
+  (reference """
+    The factor of @code{km/h} is 5/18. The factor of @code{km^(1/2)} is
+    √1000, and the result is @code{(Err "the factor of km^(1/2) is
+    irrational")}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Tables
+;; ---------------------------------------------------------------------------
+
+(:doc UnitTable
+  (summary "Dimensions, units, prefixes and preferred units for printing."))
+
+(:doc PrefixUse
+  (summary "Which prefixes printing may put on a preferred unit: NoPrefix, SmallPrefixes (below 1 only) or AllPrefixes."))
+
+(:doc empty-unit-table
+  (summary "A table with nothing in it."))
+
+(:doc def-dimension
+  (summary "Adds a base dimension and its coherent unit.")
+  (arg t "The table.")
+  (arg dim "The dimension's name, as in \"length\".")
+  (arg unit "The unit's name, as in \"m\".")
+  (returns "The new table, or why the names cannot be added.")
+  (example """
+    (def-dimension empty-unit-table "money" "EUR")
+    """))
+
+(:doc def-unit
+  (summary "Adds a unit defined by a unit expression.")
+  (arg t "The table.")
+  (arg name "The unit's name.")
+  (arg definition "A unit expression over the table, as in \"12 in\".")
+  (returns "The new table, or why the unit cannot be added.")
+  (reference """
+    A definition with coefficient 1 makes an alias: @code{N} for
+    @code{kg m/s^2} is the same unit as its definition. Any other makes an
+    atom of its own: @code{ft} for @code{12 in}. The definition's factor must
+    be exact. A name that is already defined is an error.
+    """))
+
+(:doc def-prefix
+  (summary "Adds a prefix.")
+  (arg t "The table.")
+  (arg name "The prefix, as in \"k\".")
+  (arg value "Its value as a number, as in \"1000\", \"1e-3\" or \"1|1024\".")
+  (returns "The new table, or why the prefix cannot be added."))
+
+(:doc def-preferred
+  (summary "Sets the unit printing uses for that unit's dimension.")
+  (arg t "The table.")
+  (arg unit "A unit expression, usually one name.")
+  (arg use "Which prefixes printing may put on it.")
+  (returns "The new table, or why the unit does not resolve."))
+
+(:doc unit-table-names
+  (summary "The unit names of a table.")
+  (arg t "The table.")
+  (returns "Every name defined in the table, prefixed and powered forms not included."))
+
+(:doc standard-units
+  (summary "The standard table: SI, binary prefixes, and the common units."))
+
+;; ---------------------------------------------------------------------------
+;; Resolving
+;; ---------------------------------------------------------------------------
+
+(:doc resolve-unit
+  (summary "Resolves a unit expression exactly against a table.")
+  (arg t "The table.")
+  (arg text "The expression, as in \"km/h\" or \"1|60 deg\".")
+  (returns "The resolved expression, or what is wrong with the text.")
+  (reference """
+    @code{+}, @code{-}, @code{sqrt} and @code{cbrt} are not unit
+    expressions. A power whose coefficient would be irrational, as in
+    @code{2^(1/2)}, is an error; an atom to a rational power is not.
+    Unknown names come with the nearest name in the table when one is close:
+    @code{unknown unit 'meeter'. Did you mean 'meter'?}.
+    """))
+
+(:doc conformable-units
+  (summary "The names in a table with the same dimension as an expression: GNU's ?.")
+  (arg t "The table.")
+  (arg text "A unit expression.")
+  (returns "The names, or what is wrong with the text."))
+
+;; ---------------------------------------------------------------------------
+;; Measurements
+;; ---------------------------------------------------------------------------
+
+(:doc Measurement
+  (summary "A value in the coherent unit of its dimension, and the dimension.")
+  (field value "The value in the coherent unit.")
+  (field dims "Base dimension names to nonzero exponents."))
+
+(:doc measurement
+  (summary "A measurement.")
+  (arg v "The value in the coherent unit.")
+  (arg d "The dimension: base dimension names to nonzero exponents.")
+  (returns "The measurement."))
+
+(:doc measurement-value
+  (summary "The value of a measurement.")
+  (arg m "The measurement.")
+  (returns "The value in the coherent unit of its dimension."))
+
+(:doc measurement-dims
+  (summary "The dimension of a measurement.")
+  (arg m "The measurement.")
+  (returns "Base dimension names to nonzero exponents."))
+
+(:doc string->measurement
+  (summary "Evaluates an expression with units.")
+  (arg text "The expression, as in \"6000 m + 50 ft\".")
+  (key table "The table. The standard table by default.")
+  (returns "The measurement, or what is wrong with the text."))
+
+(:doc measurement+
+  (summary "The sum of two measurements.")
+  (arg a "The first.")
+  (arg b "The second. Raises ArgumentException when its dimension is not a's.")
+  (returns "a + b."))
+
+(:doc measurement-
+  (summary "The difference of two measurements.")
+  (arg a "The first.")
+  (arg b "The second. Raises ArgumentException when its dimension is not a's.")
+  (returns "a - b."))
+
+(:doc measurement*
+  (summary "The product of two measurements.")
+  (arg a "The first.")
+  (arg b "The second.")
+  (returns "a × b, with the dimensions multiplied."))
+
+(:doc measurement/
+  (summary "The quotient of two measurements.")
+  (arg a "The dividend.")
+  (arg b "The divisor.")
+  (returns "a / b, with the dimensions divided."))
+
+(:doc measurement-scale
+  (summary "A measurement times a number.")
+  (arg k "The number.")
+  (arg m "The measurement.")
+  (returns "k × m, of m's dimension."))
+
+(:doc measurement-expt
+  (summary "A measurement to a rational power.")
+  (arg m "The measurement.")
+  (arg q "The exponent.")
+  (returns "m^q, with the dimension's exponents times q."))
+
+(:doc measurement-sqrt
+  (summary "The square root of a measurement.")
+  (arg m "The measurement.")
+  (returns "m^(1/2)."))
+
+(:doc conformable?
+  (summary "Whether two measurements have the same dimension.")
+  (arg a "The first.")
+  (arg b "The second.")
+  (returns "#t when a and b can be added."))
+
+(:doc measurement-in
+  (summary "A measurement as a number of a unit.")
+  (arg m "The measurement.")
+  (arg target "A unit expression, as in \"ft\" or \"12 mi/h\".")
+  (key table "The table. The standard table by default.")
+  (returns "m divided by target, or an error when their dimensions differ.")
+  (example """
+    (match (string->measurement "1 mi")
+      ((Ok m) (measurement-in m "km"))   ; (Ok 1.609344)
+      ((Err e) (Err e)))
+    """))
+
+(:doc measurement->string
+  (summary "A measurement as text, in a unit chosen for its dimension.")
+  (arg m "The measurement.")
+  (key table "The table. The standard table by default.")
+  (returns "The value with 7 significant digits, a space and a unit.")
+  (reference """
+    The unit is the dimension's preferred unit with a prefix by magnitude,
+    as in @code{3.6 MJ} and @code{5 ms}, or else the coherent unit written
+    with the base units, as in @code{27.77778 m/s}. A dimensionless
+    measurement is the number alone.
+    """))
+
+(:doc measurement->string/mixed
+  (summary "A measurement as a sum of units: \"5 h 25 min\".")
+  (arg m "The measurement.")
+  (arg units "Unit expressions, largest first. Each but the last takes a whole number.")
+  (key table "The table. The standard table by default.")
+  (returns "The text, or an error when a unit's dimension is not m's."))
+
+(:doc convert-query
+  (summary "Evaluates a query as Umits takes it.")
+  (arg query "An expression, optionally followed by in and one or more units separated by commas.")
+  (key table "The table. The standard table by default.")
+  (returns "The result as text, or what is wrong with the query.")
+  (reference """
+    Commas on the left add: @code{6 ft, 2 in in m}. Several units on the
+    right give mixed output: @code{1.8796 m in ft,in}. A single unit of
+    another dimension divides, and the quotient is printed as
+    @code{measurement->string} prints: @code{65 mi in 12 mi/h} is
+    @code{19500 s}. Without in, the result is printed as
+    @code{measurement->string} prints.
+    """)
+  (example """
+    (convert-query "12 h in s")                   ; (Ok "43200 s")
+    (convert-query "65 mi/(12 mi/h) in h,min")    ; (Ok "5 h 25 min")
+    (convert-query "1 m + 1 s")                   ; (Err "cannot add length and time")
+    """))
+
+(:doc dims->string
+  (summary "A dimension as text.")
+  (arg d "Base dimension names to exponents.")
+  (returns "\"length/time\", \"mass/(length time^2)\", or \"dimensionless\"."))
+
+;; ---------------------------------------------------------------------------
+;; Temperatures
+;; ---------------------------------------------------------------------------
+
+(:doc Celsius
+  (summary "An absolute temperature in degrees Celsius. A newtype over double."))
+
+(:doc Fahrenheit
+  (summary "An absolute temperature in degrees Fahrenheit. A newtype over double."))
+
+(:doc celsius->kelvin
+  (summary "A Celsius temperature in kelvin.")
+  (arg c "The temperature.")
+  (returns "A measurement of temperature: 20 °C is 293.15 K."))
+
+(:doc kelvin->celsius
+  (summary "A temperature in Celsius.")
+  (arg k "A measurement of temperature. Raises ArgumentException for any other dimension.")
+  (returns "The Celsius temperature."))
+
+(:doc fahrenheit->kelvin
+  (summary "A Fahrenheit temperature in kelvin.")
+  (arg f "The temperature.")
+  (returns "A measurement of temperature: 32 °F is 273.15 K."))
+
+(:doc kelvin->fahrenheit
+  (summary "A temperature in Fahrenheit.")
+  (arg k "A measurement of temperature. Raises ArgumentException for any other dimension.")
+  (returns "The Fahrenheit temperature."))
+
+;; ---------------------------------------------------------------------------
+;; Logarithmic
+;; ---------------------------------------------------------------------------
+
+(:doc dBW
+  (summary "A power in decibels relative to 1 W.")
+  (arg p "A measurement of power. Raises ArgumentException for any other dimension.")
+  (returns "10 log10(p / 1 W)."))
+
+(:doc dBm
+  (summary "A power in decibels relative to 1 mW.")
+  (arg p "A measurement of power. Raises ArgumentException for any other dimension.")
+  (returns "10 log10(p / 1 mW)."))
+
+(:doc dBV
+  (summary "A voltage in decibels relative to 1 V.")
+  (arg v "A measurement of voltage. Raises ArgumentException for any other dimension.")
+  (returns "20 log10(v / 1 V)."))
+
+(:doc dBSPL
+  (summary "A sound pressure in decibels relative to 20 µPa.")
+  (arg p "A measurement of pressure. Raises ArgumentException for any other dimension.")
+  (returns "20 log10(p / 20 µPa)."))
+
+(:doc dBW->power
+  (summary "The power a dBW level is.")
+  (arg x "The level.")
+  (returns "1 W × 10^(x/10)."))
+
+(:doc dBm->power
+  (summary "The power a dBm level is.")
+  (arg x "The level.")
+  (returns "1 mW × 10^(x/10)."))
+
+(:doc dBV->voltage
+  (summary "The voltage a dBV level is.")
+  (arg x "The level.")
+  (returns "1 V × 10^(x/20)."))
+
+(:doc dBSPL->pressure
+  (summary "The sound pressure a dBSPL level is.")
+  (arg x "The level.")
+  (returns "20 µPa × 10^(x/20)."))

@@ -109,6 +109,7 @@ let rec private typeKey (t: HMType) : string option =
         traverse typeKey args
         |> Option.map (fun keys -> sanitize (shortName name) + "_" + String.concat "_" keys)
     | TTuple args -> traverse typeKey args |> Option.map (fun keys -> "tup_" + String.concat "_" keys)
+    | TNum(carrier, _) -> typeKey carrier
     | TFun _
     | TVar _
     | TMeta _
@@ -167,6 +168,9 @@ let rec private hmToFType (r: Lexer.Range) (t: HMType) : FType option =
     | TAssoc(traitName, assocName, implementor) ->
         hmToFType r implementor
         |> Option.map (fun i -> TApp("assoc", [ TName(traitName, r); TName(assocName, r); i ], r))
+    | TNum(carrier, unit) ->
+        hmToFType r carrier
+        |> Option.map (fun c -> TApp("units", c :: (Units.toMetadataParts unit |> List.map (fun p -> TName(p, r))), r))
     | TVar _
     | TMeta _ -> None
 
@@ -216,6 +220,7 @@ let rec private substHM (subst: Map<string, HMType>) (t: HMType) : HMType =
     | TFun(args, ret, eff) -> TFun(args |> List.map (substHM subst), substHM subst ret, eff)
     | TTuple args -> TTuple(args |> List.map (substHM subst))
     | TAssoc(traitName, assocName, implementor) -> TAssoc(traitName, assocName, substHM subst implementor)
+    | TNum(carrier, unit) -> TNum(substHM subst carrier, unit)
     | TMeta _ -> t
 
 /// One component of a signature, at this instantiation, spelled back as surface
@@ -482,7 +487,8 @@ let private demandOf (env: Env) (cands: Map<string, Candidate>) (name: string) (
 
     match Map.tryFind key env.Bindings with
     | Some binding ->
-        let (Scheme(schemeVars, constraints, _)) = binding.Scheme
+        let (Scheme(_, constraints, _)) = binding.Scheme
+        let schemeVars = schemeTypeVars binding.Scheme
 
         // Every type argument, not only the constrained ones: a copy with no
         // type parameters left needs no type arguments at the call site, and so

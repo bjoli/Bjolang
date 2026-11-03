@@ -1,0 +1,75 @@
+;; Arithmetic on quantities: + - and the comparisons keep a unit, * and /
+;; multiply and divide them, sqrt and cbrt take roots, a plain number scales,
+;; and zero is a number of every unit.
+(import (std prelude))
+(import (std maths))
+(import (std simpletest))
+
+(def/dimension length #:base m)
+(def/dimension time #:base s)
+(def/prefix k 1000)
+(def/prefix m "1|1000")
+(def/unit h <3600 s>)
+(def/unit ft <3048|10000 m>)
+(def/unit deg <1|180 pi>)
+
+(: area (-> (double m) (double m) (double m^2)))
+(defun (area w l) (* w l))
+
+(: speed (-> (double m) (double s) (double m/s)))
+(defun (speed d t) (/ d t))
+
+;; Generic in the unit: + and the comparisons at any unit.
+(: larger (-> (double %u) (double %u) (double %u)))
+(defun (larger a b) (if (> a b) a b))
+
+(: total (-> (Vec (double %u)) (double %u)))
+(defun (total xs)
+  (let go ((i 0) (s 0.0))
+    (if (< i (length xs)) (go (+ i 1) (+ s (ref xs i))) s)))
+
+;; Generic in the unit, and the square is the unit squared.
+(: square (-> (double %u) (double %u^2)))
+(defun (square x) (* x x))
+
+(: positive-length? (-> (double m) bool))
+(defun (positive-length? x) (> x 0))
+
+;; A projectile, integrated with Euler steps, on a struct of quantities.
+(def g <9.80665 m/s^2>)
+
+(type (: State (Struct (: x (double m)) (: y (double m))
+                       (: vx (double m/s)) (: vy (double m/s)))))
+
+(: step (-> (double s) State State))
+(defun (step dt s)
+  (State (x (+ (.x s) (* (.vx s) dt)))
+         (y (+ (.y s) (* (.vy s) dt)))
+         (vx (.vx s))
+         (vy (- (.vy s) (* g dt)))))
+
+(: flight (-> (double m/s) double (double s) (double m)))
+(defun (flight v angle dt)
+  (def start (State (x 0) (y 0) (vx (* v (cos angle))) (vy (* v (sin angle)))))
+  (let go ((s start))
+    (if (< (.y s) 0) (.x s) (go (step dt s)))))
+
+(defun (main)
+  (expect "m times m" (written (area <2 m> <3 m>)) "6.0")
+  (expect "km per h" (written (in (speed <100 km> <2 h>) km/h)) "50.0")
+  (expect "ft and m add, both lengths" (written (+ <1 m> <1 ft>)) "1.3048")
+  (expect "larger, at m" (written (larger <2 m> <3 m>)) "3.0")
+  (expect "larger, at s" (written (larger <5 s> <4 s>)) "5.0")
+  (expect "total of lengths" (written (total [<1 m> <2 m> <3 m>])) "6.0")
+  (expect "square of a length" (written (in (square <3 km>) m^2)) "9000000.0")
+  (expect "sqrt of an area" (written (sqrt (area <4 m> <9 m>))) "6.0")
+  (expect "cbrt of a volume" (written (cbrt (* <2 m> (area <2 m> <2 m>)))) "2.0")
+  (expect "a plain number scales" (written (* 2 <3 m>)) "6.0")
+  (expect "and divides" (written (/ <3 m> 2)) "1.5")
+  (expect "negate" (written (- <5 m>)) "-5.0")
+  (expect "recip gives the inverse unit" (written (in (/ <4 s>) 1/s)) "0.25")
+  (expect "a ratio of lengths is a plain number" (written (+ 1.0 (/ <1 km> <500 m>))) "3.0")
+  (expect "zero compares with a length" (positive-length? <1 m>) #t)
+  (expect "a projectile" (< (abs (- (in (flight <30 m/s> <45 deg> <1 ms>) m) 91.8)) 0.5) #t)
+  (expect "plain arithmetic is unchanged" (written (+ (* 2 3) (/ 10 4))) "8")
+  0)

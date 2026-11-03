@@ -1,0 +1,48 @@
+;; Paper program: a projectile, integrated with Euler steps.
+;; A state with mixed units cannot be a (Vec double). Two ways to write it.
+
+(import (std units))
+
+(def g <9.80665 m/s^2>)                   ; (double m/s^2)
+
+;; 1. A struct per state.
+
+(type (: State (Struct (: x (double m)) (: y (double m))
+                       (: vx (double m/s)) (: vy (double m/s)))))
+
+(: step (-> (double s) State State))
+(defun (step dt s)
+  (State (x (+ (.x s) (* (.vx s) dt)))
+         (y (+ (.y s) (* (.vy s) dt)))
+         (vx (.vx s))
+         (vy (- (.vy s) (* g dt)))))
+
+(: flight (-> (double m/s) double (double s) (double m)))
+(defun (flight speed angle dt)
+  (def start (State (x 0) (y 0)           ; 0 is a number of every unit
+                    (vx (* speed (cos angle)))
+                    (vy (* speed (sin angle)))))
+  (let go ((s start))
+    (if (< (.y s) 0) (.x s) (go (step dt s)))))
+
+(flight <30 m/s> <45 deg> <1 ms>)         ; (double m), ~91.8
+;; <45 deg> is 0.7854: deg is dimensionless, so cos takes it.
+
+;; An error the types catch:
+;;   (vy (- (.vy s) (* g dt dt)))
+;; error: the units differ: m/s and m.
+
+;; 2. A generic integrator over a vector: units off going in, on coming out.
+
+(: deriv (-> double (Vec double) (Vec double)))
+(defun (deriv t v)
+  [(ref v 2) (ref v 3) 0.0 (in (- g) m/s^2)])
+
+(: flight-rk4 (-> (double m/s) double (double s) (double m)))
+(defun (flight-rk4 speed angle dt)
+  (def v0 [0.0 0.0 (in (* speed (cos angle)) m/s) (in (* speed (sin angle)) m/s)])
+  (def end (rk4-until deriv (in dt s) v0 (fun (v) (< (ref v 1) 0.0))))
+  (* (ref end 0) <1 m>))                  ; attaches m; the 1 is not emitted
+
+;; Count: 3 annotations and 0 in for the struct version.
+;; 2 annotations, 4 in and 1 attaching literal for the vector version.

@@ -542,13 +542,14 @@ let internal checkDeclaredExtern
         let seenAs (view: HMType -> HMType) (written: HMType) (actual: HMType) =
             if prune registry written = actual then actual else view actual
 
-        match prune registry declared with
-        | TFun(written, writtenResult, _) when written.Length = declaredParams.Length ->
+        // Units are the declaration's own: .NET sees the carrier.
+        match eraseUnits (prune registry declared) with
+        | TFun(written, writtenResult, _) as erased when written.Length = declaredParams.Length ->
             unify
                 registry
-                declared
+                erased
                 (tfun (List.map2 (seenAs seenParamType) written declaredParams) (seenAs seenType writtenResult result))
-        | _ -> unify registry declared (tfun (List.map seenParamType declaredParams) (seenType result))
+        | erased -> unify registry erased (tfun (List.map seenParamType declaredParams) (seenType result))
     | None -> ()
 
 let internal metadataOf (resolved: DotNetInterop.ResolvedCall) (exceptions: string list) : DotNetMethodMetadata =

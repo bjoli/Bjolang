@@ -961,7 +961,10 @@ and private spliceTemplate
                 (fun acc (name, (arg: TypedExpr)) ->
                     addBinding
                         name
-                        { Scheme = Scheme([], [], prune ctx.Env.Registry arg.Type)
+                        // Units are erased by now (`EraseUnits`), and a
+                        // record's field types in the registry still have
+                        // them.
+                        { Scheme = Scheme([], [], eraseUnits (prune ctx.Env.Registry arg.Type))
                           IsMutable = false }
                         acc)
                 { ctx.Env with CurrentModule = tpl.OriginModule }
@@ -971,7 +974,7 @@ and private spliceTemplate
         //    metavariable in a scope of its own, which would throw away the
         //    concrete argument types just supplied.
         let bodyType, typedBody = InferExpr.infer spliceEnv freshBody
-        unify ctx.Env.Registry bodyType expr.Type
+        unify ctx.Env.Registry (eraseUnits (prune ctx.Env.Registry bodyType)) (eraseUnits (prune ctx.Env.Registry expr.Type))
 
         // Obligations raised by the body — a `bind` calling `bind` — are
         // discharged here, before anything looks at the result.

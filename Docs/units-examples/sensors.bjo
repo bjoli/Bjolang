@@ -1,0 +1,44 @@
+;; Paper program: weather station readings from CSV, filtered and printed.
+;;
+;; readings.csv:
+;;   sensor,temp_c,pressure_hpa,wind_kmh
+;;   roof,21.5,1013.2,12.0
+;;   mast,19.0,1009.8,61.5
+
+(import (std units) (text csv) (text csv-codec))
+
+;; A field's type is its dimension, in base units. The unit the file has it in
+;; is the codec's to say (Phase 12): #:unit is not there yet.
+(def/csv-type
+  (: Reading (Record (: sensor string)
+                     (: temp Celsius #:csv "temp_c")
+                     (: pressure (double Pa) #:csv "pressure_hpa" #:unit "hPa")
+                     (: wind (double m/s) #:csv "wind_kmh" #:unit "km/h"))))
+
+(: windy? (-> Reading bool))
+(defun (windy? r)
+  (> (.wind r) <50 km/h>))                ; 13.889 m/s, at compile time
+
+(: low-pressure? (-> Reading bool))
+(defun (low-pressure? r)
+  (< (.pressure r) <1 atm>))              ; 101325 Pa
+
+(defun (main args)
+  (match (parse-csv-records (csv-file "readings.csv"))
+    ((Ok rs)
+     (loop (:for r rs)
+           (:when (or (windy? r) (low-pressure? r)))
+           (:do (println (.sensor r) ": " (in (.wind r) km/h) " km/h"))))
+     ;; mast: 61.5 km/h
+    ((Err e) (println e)))
+  0)
+
+;; Errors.
+(+ (.wind r) (.pressure r))
+;; error: the units differ: m/s and kg/(m s^2).
+
+(> (.wind r) 50)
+;; error: '50' is a plain number, and it is being used where a (double m/s)
+;;   is wanted. Write <50 m/s>, or a unit of the same dimension.
+
+;; Count: 2 field units, 1 annotation, 2 in.

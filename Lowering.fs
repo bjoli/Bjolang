@@ -223,6 +223,10 @@ let rec buildEvidence
           Range = range
           Node = TIdent(name, []) }
 
+    // A number type with a unit has its carrier's implementations, and is
+    // its carrier at run time.
+    | TNum(carrier, _) -> buildEvidence env scope traitName carrier range describe
+
     // A tuple dispatches under its synthetic arity key, and a function type
     // under `Procedure`; each is otherwise an ordinary head applied to its
     // arguments.
@@ -287,6 +291,7 @@ let rec buildEvidence
                 | TVar v -> [ v ]
                 | TCon(_, args) | TTuple args -> args |> List.collect varsOf
                 | TFun(args, ret, _) -> (args |> List.collect varsOf) @ varsOf ret
+                | TNum(carrier, _) -> varsOf carrier
                 | _ -> []
 
             let vars = target.FixedPrefix |> List.collect varsOf |> List.distinct
@@ -616,7 +621,8 @@ module DictionaryLowering =
                     | TIdent(calleeName, tArgs) ->
                         match bindingOf env calleeName with
                         | Some binding ->
-                            let (Scheme(schemeVars, constraints, _)) = binding.Scheme
+                            let (Scheme(_, constraints, _)) = binding.Scheme
+                            let schemeVars = schemeTypeVars binding.Scheme
 
                             if not constraints.IsEmpty && not tArgs.IsEmpty then
                                 // Build a substitution from scheme vars to instantiated types

@@ -1,0 +1,215 @@
+;; Docs for std/rational.bjo, read through (:doc #:file "rational.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Exact fractions over bigint.")
+  (see Rational rational string->rational rational->double rational->decimal)
+  (example """
+    (import (std rational))
+
+    (def third (rational 1 3))
+    (rational+ third third)                   ; 2/3
+    (rational* (rational 3 4) (rational 2 3)) ; 1/2
+    (string->rational "0.3048")               ; (Some 381/1250)
+    (string->rational "1|60")                 ; (Some 1/60)
+    (rational->double third)                  ; 0.3333333333333333
+    (rational->decimal third)                 ; 0.3333333333333333333333333333
+    """)
+  (reference """
+    @code{Rational} is the built-in @code{rational}, so these functions
+    and the operators are two ways to the same values: @code{(rational+ a
+    b)} is @code{(+ a b)}. It is always in lowest terms with a positive
+    denominator, so two equal fractions are equal values. @code{Ord}
+    compares by value. It is written @code{(: <1|3> rational)}, which reads
+    back, and displayed @code{1/3}.
+
+    @strong{Errors.} A zero denominator, the reciprocal of zero and zero
+    to a negative power raise @code{DivideByZeroException}.
+    @code{rational->decimal} raises @code{OverflowException} when the
+    integer part does not fit. @code{string->rational} returns
+    @code{None} for text it does not read.
+    """))
+
+(:doc Rational
+  (summary "The built-in rational: an exact fraction, a bigint numerator and a positive bigint denominator, in lowest terms."))
+
+;; ---------------------------------------------------------------------------
+;; Construction and parts
+;; ---------------------------------------------------------------------------
+
+(:doc rational
+  (summary "The fraction n/d, in lowest terms.")
+  (arg n "The numerator.")
+  (arg d "The denominator. Raises DivideByZeroException when zero.")
+  (returns "The fraction, with a positive denominator.")
+  (example """
+    (rational 6 -4)       ; -3/2
+    """))
+
+(:doc int->rational
+  (summary "An int as a fraction.")
+  (arg n "The int.")
+  (returns "n/1."))
+
+(:doc bigint->rational
+  (summary "A bigint as a fraction.")
+  (arg n "The bigint.")
+  (returns "n/1."))
+
+(:doc rational-num
+  (summary "The numerator.")
+  (arg x "The fraction.")
+  (returns "The numerator in lowest terms, with the sign of x."))
+
+(:doc rational-den
+  (summary "The denominator.")
+  (arg x "The fraction.")
+  (returns "The denominator in lowest terms. Always positive."))
+
+;; ---------------------------------------------------------------------------
+;; Arithmetic
+;; ---------------------------------------------------------------------------
+
+(:doc rational+
+  (summary "Addition.")
+  (arg a "The first term.")
+  (arg b "The second term.")
+  (returns "a + b."))
+
+(:doc rational-
+  (summary "Subtraction.")
+  (arg a "The minuend.")
+  (arg b "The subtrahend.")
+  (returns "a - b."))
+
+(:doc rational*
+  (summary "Multiplication.")
+  (arg a "The first factor.")
+  (arg b "The second factor.")
+  (returns "a * b."))
+
+(:doc rational/
+  (summary "Division.")
+  (arg a "The dividend.")
+  (arg b "The divisor. Raises DivideByZeroException when zero.")
+  (returns "a / b."))
+
+(:doc rational-negate
+  (summary "Negation.")
+  (arg x "The fraction.")
+  (returns "-x."))
+
+(:doc rational-recip
+  (summary "The reciprocal.")
+  (arg x "The fraction. Raises DivideByZeroException when zero.")
+  (returns "1/x."))
+
+(:doc rational-abs
+  (summary "The magnitude.")
+  (arg x "The fraction.")
+  (returns "|x|."))
+
+(:doc rational-expt
+  (summary "An integer power.")
+  (arg x "The base.")
+  (arg n "The exponent. Negative takes the reciprocal; 0 gives 1.")
+  (returns "x^n. Raises DivideByZeroException for zero to a negative power.")
+  (example """
+    (rational-expt (rational 2 3) -2)   ; 9/4
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Predicates
+;; ---------------------------------------------------------------------------
+
+(:doc rational-zero?
+  (summary "Whether a fraction is zero.")
+  (arg x "The fraction.")
+  (returns "#t for 0."))
+
+(:doc rational-integer?
+  (summary "Whether a fraction is an integer.")
+  (arg x "The fraction.")
+  (returns "#t when the denominator is 1."))
+
+(:doc rational-sign
+  (summary "The sign.")
+  (arg x "The fraction.")
+  (returns "-1, 0 or 1."))
+
+;; ---------------------------------------------------------------------------
+;; Rounding
+;; ---------------------------------------------------------------------------
+
+(:doc rational-floor
+  (summary "Rounding down.")
+  (arg x "The fraction.")
+  (returns "The largest integer at most x."))
+
+(:doc rational-ceiling
+  (summary "Rounding up.")
+  (arg x "The fraction.")
+  (returns "The smallest integer at least x."))
+
+(:doc rational-truncate
+  (summary "Rounding toward zero.")
+  (arg x "The fraction.")
+  (returns "x without its fractional part."))
+
+(:doc rational-round
+  (summary "Rounding to nearest.")
+  (arg x "The fraction.")
+  (returns "The nearest integer, ties to even.")
+  (example """
+    (rational-round (rational 5 2))    ; 2
+    (rational-round (rational 7 2))    ; 4
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(:doc rational->double
+  (summary "A fraction as a double.")
+  (arg x "The fraction.")
+  (returns "The nearest double, ties to even. Infinity of x's sign when too large.")
+  (reference """
+    Rounds once, subnormals included.
+    """))
+
+(:doc rational->decimal
+  (summary "A fraction as a decimal.")
+  (arg x "The fraction.")
+  (returns "The nearest decimal, ties to even, without trailing zeros.")
+  (reference """
+    Rounds once, at the largest scale (up to 28) at which the result fits.
+    Raises OverflowException when the integer part does not fit.
+    """)
+  (example """
+    (rational->decimal (rational 1 8))   ; 0.125
+    (rational->decimal (rational 2 3))   ; 0.6666666666666666666666666667
+    """))
+
+(:doc rational->string
+  (summary "A fraction as text.")
+  (arg x "The fraction.")
+  (returns "\"3\" for an integer, \"-1/3\" otherwise.")
+  (see string->rational))
+
+(:doc string->rational
+  (summary "The fraction a text writes.")
+  (arg s "The text.")
+  (returns "The fraction, or None.")
+  (reference """
+    Reads a decimal: an optional sign, digits with an optional point, and
+    an optional exponent, as in @code{-0.3048}, @code{.5} or
+    @code{2.5E+10}. Two decimals separated by @code{|} or @code{/} are their
+    quotient, as in @code{1|60}. No space is allowed. Returns @code{None}
+    for anything else, and for a zero denominator.
+    """)
+  (example """
+    (string->rational "1e-3")   ; (Some 1/1000)
+    (string->rational "1|60")   ; (Some 1/60)
+    (string->rational "1/0")    ; None
+    (string->rational "1 m")    ; None
+    """))

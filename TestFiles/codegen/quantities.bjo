@@ -1,0 +1,33 @@
+;; A quantity literal is one constant, converted at compile time, and `in` is
+;; one multiplication by a constant, or none for a factor of 1.
+(import (std prelude))
+
+(def/dimension length #:base m)
+(def/dimension time #:base s)
+(def/dimension money #:base cent #:carrier long)
+(def/prefix k 1000)
+(def/unit h <3600 s>)
+(def/unit EUR <100 cent>)
+
+;; EXPECT-CS: return 2\.777777777777777777777777777777777777778e1;
+(: (-> (double m/s)))
+(defun (speed-limit) #:no-inline <100 km/h>)
+
+;; EXPECT-CS: return 150L;
+(: (-> (long cent)))
+(defun (price) #:no-inline <1.50 EUR>)
+
+;; EXPECT-CS: return \(v \* 3\.6e0\);
+(: (-> (double m/s) double))
+(defun (as-kmh v) #:no-inline (in v km/h))
+
+;; EXPECT-CS: return d;
+(: (-> (double m) double))
+(defun (as-metres d) #:no-inline (in d m))
+
+;; At a rational carrier the literal is exact: 5/18, not the 40 digits.
+;; EXPECT-CS: return new Bjolang\.Runtime\.BjoRational\(5L, 18L\);
+(: (-> (rational m/s)))
+(defun (exact-kmh) #:no-inline <1 km/h>)
+
+(defun (main) 0)

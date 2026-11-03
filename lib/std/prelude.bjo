@@ -421,6 +421,17 @@
   (defun (displayed n) (clr-show n))
   (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
 
+(import/extern
+  (clr-written-rational (: Bjolang.Runtime.BjoRational.Written (-> rational string))))
+
+(impl (Written rational)
+  (defun (written n) (clr-written-rational n))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+
+(impl (Displayed rational)
+  (defun (displayed n) (clr-show n))
+  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+
 (impl (Written int128)
   (defun (written n) (str "(: " (clr-written-number n "") " int128)"))
   (defun (write-into n b) (stringbuilder-add-string! b (written n))))
@@ -2194,9 +2205,12 @@
 ;; Remember: exporting one trait function exposes ALL functions.
 (re-export abs sign min max clamp zero?)
 
-;; Square root.
+;; Square root. The root of a number in m^2 is in m.
 (import/extern
-  (sqrt (: System.Math.Sqrt)))
+  (clr-sqrt (: System.Math.Sqrt (-> double double))))
+
+(: sqrt (-> (double %u^2) (double %u)))
+(defun (sqrt x) (cast (double %u) (clr-sqrt (cast double x))))
 
 ;; ---------------------------------------------------------------------------
 ;; Strings, conversions, files and paths

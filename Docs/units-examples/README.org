@@ -1,0 +1,40 @@
+* Units: paper programs
+
+Programs written against ~../Units.org~. Phase 0 wrote them for an earlier
+design, with units rather than base units in types and ~as~ between them;
+Phase 10 rewrote them for the design as built. Each file gives the expected
+types, values and errors in comments. ~TestFiles/516_std_units.bjo~ compiles
+and runs what they compute.
+
+| File             | What                                   | Annotations | ~in~ | Other                    |
+|------------------+----------------------------------------+-------------+------+--------------------------|
+| ~umits.bjo~      | Umits README: drag, dilution, Co-60    |           1 |    6 |                          |
+| ~sensors.bjo~    | CSV readings, filtered and printed     |           1 |    2 | 2 field units            |
+| ~projectile.bjo~ | Euler steps on a struct; RK4 on a vec  |       3 / 2 | 0 / 4 | vec: 1 attaching literal |
+| ~stats.bjo~      | mean and standard deviation            |           2 |    0 |                          |
+| ~astronomy.bjo~  | Kepler in double m                     |           2 |    1 | 1 ~def/unit~             |
+
+** What changed from Phase 0
+
+- A type names base units, so ~(double km/h)~ is ~(double m/s)~, and a field
+  holds its value in the base whatever unit it was written in. ~as~ is gone;
+  ~in~ is the only way out.
+- ~(decimal au)~ is gone with it: an au³ in m³ overflows a ~decimal~.
+  ~astronomy.bjo~ is in ~double~. A program that wants astronomical numbers
+  in a ~decimal~ declares a dimension with ~au~ as its base.
+- ~summing~ is still ~Num~, so at unit 1 only: ~stats.bjo~ sums with a named
+  ~let~. ~min~, ~max~, ~abs~, ~sqr~ and ~positive?~ take any unit.
+
+** Findings from Phase 0, as they stand
+
+1. ~Measure~ was not needed: ~Num~ is asked of the carrier, and the methods
+   of ~Num~ itself take any unit.
+2. Attaching a unit is multiplication: ~(* x <1 m>)~.
+3. No ~degC~ or ~degF~ unit. Absolute temperatures are newtypes.
+4. Constants are units: ~<1 c>~, ~(in v c)~.
+5. Every zero literal is a number of every unit.
+6. A factor is a rational times a power of pi, exact until the carrier.
+7. A plain literal where a unit is expected is an error that suggests the
+   quantity literal.
+8. Factor-1 names are lost in printing: ~Sv~ and ~Gy~ are both ~m^2/s^2~.
+   Open question 2.

@@ -238,6 +238,10 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "--help" :: _ ->
         printUsage ()
         exit 0
+    // Undocumented: the unit solver's test driver.
+    | "--solve-units" :: path :: _ ->
+        Units.runSolverFile path
+        exit 0
     | "--repl" :: rest -> parseArgs rest { opts with Repl = true }
     | "--lib" :: rest -> parseArgs rest { opts with IsLibrary = true }
     | "--batch" :: rest -> parseArgs rest { opts with Batch = true }

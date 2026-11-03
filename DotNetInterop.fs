@@ -534,6 +534,8 @@ let interfaceMemberNames (iface: Type) : string list =
 let rec private pruneLocal (t: HMType) : HMType =
     match t with
     | TMeta { Value = Some inner } -> pruneLocal inner
+    // A unit solved to 1 leaves the carrier, as `Unification.prune` has it.
+    | TNum(carrier, unit) when Units.isOne (Units.prune unit) -> pruneLocal carrier
     | other -> other
 
 // ---------------------------------------------------------------------------
@@ -959,6 +961,7 @@ let showTypesTogether (ts: HMType list) : string list =
             | "System.Single" -> "float"
             | "System.Decimal" -> "decimal"
             | "System.Numerics.BigInteger" -> "bigint"
+            | "Bjolang.Runtime.BjoRational" -> "rational"
             | "System.Int128" -> "int128"
             | "System.UInt128" -> "uint128"
             | "String" -> "string"
@@ -979,6 +982,11 @@ let showTypesTogether (ts: HMType list) : string list =
         | TVar n -> "%" + n.TrimStart('\'')
         | TMeta m -> nameOf m.Id
         | TAssoc(tn, an, impl) -> $"(assoc %s{tn} %s{an} %s{go impl})"
+        | TNum(carrier, unit) ->
+            let unitMeta (c: Units.UnitCell) = "%?" + string c.UId
+            // A carrier that is a variable is spelled as it is written.
+            let head = match carrier with TVar _ -> "num " | _ -> ""
+            $"(%s{head}%s{go carrier} %s{Units.toStringWith UnitTable.nameOfKey unitMeta unit})"
 
     ts |> List.map go
 

@@ -622,6 +622,16 @@ type MemberConstraint =
       MCPins: (string * FType) list
       MCRange: Range }
 
+/// An entry of the unit table, as written. Each carries its own source, which
+/// is what a module's metadata publishes.
+type UnitDecl =
+    /// Name, base unit, carrier.
+    | UDimension of string * string * string option
+    /// Name, definition as a unit expression.
+    | UUnit of string * string
+    /// Name, value as a unit expression with no units.
+    | UPrefix of string * string
+
 type Decl =
     | DSignature of string * FType * MemberConstraint list * Range
     | DImport of ImportSpec list * Range
@@ -751,6 +761,10 @@ type Decl =
     // clause, it answers loop clauses. A table of its own, as for patterns.
     | DClauseMacro of string * Range
 
+    /// `(def/dimension ...)`, `(def/unit ...)`, `(def/prefix ...)`: an entry
+    /// of the unit table. See Docs/Units.org.
+    | DUnitDecl of UnitDecl * Range
+
     // `(def/hash-extend (name form inject compare) body...)`, registered as
     // `#name(...)`. The name is the bare one; the transformer `defun` beside it
     // is spelled `#name`, which no source identifier can be.
@@ -840,6 +854,7 @@ let rec declRange (decl: Decl) : Range =
     | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
     | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
     | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DPatternMacro(_, r) | DClauseMacro(_, r) | DHashMacro(_, r)
+    | DUnitDecl(_, r)
     | DSyncOnly(_, r) -> r
     | DNoInline(_, r) -> r
     | DInline(_, r) -> r
@@ -1462,6 +1477,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DGrammar _
         | DMacro _
         | DClauseMacro _
+        | DUnitDecl _
         | DPatternMacro _
         | DHashMacro _
         | DSyncOnly _
@@ -1527,6 +1543,7 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DImportClass _
     | DMacro _
     | DClauseMacro _
+    | DUnitDecl _
     | DPatternMacro _
     | DHashMacro _
     | DSyncOnly _

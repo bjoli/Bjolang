@@ -1,0 +1,33 @@
+;; Paper program: the planets, and Kepler's third law.
+;; In the base units an au^3 is 3.3e33 m^3 and the Sun 2.0e30 kg: too large
+;; for a decimal, so this is in double.
+
+(import (std units))
+
+(def/unit Msun <1.98847e30 kg>)            ; a unit of the program's own
+
+(type (: Body (Record (: name string)
+                      (: a (double m))     ; semi-major axis
+                      (: mass (double kg)))))
+
+(def mars (Body (name "Mars") (a <1.523679 au>) (mass <3.227e-7 Msun>)))
+;; (a 1.523679) is an error: a plain number is unit 1. Write <1.523679 au>.
+
+(in (.a mars) au)                          ; double, 1.523679
+(in (* (.a mars) (.a mars) (.a mars)) au^3) ; double, 3.5374
+
+(def gm-sun <1.32712440018e20 m^3/s^2>)
+
+;; Kepler: T = 2 pi sqrt(a^3 / GM).
+(: period (-> Body (double s)))
+(defun (period b)
+  (def a (.a b))
+  (* 2 pi (sqrt (/ (* a a a) gm-sun))))    ; sqrt of s^2 is s
+
+(in (period mars) yr)                      ; double, 1.8808
+
+;; A program that wants the numbers of astronomy in a decimal declares them:
+(def/dimension astro-length #:base au* #:carrier decimal)
+;; and au* is a unit of its own, not convertible to (std units)' m.
+
+;; Count: 2 annotations, 1 unit declaration.
