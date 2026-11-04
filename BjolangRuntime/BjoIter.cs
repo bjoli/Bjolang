@@ -130,14 +130,12 @@ public readonly struct StringWalk {
     private readonly int _next;
     private readonly int _end;
     private readonly BjoChar _current;
-    private readonly bool _more;
 
-    private StringWalk(byte[]? bytes, int next, int end, BjoChar current, bool more) {
+    private StringWalk(byte[]? bytes, int next, int end, BjoChar current) {
         _bytes = bytes;
         _next = next;
         _end = end;
         _current = current;
-        _more = more;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -145,10 +143,11 @@ public readonly struct StringWalk {
         if (i >= end) {
             return default;
         }
-        var (r, next) = BjoString.Cursors.RefNext(bytes, 0, end, i);
-        return new StringWalk(bytes, next.Offset, end, BjoChar.FromRune(r), true);
+        var (r, next) = BjoString.Cursors.RefNext(bytes!, end, i);
+        return new StringWalk(bytes, next.Offset, end, BjoChar.FromRune(r));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static StringWalk Start(Utf8String s) {
         var b = s.GetBounds();
         return At(b.Bytes, b.Lo, b.Hi);
@@ -156,17 +155,17 @@ public readonly struct StringWalk {
 
     public bool Done {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => !_more;
+        get => _bytes is null;
     }
 
     /// The character; a walk at the end has none, and says so.
     public BjoChar Current {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => _more ? _current : ThrowAtEnd();
+        get => _bytes is not null ? _current : ThrowAtEnd();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public StringWalk Next() => _more ? At(_bytes, _next, _end) : this;
+    public StringWalk Next() => _bytes is not null ? At(_bytes, _next, _end) : this;
 
     [System.Diagnostics.CodeAnalysis.DoesNotReturn]
     private static BjoChar ThrowAtEnd() =>
