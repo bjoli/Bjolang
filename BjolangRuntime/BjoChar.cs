@@ -38,11 +38,15 @@ public readonly record struct BjoChar : IComparable<BjoChar>, IComparisonOperato
         Value = codePoint;
     }
 
-    // A `Rune` is already a valid scalar, so the check above is not repeated.
-    private BjoChar(Rune r) => Value = (uint)r.Value;
-
-    /// <summary>The scalar that BjoString's operations answer.</summary>
-    public static BjoChar FromRune(Rune r) => new(r);
+    /// <summary>The scalar that BjoString's operations return.</summary>
+    /// <remarks>
+    /// A `Rune` is already a valid scalar, so the check in the constructor is
+    /// not repeated. Both types are one `uint`, so this is a bit cast. It is
+    /// not a constructor call, because string loops inline it, and every
+    /// inlined call uses part of the loop method's inline budget.
+    /// </remarks>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static BjoChar FromRune(Rune r) => System.Runtime.CompilerServices.Unsafe.BitCast<Rune, BjoChar>(r);
 
     public Rune ToRune() => System.Runtime.CompilerServices.Unsafe.BitCast<uint, Rune>(Value);
 

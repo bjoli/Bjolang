@@ -425,11 +425,18 @@ public static partial class BjolangRuntime {
     // `string-cursor-ref+next`: the character and the cursor after it, for the
     // loop that wants both. One read of the lead byte answers both questions,
     // so this is cheaper than the two calls it replaces.
+    //
+    // The result is built by field stores, not by the tuple constructor: each
+    // call that the JIT inlines uses part of the loop method's inline budget
+    // (see `BjoString.Cursors`).
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static (Bjolang.Runtime.BjoChar, BjoString.StringCursor) stringsubcursorsubrefaddnext(
         Utf8String s, BjoString.StringCursor c) {
-        var (r, next) = BjoString.StringCursor.RefNext(s, c);
-        return (Bjolang.Runtime.BjoChar.FromRune(r), next);
+        var step = BjoString.StringCursor.RefNext(s, c);
+        (Bjolang.Runtime.BjoChar, BjoString.StringCursor) result = default;
+        result.Item1 = Bjolang.Runtime.BjoChar.FromRune(step.Item1);
+        result.Item2 = step.Item2;
+        return result;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

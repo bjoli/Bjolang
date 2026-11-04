@@ -129,6 +129,41 @@ noted.
   positions are opaque cursors. ~string->bytes~ copies. When
   ~ReadOnlyMemory<byte>~ is usable from Bjolang, a string can give its bytes
   as one, and ~SimdSource~ can take that without exposing string indexes.
+- *Cursor loops unpeel the string at every step.* Each ~string-cursor-*~ call
+  tests whether the string is a whole array or a slice. The JIT does not hoist
+  this out of the loop. A cursor loop runs at about 1230 MB/s, and ~(:for ch s)~
+  (~StringWalk~, which unpeels once) at about 1710. The steps are also near the
+  JIT inline budget: with half the budget, cursor loops fall to about 430 MB/s.
+  Fix: hoist the bounds out of loops where the string does not change.
+  Estimate 1-2 days.
+  - Runtime: a public ~StringBounds~ struct (array, lo, hi) with internal
+    fields, and versions of ~end?~, ~ref~, ~next~, ~prev~ and ~ref+next~ that
+    take it. A step is ~Cursors~ with ~i >= lo ? hi : 0~. Exceptions do not
+    change; ~end?~ stays ~c >= hi~.
+  - Compiler: ~TCon("StringBounds")~ in ~Prelude.fs~, with mappings in
+    ~Codegen.fs~ (~typeToString~), ~DotNetInterop.fs~ and ~Naming.fs~, and
+    internal builtin names for the helpers.
+  - A typed-AST pass after ~LoopLowering~, next to ~findVectorLoops~. For each
+    loop that runs inline in its method, find cursor calls on an identifier
+    ~s~ that does not change in the loop: ~s~ is from outside and has no
+    ~set!~ or rebinding inside, or ~s~ is a slot that every ~TRecur~ passes
+    back unchanged. Put ~(let ((b (string-bounds s))) ...)~ around the loop
+    and rewrite the calls to use ~b~. Use ~jumpsAt~ for the levels of nested
+    loops. Look out for the slot/local split (~formsClosure~) and shadowing.
+  - ~generateFunctionBody~ matches only a bare ~TLoop([m], None)~. It must
+    also emit a ~let~ before the ~while~, for a tail-recursive ~defun~ that
+    passes ~s~ on unchanged.
+  - Do not hoist for groups that stay C# local functions: the bounds become a
+    captured variable, and each step loads it from the heap.
+  - Tests: whole string and slice; a cursor from another string still raises;
+    ~set!~ or shadowing of ~s~ in the loop stops the hoist; a slot that
+    changes; closures in the loop; async loops and ~seq~ bodies (no ~ref~
+    locals, so the struct is safe across awaits). Some codegen tests may need
+    new expected output.
+  - Measure with a Bjolang program under the default JIT, with
+    ~DOTNET_JitInlineBudget=5~ and with ~DOTNET_TieredPGO=0~, and read the
+    loop with ~DOTNET_JitDisasm~. The C# bench in ~BjoString~ does not show
+    inline-budget problems.
 
 * Emacs mode (~bjomode.el~)
 
