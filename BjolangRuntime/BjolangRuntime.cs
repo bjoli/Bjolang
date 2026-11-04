@@ -1872,7 +1872,7 @@ public static partial class BjolangRuntime {
     /// task and a thread hop per refill: reading 250 MB of lines took 820 ms
     /// that way and 530 ms with plain reads into the default buffer.
     public static readonly Bjolang.Runtime.BjoInputPort StdIn =
-        new(Console.OpenStandardInput(), Bjolang.Runtime.BjoInputPort.DefaultBufferSize, ownsInner: false, syncReads: true) {
+        new(OpenStandardInputOrEmpty(), Bjolang.Runtime.BjoInputPort.DefaultBufferSize, ownsInner: false, syncReads: true) {
             BeforeWait = [NonUserCode] static () => StdOut?.FlushAtExit(),
         };
 
@@ -1890,6 +1890,17 @@ public static partial class BjolangRuntime {
     /// console is not reordered against the program's own output by two
     /// buffers.
     public static readonly Bjolang.Runtime.BjoOutputPort StdOut = MakeStandardPorts();
+
+    /// The process's standard input, or an empty stream where the platform has
+    /// none: in a browser, `Console.OpenStandardInput` throws, and it is called
+    /// from this class's static initializer.
+    private static System.IO.Stream OpenStandardInputOrEmpty() {
+        try {
+            return Console.OpenStandardInput();
+        } catch (PlatformNotSupportedException) {
+            return System.IO.Stream.Null;
+        }
+    }
 
     /// Standard error: unbuffered, as Racket's is.
     public static readonly Bjolang.Runtime.BjoOutputPort StdErr =
