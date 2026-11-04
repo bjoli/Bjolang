@@ -658,6 +658,23 @@ let rec tryParseDecl (s: SExpr) : Decl option =
         | Defaults(name, bound) -> Some(DDef(name, bound, r))
         | Leaves _ -> failwith "internal error: :default read as a failure part that leaves"
 
+    // `:panic` does not leave either: the def binds its names or the program
+    // stops. Each name the pattern binds becomes a definition, and the
+    // scrutinee is evaluated once:
+    // - one name: (def name <the def, with the name as its sequel>);
+    // - several: a tuple def of them;
+    // - none: a def of nothing, for the check alone.
+    | SList(SAtom { Token = Symbol "def" } :: binder :: scrutinee :: ((SAtom { Token = Keyword "panic" } :: _) as forms), _) ->
+        match parseDefTail r binder scrutinee forms with
+        | Leaves(pattern, scrut, failure) ->
+            let matched sequel = EDefMatch(pattern, scrut, failure, sequel, r)
+
+            match patternBinders pattern |> List.distinct with
+            | [ name ] -> Some(DDef(name, matched (EIdent(name, r)), r))
+            | [] -> Some(DDefPattern(PWildcard r, matched (EBool(true, r)), r))
+            | names -> Some(DDefTuple(names, matched (ETuple(names |> List.map (fun n -> EIdent(n, r)), r)), r))
+        | Defaults _ -> failwith "internal error: :panic read as :default"
+
     // A failure part that leaves, written where there is no body to leave.
     //
     // A REPL entry is a top level too. Binding a pattern that may fail at the
@@ -665,7 +682,7 @@ let rec tryParseDecl (s: SExpr) : Decl option =
     // have to decide what the *rest of the session* is, and it does not.
     | SList(SAtom { Token = Symbol "def" } :: _ :: _ :: _ :: _, _) ->
         failwithf
-            $"Syntax error at %s{Lexer.formatPos r}: a failure part that leaves gives the value of the body the `def` stands in, and the top level is not a body. Here a pattern has to match every value, or take `:default value` for its one name. A REPL entry is a top level as well."
+            $"Syntax error at %s{Lexer.formatPos r}: a failure part that leaves gives the value of the body the `def` stands in, and the top level is not a body. Here a pattern has to match every value, take `:default value` for its one name, or take `:panic`. A REPL entry is a top level as well."
 
     | SList(SAtom { Token = Symbol "def" } :: SList(names, _) :: [ expr ], _) ->
         let rawNames =

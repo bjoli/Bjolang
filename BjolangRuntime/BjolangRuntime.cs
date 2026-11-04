@@ -1340,6 +1340,18 @@ public static partial class BjolangRuntime {
         return default!;   // unreachable: Exit does not return
     }
 
+    // The `:panic` failure part of a `def`. The parser writes the calls, by
+    // `%` names that no binding of a program can shadow, so a program that
+    // binds `panic!` does not change them. Both exit with 1, as `panic!` does.
+
+    /// `(def pattern scrutinee :panic)`, builtin `%def-panic`: `where` says
+    /// which def, and the value that did not match is shown after it.
+    public static T _u25_defsubpanic<V, T>(Utf8String where, V value) =>
+        Panic<T>(Utf8String.FromUtf16(where.ToString() + Bjolang.Runtime.BjoNum.ShowField(value)), 1);
+
+    /// `(def pattern scrutinee :panic message)`, builtin `%def-panic-with`.
+    public static T _u25_defsubpanicsubwith<T>(Utf8String message) => Panic<T>(message, 1);
+
     /// Why a scope was cancelled, and Bjolang's `CancelReason`. The payload of
     /// every cancellation token: a token used to say only *that* you had been
     /// cancelled.

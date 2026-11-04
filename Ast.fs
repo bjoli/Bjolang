@@ -1228,6 +1228,13 @@ let fieldOrCallMarker = "%field-or-call"
 /// `(%call-error "message")`. It is an error only if inference takes it.
 let callErrorMarker = "%call-error"
 
+/// The builtins that the `:panic` failure part of a `def` calls (see
+/// `Parser.parseDefTail`). `%def-panic` takes the def's position and the value
+/// that did not match; `%def-panic-with` takes the message the def gives.
+/// Neither returns.
+let defPanicName = "%def-panic"
+let defPanicWithName = "%def-panic-with"
+
 /// How `Codegen` writes a `PFieldOr` into a published body:
 /// `(%field-or (label p) other)`, and `(%pattern-error "message")` in the
 /// place of an `other` that could not be read.

@@ -849,6 +849,12 @@ let prelude : Env =
         /// `void` would keep it out of the one position that needs it, a `match`
         /// arm whose siblings produce a value.
         "raise", {Scheme = Scheme(["a"], [], makeFunType [TCon("System.Exception", [])] (TVar "a")); IsMutable = false }
+        // The `:panic` failure part of a `def`: the parser writes these calls
+        // (see `Ast.defPanicName`). A bare `%name` reads as a quoted symbol,
+        // so a program reaches them only by the call form `(%def-panic ...)`,
+        // which is how a published body spells them.
+        "%def-panic", {Scheme = Scheme(["v"; "a"], [], makeFunType [stringType; TVar "v"] (TVar "a")); IsMutable = false }
+        "%def-panic-with", {Scheme = Scheme(["a"], [], makeFunType [stringType] (TVar "a")); IsMutable = false }
 
         // The two halves of `parameterize`, which the parser desugars to. Not
         // surface API: called by hand they pair a push with a restore that no

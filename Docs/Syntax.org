@@ -685,6 +685,8 @@ pattern does not match. Every failure part starts with a keyword:
 (def pattern scrutinee :leave arm ...)     ;; the arms decide the body's value
 (def pattern scrutinee :propagate)         ;; the leftover cases are rebuilt
 (def pattern scrutinee :default value)     ;; the pattern's one name is value
+(def pattern scrutinee :panic)             ;; the program stops
+(def pattern scrutinee :panic message)     ;; the program stops with message
 
 (def* clause clause ...)                   ;; a clause is a parenthesised def
 #+END_SRC
@@ -710,6 +712,7 @@ What makes it a definition rather than a ~match~ is where the success path goes:
 | it does not, and a ~:leave~ arm matches | that arm's body is the form's value, and what *it* binds is in scope only there |
 | it does not, and ~:propagate~ was written | the case it did not match is rebuilt — see propagation below |
 | it does not, and ~:default~ was written | the pattern's one name is bound to the default, and the rest of the body runs — see below |
+| it does not, and ~:panic~ was written | the program stops, as ~panic!~ stops it — see below |
 | nothing was written | there is no such case: the pattern has to match every value, and it is an error where it does not |
 
 ~:leave~, ~:leave-with~ and ~:propagate~ produce a value for the body; they do
@@ -750,6 +753,26 @@ match, its one name is bound to the value, and the next form runs either way.
   ~(option-value e 8080)~ does the same.
 - In a ~def*~ a ~:default~ clause never short-circuits, and later clauses see
   the name.
+
+**~:panic~ binds or stops the program.** For a script, where a value that
+does not match is a bug and not a case to handle:
+
+#+BEGIN_SRC scheme
+(def (Ok table) (read-csv "prices.csv") :panic)
+(def (Some port) (lookup cfg "port") :panic "the config has no port")
+#+END_SRC
+
+- Without a message, the panic says where the ~def~ is and shows the value
+  that did not match: ~app.bjo:12:3: this def's pattern does not match (Err
+  ...)~.
+- With a message, the panic is that message, a string. It is **evaluated only
+  when the pattern fails**.
+- The program exits with 1 and the message goes to the error port, as with
+  ~panic!~. At a REPL, the entry fails and the session carries on.
+- It never leaves the body, so it binds any number of names, and it gets no
+  warning where the body's value is dropped.
+- In a ~def*~, a ~:panic~ clause that fails stops the program before any later
+  clause runs.
 
 **A pattern that may fail needs a failure part.** Writing none says it matches
 every value; where it does not, the counterexample is named and the form
@@ -821,7 +844,7 @@ A pattern may also be written at the top level, where it has nowhere to fail:
 
 Each name becomes a definition of its own, from one evaluation and destructuring of the scrutinee, and a later clause reads what an earlier one bound.
 
-There is no body for a failure to be the value of, so **the pattern must match every value**, and a failure part that leaves is refused. ~:default~ never leaves, so it is allowed: ~(def (Some port) (lookup cfg "port") :default 8080)~ defines ~port~, and the default is evaluated once, when the module initialises and the pattern fails. A REPL entry is a top level too: `(def (Tuple a b) ...)` binds at the prompt and `(def (Some x) ...)` does not, unless it has a ~:default~.
+There is no body for a failure to be the value of, so **the pattern must match every value**, and a failure part that leaves is refused. ~:default~ and ~:panic~ never leave, so they are allowed: ~(def (Some port) (lookup cfg "port") :default 8080)~ defines ~port~, and the default is evaluated once, when the module initialises and the pattern fails. ~(def (Ok table) (read-csv "prices.csv") :panic)~ defines ~table~, or stops the program when the module initialises. A ~:panic~ pattern may bind several names, and each becomes a definition. A REPL entry is a top level too: `(def (Tuple a b) ...)` binds at the prompt and `(def (Some x) ...)` does not, unless it has a ~:default~ or a ~:panic~.
 ** ~apply~ — spreading a collection into a rest parameter
 ~apply~ calls a function whose last parameter is ~#:rest~, taking the rest
 elements from a collection instead of writing them out:
@@ -860,7 +883,7 @@ Standard ~if~ expressions:
   (else "word"))
 #+END_SRC
 
-A ~:def~ clause is a ~def~, and the body it swallows is the rest of the cond, so it takes the same failure parts: ~(:def (Ok v) (parse s) :propagate)~ makes the whole cond the ~Err~ when the parse failed, ~(:def (Some n) e :leave-with 0)~ makes it ~0~, and ~(:def (Some n) e :default 0)~ binds ~n~ either way and never answers. See ~def~ below.
+A ~:def~ clause is a ~def~, and the body it swallows is the rest of the cond, so it takes the same failure parts: ~(:def (Ok v) (parse s) :propagate)~ makes the whole cond the ~Err~ when the parse failed, ~(:def (Some n) e :leave-with 0)~ makes it ~0~, ~(:def (Some n) e :default 0)~ binds ~n~ either way and never answers, and ~(:def (Some n) e :panic)~ binds ~n~ or stops the program. See ~def~ below.
 
 ~(:match pattern expr body ...)~ is a test that binds. It answers when ~expr~ matches ~pattern~, and an optional ~#:when guard~ after ~expr~ must hold as well, as in a ~match~ arm. When the pattern or the guard fails, the cond goes on to the next clause. What the pattern binds is in scope in the guard and the body only. Unlike ~:def~, nothing below the clause depends on it matching:
 

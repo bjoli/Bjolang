@@ -1,0 +1,92 @@
+;; `(def pattern scrutinee :panic)` and `(def pattern scrutinee :panic message)`:
+;; the def binds what the pattern binds, or the program stops with a panic.
+;; What is pinned here:
+;; - it binds, in a body, in def*, in cond's :def and at the top level (one
+;;   name and several);
+;; - the panic without a message gives the def's position and the value that
+;;   did not match;
+;; - the panic with a message gives that message, and the message is
+;;   evaluated only when the pattern does not match;
+;; - in a body whose value goes nowhere, a :panic def gets no warning that it
+;;   leaves the body: it does not leave.
+;; A panic exits the program, except at a REPL, where it raises. The checks
+;; bind `currently-in-repl` to catch it.
+(import (std prelude))
+(import (std simpletest))
+
+(: (-> string (Result string int)))
+(defun (parse s)
+  (if (string-contains? s "x")
+      (Err (str "not a number: " s))
+      (Ok (string->int s))))
+
+(def (Ok top) (parse "42") :panic)
+(def (Tuple (Some first) second) (Tuple (Some 1) "two") :panic)
+
+(: (-> string int))
+(defun (twice s)
+  (def (Ok n) (parse s) :panic)
+  (* 2 n))
+
+(def/mutable messages-made 0)
+
+(: (-> string string))
+(defun (message-for s)
+  (set! messages-made (+ messages-made 1))
+  (str "twice-said: " s " is not a number"))
+
+(: (-> string int))
+(defun (twice-said s)
+  (def (Ok n) (parse s) :panic (message-for s))
+  (* 2 n))
+
+(: (-> string string int))
+(defun (sum2 x y)
+  (def* ((Ok a) (parse x) :panic)
+        ((Ok b) (parse y) :panic))
+  (+ a b))
+
+(: (-> string int))
+(defun (in-cond s)
+  (cond
+    (:def (Ok n) (parse s) :panic)
+    ((> n 10) 1)
+    (else 0)))
+
+;; A body whose value is dropped. `warnings/def_panic_leaves_nothing.bjo`
+;; checks that this gets no warning.
+(: (-> string void))
+(defun (print-parsed s)
+  (when (> (string-length s) 0)
+    (def (Ok n) (parse s) :panic)
+    (println (int->string n))))
+
+;; The panic's message, or what the call returned.
+(: (-> (-> int) string))
+(defun (outcome f)
+  (parameterize ((currently-in-repl #t))
+    (match (try (f) #:catch (System.Exception))
+      ((Ok v) (str "returned " (int->string v)))
+      ((Err e) (.-Message e)))))
+
+(defun (main)
+  (expect "top level, one name" top 42)
+  (expect "top level, two names" (+ first (string-length second)) 4)
+  (expect "in a body" (twice "21") 42)
+  (expect "in def*" (sum2 "1" "2") 3)
+  (expect "in cond" (in-cond "11") 1)
+  (print-parsed "5")
+
+  (def plain (outcome (fun () (twice "x"))))
+  (expect "says where" (string-contains? plain "519_def_panic.bjo:28:3") #t)
+  (expect "and what did not match" (string-contains? plain "this def's pattern does not match (Err not a number: x)") #t)
+  (expect "in def*, the clause that failed"
+          (string-contains? (outcome (fun () (sum2 "1" "x"))) "519_def_panic.bjo:46:9") #t)
+
+  (expect "a match makes no message" (twice-said "4") 8)
+  (expect "so the message was not evaluated" messages-made 0)
+  (expect "the message" (outcome (fun () (twice-said "x"))) "twice-said: x is not a number")
+  (expect "evaluated once" messages-made 1)
+
+  (println "519 ok")
+  0)

@@ -1193,7 +1193,8 @@ let check (env: Env) (moduleKey: string) (decls: Decl list) (entries: Entry list
             | _ -> ()
 
         // The builtins are offered beside the prelude, and are documented in it.
+        // A name with `%` is one the compiler writes, and is not offered.
         if isPrelude moduleKey then
             for n in Prelude.builtinNames do
-                if not (Set.contains n documented) && not (Map.containsKey n kinds) && warned.Add n then
+                if not (n.StartsWith "%") && not (Set.contains n documented) && not (Map.containsKey n kinds) && warned.Add n then
                     Diagnostics.warn $"The builtin %s{n} has no (:doc %s{n} ...). %s{why}"

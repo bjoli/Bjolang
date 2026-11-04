@@ -1,0 +1,25 @@
+;; A `:panic` def does not leave the body it stands in: it binds, or the
+;; program stops. So where the body's value is dropped, it gets none of the
+;; warning that `def_leaves_the_when.bjo` pins for a def that leaves. The
+;; second function is there so that the file warns at all, as a warning test
+;; must.
+;; EXPECT-WARNING: at def_panic_leaves_nothing.bjo:24:5: a failing def here leaves
+;; EXPECT-NO-WARNING: at def_panic_leaves_nothing.bjo:17:5: a failing def here leaves
+
+(import (std prelude))
+(export show-panics show-leaves)
+
+;; The def is on line 17.
+(: (-> (Option int) void))
+(defun (show-panics o)
+  (when #t
+    (println "checking")
+    (def (Some n) o :panic)
+    (println (int->string n))))
+
+;; The def is on line 24.
+(: (-> (Option int) void))
+(defun (show-leaves o)
+  (when #t
+    (def (Some n) o :leave-with (println "none"))
+    (println (int->string n))))

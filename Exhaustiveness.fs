@@ -1063,7 +1063,7 @@ let private checkDefMatch
                 $"Pattern Error at %s{formatPos binder.Range}: a parameter's pattern has to match every value, and this one does not: %s{showWitness witness} reaches nothing. Take the parameter as a name, and match on it in the body."
         | Some [ witness ] when arms.IsEmpty ->
             failwithf
-                $"Pattern Error at %s{formatPos range}: this def's pattern does not match every value. %s{showWitness witness} reaches nothing, and a def with no failure part has nowhere to send it. Give it a failure part: :leave-with, :leave, :default or :propagate."
+                $"Pattern Error at %s{formatPos range}: this def's pattern does not match every value. %s{showWitness witness} reaches nothing, and a def with no failure part has nowhere to send it. Give it a failure part: :leave-with, :leave, :default, :panic or :propagate."
         | Some [ witness ] ->
             failwithf
                 $"Pattern Error at %s{formatPos range}: this def does not cover every value. %s{showWitness witness} matches neither the binding pattern nor any arm, and a def has nowhere to send it."
@@ -1096,7 +1096,7 @@ let private checkDefPattern
                     ""
 
             failwithf
-                $"Pattern Error at %s{formatPos range}: this def's pattern does not match every value, and at the top level there is nowhere else for one to go. %s{showWitness witness} reaches nothing. Give its one name a :default, or move the binding into a body, where it can also take :leave-with, :leave or :propagate.%s{note}"
+                $"Pattern Error at %s{formatPos range}: this def's pattern does not match every value, and at the top level there is nowhere else for one to go. %s{showWitness witness} reaches nothing. Give its one name a :default, give it :panic, or move the binding into a body, where it can also take :leave-with, :leave or :propagate.%s{note}"
         | _ -> ()
     with Undecidable ->
         ()

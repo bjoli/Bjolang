@@ -3,6 +3,42 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~def~ takes ~:panic~
+
+- ~(def (Ok table) (read-csv path) :panic)~ binds ~table~, or stops the
+  program. The panic says where the ~def~ is and shows the value that did
+  not match: ~app.bjo:12:3: this def's pattern does not match (Err ...)~.
+- ~(def p e :panic message)~ panics with ~message~, a string that is
+  evaluated only when the pattern does not match.
+- It works where ~def~ does: in a body, in ~def*~, in ~cond~'s ~:def~, and at
+  the top level, where each name the pattern binds becomes a definition.
+- It does not leave the body, so it binds any number of names, and a body
+  whose value is dropped gets no warning for it.
+- The program exits with 1, as with ~panic!~. At a REPL the entry fails.
+- The calls are to the builtins ~%def-panic~ and ~%def-panic-with~, which a
+  program's own ~panic!~ or other bindings do not change. A function with a
+  ~:panic~ def can be published and inlined in another module.
+- Not here: the message shows the value as ~ToString~ does, which for a
+  record is C#'s ~Name { field = ... }~ and not what ~displayed~ gives.
+
+* Cursor loops: smaller steps, and the bounds once per loop
+
+- The cursor steps are small enough for the JIT to inline them where a
+  loop is inlined into a small caller. Before, it kept parts of each step
+  as calls there, once per character. A ~string-cursor-ref+next~ loop went
+  from about 400 to 1230 MB/s, and ~(:for ch s)~ from 445 to 1710.
+- A loop whose string does not change gets the string's bounds once, before
+  the loop, and its steps take the bounds. Each step then does not test
+  again whether the string is a whole array or a slice. Cursor loops went
+  from about 1230 to 2100-2350 MB/s, and to 1650 with PGO off.
+- A string qualifies when it is a loop slot that every jump passes on
+  unchanged, or a local from outside the loop that no ~set!~ writes. A
+  module-level string does not: a call in the loop can change it.
+- The steps on the bounds return and raise what the steps on the string
+  do, at every offset.
+- Not here: a merged loop group gets no bounds, and a ~ReadOnlySpan~ in
+  place of the bounds would be faster again (see ~Todo.org~).
+
 * Native AOT: two crashes fixed, vec loops at JIT speed, no fiber trace
 
 - ~(make-atomic x)~ of a record or union stopped a native executable with

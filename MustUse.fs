@@ -96,8 +96,15 @@ let private checkDiscard (registry: TraitRegistry) (what: string) (expr: TypedEx
 /// body is the `def`'s: the sequel's when the pattern matched, and the failure
 /// part's when it did not.
 let rec private refutableDef (expr: TypedExpr) : TypedExpr option =
+    // An arm of `:panic` does not return, so a def with only those leaves
+    // nothing.
+    let panics (arm: TDefMatchArm) =
+        match arm.Body.Node with
+        | TApply({ Node = TIdent(n, _) }, _, _) -> n = Ast.defPanicName || n = Ast.defPanicWithName
+        | _ -> false
+
     match expr.Node with
-    | TDefMatch(_, _, _, arms) when not arms.IsEmpty -> Some expr
+    | TDefMatch(_, _, _, arms) when not arms.IsEmpty && not (List.forall panics arms) -> Some expr
     | TLet(_, _, _, _, body)
     | TLetRec(_, body)
     | TLetTuple(_, _, body)

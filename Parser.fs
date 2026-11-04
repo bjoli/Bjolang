@@ -656,6 +656,10 @@ let rec parseExpr (s: SExpr) : Expr =
                 | _ -> failwithf $"Invalid %s{fieldOrCallMarker} at %s{Lexer.formatPos listRange}: the label is a quoted symbol."
             | _ -> failwithf $"Invalid %s{fieldOrCallMarker} at %s{Lexer.formatPos listRange}: expected a label, a value and a call."
 
+        // A `:panic` arm of a def, as `Codegen` writes it into a published
+        // body. See `Ast.defPanicName`.
+        | SAtom { Token = QuotedSymbol marker } when "%" + marker = defPanicName || "%" + marker = defPanicWithName ->
+            EApp(EResolved("%" + marker, listRange), List.map parseExpr args, listRange)
         | SAtom { Token = QuotedSymbol marker } when "%" + marker = callErrorMarker ->
             match args with
             | [ SAtom { Token = StringLit message; Range = mr } ] ->
@@ -2659,8 +2663,14 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
 /// A `def` clause from its binder on: `(def binder scrutinee failure-part ...)`.
 ///
 /// The failure part is nothing, `:propagate`, `:leave-with value`,
-/// `:leave arm ...` or `:default value`. `:leave` comes last, so every form
-/// after it is an arm.
+/// `:leave arm ...`, `:default value` or `:panic [message]`. `:leave` comes
+/// last, so every form after it is an arm.
+///
+/// `:panic` is a `:leave` whose arms do not return (see `Ast.defPanicName`):
+/// - `:panic`: one arm binds the value that did not match, and the panic
+///   message gives the def's position and that value.
+/// - `:panic message`: the message is the string `message`, evaluated only
+///   when the pattern does not match.
 and parseDefTail (r: Range) (binder: SExpr) (scrutinee: SExpr) (forms: SExpr list) : DefTail =
     let pattern = parsePattern binder
 
@@ -2696,7 +2706,7 @@ and parseDefTail (r: Range) (binder: SExpr) (scrutinee: SExpr) (forms: SExpr lis
     let binders = patternBinders pattern |> List.distinct
 
     let failureParts =
-        "(def pattern scrutinee :leave-with value), (def pattern scrutinee :leave arm ...), (def pattern scrutinee :default value) or (def pattern scrutinee :propagate)"
+        "(def pattern scrutinee :leave-with value), (def pattern scrutinee :leave arm ...), (def pattern scrutinee :default value), (def pattern scrutinee :panic [message]) or (def pattern scrutinee :propagate)"
 
     match forms with
     | [] -> leaves FailNone
@@ -2712,6 +2722,15 @@ and parseDefTail (r: Range) (binder: SExpr) (scrutinee: SExpr) (forms: SExpr lis
         failwithf
             $"Syntax error at %s{Lexer.formatPos r}: `:leave` takes at least one arm: (def pattern scrutinee :leave (pattern body ...) ...)."
     | SAtom { Token = Keyword "leave" } :: armForms -> leaves (FailLeave(List.map arm armForms))
+    | [ SAtom { Token = Keyword "panic" } ] ->
+        let unmatched = Gensym.fresh "unmatched"
+        let where = EString($"%s{Lexer.formatPos r}: this def's pattern does not match ", r)
+        leaves (FailLeave [ PIdent(unmatched, r), EApp(EResolved(defPanicName, r), [ where; EIdent(unmatched, r) ], r) ])
+    | [ SAtom { Token = Keyword "panic" }; message ] ->
+        leaves (FailLeave [ PWildcard r, EApp(EResolved(defPanicWithName, r), [ parseExpr message ], r) ])
+    | SAtom { Token = Keyword "panic" } :: _ ->
+        failwithf
+            $"Syntax error at %s{Lexer.formatPos r}: `:panic` takes the message as its one value, or nothing: (def pattern scrutinee :panic) or (def pattern scrutinee :panic message)."
     | [ SAtom { Token = Keyword "default" }; value ] ->
         if binders.Length <> 1 then
             failwithf
