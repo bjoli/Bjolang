@@ -897,6 +897,21 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // wrote reaches whichever of them it should — trait method, record
     // constructor, union case or ordinary function — with its head meaning what
     // it meant at module level.
+    // The panic of a `:panic` def with no message. The value that did not
+    // match is shown as `written` shows it, when the module sees the
+    // prelude's `written`: its blanket implementation reaches every type, so
+    // the call always checks. A module without the prelude passes the value
+    // on, and the runtime shows it with `ToString`. The parser gives the value
+    // as a name, and the rewritten call does not match here again.
+    | EApp(EResolved(name, mr), [ where; (EIdent _ as value) ], r) when
+        name = defPanicName
+        && Map.containsKey "written" env.Resolved
+        && (match Map.tryFind "written" env.Registry.TraitMethods with
+            | Some traitName -> Naming.showTraitName traitName = "Written"
+            | None -> false)
+        ->
+        infer env (EApp(EResolved(name, mr), [ where; EApp(EResolved("written", mr), [ value ], mr) ], r))
+
     | EApp(EResolved(name, mr), args, r) ->
         let shielded, args, restore = shieldLocal name env args
         let t, te = infer (unshadow name shielded) (EApp(EIdent(name, mr), args, r))

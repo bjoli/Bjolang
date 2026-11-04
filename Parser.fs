@@ -2668,7 +2668,8 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
 ///
 /// `:panic` is a `:leave` whose arms do not return (see `Ast.defPanicName`):
 /// - `:panic`: one arm binds the value that did not match, and the panic
-///   message gives the def's position and that value.
+///   message gives the def's position and that value, as `written` shows
+///   it (see the `defPanicName` case of `InferExpr.infer`).
 /// - `:panic message`: the message is the string `message`, evaluated only
 ///   when the pattern does not match.
 and parseDefTail (r: Range) (binder: SExpr) (scrutinee: SExpr) (forms: SExpr list) : DefTail =

@@ -7,7 +7,8 @@ What each change guarantees, and what it leaves open.
 
 - ~(def (Ok table) (read-csv path) :panic)~ binds ~table~, or stops the
   program. The panic says where the ~def~ is and shows the value that did
-  not match: ~app.bjo:12:3: this def's pattern does not match (Err ...)~.
+  not match, as ~written~ shows it:
+  ~app.bjo:12:3: this def's pattern does not match (Err (TableError (message "no column x")))~.
 - ~(def p e :panic message)~ panics with ~message~, a string that is
   evaluated only when the pattern does not match.
 - It works where ~def~ does: in a body, in ~def*~, in ~cond~'s ~:def~, and at
@@ -18,8 +19,9 @@ What each change guarantees, and what it leaves open.
 - The calls are to the builtins ~%def-panic~ and ~%def-panic-with~, which a
   program's own ~panic!~ or other bindings do not change. A function with a
   ~:panic~ def can be published and inlined in another module.
-- Not here: the message shows the value as ~ToString~ does, which for a
-  record is C#'s ~Name { field = ... }~ and not what ~displayed~ gives.
+- Every type is ~Written~ (the prelude's blanket implementation reaches
+  the rest), so the value is always shown. A module that does not import
+  the prelude has no ~written~, and shows the value as ~ToString~ does.
 
 * Cursor loops: smaller steps, and the bounds once per loop
 
