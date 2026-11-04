@@ -282,21 +282,19 @@
     (cond
       ((>= have n) #t)
       (else
-       (match (record-ref rd port)
-         (None #f)
-         ((Some p)
-          (def ask (record-ref rd ask))
-          (match (read-bytes p (if (> n ask) n ask))
-            (None
-             (record-set! rd (port None))
-             #f)
-            ((Some more)
-             (record-set! rd
-                          (bytes (join-bytes (record-ref rd bytes) (record-ref rd next) have more))
-                          (next 0)
-                          (limit (+ have (array-length more)))
-                          (ask (if (< ask read-most) (* ask 2) read-most)))
-             (go)))))))))
+       (def (Some p) (get rd .port) :leave-with #f)
+       (def ask (record-ref rd ask))
+       (match (read-bytes p (if (> n ask) n ask))
+         (None
+          (record-set! rd (port None))
+          #f)
+         ((Some more)
+          (record-set! rd
+                       (bytes (join-bytes (record-ref rd bytes) (record-ref rd next) have more))
+                       (next 0)
+                       (limit (+ have (array-length more)))
+                       (ask (if (< ask read-most) (* ask 2) read-most)))
+          (go)))))))
 
 ;; The byte the reader is looking at, or `spent` at the end of the document.
 (: (-> Reader int))
@@ -330,13 +328,6 @@
                (next (+ (record-ref rd next) 1))
                (col (+ (record-ref rd col) 1))))
 
-;; A line ends at the newline whether or not a return came before it.
-(: (-> Reader void))
-(defun (newline! rd)
-  (record-set! rd
-               (next (+ (record-ref rd next) 1))
-               (row (+ (record-ref rd row) 1))
-               (col 1)))
 
 (: (-> int bool))
 (defun (space? c) (or (= c 32) (= c 10) (= c 9) (= c 13)))
@@ -393,23 +384,21 @@
 (: (-> (Array byte) int int int int (Tuple int int int bool)))
 (defun (scan-space/128 b start limit row col)
   (let go ((i start) (row row) (col col))
-    (if (> (+ i 16) limit)
-        (Tuple i row col #f)
-        (let ()
-          (def v (simd128-load b i))
-          (def nl (simd-eq v (simd128-splat 10uy)))
-          (def spaces (simd-mask-bits (simd-or (simd-or nl (simd-eq v (simd128-splat 32uy)))
-                                               (simd-or (simd-eq v (simd128-splat 9uy))
-                                                        (simd-eq v (simd128-splat 13uy))))))
-          (def nls (simd-mask-bits nl))
-          (if (= spaces 65535)
-              (let ()
-                (def (Tuple r c) (after-space nls 16 row col))
-                (go (+ i 16) r c))
-              (let ()
-                (def t (trailing-zeros (bitwise-xor spaces 65535)))
-                (def (Tuple r c) (after-space (bitwise-and nls (- (shift-left 1 t) 1)) t row col))
-                (Tuple (+ i t) r c #t)))))))
+    (cond 
+      ((> (+ i 16) limit) (Tuple i row col #f))
+      (:def v (simd128-load b i))
+      (:def nl (simd-eq v (simd128-splat 10uy)))
+      (:def spaces (simd-mask-bits (simd-or (simd-or nl (simd-eq v (simd128-splat 32uy)))
+                                            (simd-or (simd-eq v (simd128-splat 9uy))
+                                                     (simd-eq v (simd128-splat 13uy))))))
+      (:def nls (simd-mask-bits nl))
+      ((= spaces 65535)
+        (def (Tuple r c) (after-space nls 16 row col))
+        (go (+ i 16) r c))
+      (else
+       (def t (trailing-zeros (bitwise-xor spaces 65535)))
+       (def (Tuple r c) (after-space (bitwise-and nls (- (shift-left 1 t) 1)) t row col))
+       (Tuple (+ i t) r c #t)))))
 
 ;; White space a chunk at a time: the chunk is scanned with a local index, and
 ;; the reader is moved once for it. A chunk that ends in white space is
@@ -422,16 +411,18 @@
     (scan-space b (record-ref rd next) limit (record-ref rd row) (record-ref rd col)))
   (def (Tuple end row col)
     (let go ((i fast-end) (row fast-row) (col fast-col))
-      (if (or stopped (>= i limit))
-          (Tuple i row col)
-          (let ((c (cast int (array-ref b i))))
-            (cond
-              ((= c 10) (go (+ i 1) (+ row 1) 1))
-              ((or (= c 32) (= c 9) (= c 13)) (go (+ i 1) row (+ col 1)))
-              (else (Tuple i row col)))))))
+      (cond
+        ((or stopped (>= i limit))
+          (Tuple i row col))
+        (:def c (cast int (array-ref b i)))
+        ((= c 10) (go (+ i 1) (+ row 1) 1))
+        ((or (= c 32) (= c 9) (= c 13)) (go (+ i 1) row (+ col 1)))
+        (else (Tuple i row col)))))
   (record-set! rd (next end) (row row) (col col))
   (when (and (>= end limit) (ensure! rd 1))
     (skip-space-run! rd)))
+
+
 
 ;; ---------------------------------------------------------------------------
 ;; Characters of several bytes
@@ -480,19 +471,18 @@
   (cond
     ((<= n 1) n)
     ((> (+ i n) limit) 0)
-    (else
-     (def second (cast int (array-ref b (+ i 1))))
-     (def low (cond ((= lead 224) 160) ((= lead 240) 144) (else 128)))
-     (def high (cond ((= lead 237) 159) ((= lead 244) 143) (else 191)))
-     (if (and (>= second low)
-              (<= second high)
-              (let check ((k 2))
-                (cond
-                  ((>= k n) #t)
-                  ((continuation? (cast int (array-ref b (+ i k)))) (check (+ k 1)))
-                  (else #f))))
-         n
-         0))))
+     (:def second (cast int (array-ref b (+ i 1))))
+     (:def low (cond ((= lead 224) 160) ((= lead 240) 144) (else 128)))
+     (:def high (cond ((= lead 237) 159) ((= lead 244) 143) (else 191)))
+     ((and (>= second low)
+           (<= second high)
+           (let check ((k 2))
+             (cond
+               ((>= k n) #t)
+               ((continuation? (cast int (array-ref b (+ i k)))) (check (+ k 1)))
+               (else #f))))
+      n)
+     (else 0)))
 
 ;; Copies the `n` bytes of the character being looked at into `sb`, and moves
 ;; past them: one column.
@@ -571,13 +561,11 @@
     (cond
       ((= left 0) (Ok n))
       ((at-end? rd) (Err (at rd "the document ended inside a \\u escape")))
+      (:def d (hex-digit (peek rd)))
+      ((< d 0) (Err (at rd (str "a \\u escape takes four hex digits, and this is " (found rd)))))
       (else
-       (def d (hex-digit (peek rd)))
-       (cond
-        ((< d 0) (Err (at rd (str "a \\u escape takes four hex digits, and this is " (found rd)))))
-        (else
-         (step! rd)
-         (go (+ (* n 16) d) (- left 1))))))))
+       (step! rd)
+       (go (+ (* n 16) d) (- left 1))))))
 
 ;; The pair is one character. A Bjolang char is a Unicode scalar... Not a match made in heaven
 (: (-> Reader int (Result string string)))
@@ -767,13 +755,11 @@
       (go))
      ;; The first byte of a character of several, all copied once they are
      ;; known to be UTF-8.
+     (:def n (sequence-length rd))
+     ((= n 0) (Err (at rd "a string has to be UTF-8, and this byte is not")))
      (else
-      (def n (sequence-length rd))
-      (cond
-        ((= n 0) (Err (at rd "a string has to be UTF-8, and this byte is not")))
-        (else
-         (take-character! rd sb n)
-         (go)))))))
+      (take-character! rd sb n)
+      (go)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Numbers

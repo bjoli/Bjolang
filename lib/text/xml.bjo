@@ -630,6 +630,7 @@
        (write-into name sb)
        (unless (list-empty? attrs)
          (stringbuilder-add-string! sb " (@")
+         ;; todo: rewrite as loop. 
          (let each ((as attrs))
            (match as
              (Nil unit)
@@ -650,8 +651,8 @@
 
 (: (-> StringBuilder Doctype void))
 (defun (print-doctype! sb dt)
-  (stringbuilder-add-string! sb (str "(*DOCTYPE* " (record-ref dt name)))
-  (match (Tuple (record-ref dt public-id) (record-ref dt system-id))
+  (stringbuilder-add-string! sb (str "(*DOCTYPE* " (get dt .name)))
+  (match (Tuple (get dt .public-id) (get dt .system-id))
     ((Tuple (Some pub) (Some sys))
      (stringbuilder-add-string! sb " PUBLIC ")
      (add-quoted! sb pub)
@@ -669,7 +670,7 @@
 (impl (Written Document)
   (defun (write-into d sb)
     (stringbuilder-add-string! sb "(*TOP*")
-    (match (record-ref d doctype)
+    (match (get d .doctype)
       ((Some dt)
        (stringbuilder-add! sb #\space)
        (print-doctype! sb dt))
@@ -677,5 +678,5 @@
     (list-for-each (fun (n)
                      (stringbuilder-add! sb #\space)
                      (print-node! sb n))
-                   (list-append (record-ref d prolog) (Cons (record-ref d root) (record-ref d epilog))))
+                   (list-append (get d .prolog) (Cons (get d .root) (get d .epilog))))
     (stringbuilder-add! sb #\))))
