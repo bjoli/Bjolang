@@ -1,0 +1,148 @@
+;; A cursor loop whose string does not change gets the string's bounds once,
+;; before the loop, and its steps take the bounds (`hoistStringBounds` in
+;; Codegen.fs; `codegen/string_bounds.bjo` pins where). What is pinned here:
+;; - the loops give the same answers with and without the bounds, on a whole
+;;   string, a slice and the empty string;
+;; - a step on the bounds raises what a step on the string raises;
+;; - a string that changes in the loop, by set! or by a jump, is read again;
+;; - steps in a closure, in a seq body and in a bjoroutine work.
+(import (std prelude))
+(import (std simpletest))
+
+;; The reference answer: no loop of ours.
+(: (-> string int))
+(defun (sum-list s)
+  (list-foldl (fun (ch acc) (+ acc (char->integer ch))) 0 (string->list s)))
+
+;; A named let over a string from outside the loop.
+(: (-> string int))
+(defun (sum-outer s)
+  (let loop ((c (string-cursor-start s)) (acc 0))
+    (if (string-cursor-end? s c)
+        acc
+        (match (string-cursor-ref+next s c)
+          ((Tuple ch next) (loop next (+ acc (char->integer ch))))))))
+
+;; A function that passes its string on unchanged, with ref and next apart.
+(: (-> string StringCursor int int))
+(defun (sum-from s c acc)
+  (if (string-cursor-end? s c)
+      acc
+      (sum-from s (string-cursor-next s c) (+ acc (char->integer (string-cursor-ref s c))))))
+
+;; Backwards, with prev.
+(: (-> string int))
+(defun (sum-back s)
+  (let loop ((c (string-cursor-end s)) (acc 0))
+    (if (string-cursor=? c (string-cursor-start s))
+        acc
+        (let ((p (string-cursor-prev s c)))
+          (loop p (+ acc (char->integer (string-cursor-ref s p))))))))
+
+;; Counts the characters from `c`, which may be a cursor that `s` rejects.
+(: (-> string StringCursor int))
+(defun (count-from s c)
+  (let loop ((c c) (n 0))
+    (if (string-cursor-end? s c)
+        n
+        (begin
+          (ignore (string-cursor-ref s c))
+          (loop (string-cursor-next s c) (+ n 1))))))
+
+;; The message a call raises, or "no error".
+(: (-> (-> int) string))
+(defun (raised f)
+  (match (try (f) #:catch (System.ArgumentException))
+    ((Ok _) "no error")
+    ((Err e) (.-Message e))))
+
+;; Changes its string after the first step: the loop must see the new one.
+(: (-> string string int))
+(defun (count-switching first second)
+  (def/mutable text first)
+  (let loop ((c (string-cursor-start text)) (n 0))
+    (if (string-cursor-end? text c)
+        n
+        (begin
+          (when (= n 0) (set! text second))
+          (loop (string-cursor-next text c) (+ n 1))))))
+
+;; A slot that one jump changes: counts both strings.
+(: (-> string string int))
+(defun (count-two a b)
+  (let loop ((s a) (c (string-cursor-start a)) (n 0) (swapped #f))
+    (cond
+      ((and (string-cursor-end? s c) swapped) n)
+      ((string-cursor-end? s c) (loop b (string-cursor-start b) n #t))
+      (else (loop s (string-cursor-next s c) (+ n 1) swapped)))))
+
+;; Steps in closures that the loop makes, and that run after it.
+(: (-> string (List char)))
+(defun (chars-later s)
+  (def thunks
+    (let loop ((c (string-cursor-start s)) (acc '()))
+      (if (string-cursor-end? s c)
+          (list-reverse acc)
+          (loop (string-cursor-next s c) (cons (fun () (string-cursor-ref s c)) acc)))))
+  (list-map (fun (f) (f)) thunks))
+
+;; A loop in a seq body.
+(: (-> string (Seq char)))
+(defun (chars-seq s)
+  (seq
+    (let loop ((c (string-cursor-start s)))
+      (unless (string-cursor-end? s c)
+        (yield (string-cursor-ref s c))
+        (loop (string-cursor-next s c))))))
+
+;; A loop that suspends at every character.
+(: (-bjo-> string int))
+(defbjo (sum-suspending s)
+  (let loop ((c (string-cursor-start s)) (acc 0))
+    (if (string-cursor-end? s c)
+        acc
+        (begin
+          (sync (timeout (milliseconds 0)))
+          (match (string-cursor-ref+next s c)
+            ((Tuple ch next) (loop next (+ acc (char->integer ch)))))))))
+
+(defbjo (main args)
+  (def text "ab,cé,😀€z")
+  (def middle (substring/slice text (string-cursor-next text (string-cursor-start text))
+                               (string-cursor-prev text (string-cursor-end text))))
+  (def empty "")
+
+  (expect "named let, whole" (sum-outer text) (sum-list text))
+  (expect "named let, slice" (sum-outer middle) (sum-list middle))
+  (expect "named let, empty" (sum-outer empty) 0)
+  (expect "passed on, whole" (sum-from text (string-cursor-start text) 0) (sum-list text))
+  (expect "passed on, slice" (sum-from middle (string-cursor-start middle) 0) (sum-list middle))
+  (expect "backwards, slice" (sum-back middle) (sum-list middle))
+
+  ;; A cursor before the slice: the loop raises what a lone step raises.
+  (def before (string-cursor-start text))
+  (expect "a cursor outside the slice"
+          (raised (fun () (count-from middle before)))
+          (raised (fun () (char->integer (string-cursor-ref middle before)))))
+  (expect "says so" (string-contains? (raised (fun () (count-from middle before))) "outside the slice") #t)
+  ;; A cursor from another string, which is inside the é here: also the lone
+  ;; step's error.
+  (def accented "éa")
+  (def other "xy")
+  (def inside (string-cursor-next other (string-cursor-start other)))
+  (expect "a cursor that is not on a boundary"
+          (raised (fun () (count-from accented inside)))
+          (raised (fun () (char->integer (string-cursor-ref accented inside)))))
+  (expect "says so too" (string-contains? (raised (fun () (count-from accented inside))) "boundary") #t)
+  ;; From the é: é , 😀 € z.
+  (def at-e (string-cursor-next text (string-cursor-next text (string-cursor-next text (string-cursor-next text before)))))
+  (expect "a cursor on a boundary" (count-from text at-e) 5)
+
+  (expect "set! is seen" (count-switching "abcdef" "ab") 2)
+  (expect "a changed slot is seen" (count-two "abc" "de") 5)
+  (expect "closures" (chars-later middle) (string->list middle))
+  (expect "seq" (->list (chars-seq middle)) (string->list middle))
+  (expect "bjoroutine" (sum-suspending middle) (sum-list middle))
+
+  (println "518 ok")
+  0)

@@ -321,6 +321,11 @@ type CodegenContext = {
     /// The loops that get a vector part, by the name of their loop member.
     /// Found before the code is written: see `findVectorLoops`.
     VectorLoops: System.Collections.Generic.Dictionary<string, VectorLoop>
+    /// The string bounds to get before the `while` of a loop member, by the
+    /// member's body, compared by reference. Each is the C# local and the
+    /// string it holds the bounds of. Found before the code is written: see
+    /// `hoistStringBounds`.
+    StringBounds: System.Collections.Generic.Dictionary<TypedExpr, (string * TypedExpr) list>
 }
 
 let inline append (ctx: CodegenContext) (s: string) =
@@ -445,6 +450,8 @@ let mapPrimitiveType (name: string) =
     | "VecCursor" -> "BjolangRuntime.VecCursor"
     | "SeqEnumerator" -> "BjolangRuntime.SeqEnumerator"
     | "StringCursor" -> "BjoString.StringCursor"
+    // Made only by the compiler: see `hoistStringBounds`.
+    | "StringBounds" -> "BjoString.StringBounds"
     | "StringBuilder" -> "BjoString.Utf8StringBuilder"
     | "VecBuilder" -> "Collections.RrbBuilder"
     | "List" -> "SchemeList.SchemeList"
@@ -4855,6 +4862,8 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                 | true, v -> emitVectorLoop ctx v
                 | _ -> ()
 
+                emitStringBounds ctx member_
+
                 let loopTarget =
                     match target with
                     | DeclareAndAssign (varType, varName) ->
@@ -6418,6 +6427,20 @@ and private emitIterationCopies (ctx: CodegenContext) (member_: TLoopMember) : u
             indent ctx
             appendLine ctx $"var %s{sanitizeIdent local} = %s{sanitizeIdent slot};"
 
+/// Gets the bounds of the strings that `hoistStringBounds` found unchanged in
+/// `member_`'s loop. Emitted before the loop's `while` and its top label, so
+/// that a jump to the top of the loop does not get them again.
+and private emitStringBounds (ctx: CodegenContext) (member_: TLoopMember) : unit =
+    match ctx.StringBounds.TryGetValue member_.Body with
+    | true, hoists ->
+        for name, source in hoists do
+            emitStatement ctx (fun c ->
+                indent c
+                append c $"var %s{sanitizeIdent name} = BjoString.StringBounds.Of("
+                generateExpr c source
+                appendLine c ");")
+    | _ -> ()
+
 /// Emits `TLoop (_, None)`: the loop *is* this function's body, so the
 /// `while (true)` lives in the function's own block and its slots are the
 /// function's own parameters.
@@ -6425,6 +6448,7 @@ and private generateFunctionBody (ctx: CodegenContext) (body: TypedExpr) : unit 
     match body.Node with
     | TLoop ([ member_ ], None) ->
         let topLabel = topLabelFor [ member_ ]
+        emitStringBounds ctx member_
         emitTopLabel ctx topLabel
         indent ctx; appendLine ctx "while (true) {"
         withIndent ctx (fun c ->
@@ -6528,6 +6552,7 @@ and private generateSingleLoop
                 Loop = Some { Members = members; Merged = false; StateVar = ""; NestedSwitches = 0; IsInlineLoop = false; ExitLabel = ""; ExitLabelUsed = ref false; TopLabel = topLabel; Outer = None } }
 
         if loops then
+            emitStringBounds inner member_
             emitTopLabel inner topLabel
             indent inner; appendLine inner "while (true) {"
             withIndent inner (fun c2 ->
@@ -8715,6 +8740,241 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 /// handle them exactly as they handle a union the program declared —
 /// `Bjolang.Runtime.Syntax.SList(var xs)` and `new Bjolang.Runtime.Syntax.SList(xs)`
 /// — and no special case is needed.
+// ---------------------------------------------------------------------------
+// Loop-invariant string bounds
+// ---------------------------------------------------------------------------
+
+/// The cursor steps that `hoistStringBounds` rewrites, and the runtime method
+/// that takes a string's bounds in place of the string.
+let private boundsSteps: Map<string, string> =
+    Map
+        [ "string-cursor-end?", "StringBoundsAtEnd"
+          "string-cursor-ref", "StringBoundsRef"
+          "string-cursor-next", "StringBoundsNext"
+          "string-cursor-prev", "StringBoundsPrev"
+          "string-cursor-ref+next", "StringBoundsRefNext" ]
+
+/// The names that `expr` binds at its own node.
+let private bindersAt (expr: TypedExpr) : string list =
+    let ofFun (fn: LocalFun) =
+        fn.Params
+        @ (fn.KeywordArgs |> List.map (fun (n, _, _) -> n))
+        @ (fn.RestArg |> Option.map fst |> Option.toList)
+
+    match expr.Node with
+    | TLet(n, _, fn, _, _) -> n :: ofFun fn
+    | TLetRec(bindings, _) -> bindings |> List.collect (fun (n, _, fn, _) -> n :: ofFun fn)
+    | TLetTuple(names, _, _) -> names
+    | TLetMutable(n, _, _) -> [ n ]
+    | TLambda(args, _) -> args
+    | TMatch(_, clauses) -> clauses |> List.collect (fun c -> AlphaRename.patternNames c.Pattern)
+    | TDefMatch(binder, _, _, arms) ->
+        AlphaRename.patternNames binder
+        @ (arms |> List.collect (fun a -> AlphaRename.patternNames a.Pattern))
+    | TLoop(members, _) ->
+        members
+        |> List.collect (fun m -> m.LoopName :: (m.Slots |> List.map fst) @ m.Locals)
+    | _ -> []
+
+/// Whether `name` is bound anywhere in `expr`.
+let private bindsAnywhere (name: string) (expr: TypedExpr) : bool =
+    TypeVisitor.foldExpr (fun found e -> found || List.contains name (bindersAt e)) false expr
+
+/// Rewrites the parts of a loop member's body that run in the member's own
+/// iteration, in the C# method of the loop. `f` returns the rewritten node, or
+/// None to look inside it.
+///
+/// Not rewritten:
+/// - A lambda, a sequence, a hoisted body, a spawned call, a task event and a
+///   local function. They run in a C# member of their own.
+/// - The members of a nested loop. `hoistStringBounds` treats them as loops
+///   of their own. The body that enters a nested loop runs in this iteration,
+///   and is rewritten.
+let rec private mapAtLevel (f: TypedExpr -> TypedExpr option) (expr: TypedExpr) : TypedExpr =
+    match f expr with
+    | Some rewritten -> rewritten
+    | None ->
+        match expr.Node with
+        | TLambda _
+        | TSeq _
+        | THoist _
+        | TBjo _
+        | TTaskEvent _
+        | TLoop(_, None) -> expr
+        | TLet(name, true, fn, value, body) -> { expr with Node = TLet(name, true, fn, value, mapAtLevel f body) }
+        | TLetRec(bindings, body) -> { expr with Node = TLetRec(bindings, mapAtLevel f body) }
+        | TLoop(members, Some body) -> { expr with Node = TLoop(members, Some(mapAtLevel f body)) }
+        | _ -> TypeVisitor.mapChildren (mapAtLevel f) expr
+
+/// The argument lists of the jumps to member `index` of the loop whose member
+/// body `expr` is. `level` is the number of loops between `expr` and that
+/// loop. The same scopes as `LoopLowering.jumpsAt`.
+let rec private jumpsTo (index: int) (level: int) (expr: TypedExpr) : TypedExpr list list =
+    match expr.Node with
+    | TRecur(depth, i, args) ->
+        (if depth = level && i = index then [ args ] else []) @ List.collect (jumpsTo index level) args
+    | TLambda _
+    | TSeq _
+    | THoist _
+    | TBjo _ -> []
+    | TLoop(members, bodyOpt) ->
+        (members |> List.collect (fun m -> jumpsTo index (level + 1) m.Body))
+        @ (bodyOpt |> Option.map (jumpsTo index level) |> Option.defaultValue [])
+    | _ -> TypeVisitor.children expr |> List.collect (jumpsTo index level)
+
+/// Gets the bounds of a string once, before a loop, when the string does not
+/// change in the loop. The cursor steps in the loop then take the bounds, and
+/// do not test again at each step whether the string is a whole array or a
+/// slice (see `BjoString.StringBounds`).
+///
+/// - Which loops: the members that are emitted with a `while` of their own,
+///   as `generateBlock`, `generateFunctionBody` and `generateLoopGroup`
+///   decide. Not a merged group, whose members share one `while`.
+/// - Which strings: a name `s` given to a step in the member's own iteration
+///   (see `mapAtLevel`). No `set!` writes `s` and no binding of `s` is
+///   mutable, anywhere in the declaration. The member body does not bind `s`
+///   again. And either:
+///   - `s` is a slot of the member, and every jump to the member passes the
+///     slot on unchanged; or
+///   - `s` is a local from outside the loop. A module-level name can change
+///     in a call during the loop, so it is not one.
+/// - Result: the steps on `s` become calls of the `StringBounds*` methods of
+///   the runtime, and `ctx.StringBounds` has the local to get before the
+///   `while` (`emitStringBounds`).
+///
+/// Inner loops are done first. An inner loop gets the bounds again at each
+/// entry, which also makes it correct when `s` is a slot of an outer loop.
+let private hoistStringBounds (ctx: CodegenContext) (decl: TDecl) : TDecl =
+    let mutated =
+        TypeVisitor.foldDecl
+            (fun acc (e: TypedExpr) ->
+                match e.Node with
+                | TSet(n, _)
+                | TLetMutable(n, _, _) -> Set.add n acc
+                | _ -> acc)
+            Set.empty
+            decl
+
+    let isStep (name: string) =
+        boundsSteps.ContainsKey name && builtinNamed ctx name = Some name
+
+    let withWhile (members: TLoopMember list) (bodyOpt: TypedExpr option) : Set<int> =
+        match bodyOpt with
+        | None -> if members.Length = 1 then Set.singleton 0 else Set.empty
+        | Some body ->
+            if (LoopLowering.flatLoopEntry members body).IsSome then
+                Set.singleton 0
+            elif (LoopLowering.mergedLoopEntry members body).IsSome then
+                Set.empty
+            else
+                let targets = members |> List.map (fun m -> LoopLowering.recurTargetsIn m.Body)
+
+                let crossJump =
+                    targets |> List.indexed |> List.exists (fun (i, t) -> t |> Set.exists (fun j -> j <> i))
+
+                if members.Length > 1 && crossJump then
+                    Set.empty
+                else
+                    targets
+                    |> List.indexed
+                    |> List.filter (fun (i, t) -> t.Contains i)
+                    |> List.map fst
+                    |> Set.ofList
+
+    let hoistMember (index: int) (m: TLoopMember) : TLoopMember =
+        // The strings that the member's own steps take, in the order found.
+        let named = ResizeArray<string * TypedExpr>()
+
+        mapAtLevel
+            (fun e ->
+                match e.Node with
+                | TApply({ Node = TIdent(step, _) }, [ ({ Node = TIdent(s, []) } as str); _ ], []) when
+                    isStep step && not (named |> Seq.exists (fun (n, _) -> n = s))
+                    ->
+                    named.Add((s, str))
+                    None
+                | _ -> None)
+            m.Body
+        |> ignore
+
+        let jumps = lazy (jumpsTo index 0 m.Body)
+
+        // The string to get the bounds of before the `while`, if `s` does not
+        // change in the loop.
+        let sourceOf (s: string) (str: TypedExpr) : TypedExpr option =
+            if mutated.Contains s || bindsAnywhere s m.Body then
+                None
+            else
+                let slotIndex =
+                    List.tryFindIndex (fun l -> l = s) m.Locals
+                    |> Option.orElse (m.Slots |> List.tryFindIndex (fun (n, _) -> n = s))
+
+                match slotIndex with
+                | Some k ->
+                    let slot, slotType = m.Slots[k]
+
+                    let passesOn (args: TypedExpr list) =
+                        args.Length = m.Slots.Length
+                        && (match args[k].Node with
+                            | TIdent(a, []) -> a = m.Locals[k] || a = slot
+                            | _ -> false)
+
+                    if List.forall passesOn jumps.Value then
+                        Some { str with Node = TIdent(slot, []); Type = slotType }
+                    else
+                        None
+                | None ->
+                    if ctx.GlobalBindings.ContainsKey s || Prelude.builtinNames.Contains s then
+                        None
+                    else
+                        Some str
+
+        let hoists =
+            [ for s, str in named do
+                  match sourceOf s str with
+                  | Some source -> yield s, Gensym.fresh "_bounds", source
+                  | None -> () ]
+
+        if hoists.IsEmpty then
+            m
+        else
+            let boundsOf = hoists |> List.map (fun (s, b, _) -> s, b) |> Map.ofList
+
+            let rec rewrite (e: TypedExpr) : TypedExpr option =
+                match e.Node with
+                | TApply({ Node = TIdent(step, _) }, [ ({ Node = TIdent(s, []) } as str); cursor ], []) when
+                    isStep step && boundsOf.ContainsKey s
+                    ->
+                    let bounds =
+                        { str with
+                            Node = TIdent(boundsOf[s], [])
+                            Type = TCon("StringBounds", []) }
+
+                    Some
+                        { e with
+                            Node = TForeignStaticCall("BjolangRuntime", boundsSteps[step], [ bounds; mapAtLevel rewrite cursor ], None) }
+                | _ -> None
+
+            let body = mapAtLevel rewrite m.Body
+            ctx.StringBounds[body] <- hoists |> List.map (fun (_, b, source) -> b, source)
+            { m with Body = body }
+
+    let hoistLoop (e: TypedExpr) : TypedExpr =
+        match e.Node with
+        | TLoop(members, bodyOpt) ->
+            let eligible = withWhile members bodyOpt
+
+            if eligible.IsEmpty then
+                e
+            else
+                let members =
+                    members |> List.mapi (fun i m -> if eligible.Contains i then hoistMember i m else m)
+
+                { e with Node = TLoop(members, bodyOpt) }
+        | _ -> e
+
+    TypeVisitor.mapDecl (TypeVisitor.mapExpr hoistLoop) decl
+
 /// Finds the loops of `decl` that get a vector part (see `vectorLoopOf`), and
 /// puts them in `ctx.VectorLoops`. Returns `decl` without the marks of
 /// `VectorMarks`: each mark is replaced by the call that it marks.
@@ -9004,7 +9264,8 @@ let generateProgram
           ClrConstraints = clrConstraintClauses env decls
           FunMetas = Map.fold (fun acc k v -> Map.add k v acc) env.ResolvedFunMetas env.FunMetas
           ReturnsVoid = false
-          VectorLoops = System.Collections.Generic.Dictionary() }
+          VectorLoops = System.Collections.Generic.Dictionary()
+          StringBounds = System.Collections.Generic.Dictionary(HashIdentity.Reference) }
 
     appendLine ctx "using System;"
     appendLine ctx "using static BjolangRuntime;"
@@ -9065,7 +9326,7 @@ let generateProgram
     // Only generate code for the main module (the last one).
     // The modules are namespaced according to folder. Classes and types are not renamed
     if not decls.IsEmpty then
-        let mainModule = findVectorLoops ctx env (List.last decls)
+        let mainModule = findVectorLoops ctx env (List.last decls) |> hoistStringBounds ctx
         appendLine ctx $"namespace %s{Naming.moduleNamespace mainModulePath} {{"
         withIndent ctx (fun ctx -> generateDecl ctx mainModule)
 

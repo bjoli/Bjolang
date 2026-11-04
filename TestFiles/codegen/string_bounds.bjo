@@ -1,0 +1,69 @@
+;; Where a cursor loop gets the bounds of its string once, before the loop.
+;;
+;; A loop whose string does not change gets `BjoString.StringBounds.Of(s)`
+;; before its `while`, and its steps take the bounds (`StringBoundsRefNext`
+;; and the others) in place of the string. A loop whose string can change keeps
+;; the steps on the string. See `hoistStringBounds` in Codegen.fs.
+;;
+;; Each function names its string differently, so that a pattern finds the one
+;; function it is about. `518_string_bounds.bjo` is what checks the answers.
+
+(import (std prelude))
+(export sum-outer count-digits count-two count-written count-module)
+
+;; A named let over a string from outside the loop.
+;; EXPECT-CS: var _bounds__\d+ = BjoString\.StringBounds\.Of\(outer\);
+;; EXPECT-CS: BjolangRuntime\.StringBoundsAtEnd\(_bounds__\d+, 
+;; EXPECT-CS: BjolangRuntime\.StringBoundsRefNext\(_bounds__\d+, 
+(: (-> string int))
+(defun (sum-outer outer)
+  (let loop ((c (string-cursor-start outer)) (acc 0))
+    (if (string-cursor-end? outer c)
+        acc
+        (match (string-cursor-ref+next outer c)
+          ((Tuple ch next) (loop next (+ acc (char->integer ch))))))))
+
+;; A tail-recursive function that passes its string on unchanged: the
+;; function's parameter is a slot that keeps its value.
+;; EXPECT-CS: var _bounds__\d+ = BjoString\.StringBounds\.Of\(passed\);
+;; EXPECT-CS: BjolangRuntime\.StringBoundsRef\(_bounds__\d+, 
+;; EXPECT-CS: BjolangRuntime\.StringBoundsNext\(_bounds__\d+, 
+(: (-> string StringCursor int int))
+(defun (count-digits passed c n)
+  (cond
+    ((string-cursor-end? passed c) n)
+    ((char-numeric? (string-cursor-ref passed c)) (count-digits passed (string-cursor-next passed c) (+ n 1)))
+    (else (count-digits passed (string-cursor-next passed c) n))))
+
+;; A slot that one jump changes: no bounds.
+;; EXPECT-NO-CS: StringBounds\.Of\(changing
+(: (-> string string int))
+(defun (count-two changing other)
+  (let loop ((changing changing) (c (string-cursor-start changing)) (n 0) (swapped #f))
+    (cond
+      ((and (string-cursor-end? changing c) swapped) n)
+      ((string-cursor-end? changing c) (loop other (string-cursor-start other) n #t))
+      (else (loop changing (string-cursor-next changing c) (+ n 1) swapped)))))
+
+;; A string that `set!` writes: no bounds.
+;; EXPECT-NO-CS: StringBounds\.Of\(written
+(: (-> string int))
+(defun (count-written s)
+  (def/mutable written s)
+  (let loop ((c (string-cursor-start written)) (n 0))
+    (if (string-cursor-end? written c)
+        n
+        (begin
+          (when (= n 0) (set! written s))
+          (loop (string-cursor-next written c) (+ n 1))))))
+
+;; A module-level string, which a call in the loop could change: no bounds.
+;; EXPECT-NO-CS: StringBounds\.Of\(moduletext
+(def moduletext "a module-level string")
+
+(: (-> int))
+(defun (count-module)
+  (let loop ((c (string-cursor-start moduletext)) (n 0))
+    (if (string-cursor-end? moduletext c)
+        n
+        (loop (string-cursor-next moduletext c) (+ n 1)))))

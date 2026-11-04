@@ -439,6 +439,38 @@ public static partial class BjolangRuntime {
         return result;
     }
 
+    // The cursor steps on the bounds of a string. Bjolang code does not call
+    // these by name: the compiler rewrites a step in a loop to one of them when
+    // the string does not change in the loop, and gets the bounds once, before
+    // the loop (see `hoistStringBounds` in Codegen.fs). Each returns and raises
+    // what the step on the string does.
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool StringBoundsAtEnd(BjoString.StringBounds b, BjoString.StringCursor c) =>
+        BjoString.StringCursor.AtEnd(b, c);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Bjolang.Runtime.BjoChar StringBoundsRef(BjoString.StringBounds b, BjoString.StringCursor c) =>
+        Bjolang.Runtime.BjoChar.FromRune(BjoString.StringCursor.Ref(b, c));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static BjoString.StringCursor StringBoundsNext(BjoString.StringBounds b, BjoString.StringCursor c) =>
+        BjoString.StringCursor.Next(b, c);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static BjoString.StringCursor StringBoundsPrev(BjoString.StringBounds b, BjoString.StringCursor c) =>
+        BjoString.StringCursor.Prev(b, c);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static (Bjolang.Runtime.BjoChar, BjoString.StringCursor) StringBoundsRefNext(
+        BjoString.StringBounds b, BjoString.StringCursor c) {
+        var step = BjoString.StringCursor.RefNext(b, c);
+        (Bjolang.Runtime.BjoChar, BjoString.StringCursor) result = default;
+        result.Item1 = Bjolang.Runtime.BjoChar.FromRune(step.Item1);
+        result.Item2 = step.Item2;
+        return result;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Utf8String substring(Utf8String s, BjoString.StringCursor start, BjoString.StringCursor end) =>
         BjoString.StringCursor.Substring(s, start, end);
