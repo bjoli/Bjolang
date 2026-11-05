@@ -955,15 +955,28 @@ gave the put/get ring 1556 instructions a hop, against 1342 here. Bisected:
     a4d8166  the runtime and std precompiled with ReadyToRun   +120
     325434f  a module bjoroutine spawned without a lambda       +27
     04cc6cc  a parked fiber resumed through its box             +24
-    b89b3d1  a finished fiber's watch goes to the next          +41
+    b89b3d1  a finished fiber's watch goes to the next          +41, see below
 
 The first is the tool's. With tiering off, precompiled code is run as it is
 and never compiled again, so `--tc0` measured ReadyToRun code, which a program
 with tiering on replaces. `--tc0` now sets `DOTNET_ReadyToRun=0` as well:
-1433. The other three are the price of what their sections record, less memory
-a parked fiber and less CPU on `bench/service`; with tiering on they cost about
-75 instructions and 5% of a hop (1036-1041 instructions and 330-338 cycles at
-`34c310c`, 1111-1119 and 348-353 now).
+1433. With tiering on the ring took 1036-1041 instructions and 330-338 cycles
+at `34c310c`, and 1111-1119 and 348-353 now.
+
+The last of the three is the benchmark's, not the hop's. With retiring
+switched off on today's runtime the ring took 1067-1071 instructions and 72 ns
+against 1111-1113 and 77-79: the code a hop runs is the same, and so are its
+paths (one slow `Cell` and one `FiberEnded` a fiber, a few hundred
+registrations a run). What differs is the watch's age. The ring allocates
+nothing, so no collection runs during a rep and a fresh watch stays in gen0,
+where a store into it is the write barrier's cheapest case; a retired watch
+comes from the rep before, through `settle`'s full collections, and every park
+stores references into an old object. With the nodes parked before `settle`,
+so that both builds' watches are old: 1079-1092 instructions and 337-348
+cycles with retiring, 1081-1088 and 332-339 without. In a program that
+allocates, a long-lived fiber's watch is old either way. The other two, about
+50 instructions a hop, are the price of what their sections record: less
+memory a parked fiber and less CPU on `bench/service`.
 
 With tiering on, which is how programs run, one core:
 
