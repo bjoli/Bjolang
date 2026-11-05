@@ -2148,6 +2148,7 @@ The names follow one rule: *finish* stops and continues *after* the thing, *aban
 
 - `(:finish test)` ends the loop from any level, and the `=>` expression is evaluated.
 - `(:finish test value)` ends the loop with `value` as its result. `value` is evaluated only when `test` holds, and sees loop variables and accumulators as the clauses above it left them in this iteration: an accumulator is its running state, as anywhere else inside the loop, not the finished value `=>` sees. It must have the type of the loop's result; a mismatch is a compile error naming both types. A `seql` has no result, so it takes only `(:finish test)`.
+- A loop that ends only by `(:finish test value)` needs no `=>`: its result is the type of the values. That is a loop whose first level never runs out — no `:for`, `:while` or `:until` there, and each `:with` there without an end test, or with `#f` — and that has no `:finish` without a value, no `:final` and no `:finish-let`. `(loop (:with i 0 (+ i 1)) (:finish (> (* i i) n) i))` is an `int`. A loop that can also run out needs `=>` for that exit.
 - `(:abandon test)` ends the current level. At the outermost level there is no level above, and it is a compile error.
 - `:break`, `:break-let` and `:end-subloop-if` are deprecated spellings of `:finish`, `:finish-let` and `:abandon`, and warn.
 

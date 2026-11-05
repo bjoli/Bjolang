@@ -1,0 +1,51 @@
+;; A loop that ends only by (:finish test value) needs no `=>`: its finish
+;; block is never reached, so the loop's result is the type of the values.
+;; Before, the finish block was `void`, and the loop was a type error.
+(import (std prelude))
+(import (std simpletest))
+
+;; A :with with no end test never runs out.
+(: first-square-over (-> int int))
+(defun (first-square-over n)
+  (loop (:with i 0 (+ i 1))
+        (:finish (> (* i i) n) i)))
+
+;; Nor does one whose end test is #f. The value may come from a :subloop form,
+;; and an inner level that runs out goes on with the level above.
+(: pair-summing-to (-> int (Tuple int int)))
+(defun (pair-summing-to n)
+  (loop (:with i 0 (+ i 1) #f)
+        (:subloop (:for j (range 0 i))
+                  (:finish (= (+ i j) n) (Tuple i j)))))
+
+;; A bare (:subloop) opens a second level; its :for running out is not the end.
+(: first-multiple (-> int int int))
+(defun (first-multiple a b)
+  (loop (:with i 1 (+ i 1))
+        (:subloop)
+        (:for k (list a b))
+        (:finish (= (% i (* k 7)) 0) i)))
+
+;; Two values, and a string.
+(: classify (-> int string))
+(defun (classify n)
+  (loop (:with i n (- i 3))
+        (:finish (= i 0) "divides")
+        (:finish (< i 0) "does not")))
+
+;; A void value is still a void loop.
+(def seen (make-box 0))
+(: stop-at (-> int void))
+(defun (stop-at n)
+  (loop (:with i 0 (+ i 1))
+        (:finish (= i n) (box-set! seen i))))
+
+(defun (main)
+  (expect "a :with with no end" (first-square-over 50) 8)
+  (expect "from a :subloop form" (pair-summing-to 5) (Tuple 3 2))
+  (expect "an inner level running out goes on" (first-multiple 2 3) 14)
+  (expect "two :finish values" (classify 9) "divides")
+  (expect "and the other" (classify 10) "does not")
+  (stop-at 4)
+  (expect "a void value" (box-ref seen) 4)
+  0)

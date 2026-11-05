@@ -1673,6 +1673,47 @@ and private buildGroup
             Set.empty
             e
 
+    /// Whether no exit of this `(loop ...)` leads to its finish block, and one
+    /// leaves it with a value. The finish block is reached when the first
+    /// level runs out (an inner level running out goes on with the level above
+    /// it), and by a `:finish` without a value, a `:final` and a `:finish-let`
+    /// at any depth. A `:with` without an end test, or with `#f`, never runs
+    /// out; any other driver may.
+    let finishUnreachable =
+        let rec reachesFinish (cls: LoopClause list) =
+            cls
+            |> List.exists (function
+                | LFinish(_, None, _)
+                | LFinal _
+                | LRefutableLet(_, _, true, _) -> true
+                | LSubloopForm(inner, _, _) -> reachesFinish inner
+                | _ -> false)
+
+        let firstLevelEnds =
+            List.zip levelOf clauses
+            |> List.exists (fun (level, c) ->
+                level = 0
+                && match c with
+                   | LFor _
+                   | LTestDriver _ -> true
+                   | LWith(_, _, _, None, _)
+                   | LWith(_, _, _, Some(SAtom { Token = BoolLit false }), _) -> false
+                   | LWith _ -> true
+                   | _ -> false)
+
+        let rec leavesWithValue (cls: LoopClause list) =
+            cls
+            |> List.exists (function
+                | LFinish(_, Some _, _) -> true
+                | LSubloopForm(inner, _, _) -> leavesWithValue inner
+                | _ -> false)
+
+        not isSub
+        && finishForm.IsNone
+        && not firstLevelEnds
+        && not (reachesFinish clauses)
+        && leavesWithValue clauses
+
     let finishBlockBody =
         // `:final`'s accumulator is not the author's and has no business in the
         // result, so only the declared ones are delivered or even finished.
@@ -1686,6 +1727,12 @@ and private buildGroup
                 parsed
             | None ->
                 match declared with
+                // A loop that leaves only by `(:finish test value)`: the finish
+                // block is never reached, so it has no value to give and no
+                // type to impose on the values. A call that does not return
+                // takes the type of the `:finish` values.
+                | [] when finishUnreachable ->
+                    call defPanicWithName [ EString("a loop reached its end, which no exit of it leads to", r) ] r
                 // Nothing to deliver: a loop with no accumulators and no `=>`
                 // is pure effect, and types as `void` rather than as unit so
                 // that it can be the body of a `void` function. `when` is the
