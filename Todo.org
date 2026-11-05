@@ -15,6 +15,28 @@ noted.
 - *A send carries a ~Unit~ it does not want.* ~ChannelSendEvent : IEvent<Unit>~;
   ~PutOp.ResumeGive~ exists only to avoid a closure (88 of 128 B/op).
 
+* Units
+
+- *Maybe: a unit as the parameter of a type.* F# has
+  ~type Body<[<Measure>] 'u> = { Pos: float<'u>; Vel: float<'u/s> }~. Today
+  a type's parameters are types, so ~(Vec2 %a)~ at ~(Vec2 (double m))~ works,
+  and a field whose unit is computed from the parameter (~%u/s~, ~%u^2~)
+  needs a parameter of its own, with the relation said in each signature.
+  ~registerTypeDefs~ rejects a unit variable in a field, case, newtype or
+  alias. Do it when a program needs it. What it takes:
+  - A unit argument as a ~TNum~ over a marker carrier, so that ~unify~'s
+    ~TNum~ arms already treat it.
+  - A parameter used only in unit positions is a unit parameter; the registry
+    and the module metadata record which (~currentVersion~ bump). One used
+    both ways is an error.
+  - ~(Vec2 m)~ and ~(Vec2 %u)~ in ~TypeSyntax~: a unit expression in a unit
+    position.
+  - ~instantiateRecord~, the constructor schemes and patterns substitute the
+    unit parameters in the field types too: ~substTypeVars~ leaves units.
+  - ~eraseUnits~ drops unit arguments; the C# record and union classes have
+    no generic parameter for them. About 40 sites zip a type's parameters
+    with its arguments, and each has to skip them.
+
 * Source mapping (~#line~)
 
 - Hoisted temporaries inherit the directive of the statement before them; they

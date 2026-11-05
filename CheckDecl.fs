@@ -345,14 +345,29 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
         let hmArgs = tArgs |> List.map TVar
         let parentType = TCon(td.Name, hmArgs)
 
+        // A unit variable in a declared type has nothing to bind it. A type's
+        // parameters are types: building or reading a value replaces them, and
+        // leaves a unit variable as written, so no value could match it.
+        let rejectUnitVariable (part: string) (t: HMType) (r: Range) =
+            match unitVarsOf t with
+            | [] -> ()
+            | v :: _ ->
+                let bare = Naming.bareTypeName env.CurrentModule td.Name
+                let shown = DotNetInterop.showType t
+
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: %s{part} has the type %s{shown}, and its unit %%%s{v.TrimStart '\''} is a variable. The parameters of a type are types, not units. Make the whole number type the parameter instead: declare (%s{bare} %%a), write %%a in place of %s{shown}, and write (%s{bare} (double m)) where the type is used."
+
         match td.Kind with
         | Alias ftype ->
             let resolved = resolveTypeAnnotation finalRegistry ftype
+            rejectUnitVariable $"the alias %s{Naming.bareTypeName env.CurrentModule td.Name}" resolved td.Range
             finalRegistry <- { finalRegistry with Aliases = Map.add td.Name (tArgs, resolved) finalRegistry.Aliases }
         | Newtype ftype ->
             // The constructor has the type's name and takes one argument, the
             // value as it is at run time: `(Banana 3)`.
             let underlying = resolveTypeAnnotation finalRegistry ftype
+            rejectUnitVariable $"the newtype %s{Naming.bareTypeName env.CurrentModule td.Name}" underlying td.Range
             finalRegistry <- { finalRegistry with Newtypes = Map.add td.Name (tArgs, underlying) finalRegistry.Newtypes }
             DotNetInterop.newtypeKeys.TryAdd(td.Name, ()) |> ignore
 
@@ -360,6 +375,13 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                 Map.add td.Name { Scheme = Scheme(tArgs, [], tfun [ underlying ] parentType); IsMutable = false } finalBindings
         | Record(fields, _) ->
             let resolvedFields = fields |> List.map (fun f -> f.Name, resolveTypeAnnotation finalRegistry f.Type)
+
+            for (fName, fType) in resolvedFields do
+                rejectUnitVariable
+                    $"the field '%s{fName}' of %s{Naming.bareTypeName env.CurrentModule td.Name}"
+                    fType
+                    td.Range
+
             finalRegistry <- { finalRegistry with Records = Map.add td.Name (tArgs, resolvedFields) finalRegistry.Records }
 
             // Only for a record that has one, so that `Map.tryFind` answering
@@ -388,6 +410,12 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     match case with
                     | SimpleCase(n, cr) -> n, [], cr
                     | DataCase(n, types, cr) -> n, types |> List.map (resolveTypeAnnotation finalRegistry), cr
+
+                for argType in resolvedArgs do
+                    rejectUnitVariable
+                        $"the case %s{Naming.bareTypeName env.CurrentModule caseName} of %s{Naming.bareTypeName env.CurrentModule td.Name}"
+                        argType
+                        caseRange
 
                 // A case's key carries its union, so a case of another union
                 // never collides here, in this module or another.

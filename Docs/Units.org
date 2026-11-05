@@ -177,6 +177,28 @@ milli-inch.
 
 The run-time parser in ~(std units)~ (Phase 2) reads the same grammar.
 
+*** Types over quantities
+
+A type's parameters are types, so a record that holds a quantity of any unit
+takes the whole number type as its parameter:
+
+#+BEGIN_SRC scheme
+(type (: (Vec2 %a) (Record (: x %a) (: y %a))))
+
+(: vadd (-> (Vec2 (num %c %u)) (Vec2 (num %c %u)) (Vec2 (num %c %u))) (where (Num %c)))
+(: vscale (-> (Vec2 (double %u)) (double %v) (Vec2 (double %u %v))))
+
+(: pos (Vec2 (double m)))
+#+END_SRC
+
+- ~(Vec2 (double m))~, ~(Vec2 (rational m/s))~ and ~(Vec2 int)~ are all
+  instances. A ~Vec2~ built from a length and a time is a type error.
+- A unit variable in a field, a case, a newtype or an alias is an error:
+  ~(Record (: x (double %u)))~. Nothing would bind ~%u~.
+- Not possible: a field whose unit is computed from the parameter, as F#'s
+  ~float<'u/s>~. Give that field a parameter of its own, and say the relation
+  in the signatures that use it.
+
 ** Where units are visible
 
 A module sees the units, dimensions and prefixes it declares and those of the
