@@ -1,0 +1,16 @@
+;; An Eq is also the type's .NET Equals, which is one member for every Pair.
+;; One for the pairs of one type only would differ from it.
+
+;; EXPECT-ERROR: an implementation of 'Eq' has to cover every eq_specialized_target/Pair, and this one is for (eq_specialized_target/Pair %a %a)
+;; EXPECT-ERROR: Write it for (eq_specialized_target/Pair %a %b)
+
+(import (std prelude))
+
+(type (: (Pair %a %b) (Record (: l %a) (: r %b))))
+
+(impl (Eq (Pair %a %a))
+  (where (Eq %a))
+  (defun (= x y) (and (= (.l x) (.r y)) (= (.r x) (.l y))))
+  (defun (eq-hash p) (bitwise-xor (eq-hash (.l p)) (eq-hash (.r p)))))
+
+(defun (main) 0)

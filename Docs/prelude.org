@@ -81,7 +81,7 @@ A hand-written implementation is how a type says its equality is not its fields:
 
 The implementation *is* the type's .NET equality: its ~Equals~ and ~GetHashCode~ are emitted as calls to it, so ~Map~, ~HashSet~ and every other .NET consumer agree with ~=~. ~Ord~ becomes ~IComparable<T>~/~CompareTo~ the same way.
 
-A collection does not depend on that, though. What makes a ~Map~, ~HashSet~, ~OrderedMap~ or ~OrderedSet~ out of nothing — ~map-empty~, ~list->hashset~, ~seq->orderedmap~, a collector — asks for the key's ~Eq~ or ~Ord~, and compares keys with it. Where the type's own members give the same answer, which is almost always, it keeps them and nothing changes; where they do not (below), it is handed the implementation itself. A collection made from another keeps that one's comparison. The constraint is inferred, so a signature need not mention it.
+A collection does not depend on that, though. What makes a ~Map~, ~HashSet~, ~OrderedMap~ or ~OrderedSet~ out of nothing — ~map-empty~, ~list->hashset~, ~seq->orderedmap~, a collector — asks for the key's ~Eq~ or ~Ord~, and compares keys with it. Where the type's own members give the same answer it keeps them and nothing changes; where they do not, it is handed the implementation itself. That is a newtype with its own ~Eq~, which is the wrapped value to .NET, and an ~Ord~ of a union with a ~null~ case, which .NET's comparers order themselves. A collection made from another keeps that one's comparison. The constraint is inferred, so a signature need not mention it.
 
 - An implementation that wants "the field-by-field comparison, plus one tweak" writes ~(structural-equals a b)~ and ~(structural-hash a)~: they compare the fields directly and never consult the receiver type's own ~Equals~, while each *field* still compares through its own type's equality.
 - The implementation is compiled into the type, so it must live in the module that declares the type. An ~Eq~ or ~Ord~ implementation for an imported type, an ~import/class~ alias, or (in the REPL) a type from an earlier entry is refused. The way out: the declaring module, the same REPL entry, or a wrapper type.
@@ -102,11 +102,12 @@ A type with parameters is no different. Its implementation is usually *condition
 
 Inside the type nobody hands it the ~Eq~ of ~%a~, so the type answers ~(where (Eq %a))~ itself, with ~%a~'s own ~Equals~ and ~GetHashCode~. That is right because they *are* ~%a~'s ~Eq~: compiled in for a type a module declares, and the same members for everything ~(std eq)~ implements. ~(where (Ord %a))~ is answered with ~%a~'s ~CompareTo~, and a string ordinally, as ~(Ord string)~ does. So a ~HashSet~ of the edges (1 2) and (2 1) has one element, and a ~Map~ finds either through the other.
 
-Where the type's own .NET members and ~=~ part ways — which matters to .NET code handed such a value, and not to the collections above:
+So the type's own .NET members and ~=~ always agree, and .NET code handed the value — a ~Dictionary~ through interop, LINQ's ~Distinct~ — compares as ~=~ does. Two rules keep it so. For a record or a union, an implementation of ~Eq~ or ~Ord~:
 
-- *An implementation with a ~(where ...)~ of another trait*, such as ~(where (Written %a))~. .NET has nothing to answer it with, so the type keeps the members C# writes, which compare field by field.
-- *An implementation for a specialized target*, such as ~(impl (Eq (Pair %a %a)))~ on a ~Pair~ with two parameters. The same.
-- *Two different cases of a union.* Each case is a C# record, and C# writes its ~Equals~ itself: asked about a value of another case, it answers false before the implementation runs. Two values of the *same* case do reach the implementation.
+- *covers every instance of the type*: ~(impl (Eq (Pair %a %b)))~, not ~(Pair %a %a)~ or ~(Pair int %b)~. .NET has one ~Equals~ for every ~Pair~, so one for some of them would give another answer. For the instances that compare differently, declare a type of their own: ~(type (: (UPair %a) (Record (: l %a) (: r %a))))~.
+- *requires only ~Eq~ or ~Ord~ of the type's parameters*. .NET calls ~Equals~ with no dictionary, and the type can rebuild only those two from its parameters' own members. For an equality over ~written~ or ~displayed~, write a function of your own.
+
+A union's ~Equals~ and ~GetHashCode~ are the union's, not each case's, so two values of different cases reach the implementation too:
 
 #+BEGIN_SRC scheme
 (type (: Money (Union (: Cents int) (: Dollars int))))
@@ -123,7 +124,9 @@ Where the type's own .NET members and ~=~ part ways — which matters to .NET co
 (hashset-length (list->hashset (list (Cents 100) (Dollars 1))))  ;; 1
 #+END_SRC
 
-An ~Ord~ of the first two shapes leaves the type with no ~CompareTo~ at all, since C# writes none; an ~OrderedSet~ or ~OrderedMap~ of it is ordered by the implementation all the same. Two cases of a union do not have this problem with ~Ord~: ~CompareTo~ is the union's, and the implementation sees both.
+~System.Object.Equals~ of the two is true as well. A union with an ~Eq~ implementation is compiled to C# classes rather than records for this: a case record writes its own ~Equals~, which returns false for a value of another case.
+
+A union's ~CompareTo~ is the union's too, and the implementation sees both cases.
 
 *** ~type/derive~
 ~type/derive~ writes that out per field. A macro in ~(std prelude)~, and syntactic — where a declaration is read there is no registry to ask what a type's fields are, only the form that declares them.

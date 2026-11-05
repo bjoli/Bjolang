@@ -3073,6 +3073,57 @@ and private registerImplHead
 
                 c)
 
+    // An `Eq` or `Ord` of a declared record or union is also the type's .NET
+    // `Equals`, `GetHashCode` or `CompareTo` (see `materializableImpl` in
+    // `Codegen`). .NET has one such member for all instances of a generic
+    // type, and nothing passes it a dictionary. So the implementation has to
+    // cover every instance, and require only `Eq` or `Ord` of the type's
+    // parameters, which the type rebuilds from their own .NET members.
+    // Otherwise `=` and .NET code (a `Dictionary`, a `HashSet`, LINQ) would
+    // give different answers.
+    if traitName = "Eq" || traitName = "Ord" then
+        let declaredParams =
+            match targetType with
+            | TCon(key, _) ->
+                match Map.tryFind key env.Registry.Records, Map.tryFind key env.Registry.Unions with
+                | Some(ps, _), _
+                | None, Some(ps, _) -> Some(key, ps)
+                | None, None -> None
+            | _ -> None
+
+        match declaredParams, targetType with
+        | Some(key, ps), TCon(_, args) ->
+            let netMember = if traitName = "Eq" then "Equals and GetHashCode" else "CompareTo"
+            let shownType = Naming.showTypeName key
+
+            let generic =
+                if ps.IsEmpty then
+                    shownType
+                else
+                    let shownParams = ps |> List.map (fun p -> "%" + p.TrimStart '\'')
+                    "(" + String.concat " " (shownType :: shownParams) + ")"
+
+            let vars =
+                args
+                |> List.choose (function
+                    | TVar v -> Some v
+                    | _ -> None)
+
+            if vars.Length <> args.Length || (List.distinct vars).Length <> args.Length then
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: an implementation of '%s{traitName}' has to cover every %s{shownType}, and this one is for %s{DotNetInterop.showType targetType}. Write it for %s{generic}. The implementation is also the type's .NET %s{netMember}, which is one member for every %s{shownType}, so one for some of them would give another answer than '%s{traitName}' where .NET code compares them. For the instances that compare differently, declare a type of their own."
+
+            for c in implConstraints do
+                if c.TraitName <> "Eq" && c.TraitName <> "Ord" then
+                    let written =
+                        match c.TargetType with
+                        | TVar v -> "%" + v.TrimStart '\''
+                        | t -> DotNetInterop.showType t
+
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: an implementation of '%s{traitName}' for %s{shownType} may require only Eq or Ord of its parameters, and this one requires %s{Naming.showTraitName c.TraitName} of %s{written}. The implementation is also the type's .NET %s{netMember}, and .NET calls those with no %s{Naming.showTraitName c.TraitName} to give them. Compare with a function of your own, or implement '%s{traitName}' for a type whose fields need no %s{Naming.showTraitName c.TraitName}."
+        | _ -> ()
+
     // A projection in an associated type, `(assoc Iterable elem %s)`, names
     // the impl of a type this impl does not know. It is that impl's only
     // through the where clause, which says there is one: so the projection

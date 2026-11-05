@@ -1,0 +1,19 @@
+;; An Ord is also the type's .NET CompareTo. A fixed argument covers some
+;; instances only.
+
+;; EXPECT-ERROR: an implementation of 'Ord' has to cover every ord_fixed_argument/Tag, and this one is for (ord_fixed_argument/Tag int %b)
+;; EXPECT-ERROR: .NET CompareTo
+
+(import (std prelude))
+
+(type (: (Tag %a %b) (Record (: k %a) (: v %b))))
+
+(impl (Eq (Tag %a %b))
+  (where (Eq %a))
+  (defun (= x y) (= (.k x) (.k y)))
+  (defun (eq-hash p) (eq-hash (.k p))))
+
+(impl (Ord (Tag int %b))
+  (defun (compare x y) (compare (.k x) (.k y))))
+
+(defun (main) 0)

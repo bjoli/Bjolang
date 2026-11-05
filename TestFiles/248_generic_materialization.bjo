@@ -109,23 +109,6 @@
   (def ps (list->hashset (list (Pair (first "x") (second "y")) (Pair (first "x") (second "y")))))
   (expect "pairs of strings" (hashset-length ps) 1))
 
-;; A `(where ...)` of another trait has no .NET member to answer it, so this
-;; implementation is not compiled in: `=` compares by `->str` length, and C#'s
-;; own members field by field. A `HashSet` is handed the implementation as its
-;; comparer, so it agrees with `=` all the same.
-(type (: (Loose %a) (Record (: item %a))))
-
-(impl (Eq (Loose %a))
-  (where (Displayed %a))
-  (defun (= x y) (= (string-length (displayed (record-ref x item)))
-                    (string-length (displayed (record-ref y item)))))
-  (defun (eq-hash x) (string-length (displayed (record-ref x item)))))
-
-(: (-> void))
-(defun (eq-other-trait)
-  (expect-true "= uses the implementation" (= (Loose (item 1)) (Loose (item 2))))
-  (expect "and so does a Set" (hashset-length (list->hashset (list (Loose (item 1)) (Loose (item 2))))) 1))
-
 ;; A generic record with a mutable field. Written by hand, reading only the
 ;; field that does not move, it is a key, and stays found across a write.
 (type (: (Slot %a) (Record (: key %a) (: hits int #:mutable))))
@@ -276,7 +259,6 @@
   (eq-edges)
   (eq-nested)
   (eq-derived)
-  (eq-other-trait)
   (eq-mutable)
   (eq-deque)
   (ord-derived)

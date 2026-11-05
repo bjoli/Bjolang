@@ -1,0 +1,16 @@
+;; An Eq may require only Eq or Ord of its type's parameters: .NET calls the
+;; type's Equals with no other dictionary to give it.
+
+;; EXPECT-ERROR: an implementation of 'Eq' for eq_where_other_trait/Shown may require only Eq or Ord of its parameters, and this one requires Displayed of %a
+;; EXPECT-ERROR: Compare with a function of your own
+
+(import (std prelude))
+
+(type (: (Shown %a) (Record (: v %a))))
+
+(impl (Eq (Shown %a))
+  (where (Displayed %a))
+  (defun (= x y) (= (displayed (.v x)) (displayed (.v y))))
+  (defun (eq-hash p) (eq-hash (displayed (.v p)))))
+
+(defun (main) 0)

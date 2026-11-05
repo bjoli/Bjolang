@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~Eq~ and ~Ord~ of a declared type always agree with .NET
+
+- An ~Eq~ or ~Ord~ implementation for a record or a union has to cover every
+  instance of the type, and may require only ~Eq~ or ~Ord~ of its
+  parameters. ~(impl (Eq (Pair %a %a)))~, ~(impl (Ord (Tag int %b)))~ and
+  ~(impl (Eq (Shown %a)) (where (Displayed %a)))~ are now errors, which say
+  what to write instead.
+- Such an implementation is the type's .NET ~Equals~, ~GetHashCode~ or
+  ~CompareTo~, so .NET code (a ~Dictionary~ through interop, LINQ) compares
+  as ~=~ does, for every type a program declares. Before, these two forms
+  kept the members C# writes, which compare field by field.
+- Other traits keep specialized targets and any ~(where ...)~.
+
+* A union's .NET equality is its ~Eq~ for every case
+
+- A union with an ~Eq~ implementation, written or derived, answers
+  ~System.Object.Equals~ and ~GetHashCode~ through it for two values of
+  different cases too. Before, a union that is a class returned false there,
+  so a ~Dictionary~ through interop or LINQ's ~Distinct~ disagreed with ~=~.
+  A struct union already agreed.
+- Such a union is compiled to C# classes rather than records: the base has
+  ~Equals~, ~GetHashCode~ and ~IEquatable~, and each case has its
+  properties, ~Deconstruct~ and the record's ~ToString~ text. A union without
+  ~Eq~ is records, as before.
+- The collections now keep the union's own members as their comparer, where
+  they were handed the dictionary.
+
 * A unit variable in a type declaration is an error
 
 - ~(type (: (Vec2 %u) (Record (: x (double %u)))))~ was accepted, and then

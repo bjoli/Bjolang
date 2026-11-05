@@ -16,11 +16,17 @@
 (type/derive (Eq)
   (: Coord (Struct (: lat int) (: lon int))))
 
-;; Into every case class, not onto the abstract base: a derived record
-;; synthesizes its own `Equals`, which overrides the base's, so an override
-;; written only on the base would be silently dead.
-;; EXPECT-CS: public bool Equals\(materialization__Circle\? other\) => other is not null && Eq_materialization__Shape\.Instance\.eq\(this, other\);
-;; EXPECT-CS: public bool Equals\(materialization__Square\? other\) => other is not null && Eq_materialization__Shape\.Instance\.eq\(this, other\);
+;; A union with an `Eq` is classes, not records, and `Equals` and
+;; `GetHashCode` are the base's: a case record writes its own `Equals`, which
+;; returns false for a value of another case. The case classes have what the
+;; record had: properties, `Deconstruct` and the record's text.
+;; EXPECT-CS: public abstract class materialization__Shape : System.IEquatable<materialization__Shape> \{
+;; EXPECT-CS: public bool Equals\(materialization__Shape\? other\) => other is not null && Eq_materialization__Shape\.Instance\.eq\(this, other\);
+;; EXPECT-CS: public override bool Equals\(object\? obj\) => obj is materialization__Shape other && Equals\(other\);
+;; EXPECT-CS: public override int GetHashCode\(\) => Eq_materialization__Shape\.Instance\.eqsubhash\(this\);
+;; EXPECT-CS: public sealed class materialization__Circle : materialization__Shape \{
+;; EXPECT-CS: public void Deconstruct\(out double Item1\) \{ Item1 = this\.Item1; \}
+;; EXPECT-NO-CS: Equals\(materialization__Circle
 (type/derive (Eq)
   (: Shape (Union (: Circle double) (: Square string))))
 
@@ -52,13 +58,12 @@
 (type/derive (Eq)
   (: (Cell %a) (Struct (: v %a))))
 
-;; A union: the field goes on the abstract base, and every case class reads it
-;; as a private member of the type it is nested in. `Nope` is `null` at run
-;; time, so it has no class and no `Equals`.
-;; EXPECT-CS: public abstract record materialization__Maybe<T_a> \{
+;; A union: the field and `Equals` go on the abstract base. `Nope` is `null` at
+;; run time, so it has no class.
+;; EXPECT-CS: public abstract class materialization__Maybe<T_a> : System.IEquatable<materialization__Maybe<T_a>> \{
 ;; EXPECT-CS: private static readonly Eq_materialization__Maybe<T_a> __Eq_impl = Eq_materialization__Maybe<T_a>\.Make\(new __ClrEq<T_a>\(\)\);
-;; EXPECT-NO-CS: Equals\(materialization__Nope
-;; EXPECT-CS: public bool Equals\(materialization__Yep\? other\) => other is not null && __Eq_impl\.eq\(this, other\);
+;; EXPECT-CS: public bool Equals\(materialization__Maybe<T_a>\? other\) => other is not null && __Eq_impl\.eq\(this, other\);
+;; EXPECT-NO-CS: Equals\(materialization__Yep
 (type/derive (Eq)
   (: (Maybe %a) (Union Nope (: Yep %a))))
 
@@ -73,17 +78,6 @@
   (where (Eq %y))
   (defun (= p q) (= (record-ref p right) (record-ref q right)))
   (defun (eq-hash p) (eq-hash (record-ref p right))))
-
-;; A `(where ...)` of another trait has no .NET member to stand in for it, so
-;; that implementation keeps C#'s synthesized members.
-;; EXPECT-CS: public record materialization__Shown<T_a>\(T_a item\);
-(type
-  (: (Shown %a) (Record (: item %a))))
-
-(impl (Eq (Shown %a))
-  (where (Displayed %a))
-  (defun (= p q) (= (displayed (record-ref p item)) (displayed (record-ref q item))))
-  (defun (eq-hash p) (eq-hash (displayed (record-ref p item)))))
 
 ;; `Ord` materializes as `IComparable<T>`: the interface in the base clause —
 ;; which is the part `Comparer<T>.Default` actually looks for — and a

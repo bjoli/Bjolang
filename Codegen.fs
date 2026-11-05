@@ -7036,8 +7036,8 @@ let private standInTraits = set [ "Eq"; "Ord" ]
 /// The target has to be fully generic: every argument a distinct type
 /// variable, one per parameter, so that instantiating the impl class with the
 /// type's own parameters, in order, is the impl the trait system would have
-/// picked. A specialized target (`(impl (Eq (Pair %a %a)))`) is left to the
-/// synthesized members.
+/// picked. `CheckDecl.registerImplHead` rejects any other `Eq` or `Ord` of a
+/// declared record or union; this test is for the other traits' sake.
 ///
 /// A *conditional* implementation — every one a generic type derives — is
 /// built from dictionaries for its `(where ...)`, and a C# type parameter
@@ -7046,10 +7046,8 @@ let private standInTraits = set [ "Eq"; "Ord" ]
 /// closed type, out of stand-ins that answer through `T`'s own .NET members
 /// (see `standInClass` and `materializedSupport`). That is only sound for a
 /// constraint on one of the type's own parameters, of a trait whose every
-/// implementation *is* such a member: `standInTraits`. A `(where (->str %a))`
-/// has nothing .NET could answer it with, so an implementation asking for one
-/// keeps C#'s synthesized members, and a collection of the type is handed the
-/// dictionary instead (`agreementWithClr`).
+/// implementation *is* such a member: `standInTraits`. `CheckDecl` rejects an
+/// `Eq` or `Ord` whose `(where ...)` asks for any other trait.
 let private materializableImpl
     (registry: TraitRegistry)
     (traitName: string)
@@ -7091,8 +7089,7 @@ let private standInName (traitName: string) = $"__Clr%s{sanitizeIdent traitName}
 /// Right because every type's `Eq` and `Ord` *are* those members: materialized
 /// into a declared type, native for a primitive, and a delegation to the very
 /// same members for the .NET and runtime types `lib/std` implements them for —
-/// which `CheckDecl` refuses any other module to do. It is wrong only where
-/// materialization already is: two cases of one union that `=` equates.
+/// which `CheckDecl` refuses any other module to do.
 ///
 /// A string compares ordinally, as `(Ord string)` does and as the ordered
 /// collections' `DefaultOrder` chooses: `Comparer<string>.Default` would order
@@ -7151,9 +7148,9 @@ let private comparerInterface (registry: TraitRegistry) (traitName: string) (t: 
 /// Three kinds agree. The blanket, which *is* .NET's equality. An
 /// implementation for a builtin or .NET type, which only `std` may write and
 /// which delegates to those very members (`Naming.isStdModuleKey`). And one
-/// materialized into a type this module declares — except `Eq` on a union of
-/// more than one case, whose cases are C# records that answer false for each
-/// other before the implementation runs. A conditional one agrees only if the
+/// materialized into a type this module declares. A union with a materialized
+/// `Eq` writes `Equals` on its base, for every case (`ClassUnionBase`). A
+/// conditional one agrees only if the
 /// dictionaries it stands on do: `(List Money)`'s .NET `Equals` asks `Money`'s.
 let private agreementWithClr
     (registry: TraitRegistry)
@@ -7187,20 +7184,11 @@ let private agreementWithClr
         not (Set.contains key Naming.builtinTypeNames)
         && (Map.containsKey key registry.Records || Map.containsKey key registry.Unions)
         ->
-        // A struct union has no case classes: its `Equals` is the
-        // implementation's alone.
-        let crossCase =
-            traitName = "Eq"
-            && (structUnionLayout registry key).IsNone
-            && (match Map.tryFind key registry.Unions with
-                | Some(_, cases) -> cases.Length > 1
-                | None -> false)
-
         // .NET's comparers settle a `null` themselves and never ask the
         // implementation, which may order the `null` case elsewhere.
         let nullCase = (nullCaseOf registry key).IsSome
 
-        if materializableImpl registry traitName key args.Length && not crossCase && not nullCase then
+        if materializableImpl registry traitName key args.Length && not nullCase then
             fromDicts ()
         else
             None
@@ -7232,16 +7220,22 @@ type private MaterializeTarget =
     | OpenRecord
     /// A record struct. No null to guard against, and nothing virtual.
     | ValueRecord
-    /// One case class of a union. Sealed, so `virtual` is an error; the
-    /// `sealed override Equals(Base?)` the compiler still synthesizes is what
-    /// routes a comparison at the base type through to here.
+    /// One case record of a union with no materialized `Eq`. It writes no
+    /// member: `Ord` is the base's.
     | SealedCase
-    /// A union's abstract base. `Eq` writes no member here and `Ord` writes
-    /// every member here — see the match in `materializedMembers` for why the
-    /// two go opposite ways. A conditional implementation's dictionary goes
-    /// here for both; see `materializedSupport`. True when one case of the
-    /// union is `null` (`nullCaseOf`).
+    /// The abstract base record of a union with no materialized `Eq`. `Ord`
+    /// writes every member here. A conditional implementation's dictionary
+    /// goes here; see `materializedSupport`. True when one case of the union
+    /// is `null` (`nullCaseOf`).
     | UnionBase of hasNullCase: bool
+    /// A union's abstract base when the union has a materialized `Eq`. The
+    /// base and its cases are then classes, not records, so that `Equals`
+    /// and `GetHashCode` can be the base's: a case record writes its own
+    /// `Equals`, which returns false for a value of another case. `Ord` is as
+    /// on `UnionBase`.
+    | ClassUnionBase of hasNullCase: bool
+    /// One case class of such a union. It writes no member: the base has them.
+    | ClassCase
 
 /// The members `traitName`'s implementation becomes.
 ///
@@ -7258,10 +7252,16 @@ let private materializedMembers
     : string list =
 
     match traitName, target with
-    // `Eq` goes into every case class and never onto a union's base: a derived
-    // record synthesizes its own `Equals`, which would silently override one
-    // written there. See the union branch of `generateDecl`.
+    // A union with a materialized `Eq` is `ClassUnionBase`, so these two
+    // never have an `Eq`. A case writes nothing: the base has every member.
     | "Eq", UnionBase _ -> []
+    | _, (SealedCase | ClassCase) -> []
+    | "Eq", ClassUnionBase _ ->
+        let hashMember = sanitizeIdent "eq-hash"
+
+        [ $"public bool Equals(%s{selfType}? other) => other is not null && %s{instance}.eq(this, other);"
+          $"public override bool Equals(object? obj) => obj is %s{selfType} other && Equals(other);"
+          $"public override int GetHashCode() => %s{instance}.%s{hashMember}(this);" ]
     | "Eq", _ ->
         // A reference type's `Equals` is handed `null` by .NET, which the
         // implementation — an ordinary Bjolang function over two values — has
@@ -7273,21 +7273,18 @@ let private materializedMembers
 
         [ $"%s{modifier}bool Equals(%s{param}) => %s{notNull}%s{instance}.eq(this, other);"
           $"public override int GetHashCode() => %s{instance}.%s{hashMember}(this);" ]
-    // `Ord` goes the other way round: `CompareTo` is written on a union's
-    // *base* and not on its cases. `Comparer<Shape>.Default` asks `Shape` for
-    // `IComparable<Shape>`, which a member on `Circle` alone could not
-    // satisfy — and unlike `Equals`, nothing synthesized displaces it (a
-    // record synthesizes `Equals`, never `CompareTo`), so one member on the
-    // base is reached from every case and dead on none.
-    | "Ord", SealedCase -> []
+    // A union's `CompareTo` is on its base: `Comparer<Shape>.Default` asks
+    // `Shape` for `IComparable<Shape>`, which a member on `Circle` could not
+    // give. A record never writes `CompareTo`, so the base's is reached from
+    // every case.
     | "Ord", ValueRecord ->
         let compareMember = sanitizeIdent "compare"
         [ $"public int CompareTo(%s{selfType} other) => %s{instance}.%s{compareMember}(this, other);" ]
     // `null` is a case of the union here, which the implementation orders.
-    | "Ord", UnionBase true ->
+    | "Ord", (UnionBase true | ClassUnionBase true) ->
         let compareMember = sanitizeIdent "compare"
         [ $"public int CompareTo(%s{selfType}? other) => %s{instance}.%s{compareMember}(this, other!);" ]
-    | "Ord", (OpenRecord | UnionBase false) ->
+    | "Ord", (OpenRecord | UnionBase false | ClassUnionBase false) ->
         // Null sorts first, which is `Comparer<T>.Default`'s own convention;
         // the implementation — an ordinary Bjolang function — never sees it.
         let compareMember = sanitizeIdent "compare"
@@ -7893,9 +7890,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
             let tyArgsStr = 
                 if td.TypeArgs.IsEmpty then "" 
                 else "<" + (td.TypeArgs |> List.map typeParamName |> String.concat ", ") + ">"
-            // A parameterized type materializes too — `materializableImpl`
-            // is where a `(where ...)` of another trait, and a target that is
-            // not fully generic, fall back to C#'s synthesized members.
+            // A parameterized type materializes too; see `materializableImpl`.
             let materialized selfType target =
                 materializedBody ctx.Registry td.Name td.TypeArgs.Length selfType tyArgsStr target
 
@@ -7967,10 +7962,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     // Materialization already writes one where there is an
                     // `Eq` implementation to write it from, and for a derived
                     // implementation that one throws too. This is the other
-                    // two cases: a record with no implementation at all, and
-                    // one whose implementation materialization skips — a
-                    // `(where ...)` of a trait with no stand-in, or a target
-                    // that is not fully generic.
+                    // case: a record with no implementation at all.
                     //
                     // Without it C# synthesizes a hash over all instance
                     // fields, the mutable one included, and a `Map` or a `Set`
@@ -8029,26 +8021,42 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     appendLine ctx $"[Bjolang.Runtime.NullCase(\"%s{escapeStringLiteral (shownCaseName n)}\")]"
                 | None -> ()
 
+                // With a materialized `Eq`, the base and the cases are
+                // classes: `Equals` and `GetHashCode` are then the base's, for
+                // every case. A case record writes its own `Equals`, which
+                // returns false for a value of another case before the
+                // implementation runs, and C# rejects one written in its place.
+                let ownsEquality = materializableImpl ctx.Registry "Eq" td.Name td.TypeArgs.Length
+
+                let baseTarget, caseTarget =
+                    if ownsEquality then ClassUnionBase nullCase.IsSome, ClassCase
+                    else UnionBase nullCase.IsSome, SealedCase
+
+                let kind = if ownsEquality then "class" else "record"
+
+                let equatable =
+                    if not ownsEquality then baseClause selfRef
+                    else
+                        let interfaces =
+                            $"System.IEquatable<%s{selfRef}>"
+                            :: materializedInterfaces ctx.Registry td.Name td.TypeArgs.Length selfRef
+
+                        " : " + String.concat ", " interfaces
+
                 indent ctx
-                appendLine ctx $"public abstract record %s{selfRef}%s{baseClause selfRef} {{"
+                appendLine ctx $"public abstract %s{kind} %s{selfRef}%s{equatable} {{"
                 withIndent ctx (fun ctx ->
                     indent ctx
                     appendLine ctx $"private %s{declaredTypeName td.Name}() {{}}"
 
-                    // A materialized `Ord`'s `CompareTo` — and no `Eq` member.
-                    // See `materializedMembers`. The dictionaries go here too,
-                    // for both: the cases reach them as members of the type
-                    // they are nested in.
-                    for m in support @ materialized selfRef (UnionBase nullCase.IsSome) do
+                    // A materialized `Ord`'s `CompareTo`, and `Eq`'s members
+                    // when the union is classes. See `materializedMembers`. The
+                    // dictionaries go here too, for both: the cases reach them
+                    // as members of the type they are nested in.
+                    for m in support @ materialized selfRef baseTarget do
                         indent ctx
                         appendLine ctx m
 
-                    // Into every case class, and not onto the abstract base: a
-                    // derived record synthesizes its own `Equals`, which
-                    // overrides the base's, so an override written only on the
-                    // base would be silently dead. Declaring `Equals(Case?)` is
-                    // what displaces it — the `sealed override Equals(Base?)`
-                    // the compiler still synthesizes calls through to it.
                     for c in cases do
                         match c with
                         // The `null` case has no class: no value is of it.
@@ -8060,8 +8068,38 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                             let instance = $"public static readonly %s{declaredTypeName n} Instance = new();"
                             // By its name, as the `null` case prints.
                             let toString = $"public override string ToString() => \"%s{escapeStringLiteral (shownCaseName n)}\";"
-                            append ctx $"public sealed record %s{declaredTypeName n}() : %s{declaredTypeName td.Name}%s{tyArgsStr}"
-                            appendTypeBody ctx (instance :: toString :: materialized (declaredTypeName n) SealedCase)
+                            let parens = if ownsEquality then "" else "()"
+                            append ctx $"public sealed %s{kind} %s{declaredTypeName n}%s{parens} : %s{declaredTypeName td.Name}%s{tyArgsStr}"
+                            appendTypeBody ctx (instance :: toString :: materialized (declaredTypeName n) caseTarget)
+                        | DataCase (n, ftypes, _) when ownsEquality ->
+                            // What the record would have had, written out: the
+                            // constructor, the properties, `Deconstruct` for the
+                            // positional patterns, and the record's text.
+                            let caseName = declaredTypeName n
+                            let types = ftypes |> List.map (fun ft -> typeToString (Annotations.resolveTypeAnnotation ctx.Registry ft))
+                            let items = types |> List.mapi (fun i _ -> $"Item%d{i + 1}")
+                            let pairs = List.zip types items
+                            let parameters = pairs |> List.map (fun (t, item) -> $"%s{t} %s{item}") |> String.concat ", "
+                            let assignments = items |> List.map (fun item -> $"this.%s{item} = %s{item};") |> String.concat " "
+                            let outs = pairs |> List.map (fun (t, item) -> $"out %s{t} %s{item}") |> String.concat ", "
+                            let reads = items |> List.map (fun item -> $"%s{item} = this.%s{item};") |> String.concat " "
+
+                            let shown =
+                                items
+                                |> List.mapi (fun i item ->
+                                    let sep = if i = 0 then "" else ", "
+                                    $" + \"%s{sep}%s{item} = \" + Bjolang.Runtime.BjoNum.ShowField(%s{item})")
+                                |> String.concat ""
+
+                            let members =
+                                [ $"public %s{caseName}(%s{parameters}) {{ %s{assignments} }}" ]
+                                @ (pairs |> List.map (fun (t, item) -> $"public %s{t} %s{item} {{ get; }}"))
+                                @ [ $"public void Deconstruct(%s{outs}) {{ %s{reads} }}"
+                                    $"public override string ToString() => \"%s{caseName} {{ \"%s{shown} + \" }}\";" ]
+
+                            indent ctx
+                            append ctx $"public sealed class %s{caseName} : %s{declaredTypeName td.Name}%s{tyArgsStr}"
+                            appendTypeBody ctx members
                         | DataCase (n, ftypes, _) ->
                             indent ctx
                             append ctx $"public sealed record %s{declaredTypeName n}("

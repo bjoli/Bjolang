@@ -1,10 +1,10 @@
-;; A collection compares with the key's Eq or Ord, not with what C# wrote.
+;; A collection compares with the key's Eq or Ord, not field by field.
 ;;
-;; What makes a Map, a HashSet or an ordered collection out of nothing is handed
-;; the key's evidence, and keeps the type's own .NET members only where they
-;; give the same answer. Each case below is one where they do not: before, the
-;; first three were lookups that silently missed and the fourth threw at its
-;; second element.
+;; Each key type below has an Eq or Ord that is not its fields: an unordered
+;; pair, and two union cases `=` equates. The collections and .NET's own
+;; Equals, GetHashCode and CompareTo all give `=`'s answer. Before, the first
+;; three were lookups that silently missed and the fourth threw at its second
+;; element.
 
 (import (std prelude))
 (import (std hashset))
@@ -12,23 +12,22 @@
 (import (std orderedset))
 (import (std simpletest))
 
-;; A specialized target: an unordered pair. Not compiled into `Pair`, whose
-;; C#-written `Equals` compares in order.
-(type (: (Pair %a %b) (Record (: fst %a) (: snd %b))))
+;; An unordered pair.
+(type (: (Pair %a) (Record (: fst %a) (: snd %a))))
 
-(impl (Eq (Pair %a %a))
+(impl (Eq (Pair %a))
   (where (Eq %a))
   (defun (= x y)
     (or (and (= (.fst x) (.fst y)) (= (.snd x) (.snd y)))
         (and (= (.fst x) (.snd y)) (= (.snd x) (.fst y)))))
   (defun (eq-hash p) (bitwise-xor (eq-hash (.fst p)) (eq-hash (.snd p)))))
 
-;; Ordered by the first component alone. `Pair` gets no CompareTo at all.
-(impl (Ord (Pair %a %a))
+;; Ordered by the first component alone.
+(impl (Ord (Pair %a))
   (where (Ord %a))
   (defun (compare x y) (compare (.fst x) (.fst y))))
 
-(: (-> int int (Pair int int)))
+(: (-> int int (Pair int)))
 (defun (pair a b) (Pair (fst a) (snd b)))
 
 ;; Two cases `=` equates.
@@ -42,18 +41,36 @@
   (defun (= x y) (= (money->cents x) (money->cents y)))
   (defun (eq-hash m) (eq-hash (money->cents m))))
 
+;; .NET's own equality of a union is the union's, so it agrees with `=` across
+;; cases: what a Dictionary through interop, or LINQ, would see. Money is a
+;; struct union; Tally contains itself, so it is a class.
+(type-rec (: Tally (Union (: Ones int) (: Tens int) (: Both Tally Tally))))
+
+(: (-> Tally int))
+(defun (tally-value t)
+  (match t ((Ones n) n) ((Tens n) (* 10 n)) ((Both a b) (+ (tally-value a) (tally-value b)))))
+
+(impl (Eq Tally)
+  (defun (= x y) (= (tally-value x) (tally-value y)))
+  (defun (eq-hash t) (eq-hash (tally-value t))))
+
+(import/class (Obj (: System.Object)))
+(import/extern
+  (object-equals (: System.Object.Equals (-> Obj Obj bool)))
+  (object-hash (: System.Object.GetHashCode (-> Obj int))))
+
 ;; A generic function that never mentions Eq: the constraint is inferred, and
 ;; the caller's evidence is what reaches the set.
 (: (-> (List %a) int))
 (defun (distinct-count xs) (hashset-length (list->hashset xs)))
 
 (defun (main)
-  (expect "a Map keyed on a specialized target"
+  (expect "a Map keyed on an unordered pair"
           (map-length (map-set (map-set (map-empty) (pair 1 2) "a") (pair 2 1) "b"))
           1)
   (expect-true "finds the other order"
                (some? (map-try-ref (list->map (list (Tuple (pair 1 2) "a"))) (pair 2 1))))
-  (expect "an OrderedSet ordered by an Ord the type has no CompareTo for"
+  (expect "an OrderedSet ordered by its Ord"
           (orderedset-length (list->orderedset (list (pair 1 2) (pair 3 1) (pair 2 2) (pair 1 5))))
           3)
   (expect "an OrderedMap likewise"
@@ -75,4 +92,22 @@
   (expect "a collected map asks the key's Eq"
           (map-length {mapping (Tuple m 0) (:for m (list (Cents 100) (Dollars 1)))})
           1)
+  (expect "Object.Equals of two cases is the union's Eq"
+          (object-equals (cast Obj (Cents 100)) (cast Obj (Dollars 1)))
+          #t)
+  (expect "and so is GetHashCode"
+          (= (object-hash (cast Obj (Cents 100))) (object-hash (cast Obj (Dollars 1))))
+          #t)
+  (expect "a union that is a class: Object.Equals of two cases"
+          (object-equals (cast Obj (Tens 2)) (cast Obj (Both (Ones 10) (Tens 1))))
+          #t)
+  (expect "and GetHashCode"
+          (= (object-hash (cast Obj (Tens 2))) (object-hash (cast Obj (Both (Ones 10) (Tens 1)))))
+          #t)
+  (expect "Object.Equals of two unordered pairs"
+          (object-equals (cast Obj (pair 1 2)) (cast Obj (pair 2 1)))
+          #t)
+  (expect "a case of it is still matched by position"
+          (match (Both (Ones 1) (Tens 2)) ((Both (Ones a) (Tens b)) (+ a b)) (_ 0))
+          3)
   0)
