@@ -2160,6 +2160,60 @@ At a fixed 1M requests a second on 4 cores, 7 rounds each: no difference
 (median p99 10.1 against 9.7 ms, p99.9 13.1 against 13.3). Two rounds alone had
 put the new runtime 30% worse at p99.9.
 
+#### The slow mode — measured, not kept
+
+Go's spawn burst on this machine, for calibration: 509 ns a spawn on one core,
+123 on four, 139 on twelve, 133 on all. Go does not scale past four cores
+either. The Bjolang burst (`(spawn (nothing))` under a `with-cancel`) was 229,
+58, about 150 and 202-278.
+
+Cycles a spawn of the spawner's own work, counted from samples whose call chain
+passes through its loop:
+
+                                         4 cores   all cores
+    total                                  269        934
+    Interlocked.Exchange on runnext         61        375
+    Scope.TryEnlist                        108        219
+    the loop itself                         25        113
+    PushTail                                14         81
+    Wake                                     1         62
+
+The growth is the spawner's cache lines, which the other workers read on every
+search. Four changes, each behind a flag in one build, 3 processes of 6 bursts,
+ns a spawn:
+
+                                         4 cores    all cores
+    as committed                         56-88      257-273
+    X1 no thief takes a runnext          81-123     327-628
+    X2 a spawn to the tail, not runnext  72-134     208-322
+    X3 a pump that finds work after
+       giving its worker back leaves
+       when another pump spins           55-82      179-237
+    X3 and X4 steal only while spinning,
+       or allowed to (Go's rule)         67-100     150-188
+
+X2 moves the contention from the exchange to `PushTail`. X3 is Go's rule that
+only a spinning thread looks again before it sleeps. Without it every pump
+re-takes a worker at once, since the spawner's queue is never empty, and polls
+again. X4 is Go's rule that a thread steals only while it spins or may start
+to.
+
+Neither was kept. On `bench/service` with all cores X3 and X4 together cost 7%
+of the throughput (wall 243-249 against 227-232 ms, p50 121-125 against
+98-110 us); this layer's eager stealing is better for the service than Go's
+rule. X3 alone was neutral in the closed loop, on all cores and on 4, and at a
+fixed 1M a second on 4 cores its median p99 was 9.9 against 8.8 ms and p99.9
+12.3 against 10.8, inside a spread of 7.3-13.4 ms for the committed runtime.
+Four rounds do not settle that, and a 15-25% gain on a burst is not worth a
+possible cost in the tail.
+
+What is left on the spawner with X3 and X4: the scope's one child count, which
+every landing child writes from its own core (186 cycles a spawn), and the
+runnext exchange (142). Go's `WaitGroup` is one counter as well. A count split
+by core would need the close protocol rebuilt (`TryEnlist`, `Landed`, `Close`
+agree through one word today) and memory on every scope, and the service makes
+a scope per request.
+
 ---
 
 ## 6. Known issues
