@@ -12,8 +12,13 @@ between ~sync~ and the layer. Surgical,
 separately measurable changes; ~IEvent<T>~ stays the spec. Unmeasured unless
 noted.
 
-- *A send carries a ~Unit~ it does not want.* ~ChannelSendEvent : IEvent<Unit>~;
-  ~PutOp.ResumeGive~ exists only to avoid a closure (88 of 128 B/op).
+- *A ~choose~ over sends allocates each send's event.* 32 B per send
+  branch: a receive event is the channel, but a send event holds its value
+  (157 against 93 B/op for two branches, ~120 ns/op either way). Events are
+  values and may be kept and synced again, so the object cannot be reused
+  unless the compiler emits a path for a ~chan-send~ written inside
+  ~(sync (choose ...))~. Not worth it so far. The larger part of a
+  ~choose~'s allocation is its ~SyncState~ (~54 B), on every ~choose~.
 
 * Units
 
@@ -263,17 +268,6 @@ temporary per variable (~__next__~).
   over a .NET interface is checked during type checking too, so dead code is
   checked; one with implementations is checked in ~Lowering~ when its evidence
   is built, after ~Simplify~ has removed dead branches.
-
-
-- *An impl of another module's trait is not inlined across modules.* A
-  module publishes the inline templates of its impls only for traits it
-  publishes, and the no-op bodies of others' (Exports.fs,
-  ~inlineTemplatesToExport~). So a loop over a library's own iterable calls
-  it through its dictionary, and for a conditional impl, such as an adapter
-  over ~(where (Iterable %s))~, the loop builds the dictionary with ~Make~ at
-  every call, once per iteration. Adapters in the prelude, which publishes
-  ~Iterable~, are not affected. Publishing every impl's templates, or
-  hoisting the ~Make~ out of the loop, would fix it.
 - *A projection only in an impl's associated types.* ~(assoc Iterable elem
   %s)~ can be written in an impl's ~(type ...)~, where the where clause
   guarantees the impl it names. A function's ~where~ cannot constrain one,
