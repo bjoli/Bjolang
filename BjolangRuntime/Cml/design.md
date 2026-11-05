@@ -2207,6 +2207,22 @@ fixed 1M a second on 4 cores its median p99 was 9.9 against 8.8 ms and p99.9
 Four rounds do not settle that, and a 15-25% gain on a burst is not worth a
 possible cost in the tail.
 
+Two narrower rules, meant to keep the eager stealing and cut only the
+traffic on a hot producer, made the burst worse on all cores (committed
+206-275 ns):
+
+    X5 a pump that searched in vain waits before it searches again,
+       0.5 us doubling to a cap of 2, 8 or 32 us    221-296, 219-300, 214-295
+    X6 no thief takes a running worker's last item,
+       or its last 3                                368-446, 260-373
+
+X5 rests on a wrong premise: in the slow mode successful steals outnumber
+failed searches more than two to one, and each fiber is moved four times or
+more, mostly from thief to thief. X6 leaves the spawner's queue as the one
+place to steal from, which makes it hotter. Only fewer pumps taking part, as
+with X3 and X4, made the spawner cheaper. `perf c2c`, which would show the
+lines themselves, needs memory events this machine does not offer.
+
 What is left on the spawner with X3 and X4: the scope's one child count, which
 every landing child writes from its own core (186 cycles a spawn), and the
 runnext exchange (142). Go's `WaitGroup` is one counter as well. A count split
