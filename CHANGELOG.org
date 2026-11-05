@@ -3,6 +3,89 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std parallel)~: work on the parts of a collection at the same time
+
+- ~(in-parallel c f)~ splits ~c~ into parts, runs ~f~ on each part on the
+  compute threads, and returns the results in the order of the parts, as a
+  ~Vec~. The caller joins them. ~#:parts~ says how many parts to ask for:
+  four for each compute thread unless given. ~f~ is an ordinary function.
+- ~(computing-each n work)~ runs ~(work k)~ for each k below n on the
+  compute threads and returns the values in the order of k. It is what
+  ~in-parallel~ runs its parts with. ~(compute-thread-count)~ says how many
+  threads there are.
+- The compute threads are made at the first call and kept: one for each
+  logical core, or as many as ~BJOLANG_COMPUTE_THREADS~ says. They are
+  written in Bjolang: each is a ~spawn/thread~ that takes jobs from an
+  inbox. They are not the threads that run fibers, so a part holds no run
+  queue.
+- In a bjoroutine the fiber is suspended while the parts run. In ordinary
+  code the thread takes parts too, and waits only for the parts that other
+  threads have taken, so a part can call ~in-parallel~ with no deadlock. A
+  part sees the dynamic environment of the call.
+- When a part raises, the parts not started do not run, and ~in-parallel~
+  raises the exception when the parts that started have ended.
+- The trait ~Chunkable~ (~chunk-size~, ~chunks~) has implementations for
+  ~Range~, ~Vec~, ~Array~, ~IArray~, ~Map~, ~HashSet~, ~OrderedMap~ and
+  ~OrderedSet~.
+  - A part of an array is an ~ArrayPart~, a view with no copy, and
+    ~part->span~ gives a span of its elements that writes into the array:
+    the parts of one array can be written in place at the same time.
+  - A part of a vector, a map or a set is a collection of the same type
+    that shares its nodes. A vector is cut at all points by one call,
+    ~RrbList.SplitAt~.
+  - A map or a set is cut along its tree's nodes by ~Split(k)~ in the
+    runtime (~Map~, ~Set~, ~OrderedMap~, ~OrderedSet~). The split visits no
+    leaf: 32 us for a hash map of 1M entries into 96 parts, 11 us for an
+    ordered map. So the parts' sizes are close, not equal, and a tree of one
+    leaf is one part. The parts of an ordered map or set are in key order.
+- The count of a map or a set made by ~Split~ is taken the first time it is
+  asked for. Counting would traverse the tree, which cost a hash map as much
+  as half of a sequential walk of it; now each part counts itself, on its
+  own thread. Every other map and set has its count when it is made, as
+  before.
+- Measured on 24 threads (~bench/bjolang/parallel.bjo~): on 10M doubles, a
+  sum of sines 11.5-12x faster than in sequence, 3.7x on 4 cores; a sum
+  3.6-3.7x and an in-place scale 1.4-1.6x, both at the memory bandwidth. A
+  sum of the values of 1M entries: 2.9x for a hash map, 3.1x for an ordered
+  map. A call costs about 2 us for each part.
+- A fiber that sleeps 1 ms while the parts run on 24 compute threads wakes
+  1.1-1.3 ms late at the median, as when the parts were fibers: the parts use
+  every core. With 18 compute threads: 0.12 ms, at half the throughput
+  (~bench/bjolang/parallel-latency.bjo~).
+- Open: a generic function cannot iterate the parts of any ~Chunkable~, and
+  the compiler warns that a call of ~in-parallel~ in a part parks its thread,
+  as it cannot see that the part runs on a compute thread (~Todo.org~).
+
+* A dynamic environment can be taken to another thread
+
+- ~(current-dynamic-environment)~ returns the dynamic environment here, as
+  an opaque ~DynamicEnvironment~: the ports, the parameters, the ambient
+  cancellation token and the scope. ~(call-with-dynamic-environment env
+  thunk)~ runs an ordinary thunk in it, and puts the thread's own back
+  after, also when the thunk raises.
+- It is what ~blocking~ and ~spawn/thread~ do for their thunks, for code
+  that hands work to another thread itself. The compute threads of
+  ~(std parallel)~ are written with it.
+- The environment holds the scope of the code that took it. When that scope
+  has closed, a ~spawn~ in the thunk starts nothing, ~bjo~ returns a promise
+  that has failed with ~Cancelled~, and a ~sync~ raises ~Cancelled~.
+
+* A plain thread that waits for an event is woken sooner
+
+- A ~sync/blocking~ whose event is ready at once no longer waits for a pump
+  to run its own wake-up: 12 us to 0.8 us on a plain thread. On a pump past
+  its inline budget the wake-up went to that pump's own queue, and the
+  parked thread waited until another pump stole it: up to 2 ms.
+- A thread in ~sync/blocking~ spins a little before it parks, as
+  ~SemaphoreSlim~ does: a round trip fiber, plain thread, fiber went from
+  12.5 to 4.6 us when the thread waits again at once.
+- ~InboxModule.MakeNewestFirst~ makes an inbox that wakes the receiver that
+  parked last, for threads that wait for work: the one most likely to be
+  spinning still. Ordinary inboxes are unchanged.
+- ~bench/bjolang/cmlbench.bjo~ is the same within noise. The findings, and
+  what was tried for the compute threads and rejected, are in
+  ~BjolangRuntime/Cml/design.md~, "A plain thread that waits".
+
 * A full run queue spills to the others as one batch
 
 - A worker whose queue is full moves half of it to a shared queue as one

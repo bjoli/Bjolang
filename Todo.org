@@ -275,6 +275,8 @@ temporary per variable (~__next__~).
   function signature naming one at a concrete type fails because signatures
   are read before impls are registered. Both want the same thing as the
   impl case: a projection treated as a type parameter of the function.
+  ~(std parallel)~ meets it: a generic function cannot iterate the parts of
+  any ~Chunkable~, ~(where (Iterable (assoc Chunkable chunk %c)))~.
 - *Pins are matched by the name of a rigid variable.* A body's pins
   (~Registry.PinnedAssocs~) speak of its signature's variables, and a scheme
   read in that body is read without them (~Unification.withoutPins~). A type
@@ -343,6 +345,61 @@ several cores and their ends are events.
   which run on the same pool's threads. If they do not, ~blocking~ (or a
   function of the same body with a name for computing) is the way to run
   short parts, and ~spawn/thread~ is for long ones.
+
+* ~(std parallel)~
+
+- *A map's parts are as even as its hashes.* The trie split weighs a node
+  by its level, as spread hashes make it. Keys whose hashes agree in their
+  low bits put most entries under a few nodes, and the parts are then far
+  from equal. Exact weights would need a size in each node, or a count in
+  the split, which cost half of a sequential walk.
+- *A walk of a map in parts stops at 2-3x* on 24 threads, against 3.7x for
+  a sum of an array: a walk follows pointers. Not examined further.
+- *~loop/parallel~.* A ~loop~ whose ~:for~ is over a ~Chunkable~ and whose
+  parts' accumulators are joined at the end. It needs a way to merge two
+  states of a ~Collector~: an optional ~collector-merge~.
+- *As many compute threads as cores delay fibers.* At 24 compute threads a
+  fiber that sleeps 1 ms wakes 1.1-1.3 ms late at the median and 1.5-1.7 ms
+  at p90, as when the parts were fibers; at 18, 0.12 and 0.14-0.18 ms, at
+  half the throughput. The default is the cores, as bjostat's workers
+  chose for scripts; a server would set ~BJOLANG_COMPUTE_THREADS~ lower. A
+  default below the cores, or a priority below the run queues' threads, is
+  not measured yet.
+- *A call costs about 2 us for each part* on 24 threads: 49-59 us for 24
+  parts that do nothing, from a bjoroutine. Most of it is the poster waking
+  compute threads that sleep, one system call each, one after another. The
+  C# pool the compute threads replaced took 19-21 us. Spinning longer, or
+  waking a few threads that each wake more, are what is left to try
+  (~BjolangRuntime/Cml/design.md~, "A plain thread that waits").
+- *bjostat has a pool of its own.* ~glue/Workers.cs~ in bjostat is the same
+  pool; its ~computing-each~ could be ~(std parallel)~'s, so that a program
+  has one pool, not two of as many threads as cores.
+- *The compiler cannot see that a lambda runs on another thread.* The lint
+  that a call parks its thread exempts the lambdas of ~blocking~ and
+  ~spawn-thunk~ by name (~Prelude.elsewhereBuiltins~). A library function
+  such as ~in-parallel~ or ~computing-each~ cannot say the same of its
+  function parameter, so a nested call in a part, which parks a compute
+  thread, is warned of as if it parked a thread that runs fibers. A
+  declaration on the parameter would fix it.
+- *Parts are not split again.* ~chunks~ makes about k parts at once, so a
+  part that is slower than the others is not shared. A recursive split, as
+  in Rayon or Java's ~Spliterator~, would let idle workers take half of it.
+- *On one core the parallel rows of ~bench/bjolang/parallel.bjo~ are up to
+  20% slower than the sequential ones* with tiered compilation on, and
+  0.99x with ~DOTNET_TieredCompilation=0~. Not examined. Probably the parts
+  call the kernel more often than the sequential row does, so it tiers up
+  during the timed runs, and the JIT's background thread competes for the
+  one core.
+
+* Found while measuring ~(std parallel)~
+
+- *A bjoroutine in a ~Some~ makes C# that does not compile.* In
+  ~(: (-bjo-> string (Option (-bjo-> double)) void))~, the call
+  ~(scenario "x" (Some (bjoroutine () (on-fibers))))~ fails in C# with
+  "cannot convert from 'Option<Func<Task<double>>>' to
+  'Option<Func<Fiber<double>>>'": the lambda is emitted as a Task-returning
+  one where the option of a suspending arrow wants a Fiber. Found in
+  ~bench/bjolang/parallel-latency.bjo~, which now passes a number instead.
 
 * Packages and projects
 

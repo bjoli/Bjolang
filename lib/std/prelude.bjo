@@ -211,6 +211,9 @@
   ;; The clock
   Clock make-clock system-clock current-clock monotonic-ms monotonic-ns
 
+  ;; The dynamic environment, taken here and run in on another thread.
+  DynamicEnvironment current-dynamic-environment call-with-dynamic-environment
+
   promise-join/sync panic!
 
   ;; What a grammar's checked literal calls. See (def/grammar ...).
@@ -4602,6 +4605,19 @@
     ((_ ms first body ...)
      #'(scope-form (deadline-open! (duration->timer-ms ,ms)) (fire) ,first ,@body))
     (bad (syntax-error bad "with-deadline takes a Duration and a body: (with-deadline (seconds 5) body ...)"))))
+
+;; ---------------------------------------------------------------------------
+;; The dynamic environment, for another thread
+;; ---------------------------------------------------------------------------
+
+;; Opaque: taken by `current-dynamic-environment`, used by
+;; `call-with-dynamic-environment`, and nothing else.
+(import/class
+  (DynamicEnvironment (: Bjolang.Runtime.DynamicEnvironment)))
+
+(import/extern
+  (current-dynamic-environment (: Bjolang.Runtime.DynamicEnvironments.Current (-> DynamicEnvironment)))
+  (call-with-dynamic-environment (: Bjolang.Runtime.DynamicEnvironments.Call (-> DynamicEnvironment (-> %a) %a))))
 
 ;; `(with-shield body ...)` and `(with-shield #:within ms body ...)` — a scope
 ;; whose token is *not* linked to its parent's.

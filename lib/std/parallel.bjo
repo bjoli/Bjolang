@@ -1,0 +1,364 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; Work on the parts of a collection at the same time.
+;;
+;; A `Chunkable` collection splits into parts that together hold each element
+;; once, in the collection's order when it has one. `in-parallel` runs a
+;; function on each part on threads made for work that uses a core, and
+;; returns the results in the order of the parts. The caller joins them: `(vec-fold + 0 ...)`, a
+;; concatenation, a merge.
+;;
+;; An array splits into views, not copies. A part of an array gives a span of
+;; its own elements, so the parts of one array can be written in place at the
+;; same time. A span cannot go to another thread, so each part makes its own.
+;; A vector, a map or a set splits into collections of its own type, which
+;; share its nodes.
+
+(import (std prelude))
+(import (std hashset))
+(import (std orderedmap))
+(import (std orderedset))
+(import (std atomic))
+(import (std inbox))
+
+(:doc #:file "parallel.bjodoc")
+
+(import/extern
+  (processor-count (: System.Environment.ProcessorCount #:get))
+  (parse-int (: System.Int32.TryParse (-> string (out int) (Option int))))
+  (make-jobs-inbox (: Bjoml.InboxModule.MakeNewestFirst (-> int bool (Inbox %a))))
+  (clr-vec-split-at (: Collections.RrbFun.SplitAt (-> (Vec %a) (Array int) (Array (Vec %a)))))
+  (clr-map-split (: Map.MapModule.Split (-> (Map %k %v) int (Array (Map %k %v)))))
+  (clr-hashset-split (: Set.SetModule.Split (-> (HashSet %a) int (Array (HashSet %a)))))
+  (clr-orderedmap-split (: OrderedMap.OrderedMapModule.Split (-> (OrderedMap %k %v) int (Array (OrderedMap %k %v)))))
+  (clr-orderedset-split (: OrderedSet.OrderedSetModule.Split (-> (OrderedSet %a) int (Array (OrderedSet %a))))))
+
+(export Chunkable chunk-size chunks
+        in-parallel computing-each compute-thread-count
+        ArrayPart part-array part-lo part-hi part-length part->span part->ro-span
+        IArrayPart iarray-part-lo iarray-part-hi iarray-part-length)
+
+;; ---------------------------------------------------------------------------
+;; The trait
+;; ---------------------------------------------------------------------------
+
+;; A collection that splits into parts.
+;;
+;; - `chunk-size`: the number of elements, or a good estimate.
+;; - `chunks c k`: about k parts, in the collection's order when it has one,
+;;   that hold each element once. Fewer when there are fewer elements than k,
+;;   and at least one, which may be empty.
+(def/trait (Chunkable %c)
+  (type %chunk)
+  (: chunk-size (-> %c int))
+  (: chunks (-> %c int (Vec %chunk))))
+
+;; The number of parts to make of n elements when k are asked for: at least
+;; one, and no more than there are elements.
+(: (-> int int int))
+(defun (part-count n k)
+  (max 1 (min k n)))
+
+;; Where part i of k starts, as an offset into n elements. Parts differ in size
+;; by one at most. In a long, because i times n can pass `int-max`.
+(: (-> int int int int))
+(defun (part-start n k i)
+  (cast int (/ (* (cast long n) (cast long i)) (cast long k))))
+
+;; ---------------------------------------------------------------------------
+;; The compute threads
+;; ---------------------------------------------------------------------------
+
+;; Threads for work that uses a core, made at the first call and kept.
+;;
+;; - Each is a `spawn/thread` that takes jobs from `jobs` for ever. A
+;;   detached fiber syncs its event, as `spawn/thread` starts its thread when
+;;   synced. The fiber is suspended for ever, and holds nothing.
+;; - They are not the threads of the run queues, so a job holds no pump, and
+;;   fibers go on running while the jobs compute.
+;; - `jobs` is an inbox, which several threads can wait on, and which a post
+;;   does not wait for. It wakes the thread that waited last, which is the
+;;   one most likely to be spinning still, as a thread spins a little before
+;;   it parks: then a post makes no system call to wake it.
+;; - A job is a closure over the dynamic environment of the code that made
+;;   it, and runs in that environment.
+;; - A job posted to a full inbox is dropped. That is safe because a call
+;;   always has a thread that takes its parts: in ordinary code the calling
+;;   thread, and in a bjoroutine the first runner, which waits for room
+;;   when the inbox is full.
+
+;; How many compute threads there are: BJOLANG_COMPUTE_THREADS, or one for
+;; each logical core. Read once, when the module is loaded.
+(def thread-count
+  (match (get-environment-variable "BJOLANG_COMPUTE_THREADS")
+    ((Some s) (match (parse-int s)
+                ((Some n) (if (> n 0) n processor-count))
+                (None processor-count)))
+    (None processor-count)))
+
+(: (-> int))
+(defun (compute-thread-count) thread-count)
+
+(def jobs (: (make-jobs-inbox 4096 #f) (Inbox (-> Unit))))
+(def started (make-atomic 0))
+
+;; A compute thread: runs jobs for ever. A job raises nothing: the parts it
+;; runs keep their exceptions.
+(: (-> Unit))
+(defun (compute-loop)
+  (let go ()
+    ((sync/blocking (inbox-recv jobs)))
+    (go)))
+
+(: (-bjo-> void))
+(defbjo (keep-compute-thread)
+  (ignore (sync (spawn/thread compute-loop))))
+
+(: (-> void))
+(defun (start-compute-threads!)
+  (when (= (atomic-compare-and-swap! started 0 1) 0)
+    (loop (:for _ (range 0 thread-count))
+          (:do (spawn/detached (keep-compute-thread))))))
+
+;; ---------------------------------------------------------------------------
+;; Running the parts
+;; ---------------------------------------------------------------------------
+
+;; Runs `(work k)` for each k from 0 to n - 1 on the compute threads, and
+;; returns the values in the order of k.
+;;
+;; - A runner is a job that takes parts by number until none is left. One is
+;;   posted for each compute thread, or for each part when there are fewer.
+;;   A runner that a thread takes after the parts are all taken ends at once.
+;; - In a bjoroutine the fiber is suspended until the parts have run, and
+;;   holds nothing.
+;; - In ordinary code the thread posts one runner fewer, takes parts itself,
+;;   and then waits only for the parts that other threads have taken. So a
+;;   part can call `computing-each` itself: a call does not wait for runners
+;;   that no thread is free to take, and there is no deadlock when calls nest.
+;; - A part runs in the dynamic environment of the call.
+;; - When a part raises, the parts not started do not run, and the exception
+;;   is raised here when the parts that started have ended. A part that runs
+;;   cannot be stopped. In a bjoroutine, the parts not started when the scope
+;;   is cancelled do not run, and `Cancelled` is raised.
+(: computing-each (-> int (-> int %a) (Vec %a)))
+(defun (computing-each n work)
+  (if (<= n 0)
+      []
+      (let ()
+        (start-compute-threads!)
+        (def results (make-array n))
+        (def next (make-atomic -1))
+        (def ended (make-atomic 0))
+        (def failed (make-atomic 0))
+        (def failure (: (make-array 1) (Array Exception)))
+        (def skipped (make-atomic 0))
+        (def done (: (make-inbox 1 DropNewest) (Inbox Unit)))
+        (def token (parameter-ref current-cancel))
+        (def env (current-dynamic-environment))
+        ;; Takes parts until none is left.
+        (def run-parts
+          (fun ()
+            (let go ()
+              (def k (atomic-increment! next))
+              (when (< k n)
+                (cond
+                  ((not (= (atomic-ref failed) 0)) unit)
+                  ((cancelled? token) (ignore (atomic-increment! skipped)))
+                  (else (match (try (array-set! results k (work k)) #:catch (System.Exception))
+                          ((Ok _) unit)
+                          ((Err e) (when (= (atomic-compare-and-swap! failed 0 1) 0)
+                                     (array-set! failure 0 e))))))
+                (when (= (atomic-increment! ended) n)
+                  (ignore (inbox-post! done unit)))
+                (go)))
+            unit))
+        (def runner (fun () (call-with-dynamic-environment env run-parts)))
+        ;; One runner for each part, at most one for each compute thread, and
+        ;; in ordinary code one less, as the calling thread takes parts too.
+        (def runners (by-colour (#:sync (min (- n 1) thread-count))
+                                (#:bjo (min n thread-count))))
+        (by-colour
+          (#:sync (begin
+                    (loop (:for _ (range 0 runners))
+                          (:do (ignore (inbox-post! jobs runner))))
+                    (run-parts)
+                    (sync/blocking (inbox-recv done))))
+          (#:bjo (begin
+                   (unless (inbox-post! jobs runner)
+                     (sync (inbox-send-evt jobs runner)))
+                   (loop (:for _ (range 1 runners))
+                         (:do (ignore (inbox-post! jobs runner))))
+                   (sync (inbox-recv done))
+                   (when (> (atomic-ref skipped) 0) (sync (: (never) (Event Unit)))))))
+        (when (= (atomic-ref failed) 1) (raise (array-ref failure 0)))
+        (array->vec results))))
+
+;; Runs `f` on each part of `c` on the compute threads, and returns the
+;; results in the order of the parts. For work that uses a core: see
+;; `computing-each`, which runs the parts.
+;;
+;; `#:parts` is how many parts to ask for: four for each compute thread
+;; unless given. The collection may make fewer.
+(: in-parallel (-> %c (-> %p %r) (#:parts int) (Vec %r)) (where (Chunkable %c #:chunk %p)))
+(defun (in-parallel c f #:parts (* 4 thread-count))
+  (def ps (chunks c parts))
+  (computing-each (vec-length ps) (fun (i) (f (vec-ref ps i)))))
+
+;; ---------------------------------------------------------------------------
+;; Ranges and vectors
+;; ---------------------------------------------------------------------------
+
+(impl (Chunkable Range)
+  (type %chunk Range)
+  (defun (chunk-size r) (max 0 (- (record-ref r hi) (record-ref r lo))))
+  (defun (chunks r k)
+    (def lo (record-ref r lo))
+    (def n (max 0 (- (record-ref r hi) lo)))
+    (def m (part-count n k))
+    (loop (:for i (range 0 m))
+          (:acc parts (vecing (range (+ lo (part-start n m i))
+                                     (+ lo (part-start n m (+ i 1)))))))))
+
+;; A part of a vector is a slice of it, which shares its nodes.
+(impl (Chunkable (Vec %a))
+  (type %chunk (Vec %a))
+  (defun (chunk-size v) (vec-length v))
+  (defun (chunks v k)
+    (def n (vec-length v))
+    (def m (part-count n k))
+    (loop (:for i (range 0 m))
+          (:acc parts (vecing (vec-slice v
+                                         (part-start n m i)
+                                         (- (part-start n m (+ i 1)) (part-start n m i))))))))
+
+;; ---------------------------------------------------------------------------
+;; Arrays: parts are views
+;; ---------------------------------------------------------------------------
+
+;; The elements of `array` from `lo` up to `hi`. A view: it holds the array,
+;; not a copy of the elements.
+(type (: (ArrayPart %a) (Struct (: array (Array %a)) (: lo int) (: hi int))))
+
+(: (-> (ArrayPart %a) (Array %a)))
+(defun (part-array p) (record-ref p array))
+
+;; The index in the array of the part's first element.
+(: (-> (ArrayPart %a) int))
+(defun (part-lo p) (record-ref p lo))
+
+;; The index in the array after the part's last element.
+(: (-> (ArrayPart %a) int))
+(defun (part-hi p) (record-ref p hi))
+
+(: (-> (ArrayPart %a) int))
+(defun (part-length p) (- (record-ref p hi) (record-ref p lo)))
+
+;; A span of the part's elements, which writes into the array. Index 0 is the
+;; part's first element. Made where it is used: a span cannot go to another
+;; thread or into a closure.
+(: (-> (ArrayPart %a) (Span %a)))
+(defun (part->span p)
+  (array->span (record-ref p array) #:from (record-ref p lo) #:to (record-ref p hi)))
+
+(: (-> (ArrayPart %a) (RoSpan %a)))
+(defun (part->ro-span p)
+  (array->ro-span (record-ref p array) #:from (record-ref p lo) #:to (record-ref p hi)))
+
+;; The part's elements, in order. The cursor is the index into the array.
+(impl (Iterable (ArrayPart %a))
+  (type %elem %a)
+  (type %cursor int)
+  (defun (iterable-start p) (record-ref p lo))
+  (defun (iterable-done? p index) (>= index (record-ref p hi)))
+  (defun (iterable-current p index) (array-ref (record-ref p array) index))
+  (defun (iterable-next p index) (+ index 1))
+  (defun (count p) (- (record-ref p hi) (record-ref p lo))))
+
+(impl (Chunkable (Array %a))
+  (type %chunk (ArrayPart %a))
+  (defun (chunk-size a) (array-length a))
+  (defun (chunks a k)
+    (def n (array-length a))
+    (def m (part-count n k))
+    (loop (:for i (range 0 m))
+          (:acc parts (vecing (ArrayPart (array a)
+                                         (lo (part-start n m i))
+                                         (hi (part-start n m (+ i 1)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Immutable arrays: parts are views too
+;; ---------------------------------------------------------------------------
+
+(type (: (IArrayPart %a) (Struct (: iarray (IArray %a)) (: lo int) (: hi int))))
+
+(: (-> (IArrayPart %a) int))
+(defun (iarray-part-lo p) (record-ref p lo))
+
+(: (-> (IArrayPart %a) int))
+(defun (iarray-part-hi p) (record-ref p hi))
+
+(: (-> (IArrayPart %a) int))
+(defun (iarray-part-length p) (- (record-ref p hi) (record-ref p lo)))
+
+(impl (Iterable (IArrayPart %a))
+  (type %elem %a)
+  (type %cursor int)
+  (defun (iterable-start p) (record-ref p lo))
+  (defun (iterable-done? p index) (>= index (record-ref p hi)))
+  (defun (iterable-current p index) (iarray-ref (record-ref p iarray) index))
+  (defun (iterable-next p index) (+ index 1))
+  (defun (count p) (- (record-ref p hi) (record-ref p lo))))
+
+(impl (Chunkable (IArray %a))
+  (type %chunk (IArrayPart %a))
+  (defun (chunk-size a) (iarray-length a))
+  (defun (chunks a k)
+    (def n (iarray-length a))
+    (def m (part-count n k))
+    (loop (:for i (range 0 m))
+          (:acc parts (vecing (IArrayPart (iarray a)
+                                          (lo (part-start n m i))
+                                          (hi (part-start n m (+ i 1)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Maps and sets: parts are maps and sets
+;; ---------------------------------------------------------------------------
+
+;; The split is in the runtime. It cuts along the tree's own nodes, so the
+;; parts share them, and their sizes are close but not equal. A tree too small
+;; to cut, one leaf, is one part.
+
+;; The parts of a hash map or a hash set are in no order that means
+;; anything, as the map's own order does not.
+(impl (Chunkable (Map %k %v))
+  (type %chunk (Map %k %v))
+  (defun (chunk-size m) (map-length m))
+  (defun (chunks m k) (array->vec (clr-map-split m k))))
+
+(impl (Chunkable (HashSet %a))
+  (type %chunk (HashSet %a))
+  (defun (chunk-size s) (hashset-length s))
+  (defun (chunks s k) (array->vec (clr-hashset-split s k))))
+
+;; The parts of an ordered map or set are in key order: every key of a part
+;; is less than every key of the next.
+(impl (Chunkable (OrderedMap %k %v))
+  (type %chunk (OrderedMap %k %v))
+  (defun (chunk-size m) (orderedmap-length m))
+  (defun (chunks m k) (array->vec (clr-orderedmap-split m k))))
+
+(impl (Chunkable (OrderedSet %a))
+  (type %chunk (OrderedSet %a))
+  (defun (chunk-size s) (orderedset-length s))
+  (defun (chunks s k) (array->vec (clr-orderedset-split s k))))

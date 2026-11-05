@@ -1,0 +1,288 @@
+;; Docs for std/parallel.bjo, read through (:doc #:file "parallel.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Work on the parts of a collection at the same time, on threads made for work that uses a core.")
+  (see Chunkable in-parallel computing-each ArrayPart part->span part->ro-span)
+  (example """
+    (import (std parallel))
+
+    ;; A sum in parts, joined by the caller.
+    (vec-fold + 0L (in-parallel (range 0 1000000)
+                                (fun (part) (loop (:for i part)
+                                                  (:acc s (summing (cast long i)))))))
+    ;; 499999500000L
+
+    ;; The parts of one array, written in place at the same time.
+    (: (-> (Span double) void))
+    (defun (double-all! s)
+      (loop (:for i (range 0 (span-length s)))
+            (:do (span-set! s i (* 2.0 (span-ref s i))))))
+
+    (def xs (make-array 1000000 #:fill 1.5))
+    (ignore (in-parallel xs (fun (part) (double-all! (part->span part)))))
+    """)
+  (reference """
+    A @code{Chunkable} collection splits into parts that together hold each
+    element once, in the collection's order when it has one.
+    @code{in-parallel} runs a function on each part on the compute threads,
+    and returns a vector of the results, in the order of the parts. The caller joins the results: with
+    @code{vec-fold}, a concatenation or a merge.
+
+    @strong{Implementations.} @code{Range}, @code{Vec}, @code{Array},
+    @code{IArray}, @code{Map}, @code{HashSet}, @code{OrderedMap} and
+    @code{OrderedSet}. A part of a range is a range. A part of a vector is a
+    vector that shares the vector's nodes, cut at all points in one call. A
+    part of an array is an @code{ArrayPart}, and a part of an immutable
+    array is an @code{IArrayPart}: views that hold the array and two
+    indices, not a copy of the elements. A list has no implementation,
+    because a split must traverse it. Use @code{list->vec} first.
+
+    @strong{Maps and sets.} A part of a map or a set is a map or a set of
+    the same type and comparer, which shares the tree's nodes. The split
+    cuts along the nodes: it makes some new nodes on the way down to each
+    cut, and visits no leaf. So the parts' sizes are close, not equal, and a
+    tree of one leaf, up to 64 entries in an ordered map, is one part. A
+    part counts its entries when its length is first asked for, in the
+    thread that asks. The parts of an ordered map or set are in key order.
+    The parts of a hash map or set are in no order that means anything, and
+    their sizes are close only when the hashes are spread.
+
+    @strong{Writing in place.} @code{part->span} gives a span of a part's
+    elements that writes into the array. The parts of one array do not
+    overlap, so their spans can be written at the same time with no lock. A
+    span cannot be captured by a closure or go to another thread, so the
+    function makes the span from its part, and gives it to a named function.
+
+    @strong{The compute threads.} The parts run on threads made at the first
+    call and kept: one for each logical core, or as many as the environment
+    variable @code{BJOLANG_COMPUTE_THREADS} says. Each is a
+    @code{spawn/thread} that takes jobs from an inbox, and a job runs in the
+    dynamic environment of the call that made it. They are not the threads
+    that run fibers, so a part holds no run queue.
+
+    They share the cores with the threads that run fibers. With as many
+    compute threads as cores, the parts use every core, and a fiber that
+    sleeps 1 ms while they run wakes about 1.1 ms late at the median and
+    1.5 ms at the 90th percentile (24 threads, Ryzen 9 5900X): as late as
+    when the parts were fibers. With 18 compute threads it wakes 0.12 and
+    0.18 ms late, at half the throughput. A program that must answer on time
+    while it computes, such as a server, sets fewer.
+    @code{bench/bjolang/parallel-latency.bjo} measures it.
+
+    @strong{When it is faster.} One call with 24 parts that do nothing takes
+    about 50 us from a bjoroutine and 33 us from ordinary code (Ryzen 9
+    5900X), most of it the wake of threads that sleep. The default is four
+    parts for each compute thread. Work below some hundreds of microseconds
+    is faster in sequence. Work that is
+    bound by memory, such as a sum or a scale of a large array of doubles,
+    stops at the memory bandwidth. Work that is bound by computation scales
+    with the physical cores. @code{bench/bjolang/parallel.bjo} has the
+    measurements.
+
+    @strong{Limit.} A generic function cannot yet iterate the parts of any
+    @code{Chunkable}: its @code{where} cannot ask for
+    @code{(Iterable (assoc Chunkable chunk %c))}. @code{in-parallel} itself
+    is generic, and the function given to it sees the part type of the
+    collection at the call.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The trait
+;; ---------------------------------------------------------------------------
+
+(:doc Chunkable
+  (summary "Trait for collections that split into ordered parts.")
+  (tparam %c "The collection type.")
+  (see chunk-size chunks in-parallel)
+  (reference """
+    An implementation defines the associated type @code{%chunk}, the type of
+    a part, and implements @code{chunk-size} and @code{chunks}. A function
+    names the part type with a pin:
+    @code{(where (Chunkable %c #:chunk %p))}.
+    """))
+
+(:doc chunk-size
+  (summary "Returns the number of elements of a collection, or a good estimate.")
+  (arg c "The collection.")
+  (returns "The number of elements, zero or more.")
+  (see chunks))
+
+(:doc chunks
+  (summary "Splits a collection into about k parts, in order.")
+  (arg c "The collection.")
+  (arg k "How many parts to make.")
+  (returns "A vector of parts that together hold each element of c once, in c's order when c has one.")
+  (see chunk-size in-parallel)
+  (reference """
+    There are fewer than @code{k} parts when there are fewer elements than
+    @code{k}, and there is always at least one part, which is empty when
+    @code{c} is empty. The parts of a range, a vector or an array differ in
+    size by one element at most. The parts of a map or a set are cut along
+    the tree's nodes, so their sizes are close, not equal, and a small tree
+    is one part.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Running the parts
+;; ---------------------------------------------------------------------------
+
+(:doc in-parallel
+  (summary "Runs a function on each part of a collection on the compute threads.")
+  (arg c "The collection. It must be @code{Chunkable}.")
+  (arg f "The function, called once with each part.")
+  (key parts "How many parts to ask for. Four for each compute thread unless given. The collection may make fewer.")
+  (returns "A vector of the results of f, in the order of the parts.")
+  (see chunks part->span computing-each)
+  (example """
+    (in-parallel (range 0 10) (fun (part) (count part)) #:parts 4)   ; [2 3 2 3]
+    """)
+  (reference """
+    For work that uses a core. @code{f} is an ordinary function: a part
+    runs on a thread, not in a fiber, and cannot suspend. The parts are run
+    by @code{computing-each}.
+
+    In a bjoroutine, the fiber is suspended until the parts have run, and
+    holds nothing. In ordinary code, the thread takes parts too, and then
+    waits only for the parts that other threads run. So a part can call
+    @code{in-parallel} itself. Everything the parts wrote is visible to the
+    caller when @code{in-parallel} returns.
+
+    A part runs in the dynamic environment of the call: it sees the
+    caller's parameters.
+
+    When a part raises, the parts not started do not run, and
+    @code{in-parallel} raises the exception when the parts that started have
+    ended. A part that runs cannot be stopped. In a bjoroutine, a cancelled
+    scope stops the parts that have not started, and the bjoroutine stops
+    waiting at once.
+
+    In ordinary code @code{in-parallel} parks its thread while it waits, and
+    the compiler warns when a bjoroutine reaches such a call. It also warns
+    for a call in a part, where the thread it parks is a compute thread and
+    not one that runs fibers: the compiler cannot see that @code{f} runs on
+    another thread.
+    """))
+
+(:doc computing-each
+  (summary "Runs a function of k for each k from 0 to n - 1 on the compute threads.")
+  (arg n "How many parts. Zero or less gives an empty vector.")
+  (arg work "The function, called once with each k: ordinary code that cannot suspend.")
+  (returns "A vector of the results, in the order of k.")
+  (see in-parallel compute-thread-count)
+  (example """
+    (computing-each 4 (fun (k) (* k k)))   ; [0 1 4 9]
+    """)
+  (reference """
+    What @code{in-parallel} runs its parts with, for work that is not
+    the parts of a @code{Chunkable} collection.
+
+    The parts are taken by number by the threads that run parts. The call
+    posts a runner, a job that takes parts until none is left, for each
+    compute thread, or for each part when there are fewer. In a bjoroutine
+    the fiber is suspended while the parts run. In ordinary code the
+    calling thread takes parts too, and then waits only for the parts that
+    other threads have taken. So a part can call @code{computing-each}
+    itself, also when every compute thread is busy.
+
+    A part runs in the dynamic environment of the call, as
+    @code{call-with-dynamic-environment} runs a thunk. When a part raises,
+    the parts not started do not run, and the exception is raised when the
+    parts that started have ended. In a bjoroutine, the parts not started
+    when the scope is cancelled do not run, and @code{Cancelled} is raised.
+    """))
+
+(:doc compute-thread-count
+  (summary "Returns how many compute threads there are.")
+  (returns "The value of BJOLANG_COMPUTE_THREADS when it is a number above 0, or else the number of logical cores.")
+  (see computing-each in-parallel)
+  (reference """
+    Read once, when @code{(std parallel)} is loaded. The threads themselves
+    are made at the first call of @code{computing-each}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Parts of arrays
+;; ---------------------------------------------------------------------------
+
+(:doc ArrayPart
+  (summary "A part of an array: a view of the elements from lo up to hi.")
+  (field array "The array. Not a copy.")
+  (field lo "The index of the part's first element.")
+  (field hi "The index after the part's last element.")
+  (see part->span part->ro-span part-length)
+  (reference """
+    An @code{ArrayPart} is @code{Iterable}: @code{(:for x part)} gives the
+    part's elements in order.
+    """))
+
+(:doc part-array
+  (summary "Returns the array that a part is a view of.")
+  (arg p "The part.")
+  (returns "The whole array, not only the part's elements."))
+
+(:doc part-lo
+  (summary "Where a part starts in its array.")
+  (arg p "The part.")
+  (returns "The index in the array of the part's first element.")
+  (see part-hi))
+
+(:doc part-hi
+  (summary "Where a part ends in its array.")
+  (arg p "The part.")
+  (returns "The index in the array after the part's last element.")
+  (see part-lo))
+
+(:doc part-length
+  (summary "Returns the number of elements in a part.")
+  (arg p "The part.")
+  (returns "hi minus lo."))
+
+(:doc part->span
+  (summary "Returns a span of a part's elements that writes into the array.")
+  (arg p "The part.")
+  (returns "A span of the elements from lo up to hi. Index 0 is the part's first element.")
+  (see part->ro-span in-parallel)
+  (reference """
+    Make the span in the function that @code{in-parallel} calls: a span
+    cannot be captured by a closure, go to another thread or be kept across a
+    @code{sync}.
+    """))
+
+(:doc part->ro-span
+  (summary "Returns a read-only span of a part's elements.")
+  (arg p "The part.")
+  (returns "A read-only span of the elements from lo up to hi. Index 0 is the part's first element.")
+  (see part->span))
+
+;; ---------------------------------------------------------------------------
+;; Parts of immutable arrays
+;; ---------------------------------------------------------------------------
+
+(:doc IArrayPart
+  (summary "A part of an immutable array: a view of the elements from lo up to hi.")
+  (field iarray "The immutable array. Not a copy.")
+  (field lo "The index of the part's first element.")
+  (field hi "The index after the part's last element.")
+  (see iarray-part-length)
+  (reference """
+    An @code{IArrayPart} is @code{Iterable}: @code{(:for x part)} gives the
+    part's elements in order.
+    """))
+
+(:doc iarray-part-lo
+  (summary "Where a part starts in its immutable array.")
+  (arg p "The part.")
+  (returns "The index in the immutable array of the part's first element.")
+  (see iarray-part-hi))
+
+(:doc iarray-part-hi
+  (summary "Where a part ends in its immutable array.")
+  (arg p "The part.")
+  (returns "The index in the immutable array after the part's last element.")
+  (see iarray-part-lo))
+
+(:doc iarray-part-length
+  (summary "Returns the number of elements in a part of an immutable array.")
+  (arg p "The part.")
+  (returns "hi minus lo."))

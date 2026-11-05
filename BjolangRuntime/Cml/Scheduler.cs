@@ -77,6 +77,11 @@ public static class Scheduler
     [ThreadStatic]
     internal static int InlineBudget;
 
+    /// True while this thread publishes the events of a <c>sync/blocking</c>:
+    /// see <see cref="DispatchOwn{T}"/>.
+    [ThreadStatic]
+    internal static bool InBlockingPublish;
+
     /// <summary>
     /// Where exceptions escaping a scheduled work item go. Defaults to stderr.
     ///
@@ -339,11 +344,22 @@ public static class Scheduler
     /// (<see cref="Workers.PushYield"/>). Woken, that core stole the partner,
     /// and a chain of two fibers went on between two cores: on a choose that
     /// fires one branch, three times the CPU of the chain on one core.
+    ///
+    /// The sink of a <c>sync/blocking</c> runs here, whatever the budget: it
+    /// only wakes this same thread, which parks for it as soon as the publish
+    /// returns. Queued, the thread waited for a pump to run its own wake-up.
+    /// Off a pump's thread there is no budget, as the pumps refill it, so this
+    /// was every such sync: a <c>(sync/blocking (always 1))</c> on a plain
+    /// thread took 12 us, where <c>(sync (always 1))</c> in a fiber takes
+    /// 0.6 us. On a pump past its budget the sink went to that pump's own
+    /// <c>runnext</c>, which the parked thread could not run, until another
+    /// pump stole it: 2 ms.
     /// </summary>
     internal static void DispatchOwn<T>(Action<T> onSync, T value)
     {
         int depth = InlineDepth;
-        if (depth < MaxInlineDepth && (!Workers.Enabled || --InlineBudget >= 0))
+        if (depth < MaxInlineDepth
+            && (!Workers.Enabled || InBlockingPublish || --InlineBudget >= 0))
         {
             InlineDepth = depth + 1;
             try { onSync(value); }

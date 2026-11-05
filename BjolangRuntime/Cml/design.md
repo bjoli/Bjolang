@@ -2305,6 +2305,54 @@ Not kept. What threads of its own would still give, unmeasured: a timer that
 an idle worker waits for, instead of a 1 ms tick; `Bjo.RunToCompletion` from a
 pool thread; a loop that a single-threaded host can drive.
 
+### A plain thread that waits: its own wake-up, and which one wakes
+
+Found while moving the compute threads of `(std parallel)` from C# to
+Bjolang: threads made by `spawn/thread` that wait on an inbox with
+`sync/blocking`, and fibers that post jobs to them. The pool's fixed cost of
+one call, 24 parts that do nothing, from a bjoroutine, was 103 us, against
+19-21 us for the C# pool it replaced (`BlockingCollection`, a promise for the
+end). Three causes, each measured alone:
+
+- **A `sync/blocking` that commits at once waited for a pump.** Its sink only
+  wakes the thread that published, but `DispatchOwn` runs a sink inline only
+  within the budget, and the budget is refilled by the pumps: a plain thread
+  has none, so the sink went to the global queue, and the thread parked until
+  a pump ran its own wake-up. `(sync/blocking (always 1))` on a plain thread:
+  12 us, against 0.6 us for `(sync (always 1))` in a fiber. On a pump past
+  its budget the sink went to that pump's `runnext`, which the parked thread
+  could not run, until another pump stole it: 2 ms for each call. The
+  publish of a `sync/blocking` now sets `InBlockingPublish`, and
+  `DispatchOwn` runs the sink inline while it is set: 0.8 us.
+- **The thread parked at once.** `BlockingLanding.Wait` went straight to
+  `Monitor.Wait`. It spins first now, as `SemaphoreSlim` does: a round trip
+  fiber -> plain thread -> fiber, the thread waiting again at once, went from
+  12.5 to 4.6 us.
+- **The inbox woke the receiver that waited longest**, which is the one in
+  the deepest sleep, where `SemaphoreSlim` in effect lets a spinning thread
+  take the count. One part on 1 compute thread: 5.2 us; on 2: 13.9 us, as the
+  two took turns. `InboxModule.MakeNewestFirst` makes an inbox that wakes
+  the receiver that parked last; ordinary inboxes are unchanged. One part on
+  24 threads: 17 to 5-7 us.
+
+The fixed cost is now 48-52 us from a bjoroutine and 33 us from ordinary
+code. What is left is the poster waking threads that have gone to sleep, one
+system call each. `bench/bjolang/cmlbench.bjo`, with and without the change
+to `DispatchOwn`, two runs each: the same within noise (ring 67-70 ns, spawn
+burst 209-240 ns, skewed choose 175-202 ns).
+
+Tried for the pool and rejected, all measured with the three causes above
+still in place:
+
+- **Jobs on a channel, sent one by one.** A rendezvous for each runner: 57 us.
+- **A tree of runners**, each offering one more, `(choose (chan-send ...)
+  (always #f))`, before each of its parts: 186 us, as with parts that do
+  nothing a runner does one offer for each part. Two offers per runner, the
+  failed ones tried again before the next part: 60 us. Each level of the tree
+  waits for the thread it woke.
+- **An inbox, all runners posted at once**, oldest receiver first: 103 us,
+  which was the measurement that found the three causes.
+
 ---
 
 ## 6. Known issues

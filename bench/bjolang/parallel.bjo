@@ -1,0 +1,194 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; `in-parallel` against a sequential loop: 10M doubles in one array, and
+;; maps of 1M entries.
+;;
+;; Each row does the same work two ways: once on the whole collection, and
+;; once on each part, on the compute threads. The rows:
+;;
+;; - scale: multiplies each element of the array in place. Memory bound.
+;; - sum: adds the elements. Memory bound, reads only.
+;; - sin-sum: adds the sine of each element. Compute bound.
+;; - overhead: one call whose parts do nothing, to price the threads.
+;; - map-sum, omap-sum: adds the values of a hash map and an ordered map.
+;; - split: `chunks` of each map alone, into the default number of parts.
+;;
+;; Measured on a Ryzen 9 5900X (12 cores, 24 threads), .NET tiering on, the
+;; default 4 parts for each compute thread, and as many compute threads as
+;; cores; ns per element, sequential / parallel:
+;;
+;;   cores      scale        sum          sin-sum      map-sum      omap-sum
+;;   24         0.51 / 0.34  0.65 / 0.17  6.86 / 0.57  1.07 / 0.36  1.01 / 0.33
+;;   12 (0-11)  0.49 / 0.32  0.64 / 0.18  6.95 / 0.84  1.03 / 0.40  1.00 / 0.51
+;;   4 (0-3)    0.52 / 0.41  0.64 / 0.26  6.95 / 1.89  0.96 / 0.58  0.94 / 0.52
+;;
+;;   cores      overhead/call        split, map / ordered map
+;;   24         49-59 us (24 parts)  34 / 13 us (96 parts)
+;;   12 (0-11)  30 us (12 parts)     30 / 9 us (48 parts)
+;;   4 (0-3)    6.4 us (4 parts)     4.0 / 2.0 us (16 parts)
+;;
+;; - scale and sum stop at the memory bandwidth, about 40 GB/s, so more cores
+;;   do not help past four.
+;; - sin-sum scales with the physical cores: 3.7x on 4, 8.2x on 12, 12x on
+;;   24 threads.
+;; - A walk of a map follows pointers, and stops at 2-3x.
+;; - On one core the parallel rows are 0.74-0.98x.
+;; - A call costs about 2 us for each part on 24 threads, most of it the wake
+;;   of a compute thread that sleeps, so a call with a total work below some
+;;   hundreds of microseconds is faster in sequence. When the parts ran in
+;;   fibers it was 0.3 us, at the price of the fibers behind them
+;;   (bench/bjolang/parallel-latency.bjo); on the C# pool that the compute
+;;   threads of Bjolang replaced, 0.8 us. See BjolangRuntime/Cml/design.md,
+;;   "A plain thread that waits".
+;;
+;; How the map split was made cheap: 1M entries into 96 parts, 24 threads,
+;; with DOTNET_TieredCompilation=0 unless it says otherwise.
+;;
+;; - First: a split of 460 us, and map-sum 0.58x with tiering on. Each part's
+;;   count was taken in the split, which traversed the whole trie, some levels
+;;   twice.
+;; - A part counts itself when its count is asked for, on its own thread, and
+;;   the split weighs the trie's nodes by their shape: 140 us.
+;; - The list of units was 98 KB of 48-byte units, grown by doubling, and so
+;;   in the large object heap on each split. 24-byte units and a list of the
+;;   right size: 70-95 us, but 240 us with tiering on, as the split runs once
+;;   for each call and stays unoptimised.
+;; - Lists and sorts in the build of each node replaced by arrays by bit, and
+;;   AggressiveOptimization on the split: 26-33 us with tiering on.
+;;
+;; Build and run:
+;;
+;;   dotnet "$(./build_compiler.sh --path)" bench/bjolang/parallel.bjo
+;;   dotnet bench/bjolang/parallel.exe
+;;   taskset -c 0-3 dotnet bench/bjolang/parallel.exe
+
+(import (std prelude))
+(import (std parallel))
+(import (std orderedmap))
+
+(import/extern
+  (gc-collect (: System.GC.Collect (-> void)))
+  (gc-wait-finalizers (: System.GC.WaitForPendingFinalizers (-> void)))
+  (clr-sin (: System.Math.Sin (-> double double)))
+  (processor-count (: System.Environment.ProcessorCount #:get)))
+
+(def n 10000000)
+(def reps 9)
+
+(: (-> void))
+(defun (settle)
+  (gc-collect)
+  (gc-wait-finalizers)
+  (gc-collect))
+
+;; ---------------------------------------------------------------------------
+;; Kernels
+;; ---------------------------------------------------------------------------
+
+(: (-> (Span double) double void))
+(defun (scale-span! s k)
+  (loop (:for i (range 0 (span-length s)))
+        (:do (span-set! s i (* k (span-ref s i))))))
+
+(: (-> (RoSpan double) double))
+(defun (sum-span s)
+  (loop (:for i (range 0 (ro-span-length s)))
+        (:acc total (summing (ro-span-ref s i)))))
+
+(: (-> (RoSpan double) double))
+(defun (sin-sum-span s)
+  (loop (:for i (range 0 (ro-span-length s)))
+        (:acc total (summing (clr-sin (ro-span-ref s i))))))
+
+;; ---------------------------------------------------------------------------
+;; Timing
+;; ---------------------------------------------------------------------------
+
+;; The median of `reps` timings of `thunk`, in nanoseconds, after five runs
+;; that are not timed. One was not enough: the code a part runs is still
+;; tiering up, and the first row timed came out up to three times slower.
+(: (-bjo-> (-bjo-> void) long))
+(defbjo (median-ns thunk)
+  (loop (:for _ (range 0 5)) (:do (thunk)))
+  (def times
+    (loop (:for _ (range 0 reps))
+          (:do (settle))
+          (:let t0 (monotonic-ns))
+          (:do (thunk))
+          (:acc ts (listing (- (monotonic-ns) t0)))))
+  (list-ref (list-sort times) (/ reps 2)))
+
+;; `x` hundredths as a string with two decimals.
+(: (-> long string))
+(defun (hundredths x)
+  (str (displayed (/ x 100L)) "." (string-pad-left (displayed (% x 100L)) 2 #:with #\0)))
+
+;; Prints one row: ns per element for each way, and the speed-up.
+(: (-> string long long void))
+(defun (report name seq par)
+  (report-of name n seq par))
+
+(: (-> string int long long void))
+(defun (report-of name elems seq par)
+  (def nn (cast long elems))
+  (println (str (string-pad-right name 9)
+                "seq " (hundredths (/ (* seq 100L) nn)) " ns/elem   "
+                "par " (hundredths (/ (* par 100L) nn)) " ns/elem   "
+                "speed-up " (hundredths (/ (* seq 100L) par)) "x")))
+
+(defbjo (main)
+  (println (str "n = " (displayed n) " doubles, " (displayed processor-count) " processors, "
+                (displayed (* 4 processor-count)) " parts"))
+  (def a (vec->array (loop (:for i (range 0 n)) (:acc v (vecing (* 1e-6 (cast double i)))))))
+  (def sink (make-box 0.0))
+
+  (report "scale"
+          (median-ns (bjoroutine () (scale-span! (array->span a) 1.0000001)))
+          (median-ns (bjoroutine () (ignore (in-parallel a (fun (part) (scale-span! (part->span part) 1.0000001)))))))
+  (report "sum"
+          (median-ns (bjoroutine () (ignore (box-set! sink (sum-span (array->ro-span a))))))
+          (median-ns (bjoroutine () (ignore (box-set! sink (vec-fold + 0.0 (in-parallel a (fun (part) (sum-span (part->ro-span part))))))))))
+  (report "sin-sum"
+          (median-ns (bjoroutine () (ignore (box-set! sink (sin-sum-span (array->ro-span a))))))
+          (median-ns (bjoroutine () (ignore (box-set! sink (vec-fold + 0.0 (in-parallel a (fun (part) (sin-sum-span (part->ro-span part))))))))))
+  ;; The fixed cost of one call: one part for each processor, parts that do
+  ;; nothing.
+  (def calls 10000)
+  (def overhead
+    (median-ns (bjoroutine ()
+                 (loop (:for _ (range 0 calls))
+                       (:do (ignore (in-parallel (range 0 processor-count) (fun (part) 0) #:parts processor-count)))))))
+  (println (str "overhead " (hundredths (/ (* overhead 100L) (* 1000L (cast long calls))))
+                " us per call of " (displayed processor-count) " parts"))
+
+  ;; Maps: a sum of the values of 1M entries, and the split alone.
+  (def entries 1000000)
+  (def pairs (loop (:for i (range 0 entries)) (:acc v (vecing (Tuple i (cast long i))))))
+  (def m (vec->map pairs))
+  (def om (vec->orderedmap pairs))
+  (def total (make-box 0L))
+  (report-of "map-sum" entries
+             (median-ns (bjoroutine () (ignore (box-set! total (loop (:for (Tuple _k v) m) (:acc s (summing v)))))))
+             (median-ns (bjoroutine () (ignore (box-set! total (vec-fold + 0L (in-parallel m (fun (part) (loop (:for (Tuple _k v) part) (:acc s (summing v)))))))))))
+  (report-of "omap-sum" entries
+             (median-ns (bjoroutine () (ignore (box-set! total (loop (:for (Tuple _k v) om) (:acc s (summing v)))))))
+             (median-ns (bjoroutine () (ignore (box-set! total (vec-fold + 0L (in-parallel om (fun (part) (loop (:for (Tuple _k v) part) (:acc s (summing v)))))))))))
+  (def splits 100)
+  (def parts (* 4 processor-count))
+  (def map-split (median-ns (bjoroutine () (loop (:for _ (range 0 splits)) (:do (ignore (chunks m parts)))))))
+  (def omap-split (median-ns (bjoroutine () (loop (:for _ (range 0 splits)) (:do (ignore (chunks om parts)))))))
+  (println (str "split    map " (hundredths (/ (* map-split 100L) (* 1000L (cast long splits))))
+                " us, ordered map " (hundredths (/ (* omap-split 100L) (* 1000L (cast long splits))))
+                " us, " (displayed entries) " entries into " (displayed parts) " parts"))
+  (println (str "(sink " (displayed (box-ref sink)) " " (displayed (box-ref total)) ")"))
+  0)

@@ -359,6 +359,47 @@
     already failed with @code{Cancelled}.
     """))
 
+(:doc DynamicEnvironment
+  (summary "A dynamic environment taken from where it was made: ports, parameters, cancellation token and scope.")
+  (see current-dynamic-environment call-with-dynamic-environment)
+  (reference """
+    Opaque: it can only be taken with @code{current-dynamic-environment},
+    kept, sent, and given to @code{call-with-dynamic-environment}. It is what
+    a spawned child starts with, so it can go to another thread, and two
+    threads can use it at once.
+    """))
+
+(:doc current-dynamic-environment
+  (summary "Returns the dynamic environment here, for code that runs on another thread.")
+  (returns "The ports, the parameters, the ambient cancellation token and the scope of the caller.")
+  (see call-with-dynamic-environment blocking)
+  (example """
+    (def env (current-dynamic-environment))
+    (sync (chan-send jobs (fun () (call-with-dynamic-environment env work))))
+    """))
+
+(:doc call-with-dynamic-environment
+  (summary "Runs a thunk in a dynamic environment that was taken elsewhere.")
+  (arg env "The environment, from @code{current-dynamic-environment}.")
+  (arg thunk "Ordinary code: it cannot suspend.")
+  (returns "What thunk returns.")
+  (see current-dynamic-environment)
+  (reference """
+    The thunk sees the parameters, the ports and the cancellation token of
+    the code that took @code{env}. The environment of the thread is put back
+    when the thunk returns or raises. This is what @code{blocking} and
+    @code{spawn/thread} do for their thunks, for code that hands work to
+    another thread itself, as the compute threads of @code{(std parallel)}
+    do.
+
+    @strong{Scopes.} @code{env} holds the scope of the code that took it, and
+    a spawn in the thunk enlists there. When that scope has closed, a
+    @code{spawn} starts nothing, and @code{bjo} returns a promise that has
+    failed with @code{Cancelled}. The token of a closed scope has fired, so a
+    @code{sync} in the thunk raises @code{Cancelled}. Use it while the code
+    that took it waits.
+    """))
+
 (:doc blocking
   (summary "An event that runs a thread-parking thunk off the fiber pool.")
   (arg thunk "The work: a call that parks its thread, such as a synchronous read.")

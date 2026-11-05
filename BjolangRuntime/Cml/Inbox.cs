@@ -65,6 +65,15 @@ public sealed class Inbox<T>
     private readonly bool _dropOldest;
 
     /// <summary>
+    /// Wake the receiver that parked last, not first. For threads that wait for
+    /// work again and again, as the compute threads of (std parallel) do: the
+    /// one that parked last is the one most likely to be spinning still, and
+    /// takes the item with no system call to wake it. Fibers parked on an
+    /// ordinary inbox are woken oldest first.
+    /// </summary>
+    private readonly bool _newestFirst;
+
+    /// <summary>
     /// The queued items. A linked list rather than a <see cref="Queue{T}"/>
     /// because a receiver that loses its <c>choose</c> has to put the item back
     /// where it took it from — see <see cref="GiveBack"/>. Dropping it at the
@@ -121,7 +130,9 @@ public sealed class Inbox<T>
     private readonly Gate<global::BjolangRuntime.Option<Exception>> _closedGate = new();
     private readonly InboxRecvEvent<T> _recvEvent;
 
-    public Inbox(int capacity, bool dropOldest)
+    public Inbox(int capacity, bool dropOldest) : this(capacity, dropOldest, newestFirst: false) { }
+
+    public Inbox(int capacity, bool dropOldest, bool newestFirst)
     {
         if (capacity <= 0)
             throw new ArgumentOutOfRangeException(
@@ -130,6 +141,7 @@ public sealed class Inbox<T>
 
         _capacity = capacity;
         _dropOldest = dropOldest;
+        _newestFirst = newestFirst;
         _recvEvent = new InboxRecvEvent<T>(this);
     }
 
@@ -738,6 +750,7 @@ public sealed class Inbox<T>
     {
         if (++_recvParks >= _recvSweepAt) SweepReceiversLocked();
         if (_recvTail is null) _recvHead = _recvTail = n;
+        else if (_newestFirst) { n.Next = _recvHead; _recvHead = n; }
         else { _recvTail.Next = n; _recvTail = n; }
     }
 
@@ -1382,6 +1395,11 @@ public sealed class DelegateObserver<T> : IObserver<T>
 public static class InboxModule
 {
     public static Inbox<T> Make<T>(int capacity, bool dropOldest) => new(capacity, dropOldest);
+
+    /// An inbox that wakes the receiver that parked last: for a pool of
+    /// threads that wait for work. See <c>Inbox._newestFirst</c>.
+    public static Inbox<T> MakeNewestFirst<T>(int capacity, bool dropOldest) =>
+        new(capacity, dropOldest, newestFirst: true);
 
     public static bool Post<T>(Inbox<T> inbox, T item) => inbox.Post(item);
 

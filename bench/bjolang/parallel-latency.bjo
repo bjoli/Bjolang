@@ -1,0 +1,113 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; How late a fiber wakes while `in-parallel` computes on all the cores.
+;;
+;; A fiber sleeps 1 ms, 500 times, and keeps how late each wake was. The main
+;; fiber meanwhile adds the sines of 4M doubles in parts, again and again,
+;; until the sleeper is done. The parts run as:
+;;
+;; - nothing: no load, the lateness of the timer itself;
+;; - fibers: each part a fiber that computes, as in-parallel first did. A
+;;   fiber that computes holds the pump of its run queue;
+;; - in-parallel: the compute threads of (std parallel).
+;;
+;; Twin of bjostat's bench/latency.bjo, which measured the same for its own
+;; workers.
+;;
+;; Measured on a Ryzen 9 5900X (24 threads), lateness of the 1 ms sleep in us:
+;;
+;;   load                            loops  median   p90   p99    max
+;;   nothing                             -     105   121  1175   2371
+;;   fibers                            373     953  1521  3233  15798
+;;   in-parallel, 24 compute threads   429    1289  1674  2053  21922
+;;   in-parallel, 18 compute threads   214     116   141  1383   2349
+;;
+;; With as many compute threads as cores the parts use every core, and a
+;; fiber waits as long as when the parts were fibers. With 18 it is on time,
+;; at half the loops.
+;;
+;;   dotnet "$(./build_compiler.sh --path)" bench/bjolang/parallel-latency.bjo
+;;   dotnet bench/bjolang/parallel-latency.exe
+
+(import (std prelude))
+(import (std parallel))
+
+(import/extern
+  (clr-sin (: System.Math.Sin (-> double double))))
+
+(def n 4000000)
+(def xs (vec->array (loop (:for i (range 0 n)) (:acc v (vecing (* 1e-6 (cast double i)))))))
+
+(: (-> (RoSpan double) double))
+(defun (sin-sum-span s)
+  (loop (:for i (range 0 (ro-span-length s)))
+        (:acc total (summing (clr-sin (ro-span-ref s i))))))
+
+(: (-> (ArrayPart double) double))
+(defun (sin-sum-part p) (sin-sum-span (part->ro-span p)))
+
+;; Each part in a fiber of its own, joined in order.
+(: (-bjo-> double))
+(defbjo (on-fibers)
+  (with-scope
+    (def ps (loop (:for p (chunks xs 96)) (:acc v (vecing (bjo (sin-sum-part p))))))
+    (loop (:for p ps)
+          (:acc s (summing (match (sync (promise-join p)) ((Ok v) v) ((Err e) (raise e))))))))
+
+(: (-bjo-> double))
+(defbjo (on-compute)
+  (vec-fold + 0.0 (in-parallel xs sin-sum-part)))
+
+;; How late each of `k` wakes after 1 ms was, in microseconds.
+(: (-bjo-> int (Vec long)))
+(defbjo (ticker k)
+  (let more ((i 0) (late []))
+    (if (= i k)
+        late
+        (let ((start (monotonic-ns)))
+          (sync (timeout (milliseconds 1)))
+          (more (+ i 1) (vec-add late (- (/ (- (monotonic-ns) start) 1000L) 1000L)))))))
+
+(: (-> (Vec long) double long))
+(defun (quantile sorted q)
+  (vec-ref sorted (min (- (vec-length sorted) 1) (cast int (* q (cast double (vec-length sorted)))))))
+
+;; The load: 0 none, 1 fibers, 2 in-parallel. A number, as a bjoroutine in
+;; a `Some` makes C# that does not compile (Todo.org).
+(: (-bjo-> int double))
+(defbjo (load-of k)
+  (if (= k 1) (on-fibers) (on-compute)))
+
+(: (-bjo-> string int void))
+(defbjo (scenario name load)
+  (with-scope
+    (def p (bjo (ticker 500)))
+    (def loops
+      (if (= load 0)
+          (begin (ignore (sync (promise-join p))) 0)
+          (let go ((k 0)) (if (promise-done? p) k (begin (ignore (load-of load)) (go (+ k 1)))))))
+    (def late (match (sync (promise-join p)) ((Ok v) v) ((Err e) (raise e))))
+    (def sorted (list->vec (list-sort (vec->list late))))
+    (println (str (string-pad-right name 14) (string-pad-left (displayed loops) 5) " loops"
+                  "   late, us: median " (string-pad-left (displayed (quantile sorted 0.5)) 6)
+                  "  p90 " (string-pad-left (displayed (quantile sorted 0.9)) 6)
+                  "  p99 " (string-pad-left (displayed (quantile sorted 0.99)) 6)
+                  "  max " (string-pad-left (displayed (vec-ref sorted (- (vec-length sorted) 1))) 6)))))
+
+(defbjo (main)
+  (println (str (displayed n) " doubles, sum of sines in 96 parts"))
+  (scenario "nothing" 0)
+  (scenario "fibers" 1)
+  (scenario "in-parallel" 2)
+  (scenario "nothing, again" 0)
+  0)

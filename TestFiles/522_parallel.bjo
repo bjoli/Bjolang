@@ -1,0 +1,200 @@
+;; (std parallel): a collection's parts hold each element once, in order;
+;; `in-parallel` returns the parts' results in the order of the parts; the
+;; parts of an array can be written in place at the same time; a part that
+;; raises makes `in-parallel` raise.
+(import (std prelude))
+(import (std simpletest))
+(import (std parallel))
+(import (std hashset))
+(import (std orderedmap))
+(import (std orderedset))
+
+(import/class
+  (Boom (: System.InvalidOperationException (-> string Boom))))
+
+;; The elements of every part, one part after the other.
+(: (-> (Vec (Vec %a)) (Vec %a)))
+(defun (flatten parts)
+  (loop (:for part parts)
+        (:subloop)
+        (:for x part)
+        (:acc all (vecing x))))
+
+(: (-> (Span double) double void))
+(defun (scale-span! s k)
+  (loop (:for i (range 0 (span-length s)))
+        (:do (span-set! s i (* k (span-ref s i))))))
+
+(: (-> (RoSpan double) double))
+(defun (sum-span s)
+  (loop (:for i (range 0 (ro-span-length s)))
+        (:acc total (summing (ro-span-ref s i)))))
+
+(: (-> int int))
+(defun (fails-at-three i)
+  (if (= i 3) (raise (cast Exception (Boom. "part three"))) i))
+
+(def depth (make-parameter 1))
+
+;; The sum of 0 .. n-1, by parts that each sum their range by parts.
+(: (-> int long))
+(defun (nested-sum n)
+  (vec-fold + 0L (in-parallel (range 0 n)
+                              (fun (outer)
+                                (vec-fold + 0L (in-parallel outer
+                                                            (fun (inner) (loop (:for i inner) (:acc s (summing (cast long i)))))
+                                                            #:parts 8)))
+                              #:parts 64)))
+
+(defbjo (main)
+  (def v (loop (:for i (range 0 1000)) (:acc v (vecing i))))
+
+  ;; Parts of a vector, a range, an array and an immutable array.
+  (expect "a vector's parts are the vector, in order"
+          (flatten (in-parallel v (fun (part) part) #:parts 7))
+          v)
+  (expect "a range's parts are the range, in order"
+          (flatten (in-parallel (range 5 1005) (fun (part) (->vec part)) #:parts 7))
+          (loop (:for i (range 5 1005)) (:acc v (vecing i))))
+  (def a (vec->array v))
+  (expect "an array's parts are the array, in order"
+          (flatten (in-parallel a (fun (part) (->vec part)) #:parts 7))
+          v)
+  (expect "an immutable array's parts likewise"
+          (flatten (in-parallel (array->iarray a) (fun (part) (->vec part)) #:parts 7))
+          v)
+
+  ;; How many parts.
+  (expect "as many parts as asked for"
+          (vec-length (in-parallel v (fun (part) 0) #:parts 7))
+          7)
+  (expect "no more parts than elements"
+          (vec-length (in-parallel [1 2 3] (fun (part) 0) #:parts 7))
+          3)
+  (expect "one part, run here"
+          (in-parallel v (fun (part) (vec-length part)) #:parts 1)
+          [1000])
+  (expect "an empty vector is one empty part"
+          (in-parallel (: [] (Vec int)) (fun (part) (vec-length part)))
+          [0])
+  (expect "parts differ in size by one at most"
+          (in-parallel (range 0 10) (fun (part) (count part)) #:parts 4)
+          [2 3 2 3])
+
+  ;; Results in the order of the parts, joined by the caller.
+  (expect "a sum in parts is the sum"
+          (vec-fold + 0L (in-parallel (range 0 1000000)
+                                      (fun (part) (loop (:for i part) (:acc s (summing (cast long i)))))))
+          499999500000L)
+
+  ;; Writing the parts of one array in place.
+  (def xs (loop (:for i (range 0 100000)) (:acc v (vecing (cast double i)))))
+  (def arr (vec->array xs))
+  (ignore (in-parallel arr (fun (part) (scale-span! (part->span part) 2.0))))
+  (expect "every element was doubled, once"
+          (array->vec arr)
+          (loop (:for x xs) (:acc v (vecing (* 2.0 x)))))
+  (expect "a part reads its elements through a read-only span"
+          (vec-fold + 0.0 (in-parallel arr (fun (part) (sum-span (part->ro-span part)))))
+          (* 2.0 (loop (:for x xs) (:acc s (summing x)))))
+  (expect "a part knows where it is in the array"
+          (in-parallel (vec->array [10 20 30 40]) (fun (part) (Tuple (part-lo part) (part-hi part))) #:parts 2)
+          [(Tuple 0 2) (Tuple 2 4)])
+
+  ;; Maps and sets: each part is a map or a set of its own.
+  (def n 20000)
+  (def keys (loop (:for i (range 0 n)) (:acc v (vecing i))))
+  (def m (vec->map (loop (:for i keys) (:acc v (vecing (Tuple i (* 2 i)))))))
+  (def m-parts (in-parallel m (fun (part)
+                                (loop (:for (Tuple k _v) part)
+                                      (:acc ok (counting k) #:when (= (map-ref part k) (* 2 k)))
+                                      (:acc found (vecing k))))
+                             #:parts 8))
+  (expect "a map's parts are as many as asked for" (vec-length m-parts) 8)
+  (expect "a map's parts hold each entry once"
+          (list-sort (vec->list (flatten (vec-map (fun (r) (match r ((Tuple ok found) found))) m-parts))))
+          (vec->list keys))
+  (expect "a part of a map finds its own keys"
+          (vec-fold + 0 (vec-map (fun (r) (match r ((Tuple ok found) ok))) m-parts))
+          n)
+
+  (def hs (vec->hashset keys))
+  (expect "a hash set's parts hold each element once"
+          (list-sort (vec->list (flatten (in-parallel hs (fun (part) (hashset->vec part)) #:parts 8))))
+          (vec->list keys))
+  (expect "a part of a hash set is a set"
+          (vec-fold + 0 (in-parallel hs (fun (part) (loop (:for x part)
+                                                          (:acc c (counting x) #:when (hashset-contains? part x))))))
+          n)
+
+  (def om (vec->orderedmap (loop (:for i keys) (:acc v (vecing (Tuple i (* 2 i)))))))
+  (expect "an ordered map's parts are the map, in key order"
+          (flatten (in-parallel om (fun (part) (loop (:for (Tuple k _v) part) (:acc ks (vecing k)))) #:parts 8))
+          keys)
+  (expect "an ordered map's parts are as many as asked for"
+          (vec-length (in-parallel om (fun (part) (orderedmap-length part)) #:parts 8))
+          8)
+  (def os (vec->orderedset keys))
+  (expect "an ordered set's parts are the set, in order"
+          (flatten (in-parallel os (fun (part) (orderedset->vec part)) #:parts 8))
+          keys)
+  (expect "a small ordered set is one part"
+          (in-parallel (vec->orderedset [3 1 2]) (fun (part) (orderedset->vec part)))
+          [[1 2 3]])
+  (expect "an empty map is one empty part"
+          (in-parallel (: (map-empty) (Map int int)) (fun (part) (map-length part)))
+          [0])
+
+  ;; A part that raises.
+  (expect-true "a part that raises makes in-parallel raise"
+               (err? (try (in-parallel (range 0 8) (fun (part) (loop (:for i part) (:acc s (summing (fails-at-three i))))) #:parts 8)
+                          #:catch (System.InvalidOperationException))))
+
+  ;; Ordinary code: the thread takes parts too, and parts can call in-parallel.
+  (expect "in-parallel from ordinary code"
+          (vec-map (fun (k) (vec-fold + 0 (in-parallel (range 0 (* k 100)) (fun (part) (count part)) #:parts 7)))
+                   [1 2 3])
+          [100 200 300])
+  (expect-true "a part that raises makes in-parallel raise in ordinary code too"
+               (vec-ref (vec-map (fun (_)
+                                   (err? (try (in-parallel (range 0 8) (fun (part) (loop (:for i part) (:acc s (summing (fails-at-three i))))) #:parts 8)
+                                              #:catch (System.InvalidOperationException))))
+                                 [0])
+                        0))
+  (expect "parts call in-parallel, and the calls do not wait for each other"
+          (nested-sum 100000)
+          4999950000L)
+  (expect "parts call in-parallel, three deep"
+          (vec-fold + 0L (in-parallel (range 0 16)
+                                      (fun (r) (loop (:for k (: r Range)) (:acc s (summing (nested-sum (+ 1000 k))))))
+                                      #:parts 16))
+          (loop (:for k (range 0 16))
+                (:let m (+ 1000 k))
+                (:acc s (summing (/ (* (cast long m) (cast long (- m 1))) 2L)))))
+
+  ;; A dynamic environment taken here, and run in elsewhere.
+  (def env (parameterize ((depth 9)) (current-dynamic-environment)))
+  (expect "a thunk sees the environment it is given"
+          (call-with-dynamic-environment env (fun () (parameter-ref depth)))
+          9)
+  (expect "and the thread has its own back afterwards" (parameter-ref depth) 1)
+  (expect "on another thread too"
+          (match (sync (spawn/thread (fun () (call-with-dynamic-environment env (fun () (parameter-ref depth))))))
+            ((Ok v) v)
+            ((Err e) (raise e)))
+          9)
+  (expect-true "the thread has its own back when the thunk raises"
+               (begin (ignore (try (call-with-dynamic-environment env (fun () (fails-at-three 3)))
+                                   #:catch (System.InvalidOperationException)))
+                      (= (parameter-ref depth) 1)))
+  (expect "computing-each of no parts is empty" (computing-each 0 (fun (k) k)) [])
+  (expect "computing-each returns the values in the order of k"
+          (computing-each 5 (fun (k) (* k k)))
+          [0 1 4 9 16])
+
+  ;; A part sees the dynamic environment of the call.
+  (expect "a part sees the parameters of the caller"
+          (parameterize ((depth 7))
+            (in-parallel (range 0 4) (fun (_) (parameter-ref depth)) #:parts 4))
+          [7 7 7 7])
+  0)

@@ -57,6 +57,7 @@ public static class FiberTests
         Run("losing choose branches do not accumulate waiters", WaitersArePruned);
         Run("losing inbox-closed branches do not accumulate waiters", ClosedWaitersArePruned);
         Run("losing inbox receives and sends do not accumulate", InboxLosersArePruned);
+        Run("an inbox wakes its receivers oldest first, or newest first", InboxWakeOrder);
         Run("the first completion wins the value, not the last", FirstCompletionWins);
 
         Section("Task interop");
@@ -684,6 +685,32 @@ public static class FiberTests
         inbox.Close();
         Await(closed, "the close", 2000);
         if (got != "closed") throw new Exception($"the waiting sync got {got}, not the close");
+    }
+
+    /// <summary>
+    /// Two receivers parked on an inbox, and one item posted: an ordinary
+    /// inbox gives it to the receiver that parked first, one made by
+    /// <c>MakeNewestFirst</c> to the one that parked last.
+    /// </summary>
+    private static void InboxWakeOrder()
+    {
+        foreach (var newestFirst in new[] { false, true })
+        {
+            var inbox = newestFirst ? InboxModule.MakeNewestFirst<int>(16, false) : new Inbox<int>(16, dropOldest: false);
+            var got = new string?[2];
+            var done = new[] { new ManualResetEventSlim(false), new ManualResetEventSlim(false) };
+            Cml.Sync(inbox.Receive, v => { got[0] = $"first {v}"; done[0].Set(); });
+            Cml.Sync(inbox.Receive, v => { got[1] = $"second {v}"; done[1].Set(); });
+            inbox.Post(1);
+            var woken = newestFirst ? 1 : 0;
+            Await(done[woken], newestFirst ? "the receiver that parked last" : "the receiver that parked first", 2000);
+            if (done[1 - woken].IsSet) throw new Exception("one item woke both receivers");
+            inbox.Post(2);
+            Await(done[1 - woken], "the other receiver", 2000);
+            var expected = newestFirst ? new[] { "first 2", "second 1" } : new[] { "first 1", "second 2" };
+            if (got[0] != expected[0] || got[1] != expected[1])
+                throw new Exception($"newest first {newestFirst}: got [{got[0]}, {got[1]}]");
+        }
     }
 
     /// <summary>

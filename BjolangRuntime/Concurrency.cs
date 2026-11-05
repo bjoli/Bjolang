@@ -1442,7 +1442,10 @@ public static partial class BjolangRuntime {
         // A committed wrap is handed to this thread, which applies it below, as
         // `sync` applies one on its fiber.
         var landing = new BlockingLanding<Synced<T>>();
-        Cml.PublishRoot(offered, new SyncState { WrapHost = landing }, landing.Land);
+        var outer = Scheduler.InBlockingPublish;
+        Scheduler.InBlockingPublish = true;
+        try { Cml.PublishRoot(offered, new SyncState { WrapHost = landing }, landing.Land); }
+        finally { Scheduler.InBlockingPublish = outer; }
         if (FiberTrace.Enabled) {
             var traced = FiberTrace.ThreadWaiting(ev);
             try { landing.Wait()?.Run(); }
@@ -1486,7 +1489,14 @@ public static partial class BjolangRuntime {
 
         /// Parks until something lands, and answers the wrap still to be
         /// applied, if a wrap was handed over rather than a value.
+        ///
+        /// Spins a little before it parks, as `SemaphoreSlim` does: a thread
+        /// that waits for work again and again, as a compute thread of
+        /// (std parallel) does, then often has it before it sleeps, and the
+        /// thread that gives it makes no system call to wake it.
         internal IDeferredWrap? Wait() {
+            var spin = new SpinWait();
+            while (!Volatile.Read(ref _landed) && !spin.NextSpinWillYield) spin.SpinOnce();
             lock (_gate) {
                 while (!_landed) Monitor.Wait(_gate);
                 return _deferred;

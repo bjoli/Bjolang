@@ -575,6 +575,14 @@ public static class CmlTests
     /// cell starts without it. A cell is armed with no claim before it, so two
     /// fibers parked on one would overwrite each other's park. Each builds its
     /// own, and cancellation reaches both.
+    ///
+    /// A cell is built by a sync that parks; one whose partner is there
+    /// already commits at once (`TryNow`) and builds none. So the warmup
+    /// values are sent from the test's thread once the receiver has parked.
+    /// They were sent by spawned fibers, and a fiber stolen by another core
+    /// could park its send first: then the child built no cell, which a load
+    /// of six copies of these tests at once showed about once in 150 runs,
+    /// and a sleep of 50 ms in the child before its sync every time.
     /// </summary>
     private static void SpawnedChildHasACellOfItsOwn()
     {
@@ -592,11 +600,6 @@ public static class CmlTests
         _ = UnderToken(token, async () =>
         {
             // Builds the cell on this fiber's environment.
-            _ = Bjo.Spawn<Unit>(async () =>
-            {
-                await warmup.Send(1);
-                return default;
-            });
             await global::BjolangRuntime.sync((IEvent<int>)warmup);
             parentCell = global::BjolangRuntime.Dyn.Current.Park;
 
@@ -604,11 +607,6 @@ public static class CmlTests
             {
                 inherited = global::BjolangRuntime.Dyn.Current.Park;
 
-                _ = Bjo.Spawn<Unit>(async () =>
-                {
-                    await childWarmup.Send(1);
-                    return default;
-                });
                 await global::BjolangRuntime.sync((IEvent<int>)childWarmup);
                 childCell = global::BjolangRuntime.Dyn.Current.Park;
 
@@ -626,6 +624,10 @@ public static class CmlTests
             return default;
         });
 
+        AwaitPark(() => warmup.RawPendingReceiveCount, "the parent to park on its warmup");
+        Assert(warmup.TryDirectSend(1), "the parent's warmup found no receiver");
+        AwaitPark(() => childWarmup.RawPendingReceiveCount, "the child to park on its warmup");
+        Assert(childWarmup.TryDirectSend(1), "the child's warmup found no receiver");
         AwaitPark(() => a.RawPendingReceiveCount, "the parent to park");
         AwaitPark(() => b.RawPendingReceiveCount, "the child to park");
 
