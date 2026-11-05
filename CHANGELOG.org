@@ -3,6 +3,19 @@
 
 What each change guarantees, and what it leaves open.
 
+* A full run queue spills to the others as one batch
+
+- A worker whose queue is full moves half of it to a shared queue as one
+  entry, and a worker that takes it moves it into its own queue, as Go does.
+  It moved the items one at a time, and the other workers took them one at
+  a time, contending.
+- ~bench/service~ on 4 cores: p99 2.8-3.1 to 2.0-2.1 ms, p99.9 4.0-4.5 to
+  3.1-3.3 ms. On all cores, and at a fixed rate, no difference.
+- A burst of a million spawns in C#: 201-234 ns a spawn to 32-220. The
+  Bjolang burst, whose spawner enlists each child in its scope, is unchanged
+  at 200-230 ns: idle workers steal the same fibers from each other several
+  times (~BjolangRuntime/Cml/design.md~, "A full queue spills one entry").
+
 * A loop that ends only by ~:finish~ with a value has that value's type
 
 - ~(loop (:with i 0 (+ i 1)) (:finish (> (* i i) n) i))~ is an ~int~. Before,

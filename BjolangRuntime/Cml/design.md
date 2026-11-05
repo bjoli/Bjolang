@@ -1211,9 +1211,7 @@ about twice as much (min of 5, all cores, measured later at d3ec31a):
     skewed choose(8), ns a choose   230      113
     ring, ns a message               71       59-63
 
-Why has not been looked into. A burst of spawns from one fiber goes to its
-worker's queue, and other workers have to steal it; the pool's own spawn
-batching (`SpawnBatch`) is not used with Workers.
+For the spawn burst, see "A full queue spills one entry" below.
 What it gets: the tail under saturation, a third of the CPU for a lone chain,
 and the many-ring rows. Go, against these, is 498 ms and 440 ms on the service,
 Hopac 336 and 413.
@@ -2121,6 +2119,46 @@ yields is no new work for another core, and its partner is the other half
 of a chain this core runs. `Scheduler.DispatchOwn` queues such a sink
 through `Workers.PushYield`. The A/B against the build before, 50 reps each,
 found no difference in wall, CPU, p99 or p99.9 in any of the four runs.
+
+### A full queue spills one entry
+
+A burst of spawns from one fiber fills its worker's queue faster than the
+others steal from it. A full queue moved half of itself to the global queue,
+one item at a time, and 23 workers then took them one each: `perf` put 88% of
+all cycles of `bench/Cml`'s spawn burst in `ConcurrentQueueSegment.TryDequeue`.
+Counted, two thirds of the million fibers went that way.
+
+A full queue now spills its half as one entry, an array, to a queue of its
+own (`s_spilled`). The worker that takes one runs its first item and moves
+the rest into its own queue, where others steal half of it: Go's
+`runqputslow` and `globrunqget`. The fairness check every 61st item takes
+one only when the queue has room for it; otherwise the half spills again, a
+copy and an array for nothing, which made a burst on one core 10% slower.
+
+`bench/Cml`'s spawn burst, 20 bursts of a million in one process, sorted ns
+a spawn, three processes each:
+
+    before   201-234, all within 25 ns of each other
+    after    32-220, medians 120-175
+
+The bursts are now in two modes. In the fast one the spawner outruns the
+thieves, its queue fills, and its fibers leave in spilled halves. In the slow
+one the thieves keep its queue near empty and steal from each other: counted,
+each fiber was moved by `StealHalf` four to five times before it ran. The
+Bjolang row (`cmlbench.bjo`) is in the slow mode at each burst, at 200-230 ns
+as before: its spawner enlists each child in the scope and so spawns more
+slowly. Over-stealing is the next thing to look at there.
+
+`bench/service`, old and new runtimes in turn, 4 rounds of 5 reps:
+
+                         p99 ms       p99.9 ms     wall ms
+    4 cores, old         2.80-3.08    4.03-4.54    389-405
+    4 cores, new         2.01-2.11    3.08-3.29    386-400
+    all cores            no difference, within the GC's noise
+
+At a fixed 1M requests a second on 4 cores, 7 rounds each: no difference
+(median p99 10.1 against 9.7 ms, p99.9 13.1 against 13.3). Two rounds alone had
+put the new runtime 30% worse at p99.9.
 
 ---
 

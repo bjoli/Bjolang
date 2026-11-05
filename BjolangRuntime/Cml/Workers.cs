@@ -100,6 +100,16 @@ internal static class Workers
     private static readonly Worker[] s_workers = CreateWorkers(s_procs * 4);
     private static readonly ConcurrentQueue<IThreadPoolWorkItem> s_global = new();
 
+    /// <summary>
+    /// The halves of full queues, each one entry. A worker that takes one moves
+    /// it into its own queue, where others steal half of it, as Go's
+    /// <c>runqputslow</c> and <c>globrunqget</c> do. Spilled one item at a time,
+    /// a burst of spawns put two thirds of its fibers on <see cref="s_global"/>,
+    /// and 23 workers taking them one each spent 88% of the cycles in its
+    /// <c>TryDequeue</c>.
+    /// </summary>
+    private static readonly ConcurrentQueue<IThreadPoolWorkItem[]> s_spilled = new();
+
     /// Workers that may be bound: the first <c>s_limit</c> of <see cref="s_workers"/>.
     private static int s_limit = s_procs;
 
@@ -274,10 +284,14 @@ internal static class Workers
     /// </summary>
     private static IThreadPoolWorkItem? FindRunnable(Worker w)
     {
-        if (++w.SchedTick % GlobalEvery == 0 && s_global.TryDequeue(out var fair))
+        if (++w.SchedTick % GlobalEvery == 0)
         {
-            w.NextRuns = 0;
-            return fair;
+            var fair = s_global.TryDequeue(out var g0) ? g0 : w.HasRoomForSpill ? TakeSpilled(w) : null;
+            if (fair is not null)
+            {
+                w.NextRuns = 0;
+                return fair;
+            }
         }
 
         var next = w.Next;
@@ -294,7 +308,21 @@ internal static class Workers
         }
 
         w.NextRuns = 0;
-        return w.PopHead() ?? (s_global.TryDequeue(out var g) ? g : null) ?? Steal(w);
+        return w.PopHead() ?? (s_global.TryDequeue(out var g) ? g : null) ?? TakeSpilled(w) ?? Steal(w);
+    }
+
+    /// <summary>
+    /// The first item of a spilled half, with the rest moved into
+    /// <paramref name="w"/>'s queue. The queue is empty on the usual path, and
+    /// the fairness path takes one only when it has room: one too full would
+    /// spill it again, a copy and an array for nothing, which made a burst on
+    /// one core 10% slower.
+    /// </summary>
+    private static IThreadPoolWorkItem? TakeSpilled(Worker w)
+    {
+        if (!s_spilled.TryDequeue(out var batch)) return null;
+        for (int i = 1; i < batch.Length; i++) w.PushTail(batch[i]);
+        return batch[0];
     }
 
     /// <summary>
@@ -381,7 +409,7 @@ internal static class Workers
 
     private static bool AnyWork()
     {
-        if (!s_global.IsEmpty) return true;
+        if (!s_global.IsEmpty || !s_spilled.IsEmpty) return true;
         int n = Volatile.Read(ref s_limit);
         var all = s_workers;
         for (int i = 0; i < n; i++)
@@ -439,7 +467,7 @@ internal static class Workers
             if (stalled && !w.IsEmpty) stuckWithWork = true;
         }
 
-        if (!stuckWithWork && s_global.IsEmpty) return;
+        if (!stuckWithWork && s_global.IsEmpty && s_spilled.IsEmpty) return;
 
         if (Volatile.Read(ref s_idle) <= 0)
         {
@@ -492,6 +520,10 @@ internal static class Workers
 
         internal Worker(int index) => Index = index;
 
+        /// Owner only. Room for a spilled half, which is at most
+        /// <see cref="Size"/> / 2.
+        internal bool HasRoomForSpill => _tail - Volatile.Read(ref _head) <= Size / 2;
+
         internal bool IsEmpty =>
             Volatile.Read(ref _head) == Volatile.Read(ref _tail) && Volatile.Read(ref Next) is null;
 
@@ -509,12 +541,13 @@ internal static class Workers
                     return;
                 }
 
-                // Full: half of it to the global queue, oldest first, then retry.
+                // Full: half of it to the spilled queue as one entry, oldest
+                // first, then retry.
                 int n = (t - h) / 2;
                 var moved = new IThreadPoolWorkItem[n];
                 for (int i = 0; i < n; i++) moved[i] = _ring[(h + i) & Mask].Item!;
                 if (Interlocked.CompareExchange(ref _head, h + n, h) != h) continue;
-                foreach (var m in moved) s_global.Enqueue(m);
+                s_spilled.Enqueue(moved);
             }
         }
 
