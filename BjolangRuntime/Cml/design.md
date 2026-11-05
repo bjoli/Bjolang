@@ -949,6 +949,28 @@ no frame, so `perf`'s frame-pointer unwinding charges it to the caller's caller;
 read call graphs through barriers with that in mind. Server and workstation GC
 made no difference to any of this.
 
+**Since then — measured again (5 November).** `drive.py --one-core --tc0`
+gave the put/get ring 1556 instructions a hop, against 1342 here. Bisected:
+
+    a4d8166  the runtime and std precompiled with ReadyToRun   +120
+    325434f  a module bjoroutine spawned without a lambda       +27
+    04cc6cc  a parked fiber resumed through its box             +24
+    b89b3d1  a finished fiber's watch goes to the next          +41
+
+The first is the tool's. With tiering off, precompiled code is run as it is
+and never compiled again, so `--tc0` measured ReadyToRun code, which a program
+with tiering on replaces. `--tc0` now sets `DOTNET_ReadyToRun=0` as well:
+1433. The other three are the price of what their sections record, less memory
+a parked fiber and less CPU on `bench/service`; with tiering on they cost about
+75 instructions and 5% of a hop (1036-1041 instructions and 330-338 cycles at
+`34c310c`, 1111-1119 and 348-353 now).
+
+With tiering on, which is how programs run, one core:
+
+                       instr  cycles  br-miss  L1d-miss
+    Ring (put/get)      1119     353     1.55      27.2
+    Hopac ring           532     177     0.14       8.3
+
 ### Under load
 
 Every row above has one chain runnable at a time on an idle machine, the one

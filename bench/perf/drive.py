@@ -25,7 +25,11 @@ count with perf_event_paranoid at 2; time in the kernel shows only in `cpu-ns`.
 
 `--tc0` sets DOTNET_TieredCompilation=0, so every method is fully optimised
 from its first compilation. Without it, parts of the runtime are still running
-tier-0 code after the warm-up, and both sides carry tiering residue.
+tier-0 code after the warm-up, and both sides carry tiering residue. It sets
+DOTNET_ReadyToRun=0 as well: the runtime and the standard library are
+precompiled, and with tiering off precompiled code is run as it is and never
+compiled again, so a `--tc0` row measured that code, about 120 instructions a
+hop more than the JIT's, which a program with tiering on replaces.
 `--one-core` pins the process to one CPU, which separates the cost of the path
 from the cost of moving work between cores.
 
@@ -177,6 +181,7 @@ def main():
                DOTNET_TC_CallCountingDelayMs="0")
     if a.tc0:
         env["DOTNET_TieredCompilation"] = "0"
+        env["DOTNET_ReadyToRun"] = "0"
     if a.procs:
         env["DOTNET_PROCESSOR_COUNT"] = str(a.procs)
     for kv in a.env:
@@ -191,7 +196,7 @@ def main():
     print("; ".join(x for x in [
         "one core" if a.one_core else "", f"cpus {a.cpus}" if a.cpus else "",
         f"CPUQuota={a.quota}%" if a.quota else "", f"ProcessorCount={a.procs}" if a.procs else "",
-        "TieredCompilation=0" if a.tc0 else "", *a.env] if x) or "all cores")
+        "TieredCompilation=0, ReadyToRun=0" if a.tc0 else "", *a.env] if x) or "all cores")
 
     if a.mixed:
         mixed([int(c) for c in a.mixed.split(",")], a, env, prefix)
