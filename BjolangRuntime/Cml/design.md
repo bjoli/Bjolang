@@ -2230,6 +2230,46 @@ by core would need the close protocol rebuilt (`TryEnlist`, `Landed`, `Close`
 agree through one word today) and memory on every scope, and the service makes
 a scope per request.
 
+### Threads of its own — measured on a branch, not kept
+
+Pumps on threads of the scheduler, which park on a semaphore of their own when
+they give up, instead of .NET pool work items whose threads go back to the
+pool (branch `owned-threads`). The question was whether Go's rules (a pump
+steals only while it spins or may start to; only the last spinner looks again)
+cost `bench/service` its throughput only because a pump that may not steal went
+back to the pool, which spins its idle threads and adds more.
+
+A thread of its own needs one thing a pool thread gets for free: its
+`ExecutionContext` restored after each item, or an `AsyncLocal` set by one
+fiber is seen by the next on the thread. The runtime test "AsyncLocal does not
+survive a channel await" caught it.
+
+`bench/service`, all cores, 3 rounds of 5 reps, medians:
+
+                                      wall ms  cores  p50 us  preemptions
+    pool pumps (as committed)           226     22.4    104      7-12 k
+    own threads                         234     22.2    105     49-62 k
+    own, pool not spinning              234     22.3    109     10-14 k
+    own + Go's rules                    302     16.0    156     53-59 k
+    own + Go's rules, pool not spinning 297     16.2    156     15-20 k
+
+"Pool not spinning" is `DOTNET_ThreadPool_UnfairSemaphoreSpinLimit=0`. The pool
+still runs the timer wheel's tick and the monitor, and its thread spins after
+each: that is the extra preemption with threads of our own. It costs little.
+Go's rules cost a quarter of the throughput with threads of our own as well:
+about 16 of 24 cores work, threads park and wait to be woken (32 k voluntary
+context switches against 13 k), and the median request takes half as long
+again. The rules, not the pool, are what this service pays for. Go's own
+service is slower than this one's (see "Under load").
+
+On 4 cores own threads were worse than pool pumps (wall 406-434 against
+390-403 ms, p99 2.2-3.1 against 2.1-2.2 ms). The spawn burst on all cores:
+own threads 217-297 ns, as pool pumps; with Go's rules 178-248.
+
+Not kept. What threads of its own would still give, unmeasured: a timer that
+an idle worker waits for, instead of a 1 ms tick; `Bjo.RunToCompletion` from a
+pool thread; a loop that a single-threaded host can drive.
+
 ---
 
 ## 6. Known issues
