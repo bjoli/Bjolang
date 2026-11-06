@@ -3,6 +3,49 @@
 
 What each change guarantees, and what it leaves open.
 
+* A body of another module may call what the importer does not import
+
+- An importer checks its copy of a published body (a copy of a constrained
+  function, ~Monomorphise~; an implementation's method spliced into a
+  call, ~TraitInline~) in its own scope. A method of a trait that the
+  importer does not import was an unbound name there, and the copy was
+  declined: every call passed a dictionary. bjostat's column statistics,
+  which call ~(std simd)~'s ~simd-add~, got the generic kernel in a
+  program that imported only ~(bjostat stats)~, and so did each
+  implementation method that called ~twice~ of a module the importer only
+  linked.
+- The traits of the linked modules (those that the importer does not
+  import) are now registered with their implementations, as the
+  implementations were before. They go into the registry only: their
+  methods are not bound and are not dispatched on, so source cannot call
+  them, and a binding of the importer with a method's name is not taken
+  for one (~TraitRegistry.LinkedTraits~, ~isScopedTraitMethod~). The check
+  of a copy or a splice binds each trait method that its body names
+  (~TypeEnv.reachTraitMethods~), also over a binding of the importer with
+  that name, and only for that check.
+- A trait whose method was unbound now also gives its implementations: a
+  constrained function of an import ~(where (Twice %a))~, with ~Twice~ of a
+  module the importer does not import, was "no implementation of trait
+  'Twice' for 'int'" at a call at ~int~.
+- A macro expansion names a binding of the macro's module by its qualified
+  reference, also as an ~EResolved~. A published body that holds one (a
+  ~simd256-of~ in an implementation's method) now publishes the binding
+  as an implicit export with the body, under its real origin
+  (~AlphaRename.qualificationOf~, ~Exports.qualifiedOrigins~). Before, the
+  importer had no binding for it, and the splice fell back to a call.
+- The copies call an implementation of the linked module through its
+  instance (~Dict_Simd_..._Vector256.simd-add~); the linked module's
+  inline templates are not read. .NET inlines these calls: the tier-1 code
+  of bjostat's ~cells-moments~ copy has the same instructions as with the
+  workaround below.
+- bjostat drops its workaround, functions of its own module around each
+  ~(std simd)~ operation (~v4-add~ and the others). Measured, alternated, 3
+  runs each, two rounds, all four rows of ~bench/compare.bjo~'s column
+  functions overlap (standard deviation narrow 177-187 µs, wide 373-400 µs
+  in both).
+- Tests: ~TestFiles/529_linked_trait.bjo~,
+  ~TestFiles/codegen/monomorphise_linked_trait.bjo~.
+
 * An ordinary function where a bjoroutine is expected: wrapped or rejected
 
 - An ordinary function is accepted where a bjoroutine is expected, and is

@@ -391,13 +391,7 @@ let publishBodies
             | None ->
                 let parameters = Ast.mandatoryNames args
 
-                let qualification =
-                    AlphaRename.freeNames (Set.ofList parameters) body
-                    |> Seq.choose (fun n ->
-                        match Map.tryFind n moduleOf with
-                        | Some(m, original) -> Some(n, Naming.qualifiedBinding m original)
-                        | None -> None)
-                    |> Map.ofSeq
+                let qualification = AlphaRename.qualificationOf moduleOf parameters body
 
                 Some(
                     name,
@@ -968,6 +962,14 @@ and private spliceTemplate
                           IsMutable = false }
                         acc)
                 { ctx.Env with CurrentModule = tpl.OriginModule }
+
+        // A body of another module may call a method of a trait that this
+        // module does not import.
+        let spliceEnv =
+            if tpl.OriginModule <> ctx.Env.CurrentModule then
+                fst (TypeEnv.reachTraitMethods tpl.Qualification freshParams freshBody spliceEnv)
+            else
+                spliceEnv
 
         // 3. Re-infer the body expression directly. Never re-wrapped as a
         //    lambda first: `infer`'s `EFun` case binds each parameter to a fresh

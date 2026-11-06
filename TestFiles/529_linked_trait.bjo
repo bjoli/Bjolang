@@ -1,0 +1,27 @@
+;; Bodies of an imported module that call a method of a trait this module does
+;; not import (`linked_trait_a.bjo`'s `twice`). The copies and the inlined
+;; implementation give the same answers as the module that wrote them. This
+;; module's own `twice` is a different function, and a call written here
+;; reaches it.
+
+(import (std prelude))
+(import "inc/linked_trait_b.bjo")
+
+(: (-> int string))
+(defun (twice n) (str "mine " (displayed n)))
+
+(: (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (begin (println (str what ": got '" got "', want '" want "'"))
+          #f)))
+
+(defun (main args)
+  (if (and (check "twice-as-double" (displayed (twice-as-double 3.0)) "7")
+           (check "quad" (displayed (quad 5)) "20")
+           (check "twice-generic int" (displayed (twice-generic 3)) "12")
+           (check "twice-generic double" (displayed (twice-generic 1.5)) "6")
+           (check "own twice" (twice 1) "mine 1"))
+      0
+      1))

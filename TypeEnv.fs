@@ -534,6 +534,110 @@ let internal withSeqElement (elemType: HMType) (env: Env) : Env =
                 { Scheme = Scheme([], [], elemType); IsMutable = false }
                 env.Bindings }
 
+/// The scheme a method of an interface trait is bound under.
+///
+/// - `sigType` is the method's signature as the trait declares it.
+/// - Each associated type becomes its projection out of the implementor.
+/// - The implementor variable is quantified first, then each other variable
+///   of the signature (a method's own generics).
+let traitMethodScheme
+    (registry: TraitRegistry)
+    (traitName: string)
+    (implementorVar: string)
+    (assocTypes: string list)
+    (sigType: HMType)
+    : Scheme =
+    let assocSubst =
+        assocTypes
+        |> List.map (fun a -> "'" + a, TAssoc(traitName, a, TVar("'" + implementorVar)))
+        |> Map.ofList
+
+    let methodType = substTypeVars assocSubst sigType
+    let methodVars = freeTVars registry methodType |> List.distinct
+    let implVar = "'" + implementorVar
+    Scheme(implVar :: (methodVars |> List.filter ((<>) implVar)), [], methodType)
+
+/// `env` with each trait method that `body` names bound and dispatched on,
+/// for a body that was written in another module and is checked here.
+///
+/// - A name is taken when it is free in `body`, it is not in `qualification`
+///   (a function of a module), and the registry knows it as a trait method.
+/// - Such a method can be one of a trait this module does not import: the
+///   registry has the traits of linked modules, and the module that wrote
+///   `body` imported the trait.
+/// - A method this module dispatches on already is left as it is.
+/// - A binding of this module with the method's name does not apply in
+///   `body`, so the method is put back over it.
+/// - Returns the environment, and a function that restores in an
+///   environment the names that this function changed.
+let reachTraitMethods
+    (qualification: Map<string, string>)
+    (parameters: string list)
+    (body: Expr)
+    (env: Env)
+    : Env * (Env -> Env) =
+    let names =
+        AlphaRename.freeNames (Set.ofList parameters) body
+        |> Seq.filter (fun n ->
+            not (Map.containsKey n qualification)
+            && not (Set.contains n env.TraitMethodNames)
+            && Map.containsKey n env.Registry.TraitMethods)
+        |> List.ofSeq
+
+    if names.IsEmpty then
+        env, id
+    else
+
+    let bindingOf (n: string) =
+        match traitMethodOf env.Registry n with
+        | Some(traitName, methodName) ->
+            match Map.tryFind traitName env.Registry.Traits with
+            | Some info when info.Kind = InterfaceTrait ->
+                Map.tryFind methodName info.Signatures
+                |> Option.map (fun sigType ->
+                    { Scheme = traitMethodScheme env.Registry traitName info.ImplementorVar info.AssociatedTypes sigType
+                      IsMutable = false })
+            | _ -> None
+        | None -> None
+
+    let reached =
+        names
+        |> List.fold
+            (fun (acc: Env) n ->
+                let acc =
+                    match bindingOf n with
+                    | Some binding -> addBinding n binding acc
+                    | None -> { acc with Bindings = Map.remove n acc.Bindings }
+
+                { acc with TraitMethodNames = Set.add n acc.TraitMethodNames })
+            env
+
+    let restore (later: Env) =
+        names
+        |> List.fold
+            (fun (acc: Env) n ->
+                { acc with
+                    Bindings =
+                        match Map.tryFind n env.Bindings with
+                        | Some b -> Map.add n b acc.Bindings
+                        | None -> Map.remove n acc.Bindings
+                    FunMetas =
+                        match Map.tryFind n env.FunMetas with
+                        | Some m -> Map.add n m acc.FunMetas
+                        | None -> Map.remove n acc.FunMetas
+                    TraitMethodNames = Set.remove n acc.TraitMethodNames
+                    DeprecatedNames =
+                        match Map.tryFind n env.DeprecatedNames with
+                        | Some d -> Map.add n d acc.DeprecatedNames
+                        | None -> acc.DeprecatedNames
+                    Escapes =
+                        match Map.tryFind n env.Escapes with
+                        | Some e -> Map.add n e acc.Escapes
+                        | None -> acc.Escapes })
+            later
+
+    reached, restore
+
 /// Leaves the enclosing `seq`, if any. A lambda body is compiled as a function
 /// of its own and cannot be resumed, so it cannot yield into the sequence it
 /// happens to be written inside.
@@ -559,7 +663,7 @@ let internal unshadow (name: string) (env: Env) : Env =
     // bound over is no longer dispatched on, which is the point of the rule —
     // but the compiler wrote *this* mention, and it meant the method.
     let env =
-        if Map.containsKey name env.Registry.TraitMethods then
+        if isScopedTraitMethod env.Registry name then
             { env with TraitMethodNames = Set.add name env.TraitMethodNames }
         else
             env
@@ -612,7 +716,7 @@ let private resolvedSpelling (name: string) (env: Env) : string option =
         Map.tryFind name env.Bindings <> Map.tryFind name env.Resolved
         || Set.contains name env.Unshadowed
 
-    if not shadowed || Map.containsKey name env.Registry.TraitMethods then
+    if not shadowed || isScopedTraitMethod env.Registry name then
         None
     else
         match Map.tryFind name env.Registry.ImportAliases with

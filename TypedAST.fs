@@ -1822,6 +1822,12 @@ type TraitRegistry =
       /// read from, and a facade's re-export is put back with the module that
       /// declared it (`Pipeline`).
       TraitOrigins: Map<string, string>
+      /// The traits of linked modules, which this module does not import. They
+      /// are registered so that a body of another module that calls one of
+      /// their methods checks here, and so that their implementations are
+      /// known. Source does not see them: their methods are not bound, and a
+      /// rule about a method in scope does not apply to them.
+      LinkedTraits: Set<string>
       /// The pin equations in force while a constrained member's body is
       /// checked — the *given* equalities its `(where ...)` grants.
       ///
@@ -2143,7 +2149,10 @@ let addTrait (name: string) (info: TraitInfo) (env: Env) : Env =
     let newRegistry =
         { env.Registry with
             Traits = Map.add name info env.Registry.Traits
-            TraitOrigins = Map.add name env.CurrentModule env.Registry.TraitOrigins }
+            TraitOrigins = Map.add name env.CurrentModule env.Registry.TraitOrigins
+            // A declaration that is not a linked module's puts the trait in
+            // scope. `CheckDecl`'s `DLinked` marks a linked one after this.
+            LinkedTraits = Set.remove name env.Registry.LinkedTraits }
 
     { env with Registry = newRegistry }
 
@@ -2176,6 +2185,14 @@ let traitMethodOf (registry: TraitRegistry) (methodKey: string) : (string * stri
     match Map.tryFind methodKey registry.TraitMethods with
     | Some traitName -> Some(traitName, Naming.bareTraitName methodKey)
     | None -> None
+
+/// Whether `methodKey` is a method of a trait that the module has in scope:
+/// a trait it declares or imports, not one of a linked module
+/// (`LinkedTraits`).
+let isScopedTraitMethod (registry: TraitRegistry) (methodKey: string) : bool =
+    match Map.tryFind methodKey registry.TraitMethods with
+    | Some traitName -> not (Set.contains traitName registry.LinkedTraits)
+    | None -> false
 
 /// The implementations of `traitName` at the head `ctor`, blanket excluded.
 let implsAtHead (registry: TraitRegistry) (traitName: string) (ctor: string) : ImplTarget list =

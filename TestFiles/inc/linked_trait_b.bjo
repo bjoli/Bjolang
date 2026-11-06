@@ -1,0 +1,31 @@
+;; For 529_linked_trait.bjo and codegen/monomorphise_linked_trait.bjo. Bodies
+;; that an importer copies, and that call a method of `linked_trait_a.bjo`'s
+;; trait, which the importer does not import.
+
+(export Quad quad AsDouble as-double twice-as-double twice-generic)
+(import (std prelude))
+(import "linked_trait_a.bjo")
+
+;; An implementation whose method calls the method of the other trait. An
+;; importer copies the method into a call.
+(def/trait (Quad %a)
+  (: quad (-> %a %a)))
+
+(impl (Quad int)
+  (defun (quad x) (twice (twice x))))
+
+(def/trait (AsDouble %a)
+  (: as-double (-> %a double)))
+
+(impl (AsDouble double)
+  (defun (as-double x) (+ x 0.5)))
+
+;; A constrained body that calls the method of the other trait at a known
+;; type. An importer specialises it.
+(: (-> %a double) (where (AsDouble %a)))
+(defun (twice-as-double x) (twice (as-double x)))
+
+;; A body constrained by the other trait itself. An importer needs the trait's
+;; implementations to call it.
+(: (-> %a %a) (where (Twice %a)))
+(defun (twice-generic x) (twice (twice x)))

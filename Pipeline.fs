@@ -2591,7 +2591,9 @@ let loadModuleGraph
                                 else
                                     $"(: %s{d.Name} %s{d.TypeText} %s{d.ConstraintsText})"
 
-                            Lexer.tokenize absPath text
+                            // As metadata: an implicit export that a macro
+                            // expansion named is a qualified reference.
+                            tokenizeMetadata absPath text
                             |> read
                             |> fst
                             |> DeclParser.parseModule
@@ -3059,23 +3061,32 @@ let loadModuleGraph
     // `CheckDecl.refuseOrphan`): a module holding a value of the type, and
     // importing neither, would take the trait's blanket at it. They are read
     // just before the module being compiled, once every trait and type they
-    // could name is registered. Only the implementations come: the linked
-    // modules' names stay out of scope.
+    // could name is registered. The linked modules' names stay out of scope.
+    //
+    // Their traits come too, ahead of every implementation, and only into the
+    // registry (see `CheckDecl`'s `DLinked`). A body published by an imported
+    // module may call a method of a trait that this module does not import,
+    // and an importer checks its copy of the body here (`Monomorphise`,
+    // `TraitInline`). Without the trait, the method was an unbound name there,
+    // and the trait's implementations were refused for want of their trait.
     let linkedImpls =
         let loaded = resolvedModules.Keys |> Set.ofSeq
 
-        dllDeps
-        |> Seq.filter (fun dll -> not (Set.contains (Path.GetFullPath dll) loaded))
-        |> List.ofSeq
-        |> List.choose (fun dll ->
-            let _, meta = metadataOf dll
+        let linked =
+            dllDeps
+            |> Seq.filter (fun dll -> not (Set.contains (Path.GetFullPath dll) loaded))
+            |> Seq.distinctBy Path.GetFullPath
+            |> List.ofSeq
+            |> List.map (fun dll -> dll, snd (metadataOf dll))
+
+        let groupOf (dll: string) (texts: string list) =
             let moduleKey = Naming.moduleKeyOfPath dll
 
             let decls =
-                if meta.ImplDecls.IsEmpty then
+                if texts.IsEmpty then
                     []
                 else
-                    Lexer.tokenize dll (String.concat "\n" meta.ImplDecls)
+                    tokenizeMetadata dll (String.concat "\n" texts)
                     |> read
                     |> fst
                     |> List.map (readOrigins moduleKey)
@@ -3084,7 +3095,10 @@ let loadModuleGraph
 
             match decls with
             | [] -> None
-            | first :: _ -> Some(DModule(moduleKey, decls, declRange first)))
+            | first :: _ -> Some(DModule(moduleKey, decls, declRange first))
+
+        (linked |> List.choose (fun (dll, meta) -> groupOf dll meta.TraitDecls))
+        @ (linked |> List.choose (fun (dll, meta) -> groupOf dll meta.ImplDecls))
 
     let allDecls =
         let groups =
@@ -3188,21 +3202,7 @@ let private qualifyInlineTemplates (moduleOf: Map<string, string * string>) (env
             if tpl.Imported || not (Map.isEmpty tpl.Qualification) then
                 tpl
             else
-                let free = AlphaRename.freeNames (Set.ofList tpl.Params) tpl.Body.Value
-
-                let qualification =
-                    free
-                    |> Seq.choose (fun n ->
-                        // Anything with no module class of its own — a data
-                        // constructor, a `Prelude` binding, a trait method — is
-                        // left exactly as written. There is nothing to qualify
-                        // it to.
-                        match Map.tryFind n moduleOf with
-                        | Some(m, original) -> Some(n, Naming.qualifiedBinding m original)
-                        | None -> None)
-                    |> Map.ofSeq
-
-                { tpl with Qualification = qualification })
+                { tpl with Qualification = AlphaRename.qualificationOf moduleOf tpl.Params tpl.Body.Value })
 
     { env with
         Registry = { env.Registry with InlineMethods = qualified } }

@@ -982,6 +982,32 @@ let metadata
 
                 $"(import/extern (%s{info.Alias} (: %s{info.ClrType}.%s{info.MemberName}%s{typeStr}%s{exceptionStr}%s{asyncStr}%s{blockingStr}%s{usesTypeStr}%s{copyStr}%s{uncancellableStr}%s{cancellableStr}%s{accessorStr})))"
 
+            /// The module and the name of each qualified reference this
+            /// module binds (`CheckDecl` binds each module's definitions
+            /// under one): an import's, and this module's own. A body that
+            /// a macro expansion wrote names a binding so, and the importer
+            /// declares it under the same reference only with this origin.
+            let qualifiedOrigins: Map<string, string * string> =
+                let own = Naming.moduleKeyOfPath inputFilePath
+
+                let imported =
+                    env.Registry.ImportAliases
+                    |> Map.toSeq
+                    |> Seq.filter (fun (_, alias) -> alias.Kind = Ast.AliasDef)
+                    |> Seq.map (fun (_, alias) ->
+                        let m = if alias.OriginModule = "" then own else alias.OriginModule
+                        Naming.qualifiedBinding m alias.OriginalName, (m, alias.OriginalName))
+
+                let defined =
+                    ownModuleDecls
+                    |> Seq.choose (function
+                        | TypedAST.TDefun(n, _, _, _, _, _, _, _, _)
+                        | TypedAST.TDef(n, _, _, _)
+                        | TypedAST.TDefMutable(n, _, _, _) -> Some(Naming.qualifiedBinding own n, (own, n))
+                        | _ -> None)
+
+                Seq.append imported defined |> Map.ofSeq
+
             /// `None` for a name with no binding to read a type off, so
             /// that a name which cannot be described is dropped rather
             /// than published as something the reader would have to
@@ -1009,6 +1035,7 @@ let metadata
                         None
                     else
                         Some(originModule, alias.OriginalName)
+                | None when Naming.isQualifiedBinding name -> Map.tryFind name qualifiedOrigins
                 | None -> None
 
             let ownDefuns =

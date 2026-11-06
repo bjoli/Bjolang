@@ -1,0 +1,25 @@
+;; A published body that calls a method of a trait this module does not
+;; import. `twice-as-double` calls `twice`, of `linked_trait_a.bjo`, which is
+;; only linked here. The copy is checked here with the trait's methods in
+;; reach, so it is specialised, and the call goes to the implementation.
+;; The implementation of `quad` calls `twice` too, and is copied into the call.
+;;
+;; EXPECT-CS: twicesubassubdouble__at_double
+;; EXPECT-CS: twicesubgeneric__at_int
+;; EXPECT-CS: linked_trait_a__Twice_System_Double\.Instance\.twice
+;; EXPECT-CS: linked_trait_a__Twice_System_Int32\.Instance\.twice\(linked_trait_a__Twice_System_Int32\.Instance\.twice\(n\)\)
+;; EXPECT-NO-CS: _dict_
+
+(import (std prelude))
+(import "../inc/linked_trait_b.bjo")
+
+(export f g h)
+
+(: (-> double double))
+(defun (f x) (twice-as-double x))
+
+(: (-> int int))
+(defun (g n) (quad n))
+
+(: (-> int int))
+(defun (h n) (twice-generic n))

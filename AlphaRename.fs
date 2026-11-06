@@ -75,6 +75,40 @@ let renameFreeResolving = Hygiene.renameFreeResolving
 /// formal parameter is bound by the splice.
 let freeNames = Ast.freeNames
 
+/// The qualified references (`Naming.qualifiedBinding`) that `body` names,
+/// free or resolved. A macro expansion writes one for a binding of the
+/// macro's module, also as an `EResolved`, which `freeNames` does not return.
+let rec private qualifiedReferences (body: Expr) : Set<string> =
+    let own =
+        match body with
+        | EIdent(n, _)
+        | EResolved(n, _) when Naming.isQualifiedBinding n -> Set.singleton n
+        | _ -> Set.empty
+
+    Ast.exprChildren body |> List.fold (fun acc e -> Set.union acc (qualifiedReferences e)) own
+
+/// The qualification of a body that a module publishes: each name of a
+/// module that the body names, and the reference that the body's copies are
+/// emitted with (see `applyQualification`).
+///
+/// - A free name that `moduleOf` knows goes to its module's qualified
+///   reference.
+/// - A qualified reference goes to itself. It is in the qualification so that
+///   the module publishes its binding with the body (`Exports.autoExportKeys`).
+/// - A name with no module class of its own (a data constructor, a `Prelude`
+///   binding, a trait method) is not in the qualification.
+let qualificationOf (moduleOf: Map<string, string * string>) (parameters: string list) (body: Expr) : Map<string, string> =
+    let free =
+        freeNames (Set.ofList parameters) body
+        |> Seq.choose (fun n ->
+            match Map.tryFind n moduleOf with
+            | Some(m, original) -> Some(n, Naming.qualifiedBinding m original)
+            | None -> None)
+
+    let written = qualifiedReferences body |> Seq.map (fun n -> n, n)
+
+    Seq.append free written |> Map.ofSeq
+
 // ---------------------------------------------------------------------------
 // Typed: the parameterized core
 // ---------------------------------------------------------------------------

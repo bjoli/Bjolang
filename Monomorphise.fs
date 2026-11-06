@@ -746,11 +746,20 @@ let private generate
             | Some origin -> { env with CurrentModule = origin }
             | None -> env
 
+        // The trait methods the body calls, also those of a trait this module
+        // does not import. They are this check's names only.
+        let checkEnv, unreach =
+            match cand.Origin with
+            | Some _ -> TypeEnv.reachTraitMethods cand.Qualification (mandatoryNames args) body checkEnv
+            | None -> checkEnv, id
+
         let checked', typed =
             Inference.checkAddendum
                 checkEnv
                 [ DSignature(demand.CopyName, signature, [], cand.SigRange)
                   DDefun(demand.CopyName, args, body, Ordinary, cand.DefRange) ]
+
+        let checked' = unreach checked'
 
         // Free names now say which module they came from. The copy is emitted
         // in *this* module's class, so a bare `helper` in it would bind to
@@ -846,16 +855,7 @@ let private publish
         |> Map.map (fun _ c ->
             let params' = mandatoryNames c.Args
 
-            let qualification =
-                AlphaRename.freeNames (Set.ofList params') c.Body.Value
-                |> Seq.choose (fun n ->
-                    // A name with no module class of its own — a data
-                    // constructor, a `Prelude` binding, a trait method — is
-                    // left as written. There is nothing to qualify it to.
-                    match Map.tryFind n moduleOf with
-                    | Some(m, original) -> Some(n, Naming.qualifiedBinding m original)
-                    | None -> None)
-                |> Map.ofSeq
+            let qualification = AlphaRename.qualificationOf moduleOf params' c.Body.Value
 
             { Params = params'
               Body = c.Body

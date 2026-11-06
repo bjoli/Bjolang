@@ -1048,6 +1048,30 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
     | DImplVia(traitName, targetTypeExpr, viaTypeExpr, isExtern, r) ->
         checkImplVia env sigs traitName targetTypeExpr viaTypeExpr isExtern r
 
+    // A trait of a linked module goes into the registry and nowhere else. Its
+    // methods are not bound and not dispatched on, so source cannot call them
+    // and they do not shadow a name this module has. A body written in another
+    // module reaches them when it is checked here (`TypeEnv.reachTraitMethods`).
+    // A trait that is registered already, because an import gave it, stays as
+    // it is.
+    | DLinked(DTrait(key, _, _, _, _, _, _, _, _)) when Map.containsKey key env.Registry.Traits -> env, sigs, []
+
+    | DLinked(DTrait(key, _, _, _, _, _, _, _, _) as inner) ->
+        match Diagnostics.attempt (fun () -> checkDeclNode env sigs inner) with
+        | Some(registered, _, decls) ->
+            { registered with
+                Registry =
+                    { registered.Registry with
+                        LinkedTraits = Set.add key registered.Registry.LinkedTraits }
+                Bindings = env.Bindings
+                FunMetas = env.FunMetas
+                TraitMethodNames = env.TraitMethodNames
+                DeprecatedNames = env.DeprecatedNames
+                Escapes = env.Escapes },
+            sigs,
+            decls
+        | None -> env, sigs, []
+
     | DLinked inner ->
         Diagnostics.attempt (fun () -> checkDeclNode env sigs inner)
         |> Option.defaultValue (env, sigs, [])
@@ -2934,12 +2958,6 @@ and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorV
                         methodNames
                         |> List.fold (fun acc m -> Map.add m traitName acc) newEnv.Registry.TraitMethods } }
 
-    let assocSubst = 
-        assocTypes 
-        |> List.map (fun assocName -> 
-            "'" + assocName, TAssoc(traitName, assocName, TVar ("'" + implementorVar)))
-        |> Map.ofList
-
     // An inline trait's methods are deliberately *not* bound into
     // `env.Bindings`. There is no single scheme they could be bound under —
     // `m` appears applied to two different arguments in `bind` — and a
@@ -2948,14 +2966,7 @@ and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorV
 
     if kind = InterfaceTrait then
         for kvp in hmSignatures do
-            let methodTypeWithAssoc = substTypeVars assocSubst kvp.Value
-            // Collect ALL free type variables from the method signature.
-            // The implementor var is always first; any additional vars (like 'acc)
-            // are method-level generics that must also be quantified.
-            let methodVars = freeTVars env.Registry methodTypeWithAssoc |> List.distinct
-            let implVar = "'" + implementorVar
-            let allVars = implVar :: (methodVars |> List.filter ((<>) implVar))
-            let scheme = Scheme(allVars, [], methodTypeWithAssoc)
+            let scheme = traitMethodScheme env.Registry traitName implementorVar assocTypes kvp.Value
             finalEnv <- addBinding (methodKey kvp.Key) { Scheme = scheme; IsMutable = false } finalEnv
 
     // Last, because `addBinding` above cleared each name as it bound it.

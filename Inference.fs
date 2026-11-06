@@ -113,6 +113,7 @@ let private warnAboutShadowedMethods (registry: TraitRegistry) (decls: TDecl lis
     // method's bare name is the definition's name.
     let methodNamed (name: string) =
         registry.TraitMethods
+        |> Map.filter (fun key _ -> isScopedTraitMethod registry key)
         |> Map.tryPick (fun key _ ->
             match traitMethodOf registry key with
             | Some(traitName, m) when m = name -> Some(Naming.showTraitName traitName)

@@ -828,7 +828,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // scheme they could be bound under, which is the whole reason the trait is
     // inline-only.
     | EIdent(name, r) when
-        Map.containsKey name env.Registry.TraitMethods
+        isScopedTraitMethod env.Registry name
         && not (Map.containsKey name env.Bindings)
         ->
         let traitName = env.Registry.TraitMethods[name]
