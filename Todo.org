@@ -190,6 +190,23 @@ out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
 - *A body that will not serialize is not published* (~try~, bare list literal,
   tuple destructuring, local function with keyword/rest parameters): calls keep
   their dictionary.
+- *An importer's copy is checked in the importer's scope, where a trait
+  method may be unbound.* A published constrained body names a function of
+  its own module by its module (~Monomorphise.publish~ qualifies it), but a
+  trait method, a data constructor or a Prelude binding is left as written.
+  When the importer does not import the module of such a trait, the copy
+  fails to check, "could not specialise 'cells-moments' ...: Unbound
+  variable: simd-store!", and every call passes a dictionary. Found in
+  bjostat's (bjostat stats), whose kernels use (std simd); a program that
+  imported only (bjostat stats) got the generic kernel, and in its loop an
+  interface call that kept the vector sums on the stack. The same for an
+  implementation's method that ~TraitInline~ copies into the importer: "could
+  not inline the 'load-doubles' implementation ...: no implementation of
+  trait 'Lane' for 'double'", and a call. bjostat wraps each such operation
+  in a function of its own module (~v4-add~ and the others). The fix:
+  resolve a trait method of a published body to its trait when the body is
+  published, as a function is qualified, and check the copy with the
+  traits of the body's own module in scope.
 - *Each module makes its own copies.* An importer specialises a published body
   where it calls it, so ~f~ at ~int~ is copied into every module that calls it
   at ~int~. A project should collect its instantiations and monomorphise each
