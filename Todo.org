@@ -276,7 +276,21 @@ temporary per variable (~__next__~).
   are read before impls are registered. Both want the same thing as the
   impl case: a projection treated as a type parameter of the function.
   ~(std parallel)~ meets it: a generic function cannot iterate the parts of
-  any ~Chunkable~, ~(where (Iterable (assoc Chunkable chunk %c)))~.
+  any ~Chunkable~, ~(where (Iterable (assoc Chunkable chunk %c)))~. A pin
+  works: ~(where (Chunkable %c #:chunk %p) (Iterable %p #:elem %e))~.
+- *A pin does not reach a lambda's parameter.* With that where clause, a
+  lambda ~(fun (part) ...)~ given to ~in-parallel~ whose body calls
+  ~iterable-current~ on ~part~ fails: "these types do not match: (assoc
+  Iterable elem %p), %e". The same body in a named function with the same
+  where clause compiles. The error names the wrong place: the end of the
+  module, or another impl. ~(std parallel)~ uses named functions
+  (~collect-part~, ~each-of-part~). To reproduce, a function
+  ~(: chained (-> %c (Vec (Vec %e))) (where (Chunkable %c #:chunk %p) (Iterable %p #:elem %e)))~
+  with the body
+  ~(in-parallel c (fun (part) (let go ((acc []) (cur (iterable-start part))) (if (iterable-done? part cur) acc (go (vec-add acc (iterable-current part cur)) (iterable-next part cur))))))~.
+- *A number collector given as a value does not get its type from its
+  use.* ~(par-collect summing sine v)~ with ~sine~ of doubles fails: the
+  pinned ~#:elem~ is int, not double. ~(: summing (Summing double))~ works.
 - *Pins are matched by the name of a rigid variable.* A body's pins
   (~Registry.PinnedAssocs~) speak of its signature's variables, and a scheme
   read in that body is read without them (~Unification.withoutPins~). A type
@@ -356,8 +370,25 @@ several cores and their ends are events.
 - *A walk of a map in parts stops at 2-3x* on 24 threads, against 3.7x for
   a sum of an array: a walk follows pointers. Not examined further.
 - *~loop/parallel~.* A ~loop~ whose ~:for~ is over a ~Chunkable~ and whose
-  parts' accumulators are joined at the end. It needs a way to merge two
-  states of a ~Collector~: an optional ~collector-merge~.
+  parts' accumulators are joined at the end. ~MergingCollector~'s
+  ~collector-merge~ now merges two states of a collector, as ~par-collect~
+  does.
+- *Parts that allocate are bound by the GC.* On 1M elements, 24 threads, a
+  vector's ~par-map~ of ~(* 2 x)~ is 0.62x the sequential ~vec-map~ with
+  the default settings, and 0.98x with ~DOTNET_GCgen0size=0x4000000~; of a
+  sine 2.56x and 5.77x. A map's ~par-filter~ goes from 1.60x to 5.90x. An
+  array's ~par-map~, which allocates one array, is 5.5x either way. Server
+  GC (~DOTNET_gcServer=1~) did not help the parallel row. Decided: Bjolang
+  programs do not set a GC budget of their own; a program that needs one
+  sets it (~bench/bjolang/parallel-collections.bjo~).
+- *An ordered map's ~par-map~ is 0.75x the sequential one* with the default
+  GC settings, 1.9x with ~DOTNET_GCgen0size=0x4000000~, after ~Concat~ and
+  ~MapValues~ by leaves. Its parts allocate two arrays of 64 for each leaf,
+  and are bound by the GC as a vector's are.
+- *A ~par-filter~ of a map sees only the value.* The inline trait is over
+  the type constructor, so its method sees ~(Map %k)~'s last argument. An
+  inline trait cannot declare associated types, which a predicate type per
+  implementation would need.
 - *As many compute threads as cores delay fibers.* At 24 compute threads a
   fiber that sleeps 1 ms wakes 1.1-1.3 ms late at the median and 1.5-1.7 ms
   at p90, as when the parts were fibers; at 18, 0.12 and 0.14-0.18 ms, at
@@ -365,12 +396,13 @@ several cores and their ends are events.
   chose for scripts; a server would set ~BJOLANG_COMPUTE_THREADS~ lower. A
   default below the cores, or a priority below the run queues' threads, is
   not measured yet.
-- *A call costs about 2 us for each part* on 24 threads: 49-59 us for 24
-  parts that do nothing, from a bjoroutine. Most of it is the poster waking
-  compute threads that sleep, one system call each, one after another. The
-  C# pool the compute threads replaced took 19-21 us. Spinning longer, or
-  waking a few threads that each wake more, are what is left to try
-  (~BjolangRuntime/Cml/design.md~, "A plain thread that waits").
+- *A call of 24 empty parts has a tail.* Back to back, 8 us at the median
+  and 28 us at p90, 16 us on average: in one call of ten or more the first
+  part waits about 20 us, the wake of a thread that sleeps, although the
+  compute threads spin 50 us. Not GC (the same with a gen0 of 256 MB). Not
+  examined further. After the threads sleep, 26 us: the wake of one thread
+  in this KVM guest (~BjolangRuntime/Cml/design.md~, "The cost of a call of
+  (std parallel)").
 - *bjostat has a pool of its own.* ~glue/Workers.cs~ in bjostat is the same
   pool; its ~computing-each~ could be ~(std parallel)~'s, so that a program
   has one pool, not two of as many threads as cores.

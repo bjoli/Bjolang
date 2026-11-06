@@ -1,0 +1,135 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; How the speed-up of `par-map` grows with the work for each element: a
+;; vector of numbers, each through a recursive `fib` of k, with fewer
+;; elements as k grows, so that each row is about the same total work.
+;; Then 40 numbers: fib of 32 forty times, and fib of 0 to 39, where the last
+;; numbers are most of the work.
+;;
+;; Measured on a Ryzen 9 5900X (12 cores, 24 threads) in a KVM guest of 24
+;; vCPUs, 96 parts, 24 compute threads, two runs; time for each element, sequential / parallel:
+;;
+;;   fib 5 x 1000000      0.01 us /    0.01 us   1.07-1.15x
+;;   fib 10 x 100000      0.13 us /    0.02 us   6.58x
+;;   fib 15 x 10000       1.42 us / 0.18-0.20 us 6.87-7.65x
+;;   fib 20 x 1000       15.80 us / 1.88-2.03 us 7.78-8.45x
+;;   fib 25 x 100       175.22 us /   22.98 us   7.62x
+;;   fib 32 x 40          5.07 ms / 0.52-0.53 ms 9.62-9.80x
+;;   fib 0 to 39          9.65 ms /    3.83 ms   2.52x
+;;
+;; - Past about 0.1 us of work for each element the speed-up stops growing,
+;;   at 7-8x for a vector cut into 96 parts.
+;; - fib 32 x 40 is 40 parts of one element: 9.6-9.8x.
+;; - fib 0 to 39 takes as long as fib 39 alone, which is 38% of the work:
+;;   no split can do better than 2.6x when one element is that big.
+;; - With fewer threads (BJOLANG_COMPUTE_THREADS), fib 20 x 1000 and fib 32
+;;   x 40: 6 threads 4.01-4.93x and 4.46x, 12 threads 6.48x and 8.04x; on
+;;   CPUs 0-11 (taskset) 5.73x and 8.77x. Which cores those are is the
+;;   host's choice: see below.
+;;
+;; Plain C# threads that take items by an atomic counter, fib 32 x 48, on
+;; the same machine (/tmp, not in the repo). The machine is a KVM guest with
+;; 24 vCPUs, and the host chooses the core each vCPU runs on: pinning in the
+;; guest changed nothing, and two threads ran at the same speed on every
+;; pair of CPUs tried (0,1 0,2 0,12 0,13 6,7 6,18). Clock and IPC from
+;; `perf stat` (cycles:u, instructions:u, task-clock), counted after a
+;; warm-up of 2 s:
+;;
+;;   threads   1      2      4      6      12     24
+;;   speed-up  1.00x  1.85x  3.46x  4.90x  8.14x  9.01x
+;;   GHz       4.80   4.73   4.58   4.57   4.39   4.35
+;;   IPC       3.67   3.49   3.42   3.38   3.05   2.02
+;;
+;; - The clock falls 9% from one thread to 12 or more.
+;; - The IPC of each thread falls: 17% at 12 threads, 45% at 24, where two
+;;   threads share each core. fib already uses a core well alone, so a
+;;   core with two threads does only 10% more (2 x 2.02 against 3.67).
+;; - The rest, 11% at 12 threads and 25% at 24 against clock x IPC, is not
+;;   measured apart. At 24 threads the 48 items are two rounds, and the
+;;   slowest thread sets the end.
+;; - Cold, with no warm-up, plain threads were 3.9-4.9x at 6 threads and
+;;   4.8-5.0x at 24, IPC 2.0-2.4 and 1.3-1.4: the code ran before the JIT
+;;   had finished with it. With DOTNET_TieredPGO=0 cold runs are as slow,
+;;   so it is not the PGO stage alone. With DOTNET_TieredCompilation=0 (the
+;;   code is optimised at once, without PGO: 360 ms instead of 220 ms on
+;;   one thread) the speed-ups were 5.2-5.4x, 8.8x and 10.6x.
+;; - So on this machine about 9-10x is what fib can get, and Bjolang's
+;;   compute threads get it: 9.6-9.8x for fib 32 x 40.
+
+;; Build and run:
+;;
+;;   dotnet "$(./build_compiler.sh --path)" bench/bjolang/parallel-work.bjo
+;;   dotnet bench/bjolang/parallel-work.exe
+
+(import (std prelude))
+(import (std parallel))
+
+(import/extern
+  (gc-collect (: System.GC.Collect (-> void)))
+  (gc-wait-finalizers (: System.GC.WaitForPendingFinalizers (-> void)))
+  (processor-count (: System.Environment.ProcessorCount #:get)))
+
+(def reps 5)
+
+(: (-> void))
+(defun (settle)
+  (gc-collect)
+  (gc-wait-finalizers)
+  (gc-collect))
+
+;; The median of `reps` timings of `thunk`, in nanoseconds, after two runs
+;; that are not timed.
+(: (-bjo-> (-bjo-> void) long))
+(defbjo (median-ns thunk)
+  (loop (:for _ (range 0 2)) (:do (thunk)))
+  (def times
+    (loop (:for _ (range 0 reps))
+          (:do (settle))
+          (:let t0 (monotonic-ns))
+          (:do (thunk))
+          (:acc ts (listing (- (monotonic-ns) t0)))))
+  (list-ref (list-sort times) (/ reps 2)))
+
+(: (-> long string))
+(defun (hundredths x)
+  (str (displayed (/ x 100L)) "." (string-pad-left (displayed (% x 100L)) 2 #:with #\0)))
+
+(: (-> int long))
+(defun (fib k)
+  (if (< k 2) (cast long k) (+ (fib (- k 1)) (fib (- k 2)))))
+
+;; Prints one row: the time for each element, both ways, and the speed-up.
+(: (-> string int long long void))
+(defun (report name elems seq par)
+  (def nn (cast long elems))
+  (println (str (string-pad-right name 24)
+                "seq " (hundredths (/ seq (* 10L nn))) " us/elem   "
+                "par " (hundredths (/ par (* 10L nn))) " us/elem   "
+                "speed-up " (hundredths (/ (* seq 100L) par)) "x")))
+
+(: (-bjo-> string (Vec int) void))
+(defbjo (row name v)
+  (def sink (make-box 0L))
+  (report name (vec-length v)
+          (median-ns (bjoroutine () (box-set! sink (vec-fold + 0L (vec-map fib v)))))
+          (median-ns (bjoroutine () (box-set! sink (vec-fold + 0L (par-map fib v)))))))
+
+(defbjo (main)
+  (println (str (displayed processor-count) " processors, "
+                (displayed (compute-thread-count)) " compute threads"))
+  (loop (:for (Tuple k n) (list (Tuple 5 1000000) (Tuple 10 100000) (Tuple 15 10000)
+                                (Tuple 20 1000) (Tuple 25 100)))
+        (:do (row #"fib ${k} x ${n}" (loop (:for _ (range 0 n)) (:acc v (vecing k))))))
+  (row "fib 32 x 40" (loop (:for _ (range 0 40)) (:acc v (vecing 32))))
+  (row "fib 0 to 39" (loop (:for i (range 0 40)) (:acc v (vecing i))))
+  0)

@@ -1459,6 +1459,20 @@ public static partial class BjolangRuntime {
         return landing.Value.Unwrap();
     }
 
+    /// How long a `sync/blocking` on this thread spins, in Stopwatch ticks,
+    /// before it parks. 0 unless `SpinBeforeParking` set it.
+    [ThreadStatic] private static long t_spinTicks;
+
+    /// Makes each `sync/blocking` on the calling thread spin for up to
+    /// `microseconds` before it parks, after the short spin that every one
+    /// does. For a thread that waits for work again and again, as a compute
+    /// thread of (std parallel) does: when the work comes within that time,
+    /// the thread that gives it makes no system call, and this one starts at
+    /// once. The cost is a core kept busy for that long after each wait
+    /// that is not met in time.
+    public static void SpinBeforeParking(int microseconds) =>
+        t_spinTicks = Math.Max(0, microseconds) * System.Diagnostics.Stopwatch.Frequency / 1_000_000;
+
     /// Where a `sync/blocking` lands, and the thread waiting for it: either
     /// the value, or the committed branch's wrap for the waiting thread to
     /// apply, whose result then lands here from that thread.
@@ -1494,9 +1508,16 @@ public static partial class BjolangRuntime {
         /// that waits for work again and again, as a compute thread of
         /// (std parallel) does, then often has it before it sleeps, and the
         /// thread that gives it makes no system call to wake it.
+        /// Then, on a thread that asked for it with `SpinBeforeParking`, spins
+        /// on for that long.
         internal IDeferredWrap? Wait() {
             var spin = new SpinWait();
             while (!Volatile.Read(ref _landed) && !spin.NextSpinWillYield) spin.SpinOnce();
+            if (t_spinTicks > 0 && !Volatile.Read(ref _landed)) {
+                var until = System.Diagnostics.Stopwatch.GetTimestamp() + t_spinTicks;
+                while (!Volatile.Read(ref _landed) && System.Diagnostics.Stopwatch.GetTimestamp() < until)
+                    Thread.SpinWait(20);
+            }
             lock (_gate) {
                 while (!_landed) Monitor.Wait(_gate);
                 return _deferred;

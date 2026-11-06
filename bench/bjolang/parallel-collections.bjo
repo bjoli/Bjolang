@@ -1,0 +1,158 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; `par-map`, `par-filter` and `par-collect` against their sequential
+;; functions, on 1M elements. Each row is the sequential function, then the
+;; parallel one, which returns the same type.
+;;
+;; - cheap: (* 2 x), or an even test. Most of the time is the result's
+;;   memory and the join.
+;; - sin: the sine of each element. Compute bound.
+;;
+;; Measured on a Ryzen 9 5900X (12 cores, 24 threads), 96 parts, .NET
+;; tiering on; ns per element, sequential / parallel. "gen0 64M" is the same
+;; run with DOTNET_GCgen0size=0x4000000:
+;;
+;;   row                    default                 gen0 64M
+;;   vec map cheap           4.87 /  7.74  0.62x     1.65 /  1.68  0.98x
+;;   vec map sin            12.67 /  4.94  2.56x     8.13 /  1.40  5.77x
+;;   array map cheap         7.10 /  1.27  5.55x     7.04 /  1.32  5.30x
+;;   array map sin          13.61 /  1.49  9.08x    12.34 /  1.49  8.26x
+;;   vec filter cheap        2.39 /  3.57  0.67x     1.95 /  1.19  1.63x
+;;   array filter cheap      2.44 /  2.07  1.17x     2.31 /  1.87  1.23x
+;;   map map-values cheap   61.07 / 36.18  1.68x    48.14 / 16.53  2.91x
+;;   map filter cheap       30.77 / 19.13  1.60x    27.23 /  4.61  5.90x
+;;   omap map-values cheap  13.10 / 16.64  0.78x    10.51 /  5.55  1.89x
+;;   omap filter cheap       8.92 /  5.00  1.78x     5.55 /  2.80  1.98x
+;;   collect summing sin     6.97 /  1.04  6.66x     7.01 /  1.08  6.47x
+;;   collect vecing cheap    6.88 /  6.63  1.03x     2.60 /  1.75  1.48x
+;;
+;; - An array's `par-map` allocates one array, and its parts only write. It
+;;   is the only row that is fast with the default settings.
+;; - The parts of a vector or a map allocate many small nodes. With the
+;;   default gen0 budget the collections stop all threads often, and the
+;;   parts gain little. The bigger budget makes the same rows 2-4x faster.
+;; - The ordered map rows are with the runtime's `Concat`, `MapValues` and
+;;   `Filter` by leaves. Before, they were 0.29x and 0.44x (0.36x and 0.57x
+;;   with gen0 64M): each part's builder had a list of the part's size, in
+;;   the large object heap, and the join added every entry to one builder
+;;   on the calling thread. `Concat` keeps the parts' leaves. In C# alone,
+;;   1M entries, `Filter` went from 10.6-11.4 to 4.6-4.8 ns per entry and
+;;   `MapValues` from 21.7-21.9 to 5.4-5.5 ns.
+;;
+;; Build and run:
+;;
+;;   dotnet "$(./build_compiler.sh --path)" bench/bjolang/parallel-collections.bjo
+;;   dotnet bench/bjolang/parallel-collections.exe
+
+(import (std prelude))
+(import (std parallel))
+(import (std orderedmap))
+
+(import/extern
+  (gc-collect (: System.GC.Collect (-> void)))
+  (gc-wait-finalizers (: System.GC.WaitForPendingFinalizers (-> void)))
+  (clr-sin (: System.Math.Sin (-> double double)))
+  (processor-count (: System.Environment.ProcessorCount #:get)))
+
+(def n 1000000)
+(def reps 9)
+
+(: (-> void))
+(defun (settle)
+  (gc-collect)
+  (gc-wait-finalizers)
+  (gc-collect))
+
+;; The median of `reps` timings of `thunk`, in nanoseconds, after five runs
+;; that are not timed.
+(: (-bjo-> (-bjo-> void) long))
+(defbjo (median-ns thunk)
+  (loop (:for _ (range 0 5)) (:do (thunk)))
+  (def times
+    (loop (:for _ (range 0 reps))
+          (:do (settle))
+          (:let t0 (monotonic-ns))
+          (:do (thunk))
+          (:acc ts (listing (- (monotonic-ns) t0)))))
+  (list-ref (list-sort times) (/ reps 2)))
+
+;; `x` hundredths as a string with two decimals.
+(: (-> long string))
+(defun (hundredths x)
+  (str (displayed (/ x 100L)) "." (string-pad-left (displayed (% x 100L)) 2 #:with #\0)))
+
+(: (-> string long long void))
+(defun (report name seq par)
+  (def nn (cast long n))
+  (println (str (string-pad-right name 22)
+                "seq " (hundredths (/ (* seq 100L) nn)) " ns/elem   "
+                "par " (hundredths (/ (* par 100L) nn)) " ns/elem   "
+                "speed-up " (hundredths (/ (* seq 100L) par)) "x")))
+
+(: (-> double double))
+(defun (twice x) (* 2.0 x))
+
+(: (-> double double))
+(defun (sine x) (clr-sin x))
+
+(: (-> double bool))
+(defun (big? x) (> x 0.5))
+
+(defbjo (main)
+  (println (str "n = " (displayed n) ", " (displayed processor-count) " processors, "
+                (displayed (* 4 processor-count)) " parts"))
+  (def v (loop (:for i (range 0 n)) (:acc v (vecing (* 1e-6 (cast double i))))))
+  (def a (vec->array v))
+  (def m (vec->map (vec-map (fun (x) (Tuple x x)) v)))
+  (def om (vec->orderedmap (vec-map (fun (x) (Tuple x x)) v)))
+  (def sink (make-box 0))
+  (def total (make-box 0.0))
+
+  (report "vec map cheap"
+          (median-ns (bjoroutine () (box-set! sink (vec-length (vec-map twice v)))))
+          (median-ns (bjoroutine () (box-set! sink (vec-length (par-map twice v))))))
+  (report "vec map sin"
+          (median-ns (bjoroutine () (box-set! sink (vec-length (vec-map sine v)))))
+          (median-ns (bjoroutine () (box-set! sink (vec-length (par-map sine v))))))
+  (report "array map cheap"
+          (median-ns (bjoroutine () (box-set! sink (array-length (loop (:for x a) (:acc o (arraying (twice x))))))))
+          (median-ns (bjoroutine () (box-set! sink (array-length (par-map twice a))))))
+  (report "array map sin"
+          (median-ns (bjoroutine () (box-set! sink (array-length (loop (:for x a) (:acc o (arraying (sine x))))))))
+          (median-ns (bjoroutine () (box-set! sink (array-length (par-map sine a))))))
+  (report "vec filter cheap"
+          (median-ns (bjoroutine () (box-set! sink (vec-length (vec-filter big? v)))))
+          (median-ns (bjoroutine () (box-set! sink (vec-length (par-filter big? v))))))
+  (report "array filter cheap"
+          (median-ns (bjoroutine () (box-set! sink (array-length (loop (:for x a) (:when (big? x)) (:acc o (arraying x)))))))
+          (median-ns (bjoroutine () (box-set! sink (array-length (par-filter big? a))))))
+  (report "map map-values cheap"
+          (median-ns (bjoroutine () (box-set! sink (map-length (map-map-values twice m)))))
+          (median-ns (bjoroutine () (box-set! sink (map-length (par-map twice m))))))
+  (report "map filter cheap"
+          (median-ns (bjoroutine () (box-set! sink (map-length (map-filter (fun (k x) (big? x)) m)))))
+          (median-ns (bjoroutine () (box-set! sink (map-length (par-filter big? m))))))
+  (report "omap map-values cheap"
+          (median-ns (bjoroutine () (box-set! sink (orderedmap-length (orderedmap-map-values twice om)))))
+          (median-ns (bjoroutine () (box-set! sink (orderedmap-length (par-map twice om))))))
+  (report "omap filter cheap"
+          (median-ns (bjoroutine () (box-set! sink (orderedmap-length (orderedmap-filter (fun (k x) (big? x)) om)))))
+          (median-ns (bjoroutine () (box-set! sink (orderedmap-length (par-filter big? om))))))
+  (report "collect summing sin"
+          (median-ns (bjoroutine () (box-set! total (loop (:for x v) (:acc s (summing (sine x)))))))
+          (median-ns (bjoroutine () (box-set! total (par-collect (: summing (Summing double)) sine v)))))
+  (report "collect vecing cheap"
+          (median-ns (bjoroutine () (box-set! sink (vec-length (loop (:for x v) (:acc o (vecing (twice x))))))))
+          (median-ns (bjoroutine () (box-set! sink (vec-length (par-collect vecing twice v))))))
+  (println (str "(sink " (displayed (box-ref sink)) " " (displayed (box-ref total)) ")"))
+  0)

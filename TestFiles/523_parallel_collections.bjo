@@ -1,0 +1,131 @@
+;; (std parallel) over whole collections: `par-map` and `par-filter` return a
+;; collection of the type given, with the elements in its order; `par-collect`
+;; merges the parts' accumulators in the order of the parts; `par-for-each`
+;; runs on each element. Checked from a bjoroutine and from ordinary code.
+(import (std prelude))
+(import (std simpletest))
+(import (std parallel))
+(import (std atomic))
+(import (std hashset))
+(import (std orderedmap))
+(import (std orderedset))
+
+(import/class
+  (Boom (: System.InvalidOperationException (-> string Boom))))
+
+(: (-> int int))
+(defun (square x) (* x x))
+
+(: (-> int int))
+(defun (fails-at-500 x)
+  (if (= x 500) (raise (cast Exception (Boom. "at 500"))) x))
+
+(: (-> int (Vec int)))
+(defun (upto n) (loop (:for i (range 0 n)) (:acc v (vecing i))))
+
+;; The same calls in ordinary code, where the calling thread runs parts too.
+(: (-> (Vec int) void))
+(defun (in-ordinary-code v)
+  (expect "ordinary code: par-map of a vector" (par-map square v) (vec-map square v))
+  (expect "ordinary code: par-filter of an array"
+          (array->vec (par-filter even? (vec->array v)))
+          (vec-filter even? v))
+  (expect "ordinary code: par-collect"
+          (par-collect summing square v)
+          (loop (:for x v) (:acc s (summing (square x))))))
+
+(defbjo (main)
+  (def n 10000)
+  (def v (upto n))
+  (def a (vec->array v))
+  (def ia (array->iarray a))
+  (def pairs (vec-map (fun (i) (Tuple i (* 2 i))) v))
+  (def m (vec->map pairs))
+  (def om (vec->orderedmap pairs))
+
+  ;; --- par-map ---
+  (expect "par-map of a vector" (par-map square v) (vec-map square v))
+  (expect "par-map of an empty vector" (par-map square (: [] (Vec int))) [])
+  (expect "par-map of an array" (array->vec (par-map square a)) (vec-map square v))
+  (expect "par-map of an empty array"
+          (array-length (par-map square (: (make-array 0) (Array int))))
+          0)
+  (expect "par-map of an immutable array" (iarray->vec (par-map square ia)) (vec-map square v))
+  (expect "par-map of a map maps its values" (par-map square m) (map-map-values square m))
+  (expect "par-map of an ordered map maps its values, in key order"
+          (orderedmap->vec (par-map square om))
+          (vec-map (fun (i) (Tuple i (square (* 2 i)))) v))
+  (expect "par-map can change the element type"
+          (par-map (fun (x) (number->string x)) [1 2 3])
+          ["1" "2" "3"])
+
+  ;; --- par-filter ---
+  (expect "par-filter of a vector" (par-filter even? v) (vec-filter even? v))
+  (expect "par-filter of an array" (array->vec (par-filter even? a)) (vec-filter even? v))
+  (expect "par-filter that keeps nothing" (array-length (par-filter (fun (x) #f) a)) 0)
+  (expect "par-filter of an immutable array" (iarray->vec (par-filter even? ia)) (vec-filter even? v))
+  (expect "par-filter of a map tests its values"
+          (par-filter (fun (x) (= 0 (% x 3))) m)
+          (map-filter (fun (k x) (= 0 (% x 3))) m))
+  (expect "par-filter of a hash set"
+          (par-filter even? (vec->hashset v))
+          (vec->hashset (vec-filter even? v)))
+  (expect "par-filter of an ordered map, in key order"
+          (orderedmap->vec (par-filter (fun (x) (= 0 (% x 3))) om))
+          (vec-filter (fun (kv) (def (_ x) kv) (= 0 (% x 3))) pairs))
+  (expect "par-filter of an ordered set, in order"
+          (orderedset->vec (par-filter even? (vec->orderedset v)))
+          (vec-filter even? v))
+
+  ;; --- par-collect: each collector merges in the order of the parts ---
+  (expect "summing" (par-collect summing square v) (loop (:for x v) (:acc s (summing (square x)))))
+  (expect "counting" (par-collect counting square (range 0 n)) n)
+  (expect "vecing keeps the order" (par-collect vecing square v) (vec-map square v))
+  (expect "vecing/small keeps the order" (par-collect vecing/small square v) (vec-map square v))
+  (expect "arraying keeps the order" (array->vec (par-collect arraying square a)) (vec-map square v))
+  (expect "listing keeps the order" (par-collect listing square v) (vec->list (vec-map square v)))
+  (expect "listing/reverse returns the elements last first"
+          (par-collect listing/reverse square v)
+          (list-reverse (vec->list (vec-map square v))))
+  (expect "stringing keeps the order"
+          (par-collect stringing (fun (i) (int->char (+ 97 (% i 10)))) (range 0 1000))
+          (loop (:for i (range 0 1000)) (:acc s (stringing (int->char (+ 97 (% i 10)))))))
+  ;; Key k is given by k, k + 10, k + 20 ...: the last, which is in the last
+  ;; part, wins.
+  (expect "mapping keeps the last value of a key"
+          (par-collect mapping (fun (i) (Tuple (% i 10) i)) v)
+          (loop (:for i v) (:acc s (mapping (Tuple (% i 10) i)))))
+  (expect "ordered-mapping keeps the last value of a key"
+          (orderedmap->vec (par-collect ordered-mapping (fun (i) (Tuple (% i 10) i)) v))
+          (loop (:for k (range 0 10)) (:acc s (vecing (Tuple k (+ k (- n 10)))))))
+  (expect "hash-setting" (par-collect hash-setting (fun (i) (% i 7)) v) (vec->hashset (upto 7)))
+  (expect "ordered-setting"
+          (orderedset->vec (par-collect ordered-setting (fun (i) (- n i)) v))
+          (vec-map (fun (i) (+ i 1)) v))
+  (expect "par-collect over a map's entries"
+          (par-collect summing (fun (kv) (def (k x) kv) (- x k)) m)
+          (loop (:for i v) (:acc s (summing i))))
+  (expect "par-collect over an array's parts"
+          (par-collect summing (fun (x) x) a)
+          (loop (:for i v) (:acc s (summing i))))
+
+  ;; --- par-for-each ---
+  (def total (make-atomic 0))
+  (par-for-each (fun (x) (ignore (atomic-add! total x))) v)
+  (expect "par-for-each runs on each element" (atomic-ref total) (loop (:for i v) (:acc s (summing i))))
+  (def seen (make-atomic 0))
+  (par-for-each (fun (kv) (ignore (atomic-increment! seen))) om)
+  (expect "par-for-each over an ordered map" (atomic-ref seen) n)
+
+  ;; --- Raising ---
+  (expect-true "par-map raises what a part raises"
+               (match (try (par-map fails-at-500 v) #:catch (System.InvalidOperationException))
+                 ((Ok _) #f)
+                 ((Err _) #t)))
+  (expect-true "par-filter raises what a part raises"
+               (match (try (par-filter (fun (x) (= 0 (fails-at-500 x))) a) #:catch (System.InvalidOperationException))
+                 ((Ok _) #f)
+                 ((Err _) #t)))
+
+  (in-ordinary-code v)
+  0)

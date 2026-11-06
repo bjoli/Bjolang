@@ -138,6 +138,11 @@ public static class IArrayModule {
 
     public static IArray<T> FromArray<T>(T[] items) => new(ImmutableArray.Create(items));
 
+    /// The array itself, not a copy. For an array that nothing else holds
+    /// and that nothing writes again, as (std parallel)'s `par-map` makes.
+    public static IArray<T> Adopt<T>(T[] items) =>
+        items.Length == 0 ? IArray<T>.Empty : new(ImmutableCollectionsMarshal.AsImmutableArray(items));
+
     /// A copy of what a `MutableVec` holds now. One copy of its elements: the
     /// list's own array is longer than its count, and the list can be written
     /// again.

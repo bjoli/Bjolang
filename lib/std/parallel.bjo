@@ -18,6 +18,15 @@
 ;; returns the results in the order of the parts. The caller joins them: `(vec-fold + 0 ...)`, a
 ;; concatenation, a merge.
 ;;
+;; The functions over a whole collection join the parts for the caller:
+;;
+;; - `par-map` and `par-filter` return a collection of the type they are
+;;   given. Each type has its own way to join its parts.
+;; - `par-collect` puts the elements into a collector, one accumulator for
+;;   each part. A `MergingCollector` merges the accumulators in the order of
+;;   the parts.
+;; - `par-for-each` runs a function on each element.
+;;
 ;; An array splits into views, not copies. A part of an array gives a span of
 ;; its own elements, so the parts of one array can be written in place at the
 ;; same time. A span cannot go to another thread, so each part makes its own.
@@ -37,16 +46,33 @@
   (processor-count (: System.Environment.ProcessorCount #:get))
   (parse-int (: System.Int32.TryParse (-> string (out int) (Option int))))
   (make-jobs-inbox (: Bjoml.InboxModule.MakeNewestFirst (-> int bool (Inbox %a))))
+  (spin-before-parking (: BjolangRuntime.SpinBeforeParking (-> int void)))
   (clr-vec-split-at (: Collections.RrbFun.SplitAt (-> (Vec %a) (Array int) (Array (Vec %a)))))
   (clr-map-split (: Map.MapModule.Split (-> (Map %k %v) int (Array (Map %k %v)))))
   (clr-hashset-split (: Set.SetModule.Split (-> (HashSet %a) int (Array (HashSet %a)))))
   (clr-orderedmap-split (: OrderedMap.OrderedMapModule.Split (-> (OrderedMap %k %v) int (Array (OrderedMap %k %v)))))
-  (clr-orderedset-split (: OrderedSet.OrderedSetModule.Split (-> (OrderedSet %a) int (Array (OrderedSet %a))))))
+  (clr-orderedset-split (: OrderedSet.OrderedSetModule.Split (-> (OrderedSet %a) int (Array (OrderedSet %a)))))
+  (iarray-adopt (: Bjolang.Runtime.IArrayModule.Adopt (-> (Array %a) (IArray %a))))
+  (clr-orderedmap-concat (: OrderedMap.OrderedMapModule.Concat (-> (Array (OrderedMap %k %v)) (OrderedMap %k %v))))
+  (clr-orderedset-concat (: OrderedSet.OrderedSetModule.Concat (-> (Array (OrderedSet %a)) (OrderedSet %a)))))
+
+(import/class
+  ;; The accumulator of `arraying`, which the prelude does not export.
+  ((ArrayBuilder %a) (: Bjolang.Runtime.ArrayBuilder)))
+
+(import/extern
+  (arraybuilder-empty (: Bjolang.Runtime.ArrayBuilderModule.Empty (-> (ArrayBuilder %a))))
+  (arraybuilder-add   (: Bjolang.Runtime.ArrayBuilderModule.Add   (-> (ArrayBuilder %a) %a (ArrayBuilder %a))))
+  (arraybuilder-count (: Bjolang.Runtime.ArrayBuilderModule.Count (-> (ArrayBuilder %a) int)))
+  (arraybuilder-grow  (: Bjolang.Runtime.ArrayBuilderModule.Grow  (-> (ArrayBuilder %a) int (ArrayBuilder %a))))
+  (arraybuilder-span  (: Bjolang.Runtime.ArrayBuilderModule.Span  (-> (ArrayBuilder %a) int int (Span %a)))))
 
 (export Chunkable chunk-size chunks
         in-parallel computing-each compute-thread-count
         ArrayPart part-array part-lo part-hi part-length part->span part->ro-span
-        IArrayPart iarray-part-lo iarray-part-hi iarray-part-length)
+        IArrayPart iarray-part-lo iarray-part-hi iarray-part-length
+        MergingCollector collector-merge par-collect par-for-each
+        ParallelMap par-map ParallelFilter par-filter)
 
 ;; ---------------------------------------------------------------------------
 ;; The trait
@@ -90,6 +116,11 @@
 ;;   does not wait for. It wakes the thread that waited last, which is the
 ;;   one most likely to be spinning still, as a thread spins a little before
 ;;   it parks: then a post makes no system call to wake it.
+;; - A thread that has no job spins for 50 us before it parks. A call that
+;;   comes within that time finds it awake: it starts at once, and the post
+;;   makes no system call. Measured on 24 empty parts after 10 us of other
+;;   work: 14 to 6 us for each call. The cost is a core for 50 us after the
+;;   last job of each thread.
 ;; - A job is a closure over the dynamic environment of the code that made
 ;;   it, and runs in that environment.
 ;; - A job posted to a full inbox is dropped. That is safe because a call
@@ -114,8 +145,11 @@
 
 ;; A compute thread: runs jobs for ever. A job raises nothing: the parts it
 ;; runs keep their exceptions.
+(def spin-us 50)
+
 (: (-> Unit))
 (defun (compute-loop)
+  (spin-before-parking spin-us)
   (let go ()
     ((sync/blocking (inbox-recv jobs)))
     (go)))
@@ -137,15 +171,21 @@
 ;; Runs `(work k)` for each k from 0 to n - 1 on the compute threads, and
 ;; returns the values in the order of k.
 ;;
-;; - A runner is a job that takes parts by number until none is left. One is
-;;   posted for each compute thread, or for each part when there are fewer.
-;;   A runner that a thread takes after the parts are all taken ends at once.
+;; - A runner is a job that takes parts by number until none is left. The
+;;   caller posts runners one after the other while a part is left that no
+;;   runner has taken, up to one for each compute thread, or for each part
+;;   when there are fewer. A post that wakes a thread that sleeps is a system
+;;   call of some microseconds, and the thread starts some microseconds
+;;   later: so when the parts are small, the first runners take them all and
+;;   the caller stops posting. A runner that a thread takes after the parts
+;;   are all taken ends at once.
 ;; - In a bjoroutine the fiber is suspended until the parts have run, and
 ;;   holds nothing.
-;; - In ordinary code the thread posts one runner fewer, takes parts itself,
-;;   and then waits only for the parts that other threads have taken. So a
-;;   part can call `computing-each` itself: a call does not wait for runners
-;;   that no thread is free to take, and there is no deadlock when calls nest.
+;; - In ordinary code the thread posts one runner fewer, then takes the parts
+;;   that are left itself, and then waits only for the parts that other
+;;   threads have taken. So a part can call `computing-each` itself: a call
+;;   does not wait for runners that no thread is free to take, and there is
+;;   no deadlock when calls nest.
 ;; - A part runs in the dynamic environment of the call.
 ;; - When a part raises, the parts not started do not run, and the exception
 ;;   is raised here when the parts that started have ended. A part that runs
@@ -184,21 +224,30 @@
                 (go)))
             unit))
         (def runner (fun () (call-with-dynamic-environment env run-parts)))
-        ;; One runner for each part, at most one for each compute thread, and
-        ;; in ordinary code one less, as the calling thread takes parts too.
+        ;; At most one runner for each part and one for each compute thread,
+        ;; and in ordinary code one less, as the calling thread takes parts
+        ;; too.
         (def runners (by-colour (#:sync (min (- n 1) thread-count))
                                 (#:bjo (min n thread-count))))
+        (def posted (make-atomic 0))
+        ;; Posts runners while a part is left that no runner has taken.
+        (def post-runners
+          (fun ()
+            (let go ()
+              (when (and (< (+ (atomic-ref next) 1) n)
+                         (<= (atomic-increment! posted) runners))
+                (ignore (inbox-post! jobs runner))
+                (go)))))
         (by-colour
           (#:sync (begin
-                    (loop (:for _ (range 0 runners))
-                          (:do (ignore (inbox-post! jobs runner))))
+                    (post-runners)
                     (run-parts)
                     (sync/blocking (inbox-recv done))))
           (#:bjo (begin
+                   (ignore (atomic-increment! posted))
                    (unless (inbox-post! jobs runner)
                      (sync (inbox-send-evt jobs runner)))
-                   (loop (:for _ (range 1 runners))
-                         (:do (ignore (inbox-post! jobs runner))))
+                   (post-runners)
                    (sync (inbox-recv done))
                    (when (> (atomic-ref skipped) 0) (sync (: (never) (Event Unit)))))))
         (when (= (atomic-ref failed) 1) (raise (array-ref failure 0)))
@@ -362,3 +411,295 @@
   (type %chunk (OrderedSet %a))
   (defun (chunk-size s) (orderedset-length s))
   (defun (chunks s k) (array->vec (clr-orderedset-split s k))))
+
+;; ---------------------------------------------------------------------------
+;; Collectors that merge
+;; ---------------------------------------------------------------------------
+
+;; A `Collector` whose accumulators of two runs merge into one.
+;;
+;; - `collector-merge c a b`: the accumulator of the elements of `a`'s run
+;;   followed by those of `b`'s run, as if one run took them all in that
+;;   order. It may change and return `a` or `b`, which are not used again.
+;; - `%acc` is the collector's own `%acc`.
+;;
+;; A collector that starts from a value, such as `(vecing x #:into v)` or
+;; `folding`, does not merge: each run would start from the value again.
+(def/trait (MergingCollector %c)
+  (type %acc)
+  (: collector-merge (-> %c %acc %acc %acc)))
+
+(impl (MergingCollector (Listing %a))
+  (type %acc (ListBuilder %a))
+  (defun (collector-merge c a b)
+    (listbuilder-add-range! a (list->seq (listbuilder->list b)))
+    a))
+
+;; Each run's list is its elements last first, so the merge is `b`'s list
+;; and then `a`'s.
+(impl (MergingCollector (ListingReverse %a))
+  (type %acc (List %a))
+  (defun (collector-merge c a b) (list-append b a)))
+
+(impl (MergingCollector (Vecing %a))
+  (type %acc (VecBuilder %a))
+  (defun (collector-merge c a b)
+    (vec->vecbuilder (vec-merge (vecbuilder->vec a) (vecbuilder->vec b)))))
+
+(impl (MergingCollector (VecingSmall %a))
+  (type %acc (VecBuilder %a))
+  (defun (collector-merge c a b)
+    (vec->vecbuilder (vec-merge (vecbuilder->vec a) (vecbuilder->vec b)))))
+
+(impl (MergingCollector (Arraying %a))
+  (type %acc (ArrayBuilder %a))
+  (defun (collector-merge c a b) (arraybuilder-append a b)))
+
+;; `a` with the elements of `b` added at its end.
+(: (-> (ArrayBuilder %a) (ArrayBuilder %a) (ArrayBuilder %a)))
+(defun (arraybuilder-append a b)
+  (def start (arraybuilder-count a))
+  (def n (arraybuilder-count b))
+  (def grown (arraybuilder-grow a n))
+  (def to (arraybuilder-span grown start n))
+  (def from (arraybuilder-span b 0 n))
+  (loop (:for i (range 0 n))
+        (:do (span-set! to i (span-ref from i))))
+  grown)
+
+;; Where both runs have a key, `b`'s value is kept, as a later step of one
+;; run keeps it.
+(impl (MergingCollector (Mapping %k %v))
+  (type %acc (MapBuilder %k %v))
+  (defun (collector-merge c a b)
+    (map->mapbuilder (map-merge (mapbuilder->map a) (mapbuilder->map b)))))
+
+(impl (MergingCollector (HashSetting %a))
+  (type %acc (HashSetBuilder %a))
+  (defun (collector-merge c a b)
+    (hashset->hashsetbuilder (hashset-union (hashsetbuilder->hashset a) (hashsetbuilder->hashset b)))))
+
+;; `b`'s entries are added to `a`'s builder, which sorts them when it builds
+;; unless they come after `a`'s: so the parts of an ordered map cost no sort.
+(impl (MergingCollector (OrderedMapping %k %v))
+  (type %acc (OrderedMapBuilder %k %v))
+  (defun (collector-merge c a b)
+    (orderedmapbuilder-add-all! a (orderedmap->seq (orderedmapbuilder->orderedmap b)))
+    a))
+
+(impl (MergingCollector (OrderedSetting %a))
+  (type %acc (OrderedSetBuilder %a))
+  (defun (collector-merge c a b)
+    (orderedsetbuilder-add-all! a (orderedset->seq (orderedsetbuilder->orderedset b)))
+    a))
+
+(impl (MergingCollector Stringing)
+  (type %acc StringBuilder)
+  (defun (collector-merge c a b)
+    (stringbuilder-add-string! a (stringbuilder->string b))
+    a))
+
+(impl (MergingCollector (Summing %a))
+  (where (Num %a))
+  (type %acc %a)
+  (defun (collector-merge c a b) (+ a b)))
+
+(impl (MergingCollector (Counting %a %n))
+  (where (Num %n))
+  (type %acc %n)
+  (defun (collector-merge c a b) (+ a b)))
+
+;; ---------------------------------------------------------------------------
+;; Over the elements of a whole collection
+;; ---------------------------------------------------------------------------
+
+;; The functions that run on each part are top-level functions, not lambdas
+;; in the callers: a lambda's parameter of the part's type does not get the
+;; part's element type from the caller's `where` (Todo.org).
+
+;; The accumulator of `col` over the elements of one part, each through `f`.
+(: collect-part (-> %k (-> %e %x) %p %acc)
+   (where (Iterable %p #:elem %e)
+          (Collector %k #:elem %x #:acc %acc)))
+(defun (collect-part col f part)
+  (let go ((acc (collector-init col)) (cur (iterable-start part)))
+    (if (iterable-done? part cur)
+        acc
+        (go (collector-step col acc (f (iterable-current part cur)))
+            (iterable-next part cur)))))
+
+;; Puts `(f x)` for each element x of `c` into the collector `col`, and
+;; returns what the collector makes of them.
+;;
+;; - Each part has an accumulator of its own, on a compute thread. Then the
+;;   accumulators are merged on the calling thread, in the order of the
+;;   parts, and the collector finishes the result.
+;; - `f` runs on the compute threads, at the same time for different parts.
+;; - A part runs as `in-parallel` runs it: also for exceptions and the
+;;   dynamic environment.
+(: par-collect (-> %k (-> %e %x) %c %out)
+   (where (Chunkable %c #:chunk %p)
+          (Iterable %p #:elem %e)
+          (Collector %k #:elem %x #:acc %acc #:out %out)
+          (MergingCollector %k #:acc %acc)))
+(defun (par-collect col f c)
+  (def accs (in-parallel c (fun (part) (collect-part col f part))))
+  (collector-finish col (joined accs (fun (a b) (collector-merge col a b)))))
+
+(: each-of-part (-> (-> %e void) %p Unit) (where (Iterable %p #:elem %e)))
+(defun (each-of-part f part)
+  (let go ((cur (iterable-start part)))
+    (if (iterable-done? part cur)
+        unit
+        (begin
+          (f (iterable-current part cur))
+          (go (iterable-next part cur))))))
+
+;; Runs `f` on each element of `c`, on the compute threads. The elements of
+;; a part are taken in order, and the parts at the same time.
+(: par-for-each (-> (-> %e void) %c void)
+   (where (Chunkable %c #:chunk %p)
+          (Iterable %p #:elem %e)))
+(defun (par-for-each f c)
+  (ignore (in-parallel c (fun (part) (each-of-part f part)))))
+
+;; The parts joined from the first to the last: `(join (join p0 p1) p2)`.
+;; There is at least one part.
+(: (-> (Vec %a) (-> %a %a %a) %a))
+(defun (joined parts join)
+  (loop (:for i (range 1 (vec-length parts)))
+        (:acc out (folding (vec-ref parts 0) (join out (vec-ref parts i))))))
+
+;; ---------------------------------------------------------------------------
+;; A collection of the type given
+;; ---------------------------------------------------------------------------
+
+;; A collection whose elements a function can change on the compute threads.
+;;
+;; - `par-map f c`: a collection of the same type, with `(f x)` in place of
+;;   each element x, in the same order. `f` runs on the compute threads.
+;; - Of a map, the values are the elements: the keys stay as they are.
+;; - A set is not a `ParallelMap`, as a set of the values of `f` needs their
+;;   `Eq` or `Ord`. Use `par-collect` with `hash-setting` or
+;;   `ordered-setting`.
+(def/trait (ParallelMap (%c %a))
+  (: par-map (-> (-> %a %b) (%c %a) (%c %b))))
+
+;; A collection whose elements a test can select on the compute threads.
+;;
+;; - `par-filter keep? c`: a collection of the same type, with the elements
+;;   for which `(keep? x)` is true, in the same order. `keep?` runs on the
+;;   compute threads.
+;; - Of a map, `keep?` is given the value. To test the key too, use
+;;   `in-parallel` with `map-filter`, and `map-merge` the parts.
+(def/trait (ParallelFilter (%c %a))
+  (: par-filter (-> (-> %a bool) (%c %a) (%c %a))))
+
+;; --- Vectors: the parts are joined by concatenation, which shares their
+;; nodes.
+
+(impl (ParallelMap (Vec %a))
+  (defun (par-map f v)
+    (joined (in-parallel v (fun (p) (vec-map f p))) (fun (a b) (vec-merge a b)))))
+
+(impl (ParallelFilter (Vec %a))
+  (defun (par-filter keep? v)
+    (joined (in-parallel v (fun (p) (vec-filter keep? p))) (fun (a b) (vec-merge a b)))))
+
+;; --- Arrays: `par-map` makes the result first, and each part writes its
+;; own range of it. `par-filter` collects each part's elements, and then
+;; copies them into an array of their number.
+
+;; Writes `(f x)` into `out` for each element x of part `p` of `a`, at the
+;; same index.
+(: (-> (-> %a %b) (ArrayPart %a) (Array %b) Unit))
+(defun (map-part-into f p out)
+  (def a (record-ref p array))
+  (loop (:for i (range (record-ref p lo) (record-ref p hi)))
+        (:do (array-set! out i (f (array-ref a i)))))
+  unit)
+
+(: (-> (-> %a %b) (IArrayPart %a) (Array %b) Unit))
+(defun (map-iarray-part-into f p out)
+  (def a (record-ref p iarray))
+  (loop (:for i (range (record-ref p lo) (record-ref p hi)))
+        (:do (array-set! out i (f (iarray-ref a i)))))
+  unit)
+
+;; The elements of the builders, one builder after the other, in an array of
+;; their number.
+(: (-> (Vec (ArrayBuilder %a)) (Array %a)))
+(defun (builders->array parts)
+  (def out (make-array (loop (:for b parts) (:acc n (summing (arraybuilder-count b))))))
+  (loop (:for b parts)
+        (:with at 0 (+ at (arraybuilder-count b)))
+        (:do (let ((from (arraybuilder-span b 0 (arraybuilder-count b))))
+               (loop (:for i (range 0 (span-length from)))
+                     (:do (array-set! out (+ at i) (span-ref from i)))))))
+  out)
+
+(: (-> (-> %a bool) (ArrayPart %a) (ArrayBuilder %a)))
+(defun (filter-part keep? p)
+  (loop (:for x p)
+        (:when (keep? x))
+        (:acc kept (folding (arraybuilder-empty) (arraybuilder-add kept x)))))
+
+(: (-> (-> %a bool) (IArrayPart %a) (ArrayBuilder %a)))
+(defun (filter-iarray-part keep? p)
+  (loop (:for x p)
+        (:when (keep? x))
+        (:acc kept (folding (arraybuilder-empty) (arraybuilder-add kept x)))))
+
+(impl (ParallelMap (Array %a))
+  (defun (par-map f a)
+    (def out (make-array (array-length a)))
+    (ignore (in-parallel a (fun (p) (map-part-into f p out))))
+    out))
+
+(impl (ParallelFilter (Array %a))
+  (defun (par-filter keep? a)
+    (builders->array (in-parallel a (fun (p) (filter-part keep? p))))))
+
+;; The array that the parts write is not seen by any other code, so it
+;; becomes the immutable array with no copy.
+(impl (ParallelMap (IArray %a))
+  (defun (par-map f a)
+    (def out (make-array (iarray-length a)))
+    (ignore (in-parallel a (fun (p) (map-iarray-part-into f p out))))
+    (iarray-adopt out)))
+
+(impl (ParallelFilter (IArray %a))
+  (defun (par-filter keep? a)
+    (iarray-adopt (builders->array (in-parallel a (fun (p) (filter-iarray-part keep? p)))))))
+
+;; --- Hash maps and sets: the parts have no key in common, so a merge
+;; shares their nodes.
+
+(impl (ParallelMap (Map %k %a))
+  (defun (par-map f m)
+    (joined (in-parallel m (fun (p) (map-map-values f p))) (fun (a b) (map-merge a b)))))
+
+(impl (ParallelFilter (Map %k %a))
+  (defun (par-filter keep? m)
+    (joined (in-parallel m (fun (p) (map-filter (fun (k v) (keep? v)) p)))
+            (fun (a b) (map-merge a b)))))
+
+(impl (ParallelFilter (HashSet %a))
+  (defun (par-filter keep? s)
+    (joined (in-parallel s (fun (p) (hashset-filter keep? p))) (fun (a b) (hashset-union a b)))))
+
+;; --- Ordered maps and sets: the parts are in key order, so the runtime
+;; joins them by their leaves, under new internal nodes. No entry is
+;; compared or copied.
+
+(impl (ParallelMap (OrderedMap %k %a))
+  (defun (par-map f m)
+    (clr-orderedmap-concat (vec->array (in-parallel m (fun (p) (orderedmap-map-values f p)))))))
+
+(impl (ParallelFilter (OrderedMap %k %a))
+  (defun (par-filter keep? m)
+    (clr-orderedmap-concat (vec->array (in-parallel m (fun (p) (orderedmap-filter (fun (k v) (keep? v)) p)))))))
+
+(impl (ParallelFilter (OrderedSet %a))
+  (defun (par-filter keep? s)
+    (clr-orderedset-concat (vec->array (in-parallel s (fun (p) (orderedset-filter keep? p)))))))

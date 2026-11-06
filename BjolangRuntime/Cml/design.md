@@ -2353,6 +2353,82 @@ still in place:
 - **An inbox, all runners posted at once**, oldest receiver first: 103 us,
   which was the measurement that found the three causes.
 
+### The cost of a call of (std parallel): posts that wake nobody useful
+
+The fixed cost of 48-52 us above, hunted down. A timeline of one call from
+a bjoroutine, 24 parts that do nothing, 24 compute threads, a KVM guest of
+24 vCPUs on a Ryzen 9 5900X (ns after the call starts, medians):
+
+| when                  | first post | all posts | first part | caller back |
+|-----------------------|-----------:|----------:|-----------:|------------:|
+| back to back          |        711 |     6 792 |     19 606 |      26 871 |
+| after 1 ms, no calls  |      3 777 |    78 818 |     21 150 |      79 229 |
+
+- A post to a thread that sleeps costs the poster about 3 us, a system call
+  and, in a guest, the interrupt that wakes an idle vCPU. 24 of them: 75 us.
+- A thread that sleeps starts about 15-20 us after the post.
+- With parts that do nothing, the first runner takes all 24 while the
+  caller still posts: one thread runs them, and 22 wakes are for nothing.
+  The caller then waits for its own posts, not for the parts.
+
+Two changes, kept:
+
+- **Post while a part is left that no runner has taken.** The caller posts
+  runners one after the other and stops when the parts are all taken. In
+  ordinary code it then takes what is left, as before, so a nested call with
+  no free compute thread still runs every part.
+- **A compute thread spins 50 us before it parks**
+  (`BjolangRuntime.SpinBeforeParking`, for the calling thread only). It is
+  still a receiver of the inbox while it spins, so the post sets a flag it
+  watches, and no system call is made.
+
+Each alone and both, us (medians; m0 is the old pool, m2 the first change):
+
+| case                              | m0    | m2    | m2 + spin 20 | m2 + spin 50 | m2 + spin 100 |
+|-----------------------------------|------:|------:|-------------:|-------------:|--------------:|
+| 24 empty, back to back            |  33.9 |  13.2 |         11.1 |         10.4 |          10.4 |
+| 24 empty, after 1 ms              |  77.8 |  25.5 |         27.1 |         27.0 |          26.8 |
+| 24 x 10 us, back to back          |  96.1 |  69.6 |         46.5 |         37.3 |          35.8 |
+| 96 x 10 us, back to back          | 147.3 | 147.3 |        114.2 |         72.3 |          71.4 |
+| 24 x 100 us, back to back         | 241.6 | 243.9 |        238.3 |        229.5 |         238.5 |
+| 24 empty, 10 us of work between   |       |  13.5 |          6.7 |          6.2 |           6.2 |
+| 24 empty, 50 us of work between   |       |  16.6 |         15.1 |          7.3 |           6.4 |
+
+The spin and m2 come from separate runs, so a column compares with its
+neighbours to a few us. With both, `std parallel`'s own call, back to back:
+30.7 to 7.9 us at the median, 16 us on average; after 1 ms 82 to 26 us,
+about the wake of one thread. The spin cost a bench of bursts 14.9 to 18.3 s
+of CPU time for the process. The lateness of a fiber that sleeps 1 ms while
+the parts compute (`bench/bjolang/parallel-latency.bjo`) is the same.
+
+The rest of the runtime does not see the spin: a thread that has not called
+`SpinBeforeParking` reads one thread-static more in each `sync/blocking`.
+`bench/bjolang/cmlbench.bjo` with the old `Concurrency.cs` and the new, two
+runs each: the same within noise (ring 67-70 ns, put/get 76-79, spawn burst
+209-253, skewed choose 186-203). A `sync/blocking` that commits at once:
+363-365 ns both. A round trip fiber -> plain thread -> fiber, the thread with
+no spin: 3.7-4.4 us old, 2.6-3.4 us new, which the change does not explain
+(the thread does not spin), so noise or the order of the runs.
+
+Tried and rejected:
+
+- **A tree of runners**, each posting two more before its parts while parts
+  are left, the caller posting one: best with parts that do nothing (9.6 us
+  back to back), but 8-18% slower with parts of 100 us, as the work reaches
+  the threads a level at a time, and each runner pays two posts first.
+- **The caller's posts and one or two more from each runner** (m3, m4):
+  between m2 and the tree, and worse than m2 with parts of 100 us after a
+  pause (275 against 253 us).
+- **A compute thread that polls the inbox before it waits**,
+  `(choose (inbox-recv jobs) (always None))` in a loop for 20 or 100 us:
+  slower, 24 empty parts back to back 16.5 to 24-29 us. A thread that polls
+  is not a receiver, so the post goes into the buffer, and each poll takes
+  the inbox's lock against the poster.
+
+Open: back to back, about one call in ten still waits ~20 us for its first
+part, the wake of a thread that sleeps (p90 28 us against a median of 8).
+Not GC: the same with a gen0 of 256 MB.
+
 ---
 
 ## 6. Known issues

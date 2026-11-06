@@ -3,7 +3,8 @@
 
 (:doc #:module
   (summary "Work on the parts of a collection at the same time, on threads made for work that uses a core.")
-  (see Chunkable in-parallel computing-each ArrayPart part->span part->ro-span)
+  (see Chunkable in-parallel computing-each par-map par-filter par-collect par-for-each
+       ArrayPart part->span part->ro-span)
   (example """
     (import (std parallel))
 
@@ -21,6 +22,11 @@
 
     (def xs (make-array 1000000 #:fill 1.5))
     (ignore (in-parallel xs (fun (part) (double-all! (part->span part)))))
+
+    ;; A collection of the same type, joined by the module.
+    (par-map (fun (x) (* x x)) [1 2 3 4])              ; [1 4 9 16]
+    (par-filter even? (vec->array [1 2 3 4]))          ; #[2 4]
+    (par-collect summing (fun (x) (* x x)) (range 0 4))  ; 14
     """)
   (reference """
     A @code{Chunkable} collection splits into parts that together hold each
@@ -28,6 +34,14 @@
     @code{in-parallel} runs a function on each part on the compute threads,
     and returns a vector of the results, in the order of the parts. The caller joins the results: with
     @code{vec-fold}, a concatenation or a merge.
+
+    The functions over a whole collection join the parts themselves.
+    @code{par-map} and @code{par-filter} return a collection of the type
+    they are given, with the elements in its order. @code{par-collect} puts
+    the elements into a collector, one accumulator for each part, and
+    merges the accumulators in the order of the parts: the collector must
+    be a @code{MergingCollector}. @code{par-for-each} runs a function on
+    each element.
 
     @strong{Implementations.} @code{Range}, @code{Vec}, @code{Array},
     @code{IArray}, @code{Map}, @code{HashSet}, @code{OrderedMap} and
@@ -71,20 +85,31 @@
     @code{bench/bjolang/parallel-latency.bjo} measures it.
 
     @strong{When it is faster.} One call with 24 parts that do nothing takes
-    about 50 us from a bjoroutine and 33 us from ordinary code (Ryzen 9
-    5900X), most of it the wake of threads that sleep. The default is four
-    parts for each compute thread. Work below some hundreds of microseconds
-    is faster in sequence. Work that is
+    about 8 us at the median and 16 us on average when the compute threads
+    worked less than 50 us before, and about 26 us when they sleep (Ryzen 9
+    5900X, in a KVM guest), most of it the wake of a thread that sleeps. The
+    default is four parts for each compute thread. Work below some tens of
+    microseconds is faster in sequence. Work that is
     bound by memory, such as a sum or a scale of a large array of doubles,
     stops at the memory bandwidth. Work that is bound by computation scales
     with the physical cores. @code{bench/bjolang/parallel.bjo} has the
     measurements.
 
-    @strong{Limit.} A generic function cannot yet iterate the parts of any
-    @code{Chunkable}: its @code{where} cannot ask for
-    @code{(Iterable (assoc Chunkable chunk %c))}. @code{in-parallel} itself
-    is generic, and the function given to it sees the part type of the
-    collection at the call.
+    The functions over a whole collection gain most when each part only
+    writes, as @code{par-map} of an array does, or computes much for each
+    element. Parts that allocate many small nodes, as the parts of a vector
+    or a map do, are bound by the garbage collector with the default .NET
+    settings. @code{bench/bjolang/parallel-collections.bjo} has the
+    measurements, and @code{bench/bjolang/parallel-work.bjo} how the gain
+    grows with the work for each element.
+
+    @strong{Generic code.} A generic function iterates the parts of any
+    @code{Chunkable} through a pin of the part type:
+    @code{(where (Chunkable %c #:chunk %p) (Iterable %p #:elem %e))}, as
+    @code{par-collect} does. The form with a projection,
+    @code{(Iterable (assoc Chunkable chunk %c))}, is not accepted yet. And
+    a lambda whose parameter is a part does not get the element type from
+    the pin: give the part to a named function.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -178,8 +203,11 @@
     the parts of a @code{Chunkable} collection.
 
     The parts are taken by number by the threads that run parts. The call
-    posts a runner, a job that takes parts until none is left, for each
-    compute thread, or for each part when there are fewer. In a bjoroutine
+    posts runners, jobs that take parts until none is left, one after the
+    other while a part is left that no runner has taken: at most one for
+    each compute thread, or for each part when there are fewer. So small
+    parts wake few threads. A compute thread with no job spins for 50 us
+    before it sleeps, so a call soon after another starts at once. In a bjoroutine
     the fiber is suspended while the parts run. In ordinary code the
     calling thread takes parts too, and then waits only for the parts that
     other threads have taken. So a part can call @code{computing-each}
@@ -286,3 +314,175 @@
   (summary "Returns the number of elements in a part of an immutable array.")
   (arg p "The part.")
   (returns "hi minus lo."))
+
+;; ---------------------------------------------------------------------------
+;; Collectors that merge
+;; ---------------------------------------------------------------------------
+
+(:doc MergingCollector
+  (summary "Trait for collectors whose accumulators of two runs merge into one.")
+  (tparam %c "The collector type. It is also a @code{Collector}.")
+  (see collector-merge par-collect)
+  (reference """
+    An implementation defines the associated type @code{%acc}, the same as
+    the collector's own, and implements @code{collector-merge}.
+
+    @strong{Implementations.} @code{listing}, @code{listing/reverse},
+    @code{vecing}, @code{vecing/small}, @code{arraying}, @code{mapping},
+    @code{hash-setting}, @code{ordered-mapping}, @code{ordered-setting},
+    @code{stringing}, @code{summing} and @code{counting}.
+
+    A collector that starts from a value, as @code{folding} and the forms
+    with @code{#:into} do, has no implementation: each run would start from
+    the value again.
+    """))
+
+(:doc collector-merge
+  (summary "Merges the accumulators of two runs of a collector.")
+  (arg c "The collector.")
+  (arg a "The accumulator of the first run. It may be changed, and is not used again.")
+  (arg b "The accumulator of the second run. It may be changed, and is not used again.")
+  (returns "The accumulator of the elements of a's run followed by those of b's run, as if one run took them all in that order.")
+  (see MergingCollector par-collect)
+  (reference """
+    For a collector into a map or a set, b's value is kept where both runs
+    have a key, as a later step of one run keeps it. For
+    @code{listing/reverse}, the result is b's list and then a's, as the
+    elements of one run are last first.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Over the elements of a whole collection
+;; ---------------------------------------------------------------------------
+
+(:doc par-collect
+  (summary "Puts (f x) for each element x of a collection into a collector, on the compute threads.")
+  (arg col "The collector, such as @code{vecing} or @code{summing}. It must be a @code{MergingCollector}.")
+  (arg f "The function of each element. It runs on the compute threads, at the same time for different parts.")
+  (arg c "The collection. It must be @code{Chunkable}, with parts that are @code{Iterable}.")
+  (returns "What the collector makes of the values, as if one run took them in the order of the parts.")
+  (see MergingCollector collector-merge par-map in-parallel)
+  (example """
+    (par-collect summing (fun (x) (* x x)) (range 0 4))        ; 14
+    (par-collect vecing (fun (x) (* 2 x)) (vec->array [1 2 3]))  ; [2 4 6]
+    (par-collect hash-setting (fun (x) (% x 3)) (range 0 100))   ; #{0 1 2}, unordered
+    """)
+  (reference """
+    Each part has an accumulator of its own, on a compute thread. Then the
+    accumulators are merged on the calling thread, from the first part to
+    the last, and the collector finishes the result. The parts run as
+    @code{in-parallel} runs them: also for exceptions, cancellation and the
+    dynamic environment.
+
+    The element of a map's part is an entry, a @code{Tuple} of the key and
+    the value.
+
+    A number collector does not get its type from @code{f}: give it, as in
+    @code{(: summing (Summing double))}, when the values are not ints.
+    """))
+
+(:doc par-for-each
+  (summary "Runs a function on each element of a collection, on the compute threads.")
+  (arg f "The function. It runs on the compute threads, at the same time for different parts.")
+  (arg c "The collection. It must be @code{Chunkable}, with parts that are @code{Iterable}.")
+  (see par-collect in-parallel)
+  (example """
+    (def total (make-atomic 0))
+    (par-for-each (fun (x) (ignore (atomic-add! total x))) (range 0 100))
+    (atomic-ref total)   ; 4950
+    """)
+  (reference """
+    The elements of one part are taken in order, and the parts at the same
+    time. The element of a map's part is an entry, a @code{Tuple} of the
+    key and the value. The parts run as @code{in-parallel} runs them.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; A collection of the type given
+;; ---------------------------------------------------------------------------
+
+(:doc ParallelMap
+  (summary "Trait for collections whose elements a function can change on the compute threads.")
+  (see par-map ParallelFilter)
+  (reference """
+    An inline trait over the collection's type constructor, as
+    @code{Monad} is: each call is resolved where it is written, so a call
+    in a bjoroutine suspends its fiber while the parts run.
+
+    @strong{Implementations.} @code{Vec}, @code{Array}, @code{IArray},
+    @code{Map} and @code{OrderedMap}. A set has none, as a set of the values
+    of the function needs their @code{Eq} or @code{Ord}. Use
+    @code{par-collect} with @code{hash-setting} or @code{ordered-setting}.
+    """))
+
+(:doc par-map
+  (summary "Returns a collection of the same type with (f x) in place of each element x.")
+  (arg f "The function. It runs on the compute threads, at the same time for different parts.")
+  (arg c "The collection: a vector, an array, an immutable array, a map or an ordered map.")
+  (returns "A collection of the same type and length, with the values of f in the order of c.")
+  (see par-filter par-collect in-parallel)
+  (example """
+    (par-map (fun (x) (* x x)) [1 2 3 4])               ; [1 4 9 16]
+    (par-map (fun (v) (+ v 1)) (list->map (list (Tuple "a" 1))))  ; #map(("a" 2))
+    """)
+  (reference """
+    Of a map or an ordered map, the values are the elements: the keys stay
+    as they are, as with @code{map-map-values}.
+
+    How the parts are joined:
+    @itemlist{
+      @item{An array or an immutable array: the result is made first, and
+        each part writes its own range of it. There is no join. An
+        immutable array is made from the result with no copy.}
+      @item{A vector: each part is mapped to a vector, and the vectors are
+        concatenated, which shares their nodes.}
+      @item{A map: each part is mapped to a map, and the maps, which have no
+        key in common, are merged.}
+      @item{An ordered map: each part is mapped to an ordered map of the
+        same shape, and the runtime joins the parts' leaves under new
+        internal nodes. No entry is compared or copied in the join.}
+    }
+
+    The parts run as @code{in-parallel} runs them: also for exceptions,
+    cancellation and the dynamic environment.
+    """))
+
+(:doc ParallelFilter
+  (summary "Trait for collections whose elements a test can select on the compute threads.")
+  (see par-filter ParallelMap)
+  (reference """
+    An inline trait over the collection's type constructor, as
+    @code{ParallelMap} is.
+
+    @strong{Implementations.} @code{Vec}, @code{Array}, @code{IArray},
+    @code{Map}, @code{HashSet}, @code{OrderedMap} and @code{OrderedSet}.
+    """))
+
+(:doc par-filter
+  (summary "Returns a collection of the same type with the elements for which (keep? x) is true.")
+  (arg keep? "The test. It runs on the compute threads, at the same time for different parts.")
+  (arg c "The collection: a vector, an array, an immutable array, a map, a hash set, an ordered map or an ordered set.")
+  (returns "A collection of the same type, with the elements kept, in the order of c.")
+  (see par-map par-collect in-parallel)
+  (example """
+    (par-filter even? [1 2 3 4])                  ; [2 4]
+    (par-filter even? (list->hashset (list 1 2 3 4)))   ; #{2 4}, unordered
+    """)
+  (reference """
+    Of a map or an ordered map, @code{keep?} is given the value. To test
+    the key too, use @code{in-parallel} with @code{map-filter}, and
+    @code{map-merge} the parts.
+
+    How the parts are joined:
+    @itemlist{
+      @item{An array or an immutable array: each part collects the elements
+        it keeps, and then they are copied into an array of their number.}
+      @item{A vector: the parts' vectors are concatenated.}
+      @item{A map or a hash set: the parts, which have no element in common,
+        are merged.}
+      @item{An ordered map or set: the runtime joins the parts' leaves
+        under new internal nodes, as for @code{par-map}.}
+    }
+
+    The parts run as @code{in-parallel} runs them.
+    """))

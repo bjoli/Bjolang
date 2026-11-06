@@ -25,31 +25,33 @@
 ;;
 ;; Measured on a Ryzen 9 5900X (12 cores, 24 threads), .NET tiering on, the
 ;; default 4 parts for each compute thread, and as many compute threads as
-;; cores; ns per element, sequential / parallel:
+;; cores; ns per element, sequential / parallel. The first column is the
+;; CPUs the run was pinned to. The machine is a KVM guest of 24 vCPUs, and
+;; the host chooses the core each vCPU runs on, so which cores CPUs 0-11
+;; are is not known (bench/bjolang/parallel-work.bjo):
 ;;
-;;   cores      scale        sum          sin-sum      map-sum      omap-sum
+;;   CPUs       scale        sum          sin-sum      map-sum      omap-sum
 ;;   24         0.51 / 0.34  0.65 / 0.17  6.86 / 0.57  1.07 / 0.36  1.01 / 0.33
 ;;   12 (0-11)  0.49 / 0.32  0.64 / 0.18  6.95 / 0.84  1.03 / 0.40  1.00 / 0.51
 ;;   4 (0-3)    0.52 / 0.41  0.64 / 0.26  6.95 / 1.89  0.96 / 0.58  0.94 / 0.52
 ;;
-;;   cores      overhead/call        split, map / ordered map
-;;   24         49-59 us (24 parts)  34 / 13 us (96 parts)
+;;   CPUs       overhead/call        split, map / ordered map
+;;   24         16.5 us (24 parts)   34 / 13 us (96 parts)
 ;;   12 (0-11)  30 us (12 parts)     30 / 9 us (48 parts)
 ;;   4 (0-3)    6.4 us (4 parts)     4.0 / 2.0 us (16 parts)
 ;;
 ;; - scale and sum stop at the memory bandwidth, about 40 GB/s, so more cores
 ;;   do not help past four.
-;; - sin-sum scales with the physical cores: 3.7x on 4, 8.2x on 12, 12x on
-;;   24 threads.
+;; - sin-sum: 3.7x on CPUs 0-3, 8.2x on 0-11, 12x on all 24.
 ;; - A walk of a map follows pointers, and stops at 2-3x.
 ;; - On one core the parallel rows are 0.74-0.98x.
-;; - A call costs about 2 us for each part on 24 threads, most of it the wake
-;;   of a compute thread that sleeps, so a call with a total work below some
-;;   hundreds of microseconds is faster in sequence. When the parts ran in
-;;   fibers it was 0.3 us, at the price of the fibers behind them
-;;   (bench/bjolang/parallel-latency.bjo); on the C# pool that the compute
-;;   threads of Bjolang replaced, 0.8 us. See BjolangRuntime/Cml/design.md,
-;;   "A plain thread that waits".
+;; - The overhead row on 24 threads was 49-59 us, when a call posted a runner
+;;   for each compute thread, each post a system call to wake a thread that
+;;   sleeps. Now the caller stops posting when no part is left, and a compute
+;;   thread spins 50 us before it parks: 16.5 us on average, 8 us at the
+;;   median, back to back. The 12 and 4 CPU rows are from before. See
+;;   BjolangRuntime/Cml/design.md, "A plain thread that waits", and
+;;   "The cost of a call of (std parallel)".
 ;;
 ;; How the map split was made cheap: 1M entries into 96 parts, 24 threads,
 ;; with DOTNET_TieredCompilation=0 unless it says otherwise.

@@ -3,6 +3,83 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std parallel)~: a call costs a third of what it did
+
+- ~computing-each~, and so ~in-parallel~ and the functions over a whole
+  collection, post runners only while a part is left that no runner has
+  taken. Before, a call posted one for each compute thread, and each post
+  to a thread that sleeps is a system call: when the parts were small, the
+  first runner took them all while the caller still posted. In ordinary
+  code the caller now posts first and then takes the parts that are left;
+  it still takes them itself when no compute thread is free, so nested
+  calls do not deadlock.
+- A compute thread spins 50 us before it parks, so a call soon after
+  another finds it awake. ~BjolangRuntime.SpinBeforeParking~ sets the spin
+  of ~sync/blocking~ for the calling thread; other threads are unchanged.
+- Measured, 24 parts that do nothing, from a bjoroutine, 24 threads, a KVM
+  guest on a Ryzen 9 5900X: back to back 30.7 to 7.9 us at the median (49-59
+  to 16.5 us on average, ~bench/bjolang/parallel.bjo~); after 1 ms with no
+  call 82 to 26 us. 24 parts of 10 us: 96 to 37 us. 24 parts of 100 us:
+  241.6 to 229.5 us. The fiber lateness of ~bench/bjolang/parallel-latency.bjo~
+  is the same (median 1168 us under load).
+- The cost: a core for 50 us after the last job of each thread that ran
+  one. In a bench of bursts, the process's CPU time went from 14.9 to 18.3
+  s.
+- Open: a tail of about 20 us in one call of ten or more, back to back.
+
+* ~(std parallel)~: functions over a whole collection, which join the parts
+
+- ~(par-map f c)~ and ~(par-filter keep? c)~ return a collection of the
+  type of ~c~, with the elements in ~c~'s order. ~f~ and ~keep?~ run on the
+  compute threads. They are the methods of two inline traits over the type
+  constructor, ~ParallelMap~ and ~ParallelFilter~, so a call in a
+  bjoroutine suspends its fiber while the parts run.
+  - ~ParallelMap~: ~Vec~, ~Array~, ~IArray~, ~Map~ and ~OrderedMap~. Of a
+    map, the values are the elements. A set has none: a set of the values
+    of ~f~ needs their ~Eq~ or ~Ord~, which the method's type cannot ask
+    for.
+  - ~ParallelFilter~: the same and ~HashSet~ and ~OrderedSet~. Of a map,
+    ~keep?~ is given the value.
+  - The joins: an array's ~par-map~ makes the result first, and each part
+    writes its own range, with no join. An immutable array takes the result
+    with no copy (~IArrayModule.Adopt~ in the runtime). A vector's parts are
+    concatenated, a hash map's or set's merged. An ordered map's or set's
+    parts are joined by ~Concat~ in the runtime.
+- ~(par-collect col f c)~ puts ~(f x)~ for each element into the collector
+  ~col~, one accumulator for each part, and merges them in the order of the
+  parts. ~(par-for-each f c)~ runs ~f~ on each element. Both take any
+  ~Chunkable~ whose parts are ~Iterable~.
+- The trait ~MergingCollector~ (~collector-merge~) says how two
+  accumulators of a collector merge. Implementations: ~listing~,
+  ~listing/reverse~, ~vecing~, ~vecing/small~, ~arraying~, ~mapping~,
+  ~hash-setting~, ~ordered-mapping~, ~ordered-setting~, ~stringing~,
+  ~summing~ and ~counting~. A key in both runs keeps the second run's
+  value.
+- Measured on 1M elements, 24 threads (~bench/bjolang/parallel-collections.bjo~):
+  an array's ~par-map~ is 5.5x as fast as a loop for a cheap function and
+  9x for a sine, and ~par-collect summing~ of a sine 6.7x. The parts of a
+  vector or a map allocate many small nodes, and with the default GC
+  settings they gain 0.6-2.6x; with ~DOTNET_GCgen0size=0x4000000~,
+  1-5.9x. An ordered map's ~par-map~ is 0.75-0.78x and its ~par-filter~
+  1.7-1.8x; 1.9x and 2.0x with the bigger gen0.
+- The gain grows with the work for each element until about 0.1 us, and
+  then stays at 7-8x for a vector in 96 parts on 12 cores and 24 threads
+  (~bench/bjolang/parallel-work.bjo~, a recursive ~fib~). Forty ~fib 32~ run
+  9.6-9.8x as fast. ~fib~ of 0 to 39 runs 2.5x as fast, as long as ~fib
+  39~ alone: one element that is 38% of the work bounds any split.
+- ~OrderedMap.Concat~ and ~OrderedSet.Concat~ (~OrderedMapModule.Concat~,
+  ~OrderedSetModule.Concat~) join trees in key order: they keep the leaves
+  and make new internal nodes over them, and join a small leaf with its
+  neighbour when the two fit in one. They raise ~ArgumentException~ when a
+  tree has a key that is not less than every key of the next.
+- ~orderedmap-map~, ~orderedmap-map-values~, ~orderedmap-filter~ and
+  ~orderedset-filter~ (the ordinary copies) work by the tree's leaves, with
+  no list of all the entries: a map keeps the tree's shape, a filter fills
+  new leaves. A filter that keeps every entry returns the map itself. On 1M
+  entries in C#: ~Filter~ 10.6-11.4 to 4.6-4.8 ns an entry, ~MapValues~
+  21.7-21.9 to 5.4-5.5 ns.
+- Open: a ~par-filter~ of a map that sees the key.
+
 * ~(std parallel)~: work on the parts of a collection at the same time
 
 - ~(in-parallel c f)~ splits ~c~ into parts, runs ~f~ on each part on the
@@ -44,7 +121,7 @@ What each change guarantees, and what it leaves open.
   own thread. Every other map and set has its count when it is made, as
   before.
 - Measured on 24 threads (~bench/bjolang/parallel.bjo~): on 10M doubles, a
-  sum of sines 11.5-12x faster than in sequence, 3.7x on 4 cores; a sum
+  sum of sines 11.5-12x faster than in sequence, 3.7x on CPUs 0-3; a sum
   3.6-3.7x and an in-place scale 1.4-1.6x, both at the memory bandwidth. A
   sum of the values of 1M entries: 2.9x for a hash map, 3.1x for an ordered
   map. A call costs about 2 us for each part.
