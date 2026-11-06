@@ -696,7 +696,9 @@ let unifyEffect (e1: Effect) (e2: Effect) =
     // Subeffecting, and the only direction of it there is: a procedure that
     // never suspends is usable wherever one that may is expected. Accepted
     // here; `Codegen` bridges the representation with `Colour.Lift`, since
-    // `Func<A,B>` and `Func<A,Fiber<B>>` are still different C# types.
+    // `Func<A,B>` and `Func<A,Fiber<B>>` are still different C# types. Only
+    // for a value that can be wrapped: `unifyIn` rejects the pair inside
+    // another type before it comes here (`refuseNestedLift`).
     //
     // Only *ground* colours reach this. A `-?->` arrives as a cell and binds in
     // the `EMeta` branches above, so nothing here can settle a colour that
@@ -795,8 +797,37 @@ let private unitsMeet (t1: HMType) (t2: HMType) (u1: Units.UnitTerm) (u2: Units.
                   Note = $"\n  Their units differ: %s{show m.Left} and %s{show m.Right}." }
         )
 
-let rec private unifyIn (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
+/// Where a pair of types is, for the one rule that depends on it: an
+/// ordinary function is accepted where a bjoroutine is expected only where
+/// the value is wrapped (see `unifyEffect`).
+type private Place =
+    /// The two types themselves: a value, a field, a return value.
+    | Top
+    /// The arrow of a call, whose parameters are the arguments themselves.
+    | CallArrow
+    /// Inside another type: an element, a field of a type argument, a
+    /// parameter or result of an arrow.
+    | Nested
+
+/// An ordinary function where a bjoroutine is expected, inside another type.
+/// `Codegen` and `InferExpr.bridgeToSuspending` wrap a value that is itself
+/// the function, also each element of a literal; a function inside a `Vec`,
+/// an `Option` or another arrow is not a value that can be wrapped, and C#
+/// rejects the delegate type.
+let private refuseNestedLift (t1: HMType) (t2: HMType) =
+    raise (
+        MismatchException
+            { Steps = []
+              Left = t1
+              Right = t2
+              Arity = None
+              Note =
+                "\n  An ordinary function is accepted where a bjoroutine is expected only as the value itself: an argument, an element of a literal, a field or a return value. Inside another type it is not. Write it as a (bjoroutine (...) ...), or give the type an ordinary arrow ->." }
+    )
+
+let rec private unifyIn (registry: TraitRegistry) (place: Place) (t1: HMType) (t2: HMType) =
     let t1, t2 = prune registry t1, prune registry t2
+    let inner = Nested
 
     match t1, t2 with
     | _ when t1 = t2 -> ()
@@ -829,7 +860,7 @@ let rec private unifyIn (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
                 let assocName = Naming.dynAssocNamesOf name1 |> List.item i
 
                 try
-                    unifyIn registry a b
+                    unifyIn registry inner a b
                 with :? MismatchException as e ->
                     let m = e.Mismatch
 
@@ -844,9 +875,13 @@ let rec private unifyIn (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
             args1
             args2
     | TCon(name1, args1), TCon(name2, args2) when name1 = name2 && args1.Length = args2.Length ->
-        List.iteri2 (fun i a b -> within (conStep name1 args1.Length i) (fun () -> unifyIn registry a b)) args1 args2
+        List.iteri2 (fun i a b -> within (conStep name1 args1.Length i) (fun () -> unifyIn registry inner a b)) args1 args2
     | TFun(args1, ret1, eff1), TFun(args2, ret2, eff2) when args1.Length = args2.Length ->
-        unifyEffect eff1 eff2
+        match place, pruneEffect eff1, pruneEffect eff2 with
+        | Nested, EAsync, ESync -> refuseNestedLift t1 t2
+        | _ -> unifyEffect eff1 eff2
+
+        let paramPlace = if place = CallArrow then Top else Nested
 
         // An argument whose type waits on an implementor is checked last. In
         // `(fold + 0 v)` the folding function's type mentions `%item`, which is
@@ -859,21 +894,21 @@ let rec private unifyIn (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
             |> List.partition (fun (_, (a, b)) -> not (awaitsImplementor registry a || awaitsImplementor registry b))
 
         for (i, (a, b)) in ready @ waiting do
-            within $"in the %s{ordinal (i + 1)} parameter" (fun () -> unifyIn registry a b)
+            within $"in the %s{ordinal (i + 1)} parameter" (fun () -> unifyIn registry paramPlace a b)
 
-        within "in what it returns" (fun () -> unifyIn registry ret1 ret2)
+        within "in what it returns" (fun () -> unifyIn registry paramPlace ret1 ret2)
     | TTuple args1, TTuple args2 when args1.Length = args2.Length ->
-        List.iteri2 (fun i a b -> within $"in the %s{ordinal (i + 1)} element of the tuple" (fun () -> unifyIn registry a b)) args1 args2
-    | TAssoc(tn1, an1, impl1), TAssoc(tn2, an2, impl2) when tn1 = tn2 && an1 = an2 -> unifyIn registry impl1 impl2
+        List.iteri2 (fun i a b -> within $"in the %s{ordinal (i + 1)} element of the tuple" (fun () -> unifyIn registry inner a b)) args1 args2
+    | TAssoc(tn1, an1, impl1), TAssoc(tn2, an2, impl2) when tn1 = tn2 && an1 = an2 -> unifyIn registry place impl1 impl2
     // Carriers as types, units as units. A type without a unit has unit 1.
     | TNum(c1, u1), TNum(c2, u2) ->
-        unifyIn registry c1 c2
+        unifyIn registry place c1 c2
         unitsMeet t1 t2 u1 u2
     | TNum(c, u), other ->
-        unifyIn registry c other
+        unifyIn registry place c other
         unitsMeet t1 t2 u Units.one
     | other, TNum(c, u) ->
-        unifyIn registry other c
+        unifyIn registry place other c
         unitsMeet t1 t2 Units.one u
     // A projection whose implementor is not known yet can not be compared now.
     // The equation waits; see `deferredProjections`.
@@ -943,10 +978,26 @@ let private whereTheyPart (registry: TraitRegistry) (m: Mismatch) =
 /// `string` with no word about where.
 let unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
     try
-        unifyIn registry t1 t2
+        unifyIn registry Top t1 t2
     with :? MismatchException as e ->
         let m = e.Mismatch
         let shown = DotNetInterop.showTypesTogether [ prune registry t1; prune registry t2 ]
+        let arity = arityLine "The first" "the second" m
+
+        failwithf
+            $"Type error: these types do not match.\n  %s{shown[0]}\n  %s{shown[1]}%s{whereTheyPart registry m}%s{arity}%s{m.Note}"
+
+/// `unify` of a callee's type with the arrow of a call's arguments. The
+/// parameters are at the top, as each argument is when it is unified with
+/// its parameter alone: `Codegen` wraps an ordinary function given to a
+/// suspending parameter (`liftedOperands`). Below them the rule of `unify`
+/// holds.
+let unifyCall (registry: TraitRegistry) (callee: HMType) (call: HMType) =
+    try
+        unifyIn registry CallArrow callee call
+    with :? MismatchException as e ->
+        let m = e.Mismatch
+        let shown = DotNetInterop.showTypesTogether [ prune registry callee; prune registry call ]
         let arity = arityLine "The first" "the second" m
 
         failwithf
@@ -956,7 +1007,7 @@ let unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
 /// first line, and each type is shown beside its label.
 let unifyLabelled (registry: TraitRegistry) (header: string) (label1: string, t1: HMType) (label2: string, t2: HMType) =
     try
-        unifyIn registry t1 t2
+        unifyIn registry Top t1 t2
     with :? MismatchException as e ->
         let m = e.Mismatch
         let shown = DotNetInterop.showTypesTogether [ prune registry t1; prune registry t2 ]

@@ -72,19 +72,21 @@
     function makes the span from its part, and gives it to a named function.
 
     @strong{The compute threads.} The parts run on threads made at the first
-    call and kept: one for each logical core, or as many as the environment
-    variable @code{BJOLANG_COMPUTE_THREADS} says. Each is a
+    call and kept: one less than the logical cores, and at least one, or as
+    many as the environment variable @code{BJOLANG_COMPUTE_THREADS} says. The
+    core left over is for the calling thread, which takes parts too in
+    ordinary code, and for the fibers. Each is a
     @code{spawn/thread} that takes jobs from an inbox, and a job runs in the
     dynamic environment of the call that made it. They are not the threads
     that run fibers, so a part holds no run queue.
 
-    They share the cores with the threads that run fibers. With as many
-    compute threads as cores, the parts use every core, and a fiber that
-    sleeps 1 ms while they run wakes about 1.1 ms late at the median and
-    1.5 ms at the 90th percentile (24 threads, Ryzen 9 5900X): as late as
-    when the parts were fibers. With 18 compute threads it wakes 0.12 and
-    0.18 ms late, at half the throughput. A program that must answer on time
-    while it computes, such as a server, sets fewer.
+    They share the cores with the threads that run fibers. Measured with
+    bjostat's @code{bench/latency.bjo}, 24 logical cores (Ryzen 9 5900X, a
+    KVM guest), a loop in 24 parts again and again: a fiber that sleeps
+    1 ms wakes 0.32-0.42 ms late at the median and up to 1.9-2.7 ms with the
+    default 23 compute threads, and up to 7.2-8.6 ms with 24. With 16 it
+    wakes 0.14 ms late at the median, at 10% fewer loops. A program that
+    must answer on time while it computes, such as a server, sets fewer.
     @code{bench/bjolang/parallel-latency.bjo} measures it.
 
     @strong{When it is faster.} One call with 24 parts that do nothing takes
@@ -266,7 +268,7 @@
 
 (:doc compute-thread-count
   (summary "Returns how many compute threads there are.")
-  (returns "The value of BJOLANG_COMPUTE_THREADS when it is a number above 0, or else the number of logical cores.")
+  (returns "The value of BJOLANG_COMPUTE_THREADS when it is a number above 0, or else one less than the number of logical cores, and at least 1.")
   (see computing-each in-parallel)
   (reference """
     Read once, when @code{(std parallel)} is loaded. The threads themselves

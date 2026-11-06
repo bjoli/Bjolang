@@ -4366,6 +4366,15 @@ and private liftedOperands
                 | None -> emit c
 
                 append c ")"
+        // A bjoroutine lambda is cast to its delegate type. Without a target
+        // type, as for a parameter of a generic method (`Some<T>(T)`), C#
+        // gives an `async` lambda the type `Func<Task<T>>`, not
+        // `Func<Fiber<T>>`.
+        | _, Some({ Node = TLambda _; Type = TFun(_, _, eff) } as arg) when groundEffect eff = EAsync ->
+            fun c ->
+                append c $"((%s{typeToString arg.Type})("
+                emit c
+                append c "))"
         | _ -> emit)
 
 /// The inline form of the call `expr` to `name`, and the C# spelling of its

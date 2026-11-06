@@ -1,0 +1,16 @@
+;; EXPECT-ERROR: the 1st argument to 'run-all' has the wrong type.
+;; EXPECT-ERROR: They differ inside the Vec: (-bjo-> int int) against (-> int int).
+;; EXPECT-ERROR: Inside another type it is not.
+;;
+;; A vector of ordinary functions, made elsewhere, is not a vector of
+;; bjoroutines: its elements are not values written here, which could be
+;; wrapped one by one.
+(import (std prelude))
+
+(: make (-> int (Vec (-> int int))))
+(defun (make n) [(fun (x) (+ x n))])
+
+(: run-all (-bjo-> (Vec (-bjo-> int int)) int))
+(defbjo (run-all fs) (vec-length fs))
+
+(defbjo (main) (println (int->string (run-all (make 1)))))

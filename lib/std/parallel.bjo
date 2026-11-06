@@ -128,14 +128,22 @@
 ;;   thread, and in a bjoroutine the first runner, which waits for room
 ;;   when the inbox is full.
 
-;; How many compute threads there are: BJOLANG_COMPUTE_THREADS, or one for
-;; each logical core. Read once, when the module is loaded.
+;; How many compute threads there are: BJOLANG_COMPUTE_THREADS, or one less
+;; than the logical cores, and at least one. The core left over is for the
+;; thread that calls, which takes parts too in ordinary code, and for the
+;; fibers. Read once, when the module is loaded.
+;;
+;; Measured with bjostat's bench/latency.bjo, 24 logical cores: with 24
+;; compute threads, a fiber that sleeps 1 ms woke up to 7.2-8.6 ms late in
+;; every run; with 23, up to 1.9-2.7 ms, at the same number of loops.
+(def default-thread-count (max 1 (- processor-count 1)))
+
 (def thread-count
   (match (get-environment-variable "BJOLANG_COMPUTE_THREADS")
     ((Some s) (match (parse-int s)
-                ((Some n) (if (> n 0) n processor-count))
-                (None processor-count)))
-    (None processor-count)))
+                ((Some n) (if (> n 0) n default-thread-count))
+                (None default-thread-count)))
+    (None default-thread-count)))
 
 (: (-> int))
 (defun (compute-thread-count) thread-count)
@@ -432,26 +440,20 @@
 ;; Over the elements of a whole collection
 ;; ---------------------------------------------------------------------------
 
-;; The functions that run on each part are top-level functions, not lambdas
-;; in the callers: a lambda's parameter of the part's type does not get the
-;; part's element type from the caller's `where` (Todo.org).
-
-(: each-of-part (-> (-> %e void) %p Unit) (where (Iterable %p #:elem %e)))
-(defun (each-of-part f part)
-  (let go ((cur (iterable-start part)))
-    (if (iterable-done? part cur)
-        unit
-        (begin
-          (f (iterable-current part cur))
-          (go (iterable-next part cur))))))
-
 ;; Runs `f` on each element of `c`, on the compute threads. The elements of
 ;; a part are taken in order, and the parts at the same time.
 (: par-for-each (-> (-> %e void) %c void)
    (where (Chunkable %c #:chunk %p)
           (Iterable %p #:elem %e)))
 (defun (par-for-each f c)
-  (ignore (in-parallel c (fun (part) (each-of-part f part)))))
+  (ignore (in-parallel c
+                       (fun (part)
+                         (let go ((cur (iterable-start part)))
+                           (if (iterable-done? part cur)
+                               unit
+                               (begin
+                                 (f (iterable-current part cur))
+                                 (go (iterable-next part cur)))))))))
 
 ;; The parts joined from the first to the last: `(join (join p0 p1) p2)`.
 ;; There is at least one part.

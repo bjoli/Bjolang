@@ -1,0 +1,50 @@
+;; A lambda's parameter whose type is a pinned associated type of the callee
+;; is known in the lambda's body.
+;;
+;; `in-parts` has `(where (Chunkable %c #:chunk %p))` and takes a function of
+;; `%p`. The other arguments make `%c` known, and the pin then makes `%p`
+;; known, before the lambda is inferred. Before, `%p` was known only after
+;; the lambda's body was checked, so a literal in the body, `(* i 2)`, had no
+;; type, and a call of `iterable-current` on the part did not match.
+(import (std prelude))
+(import (std simpletest))
+(import (std parallel))
+
+;; Generic: the element type comes through two pins.
+(: chained (-> %c (Vec (Vec %e))) (where (Chunkable %c #:chunk %p) (Iterable %p #:elem %e)))
+(defun (chained c)
+  (in-parts c
+            (fun (part)
+              (let go ((acc []) (cur (iterable-start part)))
+                (if (iterable-done? part cur)
+                    acc
+                    (go (vec-add acc (iterable-current part cur)) (iterable-next part cur)))))
+            #:parts 3))
+
+(: (-> (Vec int) int))
+(defun (total v) (vec-fold + 0 v))
+
+(: (-> (Vec (Vec int)) (Vec int)))
+(defun (flatten parts)
+  (loop (:for part parts)
+        (:subloop)
+        (:for x part)
+        (:acc all (vecing x))))
+
+(defun (main)
+  ;; As the argument of another call: no binding boundary between the call
+  ;; and the solver.
+  (expect "a range's parts, a literal in the lambda"
+          (total (in-parts (range 0 10) (fun (part) (loop (:for i part) (:acc s (summing (* i 2)))))))
+          90)
+  (expect "a vector's parts, a literal in the lambda"
+          (total (in-parts [1 2 3 4 5 6 7 8 9 10]
+                           (fun (part) (loop (:for i part) (:acc s (summing (* i 2)))))
+                           #:parts 4))
+          110)
+  (expect "a generic function's lambda reads its part"
+          (vec-fold (fun (p acc) (+ acc (vec-length p))) 0 (chained [1 2 3 4 5]))
+          5)
+  (expect "a generic function's parts are in order"
+          (flatten (chained (range 0 7)))
+          [0 1 2 3 4 5 6]))

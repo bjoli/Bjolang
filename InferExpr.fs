@@ -570,9 +570,10 @@ let private shieldLocal (name: string) (env: Env) (args: Expr list) : Env * Expr
 /// where one that can suspend is expected. But in C# the two are different
 /// delegate types, `Func<A,B>` and `Func<A,Fiber<B>>`. For a positional
 /// argument, `Codegen` wraps the value in `Colour.Lift`, because the call
-/// gives it the parameter type. A record field, a keyword argument or a
-/// return value has no such type in `Codegen`, so these are wrapped here,
-/// where the expected type is known.
+/// gives it the parameter type. A record field, a keyword argument, a return
+/// value or an element of a literal has no such type in `Codegen`, so these
+/// are wrapped here, where the expected type is known. Inside another type
+/// the pair is rejected (`Unification.refuseNestedLift`).
 ///
 /// The value is evaluated once, where it is written. A name or a lambda is
 /// called directly from the wrapper. Any other expression is bound to a
@@ -1937,7 +1938,7 @@ and private inferTraitMethodCall (env: Env) (methodKey: string) (args: Expr list
     // this arrow with `tfun` spelled it `->` unconditionally, so a trait
     // that declared `-bjo->` met its own call site and was told an ordinary
     // function cannot be used where a bjoroutine is expected.
-    unify
+    unifyCall
         env.Registry
         methodType
         (TFun(typedArgs |> List.map fst, retType, demandedEffect env methodType))
@@ -2620,7 +2621,7 @@ and private inferApply (env: Env) (args: Expr list) (r: Range) : HMType * TypedE
     // there is one `apply` and not an `apply` plus an `apply/bjo`:
     // `ColourCheck` and `Codegen` already read the effect off the callee's
     // arrow, so neither needs to know this form exists.
-    unify env.Registry targetType (TFun(flatTypes, retType, demandedEffect env targetType))
+    unifyCall env.Registry targetType (TFun(flatTypes, retType, demandedEffect env targetType))
 
     retType,
     { Type = retType
@@ -2676,6 +2677,18 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
         | Some(TNum(TMeta _, _))
         | None -> None
         | Some paramTy -> Some paramTy
+
+    /// The type the callee declares for positional argument `i`, also when
+    /// it is a bare metavariable. For `pin`: a parameter `%c` unified with
+    /// its argument here can make a pinned associated type of `%c` known
+    /// before the lambda arguments are inferred.
+    let declaredParam (i: int) : HMType option =
+        match prune env.Registry targetType with
+        | TFun(paramTys, _, _) when i < paramTys.Length ->
+            match funMeta with
+            | Some meta when i >= meta.MandatoryCount -> None
+            | _ -> Some(prune env.Registry paramTys[i])
+        | _ -> None
 
     /// The type the callee declares for keyword parameter `kwName`, for the
     /// same use as `expectedParam`. In the flat parameter list the keyword
@@ -2799,7 +2812,7 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
         | EFun _ -> ()
         | _ ->
             let argType, typedArg = inferArg arg (expectedParam i)
-            pin (expectedParam i) argType $"the %s{ordinal (i + 1)} argument to %s{callee}" (Ast.exprRange arg)
+            pin (declaredParam i) argType $"the %s{ordinal (i + 1)} argument to %s{callee}" (Ast.exprRange arg)
             slots[i] <- Some(argType, typedArg))
 
     // Keyword arguments get the same treatment, so `(f #:mode 'fast)`
@@ -2815,6 +2828,14 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
             let argType, typedArg = inferArg value (expectedKeyword kwName)
             pin (expectedKeyword kwName) argType $"the #:%s{kwName} argument to %s{callee}" (Ast.exprRange value)
             keywordSlots[i] <- Some(argType, typedArg))
+
+    // A pinned associated type in the callee's where clause can be known
+    // now that the other arguments are inferred. Solve its equation, so
+    // that a lambda's parameter of that type is known in the lambda's body.
+    let hasLambda (e: Expr) = match e with EFun _ -> true | _ -> false
+
+    if List.exists hasLambda positionalExprs || List.exists (snd >> hasLambda) keywordExprs then
+        Traits.solveSettledPins env
 
     positionalExprs
     |> List.iteri (fun i arg ->
@@ -2905,7 +2926,7 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
                 [], []
 
         let allFlatTypes = (mandatoryArgs |> List.map fst) @ kwArgTypes @ restArgTypes
-        unify env.Registry targetType (TFun(allFlatTypes, retType, demandedEffect env targetType))
+        unifyCall env.Registry targetType (TFun(allFlatTypes, retType, demandedEffect env targetType))
 
         // A keyword argument has no parameter type in `Codegen` to be lifted
         // against, so an ordinary function given to a `-bjo->` keyword is
@@ -2953,7 +2974,7 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
                 $"Type Error at %s{Lexer.formatPos r}: %s{callee} takes %s{count paramTys.Length}, and is given %s{count positionalArgs.Length} here."
         | _ -> ()
 
-        unify
+        unifyCall
             env.Registry
             targetType
             (TFun(positionalArgs |> List.map fst, retType, demandedEffect env targetType))
@@ -4175,7 +4196,9 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
         with ex when Diagnostics.needsLocation ex ->
             raise (Diagnostics.withLocation (exprRange expr) ex)
 
-        te
+        // An element is a value, as a field is: an ordinary function where
+        // the literal's elements are bjoroutines is wrapped in one.
+        bridgeToSuspending env expectedElem te
 
 // ---------------------------------------------------------------------------
 // Grammars: reading a literal by its grammar

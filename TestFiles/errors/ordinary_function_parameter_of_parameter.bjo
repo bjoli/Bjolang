@@ -1,0 +1,16 @@
+;; EXPECT-ERROR: the 1st argument to 'use' has the wrong type.
+;; EXPECT-ERROR: They differ in the 1st parameter: (-bjo-> int int) against (-> int int).
+;; EXPECT-ERROR: Inside another type it is not.
+;;
+;; `use` calls its argument with a bjoroutine, and `g` calls what it is given
+;; as an ordinary function. The parameter of a parameter is inside the arrow,
+;; so the rule that lets an argument be wrapped does not reach it.
+(import (std prelude))
+
+(: g (-> (-> int int) int))
+(defun (g f) (f 1))
+
+(: use (-bjo-> (-> (-bjo-> int int) int) int))
+(defbjo (use h) 0)
+
+(defbjo (main) (println (int->string (use g))))

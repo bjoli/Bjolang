@@ -2429,6 +2429,28 @@ Open: back to back, about one call in ten still waits ~20 us for its first
 part, the wake of a thread that sleeps (p90 28 us against a median of 8).
 Not GC: the same with a gen0 of 256 MB.
 
+### A landing kept on the token's event kept the value
+
+Found when bjostat's glue moved to the compute threads: a distinct of the
+wide file was 11% slower, with about two gen0 collections a call where
+there had been one, and gen1 collections where there had been none; with
+DOTNET_GCgen0size=0x4000000 the two were level. A `WeakReference` to an
+array of 8 MB that the parts of a call read: alive after full collections,
+also after every compute thread had run a new job since.
+
+A `sync/blocking` with an ambient token offers the token's event too. The
+node it leaves there, on losing, holds its `SyncState`, which holds the
+landing, which held the value: the job, and the call's data through it. The
+token's event prunes its list when it has doubled, so a node lived for many
+calls. `BlockingLanding.Take` now clears the value when it is returned.
+
+Also measured, in plain C#, and not the cause here: a loop that waits and
+calls what it got in its own frame, entered once and so left unoptimised by
+tiering, kept its last delegate alive while it waited for the next
+(`WeakReference`, 3 of 3; 0 of 3 with the wait in a method of its own, or
+with DOTNET_TieredCompilation=0). In the compute loop of (std parallel)
+nothing was kept with the fix above, so the loop is unchanged.
+
 ---
 
 ## 6. Known issues

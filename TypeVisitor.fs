@@ -269,7 +269,7 @@ let rec mapDeclWithContext (f: TDecl -> TypedExpr -> TypedExpr) (decl: TDecl) : 
 /// types are still spelled differently in C#: an ordinary arrow accepted into a
 /// suspending one. `Codegen` wraps such a positional argument in
 /// `Colour.Lift`, `InferExpr.bridgeToSuspending` wraps such a record field,
-/// keyword argument or return value in a bjoroutine, and the blocking lint
+/// keyword argument, return value or element of a literal in a bjoroutine, and the blocking lint
 /// reads the same question to decide whether a fiber has reached ordinary code
 /// through a value.
 ///

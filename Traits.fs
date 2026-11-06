@@ -790,6 +790,17 @@ let private solvePinEquations (env: Env) : unit =
                 failwithf
                     $"Type Error at %s{Lexer.formatPos r}: %s{context}, does not hold at this call. %s{ex.Message}"
 
+/// Solves the pin equations whose implementor is known now, before the
+/// solver runs.
+///
+/// A call infers its lambda arguments after its other arguments. With
+/// `(where (Chunkable %c #:chunk %p))`, the other arguments make `%c`
+/// known, and this makes `%p` known, so the lambda's parameter has a type
+/// while its body is checked. The equations still blocked stay queued.
+let solveSettledPins (env: Env) : unit =
+    if pinEquations.Count > 0 then
+        solvePinEquations env
+
 /// Checks each deferred projection equation whose implementor is now known.
 /// Answers whether it checked any, since a check can bind metavariables that
 /// other obligations wait on.

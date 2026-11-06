@@ -3,6 +3,83 @@
 
 What each change guarantees, and what it leaves open.
 
+* An ordinary function where a bjoroutine is expected: wrapped or rejected
+
+- An ordinary function is accepted where a bjoroutine is expected, and is
+  wrapped in one, when it is the value itself: an argument, a field, a
+  keyword argument, a return value, and now also an element of a literal.
+  ~(def (: fs (Vec (-bjo-> int int))) [(fun (x) x) twice])~ and
+  ~(list (fun (x) x))~ given to a ~(List (-bjo-> int int))~ parameter
+  compile and run. Before, the element was accepted and not wrapped, and
+  C# rejected it (CS0029).
+- Inside another type it is rejected with a type error that says so: an
+  option of an ordinary function where an option of a bjoroutine is
+  expected, a vector of them made elsewhere, or a parameter of a function
+  parameter. There is no value there to wrap, and C# has no conversion
+  between ~Func<A,B>~ and ~Func<A,Fiber<B>>~. Before, the checker accepted
+  these and C# rejected them. ~unifyIn~ knows whether a pair is at the top,
+  in the arrow of a call (whose parameters are the arguments, which
+  ~Codegen~ wraps), or inside another type (~Unification.refuseNestedLift~).
+  The four places that unify a callee with the arrow of its arguments use
+  ~unifyCall~.
+- A bjoroutine lambda given to a generic function is cast to its delegate
+  type. ~(Some (bjoroutine () 1.5))~ was emitted as ~Some(async () => ...)~,
+  which C# types ~Func<Task<double>>~, and the option did not convert
+  (CS1503).
+- Tests: ~TestFiles/528_ordinary_function_as_bjoroutine.bjo~,
+  ~TestFiles/errors/ordinary_function_inside_option.bjo~,
+  ~ordinary_function_vec_argument.bjo~,
+  ~ordinary_function_parameter_of_parameter.bjo~.
+
+* A lambda's parameter typed by a pin is known in the lambda's body
+
+- With ~(where (Chunkable %c #:chunk %p))~, ~in-parts~ takes a function of
+  ~%p~. A lambda given to it had a parameter of unknown type while its
+  body was checked: ~(in-parts (range 0 10) (fun (part) (loop (:for i
+  part) (:acc s (summing (* i 2))))))~ failed with "nothing says what type
+  '2' has", and in a generic function a call of ~iterable-current~ on the
+  part failed with "these types do not match". It worked only where a
+  ~def~ took the call's value, because the solver ran there.
+- A call now unifies each argument that is not a lambda with its parameter
+  also when the parameter is a bare type variable, and then solves the pin
+  equations that are not blocked (~Traits.solveSettledPins~), before it
+  infers the lambdas. So ~%c~, and through the pin ~%p~, are known.
+- Before, a bare type variable parameter was unified with its argument
+  only with the whole call. A mismatch found there is now found at the
+  argument: "the 2nd argument to '+' has the wrong type", at the
+  argument's column, not "They differ in the 2nd parameter" at the call.
+  Four error tests were changed to the new messages.
+- Test: ~TestFiles/527_pin_reaches_lambda.bjo~.
+
+* ~(std parallel)~: one compute thread less than the cores
+
+- The default number of compute threads is one less than the logical
+  cores, and at least one. The core left over is for the calling thread,
+  which takes parts too in ordinary code, and for the fibers.
+  ~BJOLANG_COMPUTE_THREADS~ still sets any number.
+- Measured with bjostat's ~bench/latency.bjo~, 24 logical cores, a loop in
+  24 parts again and again while a fiber sleeps 1 ms 500 times: with 24
+  compute threads the fiber woke up to 7.2-8.6 ms late in every run, with
+  23 up to 1.9-2.7 ms, at 472-484 loops against 480-482. The median is
+  0.33-0.41 ms and 0.32-0.42 ms.
+
+* ~sync/blocking~ no longer keeps the value it returned
+
+- A ~sync/blocking~ on a thread with an ambient cancellation token also
+  waits on the token's event. Its node stays on that event, which it lost
+  to, until the event's list is pruned, and the node held the landing, and
+  the landing the value returned. So a thread that waits for work, as a
+  compute thread of ~(std parallel)~ does, kept each job it had received,
+  and what the job held: the data of a call of ~computing-each~ survived
+  full collections long after the call. Found as extra gen0 and gen1
+  collections in bjostat's glue on the compute threads.
+- The landing now gives the value up when ~sync/blocking~ returns it
+  (~BlockingLanding.Take~). Measured with a ~WeakReference~ to an array of
+  8 MB that the parts of a call read: before, alive after full
+  collections, also after every compute thread had run a new job; now,
+  collected 10 ms after the call. Right after the call it may still be
+  alive for a moment, while the thread that ran the last part returns.
+
 * A trait of the standard library re-exported by a module outside it is one trait
 
 - A module outside the standard library that re-exports a method of one of

@@ -1456,7 +1456,7 @@ public static partial class BjolangRuntime {
 
         // Raised here rather than in the continuation above, which runs on the
         // thread that completed the event and must not throw.
-        return landing.Value.Unwrap();
+        return landing.Take().Unwrap();
     }
 
     /// How long a `sync/blocking` on this thread spins, in Stopwatch ticks,
@@ -1482,6 +1482,17 @@ public static partial class BjolangRuntime {
         private bool _landed;
         private IDeferredWrap? _deferred;
         internal T Value = default!;
+
+        /// The value, which the landing then no longer holds. The landing can
+        /// outlive the wait: its sync's node may stay on a long-lived event
+        /// that it lost to, such as the ambient token's, until that event's
+        /// list is pruned. Kept there, the value kept what it holds alive.
+        internal T Take() {
+            var value = Value;
+            Value = default!;
+            _deferred = null;
+            return value;
+        }
 
         internal void Land(T value) {
             lock (_gate) {
