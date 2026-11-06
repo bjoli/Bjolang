@@ -1,0 +1,73 @@
+;; Docs for std/combine.bjo, read through (:doc #:file "combine.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Values that combine in order, such as the results of the parts of a collection.")
+  (see Combinable combine combine-all)
+  (example """
+    (import (std combine))
+
+    (combine [1 2] [3])                          ; [1 2 3]
+    (combine-all ["ab" "c" "de"])                ; "abcde"
+    (combine (Tuple [1] "a") (Tuple [2] "b"))    ; (Tuple [1 2] "ab")
+    """)
+  (reference """
+    @code{(combine a b)} is the value of a run over the elements of @code{a}
+    followed by those of @code{b}. @code{in-parallel} of @code{(std parallel)}
+    uses it to join the results of the parts, in the order of the parts.
+
+    @strong{Laws.} @code{combine} is associative: @code{(combine (combine a
+    b) c)} equals @code{(combine a (combine b c))}. It is not commutative.
+    @code{(combine-all xs)} equals @code{combine} from the left over
+    @code{xs}.
+
+    @strong{No mutation.} @code{combine} and @code{combine-all} change no
+    argument. The result may share structure with them.
+
+    @strong{One meaning for each type.} A type is @code{Combinable} only
+    where it has one meaning. Numbers and maps have none: a number may be a
+    sum, a count or a maximum, and a key in both maps may keep either value
+    or both combined. Such a result is a type of its own, with its own
+    implementation.
+
+    @strong{Implementations.} @code{Unit}; @code{Vec}, @code{List},
+    @code{IArray} and @code{string}, one after the other; @code{HashSet}
+    and @code{OrderedSet}, the union; tuples of two to six elements, element
+    by element. @code{Array} has none, because it is mutable: to fill an
+    array in parts, make it first and let each part write its own range.
+    """))
+
+(:doc Combinable
+  (summary "Trait for values that combine in order.")
+  (tparam %a "The value type.")
+  (see combine combine-all)
+  (reference """
+    An implementation defines @code{combine}. It defines
+    @code{combine-all} when combining all values at once costs less than
+    combining them two at a time, as it does when each combine copies.
+    """))
+
+(:doc combine
+  (summary "Combines two values: the elements of a, then those of b.")
+  (arg a "The first value. It is not changed.")
+  (arg b "The second value. It is not changed.")
+  (returns "The combined value.")
+  (see combine-all Combinable)
+  (example """
+    (combine [1 2] [3])     ; [1 2 3]
+    (combine "ab" "c")      ; "abc"
+    """))
+
+(:doc combine-all
+  (summary "Combines the values of a vector, in order.")
+  (arg xs "The values. At least one.")
+  (returns "The values combined from the first to the last.")
+  (see combine Combinable)
+  (example """
+    (combine-all [[1] [2 3] []])    ; [1 2 3]
+    """)
+  (reference """
+    The default combines from the left. A list's combines from the right,
+    so that each list but the last is copied once. A string's and an
+    immutable array's copy each value once.
+    """))

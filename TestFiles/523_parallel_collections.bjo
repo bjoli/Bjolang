@@ -1,7 +1,8 @@
 ;; (std parallel) over whole collections: `par-map` and `par-filter` return a
-;; collection of the type given, with the elements in its order; `par-collect`
-;; merges the parts' accumulators in the order of the parts; `par-for-each`
-;; runs on each element. Checked from a bjoroutine and from ordinary code.
+;; collection of the type given, with the elements in its order; `in-parallel`
+;; of a loop combines the parts' results in the order of the parts;
+;; `par-for-each` runs on each element. Checked from a bjoroutine and from
+;; ordinary code.
 (import (std prelude))
 (import (std simpletest))
 (import (std parallel))
@@ -30,9 +31,9 @@
   (expect "ordinary code: par-filter of an array"
           (array->vec (par-filter even? (vec->array v)))
           (vec-filter even? v))
-  (expect "ordinary code: par-collect"
-          (par-collect summing square v)
-          (loop (:for x v) (:acc s (summing (square x))))))
+  (expect "ordinary code: in-parallel of a loop"
+          (in-parallel v (fun (p) (loop (:for x (: p (Vec int))) (:acc out (vecing (square x))))))
+          (vec-map square v)))
 
 (defbjo (main)
   (def n 10000)
@@ -77,37 +78,31 @@
           (orderedset->vec (par-filter even? (vec->orderedset v)))
           (vec-filter even? v))
 
-  ;; --- par-collect: each collector merges in the order of the parts ---
-  (expect "summing" (par-collect summing square v) (loop (:for x v) (:acc s (summing (square x)))))
-  (expect "counting" (par-collect counting square (range 0 n)) n)
-  (expect "vecing keeps the order" (par-collect vecing square v) (vec-map square v))
-  (expect "vecing/small keeps the order" (par-collect vecing/small square v) (vec-map square v))
-  (expect "arraying keeps the order" (array->vec (par-collect arraying square a)) (vec-map square v))
-  (expect "listing keeps the order" (par-collect listing square v) (vec->list (vec-map square v)))
-  (expect "listing/reverse returns the elements last first"
-          (par-collect listing/reverse square v)
-          (list-reverse (vec->list (vec-map square v))))
+  ;; --- in-parallel of a loop: each result combines in the order of the parts ---
+  (expect "vecing keeps the order"
+          (in-parallel v (fun (p) (loop (:for x (: p (Vec int))) (:acc out (vecing (square x))))))
+          (vec-map square v))
+  (expect "vecing/small keeps the order"
+          (in-parallel v (fun (p) (loop (:for x (: p (Vec int))) (:acc out (vecing/small (square x))))))
+          (vec-map square v))
+  (expect "listing keeps the order"
+          (in-parallel v (fun (p) (loop (:for x (: p (Vec int))) (:acc out (listing (square x))))))
+          (vec->list (vec-map square v)))
   (expect "stringing keeps the order"
-          (par-collect stringing (fun (i) (int->char (+ 97 (% i 10)))) (range 0 1000))
+          (in-parallel (range 0 1000) (fun (p) (loop (:for i (: p Range)) (:acc s (stringing (int->char (+ 97 (% i 10))))))))
           (loop (:for i (range 0 1000)) (:acc s (stringing (int->char (+ 97 (% i 10)))))))
-  ;; Key k is given by k, k + 10, k + 20 ...: the last, which is in the last
-  ;; part, wins.
-  (expect "mapping keeps the last value of a key"
-          (par-collect mapping (fun (i) (Tuple (% i 10) i)) v)
-          (loop (:for i v) (:acc s (mapping (Tuple (% i 10) i)))))
-  (expect "ordered-mapping keeps the last value of a key"
-          (orderedmap->vec (par-collect ordered-mapping (fun (i) (Tuple (% i 10) i)) v))
-          (loop (:for k (range 0 10)) (:acc s (vecing (Tuple k (+ k (- n 10)))))))
-  (expect "hash-setting" (par-collect hash-setting (fun (i) (% i 7)) v) (vec->hashset (upto 7)))
-  (expect "ordered-setting"
-          (orderedset->vec (par-collect ordered-setting (fun (i) (- n i)) v))
+  (expect "hash-setting is the union"
+          (in-parallel v (fun (p) (loop (:for x (: p (Vec int))) (:acc s (hash-setting (% x 7))))))
+          (vec->hashset (upto 7)))
+  (expect "ordered-setting is the union, in order"
+          (orderedset->vec (in-parallel v (fun (p) (loop (:for x (: p (Vec int))) (:acc s (ordered-setting (- n x)))))))
           (vec-map (fun (i) (+ i 1)) v))
-  (expect "par-collect over a map's entries"
-          (par-collect summing (fun (kv) (def (k x) kv) (- x k)) m)
-          (loop (:for i v) (:acc s (summing i))))
-  (expect "par-collect over an array's parts"
-          (par-collect summing (fun (x) x) a)
-          (loop (:for i v) (:acc s (summing i))))
+  (expect "the parts of an array, as immutable arrays"
+          (iarray->vec (in-parallel a (fun (p) (array->iarray (loop (:for x (: p (ArrayPart int))) (:acc out (arraying (square x))))))))
+          (vec-map square v))
+  (expect "the parts of a map's entries"
+          (vec-length (in-parallel m (fun (p) (loop (:for (Tuple k x) (: p (Map int int))) (:acc out (vecing (- x k)))))))
+          n)
 
   ;; --- par-for-each ---
   (def total (make-atomic 0))

@@ -1,0 +1,22 @@
+;; A module outside the standard library that implements a trait of it for a
+;; type of its own, and re-exports the trait's methods. For
+;; 525_reexported_std_trait.bjo.
+(import (std prelude))
+(import (std parallel))
+
+(re-export chunk-size chunks)
+(export Span5 span5)
+
+(type (: Span5 #:opaque (Struct (: n int))))
+
+(: (-> int Span5))
+(defun (span5 n) (Span5 (n n)))
+
+;; Parts of five.
+(impl (Chunkable Span5)
+  (type %chunk Range)
+  (defun (chunk-size s) (record-ref s n))
+  (defun (chunks s k)
+    (def n (record-ref s n))
+    (loop (:for lo (range-by 0 (max n 1) 5))
+          (:acc parts (vecing (range lo (min n (+ lo 5))))))))

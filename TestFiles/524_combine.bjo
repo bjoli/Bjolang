@@ -1,0 +1,103 @@
+;; (std combine): each implementation of `Combinable` combines in order,
+;; `combine-all` equals `combine` from the left, `combine` is associative and
+;; leaves its arguments as they were, and a type of a program's own combines
+;; through `in-parallel`.
+(import (std prelude))
+(import (std simpletest))
+(import (std combine))
+(import (std parallel))
+(import (std hashset))
+(import (std orderedset))
+
+;; A mean in parts: the count and the sum, returned unfinished by each part.
+(type (: Mean (Struct (: n long) (: sum double))))
+
+(impl (Combinable Mean)
+  (defun (combine a b)
+    (Mean (n (+ (record-ref a n) (record-ref b n)))
+          (sum (+ (record-ref a sum) (record-ref b sum))))))
+
+(: (-> Mean double))
+(defun (mean-value m) (/ (record-ref m sum) (cast double (record-ref m n))))
+
+(: (-> Range Mean))
+(defun (mean-of-part r)
+  (loop (:for i r)
+        (:acc n (counting i))
+        (:acc s (summing (cast double i)))
+        => (Mean (n (cast long n)) (sum s))))
+
+(: left-fold (-> (Vec %a) %a) (where (Combinable %a)))
+(defun (left-fold xs)
+  (loop (:for i (range 1 (vec-length xs)))
+        (:acc out (folding (vec-ref xs 0) (combine out (vec-ref xs i))))))
+
+(defbjo (main)
+  ;; --- Each implementation ---
+  (expect "Unit" (combine unit unit) unit)
+  (expect "Vec" (combine [1 2] [3]) [1 2 3])
+  (expect "Vec, empty sides" (combine (: [] (Vec int)) [1]) [1])
+  (expect "List" (combine (list 1 2) (list 3)) (list 1 2 3))
+  (expect "string" (combine "ab" "c") "abc")
+  (expect "IArray" (iarray->vec (combine (array->iarray #[1 2]) (array->iarray #[3]))) [1 2 3])
+  (expect "HashSet is the union"
+          (combine (vec->hashset [1 2]) (vec->hashset [2 3]))
+          (vec->hashset [1 2 3]))
+  (expect "OrderedSet is the union, in order"
+          (orderedset->vec (combine (vec->orderedset [3 1]) (vec->orderedset [2 4])))
+          [1 2 3 4])
+  (expect "Tuple of two" (combine (Tuple [1] "a") (Tuple [2] "b")) (Tuple [1 2] "ab"))
+  (expect "Tuple of three"
+          (combine (Tuple [1] "a" (list 1)) (Tuple [2] "b" (list 2)))
+          (Tuple [1 2] "ab" (list 1 2)))
+  (expect "Tuple of four"
+          (combine (Tuple [1] "a" (list 1) unit) (Tuple [2] "b" (list 2) unit))
+          (Tuple [1 2] "ab" (list 1 2) unit))
+  (expect "Tuple of six"
+          (combine (Tuple [1] "a" "b" "c" "d" "e") (Tuple [2] "f" "g" "h" "i" "j"))
+          (Tuple [1 2] "af" "bg" "ch" "di" "ej"))
+  (expect "a tuple in a tuple"
+          (combine (Tuple (Tuple [1] "a") [9]) (Tuple (Tuple [2] "b") [8]))
+          (Tuple (Tuple [1 2] "ab") [9 8]))
+
+  ;; --- combine-all equals combine from the left ---
+  (def vs [[1] [] [2 3] [4]])
+  (expect "combine-all of vecs" (combine-all vs) (left-fold vs))
+  (expect "combine-all of one value is that value" (combine-all [[7 8]]) [7 8])
+  (expect "combine-all of lists, from the right"
+          (combine-all [(list 1) (list) (list 2 3) (list 4)])
+          (list 1 2 3 4))
+  (expect "combine-all of strings" (combine-all ["ab" "" "c" "de"]) "abcde")
+  (expect "combine-all of immutable arrays"
+          (iarray->vec (combine-all [(array->iarray #[1]) (array->iarray #[2 3]) (array->iarray #[])]))
+          [1 2 3])
+  (expect "combine-all of Unit" (combine-all [unit unit]) unit)
+
+  ;; --- Associative ---
+  (expect "associative: vecs"
+          (combine (combine [1] [2]) [3])
+          (combine [1] (combine [2] [3])))
+  (expect "associative: strings and lists in a tuple"
+          (combine (combine (Tuple "a" (list 1)) (Tuple "b" (list 2))) (Tuple "c" (list 3)))
+          (combine (Tuple "a" (list 1)) (combine (Tuple "b" (list 2)) (Tuple "c" (list 3)))))
+
+  ;; --- The arguments are left as they were ---
+  (def x [1 2])
+  (def y [3])
+  (ignore (combine x y))
+  (expect "combine leaves a vec as it was" x [1 2])
+  (def xs (list 1 2))
+  (ignore (combine-all [xs (list 3)]))
+  (expect "combine-all leaves a list as it was" xs (list 1 2))
+  (def s (vec->orderedset [1 2]))
+  (ignore (combine s (vec->orderedset [3])))
+  (expect "combine leaves a set as it was" (orderedset->vec s) [1 2])
+
+  ;; --- A type of the program's own, through in-parallel ---
+  (def m (in-parallel (range 0 1001) mean-of-part #:size 100))
+  (expect "a mean in parts counts every element" (record-ref m n) 1001L)
+  (expect "a mean in parts" (mean-value m) 500.0)
+  (expect "in a tuple with a vec"
+          (in-parallel (range 0 10) (fun (r) (Tuple (mean-of-part r) [(count r)])) #:parts 3)
+          (Tuple (Mean (n 10L) (sum 45.0)) [3 3 4]))
+  0)

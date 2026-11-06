@@ -2422,6 +2422,35 @@ let loadModuleGraph
                                 |> List.map (readOrigins (Naming.moduleKeyOfPath absPath))
                                 |> DeclParser.parseModule)
 
+                    // The traits of the standard library that an assembly
+                    // outside it re-exported, each in a `DModule` of the module
+                    // that declared it, as a re-exported type is
+                    // (`reExportedGroups`). Their key is their bare name, so
+                    // read as this module's, `keyTraits` would key them to this
+                    // module and make each a second trait. A trait of another
+                    // module has a prefixed key, and a module of the standard
+                    // library keeps bare keys: `keyTraits` changes neither.
+                    let traitOrigins = Map.ofList meta.TraitOrigins
+                    let rekeys = not (Naming.isStdModuleKey (Naming.moduleKeyOfPath absPath))
+
+                    let isCarriedTrait (d: Decl) =
+                        match d with
+                        | DTrait(key, _, _, _, _, _, _, _, _) ->
+                            rekeys && Map.containsKey key traitOrigins && Naming.bareTraitName key = key
+                        | _ -> false
+
+                    let carriedTraitDecls = declsFromText |> List.filter isCarriedTrait
+
+                    let carriedTraits =
+                        carriedTraitDecls
+                        |> List.groupBy (function
+                            | DTrait(key, _, _, _, _, _, _, _, _) -> Map.find key traitOrigins
+                            | _ -> "")
+                        |> List.map (fun (originModule, decls) ->
+                            DModule(originModule, decls, Ast.declRange (List.head decls)))
+
+                    let declsFromText = declsFromText |> List.filter (isCarriedTrait >> not)
+
                     // The bare spellings of the types this assembly declares.
                     //
                     // A type name in metadata is a *key*: the module that
@@ -2540,11 +2569,12 @@ let loadModuleGraph
                         |> List.filter (fun (_, decls) -> not decls.IsEmpty)
 
                     let carriedDecls =
-                        reExportedGroups @ carriedGroups
-                        |> List.groupBy (fun (entry, _) -> entry.OriginModule)
-                        |> List.map (fun (originModule, group) ->
-                            let decls = group |> List.collect snd
-                            DModule(originModule, decls, Ast.declRange (List.head decls)))
+                        (reExportedGroups @ carriedGroups
+                         |> List.groupBy (fun (entry, _) -> entry.OriginModule)
+                         |> List.map (fun (originModule, group) ->
+                             let decls = group |> List.collect snd
+                             DModule(originModule, decls, Ast.declRange (List.head decls))))
+                        @ carriedTraits
 
                     // An exported binding becomes an extern: a name with a type
                     // and no body, which is exactly what an importer can say

@@ -3,6 +3,41 @@
 
 What each change guarantees, and what it leaves open.
 
+* A trait of the standard library re-exported by a module outside it is one trait
+
+- A module outside the standard library that re-exports a method of one of
+  its traits publishes the trait's declaration. An importer keyed it to the
+  facade, as a trait the facade declared, so it became a second trait: the
+  facade's implementations were "of an unknown trait", or, with the trait's
+  own module imported too, a call found no implementation.
+- Such a trait is now read in a ~DModule~ of the module that declared it, as
+  a re-exported type is (~Pipeline.fs~). A trait outside the standard
+  library has a prefixed key and is read as before.
+- Tests: ~TestFiles/525_reexported_std_trait.bjo~,
+  ~526_reexported_std_trait_with_origin.bjo~.
+- Open (Todo.org, "Re-exported traits"): import modifiers do not reach the
+  carried methods, and a method of a trait outside the standard library
+  re-exported by another module outside it is unbound for the importer.
+
+* ~(std combine)~, and ~in-parallel~ combines the parts' results
+
+- New module ~(std combine)~: the trait ~Combinable~, with ~(combine a b)~
+  and ~(combine-all xs)~. Associative, not commutative; changes no
+  argument. Implementations: ~Unit~, ~Vec~, ~List~, ~IArray~, ~string~
+  (one after the other), ~HashSet~, ~OrderedSet~ (the union), tuples of two
+  to six (element by element). Numbers, maps and ~Array~ have none.
+- ~in-parallel~ returns the parts' results combined in part order by
+  ~combine-all~. The old function, a vector of one result per part, is
+  ~in-parts~. ~(std parallel)~ re-exports ~combine~ and ~combine-all~, so
+  the impls need no import of ~(std combine)~; a program that implements
+  ~Combinable~ imports it.
+- ~#:size n~ on both: ceil(len / n) parts, so the parts do not depend on
+  the number of compute threads.
+- Removed: ~MergingCollector~, ~collector-merge~ and ~par-collect~. Use
+  ~in-parallel~ with a loop in each part.
+- Tests: ~TestFiles/522_parallel.bjo~, ~523_parallel_collections.bjo~,
+  ~524_combine.bjo~.
+
 * ~(std parallel)~: a call costs a third of what it did
 
 - ~computing-each~, and so ~in-parallel~ and the functions over a whole

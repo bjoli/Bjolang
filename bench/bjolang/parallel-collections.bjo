@@ -10,7 +10,7 @@
 ;; in such object code or executable form without complying with the source code
 ;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
 
-;; `par-map`, `par-filter` and `par-collect` against their sequential
+;; `par-map`, `par-filter` and `in-parallel` of a loop against their sequential
 ;; functions, on 1M elements. Each row is the sequential function, then the
 ;; parallel one, which returns the same type.
 ;;
@@ -33,8 +33,8 @@
 ;;   map filter cheap       30.77 / 19.13  1.60x    27.23 /  4.61  5.90x
 ;;   omap map-values cheap  13.10 / 16.64  0.78x    10.51 /  5.55  1.89x
 ;;   omap filter cheap       8.92 /  5.00  1.78x     5.55 /  2.80  1.98x
-;;   collect summing sin     6.97 /  1.04  6.66x     7.01 /  1.08  6.47x
-;;   collect vecing cheap    6.88 /  6.63  1.03x     2.60 /  1.75  1.48x
+;;   loop summing sin        8.83 /  0.92  9.54x     8.87 /  0.90  9.81x
+;;   loop vecing cheap       3.44 /  2.70  1.27x     2.33 /  1.71  1.36x
 ;;
 ;; - An array's `par-map` allocates one array, and its parts only write. It
 ;;   is the only row that is fast with the default settings.
@@ -108,6 +108,12 @@
 (: (-> double bool))
 (defun (big? x) (> x 0.5))
 
+(: (-> (Vec double) double))
+(defun (sum-sines p) (loop (:for x p) (:acc s (summing (sine x)))))
+
+(: (-> (Vec double) (Vec double)))
+(defun (twice-all p) (loop (:for x p) (:acc o (vecing (twice x)))))
+
 (defbjo (main)
   (println (str "n = " (displayed n) ", " (displayed processor-count) " processors, "
                 (displayed (* 4 processor-count)) " parts"))
@@ -148,11 +154,11 @@
   (report "omap filter cheap"
           (median-ns (bjoroutine () (box-set! sink (orderedmap-length (orderedmap-filter (fun (k x) (big? x)) om)))))
           (median-ns (bjoroutine () (box-set! sink (orderedmap-length (par-filter big? om))))))
-  (report "collect summing sin"
-          (median-ns (bjoroutine () (box-set! total (loop (:for x v) (:acc s (summing (sine x)))))))
-          (median-ns (bjoroutine () (box-set! total (par-collect (: summing (Summing double)) sine v)))))
-  (report "collect vecing cheap"
-          (median-ns (bjoroutine () (box-set! sink (vec-length (loop (:for x v) (:acc o (vecing (twice x))))))))
-          (median-ns (bjoroutine () (box-set! sink (vec-length (par-collect vecing twice v))))))
+  (report "loop summing sin"
+          (median-ns (bjoroutine () (box-set! total (sum-sines v))))
+          (median-ns (bjoroutine () (box-set! total (vec-fold + 0.0 (in-parts v sum-sines))))))
+  (report "loop vecing cheap"
+          (median-ns (bjoroutine () (box-set! sink (vec-length (twice-all v)))))
+          (median-ns (bjoroutine () (box-set! sink (vec-length (in-parallel v twice-all))))))
   (println (str "(sink " (displayed (box-ref sink)) " " (displayed (box-ref total)) ")"))
   0)

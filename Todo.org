@@ -279,18 +279,45 @@ temporary per variable (~__next__~).
   any ~Chunkable~, ~(where (Iterable (assoc Chunkable chunk %c)))~. A pin
   works: ~(where (Chunkable %c #:chunk %p) (Iterable %p #:elem %e))~.
 - *A pin does not reach a lambda's parameter.* With that where clause, a
-  lambda ~(fun (part) ...)~ given to ~in-parallel~ whose body calls
+  lambda ~(fun (part) ...)~ given to ~in-parts~ whose body calls
   ~iterable-current~ on ~part~ fails: "these types do not match: (assoc
   Iterable elem %p), %e". The same body in a named function with the same
   where clause compiles. The error names the wrong place: the end of the
-  module, or another impl. ~(std parallel)~ uses named functions
-  (~collect-part~, ~each-of-part~). To reproduce, a function
+  module, or another impl. ~(std parallel)~ uses a named function
+  (~each-of-part~). To reproduce, a function
   ~(: chained (-> %c (Vec (Vec %e))) (where (Chunkable %c #:chunk %p) (Iterable %p #:elem %e)))~
   with the body
-  ~(in-parallel c (fun (part) (let go ((acc []) (cur (iterable-start part))) (if (iterable-done? part cur) acc (go (vec-add acc (iterable-current part cur)) (iterable-next part cur))))))~.
+  ~(in-parts c (fun (part) (let go ((acc []) (cur (iterable-start part))) (if (iterable-done? part cur) acc (go (vec-add acc (iterable-current part cur)) (iterable-next part cur))))))~.
+  Probably the same cause as the next item.
+- *A lambda's parameter typed by a pin is unknown while its body is
+  checked*, at concrete types too.
+  ~(in-parts (range 0 10) (fun (part) (loop (:for i part) (:acc s (summing (* i 2))))))~
+  fails: "nothing says what type '2' has. Its type is (assoc Iterable elem
+  ?a)". Over a ~Vec~ the same. ~(summing i)~ fails on ~Num~.
+  - Cause: ~in-parts~'s ~%p~ is pinned, ~(where (Chunkable %c #:chunk
+    %p))~. At the call ~instantiate~ gives ~%p~ a metavariable and
+    ~Traits.queuePins~ queues ~(assoc Chunkable chunk %c) = ?p~
+    (~InferExpr.fs~ ~queuePins name constraints r~). The non-lambda
+    arguments are inferred first and make ~%c~ ~Range~; then the lambda
+    is inferred with ~part : ?p~. The equation is solved only in
+    ~Traits.solvePinEquations~, after the body was checked.
+  - Works: bodies that leave the element open (~vecing i~, ~(cast long
+    i)~), or call something that fixes ~?p~ (~(vec-map f part)~, ~(count
+    part)~). ~vec-map~ is not affected: its ~(-> %a %b) (Vec %a)~ names
+    the element directly.
+  - Workarounds: ~(:for i (: part Range))~, ~(: (fun (part) ...) (-> Range
+    int))~, or a named function. ~(fun ((: part Range)) ...)~ is a syntax
+    error.
+  - Fix to try: in the call's inference, between the non-lambda arguments
+    and the lambdas, solve the pin equations no longer blocked
+    (~solvePinEquations~ already re-queues blocked ones). Then
+    ~(assoc Chunkable chunk Range)~ reduces and ~?p~ is ~Range~ when the
+    body is checked. Check the generic case above with it.
 - *A number collector given as a value does not get its type from its
-  use.* ~(par-collect summing sine v)~ with ~sine~ of doubles fails: the
-  pinned ~#:elem~ is int, not double. ~(: summing (Summing double))~ works.
+  use.* Passed to a function that pins ~(Collector %k #:elem %x)~ with
+  ~%x~ double, ~summing~ is ~(Summing int)~ and the pin fails.
+  ~(: summing (Summing double))~ works. Found with ~par-collect~, since
+  removed.
 - *Pins are matched by the name of a rigid variable.* A body's pins
   (~Registry.PinnedAssocs~) speak of its signature's variables, and a scheme
   read in that body is read without them (~Unification.withoutPins~). A type
@@ -324,6 +351,25 @@ what was meant. Confirmed by running it where it says so.
   ~(handler-of open-input-file)~ where the operation is ~open-read-stream~.
   The reference parts of it could now be cut down to what the docs do not
   say.
+
+* Re-exported traits
+
+- *Import modifiers do not reach a carried trait's methods.* A module
+  outside the standard library that re-exports a method of a trait of it
+  (~(re-export chunk-size chunks)~ in a module that implements
+  ~Chunkable~) has the trait read back in a ~DModule~ of the trait's own
+  module (~Pipeline.fs~, ~carriedTraits~). Its methods are then bound
+  under their bare names whatever the import says: with
+  ~(import (prefix "lib.bjo" "a/"))~, ~a/chunk-size~ is unbound and
+  ~chunk-size~ is bound. Spellings of the methods in the facade's
+  declarations, as a re-exported type's, did not change it.
+- *A method of a trait outside the standard library, re-exported by
+  another module outside it, is unbound for the importer.* ~x.bjo~
+  declares ~(def/trait (Sized %a) (: size-of (-> %a int)))~; ~y.bjo~
+  imports it, implements ~Sized~ for a type of its own and
+  ~(re-export size-of)~; a program that imports only ~y.bjo~ gets
+  "Unbound variable: size-of". The trait's key is prefixed, so it is not
+  the keying that the carried traits fix.
 
 * Found while writing bjostat's parallel loops
 
@@ -370,9 +416,10 @@ several cores and their ends are events.
 - *A walk of a map in parts stops at 2-3x* on 24 threads, against 3.7x for
   a sum of an array: a walk follows pointers. Not examined further.
 - *~loop/parallel~.* A ~loop~ whose ~:for~ is over a ~Chunkable~ and whose
-  parts' accumulators are joined at the end. ~MergingCollector~'s
-  ~collector-merge~ now merges two states of a collector, as ~par-collect~
-  does.
+  parts' accumulators are joined at the end. ~in-parallel~ with a loop in
+  each part does it by hand, combining finished values by ~Combinable~. A
+  clause would merge unfinished accumulators: whether that needs a trait
+  on collectors, or ~Combinable~ on ~%acc~ is enough, is open.
 - *Parts that allocate are bound by the GC.* On 1M elements, 24 threads, a
   vector's ~par-map~ of ~(* 2 x)~ is 0.62x the sequential ~vec-map~ with
   the default settings, and 0.98x with ~DOTNET_GCgen0size=0x4000000~; of a
@@ -409,7 +456,7 @@ several cores and their ends are events.
 - *The compiler cannot see that a lambda runs on another thread.* The lint
   that a call parks its thread exempts the lambdas of ~blocking~ and
   ~spawn-thunk~ by name (~Prelude.elsewhereBuiltins~). A library function
-  such as ~in-parallel~ or ~computing-each~ cannot say the same of its
+  such as ~in-parts~ or ~computing-each~ cannot say the same of its
   function parameter, so a nested call in a part, which parks a compute
   thread, is warned of as if it parked a thread that runs fibers. A
   declaration on the parameter would fix it.

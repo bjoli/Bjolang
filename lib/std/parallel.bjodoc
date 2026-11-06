@@ -3,15 +3,19 @@
 
 (:doc #:module
   (summary "Work on the parts of a collection at the same time, on threads made for work that uses a core.")
-  (see Chunkable in-parallel computing-each par-map par-filter par-collect par-for-each
+  (see Chunkable in-parallel in-parts computing-each par-map par-filter par-for-each
        ArrayPart part->span part->ro-span)
   (example """
     (import (std parallel))
 
-    ;; A sum in parts, joined by the caller.
-    (vec-fold + 0L (in-parallel (range 0 1000000)
-                                (fun (part) (loop (:for i part)
-                                                  (:acc s (summing (cast long i)))))))
+    ;; The parts' results, combined in order.
+    (in-parallel (range 0 10) (fun (part) (loop (:for i part) (:acc v (vecing (* i i))))))
+    ;; [0 1 4 9 16 25 36 49 64 81]
+
+    ;; The parts' results, one for each part, joined by the caller.
+    (vec-fold + 0L (in-parts (range 0 1000000)
+                             (fun (part) (loop (:for i part)
+                                               (:acc s (summing (cast long i)))))))
     ;; 499999500000L
 
     ;; The parts of one array, written in place at the same time.
@@ -21,27 +25,26 @@
             (:do (span-set! s i (* 2.0 (span-ref s i))))))
 
     (def xs (make-array 1000000 #:fill 1.5))
-    (ignore (in-parallel xs (fun (part) (double-all! (part->span part)))))
+    (ignore (in-parts xs (fun (part) (double-all! (part->span part)))))
 
     ;; A collection of the same type, joined by the module.
     (par-map (fun (x) (* x x)) [1 2 3 4])              ; [1 4 9 16]
     (par-filter even? (vec->array [1 2 3 4]))          ; #[2 4]
-    (par-collect summing (fun (x) (* x x)) (range 0 4))  ; 14
     """)
   (reference """
     A @code{Chunkable} collection splits into parts that together hold each
     element once, in the collection's order when it has one.
-    @code{in-parallel} runs a function on each part on the compute threads,
-    and returns a vector of the results, in the order of the parts. The caller joins the results: with
-    @code{vec-fold}, a concatenation or a merge.
+    @code{in-parts} runs a function on each part on the compute threads,
+    and returns a vector of the results, in the order of the parts.
+    @code{in-parallel} does the same and returns the results combined, in
+    the order of the parts, by @code{Combinable} of @code{(std combine)}.
+    A number is not @code{Combinable}: sum the results of
+    @code{in-parts}, or return a type that combines.
 
     The functions over a whole collection join the parts themselves.
     @code{par-map} and @code{par-filter} return a collection of the type
-    they are given, with the elements in its order. @code{par-collect} puts
-    the elements into a collector, one accumulator for each part, and
-    merges the accumulators in the order of the parts: the collector must
-    be a @code{MergingCollector}. @code{par-for-each} runs a function on
-    each element.
+    they are given, with the elements in its order. @code{par-for-each}
+    runs a function on each element.
 
     @strong{Implementations.} @code{Range}, @code{Vec}, @code{Array},
     @code{IArray}, @code{Map}, @code{HashSet}, @code{OrderedMap} and
@@ -106,7 +109,7 @@
     @strong{Generic code.} A generic function iterates the parts of any
     @code{Chunkable} through a pin of the part type:
     @code{(where (Chunkable %c #:chunk %p) (Iterable %p #:elem %e))}, as
-    @code{par-collect} does. The form with a projection,
+    @code{par-for-each} does. The form with a projection,
     @code{(Iterable (assoc Chunkable chunk %c))}, is not accepted yet. And
     a lambda whose parameter is a part does not get the element type from
     the pin: give the part to a named function.
@@ -152,41 +155,82 @@
 ;; Running the parts
 ;; ---------------------------------------------------------------------------
 
-(:doc in-parallel
-  (summary "Runs a function on each part of a collection on the compute threads.")
+(:doc in-parts
+  (summary "Runs a function on each part of a collection on the compute threads, and returns each part's result.")
   (arg c "The collection. It must be @code{Chunkable}.")
   (arg f "The function, called once with each part.")
   (key parts "How many parts to ask for. Four for each compute thread unless given. The collection may make fewer.")
+  (key size "Instead of @code{#:parts}: ask for as many parts as n elements make in parts of this size, rounded up. Zero or less: not given.")
   (returns "A vector of the results of f, in the order of the parts.")
-  (see chunks part->span computing-each)
+  (see in-parallel chunks part->span computing-each)
   (example """
-    (in-parallel (range 0 10) (fun (part) (count part)) #:parts 4)   ; [2 3 2 3]
+    (in-parts (range 0 10) (fun (part) (count part)) #:parts 4)   ; [2 3 2 3]
+    (in-parts (range 0 10) (fun (part) (count part)) #:size 4)    ; [3 3 4]
     """)
   (reference """
     For work that uses a core. @code{f} is an ordinary function: a part
     runs on a thread, not in a fiber, and cannot suspend. The parts are run
     by @code{computing-each}.
 
+    @strong{The same parts on every machine.} By default the number of
+    parts follows the number of compute threads, so a result that depends
+    on where the parts are cut, such as a sum of doubles, differs between
+    machines. With @code{#:size} the parts depend only on the collection.
+    A collection may cut close to the size, not at it: a map or a set cuts
+    along its nodes.
+
     In a bjoroutine, the fiber is suspended until the parts have run, and
     holds nothing. In ordinary code, the thread takes parts too, and then
     waits only for the parts that other threads run. So a part can call
-    @code{in-parallel} itself. Everything the parts wrote is visible to the
-    caller when @code{in-parallel} returns.
+    @code{in-parts} itself. Everything the parts wrote is visible to the
+    caller when @code{in-parts} returns.
 
     A part runs in the dynamic environment of the call: it sees the
     caller's parameters.
 
     When a part raises, the parts not started do not run, and
-    @code{in-parallel} raises the exception when the parts that started have
+    @code{in-parts} raises the exception when the parts that started have
     ended. A part that runs cannot be stopped. In a bjoroutine, a cancelled
     scope stops the parts that have not started, and the bjoroutine stops
     waiting at once.
 
-    In ordinary code @code{in-parallel} parks its thread while it waits, and
+    In ordinary code @code{in-parts} parks its thread while it waits, and
     the compiler warns when a bjoroutine reaches such a call. It also warns
     for a call in a part, where the thread it parks is a compute thread and
     not one that runs fibers: the compiler cannot see that @code{f} runs on
     another thread.
+    """))
+
+(:doc in-parallel
+  (summary "Runs a function on each part of a collection on the compute threads, and combines the results in order.")
+  (arg c "The collection. It must be @code{Chunkable}.")
+  (arg f "The function, called once with each part. Its result must be @code{Combinable}.")
+  (key parts "As for @code{in-parts}.")
+  (key size "As for @code{in-parts}.")
+  (returns "The results of f combined by @code{combine-all}, in the order of the parts.")
+  (see in-parts combine-all Combinable)
+  (example """
+    (in-parallel (range 0 6) (fun (part) (loop (:for i part) (:acc v (vecing (* i i))))))
+    ;; [0 1 4 9 16 25]
+
+    ;; Several accumulators: a tuple combines element by element.
+    (in-parallel [1 2 3 4]
+                 (fun (part) (loop (:for x part)
+                                   (:acc evens (vecing x) #:when (even? x))
+                                   (:acc odds (vecing x) #:when (not (even? x))))))
+    ;; (Tuple [2 4] [1 3])
+    """)
+  (reference """
+    The parts run as @code{in-parts} runs them: also for exceptions,
+    cancellation and the dynamic environment. The results are combined on
+    the calling thread.
+
+    A number is not @code{Combinable}, as it may be a sum, a count or a
+    maximum. Sum the results of @code{in-parts}, or return a type of
+    one's own that implements @code{Combinable} from @code{(std combine)}.
+
+    To fill an array, make it before the call and let each part of a range
+    or of the array write its own elements; return @code{unit}.
     """))
 
 (:doc computing-each
@@ -194,7 +238,7 @@
   (arg n "How many parts. Zero or less gives an empty vector.")
   (arg work "The function, called once with each k: ordinary code that cannot suspend.")
   (returns "A vector of the results, in the order of k.")
-  (see in-parallel compute-thread-count)
+  (see in-parts compute-thread-count)
   (example """
     (computing-each 4 (fun (k) (* k k)))   ; [0 1 4 9]
     """)
@@ -319,73 +363,15 @@
 ;; Collectors that merge
 ;; ---------------------------------------------------------------------------
 
-(:doc MergingCollector
-  (summary "Trait for collectors whose accumulators of two runs merge into one.")
-  (tparam %c "The collector type. It is also a @code{Collector}.")
-  (see collector-merge par-collect)
-  (reference """
-    An implementation defines the associated type @code{%acc}, the same as
-    the collector's own, and implements @code{collector-merge}.
-
-    @strong{Implementations.} @code{listing}, @code{listing/reverse},
-    @code{vecing}, @code{vecing/small}, @code{arraying}, @code{mapping},
-    @code{hash-setting}, @code{ordered-mapping}, @code{ordered-setting},
-    @code{stringing}, @code{summing} and @code{counting}.
-
-    A collector that starts from a value, as @code{folding} and the forms
-    with @code{#:into} do, has no implementation: each run would start from
-    the value again.
-    """))
-
-(:doc collector-merge
-  (summary "Merges the accumulators of two runs of a collector.")
-  (arg c "The collector.")
-  (arg a "The accumulator of the first run. It may be changed, and is not used again.")
-  (arg b "The accumulator of the second run. It may be changed, and is not used again.")
-  (returns "The accumulator of the elements of a's run followed by those of b's run, as if one run took them all in that order.")
-  (see MergingCollector par-collect)
-  (reference """
-    For a collector into a map or a set, b's value is kept where both runs
-    have a key, as a later step of one run keeps it. For
-    @code{listing/reverse}, the result is b's list and then a's, as the
-    elements of one run are last first.
-    """))
-
 ;; ---------------------------------------------------------------------------
 ;; Over the elements of a whole collection
 ;; ---------------------------------------------------------------------------
-
-(:doc par-collect
-  (summary "Puts (f x) for each element x of a collection into a collector, on the compute threads.")
-  (arg col "The collector, such as @code{vecing} or @code{summing}. It must be a @code{MergingCollector}.")
-  (arg f "The function of each element. It runs on the compute threads, at the same time for different parts.")
-  (arg c "The collection. It must be @code{Chunkable}, with parts that are @code{Iterable}.")
-  (returns "What the collector makes of the values, as if one run took them in the order of the parts.")
-  (see MergingCollector collector-merge par-map in-parallel)
-  (example """
-    (par-collect summing (fun (x) (* x x)) (range 0 4))        ; 14
-    (par-collect vecing (fun (x) (* 2 x)) (vec->array [1 2 3]))  ; [2 4 6]
-    (par-collect hash-setting (fun (x) (% x 3)) (range 0 100))   ; #{0 1 2}, unordered
-    """)
-  (reference """
-    Each part has an accumulator of its own, on a compute thread. Then the
-    accumulators are merged on the calling thread, from the first part to
-    the last, and the collector finishes the result. The parts run as
-    @code{in-parallel} runs them: also for exceptions, cancellation and the
-    dynamic environment.
-
-    The element of a map's part is an entry, a @code{Tuple} of the key and
-    the value.
-
-    A number collector does not get its type from @code{f}: give it, as in
-    @code{(: summing (Summing double))}, when the values are not ints.
-    """))
 
 (:doc par-for-each
   (summary "Runs a function on each element of a collection, on the compute threads.")
   (arg f "The function. It runs on the compute threads, at the same time for different parts.")
   (arg c "The collection. It must be @code{Chunkable}, with parts that are @code{Iterable}.")
-  (see par-collect in-parallel)
+  (see in-parallel in-parts)
   (example """
     (def total (make-atomic 0))
     (par-for-each (fun (x) (ignore (atomic-add! total x))) (range 0 100))
@@ -412,7 +398,8 @@
     @strong{Implementations.} @code{Vec}, @code{Array}, @code{IArray},
     @code{Map} and @code{OrderedMap}. A set has none, as a set of the values
     of the function needs their @code{Eq} or @code{Ord}. Use
-    @code{par-collect} with @code{hash-setting} or @code{ordered-setting}.
+    @code{in-parallel} with a loop into @code{hash-setting} or
+    @code{ordered-setting}.
     """))
 
 (:doc par-map
@@ -420,7 +407,7 @@
   (arg f "The function. It runs on the compute threads, at the same time for different parts.")
   (arg c "The collection: a vector, an array, an immutable array, a map or an ordered map.")
   (returns "A collection of the same type and length, with the values of f in the order of c.")
-  (see par-filter par-collect in-parallel)
+  (see par-filter in-parallel)
   (example """
     (par-map (fun (x) (* x x)) [1 2 3 4])               ; [1 4 9 16]
     (par-map (fun (v) (+ v 1)) (list->map (list (Tuple "a" 1))))  ; #map(("a" 2))
@@ -463,14 +450,14 @@
   (arg keep? "The test. It runs on the compute threads, at the same time for different parts.")
   (arg c "The collection: a vector, an array, an immutable array, a map, a hash set, an ordered map or an ordered set.")
   (returns "A collection of the same type, with the elements kept, in the order of c.")
-  (see par-map par-collect in-parallel)
+  (see par-map in-parallel)
   (example """
     (par-filter even? [1 2 3 4])                  ; [2 4]
     (par-filter even? (list->hashset (list 1 2 3 4)))   ; #{2 4}, unordered
     """)
   (reference """
     Of a map or an ordered map, @code{keep?} is given the value. To test
-    the key too, use @code{in-parallel} with @code{map-filter}, and
+    the key too, use @code{in-parts} with @code{map-filter}, and
     @code{map-merge} the parts.
 
     How the parts are joined:

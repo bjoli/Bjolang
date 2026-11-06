@@ -1,0 +1,116 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; Values that combine in order: the result of a run over the elements of `a`
+;; followed by those of `b`.
+;;
+;; - `combine` is associative, not commutative.
+;; - `combine` changes neither argument. The result may share structure with
+;;   them.
+;; - Implemented only where a type has one meaning. A type that combines
+;;   some other way is a type of its own.
+;; - `Array` has none: it is mutable. Write the parts into one array instead.
+
+(import (std prelude))
+(import (std hashset))
+(import (std orderedset))
+
+(:doc #:file "combine.bjodoc")
+
+(import/extern
+  (iarray-adopt (: Bjolang.Runtime.IArrayModule.Adopt (-> (Array %a) (IArray %a)))))
+
+(export Combinable combine combine-all)
+
+;; - `combine a b`: `a`'s elements, then `b`'s.
+;; - `combine-all xs`: the values of `xs` combined in order. `xs` is not
+;;   empty. Equal to `combine` from the left; an implementation overrides it
+;;   to copy once.
+(def/trait (Combinable %a)
+  (: combine (-> %a %a %a))
+  (: combine-all (-> (Vec %a) %a))
+  (defun (combine-all xs)
+    (loop (:for i (range 1 (vec-length xs)))
+          (:acc out (folding (vec-ref xs 0) (combine out (vec-ref xs i)))))))
+
+(impl (Combinable Unit)
+  (defun (combine a b) unit)
+  (defun (combine-all xs) unit))
+
+;; Concatenation shares the nodes of both vectors.
+(impl (Combinable (Vec %a))
+  (defun (combine a b) (vec-merge a b)))
+
+;; From the right: each list but the last is copied once.
+(impl (Combinable (List %a))
+  (defun (combine a b) (list-append a b))
+  (defun (combine-all xs)
+    (def n (vec-length xs))
+    (loop (:for i (down-from (- n 2) #:to 0))
+          (:acc out (folding (vec-ref xs (- n 1)) (list-append (vec-ref xs i) out))))))
+
+(impl (Combinable string)
+  (defun (combine a b) (string-append a b))
+  (defun (combine-all xs) (string-join xs "")))
+
+(impl (Combinable (IArray %a))
+  (defun (combine a b) (combine-all [a b]))
+  (defun (combine-all xs)
+    (def out (make-array (loop (:for x xs) (:acc n (summing (iarray-length x))))))
+    (loop (:for x xs)
+          (:with at 0 (+ at (iarray-length x)))
+          (:do (loop (:for i (range 0 (iarray-length x)))
+                     (:do (array-set! out (+ at i) (iarray-ref x i))))))
+    (iarray-adopt out)))
+
+(impl (Combinable (HashSet %a))
+  (defun (combine a b) (hashset-union a b)))
+
+(impl (Combinable (OrderedSet %a))
+  (defun (combine a b) (orderedset-union a b)))
+
+;; Tuples combine element by element.
+
+(impl (Combinable (Tuple %a %b))
+  (where (Combinable %a) (Combinable %b))
+  (defun (combine x y)
+    (def (a1 b1) x)
+    (def (a2 b2) y)
+    (Tuple (combine a1 a2) (combine b1 b2))))
+
+(impl (Combinable (Tuple %a %b %c))
+  (where (Combinable %a) (Combinable %b) (Combinable %c))
+  (defun (combine x y)
+    (def (a1 b1 c1) x)
+    (def (a2 b2 c2) y)
+    (Tuple (combine a1 a2) (combine b1 b2) (combine c1 c2))))
+
+(impl (Combinable (Tuple %a %b %c %d))
+  (where (Combinable %a) (Combinable %b) (Combinable %c) (Combinable %d))
+  (defun (combine x y)
+    (def (a1 b1 c1 d1) x)
+    (def (a2 b2 c2 d2) y)
+    (Tuple (combine a1 a2) (combine b1 b2) (combine c1 c2) (combine d1 d2))))
+
+(impl (Combinable (Tuple %a %b %c %d %e))
+  (where (Combinable %a) (Combinable %b) (Combinable %c) (Combinable %d) (Combinable %e))
+  (defun (combine x y)
+    (def (a1 b1 c1 d1 e1) x)
+    (def (a2 b2 c2 d2 e2) y)
+    (Tuple (combine a1 a2) (combine b1 b2) (combine c1 c2) (combine d1 d2) (combine e1 e2))))
+
+(impl (Combinable (Tuple %a %b %c %d %e %f))
+  (where (Combinable %a) (Combinable %b) (Combinable %c) (Combinable %d) (Combinable %e) (Combinable %f))
+  (defun (combine x y)
+    (def (a1 b1 c1 d1 e1 f1) x)
+    (def (a2 b2 c2 d2 e2 f2) y)
+    (Tuple (combine a1 a2) (combine b1 b2) (combine c1 c2) (combine d1 d2) (combine e1 e2) (combine f1 f2))))

@@ -10,7 +10,7 @@
 ;; in such object code or executable form without complying with the source code
 ;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
 
-;; `in-parallel` against a sequential loop: 10M doubles in one array, and
+;; `in-parts` against a sequential loop: 10M doubles in one array, and
 ;; maps of 1M entries.
 ;;
 ;; Each row does the same work two ways: once on the whole collection, and
@@ -156,20 +156,20 @@
 
   (report "scale"
           (median-ns (bjoroutine () (scale-span! (array->span a) 1.0000001)))
-          (median-ns (bjoroutine () (ignore (in-parallel a (fun (part) (scale-span! (part->span part) 1.0000001)))))))
+          (median-ns (bjoroutine () (ignore (in-parts a (fun (part) (scale-span! (part->span part) 1.0000001)))))))
   (report "sum"
           (median-ns (bjoroutine () (ignore (box-set! sink (sum-span (array->ro-span a))))))
-          (median-ns (bjoroutine () (ignore (box-set! sink (vec-fold + 0.0 (in-parallel a (fun (part) (sum-span (part->ro-span part))))))))))
+          (median-ns (bjoroutine () (ignore (box-set! sink (vec-fold + 0.0 (in-parts a (fun (part) (sum-span (part->ro-span part))))))))))
   (report "sin-sum"
           (median-ns (bjoroutine () (ignore (box-set! sink (sin-sum-span (array->ro-span a))))))
-          (median-ns (bjoroutine () (ignore (box-set! sink (vec-fold + 0.0 (in-parallel a (fun (part) (sin-sum-span (part->ro-span part))))))))))
+          (median-ns (bjoroutine () (ignore (box-set! sink (vec-fold + 0.0 (in-parts a (fun (part) (sin-sum-span (part->ro-span part))))))))))
   ;; The fixed cost of one call: one part for each processor, parts that do
   ;; nothing.
   (def calls 10000)
   (def overhead
     (median-ns (bjoroutine ()
                  (loop (:for _ (range 0 calls))
-                       (:do (ignore (in-parallel (range 0 processor-count) (fun (part) 0) #:parts processor-count)))))))
+                       (:do (ignore (in-parts (range 0 processor-count) (fun (part) 0) #:parts processor-count)))))))
   (println (str "overhead " (hundredths (/ (* overhead 100L) (* 1000L (cast long calls))))
                 " us per call of " (displayed processor-count) " parts"))
 
@@ -181,10 +181,10 @@
   (def total (make-box 0L))
   (report-of "map-sum" entries
              (median-ns (bjoroutine () (ignore (box-set! total (loop (:for (Tuple _k v) m) (:acc s (summing v)))))))
-             (median-ns (bjoroutine () (ignore (box-set! total (vec-fold + 0L (in-parallel m (fun (part) (loop (:for (Tuple _k v) part) (:acc s (summing v)))))))))))
+             (median-ns (bjoroutine () (ignore (box-set! total (vec-fold + 0L (in-parts m (fun (part) (loop (:for (Tuple _k v) part) (:acc s (summing v)))))))))))
   (report-of "omap-sum" entries
              (median-ns (bjoroutine () (ignore (box-set! total (loop (:for (Tuple _k v) om) (:acc s (summing v)))))))
-             (median-ns (bjoroutine () (ignore (box-set! total (vec-fold + 0L (in-parallel om (fun (part) (loop (:for (Tuple _k v) part) (:acc s (summing v)))))))))))
+             (median-ns (bjoroutine () (ignore (box-set! total (vec-fold + 0L (in-parts om (fun (part) (loop (:for (Tuple _k v) part) (:acc s (summing v)))))))))))
   (def splits 100)
   (def parts (* 4 processor-count))
   (def map-split (median-ns (bjoroutine () (loop (:for _ (range 0 splits)) (:do (ignore (chunks m parts)))))))
