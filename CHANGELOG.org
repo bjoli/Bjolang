@@ -3,6 +3,48 @@
 
 What each change guarantees, and what it leaves open.
 
+* A filter loop has its jump once, after the if
+
+- ~Simplify~: a binding whose value is a binding, ~(let ((a (begin e v)))
+  body)~, is ~(begin e (let ((a v)) body))~, when the inner name is ~_~ or
+  does not occur in ~body~. The values are evaluated in the order they
+  were. A copy of a name bound to the same name, ~(let ((x x)) body)~, is
+  ~body~. A collector's step gives back its accumulator, ~(begin
+  (listbuilder-add! acc x) acc)~, so the loop no longer copies the
+  accumulator, and its jump passes the accumulator on unchanged.
+- ~Codegen~: an ~if~ whose arms both end in the same jump (the same loop,
+  the same arguments written the same way, and no name that an arm binds
+  in them) has the arms without the jump, and the jump once after the
+  ~if~. An arm that is only the jump gives a one-armed ~if~. This holds for
+  every jump, also of tail recursion. The typed tree is not changed, so
+  the vectoriser still sees the filter loop it knows.
+- The empty void, as a loop with nothing to do at its end has, is emitted
+  as nothing, not as ~if (false) { _ = default(ValueTuple); }~ (no IL
+  either way).
+- The debugger maps the one jump to the line of the jump in the first arm.
+- IL of all of ~lib/~ and bjostat's ~src/~:
+
+  | group   | before  | the bindings | and the jump |
+  |---------+---------+--------------+--------------|
+  | lib     | 1447260 | 1443630      | 1441313      |
+  | bjostat |  194307 |  193458      |  192945      |
+
+  Methods over 100 bytes 2705 to 2701 and 442 to 440. Larger: 2 methods by
+  4 bytes. ~{listing x (:for x xs) (:when (not (< x 0.0)))}~ is 63 bytes
+  and 3 locals, as in hand-written C# (was 77 and 5); ~squares~ 41 (was 43).
+- The results are the same: bjostat prints the same 4630 values, its 15
+  test files pass with all threads and with one, and the ports of
+  bench/clbg print the same output.
+- Measured, three builds (before, the bindings, both) in rounds A B C, C B
+  A, A B C: bjostat's scratch/distbench.bjo, bench/loops.bjo and the nine
+  ports of bench/clbg. All rows overlap or were faster once, except
+  spectralnorm with both: 1.244-1.247 against 1.228-1.241 s, and again 4
+  runs each, 1.243-1.247 against 1.230-1.238. spectralnorm's own methods
+  have the same IL in all three builds: the change is in the libraries,
+  which moves where the JIT puts spectralnorm's OSR code (see "A local that
+  is a copy of a name"). Kept.
+- Tests: ~TestFiles/codegen/same_jump.bjo~.
+
 * A local that is a copy of a name is that name
 
 - ~(let ((a b)) body)~ is ~body~ with each reference to ~a~ reading ~b~, when

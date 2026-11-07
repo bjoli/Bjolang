@@ -487,8 +487,10 @@ let rec private renameRefs (a: string) (b: string) (expr: TypedExpr) : TypedExpr
     | _ -> TypeVisitor.mapChildren (renameRefs a b) expr
 
 let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
-    let expr = TypeVisitor.mapChildren (simplify ctx) expr
+    simplifyNode ctx (TypeVisitor.mapChildren (simplify ctx) expr)
 
+/// The rules at `expr` itself, whose children are simplified already.
+and private simplifyNode (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     match expr.Node with
     // A local function that only returns its arguments, such as the
     // `loopexit` of a loop whose collectors are `folding`: each call is
@@ -509,16 +511,31 @@ let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     | TLet(name, false, fn, value, { Node = TIdent(read, []) }) when fn = noParams && read = name && name <> "_" ->
         value
 
+    // A binding whose value is a binding, `(let ((a (let ((x e)) v))) body)`,
+    // as `(let ((a (begin e v))) body)` is: the inner binding goes first,
+    // `(let ((x e)) (let ((a v)) body))`. `e`, `v` and `body` are evaluated
+    // in the order they were. Then the rules apply to `(let ((a v)) body)`,
+    // and `v` is often a name, as the value of a collector's step is.
+    | TLet(a, false, fn, { Node = TLet(x, false, fnx, xv, rest) }, body) when
+        fn = noParams
+        && fnx = noParams
+        && x <> a
+        && (x = "_" || (not (mentions x body) && not (rebinds x body)))
+        ->
+        let inner = simplifyNode ctx { expr with Node = TLet(a, false, fn, rest, body) }
+        simplifyNode ctx { expr with Node = TLet(x, false, fnx, xv, inner) }
+
     // A local that is a copy of another name, as `(let ((xs ys)) ...)` that a
     // loop over `ys` or an inlined body leaves: each reference reads the
     // other name. Neither name is assigned anywhere, so both have the one
     // value, also in a closure. Not a union case, which the rule below
     // decides matches on, and not a function, which a read of a module's
-    // function would make a delegate of each time.
+    // function would make a delegate of each time. `a` may be `b`: a loop's
+    // collector step gives back its accumulator, which is bound to the name
+    // of the accumulator again.
     | TLet(a, false, fn, ({ Node = TIdent(b, []) } as v), body) when
         fn = noParams
         && a <> "_"
-        && a <> b
         && not (Set.contains b ctx.Cases)
         && not (Set.contains a ctx.Written)
         && not (Set.contains b ctx.Written)

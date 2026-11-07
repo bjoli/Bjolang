@@ -1,0 +1,27 @@
+;; An `if` whose arms both end in the same jump has the jump once, after the
+;; `if`:
+;;
+;; - A filter loop: the collector's step gives back its accumulator, which
+;;   the jump passes on unchanged, so the arm that keeps the element and the
+;;   arm that skips it end in the same jump. The `if` keeps the step only.
+;; EXPECT-CS: if \(\(!\(\(x < 0\.0\)\)\)\) \{\n(.*\n){0,2}\s*_ = listbuildersubadd_BANG\(comp\w*, x\);\n(.*\n){0,2}\s*\}\n(.*\n){0,2}\s*var __next__\d+ = \(loopcur\w* \+ 1\);
+;; EXPECT-NO-CS: __next__\d+ = comp
+;; - Tail recursion, not a `loop`: the same.
+;; EXPECT-CS: if \(\(v > 0\.0\)\) \{\n(.*\n){0,2}\s*\(@out\)\[\(i\)\] = v;\n(.*\n){0,2}\s*\}\n(.*\n){0,2}\s*var __next__\d+ = \(i \+ 1\);
+;; - A loop with nothing to do at its end has no `if (false)`.
+;; EXPECT-NO-CS: if \(false\)
+(export keep-non-negative copy-positive!)
+
+(import (std prelude))
+
+(: (-> (Array double) (List double)))
+(defun (keep-non-negative xs) {listing x (:for x xs) (:when (not (< x 0.0)))})
+
+(: (-> (Array double) (Array double) int void))
+(defun (copy-positive! xs out i)
+  (if (>= i (array-length xs))
+      (begin)
+      (let ((v (array-ref xs i)))
+        (if (> v 0.0)
+            (begin (array-set! out i v) (copy-positive! xs out (+ i 1)))
+            (copy-positive! xs out (+ i 1))))))

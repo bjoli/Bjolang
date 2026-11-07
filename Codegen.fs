@@ -3156,6 +3156,58 @@ let private generateParameterList
         append ctx $"params %s{typeToString restElemType}[] %s{declaredName}"
     | None -> ()
 
+/// Whether `a` and `b` are the same expression of the same type, written the
+/// same way: names, literals, calls, casts and field reads of them. Their
+/// ranges may differ. Any other form returns false.
+let rec private sameExpr (a: TypedExpr) (b: TypedExpr) : bool =
+    typeToString a.Type = typeToString b.Type
+    && (match a.Node, b.Node with
+        | TIdent(x, tx), TIdent(y, ty) -> x = y && List.map typeToString tx = List.map typeToString ty
+        | TInt x, TInt y -> x = y
+        | TBool x, TBool y -> x = y
+        | TString x, TString y -> x = y
+        | TApply(f, xs, []), TApply(g, ys, []) ->
+            sameExpr f g && xs.Length = ys.Length && List.forall2 sameExpr xs ys
+        | TGetField(x, fx), TGetField(y, fy) -> fx = fy && sameExpr x y
+        | TCast(x, tx), TCast(y, ty) -> typeToString tx = typeToString ty && sameExpr x y
+        | _ -> false)
+
+/// An arm as the bindings that lead to its last expression, and that
+/// expression:
+///
+/// - the arm with its last expression replaced by a given one;
+/// - the last expression;
+/// - the names that the bindings bind.
+///
+/// The bindings are `let` of a value, `let-mutable` and a tuple's `let`.
+let rec private splitTail (e: TypedExpr) : (TypedExpr -> TypedExpr) * TypedExpr * string list =
+    let along (rebuild: TypedExpr -> TExprNode) (names: string list) (body: TypedExpr) =
+        let inner, last, bound = splitTail body
+        (fun (x: TypedExpr) -> { e with Node = rebuild (inner x); Type = x.Type }), last, names @ bound
+
+    match e.Node with
+    | TLet(n, false, fn, v, body) when fn = noParams -> along (fun b -> TLet(n, false, fn, v, b)) [ n ] body
+    | TLetMutable(n, v, body) -> along (fun b -> TLetMutable(n, v, b)) [ n ] body
+    | TLetTuple(names, v, body) -> along (fun b -> TLetTuple(names, v, b)) names body
+    | _ -> id, e, []
+
+/// Whether `name` occurs in `expr`.
+let private occursIn (name: string) (expr: TypedExpr) : bool =
+    TypeVisitor.foldExpr
+        (fun found e ->
+            found
+            || (match e.Node with
+                | TIdent(n, _) -> n = name
+                | _ -> false))
+        false
+        expr
+
+/// The empty void, which `generateBlock` emits as nothing.
+let private emptyVoid (r: Lexer.Range) : TypedExpr =
+    { Type = TypeConstants.voidType
+      Range = r
+      Node = TWhen({ Type = TypeConstants.boolType; Range = r; Node = TBool false }, { Type = TypeConstants.unitType; Range = r; Node = TTupleMake [] }, false) }
+
 let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     match ctx.Prelude with
     | Some prelude when isStatementShaped expr -> append ctx (hoistToTemp ctx prelude expr)
@@ -5504,6 +5556,37 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 
     | _ when isGuardedCall expr -> generateGuardedCall ctx target expr
 
+    // Both arms end in the same jump, as a filter loop's do once a collector
+    // step gives back its accumulator: the arms without the jump, and the
+    // jump once after them. No name that an arm binds occurs in the jump,
+    // so it reads the same values after the `if` as in each arm.
+    | TIf (cond, t, f) when
+        (let _, lastT, boundT = splitTail t
+         let _, lastF, boundF = splitTail f
+
+         match lastT.Node, lastF.Node with
+         | TRecur(dt, it, argsT), TRecur(df, iF, argsF) ->
+             dt = df
+             && it = iF
+             && argsT.Length = argsF.Length
+             && List.forall2 sameExpr argsT argsF
+             && not (boundT @ boundF |> List.exists (fun n -> argsT |> List.exists (occursIn n)))
+         | _ -> false)
+        ->
+        let rebuildT, jump, _ = splitTail t
+        let rebuildF, _, _ = splitTail f
+        let armT = rebuildT (emptyVoid t.Range)
+        let armF = rebuildF (emptyVoid f.Range)
+
+        let arms =
+            match t.Node, f.Node with
+            | _, TRecur _ -> TWhen(cond, armT, false)
+            | TRecur _, _ -> TWhen(cond, armF, true)
+            | _ -> TIf(cond, armT, armF)
+
+        generateBlock ctx Effect { expr with Type = TypeConstants.voidType; Node = arms }
+        generateBlock ctx target jump
+
     | TIf (cond, t, f) ->
         let armTarget =
             match target with
@@ -5521,6 +5604,9 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         indent ctx; appendLine ctx "} else {"
         withIndent ctx (fun c -> generateBlock c armTarget f)
         indent ctx; appendLine ctx "}"
+
+    // The empty void (see `emptyVoid`): nothing to run.
+    | TWhen ({ Node = TBool false }, _, false) -> dischargeVoid ctx target
 
     | TWhen (cond, body, negated) ->
         emitStatement ctx (fun c ->
