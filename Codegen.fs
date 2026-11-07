@@ -2605,6 +2605,9 @@ let private vectorLoopOf
             match env[n] with
             | Index cur -> Some(Plain(VIndex cur, TypeConstants.intType))
             | l -> Some l
+        // The cursor itself, read where `Simplify` has removed the local that
+        // was a copy of it: the same lane as that local.
+        | TIdent(n, []) when isCursor n -> Some(Plain(VIndex n, TypeConstants.intType))
         | TIdent("None", _) ->
             optionValue t
             |> Option.map (fun v -> Optional(VSplat { e with Type = v; Node = TInt "0" }, MNone, v))

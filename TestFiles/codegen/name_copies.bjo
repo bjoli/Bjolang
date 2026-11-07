@@ -1,0 +1,33 @@
+;; A local that is a copy of a name that nothing assigns is not emitted: each
+;; reference reads the name itself.
+;;
+;; - `let` of names, written in the source.
+;; EXPECT-CS: return \(x \* 2\.0\);
+;; - A loop over a parameter reads the parameter, with no `loopseq` copy.
+;; EXPECT-NO-CS: loopseq__\d+ = xs;
+;; EXPECT-CS: \(xs\)\[\(loopcur\w*\)\]
+;; - A name that a `set!` assigns keeps its copy: the copy has the value of
+;;   the time it was made.
+;; EXPECT-CS: int before = n2;
+;; - A loop that collects its cursor still has its vector part, though the
+;;   element is now the cursor itself.
+;; EXPECT-CS: __vok__\d+ = System\.Runtime\.Intrinsics\.Vector256\.IsHardwareAccelerated
+(export twice sum-of counted indices)
+
+(import (std prelude))
+
+(: (-> double double))
+(defun (twice x) (let ((y x)) (let ((z y)) (* z 2.0))))
+
+(: (-> (Array double) double))
+(defun (sum-of xs) (loop (:for x xs) (:acc s (folding 0.0 (+ s x)))))
+
+(: (-> int int))
+(defun (counted n)
+  (def/mutable n2 n)
+  (let ((before n2))
+    (set! n2 (+ n2 1))
+    (+ before n2)))
+
+(: (-> int (Array int)))
+(defun (indices n) {arraying i (:for i (range 0 n))})

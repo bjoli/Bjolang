@@ -3,6 +3,54 @@
 
 What each change guarantees, and what it leaves open.
 
+* A local that is a copy of a name is that name
+
+- ~(let ((a b)) body)~ is ~body~ with each reference to ~a~ reading ~b~, when
+  ~b~ is a name that no ~set!~ assigns and no ~let-mutable~ binds anywhere in
+  the program, the body binds neither name again, ~b~ is not a union case
+  and not a function. Both names have the one value, also in a closure. The
+  copy of the sequence before a loop (~loopseq~), the bounds of a ~range~
+  and the element of a loop over a range are such copies, and so are
+  copies that inlining and user code leave.
+- A name of a function is not substituted: each read of a module's function
+  as a value can make a delegate. A copy of a mutable name stays: it holds
+  the value of the time it was made.
+- The vectoriser takes a read of the loop's cursor as the element, as it
+  took a local bound to the cursor. bjostat's ranks-of keeps its vector
+  part (it lost it before this was in).
+- Not reached: the copies that ~LoopLowering~ makes after ~Simplify~, as
+  ~comp__77 = comp__6__73~ after a collector's step, and the per-iteration
+  copies of the slots for a closure.
+- IL of all of ~lib/~ and bjostat's ~src/~: lib 1456568 to 1447260 (-0.64 %),
+  bjostat 197167 to 194307 (-1.45 %); 681 and 159 locals fewer; methods
+  over 100 bytes 2727 to 2705 and 449 to 442. 1075 methods smaller, 23
+  larger by 3 to 6 bytes (a closure captures the per-iteration copy of the
+  cursor in place of a copy of it).
+- The results are the same: bjostat prints the same 4630 values, its 15
+  test files pass with all threads and with one, and the ports of
+  bench/clbg print the same output.
+- Measured, the compiler before and after alternated, 3 runs each:
+  bjostat's scratch/distbench.bjo, bench/loops.bjo and the nine ports of
+  bench/clbg. t-cdf and the poisson model faster (131 against 132-133 µs,
+  6120-6180 against 6190-6210 µs, not run again). bench/loops' "sum,
+  cells, :when-let" 633-637 against 630-631 µs, and again 632-634 against
+  628-632. spectralnorm 5500 slower: 1.239-1.245 against 1.214-1.218 s, and
+  again 1.233-1.254 against 1.213-1.233. The other rows overlap.
+- spectralnorm, why: its loops run in OSR code (each function is called 20
+  times, so it does not reach the full tier). The OSR code of the inner
+  loops has the same instructions in both builds, with other registers:
+  the loop is 65 bytes in place of 72, and starts at another offset. The
+  hardware counters give the same instructions (24.51 billion), the same
+  op-cache hits, branch misses and misaligned loads, and 1.7 % more cycles.
+  With ~DOTNET_TieredPGO=0~ the code is at other addresses and still 1 %
+  slower (1.232-1.246 against 1.220-1.226 s). With
+  ~DOTNET_TieredCompilation=0~ the full-tier code is used, and the two are
+  the same (1.180-1.188 against 1.180-1.193 s). Kept: the cause is where
+  and how the same instructions are placed, which a later change can move
+  either way.
+- Tests: ~TestFiles/codegen/name_copies.bjo~. Five codegen tests read the
+  names in place of their copies.
+
 * ~make-array~ and ~array-set!~ are C#'s own array operations
 
 - ~(make-array n)~ without ~#:fill~ is ~new T[n]~. With ~#:fill~, and for an

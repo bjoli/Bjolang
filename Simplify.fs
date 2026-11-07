@@ -34,6 +34,7 @@ open Bjolang.TypedAST
 ///     `loopexit` is for `folding`, is replaced by them at each call.
 ///   * A record that is made at a binding and only read, as the `Range` of a
 ///     loop over `(range a b)`, becomes a local for each field.
+///   * A local that is a copy of a name that nothing assigns is that name.
 ///
 /// The last two make the C# method smaller, and the JIT inlines a smaller
 /// method into more callers.
@@ -97,7 +98,11 @@ let rec private mentions (name: string) (expr: TypedExpr) : bool =
 // Values
 // ---------------------------------------------------------------------------
 
-type private Ctx = { Cases: Set<string> }
+type private Ctx =
+    { Cases: Set<string>
+      /// The names that a `set!` assigns or a `let-mutable` binds anywhere
+      /// in the program. Names are not unique here, so this is by name.
+      Written: Set<string> }
 
 /// `(K a ...)` or a bare nullary `K`, as the case and its arguments.
 let private asCase (ctx: Ctx) (expr: TypedExpr) : (string * TypedExpr list) option =
@@ -471,6 +476,16 @@ let rec private peelLocals (scope: TypedExpr) (value: TypedExpr) : (string * Typ
         (n, v) :: outer, core
     | _ -> [], value
 
+/// `expr` with each reference to `a` made a reference to `b`.
+let rec private renameRefs (a: string) (b: string) (expr: TypedExpr) : TypedExpr =
+    match expr.Node with
+    | TIdent(n, tys) when n = a -> { expr with Node = TIdent(b, tys) }
+    | TRecordSet(n, fields) when n = a ->
+        { expr with Node = TRecordSet(b, fields |> List.map (fun (k, v) -> k, renameRefs a b v)) }
+    | TRecordUpdate(n, fields) when n = a ->
+        { expr with Node = TRecordUpdate(b, fields |> List.map (fun (k, v) -> k, renameRefs a b v)) }
+    | _ -> TypeVisitor.mapChildren (renameRefs a b) expr
+
 let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     let expr = TypeVisitor.mapChildren (simplify ctx) expr
 
@@ -493,6 +508,27 @@ let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     // the value itself.
     | TLet(name, false, fn, value, { Node = TIdent(read, []) }) when fn = noParams && read = name && name <> "_" ->
         value
+
+    // A local that is a copy of another name, as `(let ((xs ys)) ...)` that a
+    // loop over `ys` or an inlined body leaves: each reference reads the
+    // other name. Neither name is assigned anywhere, so both have the one
+    // value, also in a closure. Not a union case, which the rule below
+    // decides matches on, and not a function, which a read of a module's
+    // function would make a delegate of each time.
+    | TLet(a, false, fn, ({ Node = TIdent(b, []) } as v), body) when
+        fn = noParams
+        && a <> "_"
+        && a <> b
+        && not (Set.contains b ctx.Cases)
+        && not (Set.contains a ctx.Written)
+        && not (Set.contains b ctx.Written)
+        && not (rebinds a body)
+        && not (rebinds b body)
+        && (match settled v.Type with
+            | TFun _ -> false
+            | _ -> true)
+        ->
+        { renameRefs a b body with Type = expr.Type }
 
     // A statement with no effect. `_` is never read, so a `_` bound again
     // inside `body` does not matter, as it does for the case below.
@@ -637,5 +673,23 @@ let run (env: Env) (decls: TDecl list) : TDecl list =
         |> Seq.collect (fun (_, (_, cases)) -> cases |> Seq.map (fun (n, _) -> n))
         |> Set.ofSeq
 
-    let ctx = { Cases = cases }
+    let written =
+        let acc = System.Collections.Generic.HashSet<string>()
+
+        let collect (e: TypedExpr) =
+            e
+            |> TypeVisitor.foldExpr
+                (fun () x ->
+                    match x.Node with
+                    | TLetMutable(n, _, _)
+                    | TSet(n, _) -> acc.Add n |> ignore
+                    | _ -> ())
+                ()
+
+            e
+
+        decls |> List.iter (fun d -> TypeVisitor.mapDecl collect d |> ignore)
+        Set.ofSeq acc
+
+    let ctx = { Cases = cases; Written = written }
     decls |> List.map (TypeVisitor.mapDecl (simplify ctx))

@@ -288,9 +288,18 @@ alternated runs, µs: C# 53.5-53.8, Bjolang 58.1-59.6.
     changelog, "A function written #:inline may take keyword parameters").
   - Done: ~(not c)~ is ~!c~, with no local and no if/else, everywhere, not
     only in loops (see the changelog, "~not~ is C#'s ~!~"). The other
-    general items of scratch/loop-codegen-prompt.md are still open: copies
-    of names, the same jump in both arms of an ~if~, ~hoistToTemp~, and a
-    local function called once.
+    general items of scratch/loop-codegen-prompt.md are still open: the
+    same jump in both arms of an ~if~, ~hoistToTemp~, a local function
+    called once, and the copies that ~LoopLowering~ makes (copies of names
+    in ~Simplify~ are done, see the changelog).
+  - spectralnorm spends its time in OSR code: its functions are called 20
+    times, fewer than the 30 calls of the full tier. The OSR code of
+    mul-av keeps the bounds check of ~v[j]~ in the inner loop and loads the
+    constant 1.0 at each iteration; the full-tier code does neither.
+    Measured: 1.21-1.25 s by default, 1.18-1.19 s with
+    ~DOTNET_TieredCompilation=0~. The C# port runs the same way. Not a
+    change to the emitted C#; see Docs/Projects.org on the call-counting
+    delay.
   - Done: ~make-array~ and ~array-set!~ as C#'s own operations (see the
     changelog). Not done: the other one-call wrappers that the emitted C#
     calls most, ~listbuildersubadd_BANG~ (246 calls), ~vecsubcursorsubnext~
