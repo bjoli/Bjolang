@@ -237,19 +237,71 @@ temporary per variable (~__next__~).
   pay a task per refill. Measure before changing them: a socket's
   ~ReadAsync~ is a real asynchronous read, unlike standard input's.
 
-* A loop over an array index keeps checks that a C# for loop loses
+* The emitted C# of a loop is large enough to stop the JIT's inlining
 
-Found in bjostat's signed-rank test (plan.org, "the statistics ... in
-Bjolang"): counts[s] += counts[s - e] with (:for s (down-from top #:to e))
-took 17.6-18.1 µs where the same C# for loop took 15.7. The machine code
-of Bjolang's loop has the test at the top and a jump back
-(while (true) { if (...) break; ... }), and checks both indices; the C#
-for loop's test is at the bottom, and the JIT made a copy of the loop
-without the check of counts[s]. A walk from (array-length counts) - 1,
-rather than from a top of the same value, took it from 21.9 µs to 17.6.
-To find out: whether the shape of the emitted loop stops the JIT's loop
-inversion and cloning, and whether the loop at the array's length can be
-emitted where the source gives the bound. Not done: a new shape of loop.
+Found in bjostat (plan.org, "the statistics ... in Bjolang"). Measured on
+the normal-quantile row of bjostat's scratch/distbench.bjo, 100 quantiles,
+alternated runs, µs: C# 53.5-53.8, Bjolang 58.1-59.6.
+
+- *The cause is inlining.* From the JIT's inlining events (EventPipe,
+  keyword 0x1000): in the C#, NormalQuantile inlines LogGamma (295 bytes of
+  IL) and Gamma (464). In Bjolang, log-gamma is 420 bytes, and 3 of its 4
+  calls are "unprofitable inline"; gamma-fraction (289) is not inlined
+  either. Each call that stays keeps the floats live across it in memory.
+- *What made log-gamma large* (each edited by hand in the emitted C#, and
+  the assembly loaded with ~BJOLANG_LIB~):
+  - the Range struct of ~(:for i (range a b))~: ~prelude_Module.range~,
+    ~.lo~ and ~.hi~, three inlinees, in place of two ints;
+  - a ~loopexit~ local function that only returns its argument, and its
+    call;
+  - ~(and (<= x 30.0) (= (floor x) x))~ as a hoisted bool and an
+    if/else, as the operand of ~=~ is first bound to a local;
+  - ~(= a b)~ of doubles as ~clrsubequals~, which is three inlinees deep;
+  - the ~__init~ and ~__next~ copies of the slots.
+- *Results:*
+
+  Medians of 3 alternated runs. Each of the rows from the third on is the
+  second row and one more change, except the last two.
+
+  | change to log-gamma                          | IL  | inlined | µs        |
+  |----------------------------------------------+-----+---------+-----------|
+  | none                                         | 420 | 1 of 4  | 58.2-58.4 |
+  | no ~__init~ and ~__next~ copies              | 396 | no      | 58.2-59.6 |
+  | and ints in place of the Range               | 361 | no      | 57.5-57.7 |
+  | and no ~loopexit~ function                   | 386 | no      | 58.3-58.4 |
+  | and ~&&~ in place of the hoisted bool        | 378 | no      | 58.3-58.8 |
+  | and ~==~ in place of ~clrsubequals~          | 440 | no      | 57.4-57.7 |
+  | and the Range, ~loopexit~ and ~&&~ changes   | 329 | 4 of 4  | 54.1      |
+  | and all four                                 | 361 | 4 of 4  | 53.9-54.2 |
+  | named lets in the source, in place of ~loop~ | 353 | no      | 57.7, 1 run |
+
+  No single change is enough. The three together make the row as fast as
+  the C#, with the same operations.
+- *To do:* in the emitted C# of a loop, ints in place of the struct of a
+  ~range~ (or of any iterable struct that is constructed where the loop
+  starts), no local function for a ~loopexit~ that only returns its
+  arguments, and no local for an operand that is used once, so that ~and~
+  stays ~&&~. These do not make a new shape of loop.
+
+*Not a cause: the shape of the loop.* bjostat's exact signed-rank test,
+counts[s] += counts[s - e] with (:for s (down-from top #:to e)), was
+17.6-18.1 µs against the C#'s 15.7. The loop alone took 13.5 µs in Bjolang
+and in a C# for loop. The emitted shape copied into C#, with
+~while (true)~, ~loopexit~ and ~arraysubset_BANG~, was also 13.5. Inside the
+larger method the time of the test changed from run to run, in both:
+
+- C#: 15.6-15.7 by default, 26.2-26.6 with ~DOTNET_TieredPGO=0~ (the JIT
+  kept the array on the stack and read it three times an iteration);
+- Bjolang: 17.5-21.9 by default, 15.4-15.8 with ~DOTNET_TieredPGO=0~ (in the
+  slow runs the JIT left the test at the top and did not align the loop).
+
+~while (cond)~ in place of ~while (true)~, which puts the test at the bottom
+in IL, did not change it (16.8-21.7). The loop as a function of its own did:
+15.1-15.7 in 12 of 12 runs, also with no PGO and with a call-counting delay
+of 100 ms. One more thing found: when the struct of a ~down-from~ comes from
+a call that is not inlined, the JIT can read its ~to~ and ~by~ from memory
+at each iteration (in C#: 17.1 µs, and 13.6 with the fields read into locals
+before the loop).
 
 * A float loop with a call in its step keeps its sums in memory
 
