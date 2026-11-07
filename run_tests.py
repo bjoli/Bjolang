@@ -1343,7 +1343,7 @@ def run_pdb_tests():
         check_that("the program builds", False, output)
     else:
         ran = subprocess.run(["dotnet", str(SOURCE.with_suffix(".exe"))], capture_output=True, text=True)
-        check_that("the program runs", ran.stdout == "12\nbig 2\n[2 4 6]\n[30 20 10]\n", ran.stdout + ran.stderr)
+        check_that("the program runs", ran.stdout == "12\nbig 2\n[2 4 6]\n[30 20 10]\n[0 1 1 2 3]\n", ran.stdout + ran.stderr)
 
         # Where a debugger stops: inside the function the code is from. A brace
         # or a loop's scaffolding numbered as a continuation of the directive

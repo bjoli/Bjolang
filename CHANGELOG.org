@@ -3,6 +3,46 @@
 
 What each change guarantees, and what it leaves open.
 
+* A slot that no later argument reads is assigned at once
+
+- A jump evaluates its arguments in order. A slot that no later argument
+  reads is now assigned as soon as its argument is evaluated, ~acc = (acc +
+  i);~. A slot that a later argument reads still gets a temporary, and is
+  assigned after the last argument. A slot is a local of the loop, and a
+  closure reads a per-iteration copy, so nothing else reads it in between.
+  This holds for every jump: of a ~loop~, a named ~let~ and a
+  tail-recursive function.
+- Before, every slot that changed went through a temporary, which Roslyn
+  keeps as a local: it is read after the other arguments.
+- IL of all of ~lib/~ and bjostat's ~src/~: lib 1440739 to 1434460
+  (-0.44 %), bjostat 192731 to 191208 (-0.79 %); 1657 and 397 locals fewer;
+  methods over 100 bytes 2700 to 2693 and 440 to 437. 1128 methods smaller,
+  none larger. A tail-recursive ~count-small~ 44 to 31 bytes, 1 local to 0;
+  a ~folding~ loop 52 to 46 (hand-written C# 44); bjostat's log-gamma 337 to
+  319, gamma-fraction 273 to 257.
+- This was measured once and not kept (see Todo.org, "The emitted C# of a
+  loop"): the row log-gamma was slower in one round. Two builds with the
+  same IL have since given rows that did not overlap once. Measured again,
+  the compiler before and after alternated, 3 runs each, and a second
+  round of 4 runs each for log-gamma, normal-quantile and "standard
+  deviation, Vec":
+  - normal-quantile, 100: faster, 54.3-54.4 against 55.4-55.7 µs, and
+    again 54.1-54.4 against 55.5-55.7. The C# was 53.5-53.8.
+  - log-gamma, 1000: the same (16.3-16.4 against 16.2-16.5 in the second
+    round).
+  - bench/loops' "standard deviation, Vec": 872-887 against 857-865 µs
+    once, then 748-773 against 748-827.
+  - bench/clbg: mandelbrot 12.218-12.232 against 12.237-12.243 s, fasta
+    3.576-3.577 against 3.586-3.617, k-nucleotide 7.306-7.317 against
+    7.362-7.414, faster; the others overlap. The poisson model and
+    "standard deviation, array" faster once. The other rows overlap.
+- The results are the same: bjostat prints the same 4630 values, its 15
+  test files pass with all threads and with one, and the ports of
+  bench/clbg print the same output.
+- Tests: ~TestFiles/codegen/loop_moves.bjo~, ~same_jump.bjo~. The program
+  of the debug symbol test has a ~seql~ whose jump still needs a temporary
+  (~fibs~), so the test still sees that a temporary is hidden.
+
 * An operand that cannot change is not put in a temporary
 
 - When a later operand needs statements, as a loop in the value of

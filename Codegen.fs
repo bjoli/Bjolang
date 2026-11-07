@@ -6280,21 +6280,33 @@ and private generateRecur
             | TIdent(n, []) -> sanitizeIdent n <> slot
             | _ -> true)
 
-    // The whole vector is evaluated before any slot is written: an argument may
-    // read a slot that an earlier assignment would already have overwritten.
+    // The arguments are evaluated in order. A slot that no later argument
+    // reads is assigned as soon as its argument is evaluated. A slot that a
+    // later argument reads gets a temporary, and is assigned after the last
+    // argument, so that the later argument reads the value it had. A slot is
+    // a local of the loop, so nothing else can read it in between.
+    let slotNames = member_.Slots |> List.map fst |> List.map (fun n -> sanitizeIdent n, n) |> Map.ofList
+
+    let direct =
+        moves
+        |> List.mapi (fun k (slot, _) ->
+            let original = slotNames[slot]
+            moves |> List.skip (k + 1) |> List.forall (fun (_, later) -> not (occursIn original later)))
+
     let temps = moves |> List.map (fun _ -> freshName "__next")
 
-    for (_, arg), tmp in List.zip moves temps do
+    for ((slot, arg), tmp), isDirect in List.zip (List.zip moves temps) direct do
         let declared = localDeclarationType arg.Type
 
         emitStatement ctx (fun c ->
             indent c
-            append c $"%s{declared} %s{tmp} = "
+            if isDirect then append c $"%s{slot} = " else append c $"%s{declared} %s{tmp} = "
             generateExpr c arg
             appendLine c ";")
 
-    for (slot, _), tmp in List.zip moves temps do
-        indent ctx; appendLine ctx $"%s{slot} = %s{tmp};"
+    for ((slot, _), tmp), isDirect in List.zip (List.zip moves temps) direct do
+        if not isDirect then
+            indent ctx; appendLine ctx $"%s{slot} = %s{tmp};"
 
     if depth > 0 then
         // Out of the nested loops to the top of the enclosing one, whose `while`
