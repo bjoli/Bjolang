@@ -3,6 +3,54 @@
 
 What each change guarantees, and what it leaves open.
 
+* A walk of a Vec makes no call
+
+- The step of ~VecCursor~ to its next leaf is inlined in the loop of the
+  walk, and makes no call on any path. On Linux .NET keeps no float
+  register across a call, and the step called ~AtLeaf~ and
+  ~RrbList.TreeLeafAt~ once a leaf: a loop's float sums were then stored at
+  each element. Now they stay in registers.
+- What counts as a call there, found in the machine code: a method that is
+  not inlined, an allocation, a checked cast and a store of a reference into
+  the heap (the GC's write barrier). So:
+  - a dense tree is descended with shifts and ~Unsafe.As~
+    (~RrbList.LeafInWalk~, ~DescendToLeaf~);
+  - a ~TreePath~ (for a relaxed tree) keeps only the child index at each
+    level, not the nodes, and finds the nodes again from the root at each
+    step; ~TreePath.LeafFrom~ steps or seeks;
+  - ~Start~ makes the path, before the loop; it was made at the first new
+    leaf;
+  - ~RrbList.InTree~ and the cursor's constructors are written
+    ~AggressiveInlining~: with the inlined step the JIT's budget ran out, and
+    left them as calls.
+- The cursor keeps its four fields, its order of elements and its results.
+  A copy of a cursor of a relaxed tree that the path has left seeks again.
+- Measured, the runtime before and after alternated, 3 runs each, the same
+  programs (bench/collections/vec-walks.bjo, 1M elements unless said, bjostat's
+  bench/loops.bjo), µs:
+
+  | walk                          | before      | after     |
+  |-------------------------------+-------------+-----------|
+  | doubles, dense                | 2480        | 643-650   |
+  | doubles, joined (relaxed)     | 2540-2550   | 826-852   |
+  | doubles, prepended (head)     | 2480        | 658-670   |
+  | doubles, slice of 899000      | 2230        | 580-582   |
+  | longs, dense                  | 719-727     | 623-649   |
+  | longs, joined                 | 894-913     | 792-807   |
+  | 10000 walks of 8 longs        | 84.6-87.0   | 75.4-76.7 |
+  | 10000 walks of 100 longs      | 846-909     | 619-691   |
+  | 10000 walks of 1000 longs     | 9990-10400  | 8930-9010 |
+  | 10000 walks of 8 doubles      | 130-137     | 76.9-85.5 |
+  | 10000 walks of 100 doubles    | 2410-2420   | 706-802   |
+  | strings, 100000               | 104-111     | 106-107   |
+  | bjostat sum, Vec              | 2470        | 662-721   |
+  | bjostat standard deviation, Vec | 2480-2490 | 858-878   |
+
+  The sum over an array is 619-620. No row was slower; strings, a type
+  whose generic code is shared, are the same.
+- Tests: ~TestFiles/330_vec_walks.bjo~ also walks a vec with a head, and
+  two copies of a cursor of a relaxed tree in turn.
+
 * A body of another module may call what the importer does not import
 
 - An importer checks its copy of a published body (a copy of a constrained

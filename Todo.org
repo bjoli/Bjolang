@@ -237,31 +237,24 @@ temporary per variable (~__next__~).
   pay a task per refill. Measure before changing them: a socket's
   ~ReadAsync~ is a real asynchronous read, unlike standard input's.
 
-* A float sum over a ~Vec~ is four times slower than over an array
+* A float loop with a call in its step keeps its sums in memory
 
 On Linux .NET keeps no float register across a call. A loop whose step has
 a call that returns, on any path, even one seldom taken, keeps its float
 accumulators in memory for the whole loop, and stores them at each element.
 Integer accumulators are not affected: some general registers survive a call.
+These count as calls: a method that is not inlined, an allocation, a checked
+cast, and a store of a reference into the heap (the GC's write barrier).
 
-- *A ~Vec~ of doubles.* Its iterator calls ~RrbList.TreeLeafAt~ at each new
-  leaf of 32. Measured (bjostat's bench/loops.bjo, 1M doubles): a sum over
-  a ~Vec~ 2.47 ms, over an ~Array~ 0.62; a sum of longs over a ~Vec~ 0.68.
-  A standard deviation the same. The machine code stores the sum at each
-  element.
-- *What fixes it, measured in C#* (sums of 1M doubles in leaves of 32,
-  the leaf from a call that is not inlined): a flat loop with the call
-  2.58 ms; two loops, the call in the outer one, also 2.58; two loops with
-  the sum copied into a new local for each leaf and back after it, 0.71,
-  the same result to the bit, as the additions are in the same order; one
-  array 0.65. So the loop has to be emitted as a loop over leaves with
-  fresh locals for its accumulators in each leaf.
-- *What it needs*: a way for an iterable to give its elements a block at a
-  time (a leaf's array and its range), as ~Contiguous~ gives one span
-  (Docs/Vectorisation-design.org), and the loop over blocks in
-  ~LoopLowering~ or ~Codegen~, with each float accumulator copied into a
-  local for the block. A ~Vec~, a ~MutableVec~ that grows, a map's leaves
-  and a ~Seq~ of chunks could give blocks.
+- *A ~Vec~ of doubles: fixed* (see the changelog, "A walk of a Vec makes no
+  call"). The cursor's step to the next leaf is inlined with no call. A sum
+  of 1M doubles over a ~Vec~ 2.48 ms to 0.64-0.65, an ~Array~ 0.62.
+- *Measured in C#, and not done* (sums of 1M doubles in leaves of 32): two
+  loops, the leaf from a call in the outer one and the sum copied into a new
+  local for each leaf, 0.71 ms; one loop with no call, 0.65. A loop over
+  blocks in ~LoopLowering~ would also cover an iterable whose step must
+  call (a ~MutableVec~ that grows, a map's leaves, a ~Seq~ of chunks), but it
+  is a new shape of loop. Not done.
 - *The same in a library.* bjostat's ~Cells.Ref~ had a path that called
   ~MemoryManager.GetSpan~, never taken: a sum over cells took 2.48 ms
   against 0.63 without it (bjostat a3d4076). A throw in a method the JIT

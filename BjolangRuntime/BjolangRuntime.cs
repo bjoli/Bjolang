@@ -901,11 +901,22 @@ public static partial class BjolangRuntime {
     ///
     /// `LeafAt` descends from the root. In a dense tree that is a shift per
     /// level. In a relaxed tree, as joins make, it is a search of a size table
-    /// per level, for each leaf. So when the walk leaves a leaf of a relaxed
-    /// tree, `AtLeaf` makes a `TreePath`, which steps to the next leaf, and the
-    /// cursor holds it in place of the list. This halved the walk of a vec
-    /// joined from 1000-element pieces. A dense tree pays one test per leaf,
-    /// and a walk that stays in one leaf pays nothing.
+    /// per level, for each leaf. So a walk of a relaxed tree that leaves its
+    /// first leaf gets a `TreePath` from `Start`, which steps to the next leaf,
+    /// and the cursor holds it in place of the list. This halved the walk of a
+    /// vec joined from 1000-element pieces. A dense tree pays one test per
+    /// leaf, and a walk that stays in one leaf pays nothing.
+    ///
+    /// # No call in the step
+    ///
+    /// The step to the next leaf (`NextLeaf`) is inlined in the loop of the
+    /// walk, and makes no call on any path. On Linux .NET keeps no float
+    /// register across a call, so a call there, even once a leaf, kept a
+    /// loop's float sums in memory and stored them at each element. A store of
+    /// a reference into the heap counts as a call (the GC's write barrier), a
+    /// checked cast and an allocation too. So the descent of a dense tree is
+    /// shifts and `Unsafe.As` (`RrbList.LeafInWalk`), a `TreePath` keeps only
+    /// ints, and `Start` makes the path before the loop.
     /// </summary>
     [NonUserCode]
     public readonly struct VecCursor<T> {
@@ -938,6 +949,10 @@ public static partial class BjolangRuntime {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static long Pair(int low, int high) => (uint)low | ((long)high << 32);
 
+        // Both constructors are written AggressiveInlining: the step to the
+        // next leaf inlines a lot, and the JIT's budget for inlining was then
+        // spent, so it left this one and `RrbList.InTree` as calls in the loop.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private VecCursor(T[] items, long span, object list, long rest) {
             _items = items;
             _span = span;
@@ -945,16 +960,27 @@ public static partial class BjolangRuntime {
             _rest = rest;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private VecCursor(T[] items, int i, int end, object list, int nextIndex, int stop)
             : this(items, Pair(i, i - end), list, Pair(nextIndex, stop)) { }
 
         /// The walk of `count` elements from `from`.
+        ///
+        /// A walk of a relaxed tree that leaves its first leaf gets its
+        /// `TreePath` here, before the loop: made at the first new leaf, it
+        /// was an allocation in the loop, and so a call.
         public static VecCursor<T> Start(Collections.RrbList<T> list, int from, int count) {
             if (from < 0 || count < 0 || from > list.Count - count)
                 throw new ArgumentOutOfRangeException(nameof(count), $"{from} and {count} are not a run of a vec of {list.Count}.");
             if (count == 0) return new VecCursor<T>(Array.Empty<T>(), 0, 0, list, from, from);
-            return Enter(list, from, from + count);
+            var items = list.LeafAt(from, out var position, out var length);
+            var take = Math.Min(length - position, count);
+            object owner = take < count && list.TreeIsRelaxed ? PathOf(list) : list;
+            return new VecCursor<T>(items, position, position + take, owner, from + take, from + count);
         }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static Collections.TreePath<T> PathOf(Collections.RrbList<T> list) => new(list);
 
         public bool Done {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -966,46 +992,37 @@ public static partial class BjolangRuntime {
             get => _items[I];
         }
 
-        // The slow path takes and answers values. A method called on the
+        // The slow path takes and returns values. A method called on the
         // cursor itself would take its address, and the JIT then keeps the
         // whole cursor in memory rather than in registers.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public VecCursor<T> Next() {
             var span = _span + Step;
             if (span < 0 || NextIndex >= Stop) return new VecCursor<T>(_items, span, _list, _rest);
-            return AtLeaf(_list, NextIndex, Stop);
+            return NextLeaf(_list, NextIndex, Stop);
         }
 
-        /// The cursor on element `index`, with the part of its leaf the walk
-        /// up to `stop` takes. Inlined where a walk starts, so that the walk of
-        /// a vec that is all tail makes no call. `AtLeaf` is the same out of
-        /// line, for the next leaf of a walk, and looks for a relaxed tree.
+        /// The cursor on element `index`, the first of a leaf, with the part
+        /// of the leaf that the walk up to `stop` takes.
+        ///
+        /// - Inlined, with no call on any path: on Linux .NET keeps no float
+        ///   register across a call, and a call here, even once a leaf, kept a
+        ///   loop's float sums in memory (a sum of 1M doubles 2.48 ms against
+        ///   0.65 over an array).
+        /// - A relaxed tree's leaves come from the walk's `TreePath`, which
+        ///   `Start` made; the head and the tail from the list.
+        /// - Every other leaf comes from `RrbList.LeafInWalk`, whose descent of
+        ///   the tree is shifts and `Unsafe.As`.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static VecCursor<T> Enter(Collections.RrbList<T> list, int index, int stop) {
-            var items = list.LeafAt(index, out var position, out var length);
-            var take = Math.Min(length - position, stop - index);
-            return new VecCursor<T>(items, position, position + take, list, index + take, stop);
-        }
-
-        [MethodImpl(MethodImplOptions.NoInlining)]
-        private static VecCursor<T> AtLeaf(object owner, int index, int stop) {
+        private static VecCursor<T> NextLeaf(object owner, int index, int stop) {
             T[] items;
             int position, length;
-            if (owner is Collections.TreePath<T> path) {
-                items = path.Step(index, out position, out length)
-                    ?? (path.List.InTree(index)
-                        ? path.Seek(index, out position, out length)
-                        : path.List.LeafAt(index, out position, out length));
-            } else {
-                var list = Unsafe.As<Collections.RrbList<T>>(owner);
-                if (list.TreeIsRelaxed && list.InTree(index)) {
-                    path = new Collections.TreePath<T>(list);
-                    items = path.Seek(index, out position, out length);
-                    owner = path;
-                } else {
-                    items = list.LeafAt(index, out position, out length);
-                }
-            }
+            var path = owner as Collections.TreePath<T>;
+            var list = path != null ? path.List : Unsafe.As<Collections.RrbList<T>>(owner);
+            if (path != null && list.InTree(index))
+                items = path.LeafFrom(index, out position, out length);
+            else
+                items = list.LeafInWalk(index, out position, out length);
             var take = Math.Min(length - position, stop - index);
             return new VecCursor<T>(items, position, position + take, owner, index + take, stop);
         }

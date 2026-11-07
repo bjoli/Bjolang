@@ -33,7 +33,13 @@
     (loop (:for k (range 0 40))
           (:acc v (folding (numbers 0) (vec-merge v (vec-slice all (* k 997) 997))))
           => v))
+  ;; A head and a gap: elements added in front of a dense tree.
+  (def prepended
+    (loop (:for k (range 0 70))
+          (:acc v (folding (numbers 2000) (vec-add-first v (- -1 k))))
+          => v))
   (list (Tuple "empty" (numbers 0))
+        (Tuple "prepended" prepended)
         (Tuple "1" (numbers 1))
         (Tuple "31" (numbers 31))
         (Tuple "32" (numbers 32))
@@ -90,6 +96,20 @@
   (expect "the new one is on the next element" (vec-cursor-current d) 20)
   (expect "past the last" (vec-cursor-done? (vec-cursor-next (vec-cursor-next d))) #t)
   (expect "an empty vec" (vec-cursor-done? (vec-cursor [])) #t)
+
+  ;; Two copies of one cursor of a relaxed tree, moved on in turn past many
+  ;; leaves. The copies share the path of the walk, and each reads its own
+  ;; elements.
+  (def joined (vec-merge (numbers 37) (vec-merge (numbers 1000) (numbers 1000))))
+  (def two-copies
+    (let go ((a (vec-cursor joined)) (b (vec-cursor-next (vec-cursor joined))) (i 0) (bad 0))
+      (if (vec-cursor-done? b)
+          bad
+          (go (vec-cursor-next a) (vec-cursor-next b) (+ i 1)
+              (+ bad (if (and (= (vec-cursor-current a) (vec-ref joined i))
+                              (= (vec-cursor-current b) (vec-ref joined (+ i 1))))
+                         0 1))))))
+  (expect "copies of a cursor of a relaxed tree read their own elements" two-copies 0)
 
   ;; `=` on vecs walks two cursors in step.
   (expect "equal vecs" (= (numbers 1000) (vec-merge (numbers 37) (vec-slice (numbers 1000) 37 963))) #t)

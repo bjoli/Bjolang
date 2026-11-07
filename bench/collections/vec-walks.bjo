@@ -1,0 +1,71 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; Walks of a Vec with (:for x v): dense, joined (relaxed), with a head, a
+;; slice, many short walks, and strings.
+;;
+;;     bjo bench bench/collections/vec-walks.bjo --all
+;;
+;; A sum of doubles should take about as long as over an array (about 0.62
+;; ms for 1M). When it takes about four times as long, a call has come into
+;; the cursor's step to the next leaf: on Linux .NET keeps no float register
+;; across a call, and a loop's float sums are then stored at each element.
+;; See VecCursor in BjolangRuntime.cs.
+
+(import (std prelude))
+(import (std bench))
+
+(: int)
+(def n 1000000)
+
+;; Dense: built by vecing.
+(: (Vec double))
+(def dense-d {vecing (cast double i) (:for i (range 0 n))})
+(: (Vec long))
+(def dense-l {vecing (cast long i) (:for i (range 0 n))})
+
+;; Relaxed: joined from 1000-element pieces.
+(: (-> (Vec %a) (-> int %a) (Vec %a)))
+(defun (joined empty f)
+  (let go ((k 0) (acc empty))
+    (if (= k 1000)
+        acc
+        (go (+ k 1) (vec-merge acc {vecing (f (+ (* k 1000) i)) (:for i (range 0 1000))})))))
+(: (Vec double))
+(def joined-d (joined [] (fun (i) (cast double i))))
+(: (Vec long))
+(def joined-l (joined [] (fun (i) (cast long i))))
+
+;; A head and a gap: 1000 elements added in front of a dense vec.
+(: (Vec double))
+(def prepended-d
+  (let go ((k 0) (v {vecing (cast double i) (:for i (range 0 (- n 1000)))}))
+    (if (= k 1000) v (go (+ k 1) (vec-add-first v (cast double k))))))
+
+;; Many short walks: 10000 vecs of m elements.
+(: (-> int (Vec (Vec long))))
+(defun (shorts-l m) {vecing {vecing (cast long (+ j i)) (:for i (range 0 m))} (:for j (range 0 10000))})
+(: (-> int (Vec (Vec double))))
+(defun (shorts-d m) {vecing {vecing (cast double (+ j i)) (:for i (range 0 m))} (:for j (range 0 10000))})
+
+(: (Vec string))
+(def strings {vecing (displayed i) (:for i (range 0 100000))})
+
+(def/bench "doubles, dense" (loop (:for x dense-d) (:acc (summing x))))
+(def/bench "doubles, joined" (loop (:for x joined-d) (:acc (summing x))))
+(def/bench "doubles, prepended" (loop (:for x prepended-d) (:acc (summing x))))
+(def/bench "doubles, slice" (loop (:for x (in-vec dense-d #:from 1000 #:to 900000)) (:acc (summing x))))
+(def/bench "longs, dense" (loop (:for x dense-l) (:acc (summing x))))
+(def/bench "longs, joined" (loop (:for x joined-l) (:acc (summing x))))
+(def/bench "short longs"
+  #:params ((m [8 40 100 1000]))
+  #:setup ((vs (shorts-l m)))
+  (loop (:for v vs) (:acc (summing (loop (:for x v) (:acc (summing x)))))))
+(def/bench "short doubles"
+  #:params ((m [8 40 100]))
+  #:setup ((vs (shorts-d m)))
+  (loop (:for v vs) (:acc (summing (loop (:for x v) (:acc (summing x)))))))
+(def/bench "strings" (loop (:for s strings) (:acc (summing (string-length s)))))
+
+(run-benches)
