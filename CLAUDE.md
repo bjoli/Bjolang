@@ -27,7 +27,10 @@ To rebuild the standard library, please use ./build_std.sh
       while ! grep -q '^done' /tmp/job.txt; do sleep 10; done; cat /tmp/job.txt
 
   Have the job write a last line (here `done`) when it ends, or poll for
-  the file it writes last. Do not run a long `sleep` and then check: the
+  the file it writes last. A command is stopped after 600 seconds whatever
+  timeout it asks for, and a job started with `&` inside it is stopped with
+  it. Start a long job as a background job, and poll it with commands that
+  each end within 600 seconds (for example `for i in $(seq 1 50)`). Do not run a long `sleep` and then check: the
   job may have finished minutes before. Do not send several `sleep`
   commands in one batch: they all start at once.
 
