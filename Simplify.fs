@@ -25,6 +25,13 @@ open Bjolang.TypedAST
 ///     do nothing once spliced is removed: the `try`, the cells and the
 ///     stores into them. The loop is then in the position it had without the
 ///     guard, which `LoopLowering` needs to emit it inline.
+///   * A local function that only returns its arguments, as a loop's
+///     `loopexit` is for `folding`, is replaced by them at each call.
+///   * A record that is made at a binding and only read, as the `Range` of a
+///     loop over `(range a b)`, becomes a local for each field.
+///
+/// The last two make the C# method smaller, and the JIT inlines a smaller
+/// method into more callers.
 ///
 /// Runs on the typed tree before `Lowering`, which turns matches into type
 /// tests that no longer say which case they test for.
@@ -346,10 +353,117 @@ let private wrapInOrder (ctx: Ctx) (named: (string * TypedExpr) list) (inner: Ty
         named
         inner
 
+// ---------------------------------------------------------------------------
+// A local function that only returns its arguments
+// ---------------------------------------------------------------------------
+
+/// The body of a local function that only gives back what it was given: one
+/// of its parameters, a tuple of its parameters and literals, or something
+/// with no effect and no value. A loop's `loopexit` is one once the
+/// collectors' `collector-finish` calls are spliced, as for `folding`.
+let private isForwarding (ctx: Ctx) (ps: string list) (body: TypedExpr) : bool =
+    let isParam (e: TypedExpr) =
+        match e.Node with
+        | TIdent(p, []) -> List.contains p ps
+        | _ -> false
+
+    match body.Node with
+    | TIdent _ -> isParam body
+    | TTupleMake items -> items |> List.forall (fun item -> isParam item || isLiteral item)
+    | _ -> isNoop ctx body && ps |> List.forall (fun p -> not (mentions p body))
+
+/// Whether every occurrence of `name` in `expr` is the callee of a call with
+/// `arity` arguments, each of which has no effect and does not mention
+/// `name`. Then each call can be replaced by the body, and the arguments that
+/// the body does not use can be left out.
+let rec private onlyCalled (ctx: Ctx) (name: string) (arity: int) (expr: TypedExpr) : bool =
+    match expr.Node with
+    | TApply({ Node = TIdent(n, _) }, args, kw) when n = name ->
+        kw.IsEmpty
+        && args.Length = arity
+        && args |> List.forall (fun a -> isPure ctx a && not (mentions name a))
+    | TIdent(n, _)
+    | TSet(n, _)
+    | TRecordUpdate(n, _)
+    | TRecordSet(n, _) when n = name -> false
+    | _ -> allChildren expr |> List.forall (onlyCalled ctx name arity)
+
+/// `expr` with each call of `name` replaced by `body`, its parameters `ps`
+/// replaced by the arguments of the call.
+let rec private inlineCalls (name: string) (ps: string list) (body: TypedExpr) (expr: TypedExpr) : TypedExpr =
+    let expr = TypeVisitor.mapChildren (inlineCalls name ps body) expr
+
+    match expr.Node with
+    | TApply({ Node = TIdent(n, _) }, args, []) when n = name ->
+        let argOf = List.zip ps args |> Map.ofList
+
+        let substitute (e: TypedExpr) =
+            match e.Node with
+            | TIdent(p, []) when argOf.ContainsKey p -> argOf[p]
+            | _ -> e
+
+        let replaced =
+            match body.Node with
+            | TIdent _ -> substitute body
+            | TTupleMake items -> { body with Node = TTupleMake(List.map substitute items) }
+            | _ -> body
+
+        { replaced with Type = expr.Type; Range = expr.Range }
+    | _ -> expr
+
+// ---------------------------------------------------------------------------
+// A record that is only read
+// ---------------------------------------------------------------------------
+
+/// Whether every occurrence of `name` in `expr` reads a field of it. Then the
+/// record is not passed on, compared, written or captured whole, and each
+/// field can be a local of its own.
+let rec private onlyFieldReads (name: string) (expr: TypedExpr) : bool =
+    match expr.Node with
+    | TGetField({ Node = TIdent(n, _) }, _) when n = name -> true
+    | TIdent(n, _)
+    | TSet(n, _)
+    | TRecordUpdate(n, _)
+    | TRecordSet(n, _) when n = name -> false
+    | _ -> allChildren expr |> List.forall (onlyFieldReads name)
+
+/// `expr` with each read of a field of `name` replaced by the local of that
+/// field.
+let rec private readLocals (name: string) (locals: Map<string, TExprNode>) (expr: TypedExpr) : TypedExpr =
+    match expr.Node with
+    | TGetField({ Node = TIdent(n, _) }, field) when n = name && locals.ContainsKey field ->
+        { expr with Node = locals[field] }
+    | _ -> TypeVisitor.mapChildren (readLocals name locals) expr
+
+/// The value of a binding as the locals that inlining put around it and what
+/// is left: `(let ((a 1)) (Range (lo a) (hi 9)))` is `[a, 1]` and the
+/// `Range`. Only locals that `scope` does not mention, so that each can be
+/// bound around the whole of `scope`.
+let rec private peelLocals (scope: TypedExpr) (value: TypedExpr) : (string * TypedExpr) list * TypedExpr =
+    match value.Node with
+    | TLet(n, false, fn, v, inner) when fn = noParams && not (mentions n scope) ->
+        let outer, core = peelLocals scope inner
+        (n, v) :: outer, core
+    | _ -> [], value
+
 let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     let expr = TypeVisitor.mapChildren (simplify ctx) expr
 
     match expr.Node with
+    // A local function that only returns its arguments, such as the
+    // `loopexit` of a loop whose collectors are `folding`: each call is
+    // replaced by what it returns, and the function is not emitted. A C#
+    // local function and its call make the method larger, and a larger
+    // method is inlined less often by the JIT.
+    | TLet(name, true, fn, { Node = TLambda(ps, lambdaBody) }, rest) when
+        fn.KeywordArgs.IsEmpty
+        && fn.RestArg.IsNone
+        && isForwarding ctx ps lambdaBody
+        && not (rebinds name rest)
+        && onlyCalled ctx name ps.Length rest
+        ->
+        { inlineCalls name ps lambdaBody rest with Type = expr.Type }
+
     // A local that is the whole of its scope, as `(: value Type)` writes:
     // the value itself.
     | TLet(name, false, fn, value, { Node = TIdent(read, []) }) when fn = noParams && read = name && name <> "_" ->
@@ -358,6 +472,45 @@ let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     // A statement with no effect. `_` is never read, so a `_` bound again
     // inside `body` does not matter, as it does for the case below.
     | TLet("_", false, fn, value, body) when fn = noParams && (isPure ctx value || isNoop ctx value) -> body
+
+    // A record made here and only read, as the `Range` of
+    // `(:for i (range a b))` once `range` is inlined: each field is a local
+    // of its own, and each read of a field reads the local. The fields are
+    // evaluated in the order they were before. A C# struct and the reads of
+    // its properties make the method larger, and a larger method is inlined
+    // less often by the JIT.
+    | TLet(name, false, fn, value, body) when
+        fn = noParams
+        && name <> "_"
+        && not (rebinds name body)
+        && onlyFieldReads name body
+        && (match (snd (peelLocals body value)).Node with
+            | TRecordMake _ -> true
+            | _ -> false)
+        ->
+        let outer, core = peelLocals body value
+
+        match core.Node with
+        | TRecordMake fields ->
+            // A literal field is read as the literal. Any other value is
+            // evaluated once, where the record was made.
+            let named =
+                fields
+                |> List.map (fun (field, v) -> field, (if isLiteral v then None else Some(Gensym.fresh field)), v)
+
+            let locals =
+                named
+                |> List.map (fun (field, fresh, v) ->
+                    match fresh with
+                    | Some fresh -> field, TIdent(fresh, [])
+                    | None -> field, v.Node)
+                |> Map.ofList
+
+            let inner = readLocals name locals body
+            let bound = wrapInOrder ctx (named |> List.choose (fun (_, fresh, v) -> fresh |> Option.map (fun f -> f, v))) inner
+            let wrapped = List.foldBack (fun (n, v) acc -> letIn n v acc) outer bound
+            { wrapped with Type = expr.Type }
+        | _ -> expr
 
     | TLet(name, false, fn, value, body) when fn = noParams && not (rebinds name body) ->
         match asCase ctx value with

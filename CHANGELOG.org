@@ -3,6 +3,51 @@
 
 What each change guarantees, and what it leaves open.
 
+* The C# of a loop is smaller, so the JIT inlines it into more callers
+
+- A loop over ~(range a b)~ has two ints and no ~Range~ struct. ~range~ is
+  ~#:inline~, and ~Simplify~ makes a local of each field of a record that is
+  made at a binding and only read through its fields. The fields are
+  evaluated once, in the order they were. A ~down-from~ or ~up-from~ still
+  has its struct: they take keyword arguments, and ~#:inline~ refuses them.
+- A local function that only returns its arguments, a tuple of them, or
+  nothing is not emitted: each call is replaced by what it returns. A loop's
+  ~loopexit~ is one when its collectors are ~folding~ or ~summing~.
+- An argument of an inlined body that the body uses once, as an argument of
+  a call that evaluates it before anything else, is written in place, with
+  no local, when the arguments after it are trivial. ~(and (<= x 30.0)
+  (= (floor x) x))~ is then C#'s ~&&~, not a bool and an if/else.
+- Why: the JIT inlined bjostat's log-gamma, 420 bytes of IL, at 1 of its 4
+  calls in normal-quantile ("unprofitable inline" at the others). It is 353
+  bytes now, and inlined at 3 of the 4.
+- The results are the same: bjostat prints the same 4630 values of its
+  functions, tests and models, and the ports of bench/clbg give the same
+  output.
+- Measured, the compiler before and after alternated, 3 runs each, µs
+  (bjostat's scratch/distbench.bjo, all rows):
+
+  | row                       | before    | after     |
+  |---------------------------+-----------+-----------|
+  | normal-quantile, 100      | 58.5      | 55.3-55.6 |
+  | t-cdf df 10, 1000         | 138-139   | 132       |
+  | chi-squared-cdf, 1000     | 73.4-73.5 | 73.1-73.3 |
+  | signed-rank, 40, exact    | 15.6      | 15.2-15.3 |
+  | log-gamma, 1000           | 16.1-16.3 | 16.1-16.4 |
+
+  The 10 other rows overlap. The C# that the rows replaced took 53.6-53.9
+  for normal-quantile. bench/clbg, s: fannkuch-redux 21.27-21.36 to
+  20.50-20.76; spectral-norm 1.249-1.257 to 1.267-1.276, fasta 3.47-3.50
+  to 3.51-3.52 and k-nucleotide 7.27-7.29 to 7.31-7.38 (1 % slower); the
+  other five overlap. bjostat's bench/loops.bjo: all rows overlap.
+- Not done, measured: the ~__init~ and ~__next~ copies of a loop's slots
+  only where a later argument reads the slot (Codegen). log-gamma was then
+  329 bytes and inlined at all 4 calls, but the row log-gamma was
+  16.6-16.9, normal-cdf 110-111 against 109, and normal-quantile 56.2-56.3
+  against 55.3-55.6 without it. And a ~clrsubequals~ at ~double~ that calls
+  ~Double.Equals~ without the comparer: normal-quantile the same.
+- Tests: ~TestFiles/codegen/loop_lean.bjo~; ~vector_map.bjo~ finds the
+  range's end as a local.
+
 * A walk of a Vec makes no call
 
 - The step of ~VecCursor~ to its next leaf is inlined in the loop of the

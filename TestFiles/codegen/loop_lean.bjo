@@ -1,0 +1,21 @@
+;; The C# of a loop has no more than the loop needs, so that the JIT inlines
+;; the method where it can:
+;;
+;; - A loop over a range has two ints, not a `Range` struct.
+;; EXPECT-NO-CS: prelude__Range
+;; EXPECT-NO-CS: \.hi\b
+;; EXPECT-CS: >= hi__\d+\)
+;; - A loop whose collectors are `folding` has no `loopexit` function.
+;; EXPECT-NO-CS: loopexit
+;; - The operand of `=` that is computed is not put in a local first, so the
+;;   `and` stays `&&`.
+;; EXPECT-CS: if \(\(\(\(x > 0\.0\)\) && \(clrsubequals\(\(x \* 2\.0\), y\)\)\)\)
+(import (std prelude))
+
+(: (-> int double))
+(defun (sum-from-two n)
+  (loop (:for i (range 2 n)) (:acc s (folding 0.0 (+ s (cast double i))))))
+
+(: (-> double double int))
+(defun (double-of x y)
+  (if (and (> x 0.0) (= (* x 2.0) y)) 1 0))

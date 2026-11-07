@@ -273,15 +273,25 @@ alternated runs, µs: C# 53.5-53.8, Bjolang 58.1-59.6.
   | and ~==~ in place of ~clrsubequals~          | 440 | no      | 57.4-57.7 |
   | and the Range, ~loopexit~ and ~&&~ changes   | 329 | 4 of 4  | 54.1      |
   | and all four                                 | 361 | 4 of 4  | 53.9-54.2 |
-  | named lets in the source, in place of ~loop~ | 353 | no      | 57.7, 1 run |
+  | named lets in the source, in place of ~loop~ | 353 | no      | 57.7 once |
 
   No single change is enough. The three together make the row as fast as
   the C#, with the same operations.
-- *To do:* in the emitted C# of a loop, ints in place of the struct of a
-  ~range~ (or of any iterable struct that is constructed where the loop
-  starts), no local function for a ~loopexit~ that only returns its
-  arguments, and no local for an operand that is used once, so that ~and~
-  stays ~&&~. These do not make a new shape of loop.
+- *Done for the three* (see the changelog, "The C# of a loop is
+  smaller"): log-gamma is 353 bytes, and normal-quantile 55.3-55.6. Still
+  open:
+  - 1 of the 4 calls of log-gamma is still "unprofitable inline", also in
+    the bench's closure, into which the JIT inlines normal-quantile; and
+    gamma-fraction (289 bytes) is not inlined at all. The C# had its
+    fraction inside Gamma, and was 53.6-53.9.
+  - A ~down-from~ or ~up-from~ still has its struct: ~#:inline~ refuses a
+    function with keyword arguments.
+  - Measured and not kept: copies of the slots only where a later argument
+    reads the slot, in all loops (Codegen). log-gamma was 329 bytes and
+    inlined at all 4 calls, but the row log-gamma took 16.6-16.9 against
+    16.1-16.4, and normal-quantile 56.2-56.3 against 55.3-55.6. The hand
+    edit above changed log-gamma only. A ~clrsubequals~ at ~double~ without
+    the comparer: the same times.
 
 *Not a cause: the shape of the loop.* bjostat's exact signed-rank test,
 counts[s] += counts[s - e] with (:for s (down-from top #:to e)), was

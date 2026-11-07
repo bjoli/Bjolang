@@ -123,6 +123,24 @@ let rec private isTrivial (writable: Writable) (expr: TypedExpr) : bool =
     | TGetField(target, field) -> not (Set.contains field writable.Fields) && isTrivial writable target
     | _ -> false
 
+/// Whether `body` is a call that evaluates `name` before anything else that
+/// can have an effect: `name` occurs once in `body`, as an argument of the
+/// call, and the arguments before it are trivial. Then the argument can be
+/// written in place of `name`, and it is still evaluated once and first, as
+/// `(clr-equals (floor x) x)` is from `(= (floor x) x)`.
+let private evaluatedFirst (writable: Writable) (name: string) (body: TypedExpr) : bool =
+    occurrences name body = 1
+    && (match body.Node with
+        | TApply({ Node = TIdent(f, _) }, args, []) when f <> name ->
+            let rec before (args: TypedExpr list) =
+                match args with
+                | [] -> false
+                | { Node = TIdent(n, _) } :: _ when n = name -> true
+                | a :: more -> isTrivial writable a && before more
+
+            before args
+        | _ -> false)
+
 /// Binds `parameters` to `args` inside `body`.
 ///
 /// This one decision is what makes monadic code compile to a loop rather than
@@ -138,6 +156,10 @@ let rec private isTrivial (writable: Writable) (expr: TypedExpr) : bool =
 ///     duplicates it, and in a `(do ...)` block the continuation is the entire
 ///     rest of the block — so a `bind` that mentions its continuation twice
 ///     would give code size exponential in nesting depth.
+///
+///   * Any other argument that the body uses once, as an argument of a call
+///     that evaluates it before anything else, is also substituted, when the
+///     arguments after it are trivial (see `evaluatedFirst`).
 ///
 /// Everything else is bound with a `TLet`, in argument order with the body
 /// innermost, which preserves left-to-right evaluation and evaluates each
@@ -169,7 +191,14 @@ let rec private bindArguments
                             $"%s{describe} mentions its parameter '%s{Gensym.baseName name}' %d{n} times and is given a function there, so it cannot be substituted. It is bound to a local instead — correct, but the call it wraps will not be a tail call, and a loop written through it will grow the stack."
 
                         false
-                | _ -> false
+                | _ ->
+                    // A value used once and first, with every later argument
+                    // trivial and so substituted too: it is still evaluated
+                    // once and in order, and the call needs no local. A local
+                    // in an operand of `and` makes `Codegen` write the `and`
+                    // as statements, which makes the method larger.
+                    evaluatedFirst writable name body
+                    && rest |> List.forall (fun (n, a) -> isTrivial writable a && canSubstitute n a body)
 
         if substitutable then
             bindArguments writable describe rest (substitute name arg body)
