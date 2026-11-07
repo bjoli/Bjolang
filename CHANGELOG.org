@@ -3,6 +3,49 @@
 
 What each change guarantees, and what it leaves open.
 
+* A loop moves into its slots only what changes
+
+- A jump that passes a slot its own value, as ~(go (+ i 1) acc)~ does for
+  ~acc~, has no temporary and no assignment for that slot. The other slots
+  still go through a temporary each, all evaluated before any is written,
+  in the order they were. This holds for every jump: of a ~loop~, a named
+  ~let~ and a tail-recursive function.
+- A slot is declared with its start value, ~int i = 0;~, in place of a
+  declaration, a temporary and an assignment. A start value is an
+  expression outside the loop's members, so it cannot read a slot. The
+  values are evaluated in the order they were. This holds for every loop
+  emitted inline, flat or merged.
+- IL of all of ~lib/~ (62 modules) and bjostat's ~src/~ (10 modules), each
+  change alone and both:
+
+  | group   | before  | no own-value moves | start values direct | both    |
+  |---------+---------+--------------------+---------------------+---------|
+  | lib     | 1469733 | 1462616            | 1463821             | 1456725 |
+  | bjostat |  199811 |  198825            |  198362             |  197376 |
+
+  Both: -13008 bytes (-0.89 %) in lib and -2435 (-1.22 %) in bjostat,
+  1898 and 412 locals fewer; methods over 100 bytes 2757 to 2727 in lib,
+  455 to 449 in bjostat. 1075 methods smaller, 1 larger by 4 bytes (a
+  ~ValueTuple~ slot in ~Pairwise~'s ~for-each~, where Roslyn uses the
+  temporary differently).
+- A tail-recursive ~count-small~ is 44 bytes, 1 local (was 49, 2); a
+  ~folding~ loop 56 (was 60); a ~:when~ filter loop 81 (was 92). bjostat's
+  log-gamma is 345 (was 353), gamma-fraction 273 (was 289).
+- The results are the same: bjostat prints the same 4630 values, its 15
+  test files pass with all threads and with one, and the ports of
+  bench/clbg print the same output.
+- Measured, 4 builds (before, each change, both) in rounds A B C D, D C B
+  A, A B C D: bjostat's scratch/distbench.bjo (15 rows) and bench/loops.bjo
+  (8 rows), and the nine ports of bench/clbg. All ranges overlap, except
+  two that overlapped when run again (4 runs each): chi-squared-cdf with
+  both, 72.7-73.2 against 73.4-73.5 µs, then 72.9-73.3 against 73.0-73.4;
+  pidigits with both, 2.476-2.478 against 2.483-2.491 s, then 2.472-2.493
+  against 2.459-2.512. fannkuchredux with no own-value moves was
+  20.44-20.50 s against 20.52-20.55, not run again.
+- Tests: ~TestFiles/codegen/loop_moves.bjo~. Two codegen tests read a slot
+  declared with its value, and the debug symbol test finds a compiler's
+  name in a state machine's ~__next~ field, as there is no ~__init~ now.
+
 * ~not~ is C#'s ~!~, with no local for its argument
 
 - An argument of an inlined body that the body uses once, in the position

@@ -1411,7 +1411,7 @@ def run_pdb_tests():
                    raw is not None and any("__" in v for k, v in raw if k == "shown"), output)
         check_that("BJOLANG_RAW_PDB=1 leaves Roslyn's field names",
                    raw is not None and "<>h__1" not in [v for k, v in raw if k == "field"]
-                   and any("__init__" in v for k, v in raw if k == "field"), output)
+                   and any(re.fullmatch(r"<[^<>]*__\d+>5__\d+", v) for k, v in raw if k == "field"), output)
 
     # The runtime is not the user's code: a step into a builtin steps over it,
     # under netcoredbg's rule for what counts. A runtime type or lambda without

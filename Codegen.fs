@@ -4875,20 +4875,16 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
             match flatLoopInfo with
             | Some (member_, initArgs) ->
                 // Flat loop path: emit slot variables, evaluate initial args, and run while(true) inline!
-                for (slotName, slotType) in member_.Slots do
-                    indent ctx; appendLine ctx $"{typeToString slotType} {sanitizeIdent slotName};"
-
-                let temps = initArgs |> List.map (fun _ -> freshName "__init")
-                for arg, tmp in List.zip initArgs temps do
+                //
+                // Each slot is declared with its start value, in order. A start
+                // value is an expression outside the loop's members, so it
+                // cannot read a slot, and it needs no temporary.
+                for (slotName, slotType), arg in List.zip member_.Slots initArgs do
                     emitStatement ctx (fun c ->
                         indent c
-                        append c $"var {tmp} = "
+                        append c $"{typeToString slotType} {sanitizeIdent slotName} = "
                         generateExpr c arg
                         appendLine c ";")
-
-                let slots = member_.Slots |> List.map (fst >> sanitizeIdent)
-                for slot, tmp in List.zip slots temps do
-                    indent ctx; appendLine ctx $"{slot} = {tmp};"
 
                 // A vector part before the scalar loop, if the loop has one:
                 // see `findVectorLoops`.
@@ -4979,20 +4975,14 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                         indent ctx
                         appendLine ctx $"%s{typeToString slotType} %s{sanitizeIdent slotName} = default!;"
 
-                // Through temps, so that an argument may read a slot an earlier
-                // assignment would already have overwritten.
-                let temps = initArgs |> List.map (fun _ -> freshName "__init")
-
-                for arg, tmp in List.zip initArgs temps do
+                // A start value is an expression outside the loop's members, so
+                // it cannot read a slot: each is assigned directly, in order.
+                for (slotName, _), arg in List.zip entry.Slots initArgs do
                     emitStatement ctx (fun c ->
                         indent c
-                        append c $"var %s{tmp} = "
+                        append c $"%s{sanitizeIdent slotName} = "
                         generateExpr c arg
                         appendLine c ";")
-
-                for (slotName, _), tmp in List.zip entry.Slots temps do
-                    indent ctx
-                    appendLine ctx $"%s{sanitizeIdent slotName} = %s{tmp};"
 
                 let stateVar = freshName "__state"
                 indent ctx
@@ -6150,11 +6140,21 @@ and private generateRecur
             expr.Range
             $"internal error: jump to '%s{member_.LoopName}' carries %d{args.Length} arguments for %d{slots.Length} slots"
 
+    // An argument that is the slot itself changes nothing: it gets no
+    // temporary and no assignment. Names are unique after `AlphaRename`, so the
+    // name is the slot and not a variable that shadows it.
+    let moves =
+        List.zip slots args
+        |> List.filter (fun (slot, arg) ->
+            match arg.Node with
+            | TIdent(n, []) -> sanitizeIdent n <> slot
+            | _ -> true)
+
     // The whole vector is evaluated before any slot is written: an argument may
     // read a slot that an earlier assignment would already have overwritten.
-    let temps = args |> List.map (fun _ -> freshName "__next")
+    let temps = moves |> List.map (fun _ -> freshName "__next")
 
-    for arg, tmp in List.zip args temps do
+    for (_, arg), tmp in List.zip moves temps do
         let declared = localDeclarationType arg.Type
 
         emitStatement ctx (fun c ->
@@ -6163,7 +6163,7 @@ and private generateRecur
             generateExpr c arg
             appendLine c ";")
 
-    for slot, tmp in List.zip slots temps do
+    for (slot, _), tmp in List.zip moves temps do
         indent ctx; appendLine ctx $"%s{slot} = %s{tmp};"
 
     if depth > 0 then

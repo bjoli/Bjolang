@@ -1,0 +1,27 @@
+;; A loop moves into its slots only what changes:
+;;
+;; - A jump that passes a slot its own value has no temporary and no
+;;   assignment for that slot. The other slots still go through temporaries,
+;;   in order.
+;; EXPECT-NO-CS: var __next__\d+ = acc;
+;; EXPECT-NO-CS: var __next__\d+ = loopcur\w*;
+;; EXPECT-CS: var __next__\d+ = \(acc \+ i\);
+;; - A slot is declared with its start value: a start value cannot read a
+;;   slot, so it needs no temporary.
+;; EXPECT-NO-CS: __init__
+;; EXPECT-CS: int i__\d+ = 0;
+;; EXPECT-CS: int loopcur\w+ = 0;
+(export count-small sum-of from-zero)
+
+(import (std prelude))
+
+;; Tail recursion, not a `loop`: the `else` arm passes `acc` on unchanged.
+(: (-> int int int))
+(defun (count-small i acc)
+  (if (>= i 10) acc (if (< i 3) (count-small (+ i 1) (+ acc i)) (count-small (+ i 1) acc))))
+
+(: (-> (Array double) double))
+(defun (sum-of xs) (loop (:for x xs) (:acc s (folding 0.0 (+ s x)))))
+
+(: (-> int))
+(defun (from-zero) (let go ((i 0) (n 0)) (if (>= i 5) n (go (+ i 1) (+ n i)))))
