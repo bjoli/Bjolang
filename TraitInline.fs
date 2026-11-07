@@ -123,23 +123,69 @@ let rec private isTrivial (writable: Writable) (expr: TypedExpr) : bool =
     | TGetField(target, field) -> not (Set.contains field writable.Fields) && isTrivial writable target
     | _ -> false
 
-/// Whether `body` is a call that evaluates `name` before anything else that
-/// can have an effect: `name` occurs once in `body`, as an argument of the
-/// call, and the arguments before it are trivial. Then the argument can be
-/// written in place of `name`, and it is still evaluated once and first, as
-/// `(clr-equals (floor x) x)` is from `(= (floor x) x)`.
-let private evaluatedFirst (writable: Writable) (name: string) (body: TypedExpr) : bool =
-    occurrences name body = 1
-    && (match body.Node with
+/// Does `expr` have a yield point outside the lambdas in it? The same calls
+/// `ColourCheck` reads as one: a call whose callee suspends or is given a
+/// suspending callback, an `#:async` import, and a trait method that
+/// suspends. A lambda in `expr` has its own colour, so it is not looked in.
+let rec private hasYieldPoint (expr: TypedExpr) : bool =
+    let here =
+        match expr.Node with
+        | TApply(target, _, _) -> callSuspends target.Type || wantsSuspendingCopy target.Type
+        | TForeignStaticCall(_, _, _, Some meta) -> meta.Await
+        | TDotMethodCall(_, _, _, Some meta) -> meta.Await
+        | TTraitCall(tref, _, _) -> callSuspends tref.MethodType || wantsSuspendingCopy tref.MethodType
+        | TInterfaceCall(_, _, methodType, _, _) -> callSuspends methodType
+        | _ -> false
+
+    match expr.Node with
+    | TLambda _ -> false
+    | _ -> here || TypeVisitor.children expr |> List.exists hasYieldPoint
+
+/// Whether `body` evaluates `name` before anything else that can have an
+/// effect. Then the argument can be written in place of `name`, and it is
+/// still evaluated once and first, as `(clr-equals (floor x) x)` is from
+/// `(= (floor x) x)`, and `(if (< x 0.0) #f #t)` is from `(not (< x 0.0))`.
+///
+/// - `name` occurs once in `body`.
+/// - That occurrence is in the position that `body` evaluates first. The
+///   first position of `name` itself is `name`. The first position of these
+///   forms is the first position of the operand that they evaluate first:
+///   - a call of a named function: the first argument that is not trivial;
+///     the arguments before it are trivial, so they have no effect;
+///   - an `if` or a `when`: the test;
+///   - a `match`: the value matched;
+///   - a `let` of a value, mutable or not: the value.
+/// - Any other form returns false.
+/// - When `arg` has a yield point or is a `match`, no argument is evaluated
+///   before the position. C# stores an argument that it has evaluated in a
+///   local of its own, or in a field of the state machine, before an `await`
+///   and before a `switch` expression. That makes the method larger than the
+///   local that the binding gives.
+let private evaluatedFirst (writable: Writable) (name: string) (arg: TypedExpr) (body: TypedExpr) : bool =
+    let spills =
+        match arg.Node with
+        | TMatch _ -> true
+        | _ -> hasYieldPoint arg
+
+    let rec first (preceded: bool) (expr: TypedExpr) =
+        match expr.Node with
+        | TIdent(n, _) -> n = name && not (preceded && spills)
         | TApply({ Node = TIdent(f, _) }, args, []) when f <> name ->
-            let rec before (args: TypedExpr list) =
+            let rec before (preceded: bool) (args: TypedExpr list) =
                 match args with
                 | [] -> false
-                | { Node = TIdent(n, _) } :: _ when n = name -> true
-                | a :: more -> isTrivial writable a && before more
+                | ({ Node = TIdent(n, _) } as a) :: _ when n = name -> first preceded a
+                | a :: more -> if isTrivial writable a then before true more else first preceded a
 
-            before args
-        | _ -> false)
+            before preceded args
+        | TIf(test, _, _)
+        | TWhen(test, _, _) -> first preceded test
+        | TMatch(scrutinee, _) -> first preceded scrutinee
+        | TLet(_, false, fn, value, _) when fn = noParams -> first preceded value
+        | TLetMutable(_, value, _) -> first preceded value
+        | _ -> false
+
+    occurrences name body = 1 && first false body
 
 /// Binds `parameters` to `args` inside `body`.
 ///
@@ -157,9 +203,9 @@ let private evaluatedFirst (writable: Writable) (name: string) (body: TypedExpr)
 ///     rest of the block — so a `bind` that mentions its continuation twice
 ///     would give code size exponential in nesting depth.
 ///
-///   * Any other argument that the body uses once, as an argument of a call
-///     that evaluates it before anything else, is also substituted, when the
-///     arguments after it are trivial (see `evaluatedFirst`).
+///   * Any other argument that the body uses once, in the position that the
+///     body evaluates first, is also substituted, when the arguments after it
+///     are trivial (see `evaluatedFirst`).
 ///
 /// Everything else is bound with a `TLet`, in argument order with the body
 /// innermost, which preserves left-to-right evaluation and evaluates each
@@ -197,7 +243,7 @@ let rec private bindArguments
                     // once and in order, and the call needs no local. A local
                     // in an operand of `and` makes `Codegen` write the `and`
                     // as statements, which makes the method larger.
-                    evaluatedFirst writable name body
+                    evaluatedFirst writable name arg body
                     && rest |> List.forall (fun (n, a) -> isTrivial writable a && canSubstitute n a body)
 
         if substitutable then
@@ -251,24 +297,6 @@ let private isFunctionType (t: HMType) =
     match solvedType t with
     | TFun _ -> true
     | _ -> false
-
-/// Does `expr` have a yield point outside the lambdas in it? The same calls
-/// `ColourCheck` reads as one: a call whose callee suspends or is given a
-/// suspending callback, an `#:async` import, and a trait method that
-/// suspends. A lambda in `expr` has its own colour, so it is not looked in.
-let rec private hasYieldPoint (expr: TypedExpr) : bool =
-    let here =
-        match expr.Node with
-        | TApply(target, _, _) -> callSuspends target.Type || wantsSuspendingCopy target.Type
-        | TForeignStaticCall(_, _, _, Some meta) -> meta.Await
-        | TDotMethodCall(_, _, _, Some meta) -> meta.Await
-        | TTraitCall(tref, _, _) -> callSuspends tref.MethodType || wantsSuspendingCopy tref.MethodType
-        | TInterfaceCall(_, _, methodType, _, _) -> callSuspends methodType
-        | _ -> false
-
-    match expr.Node with
-    | TLambda _ -> false
-    | _ -> here || TypeVisitor.children expr |> List.exists hasYieldPoint
 
 /// Does a function value flow out of `expr`: a lambda, or a function named as a
 /// value rather than called? Somewhere in it, not only at the top: a union case

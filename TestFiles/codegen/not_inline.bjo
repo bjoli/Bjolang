@@ -1,0 +1,33 @@
+;; `not` is spliced with its argument in place, as the test of its `if`, so
+;; there is no local for the argument and no `if` that computes the bool:
+;;
+;; - The test of an `if` on `(not c)` is `!c`, and the arms keep their order.
+;; EXPECT-CS: if \(\(!\(\(x < 0\.0\)\)\)\) \{
+;; EXPECT-NO-CS: \(bool\)\(false\)
+;; - A `(not c)` that is a value is C#'s `!`.
+;; EXPECT-CS: return \(!\(\(x < 0\.0\)\)\);
+;; - `(when (not c) ...)` tests `!c` too.
+;; EXPECT-CS: if \(\(!\(\(x < 0\.0\)\)\)\) \{\s*$
+;; - `(not (not c))` is `c`.
+;; EXPECT-CS: return \(x < 0\.0\);
+;; - A filter loop on `(not c)` tests `!c`, with no bool local.
+;; EXPECT-NO-CS: bool b__\d+ =
+;; EXPECT-NO-CS: __hoist__\d+ = false;
+(export sign-step non-negative? clear-if-non-negative! negative-twice? keep-non-negative)
+
+(import (std prelude))
+
+(: (-> double int))
+(defun (sign-step x) (if (not (< x 0.0)) 1 2))
+
+(: (-> double bool))
+(defun (non-negative? x) (not (< x 0.0)))
+
+(: (-> (Array double) double void))
+(defun (clear-if-non-negative! xs x) (when (not (< x 0.0)) (array-set! xs 0 0.0)))
+
+(: (-> double bool))
+(defun (negative-twice? x) (not (not (< x 0.0))))
+
+(: (-> (Array double) (List double)))
+(defun (keep-non-negative xs) {listing x (:for x xs) (:when (not (< x 0.0)))})

@@ -21,6 +21,11 @@ open Bjolang.TypedAST
 ///   * A `match` on the local picks its arm at compile time.
 ///   * A local nothing reads, whose value has no effects, is dropped.
 ///   * An `if` on a literal condition is replaced by the arm it takes.
+///   * `(if c #f #t)`, as `(not c)` is once spliced, is `!c` (see
+///     `strictNot`), `(if c #t #f)` is `c`, and `!!c` is `c`. An `if` on
+///     `!c` keeps its arms in their order: C# tests `!c` with the opposite
+///     branch, at no cost, and the order of the arms is the order the JIT
+///     lays the code out in.
 ///   * A loop guard (see `LoopDesugar.guardLoop`) whose `iterable-cleanup` calls
 ///     do nothing once spliced is removed: the `try`, the cells and the
 ///     stores into them. The loop is then in the position it had without the
@@ -139,6 +144,10 @@ let private cheapArithmetic = set [ "+"; "-"; "*" ]
 let strictAnd = "bool-and"
 let strictOr = "bool-or"
 
+/// What `(if c #f #t)` becomes, which `Codegen` writes as C#'s `!`. It has no
+/// branch, and it is an expression where the `if` would be statements.
+let strictNot = "bool-not"
+
 let rec private settled (t: HMType) : HMType =
     match t with
     | TMeta { Value = Some inner } -> settled inner
@@ -187,9 +196,25 @@ let private isCheapAndPure (expr: TypedExpr) : bool =
             | TApply({ Node = TIdent(op, _) }, [ a; b ], []) when Set.contains op cheapArithmetic ->
                 isPrimitiveNumber e.Type && isPrimitiveNumber a.Type && isPrimitiveNumber b.Type && go a && go b
             | TApply({ Node = TIdent(op, _) }, [ a; b ], []) when op = strictAnd || op = strictOr -> go a && go b
+            | TApply({ Node = TIdent(op, _) }, [ a ], []) when op = strictNot -> go a
             | _ -> false)
 
     go expr
+
+/// `!c`, at the type of `whole`.
+let private notOf (c: TypedExpr) (whole: TypedExpr) : TypedExpr =
+    let callee: TypedExpr =
+        { Type = TFun([ c.Type ], whole.Type, ESync)
+          Range = whole.Range
+          Node = TIdent(strictNot, []) }
+
+    { whole with Node = TApply(callee, [ c ], []) }
+
+/// `c` when `expr` is `!c`.
+let private (|Not|_|) (expr: TypedExpr) : TypedExpr option =
+    match expr.Node with
+    | TApply({ Node = TIdent(op, _) }, [ c ], []) when op = strictNot -> Some c
+    | _ -> None
 
 /// `a & b` or `a | b`, both sides evaluated, and no branch between them.
 let private strictly (op: string) (a: TypedExpr) (b: TypedExpr) (whole: TypedExpr) : TypedExpr =
@@ -574,6 +599,21 @@ let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     // A constant condition, as the type check of `(:finish test value)` leaves.
     | TIf({ Node = TBool true }, t, _) -> { t with Type = expr.Type }
     | TIf({ Node = TBool false }, _, f) -> { f with Type = expr.Type }
+
+    // `(if c #f #t)`, as `(not c)` is once spliced, is `!c`, and `(if c #t #f)`
+    // is `c`. Both before the `and` rule below, which would make the second
+    // `c & true`.
+    //
+    // An `if` on `!c` is not made an `if` on `c` with its arms exchanged. C#
+    // compiles the `!` in a test into the opposite branch, so that saves no
+    // IL, and it changes the order of the arms, which is the order the JIT
+    // lays them out in. Measured: with the exchange, bjostat's normal-quantile
+    // row took 57.6-57.8 µs against 55.4-55.5 without it.
+    | TIf(c, { Node = TBool false }, { Node = TBool true }) when isBool expr.Type && isBool c.Type ->
+        match c with
+        | Not inner -> { inner with Type = expr.Type }
+        | _ -> notOf c expr
+    | TIf(c, { Node = TBool true }, { Node = TBool false }) when isBool c.Type -> { c with Type = expr.Type }
 
     // `(and a b)` is `(if a b #f)`, and `(or a b)` is `(if a #t b)`. When `b`
     // is cheap and can neither throw nor do anything, both are evaluated, and

@@ -2724,6 +2724,7 @@ let private vectorLoopOf
         | TIf(a, b, { Node = TBool false }) -> Option.map2 (fun x y -> MAnd(x, y)) (mask env a) (mask env b)
         | TIf(a, { Node = TBool true }, b) -> Option.map2 (fun x y -> MOr(x, y)) (mask env a) (mask env b)
         | TIf(a, { Node = TBool false }, { Node = TBool true }) -> mask env a |> Option.map MNot
+        | TApply({ Node = TIdent(op, _) }, [ a ], []) when op = Simplify.strictNot -> mask env a |> Option.map MNot
         | _ -> None
 
     // A jump back that leaves out the element: each cursor plus 1, and each
@@ -3754,18 +3755,35 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         let live = liveClauses clauses
         generateExpr ctx matchTarget
         appendLine ctx " switch {"
+        // A last clause that can only meet its own case and binds nothing is
+        // `_`, with no type test and no throw after it, as the `default:` of
+        // `generateMatch` is. See `impliedLastCase`.
+        let implied =
+            if live |> List.exists isIrrefutable || coversBool live then
+                None
+            else
+                match impliedLastCase ctx.Registry live with
+                | Some last ->
+                    match last.Pattern.Node with
+                    | TPConstruct(_, args) when args |> List.forall (fun a -> a.Node = TPWildcard) -> Some last
+                    | _ -> None
+                | None -> None
+
         withIndent ctx (fun c ->
             // Arms have no statement position of their own.
             let armCtx = { c with Prelude = None }
             for clause in live do
                 indent armCtx
                 let views = ResizeArray()
-                generatePattern armCtx views clause.Pattern
-                generateClauseGuard armCtx views clause.Guard
+                if implied |> Option.exists (fun last -> obj.ReferenceEquals(last, clause)) then
+                    append armCtx "_"
+                else
+                    generatePattern armCtx views clause.Pattern
+                    generateClauseGuard armCtx views clause.Guard
                 append armCtx " => "
                 generateExpr armCtx clause.Body
                 appendLine armCtx ","
-            if not (live |> List.exists isIrrefutable) && not (coversBool live) then
+            if implied.IsNone && not (live |> List.exists isIrrefutable) && not (coversBool live) then
                 indent armCtx
                 appendLine armCtx $"_ => throw BjolangRuntime.MatchFailure(\"%s{Lexer.formatPos expr.Range}\")"
         )
@@ -4478,6 +4496,13 @@ and private generateApply
                 append ctx "))")
 
             if constant then append ctx ")"
+
+    // `(if c #f #t)` at `bool`: see `Simplify.strictNot`.
+    | TIdent (name, _) when name = Simplify.strictNot && args.Length = 1 && kwArgs.IsEmpty ->
+        let operand = (prepareOperands ctx args).Head
+        append ctx "(!("
+        operand ctx
+        append ctx "))"
 
     | TIdent (name, _) when Map.containsKey name infixOperators && args.Length = 2 && kwArgs.IsEmpty ->
         if (name = "/" || name = "%") && isZeroLiteral args[1] && isCsConstant args[0]

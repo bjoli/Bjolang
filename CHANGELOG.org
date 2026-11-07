@@ -3,6 +3,62 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~not~ is C#'s ~!~, with no local for its argument
+
+- An argument of an inlined body that the body uses once, in the position
+  that the body evaluates first, is written in place, with no local. The
+  positions are: an argument of a call when the arguments before it are
+  trivial, the test of an ~if~ or ~when~, the value of a ~match~ and the
+  value of a ~let~, and the first position inside them. Before, only the
+  argument of a call was. The arguments after it must be trivial, as before.
+  It is still evaluated once and first.
+- Not when the argument has a yield point or is a ~match~ and an argument
+  is evaluated before the position: C# then stores that argument in a field
+  of the state machine or in a local, and the method is larger than with
+  the local of the binding (~list-map~'s bjoroutine copy was 32 bytes
+  larger).
+- ~(if c #f #t)~ at ~bool~, which is ~(not c)~ once spliced, is C#'s ~!c~
+  (~Simplify.strictNot~). ~(if c #t #f)~ is ~c~, and ~(not (not c))~ is ~c~.
+  ~(not (< x 0.0))~ was a bool local and an if/else that set a second bool;
+  it is ~(!((x < 0.0)))~.
+- A ~match~ that is a C# switch expression, whose last clause can only meet
+  its own case and binds nothing, has ~_ =>~ for that clause, with no type
+  test and no throw, as the switch statement already had (~impliedLastCase~).
+- IL of all of ~lib/~ (62 modules) and bjostat's ~src/~ (10 modules):
+
+  | group   | IL before | IL after | methods over 100 bytes |
+  |---------+-----------+----------+------------------------|
+  | lib     |   1476752 |  1469733 | 2771 to 2757           |
+  | bjostat |    200886 |   199811 | 455 to 455             |
+
+  475 methods are smaller, 20 larger by 4 to 11 bytes: a C# switch
+  expression that is now an argument after another argument (C# stores the
+  argument before it in a local), and two in ~(std url)~ where a ~match~ on a
+  ~Result~ is now inside a ~?:~. In the emitted C#, the if/else that sets a
+  bool from a ~not~ was in 433 places in lib and 66 in bjostat, and is in
+  none; ~__hoist~ temporaries went from 1952 to 1495 and from 436 to 329.
+- A function ~(if (not (< x 0.0)) 1 2)~ is 17 bytes, as in hand-written C#
+  (was 39); ~(not (< x 0.0))~ alone 17 (was 19). A filter loop
+  ~{listing x (:for x xs) (:when (not (< x 0.0)))}~ is 92 bytes (was 106).
+  bjostat's normal-quantile-of is 150 (was 161).
+- Measured and not kept: an ~if~ on ~!c~ made an ~if~ on ~c~ with its arms
+  exchanged. C# compiles the ~!~ of a test into the opposite branch, so it
+  saved no IL, and it changes the order the JIT lays the arms out in. With
+  it, bjostat's normal-quantile row took 57.6-57.8 µs against 55.4-55.5
+  (alternated, 3 runs each): the JIT found normal-quantile-of "unprofitable"
+  to inline into normal-quantile. Any one of the three changes left out
+  made the row fast again.
+- The results are the same: bjostat prints the same 4630 values, its 15
+  test files pass with all threads and with one, and the ports of
+  bench/clbg print the same output.
+- Measured, the compiler before and after alternated, 3 runs each: bjostat's
+  scratch/distbench.bjo (15 rows) and bench/loops.bjo (8 rows), and the nine
+  ports of bench/clbg: all ranges overlap. normal-quantile, 100: 55.4-55.6
+  µs before and after.
+- Tests: ~TestFiles/codegen/not_inline.bjo~. Four codegen tests now expect
+  the body of an inlined lambda as the argument of the builder's add, with
+  no local.
+
 * A function written #:inline may take keyword parameters
 
 - Such a function is copied at each call, also in an importer. A keyword
