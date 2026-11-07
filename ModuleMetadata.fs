@@ -118,7 +118,9 @@ open System.Text
 /// reader of 27 would read it as a type constructor named `units`.
 /// 29: `UnitDecls`, the module's `def/dimension`, `def/unit` and `def/prefix`
 /// as source, after `Frameworks`.
-let currentVersion = 29
+/// 30: a constrained body carries its keyword parameters and their defaults,
+/// after `Params`. A reader of 29 would read them as the body.
+let currentVersion = 30
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -174,6 +176,9 @@ type ConstrainedBodyEntry = {
     Name: string
     OriginModule: string
     Params: string list
+    /// The keyword parameters in the order they were declared, each with its
+    /// default as a serialized Bjolang expression.
+    Keywords: (string * string) list
     /// A serialized Bjolang expression.
     Body: string
     Qualification: (string * string) list
@@ -481,6 +486,7 @@ let private putConstrainedBody (sb: StringBuilder) (b: ConstrainedBodyEntry) =
     putStr sb b.Name
     putStr sb b.OriginModule
     putList sb putStr b.Params
+    putList sb putPair b.Keywords
     putStr sb b.Body
     putList sb putPair b.Qualification
     putStr sb (if b.Inline then "1" else "0")
@@ -489,6 +495,7 @@ let private getConstrainedBody (c: Cursor) : ConstrainedBodyEntry =
     let name = getStr c
     let originModule = getStr c
     let params' = getList getStr c
+    let keywords = getList getPair c
     let body = getStr c
     let qualification = getList getPair c
     let isInline = getStr c = "1"
@@ -496,6 +503,7 @@ let private getConstrainedBody (c: Cursor) : ConstrainedBodyEntry =
     { Name = name
       OriginModule = originModule
       Params = params'
+      Keywords = keywords
       Body = body
       Qualification = qualification
       Inline = isInline }

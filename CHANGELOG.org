@@ -3,6 +3,35 @@
 
 What each change guarantees, and what it leaves open.
 
+* A function written #:inline may take keyword parameters
+
+- Such a function is copied at each call, also in an importer. A keyword
+  parameter that the call leaves out gets its default in the copy. The
+  arguments are evaluated as written, then the defaults that are needed in
+  the order the parameters were declared, as in a call. A default may read
+  the parameters before it and the names of its own module, private ones
+  included. Each default is checked at the type of its parameter at the
+  call: ~#:by 1~ of a walk in doubles is a double.
+- A function written #:inline whose ~(where ...)~ names only .NET
+  interfaces, such as ~Num~ and ~Ordered~, is copied at a call whose types
+  are all known. At a call that is still generic it stays a call.
+- ~up-from~, ~down-from~ and ~check-step~ are #:inline. A loop over
+  ~(down-from top #:to e)~ in ints has ~top~ and ~e~ as locals, steps by the
+  literal 1, and has no ~DownFrom~ struct and no call.
+- Still not inlined: a function with a rest parameter, and a bjoroutine with
+  keyword parameters (a default would have to be bridged to its colour).
+- The metadata is version 30: a published body carries the keyword
+  parameters and their defaults. Libraries built before must be built again.
+- Measured, the compiler before and after alternated, 3 runs each (bjostat's
+  scratch/distbench.bjo, all rows): rank-sum, 40 and 40, exact 1640-1660 to
+  1610-1620 µs; rank-sum, 500 and 500, 13.5-14.1 to 13.2-13.4 µs; the 13
+  other rows overlap. bjostat's bench/loops.bjo, and nbody, k-nucleotide
+  and fasta of bench/clbg: the same. The same 4630 values, and the same
+  output of the ports.
+- Tests: ~TestFiles/530_inline_keywords.bjo~ (defaults, the order of
+  evaluation, a generic default, a double default, a private helper in a
+  default), ~TestFiles/codegen/inline_keywords.bjo~.
+
 * The C# of a loop is smaller, so the JIT inlines it into more callers
 
 - A loop over ~(range a b)~ has two ints and no ~Range~ struct. ~range~ is

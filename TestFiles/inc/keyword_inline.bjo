@@ -1,0 +1,47 @@
+;; For 530_inline_keywords.bjo and codegen/inline_keywords.bjo: functions
+;; written #:inline that take keyword parameters. An importer copies each call,
+;; the defaults of the keyword parameters the call leaves out included.
+
+(export scaled noted-sum keep stepped Trace make-trace note! trace-of)
+(import (std prelude))
+
+;; A private helper that a default calls.
+(: (-> int int))
+(defun (secret-bonus x) (+ x 100))
+
+;; A default that reads the parameter before it, and one that calls a private
+;; helper.
+(: (-> int (#:by int) (#:plus int) int))
+(defun (scaled x #:by 2 #:plus (secret-bonus x)) #:inline
+  (+ (* x by) plus))
+
+;; What was evaluated, in order.
+(type (: Trace (Box (List string))))
+
+(: (-> Trace))
+(defun (make-trace) (make-box '()))
+
+;; Writes `what` into the trace and gives back `value`.
+(: (-> Trace string int int))
+(defun (note! trace what value)
+  (box-set! trace (cons what (box-ref trace)))
+  value)
+
+(: (-> Trace (List string)))
+(defun (trace-of trace) (list-reverse (box-ref trace)))
+
+;; A default with an effect, which runs only when the call leaves the
+;; parameter out, after the arguments.
+(: (-> Trace int (#:extra int) int))
+(defun (noted-sum trace x #:extra (note! trace "default" 5)) #:inline
+  (note! trace "body" (+ x extra)))
+
+;; A generic function whose default is its first parameter.
+(: (-> %a (#:else %a) %a))
+(defun (keep x #:else x) #:inline
+  else)
+
+;; A default that is a literal at the type of the walk.
+(: (-> double (#:by double) double))
+(defun (stepped x #:by 0.5) #:inline
+  (+ x by))

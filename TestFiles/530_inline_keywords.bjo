@@ -1,0 +1,43 @@
+;; A function written #:inline with keyword parameters is copied over its
+;; calls (see `TraitInline.spliceTemplate`). The copy has to give what the call
+;; gave: the defaults of the parameters the call leaves out, and the arguments
+;; and the defaults evaluated in the order the call evaluated them.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/keyword_inline.bjo")
+
+;; The same, in this module.
+(: (-> int (#:times int) (#:offset int) int))
+(defun (local-scaled x #:times 3 #:offset (- x)) #:inline
+  (+ (* x times) offset))
+
+(defun (main)
+  ;; Defaults, one of which reads `x`, and one a private helper of its module.
+  (expect "no keyword given" (scaled 5) 115)
+  (expect "#:by given" (scaled 5 #:by 3) 120)
+  (expect "#:plus given" (scaled 5 #:plus 1) 11)
+  (expect "both, in the other order" (scaled 5 #:plus 1 #:by 4) 21)
+  (expect "a local function" (local-scaled 4) 8)
+  (expect "a local function, #:offset given" (local-scaled 4 #:offset 1) 13)
+
+  ;; The order of evaluation: the arguments as written, then the default.
+  (let ((t (make-trace)))
+    (expect "a default with an effect"
+            (noted-sum t (note! t "x" 1))
+            6)
+    (expect "runs after the arguments" (trace-of t) '("x" "default" "body")))
+  (let ((t (make-trace)))
+    (expect "an argument in its place"
+            (noted-sum t (note! t "x" 1) #:extra (note! t "extra" 2))
+            3)
+    (expect "and no default" (trace-of t) '("x" "extra" "body")))
+
+  ;; A default that is a parameter, at two types.
+  (expect "keep, int" (keep 7) 7)
+  (expect "keep, string, #:else given" (keep "a" #:else "b") "b")
+
+  ;; A literal default at the parameter's type.
+  (expect "a double default" (stepped 1.0) 1.5)
+  (expect "a double argument" (stepped 1.0 #:by 2.0) 3.0)
+  0)

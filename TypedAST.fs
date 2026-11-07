@@ -1632,7 +1632,14 @@ type Binding = { Scheme: Scheme; IsMutable: bool }
 /// re-inferring at the call site is precisely what gives the method a type its
 /// trait signature could not express.
 type InlineTemplate =
-    { Params: string list
+    { /// The mandatory parameters.
+      Params: string list
+      /// The keyword parameters, in the order they were declared. Empty for a
+      /// trait method's template.
+      Keywords: string list
+      /// The default of each keyword parameter, as written, in the order of
+      /// `Keywords`. A default may read the parameters before it.
+      Defaults: Lazy<Expr list>
       /// Lazy because one read back from an assembly's metadata is parsed
       /// when it is first spliced: a module imports hundreds and uses a few.
       Body: Lazy<Expr>
@@ -1646,6 +1653,9 @@ type InlineTemplate =
       /// Read back from a dependency's metadata, qualified where it was
       /// written, rather than this module's own.
       Imported: bool }
+
+/// The `Defaults` of a template with no keyword parameters.
+let noDefaults: Lazy<Expr list> = Lazy<_>.CreateFromValue []
 
 /// A trait that *is* a .NET interface.
 ///

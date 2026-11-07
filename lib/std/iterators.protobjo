@@ -198,6 +198,10 @@
 ;; `#:by` is a distance and is positive in both: `down-from` subtracts it. Zero
 ;; would be a walk that never moves, so it is refused rather than hung on.
 ;;
+;; Both are `#:inline`: a loop over one then has its three numbers and no
+;; struct, and a `#:by` it leaves out is the literal 1 (see `Simplify`, "A
+;; record that is only read").
+;;
 ;; `up-from`'s `#:to` is exclusive and `down-from`'s is *inclusive*, which is
 ;; not symmetry but is what each is written for: `(up-from 0 #:to n)` is the
 ;; indices of something of length `n`, and `(down-from n #:to 0)` counts down
@@ -229,7 +233,7 @@
 
 ;; Small enough to inline, as `check-slice` is, with the message made apart.
 (: check-step (-> string %n void) (where (Num %n) (Ordered %n)))
-(defun (check-step who by)
+(defun (check-step who by) #:inline
   (when (<= by 0)
     (step-panic who by)))
 
@@ -240,12 +244,12 @@
   (panic! #"${who}: #:by is ${(clr-show by)}, and a step of zero or less is a walk that never gets anywhere. It is a distance; down-from subtracts it."))
 
 (: up-from (-> %n (#:to %n) (#:by %n) (UpFrom %n)) (where (Num %n) (Ordered %n)))
-(defun (up-from from #:to (num-top) #:by 1)
+(defun (up-from from #:to (num-top) #:by 1) #:inline
   (check-step "up-from" by)
   (UpFrom (from from) (to to) (by by)))
 
 (: down-from (-> %n (#:to %n) (#:by %n) (DownFrom %n)) (where (Num %n) (Ordered %n)))
-(defun (down-from from #:to (num-bottom) #:by 1)
+(defun (down-from from #:to (num-bottom) #:by 1) #:inline
   (check-step "down-from" by)
   (DownFrom (from from) (to to) (by by)))
 

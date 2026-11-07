@@ -393,7 +393,21 @@ let private constrainedBodyTemplate
 
     let body = lazy (withMacrosOf macros parse)
 
+    // The defaults are lexed now for the reason the body is (see
+    // `inlineImplDecl`), and parsed with it, when the body is first spliced.
+    let defaultTokens = entry.Keywords |> List.map (fun (_, text) -> tokenizeMetadata source text)
+
+    let parseDefault (name: string) (tokens: _ list) =
+        match read tokens |> fst with
+        | [ form ] -> LetRecify.letrecifyExpr (Parser.parseExpr (readOrigins entry.OriginModule form))
+        | _ -> failwithf $"Malformed default of #:%s{name} in metadata for '%s{entry.Name}'."
+
+    let defaults =
+        lazy (withMacrosOf macros (fun () -> List.map2 parseDefault (List.map fst entry.Keywords) defaultTokens))
+
     { Params = entry.Params
+      Keywords = entry.Keywords |> List.map fst
+      Defaults = defaults
       Body = body
       Qualification = Map.ofList entry.Qualification
       OriginModule = entry.OriginModule

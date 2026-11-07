@@ -413,7 +413,9 @@ let private importedCandidates (env: Env) (local: Map<string, Candidate>) (decls
     |> List.choose (function
         | DExtern(visible, origin, ftype, constraints, r) when not (Map.containsKey visible local) ->
             match Map.tryFind origin.OriginalName env.Registry.ConstrainedBodies with
-            | Some tpl ->
+            // A function with keyword parameters is not copied (see
+            // `eligible`), and its template's `Params` are not all of them.
+            | Some tpl when tpl.Keywords.IsEmpty ->
                 let args = tpl.Params |> List.map (fun p -> MandatoryArg(p, None))
 
                 if eligible env visible ftype constraints args then
@@ -431,7 +433,7 @@ let private importedCandidates (env: Env) (local: Map<string, Candidate>) (decls
                     )
                 else
                     None
-            | None -> None
+            | _ -> None
         | _ -> None)
     |> Map.ofList
 
@@ -776,6 +778,8 @@ let private generate
             if cand.Inline then
                 let template: InlineTemplate =
                     { Params = mandatoryNames args
+                      Keywords = []
+                      Defaults = noDefaults
                       Body = Lazy<_>.CreateFromValue(substBodyTypes typeSubst renamed)
                       Qualification = cand.Qualification
                       OriginModule = Option.defaultValue env.CurrentModule cand.Origin
@@ -858,6 +862,8 @@ let private publish
             let qualification = AlphaRename.qualificationOf moduleOf params' c.Body.Value
 
             { Params = params'
+              Keywords = []
+              Defaults = noDefaults
               Body = c.Body
               Qualification = qualification
               OriginModule = ownModuleName

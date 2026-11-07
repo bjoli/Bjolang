@@ -338,10 +338,14 @@ let metadata
     /// of one: an importer cannot resolve such a name, so the splice would
     /// fail and fall back to a call, with a warning.
     let publishableBody (tpl: TypedAST.InlineTemplate) =
-        Codegen.isSerializableTemplate tpl.Body.Value
+        let parts = tpl.Body.Value :: tpl.Defaults.Value
+
+        parts |> List.forall Codegen.isSerializableTemplate
         && tpl.Qualification |> Map.forall (fun n _ -> reachableFromBody n)
-        && (let text = Codegen.serializeExpr tpl.Body.Value
-            withheldSpellings |> List.forall (fun s -> not (mentionsToken text s)))
+        && parts
+           |> List.forall (fun part ->
+               let text = Codegen.serializeExpr part
+               withheldSpellings |> List.forall (fun s -> not (mentionsToken text s)))
 
     
     /// The traits declared *in this module*, exported or not.
@@ -657,7 +661,13 @@ let metadata
              bodyExternSubst (Set.ofList tpl.Params) tpl.Body.Value |> Map.toList))
         @ (constrainedBodiesToExport
            |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) ->
-               bodyExternSubst (Set.ofList tpl.Params) tpl.Body.Value |> Map.toList))
+               let inBody = bodyExternSubst (Set.ofList (tpl.Params @ tpl.Keywords)) tpl.Body.Value
+
+               let inDefaults =
+                   tpl.Defaults.Value
+                   |> List.mapi (fun i d -> bodyExternSubst (Set.ofList (tpl.Params @ List.truncate i tpl.Keywords)) d)
+
+               (inBody :: inDefaults) |> List.collect Map.toList))
         @ (exportedTraitDefaults
            |> List.collect (fun (_, decl) ->
                match decl with
@@ -1567,11 +1577,20 @@ let metadata
         if isLibrary then
             constrainedBodiesToExport
             |> List.map (fun (name, (tpl: TypedAST.InlineTemplate)) ->
-                let body = publishBody tpl.Params tpl.Body.Value
+                // A keyword parameter is bound in the body and in the
+                // defaults after it, as a mandatory one is.
+                let body = publishBody (tpl.Params @ tpl.Keywords) tpl.Body.Value
+
+                let keywords =
+                    List.zip tpl.Keywords tpl.Defaults.Value
+                    |> List.mapi (fun i (k, d) ->
+                        let bound = tpl.Params @ List.truncate i tpl.Keywords
+                        k, Codegen.serializeExprFrom tpl.OriginModule (publishBody bound d))
 
                 ({ Name = name
                    OriginModule = tpl.OriginModule
                    Params = tpl.Params
+                   Keywords = keywords
                    Body = Codegen.serializeExprFrom tpl.OriginModule body
                    Qualification = tpl.Qualification |> Map.toList
                    Inline = tpl.Inline }

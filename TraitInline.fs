@@ -300,6 +300,47 @@ let rec private callsColourChosenDouble (env: Env) (expr: TypedExpr) : bool =
     | TApply({ Node = TIdent(name, _) }, _, _) when Map.containsKey name env.Registry.DoubleDefs -> true
     | _ -> TypeVisitor.children expr |> List.exists (callsColourChosenDouble env)
 
+/// Whether every constraint of the binding `name` is over a .NET interface,
+/// such as `(where (Num %n))`. A function constrained only by these takes no
+/// dictionary: C# has the constraint as a `where` clause, and a copy at a
+/// type that satisfies it needs nothing either.
+let private onlyClrConstraints (env: Env) (name: string) : bool =
+    match Map.tryFind name env.Bindings with
+    | Some { Scheme = Scheme(_, constraints, _) } ->
+        constraints
+        |> List.forall (fun c -> isClrTrait env.Registry (TypeEnv.originalTraitName env.Registry c.TraitName))
+    | None -> false
+
+/// Whether `t` names no type variable and no type that is not known yet.
+let rec private isGround (t: HMType) : bool =
+    match t with
+    | TVar _ -> false
+    | TMeta { Value = Some inner } -> isGround inner
+    | TMeta _ -> false
+    | TCon(_, ts)
+    | TTuple ts -> List.forall isGround ts
+    | TFun(ps, r, _) -> List.forall isGround (r :: ps)
+    | _ -> false
+
+/// The keyword parameters of an argument list, in the order they were
+/// declared, and their defaults.
+let private keywordsOf (args: Ast.DefunArg list) : string list * Ast.Expr list =
+    args
+    |> List.choose (function
+        | Ast.KeywordArg(n, d) -> Some(n, d)
+        | _ -> None)
+    |> List.unzip
+
+/// Whether the body of `name`, or a default of one of its keyword parameters,
+/// names `name` where no parameter hides it.
+let private callsItself (name: string) (args: Ast.DefunArg list) (body: Ast.Expr) : bool =
+    let parameters = Ast.mandatoryNames args
+    let keywords, defaults = keywordsOf args
+    let mentions (bound: string list) (e: Ast.Expr) = Set.contains name (AlphaRename.freeNames (Set.ofList bound) e)
+
+    mentions (parameters @ keywords) body
+    || (defaults |> List.mapi (fun i d -> mentions (parameters @ List.truncate i keywords) d) |> List.exists id)
+
 /// Publishes the body of every function of this module that takes a function,
 /// so that a call given a known function can be inlined, here and in each
 /// module that imports it. See `inlineFunctionCall`.
@@ -316,8 +357,10 @@ let rec private callsColourChosenDouble (env: Env) (expr: TypedExpr) : bool =
 /// A function written `#:inline`, ordinary or a bjoroutine, is published on
 /// the same terms with no limit on its size and no parameter of function type
 /// needed, if it does not name itself: a copy of a recursive body still holds
-/// the call. It is copied at its plain calls (see `inlineOptedIn`). Where it
-/// cannot be published, a warning says why, since its author asked.
+/// the call. It may have keyword parameters, which are published with their
+/// defaults, but no rest parameter. It is copied at its plain calls (see
+/// `inlineOptedIn`). Where it cannot be published, a warning says why, since
+/// its author asked.
 let publishBodies
     (env: Env)
     (moduleOf: Map<string, string * string>)
@@ -386,14 +429,22 @@ let publishBodies
     // Why a function cannot be published, or None.
     let refusal (name: string) (args: Ast.DefunArg list) (body: Ast.Expr) (isInline: bool) : string option =
         if name = "main" then Some "it is main"
-        elif not (unconstrained name) then Some "it has a (where ...), and its calls pass a dictionary"
+        // One constrained only over .NET interfaces passes no dictionary, and
+        // is copied where it is called at a type that is known.
+        elif not (unconstrained name) && not (isInline && onlyClrConstraints env name) then
+            Some "it has a (where ...), and its calls pass a dictionary"
         elif Map.containsKey name env.Registry.ConstrainedBodies then Some "its body is published already, for a copy at each type"
         elif Map.containsKey name env.Registry.DoubleDefs then Some "the colour around each call chooses which of its bodies runs"
         elif Set.contains name env.Registry.GeneratedCopies || Set.contains name env.Registry.InferredCopies then
             Some "it is a generated copy"
-        elif not (args |> List.forall (function Ast.MandatoryArg _ -> true | _ -> false)) then
-            Some "it has a keyword or a rest parameter"
-        elif isInline && Set.contains name (AlphaRename.freeNames (Set.ofList (Ast.mandatoryNames args)) body) then
+        elif args |> List.exists (function Ast.RestArg _ -> true | _ -> false) then
+            Some "it has a rest parameter"
+        // A keyword parameter only where its author asked: a call given a
+        // function is copied for the sake of the function, and the copy of a
+        // default would be all it gained.
+        elif not isInline && not (args |> List.forall (function Ast.MandatoryArg _ -> true | _ -> false)) then
+            Some "it has a keyword parameter"
+        elif isInline && callsItself name args body then
             Some "it calls itself, and a copy would still hold the call"
         elif not isInline && exprSize body > maxInlineBodySize then Some "it is too large"
         else None
@@ -419,12 +470,23 @@ let publishBodies
                 None
             | None ->
                 let parameters = Ast.mandatoryNames args
+                let keywords, defaults = keywordsOf args
 
-                let qualification = AlphaRename.qualificationOf moduleOf parameters body
+                // The free names of the defaults as well as the body's: a
+                // default is spliced where the call is, and names what its
+                // own module can see.
+                let qualification =
+                    (AlphaRename.qualificationOf moduleOf (parameters @ keywords) body
+                     :: (defaults
+                         |> List.mapi (fun i d ->
+                             AlphaRename.qualificationOf moduleOf (parameters @ List.truncate i keywords) d)))
+                    |> List.fold (fun acc m -> Map.fold (fun a k v -> Map.add k v a) acc m) Map.empty
 
                 Some(
                     name,
                     ({ Params = parameters
+                       Keywords = keywords
+                       Defaults = Lazy<_>.CreateFromValue defaults
                        Body = Lazy<_>.CreateFromValue body
                        Qualification = qualification
                        OriginModule = ownModuleName
@@ -670,14 +732,16 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
                     $"the '%s{tref.Method}' implementation of '%s{tref.Trait}' for '%s{implKey}'"
                     tpl
                     args
+                    []
                     expr
                     TraitMethod
                     (fun () -> landingPad ctx.Env tref implKey tyArgs args [] expr)
             | _ -> landingPad ctx.Env tref implKey tyArgs args kwArgs expr
 
-    | TApply({ Node = TIdent(name, _) } as callee, args, []) ->
+    | TApply({ Node = TIdent(name, _) } as callee, args, kwArgs) ->
         let args = args |> List.map (inlineExpr ctx)
-        let call = { expr with Node = TApply(callee, args, []) }
+        let kwArgs = kwArgs |> List.map (fun (n, e) -> n, inlineExpr ctx e)
+        let call = { expr with Node = TApply(callee, args, kwArgs) }
         // Calls in loops in the first pass, the others in the second: what the
         // budget allows goes to the calls that run most. A body the second
         // pass splices is new, so all its calls are its own to decide.
@@ -686,9 +750,10 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
 
         if ctx.InGuard || not thisPass then call
         else
-            match inlineOptedIn ctx name callee args call with
+            match inlineOptedIn ctx name callee args kwArgs call with
             | Some inlined -> inlined
-            | None -> inlineFunctionCall ctx name callee args call
+            | None when kwArgs.IsEmpty -> inlineFunctionCall ctx name callee args call
+            | None -> call
 
     // A lambda has the colour of its own type, whatever the code around it
     // has: an ordinary lambda in a bjoroutine runs where nothing may suspend.
@@ -863,6 +928,7 @@ and private inlineFunctionCall
     | Some(key, tpl) when
         not (Set.contains key ctx.Active)
         && tpl.Params.Length = args.Length
+        && tpl.Keywords.IsEmpty
         && unconstrained
         // The same rules as for a trait method: a suspending function, or one
         // given a suspending callback, keeps its call, which is what
@@ -870,7 +936,7 @@ and private inlineFunctionCall
         && not (callSuspends callee.Type)
         && not (wantsSuspendingCopy callee.Type)
         ->
-        spliceTemplate ctx key $"'%s{name}'" tpl args call GivenFunction (fun () -> call)
+        spliceTemplate ctx key $"'%s{name}'" tpl args [] call GivenFunction (fun () -> call)
     | _ -> call
 
 /// Inlines a plain call to a function written `#:inline`, here or in a
@@ -898,6 +964,7 @@ and private inlineOptedIn
     (name: string)
     (callee: TypedExpr)
     (args: TypedExpr list)
+    (kwArgs: (string * TypedExpr) list)
     (call: TypedExpr)
     : TypedExpr option =
     let template =
@@ -921,21 +988,29 @@ and private inlineOptedIn
     | Some(key, original, tpl) ->
         let suspending = callSuspends callee.Type
 
+        // A function constrained only over .NET interfaces is copied where
+        // it is called at known types: the copy is checked again at them, and
+        // what the constraints promise holds there.
         let unconstrained =
             match Map.tryFind name ctx.Env.Bindings with
             | Some { Scheme = Scheme(_, [], _) } -> true
-            | _ -> false
+            | Some _ -> onlyClrConstraints ctx.Env name && isGround (prune ctx.Env.Registry callee.Type)
+            | None -> false
 
         if
             not (Set.contains key ctx.Active)
             && tpl.Params.Length = args.Length
+            && kwArgs |> List.forall (fun (k, _) -> List.contains k tpl.Keywords)
+            // A default of a bjoroutine's keyword parameter would have to be
+            // bridged to its colour, as `CheckDecl` bridges it at home.
+            && (tpl.Keywords.IsEmpty || not suspending)
             && unconstrained
             && not (wantsSuspendingCopy callee.Type)
             && not (Map.containsKey name ctx.Env.Registry.DoubleDefs)
             && not (Map.containsKey original ctx.Env.Registry.DoubleDefs)
             && (not suspending || (ctx.CanSuspend && not (args |> List.exists passesFunction)))
         then
-            Some(spliceTemplate ctx key $"'%s{name}'" tpl args call (OptedIn suspending) (fun () -> call))
+            Some(spliceTemplate ctx key $"'%s{name}'" tpl args kwArgs call (OptedIn suspending) (fun () -> call))
         else
             Some call
 
@@ -945,6 +1020,7 @@ and private spliceTemplate
     (describe: string)
     (tpl: InlineTemplate)
     (args: TypedExpr list)
+    (kwArgs: (string * TypedExpr) list)
     (expr: TypedExpr)
     (kind: SpliceKind)
     (fallback: unit -> TypedExpr)
@@ -963,14 +1039,45 @@ and private spliceTemplate
         //    cannot recover a meaning the splice already destroyed.
         //    A `(by-colour ...)` takes the body of the colour of the call: its
         //    `#:sync` one, unless the call is a bjoroutine's.
-        let body =
-            AlphaRename.reachHidden
-                (fun n -> Map.containsKey n ctx.Env.Bindings)
-                tpl.Qualification
-                (ColourTwins.resolveIn suspending tpl.Body.Value)
+        let isBound (n: string) = Map.containsKey n ctx.Env.Bindings
 
-        let freshBody, subst = AlphaRename.freshen tpl.Params body
-        let freshParams = tpl.Params |> List.map (fun p -> Map.tryFind p subst |> Option.defaultValue p)
+        let body =
+            AlphaRename.reachHidden isBound tpl.Qualification (ColourTwins.resolveIn suspending tpl.Body.Value)
+
+        // A keyword parameter is a parameter of the body as a mandatory one
+        // is, and is freshened with them.
+        let freshBody, subst = AlphaRename.freshen (tpl.Params @ tpl.Keywords) body
+        let freshOf (p: string) = Map.tryFind p subst |> Option.defaultValue p
+        let freshParams = tpl.Params |> List.map freshOf
+
+        // The type of each keyword parameter at this call. The callee's arrow
+        // lists the mandatory parameters, then the keyword ones in the order
+        // they were declared.
+        let keywordType (i: int) : HMType =
+            match expr.Node with
+            | TApply({ Type = calleeType }, _, _) ->
+                match solvedType calleeType with
+                | TFun(ps, _, _) when ps.Length > tpl.Params.Length + i ->
+                    eraseUnits (prune ctx.Env.Registry ps[tpl.Params.Length + i])
+                | _ -> failwith "the callee's type has no keyword parameters"
+            | _ -> failwith "the splice is not of a call"
+
+        // The keyword parameters the call leaves out, in the order they were
+        // declared, each with its default. The default's own binders are
+        // freshened, and the parameters it reads are the body's.
+        let supplied (k: string) = kwArgs |> List.exists (fun (n, _) -> n = k)
+
+        let missing =
+            if tpl.Keywords.IsEmpty then
+                []
+            else
+                List.zip tpl.Keywords tpl.Defaults.Value
+                |> List.indexed
+                |> List.filter (fun (_, (k, _)) -> not (supplied k))
+                |> List.map (fun (i, (k, d)) ->
+                    let d = AlphaRename.reachHidden isBound tpl.Qualification d
+                    let d, _ = AlphaRename.freshen [] d
+                    i, freshOf k, AlphaRename.renameFree subst d)
 
         // 2. Each parameter is bound at the argument's *concrete* type. Not a
         //    fresh metavariable: the whole point of re-inference is that the
@@ -978,16 +1085,23 @@ and private spliceTemplate
         //    Checked under the module the *body* came from, not the one it is
         //    landing in: a template may name something its own module is
         //    allowed to name and this one is not.
+        //    A keyword parameter the call gives is bound at its argument's
+        //    type too, and one it leaves out at the parameter's type here.
+        let parameterTypes =
+            (List.zip freshParams args |> List.map (fun (n, (a: TypedExpr)) -> n, a.Type))
+            @ (kwArgs |> List.map (fun (k, (a: TypedExpr)) -> freshOf k, a.Type))
+            @ (missing |> List.map (fun (i, n, _) -> n, keywordType i))
+
         let spliceEnv =
-            List.zip freshParams args
+            parameterTypes
             |> List.fold
-                (fun acc (name, (arg: TypedExpr)) ->
+                (fun acc (name, t) ->
                     addBinding
                         name
                         // Units are erased by now (`EraseUnits`), and a
                         // record's field types in the registry still have
                         // them.
-                        { Scheme = Scheme([], [], eraseUnits (prune ctx.Env.Registry arg.Type))
+                        { Scheme = Scheme([], [], eraseUnits (prune ctx.Env.Registry t))
                           IsMutable = false }
                         acc)
                 { ctx.Env with CurrentModule = tpl.OriginModule }
@@ -996,7 +1110,12 @@ and private spliceTemplate
         // module does not import.
         let spliceEnv =
             if tpl.OriginModule <> ctx.Env.CurrentModule then
-                fst (TypeEnv.reachTraitMethods tpl.Qualification freshParams freshBody spliceEnv)
+                let parameters = parameterTypes |> List.map fst
+
+                (freshBody :: (missing |> List.map (fun (_, _, d) -> d)))
+                |> List.fold
+                    (fun acc part -> fst (TypeEnv.reachTraitMethods tpl.Qualification parameters part acc))
+                    spliceEnv
             else
                 spliceEnv
 
@@ -1007,6 +1126,17 @@ and private spliceTemplate
         let bodyType, typedBody = InferExpr.infer spliceEnv freshBody
         unify ctx.Env.Registry (eraseUnits (prune ctx.Env.Registry bodyType)) (eraseUnits (prune ctx.Env.Registry expr.Type))
 
+        //    Each default the call needs is checked against its parameter's
+        //    type, as `CheckDecl` checks it at home: `#:by 1` of a walk in
+        //    doubles is a double.
+        let typedDefaults =
+            missing
+            |> List.map (fun (i, name, d) ->
+                let expected = keywordType i
+                let t, typed = InferExpr.inferChecked expected spliceEnv d
+                unify ctx.Env.Registry (eraseUnits (prune ctx.Env.Registry t)) expected
+                name, typed)
+
         // Obligations raised by the body — a `bind` calling `bind` — are
         // discharged here, before anything looks at the result.
         Traits.solvePending spliceEnv
@@ -1014,6 +1144,11 @@ and private spliceTemplate
 
         // 4. Free names now say which module they came from.
         let qualified = AlphaRename.applyQualification tpl.Qualification typedBody
+
+        let qualifiedDefaults =
+            typedDefaults
+            |> List.map (fun (n, d) ->
+                n, AlphaRename.applyQualification tpl.Qualification (TypeEnv.resolveOpenCaseNames d))
 
         // The body's own mutable locals are new names. A call in it can give
         // one of them as an argument.
@@ -1025,7 +1160,8 @@ and private spliceTemplate
                     { ctx.Writable with
                         Variables = Set.union ctx.Writable.Variables (writtenIn qualified) } }
 
-        let bindings = List.zip freshParams args
+        let bindings =
+            List.zip freshParams args @ (kwArgs |> List.map (fun (k, a) -> freshOf k, a))
 
         // A function splice costs the declaration's budget its body's size,
         // and its own nested splices take theirs from the same budget. If the
@@ -1036,7 +1172,9 @@ and private spliceTemplate
             match kind with
             | TraitMethod -> 0
             | GivenFunction
-            | OptedIn _ -> typedSize typedBody
+            | OptedIn _ -> typedSize typedBody + (qualifiedDefaults |> List.sumBy (snd >> typedSize))
+
+        let parts = qualified :: (qualifiedDefaults |> List.map snd)
 
         // Read before step 4: `DoubleDefs` knows a name as written, and the
         // qualification rewrites it. A yield point left in the body would be
@@ -1058,8 +1196,9 @@ and private spliceTemplate
                 || hasYieldPoint typedBody
                 || cost > budgetBefore
             | OptedIn s ->
-                callsColourChosenDouble ctx.Env typedBody
+                parts |> List.exists (callsColourChosenDouble ctx.Env)
                 || hasYieldPoint typedBody <> s
+                || qualifiedDefaults |> List.exists (snd >> hasYieldPoint)
                 || cost > budgetBefore
 
         if refused then
@@ -1069,6 +1208,7 @@ and private spliceTemplate
 
             // 5. Recurse, with this key held down for the current path only.
             let inlined = inlineExpr innerCtx qualified
+            let inlinedDefaults = qualifiedDefaults |> List.map (fun (n, d) -> n, inlineExpr innerCtx d)
 
             // A function call is inlined only for the sake of its lambdas, so
             // if one of them would only be bound to a local, the call is kept.
@@ -1091,7 +1231,28 @@ and private spliceTemplate
                     { ctx.Writable with
                         Variables = Set.union innerCtx.Writable.Variables (writtenIn inlined) }
 
-                betaReduce writable (bindArguments writable describe bindings inlined)
+                // A default is evaluated after the arguments, in the order the
+                // parameters were declared, as the callee evaluates it. One
+                // that is trivial and reads no parameter is substituted with
+                // the arguments; any other is bound around the body.
+                let roots = parameterTypes |> List.map fst
+
+                let substituted (d: TypedExpr) =
+                    isTrivial writable d && roots |> List.forall (fun r -> occurrences r d = 0)
+
+                let trivialDefaults, boundDefaults =
+                    inlinedDefaults |> List.partition (snd >> substituted)
+
+                let withDefaults =
+                    List.foldBack
+                        (fun (n, (d: TypedExpr)) (acc: TypedExpr) ->
+                            { Type = acc.Type
+                              Range = d.Range
+                              Node = TLet(n, false, noParams, d, acc) })
+                        boundDefaults
+                        inlined
+
+                betaReduce writable (bindArguments writable describe (bindings @ trivialDefaults) withDefaults)
     with ex ->
         // A template that will not re-infer here is a compile error waiting to
         // happen in generated C#, and the fallback is always a correct answer.
