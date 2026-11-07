@@ -237,6 +237,20 @@ temporary per variable (~__next__~).
   pay a task per refill. Measure before changing them: a socket's
   ~ReadAsync~ is a real asynchronous read, unlike standard input's.
 
+* A loop over an array index keeps checks that a C# for loop loses
+
+Found in bjostat's signed-rank test (plan.org, "the statistics ... in
+Bjolang"): counts[s] += counts[s - e] with (:for s (down-from top #:to e))
+took 17.6-18.1 µs where the same C# for loop took 15.7. The machine code
+of Bjolang's loop has the test at the top and a jump back
+(while (true) { if (...) break; ... }), and checks both indices; the C#
+for loop's test is at the bottom, and the JIT made a copy of the loop
+without the check of counts[s]. A walk from (array-length counts) - 1,
+rather than from a top of the same value, took it from 21.9 µs to 17.6.
+To find out: whether the shape of the emitted loop stops the JIT's loop
+inversion and cloning, and whether the loop at the array's length can be
+emitted where the source gives the bound. Not done: a new shape of loop.
+
 * A float loop with a call in its step keeps its sums in memory
 
 On Linux .NET keeps no float register across a call. A loop whose step has
