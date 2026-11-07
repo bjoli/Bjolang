@@ -12,6 +12,25 @@ If you change anything in bjolangruntime you need to rebuild it. It is a differe
 
 To rebuild the standard library, please use ./build_std.sh
 
+## Running and waiting for commands
+
+- Tool calls in one batch run at the same time, not in order. Put only
+  independent calls in one batch.
+  - Steps that depend on each other go in one shell command, joined with
+    `&&` or under `set -e`.
+  - One git command per message.
+  - One edit per message to the same file. Parallel edits to one file have
+    left it truncated.
+- To wait for a background job, use one command that polls every 10
+  seconds until the job is done, for example:
+
+      while ! grep -q '^done' /tmp/job.txt; do sleep 10; done; cat /tmp/job.txt
+
+  Have the job write a last line (here `done`) when it ends, or poll for
+  the file it writes last. Do not run a long `sleep` and then check: the
+  job may have finished minutes before. Do not send several `sleep`
+  commands in one batch: they all start at once.
+
 ## Standard library
 
 is in lib/std and is documented in .bjodoc files
