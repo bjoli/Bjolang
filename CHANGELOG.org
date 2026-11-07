@@ -3,6 +3,44 @@
 
 What each change guarantees, and what it leaves open.
 
+* An operand that cannot change is not put in a temporary
+
+- When a later operand needs statements, as a loop in the value of
+  ~array-set!~ does, the operands before it are each put in a temporary, so
+  that they are evaluated first. A literal, and a name that no ~set!~
+  assigns and no ~let-mutable~ or ~def/mutable~ binds in the module
+  (~CodegenContext.Assigned~), have the same value at any time, and are
+  written in place. A loop's slot is assigned only by a jump, which is never
+  inside an operand.
+- ~Simplify~: a field of a record that is only read, as the bound of
+  ~(range 0 n)~, that is a steady name (~isSteadyName~: no ~set!~, no
+  ~let-mutable~, not bound again, not a case or a function) is read as the
+  name, as a literal field was. So is such an argument of a case that a
+  ~match~ is decided on.
+- Why: Roslyn keeps such a temporary when it is read more than once or
+  after other code, as it is after the loop. spectralnorm's mul-av is 96
+  bytes and 8 locals (was 116 and 12).
+- IL of all of ~lib/~ and bjostat's ~src/~: lib 1441313 to 1440739, bjostat
+  192945 to 192731 (operands alone -326 and -116, names alone -248 and
+  -101). 110 methods smaller, 1 larger by 8 bytes (datetime's local-fit).
+- Measured and not kept: writing a value that a decided ~match~ binds in
+  place of its name, and deciding a ~match~ on a case made in place. The
+  emitted C# lost ~double s = 0.0; double __hoist = s;~, but the IL of all
+  of lib and bjostat was 8 bytes smaller: Roslyn already removes such
+  copies. A change is kept only if the IL is smaller.
+- The results are the same: bjostat prints the same 4630 values, its 15
+  test files pass with all threads and with one, and the ports of
+  bench/clbg print the same output.
+- Measured, four builds (before, each change, both) in rounds A B C D, D C
+  B A, A B C D: bjostat's scratch/distbench.bjo, bench/loops.bjo and the
+  nine ports of bench/clbg. With both, all rows overlap except
+  spectralnorm, faster: 1.223-1.225 against 1.231-1.254 s (each change
+  alone 1.213-1.219). With the names alone, fannkuchredux was 20.97-21.05
+  against 20.50-20.57 s; its own IL is the same in all four builds, and
+  with both, run again 4 times each, 20.61-21.19 against 20.76-21.13.
+- Tests: ~TestFiles/codegen/steady_operands.bjo~; ~loop_lean.bjo~ reads the
+  bound of a range as the name.
+
 * A filter loop has its jump once, after the if
 
 - ~Simplify~: a binding whose value is a binding, ~(let ((a (begin e v)))

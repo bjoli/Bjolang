@@ -326,6 +326,9 @@ type CodegenContext = {
     /// string it holds the bounds of. Found before the code is written: see
     /// `hoistStringBounds`.
     StringBounds: System.Collections.Generic.Dictionary<TypedExpr, (string * TypedExpr) list>
+    /// The names that a `set!` assigns or a `let-mutable` or `def/mutable`
+    /// binds anywhere in the module. Names are unique here.
+    Assigned: Set<string>
 }
 
 let inline append (ctx: CodegenContext) (s: string) =
@@ -4361,8 +4364,9 @@ and private hoistForm (ctx: CodegenContext) (expr: TypedExpr) (body: TypedExpr) 
 ///
 /// Hoisting a node out of the middle of an operand list moves its evaluation
 /// earlier, so every operand up to and including the last hoisted one is pulled
-/// into a temporary too. There is no purity information in the typed AST, so no
-/// operand is exempted.
+/// into a temporary too, except one that has the same value at any time: a
+/// literal, or a name that nothing assigns (see `Assigned`). A loop's slot is
+/// assigned only by a jump, which is never inside an operand.
 ///
 /// The list must be given in *source* order; the returned emitters may be used
 /// in any order, which is what `TApply`'s keyword branch needs.
@@ -4383,9 +4387,20 @@ and private prepareOperands (ctx: CodegenContext) (operands: TypedExpr list) : (
     match hoisted with
     | None -> operands |> List.map (fun operand -> fun (c: CodegenContext) -> generateExpr c operand)
     | Some(prelude, lastHoisted) ->
+        let constant (e: TypedExpr) =
+            match e.Node with
+            | TInt _
+            | TBool _
+            | TChar _
+            | TString _ -> true
+            | TIdent(n, _) -> not (Set.contains n ctx.Assigned)
+            | _ -> false
+
         operands
         |> List.mapi (fun i operand ->
-            if i <= lastHoisted then
+            if i < lastHoisted && constant operand then
+                fun (c: CodegenContext) -> generateExpr c operand
+            elif i <= lastHoisted then
                 let tmp = hoistToTemp ctx prelude operand
                 fun (c: CodegenContext) -> append c tmp
             else
@@ -9452,7 +9467,35 @@ let generateProgram
           FunMetas = Map.fold (fun acc k v -> Map.add k v acc) env.ResolvedFunMetas env.FunMetas
           ReturnsVoid = false
           VectorLoops = System.Collections.Generic.Dictionary()
-          StringBounds = System.Collections.Generic.Dictionary(HashIdentity.Reference) }
+          StringBounds = System.Collections.Generic.Dictionary(HashIdentity.Reference)
+          Assigned =
+            let acc = System.Collections.Generic.HashSet<string>()
+
+            let collect (e: TypedExpr) =
+                e
+                |> TypeVisitor.foldExpr
+                    (fun () x ->
+                        match x.Node with
+                        | TLetMutable(n, _, _)
+                        | TSet(n, _) -> acc.Add n |> ignore
+                        | _ -> ())
+                    ()
+
+                e
+
+            decls
+            |> List.iter (fun d ->
+                TypeVisitor.mapDecl collect d |> ignore
+
+                match d with
+                | TModule(_, innerDecls, _) ->
+                    for inner in innerDecls do
+                        match inner with
+                        | TDefMutable(n, _, _, _) -> acc.Add n |> ignore
+                        | _ -> ()
+                | _ -> ())
+
+            Set.ofSeq acc }
 
     appendLine ctx "using System;"
     appendLine ctx "using static BjolangRuntime;"

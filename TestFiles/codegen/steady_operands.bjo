@@ -1,0 +1,21 @@
+;; An operand that has the same value at any time is not put in a temporary
+;; when a later operand needs statements (here a loop), and a `range` over a
+;; name reads the name:
+;;
+;; - The array and the index of `array-set!` are written as they are, ahead
+;;   of the loop that gives the value.
+;; EXPECT-CS: \(@out\)\[\(loopcur\w*\)\] = __hoist__\d+;
+;; EXPECT-NO-CS: double\[\] __hoist__\d+ = @out;
+;; EXPECT-NO-CS: int __hoist__\d+ = loopcur
+;; - The bound of `(range 0 n)` is `n`, with no copy.
+;; EXPECT-NO-CS: int hi__\d+ = n;
+;; EXPECT-CS: if \(\(loopcur\w* >= n\)\)
+(export row-sums!)
+
+(import (std prelude))
+
+(: (-> (Array double) (Array double) void))
+(defun (row-sums! v out)
+  (def n (array-length v))
+  (loop (:for i (range 0 n))
+        (:do (array-set! out i (loop (:for j (range 0 n)) (:acc s (summing (* (array-ref v j) (cast double i)))))))))

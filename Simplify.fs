@@ -476,6 +476,20 @@ let rec private peelLocals (scope: TypedExpr) (value: TypedExpr) : (string * Typ
         (n, v) :: outer, core
     | _ -> [], value
 
+/// A name that has the one value in all of `scope`: no `set!` assigns it,
+/// no `let-mutable` binds it, `scope` does not bind it again, and it is not a
+/// union case or a function. It can be read where a copy of it would be.
+let private isSteadyName (ctx: Ctx) (scope: TypedExpr) (e: TypedExpr) : bool =
+    match e.Node with
+    | TIdent(b, []) ->
+        not (Set.contains b ctx.Written)
+        && not (Set.contains b ctx.Cases)
+        && not (rebinds b scope)
+        && (match settled e.Type with
+            | TFun _ -> false
+            | _ -> true)
+    | _ -> false
+
 /// `expr` with each reference to `a` made a reference to `b`.
 let rec private renameRefs (a: string) (b: string) (expr: TypedExpr) : TypedExpr =
     match expr.Node with
@@ -574,7 +588,8 @@ and private simplifyNode (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
             // evaluated once, where the record was made.
             let named =
                 fields
-                |> List.map (fun (field, v) -> field, (if isLiteral v then None else Some(Gensym.fresh field)), v)
+                |> List.map (fun (field, v) ->
+                    field, (if isLiteral v || isSteadyName ctx body v then None else Some(Gensym.fresh field)), v)
 
             let locals =
                 named
@@ -593,13 +608,13 @@ and private simplifyNode (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     | TLet(name, false, fn, value, body) when fn = noParams && not (rebinds name body) ->
         match asCase ctx value with
         | Some(k, args) ->
-            // Every argument that is not a literal goes into a fresh local
-            // ahead of the case. A fresh name cannot be shadowed, so it can be
-            // copied into any arm.
+            // Every argument that is not a literal or a steady name goes into
+            // a fresh local ahead of the case. A fresh name cannot be shadowed,
+            // so it can be copied into any arm.
             let named =
                 args
                 |> List.map (fun arg ->
-                    if isLiteral arg then
+                    if isLiteral arg || isSteadyName ctx body arg then
                         None, arg
                     else
                         let fresh = Gensym.fresh "case"
