@@ -2368,6 +2368,10 @@ let private inlineBuiltins: Map<string, InlinePart list> =
           parse "listbuilder-length" "$0.Count"
           parse "array-ref" "$0[$1]"
           parse "array-length" "$0.Length"
+          // Without `#:fill`: the call has keyword arguments otherwise, and
+          // stays the wrapper's. See `inlineBuiltinFor` for an element that
+          // is an array.
+          parse "make-array" "new $E[$0]"
           parse "vec-ref" "$0[$1]"
           parse "vec-length" "$0.Count"
           parse "vec-empty?" "($0.Count == 0)"
@@ -4425,6 +4429,9 @@ and private inlineBuiltinFor
         if List.contains ResultElement parts then
             elementOf expr.Type
             |> Option.orElse (args |> List.tryPick (fun a -> elementOf a.Type))
+            // `new double[][n]` is not C#: an array of arrays puts the length
+            // first, `new double[n][]`. Such a call stays the wrapper's.
+            |> Option.filter (fun e -> not (runtimeName = Some "make-array" && e.EndsWith "]"))
             |> Option.map (fun e -> parts, e)
         else
             Some(parts, ""))
@@ -5678,6 +5685,25 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 
             indent ctx
             appendLine ctx "}"
+
+    // `(array-set! a i v)` whose value is dropped: C#'s `a[i] = v;`. The
+    // operands are evaluated in the same order as the wrapper's arguments, and
+    // a bad index or a null array raises the same exception at the store.
+    | TApply({ Node = TIdent(f, _) }, [ arr; index; value ], []) when
+        (target = Effect || target = Discard) && builtinNamed ctx f = Some "array-set!"
+        ->
+        emitStatement ctx (fun c ->
+            let emitters = prepareOperands c [ arr; index; value ]
+            indent c
+            append c "("
+            emitters[0] c
+            append c ")[("
+            emitters[1] c
+            append c ")] = "
+            emitters[2] c
+            appendLine c ";")
+
+        if target = Discard then exitInlineLoop ctx
 
     // Any node with no statement shape of its own: emit it as a C# expression
     // and let `emitTerminal` discharge the target. The `emitStatement` wrapper

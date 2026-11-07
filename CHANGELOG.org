@@ -3,6 +3,37 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~make-array~ and ~array-set!~ are C#'s own array operations
+
+- ~(make-array n)~ without ~#:fill~ is ~new T[n]~. With ~#:fill~, and for an
+  array of arrays (~new double[][n]~ is not C#), it is still the runtime's
+  ~makesubarray~.
+- ~(array-set! a i v)~ whose value is dropped is ~a[i] = v;~. The operands
+  are evaluated in the order they were, and a bad index or a null array
+  raises the same exception, at the store. Where its value is used, it is
+  still the runtime's ~arraysubset_BANG~.
+- Why: each wrapper is an inlinee that uses the JIT's inlining budget. A
+  store also saves 5 bytes of IL: ~call~ and ~pop~ against one ~stelem~.
+  ~new T[n]~ and the wrapper call are the same size.
+- IL of all of ~lib/~ and bjostat's ~src/~: lib 1456725 to 1456568, bjostat
+  197376 to 197167; 59 methods smaller, none larger. bjostat's
+  signed-rank-counts 116 to 106; a function that makes an array and sets
+  one element 25 to 20 bytes, as in hand-written C#.
+- The results are the same: bjostat prints the same 4630 values, its 15
+  test files pass with all threads and with one, and the ports of
+  bench/clbg print the same output.
+- Measured, the compiler before and after alternated, 3 runs each:
+  bjostat's scratch/distbench.bjo (15 rows) and bench/loops.bjo (8 rows),
+  and the nine ports of bench/clbg. spectralnorm 5500 is faster:
+  1.212-1.223 s against 1.230-1.235, and again, 4 runs each, 1.218-1.220
+  against 1.233-1.239. Three other rows did not overlap once, all faster,
+  and overlapped when run again or differed by 1 µs: binarytrees,
+  10.74-10.87 against 10.91-11.02, then 10.79-11.10 against 10.86-11.01;
+  bench/loops' "sum, cells, skip-nulls" 632 against 633 µs, and "standard
+  deviation, cells, skip-nulls" 836-837 against 839-1040. The other rows
+  overlap.
+- Tests: ~TestFiles/codegen/array_direct.bjo~.
+
 * A loop moves into its slots only what changes
 
 - A jump that passes a slot its own value, as ~(go (+ i 1) acc)~ does for

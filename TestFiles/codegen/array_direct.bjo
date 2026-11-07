@@ -1,0 +1,32 @@
+;; The array built-ins are C#'s own operations, not calls of the runtime's
+;; wrappers:
+;;
+;; - `(make-array n)` is `new T[n]`.
+;; EXPECT-CS: double\[\] @out = new double\[\(n\)\];
+;; EXPECT-NO-CS: makesubarray<double>\(n\)
+;; - With `#:fill` it is still the wrapper, which fills the array.
+;; EXPECT-CS: makesubarray<double>\(n, __kw_fill: 1\.5\)
+;; - An array of arrays stays the wrapper: `new double[][n]` is not C#.
+;; EXPECT-CS: makesubarray<double\[\]>\(n\)
+;; - `(array-set! a i v)` whose value is dropped is `a[i] = v;`, also in a loop.
+;; EXPECT-CS: \(@out\)\[\(0\)\] = 1\.0;
+;; EXPECT-CS: \(@out\)\[\(i\)\] = \(\(\(double\)\(i\)\) \* \(\(double\)\(i\)\)\);
+;; EXPECT-NO-CS: _ = arraysubset_BANG
+(export one-at-zero squares filled rows)
+
+(import (std prelude))
+
+(: (-> int (Array double)))
+(defun (one-at-zero n) (let ((out (: (make-array n) (Array double)))) (array-set! out 0 1.0) out))
+
+(: (-> int (Array double)))
+(defun (squares n)
+  (let ((out (: (make-array n) (Array double))))
+    (loop (:for i (range 0 n)) (:do (array-set! out i (* (cast double i) (cast double i)))))
+    out))
+
+(: (-> int (Array double)))
+(defun (filled n) (make-array n #:fill 1.5))
+
+(: (-> int (Array (Array double))))
+(defun (rows n) (make-array n))
