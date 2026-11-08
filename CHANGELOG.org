@@ -3,6 +3,43 @@
 
 What each change guarantees, and what it leaves open.
 
+* A match on an Option or a Result tests only its first case
+
+- The runtime's ~Option~ and ~Result~ are structs with a flag and a field
+  for each payload. A match that covers both of their cases now has its last
+  case as the switch's ~default:~, with no test of ~Tag~ and no throw, as a
+  match on a declared union had. A payload that the last case binds is read
+  from the struct's field: ~var v = o.Value;~ (~OkValue~, ~ErrValue~). In a
+  switch expression the last case is a pattern on the field alone, ~{ Value:
+  var v }~, which a struct always matches.
+- A match whose last case reads fields from the value no longer copies the
+  value to a temporary when it is a name that nothing assigns (any union).
+- Why: each case of the old switch called the ~Tag~ property and compared it,
+  and the throw that could not run was code too. ~(match o ((Some v) (+ v 1))
+  (None 0))~ was 49 bytes and 1 local, and is 22 and 0; hand-written C#,
+  ~o.IsSome ? o.Value + 1 : 0~, is 20. A match on a Result: 47 to 20 (18).
+- IL of all of ~lib/~ and bjostat's ~src/~: lib 1434460 to 1409742
+  (-1.72 %), bjostat 191208 to 188956 (-1.18 %); 1319 and 130 locals fewer;
+  methods over 100 bytes 2693 to 2620 and 437 to 435. 1023 methods smaller,
+  3 larger by 8 to 12 bytes.
+- The results are the same: bjostat prints the same 4630 values, its 15
+  test files pass with all threads and with one, and the ports of
+  bench/clbg print the same output.
+- Measured, the compiler before and after alternated, 3 runs each:
+  bjostat's scratch/distbench.bjo (15 rows) and bench/loops.bjo (8 rows),
+  and the nine ports of bench/clbg. All rows overlap, and fasta is faster
+  (3.582-3.587 against 3.593-3.608 s), except bench/loops' "standard
+  deviation, cells, skip-nulls", 839-1040 against 836-838 µs. That row is
+  bimodal in both builds, and its loop has the same IL in both. Run again,
+  6 runs each: 837 838 939 941 943 1040 against 837 837 939 940 941 1040.
+- Found by a survey of non-loop code against hand-written C# (records, a
+  union of three cases, ~=~ on doubles, tuples, local functions, ~let*~,
+  nested ~if~: the same IL, within 3 bytes). A ~cond~ with ~and~ and ~or~ is
+  29 bytes against 23: ~Simplify~ writes a cheap ~and~ as ~&~, with no
+  branch, on purpose.
+- Tests: ~TestFiles/codegen/option_match.bjo~. ~implied_last_case.bjo~ and
+  ~http_colour.bjo~ read the scrutinee where it was copied.
+
 * A slot that no later argument reads is assigned at once
 
 - A jump evaluates its arguments in order. A slot that no later argument

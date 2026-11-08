@@ -1,0 +1,31 @@
+;; A match on the runtime's `Option` or `Result` that covers both cases tests
+;; only the first: the last case reads its payload from the struct's field,
+;; with no test and no throw, as the last case of a declared union does.
+;;
+;; - `Some` first: `default:` is `None`.
+;; EXPECT-CS: case \{ Tag: 1, Value: var v \}:
+;; - `None` first: `default:` reads `Value` from the scrutinee, a name, with
+;;   no temporary.
+;; EXPECT-CS: var w = o\.Value;
+;; EXPECT-NO-CS: __match
+;; - An `Err` last reads `ErrValue`.
+;; EXPECT-CS: var e = r\.ErrValue;
+;; - In an expression, the last case is a pattern on the field alone.
+;; EXPECT-CS: \{ Value: var u \} => \(u \* 2\)
+;; - No match on these has a throw left.
+;; EXPECT-NO-CS: MatchFailure
+(export or-zero or-minus first-err doubled)
+
+(import (std prelude))
+
+(: (-> (Option int) int))
+(defun (or-zero o) (match o ((Some v) (+ v 1)) (None 0)))
+
+(: (-> (Option int) int))
+(defun (or-minus o) (match o (None -1) ((Some w) w)))
+
+(: (-> (Result string int) string))
+(defun (first-err r) (match r ((Ok _) "") ((Err e) e)))
+
+(: (-> (Option int) int int))
+(defun (doubled o k) (+ k (match o (None 0) ((Some u) (* u 2)))))

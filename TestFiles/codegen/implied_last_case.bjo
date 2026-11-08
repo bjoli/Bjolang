@@ -1,11 +1,12 @@
 ;; The last clause of a match on a union, when the clauses above it cover every
 ;; other case, is the switch's default section: no type test and no throw. Its
 ;; fields are read through Deconstruct on the value, which is of that case.
+;; A scrutinee that is a name nothing assigns is read again, with no copy.
 ;; `Two` is a struct (it fits in 16 bytes), so its fields are read as the
 ;; struct's properties.
 ;;
-;; EXPECT-CS: Unsafe\.As<[^>]*Leaf>\(__match__\d+\)\.Deconstruct\(out var v\)
-;; EXPECT-CS: var a = __match__\d+\.\S*Pair_Item1;
+;; EXPECT-CS: Unsafe\.As<[^>]*Leaf>\(t\)\.Deconstruct\(out var v\)
+;; EXPECT-CS: var a = p\.\S*Pair_Item1;
 ;; EXPECT-NO-CS: MatchFailure
 
 (import (std prelude))
@@ -40,7 +41,7 @@
 ;; A guarded clause covers nothing, but it is of the last clause's own case,
 ;; and None2 is covered: a value that reaches the default is a Pair whose guard
 ;; failed, which is what the last clause takes.
-;; EXPECT-CS: var b__\d+ = __match__\d+\.\S*Pair_Item2;
+;; EXPECT-CS: var b__\d+ = p\.\S*Pair_Item2;
 (: (-> Two int))
 (defun (guarded p)
   (match p

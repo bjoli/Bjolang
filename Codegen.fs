@@ -1500,9 +1500,11 @@ let private impliedLastCase (registry: TraitRegistry) (clauses: TMatchClause lis
 
     let unionCasesOf (t: HMType) =
         match t with
-        // The built-in Option and Result are structs with a tag, not a class
-        // per case, so there is no case type to bind fields through.
-        | TCon(("Option" | "Result"), _) -> None
+        // The built-in Option and Result are structs with a flag and a field
+        // for each payload: a last case of either is read from those fields
+        // (see `optionField`).
+        | TCon("Option", _) -> Some [ "Some"; "None" ]
+        | TCon("Result", _) -> Some [ "Ok"; "Err" ]
         | TCon(key, _) ->
             Map.tryFind key registry.Unions |> Option.map (fun (_, cases) -> cases |> List.map (fun (n, _) -> n))
         | _ -> None
@@ -1534,6 +1536,19 @@ let private impliedLastCase (registry: TraitRegistry) (clauses: TMatchClause lis
             | _ -> None
         | _ -> None
     | _ -> None
+
+/// The field of the runtime's `Option` or `Result` struct that holds the
+/// payload of case `name`, or None for another case. A module that declares
+/// a case of the same name has its own union, which is matched as one.
+let private optionField (unionCases: Map<string, _>) (name: string) : string option =
+    if Map.containsKey name unionCases then
+        None
+    else
+        match name with
+        | "Some" -> Some "Value"
+        | "Ok" -> Some "OkValue"
+        | "Err" -> Some "ErrValue"
+        | _ -> None
 
 /// Do these clauses cover `bool` between them?
 ///
@@ -3820,6 +3835,10 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         // A last clause that can only meet its own case and binds nothing is
         // `_`, with no type test and no throw after it, as the `default:` of
         // `generateMatch` is. See `impliedLastCase`.
+        //
+        // A last case of the runtime's `Option` or `Result` that binds its
+        // payload is a property pattern on that field alone, `{ Value: var v }`,
+        // which a struct always matches.
         let implied =
             if live |> List.exists isIrrefutable || coversBool live then
                 None
@@ -3827,7 +3846,9 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 match impliedLastCase ctx.Registry live with
                 | Some last ->
                     match last.Pattern.Node with
-                    | TPConstruct(_, args) when args |> List.forall (fun a -> a.Node = TPWildcard) -> Some last
+                    | TPConstruct(_, args) when args |> List.forall (fun a -> a.Node = TPWildcard) -> Some(last, "_")
+                    | TPConstruct(name, [ { Node = TPIdent n } ]) when (optionField ctx.UnionCases name).IsSome ->
+                        Some(last, $"{{ %s{(optionField ctx.UnionCases name).Value}: var %s{sanitizeIdent n} }}")
                     | _ -> None
                 | None -> None
 
@@ -3837,9 +3858,9 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             for clause in live do
                 indent armCtx
                 let views = ResizeArray()
-                if implied |> Option.exists (fun last -> obj.ReferenceEquals(last, clause)) then
-                    append armCtx "_"
-                else
+                match implied with
+                | Some(last, pattern) when obj.ReferenceEquals(last, clause) -> append armCtx pattern
+                | _ ->
                     generatePattern armCtx views clause.Pattern
                     generateClauseGuard armCtx views clause.Guard
                 append armCtx " => "
@@ -6106,7 +6127,18 @@ and private generateMatch
         | None, None -> false
 
     let scrutinee =
-        if needsTemp then
+        let steady =
+            match matchTarget.Node with
+            | TIdent(n, []) -> not (Set.contains n ctx.Assigned)
+            | _ -> false
+
+        if needsTemp && steady then
+            // A name that nothing assigns has the one value: it is read where
+            // a temporary would be.
+            let scratch = StringBuilder()
+            generateExpr { ctx with Builder = scratch; Prelude = None } matchTarget
+            Some(scratch.ToString())
+        elif needsTemp then
             let tmp = freshName "__match"
             emitStatement ctx (fun c ->
                 indent c
@@ -6191,6 +6223,9 @@ and private generateMatch
                     // The value is of this case, so it is read as one without a
                     // second test.
                     match clause.Pattern.Node, scrutinee with
+                    | TPConstruct(name, [ { Node = TPIdent n } ]), Some tmp when (optionField cb.UnionCases name).IsSome ->
+                        indent cb
+                        appendLine cb $"var %s{sanitizeIdent n} = %s{tmp}.%s{(optionField cb.UnionCases name).Value};"
                     | TPConstruct(name, args), Some tmp when (structCaseTag cb.Registry clause.Pattern.Type name).IsSome ->
                         for i, a in List.indexed args do
                             match a.Node with
