@@ -80,6 +80,10 @@ let freshEffect () : Effect =
 /// compiled first is a message that changes for no reason the reader can see.
 let snapshotMetaCounter () : int = nextMetaId
 
+/// The effect counter. Not put back on its own: `restoreMetaCounter` sets
+/// both. What reads it is a check that nothing made an effect cell.
+let snapshotEffectCounter () : int = nextEffectId
+
 /// Both counters, since an effect cell's id is per-run in exactly the same way.
 let restoreMetaCounter (n: int) : unit =
     nextMetaId <- n

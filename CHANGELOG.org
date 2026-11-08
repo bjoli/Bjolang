@@ -3,6 +3,31 @@
 
 What each change guarantees, and what it leaves open.
 
+* The REPL checks the modules an entry imports once, not in every entry
+
+- Each entry checked again the declarations of every module it imports, read
+  back from their metadata: each ~import/extern~ resolved against .NET, each
+  signature, trait and impl. Now, in the REPL only
+  (~Inference.cacheCheckedModules~), the top-level modules are checked one at
+  a time and each is kept with the environment and the signatures after it.
+- An entry takes a kept module when its start environment is the same (the
+  imports' ~DoubleDefs~, ~BlockingNames~, ~WaitingNames~ and
+  ~RunTimeTypeParams~), each module before it was taken, and its
+  declarations are equal. From the first module that is not taken, each is
+  checked as before.
+- A module is kept only when checking it made no type or effect variable,
+  reported nothing and queued nothing for ~solvePending~: the ids of those
+  variables start from 0 in each entry, and a module that reports something
+  reports it again. A reload of the session forgets the kept modules.
+- The whole-program checks of ~checkProgram~ still run over all modules.
+- Measured, piped sessions with ~DOTNET_TieredPGO=0~, the old and the new
+  compiler in turn: a warm entry with only the prelude 27.6-28.2 ms to
+  13.7-13.9, its type check 13.8-14.1 to 2.0-2.1; with bjostat's ~table~,
+  ~query~ and ~csv~ imported 69 to 38, its type check 36 to 4.
+- Tests: ~TestFiles/repl/kept_modules~ (an import in the middle of a
+  session, an entry that fails, a type, a trait and an impl in entries, a
+  redefinition), the same transcript as the compiler before the change.
+
 * ~csv-row-end~ and ~csv-cut-rows~: CSV bytes cut into pieces of whole rows
 
 - ~(csv-row-end bytes from)~ returns ~Some~ of the index just after the line

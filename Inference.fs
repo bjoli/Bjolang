@@ -277,8 +277,114 @@ let checkAddendum (initialEnv: Env) (decls: Decl list) : Env * TDecl list =
 /// whole-module checks after it, which can still fail the program.
 let mutable observe: (Env -> TDecl list -> unit) option = None
 
+// ---------------------------------------------------------------------------
+// The modules a REPL session imports, checked once
+// ---------------------------------------------------------------------------
+
+/// Whether `checkProgram` keeps what it found for each module, for the next
+/// compilation in this process to take instead of checking the module again.
+///
+/// On for a REPL only, as `Pipeline.cacheLoadedModules` is, which it builds
+/// on. Every entry imports the prelude and what the session imported, and
+/// checking their declarations again (each `import/extern` resolved against
+/// .NET, each signature, trait and impl) was about half of what an entry
+/// cost, and more the more it imports.
+let mutable cacheCheckedModules = false
+
+/// One module as `checkProgram` checked it: its declarations, and the
+/// environment, the signatures and the typed module after it.
+type private CheckedModule =
+    { Module: Decl
+      Env: Env
+      Sigs: Sigs
+      Typed: TDecl list }
+
+/// What the start environment has of the compilation's imports. The rest of
+/// it is the prelude's, which is the same in each compilation.
+type private StartKey =
+    Map<string, string> * Set<string> * Set<string> * Map<string * string, (int * string) list>
+
+let private startKey (env: Env) : StartKey =
+    env.Registry.DoubleDefs, env.Registry.BlockingNames, env.Registry.WaitingNames, env.Registry.RunTimeTypeParams
+
+/// The modules the last compilation checked, from the first, as far as each
+/// could be kept, and the start it checked them from.
+let private checkedModules = ResizeArray<CheckedModule>()
+let mutable private checkedFrom: StartKey option = None
+
+/// Forgets the checked modules: for a session that loads its modules again.
+let forgetCheckedModules () =
+    checkedModules.Clear()
+    checkedFrom <- None
+
+/// The top-level modules, checked one at a time, in order, as
+/// `checkDeclGroup` checks a group of modules: none of its passes before or
+/// after the fold reads a `DModule`, and the fold gives each module the
+/// environment and the signatures the one before it left.
+///
+/// Module k is taken from the cache when the start is the same, each module
+/// before it was taken, and its declarations are equal to the kept one's:
+/// then the environment before it is the one it was checked in, and what
+/// checking it gave is a function of that and of its declarations. After the
+/// first module that is not taken, each is checked.
+///
+/// A module is kept only when checking it made no type or effect variable,
+/// reported nothing and queued nothing for `solvePending`. The ids of those
+/// variables start from 0 in each REPL entry, so a kept one could be taken
+/// for a new one; a module that reported something has to report it again;
+/// and what it queued would not be asked again of a module that is taken.
+let private checkModulesKept (initialEnv: Env) (program: Decl list) : Env * TDecl list =
+    let start = startKey initialEnv
+
+    if checkedFrom <> Some start then
+        checkedModules.Clear()
+        checkedFrom <- Some start
+
+    let rec go (index: int) (taking: bool) (env: Env) (sigs: Sigs) (acc: TDecl list list) (rest: Decl list) =
+        match rest with
+        | [] -> env, List.concat (List.rev acc)
+        | m :: rest ->
+            let kept = if taking && index < checkedModules.Count then Some checkedModules[index] else None
+
+            match kept with
+            | Some k when LanguagePrimitives.PhysicalEquality k.Module m || k.Module = m ->
+                go (index + 1) true k.Env k.Sigs (k.Typed :: acc) rest
+            | _ ->
+                if index < checkedModules.Count then
+                    checkedModules.RemoveRange(index, checkedModules.Count - index)
+
+                let metas = snapshotMetaCounter ()
+                let effects = snapshotEffectCounter ()
+                let reported = Diagnostics.collectedCount ()
+                let queued = Traits.queuedCount ()
+                let env, sigs, typed = checkDeclGroup env sigs [ m ]
+
+                let clean =
+                    snapshotMetaCounter () = metas
+                    && snapshotEffectCounter () = effects
+                    && Diagnostics.collectedCount () = reported
+                    && Traits.queuedCount () = queued
+
+                // Kept only while every module before it is: the next
+                // compilation takes a module only after the ones before it.
+                if clean && index = checkedModules.Count then
+                    checkedModules.Add
+                        { Module = m
+                          Env = env
+                          Sigs = sigs
+                          Typed = typed }
+
+                go (index + 1) false env sigs (typed :: acc) rest
+
+    go 0 true initialEnv Map.empty [] program
+
 let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
-    let finalEnv, _, typedDecls = checkDeclGroup initialEnv Map.empty program
+    let finalEnv, typedDecls =
+        if cacheCheckedModules then
+            checkModulesKept initialEnv program
+        else
+            let env, _, typed = checkDeclGroup initialEnv Map.empty program
+            env, typed
     // Anything raised outside a declaration that generalizes still has to be
     // answered for.
     solvePending finalEnv

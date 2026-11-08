@@ -190,6 +190,11 @@ module Diagnostics =
 
     let record (d: Diagnostic) = collected.Add d
 
+    /// How many diagnostics have been collected since the last `reset`, and
+    /// how many names are poisoned: a step that changed neither reported
+    /// nothing.
+    let collectedCount () = collected.Count + poisoned.Count
+
     let hasErrors () =
         collected |> Seq.exists (fun d -> d.Severity = Error)
 

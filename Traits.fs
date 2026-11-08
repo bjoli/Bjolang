@@ -168,6 +168,15 @@ let clearWanteds () : unit =
     clrChecked.Clear()
     obligations.Clear()
 
+/// How much is queued for `solvePending`: a step that left this as it was
+/// asked nothing of it.
+let queuedCount () : int =
+    wantedQueue.Count
+    + undecidedWanteds.Count
+    + Unification.deferredProjections.Count
+    + clrObligations.Count
+    + obligations.Count
+
 /// Queues the check of a constraint over a .NET interface at the type a use
 /// instantiated it to: the `(Num %a)` of `+` at the `string` of `(+ "s")`.
 /// `solvePending` checks it once the declaration is inferred. `Lowering` checks

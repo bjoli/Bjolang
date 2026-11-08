@@ -495,10 +495,13 @@ from a batch build's side, where the counter *is* reset so that a module's
 
 * Speed
 
-A warm entry costs about 24ms; the first entry of a session costs about 700ms,
-most of it waiting for Roslyn's warm-up.
+A warm entry costs about 14 ms with only the prelude imported, and about 38
+ms with bjostat's ~table~, ~query~ and ~csv~ imported (measured with piped
+input and ~DOTNET_TieredPGO=0~, which made a session about a quarter faster;
+about 55-62 ms with the defaults). The first entry of a session costs about
+700 ms, most of it waiting for Roslyn's warm-up.
 
-Two things make that possible, both switched on by ~Repl.run~ and off elsewhere:
+Three things make that possible, all switched on by ~Repl.run~ and off elsewhere:
 
 - ~CSharpEmit.preferInProcess~. Every entry is one Roslyn ~Emit~ in this
   process, against a reference set parsed once. The first emit is expensive and
@@ -510,6 +513,21 @@ Two things make that possible, both switched on by ~Repl.run~ and off elsewhere:
   ~Gensym~, so declarations produced under one compilation's counter and reused
   under another's would make a module's output depend on what was compiled
   first. A REPL entry has nothing to lose by it.
+- ~Inference.cacheCheckedModules~. The declarations read back were checked
+  again in every entry: each ~import/extern~ resolved against .NET, each
+  signature, trait and impl. That was half of a warm entry with the prelude
+  (14 of 28 ms) and 36 of 69 ms with bjostat imported. Now the top-level
+  modules are checked one at a time, and each is kept with the environment
+  and the signatures after it. An entry takes a module as kept when the
+  start environment is the same, each module before it was taken, and its
+  declarations are equal; from the first module that is not, it checks. A
+  module is kept only when checking it made no type or effect variable,
+  reported nothing and queued nothing for the solver, since the ids of those
+  variables start from 0 in each entry. The type check of an entry is about 2
+  ms with the prelude, and about 4 ms with bjostat.
+
+What is left of a warm entry with bjostat imported is mostly ~parse + module
+graph~, about 20 ms.
 
 ~BJOLANG_TIMING=1~ prints a per-phase breakdown at exit, with one line per
 entry-level phase and a count beside it.

@@ -786,6 +786,10 @@ let rec private evaluate (replaying: bool) (state: State) (text: string) : State
         printfn
             $"%s{changed} changed: reloading the session, and compiling its %d{definitions.Length} definition %s{what} again."
         state.Generation.Unload()
+        // A module that changed is read again, and its declarations would not
+        // be equal to the kept ones anyway; nothing kept is wanted after a
+        // reload.
+        Inference.forgetCheckedModules ()
 
         let fresh =
             { state with
@@ -1748,6 +1752,9 @@ let run () : int =
     // lose by the caveat that keeps this off for builds — see
     // `Pipeline.cacheLoadedModules`.
     Pipeline.cacheLoadedModules <- true
+    // The modules an entry imports, checked once and taken by each entry
+    // after: see `Inference.checkModulesKept`.
+    Inference.cacheCheckedModules <- true
 
     for assemblyPath in Paths.runtimeAssemblies do
         if File.Exists assemblyPath then
