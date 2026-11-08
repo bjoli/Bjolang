@@ -315,6 +315,13 @@ public static class AtomicModule
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T Update<T>(Atomic<T> a, Func<T, T> f) => a.Update(f);
 
+    /// Adds 1 to element `i` of the array as one atomic step, and returns the
+    /// new value: what a count kept in an array and added to from several
+    /// threads needs. An index outside the array raises
+    /// IndexOutOfRangeException.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int IncrementAt(int[] a, int i) => Interlocked.Increment(ref a[i]);
+
     // The integer operations, one overload for each integer type.
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

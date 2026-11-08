@@ -3,6 +3,18 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~atomic-array-increment!~: an element of an array of ints, plus 1, as one atomic step
+
+- ~(atomic-array-increment! a i)~ in ~(std atomic)~ adds 1 to element ~i~ of
+  an ~(Array int)~ with ~Interlocked.Increment~ and returns the new value.
+  Raises ~System.IndexOutOfRangeException~ for an index outside the array.
+- Why: an import cannot pass a ~ref~ to an array element, so counts kept in
+  one array that several threads add to had no way in Bjolang. bjostat's
+  ~table-count~ and ~table-crosstab~ count so when there are too many
+  values for one array of counts for each thread.
+- Tests: ~TestFiles/324_atomic.bjo~ (48 parts on the compute threads, each
+  adding 20 000 times to 7 elements; no addition is lost).
+
 * The compiler runs without tiered PGO
 
 - ~Bjolang.fsproj~ sets ~<TieredPGO>false</TieredPGO>~, so the compiler's

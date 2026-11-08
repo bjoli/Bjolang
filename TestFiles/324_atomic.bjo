@@ -10,6 +10,7 @@
 (import (std prelude))
 (import (std simpletest))
 (import (std atomic))
+(import (only (std parallel) computing-each))
 
 ;; ---------------------------------------------------------------------------
 ;; A type of the test's own
@@ -175,4 +176,25 @@
   (def xs (make-atomic (list)))
   (eight (fun () (hammer-update xs 20000)))
   (expect "a list, through atomic-update!: eight fibers of 20 000" (list-length (atomic-ref xs)) 160000)
+
+  ;; --- elements of an array ------------------------------------------------------
+  (def counts (: (make-array 3) (Array int)))
+  (expect "an element: the new value" (atomic-array-increment! counts 1) 1)
+  (expect "again" (atomic-array-increment! counts 1) 2)
+  (expect "the others are left" (array->vec counts) [0 2 0])
+  (expect-true "an index outside the array raises"
+               (err? (try (atomic-array-increment! counts 3) #:catch (System.IndexOutOfRangeException))))
+  ;; 48 parts on the compute threads, each adding 20 000 times to 7 elements.
+  (def shared (: (make-array 7) (Array int)))
+  (ignore (computing-each 48 (fun (p)
+                               (loop (:for i (range 0 20000))
+                                     (:do (ignore (atomic-array-increment! shared (% (+ i p) 7)))))
+                               unit)))
+  (expect "48 parts of 20 000 increments lose none" (loop (:for c shared) (:acc s (summing c))) 960000)
+  (expect "each element its share"
+          (array->vec shared)
+          {vecing (loop (:for p (range 0 48))
+                        (:acc s (folding 0 (+ s (loop (:for i (range 0 20000))
+                                                      (:acc k (summing (if (= (% (+ i p) 7) e) 1 0))))))))
+                  (:for e (range 0 7))})
   0)

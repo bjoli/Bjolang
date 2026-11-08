@@ -174,3 +174,23 @@
   (arg a "The atomic cell.")
   (arg n "The value to subtract.")
   (returns "The updated value after subtracting n."))
+
+(:doc atomic-array-increment!
+  (summary "Adds 1 to an element of an array of ints, as one atomic step.")
+  (arg a "The array.")
+  (arg i "The index of the element.")
+  (returns "The new value of the element.")
+  (raises System.IndexOutOfRangeException "When the index is not in the array.")
+  (see atomic-increment!)
+  (example """
+    (def counts (: (make-array 3) (Array int)))
+    (ignore (computing-each 1000 (fun (k) (atomic-array-increment! counts (% k 3)))))
+    (array-ref counts 0)   ; 334
+    """)
+  (reference """
+    For counts kept in one array that several threads add to: each thread
+    can add to any element, and no addition is lost. It is
+    @code{Interlocked.Increment} on the element. An element that many threads
+    add to at once is slower than one array for each thread that is summed
+    after, so use it when the array is too large to have one for each thread.
+    """))
