@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* The compiler runs without tiered PGO
+
+- ~Bjolang.fsproj~ sets ~<TieredPGO>false</TieredPGO>~, so the compiler's
+  runtimeconfig has ~System.Runtime.TieredPGO~ false. The programs it builds
+  have their own runtimeconfig, and are not changed.
+- Why: with PGO, a hot ReadyToRun method goes through an instrumented tier
+  before the optimized one, and a compiler process seldom lives long enough
+  to profit. ~JIT_CountProfile32~ alone was 9.7% of a REPL session's samples.
+- Measured, the same build with and without it: a REPL session of 81 entries
+  2.8 to 2.0 s; a warm entry 18-27 to 13.3-14.1 ms with the prelude, and
+  55-62 to 36-38 ms with bjostat's ~table~, ~query~ and ~csv~ imported; a
+  ~--check~ of ~TestFiles/481_csv.bjo~ 708-718 to 648-661 ms, a compile of it
+  1267-1281 to 1190-1232 ms.
+- ReadyToRun stays: without it a session of one entry took 1.4-1.5 s, with
+  it 0.6 s. In a long session both reach the same code.
+
 * The REPL checks the modules an entry imports once, not in every entry
 
 - Each entry checked again the declarations of every module it imports, read

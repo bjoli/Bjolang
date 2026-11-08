@@ -495,11 +495,18 @@ from a batch build's side, where the counter *is* reset so that a module's
 
 * Speed
 
-A warm entry costs about 14 ms with only the prelude imported, and about 38
+A warm entry costs about 14 ms with only the prelude imported, and about 36-38
 ms with bjostat's ~table~, ~query~ and ~csv~ imported (measured with piped
-input and ~DOTNET_TieredPGO=0~, which made a session about a quarter faster;
-about 55-62 ms with the defaults). The first entry of a session costs about
-700 ms, most of it waiting for Roslyn's warm-up.
+input). The first entry of a session costs about 600 ms, most of it waiting
+for Roslyn's warm-up.
+
+The compiler is ReadyToRun, which is what makes the first entries fast: 1.4-1.5
+s for a session of one entry without it, 0.6 s with it. It runs without
+tiered PGO (~<TieredPGO>false</TieredPGO>~ in ~Bjolang.fsproj~). With PGO a
+hot ReadyToRun method goes through an instrumented tier before the optimized
+one, and a session spends long in it: 81 entries took 2.8 s with it and 2.0 s
+without, and a warm entry 18-27 ms and 14. In the long run both reach the
+same code.
 
 Three things make that possible, all switched on by ~Repl.run~ and off elsewhere:
 
