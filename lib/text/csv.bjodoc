@@ -268,6 +268,61 @@
     """))
 
 ;; ---------------------------------------------------------------------------
+;; Rows of bytes, cut into pieces
+;; ---------------------------------------------------------------------------
+
+(:doc csv-row-end
+  (summary "Where the row that starts at an index ends.")
+  (arg bytes "CSV text as UTF-8 bytes.")
+  (arg from "The index of the first byte of a row, not inside quotes.")
+  (key #:quote-char "The quote, or None for no quoting.")
+  (returns "Some of the index just after the line feed that ends the row, or None when no line feed ends it, as for the last row of a text without a final line feed.")
+  (raises ArgumentException "When the index is not in the bytes, or the quote is not allowed.")
+  (see csv-cut-rows)
+  (example """
+    (csv-row-end (string->bytes "a,b\n1,2\n") 0)          ; (Some 4)
+    (csv-row-end (string->bytes "\"x\ny\",1\n2,3\n") 0)   ; (Some 8): the first line feed is inside quotes
+    (csv-row-end (string->bytes "a,b") 0)                 ; None
+    """)
+  (reference """
+    A line feed is inside quotes when the quotes before it, from the start
+    of the row, are odd in number. A quote inside a quoted field is two
+    quotes, so it does not change that. A CR before the line feed is part of
+    the row.
+    """))
+
+(:doc csv-cut-rows
+  (summary "CSV bytes cut into pieces of whole rows, for reading on several threads.")
+  (arg bytes "CSV text as UTF-8 bytes.")
+  (arg parts "The largest number of pieces. 1 or more.")
+  (key #:from "The index of the first byte of a row where the first piece starts, as the end of a header. 0 by default.")
+  (key #:quote-char "The quote, or None for no quoting.")
+  (returns "Some of the index where each piece starts, and then the end of the bytes: k pieces are k + 1 indices. None when the quotes do not close.")
+  (raises ArgumentException "When the number of pieces is less than 1, #:from is not in the bytes, or the quote is not allowed.")
+  (see csv-row-end)
+  (example """
+    (def b (string->bytes "h\n1\n2\n3\n4\n"))
+    (csv-cut-rows b 2 #:from 2)                  ; (Some #[2 6 10]): the rows 1 and 2, and 3 and 4
+    (csv-cut-rows (string->bytes "\"a\n") 2)     ; None: the quote is not closed
+    """)
+  (reference """
+    The pieces are of about one size. Each piece is whole rows: a cut is
+    just after a line feed that is not inside quotes, and the last piece
+    ends at the end of the bytes, with or without a final line feed. No
+    piece is empty, so a small text gives fewer pieces than asked for, and
+    bytes with no rows after @code{#:from} give no piece: @code{(Some #[n])}.
+
+    The quotes of each piece are counted with one vectorized call. Then,
+    from the point where each piece would start if all were of one size,
+    the bytes are looked at only up to the next line feed outside quotes.
+
+    The bytes are not checked to be UTF-8, nor the rows to be CSV: a reader
+    of the pieces does that. A quote inside a field that does not start
+    with a quote, which strict reading refuses, changes the parity and so
+    the cuts.
+    """))
+
+;; ---------------------------------------------------------------------------
 ;; Writing
 ;; ---------------------------------------------------------------------------
 

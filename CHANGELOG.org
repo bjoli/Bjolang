@@ -3,6 +3,28 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~csv-row-end~ and ~csv-cut-rows~: CSV bytes cut into pieces of whole rows
+
+- ~(csv-row-end bytes from)~ returns ~Some~ of the index just after the line
+  feed that ends the row starting at ~from~. A line feed inside quotes is part
+  of the row. Returns ~None~ when no line feed ends the row.
+- ~(csv-cut-rows bytes parts #:from i)~ returns ~Some~ of the index where each
+  piece starts, and then the end of the bytes. There are at most ~parts~
+  pieces, of about one size, each whole rows, none empty. Returns ~None~ when
+  the quotes do not close.
+- Both take ~#:quote-char~ (~None~ for no quoting) and raise
+  ~ArgumentException~ for an index that is not in the bytes, fewer than 1
+  piece, or a quote that is not ASCII or ends a line.
+- A piece is a range of the bytes: nothing is copied. The bytes are not
+  checked for UTF-8; the reader of each piece checks its own bytes.
+- The quotes of each piece are counted with one vectorized
+  ~MemoryExtensions.Count~. Only the bytes from each cut's target to the next
+  line feed outside quotes are looked at one by one.
+- Why: bjostat's ~read-csv~ read a large file on its compute threads with C#
+  glue that walked the file to each line feed and copied each piece with the
+  header.
+- Tests: ~TestFiles/481_csv.bjo~.
+
 * ~mutablevec-grow!~ and ~mutablevec-span~: a MutableVec filled a block at a time
 
 - ~(mutablevec-grow! v n)~ adds ~n~ elements at the end of ~v~, with

@@ -55,6 +55,8 @@
   csv-fold csv-for-each
   ;; The whole document
   parse-csv
+  ;; Rows of bytes, cut into pieces
+  csv-row-end csv-cut-rows
   ;; Writing
   csv-row->string csv->string write-csv-row write-csv)
 
@@ -729,6 +731,114 @@
       (match (fold-rows rd unit (fun (row u) (transientvec-add! rows row) u))
         ((Ok _) (Ok (transientvec->vec rows)))
         ((Err e) (Err e))))))
+
+;; ===========================================================================
+;; Rows of bytes, cut into pieces
+;; ===========================================================================
+;;
+;; For a reader that reads the pieces of a large text on several threads. A
+;; cut is just after a line feed that is not inside quotes. Whether a line
+;; feed is inside quotes is the parity of the quotes before it, since a quote
+;; in a quoted field is written as two quotes. So the quotes of each piece
+;; are counted with one vectorized call, and only the bytes from each cut's
+;; target to the next line feed are looked at one by one.
+
+(import/extern
+  (count-byte (: System.MemoryExtensions.Count (-> (RoSpan byte) byte int)))
+  (index-of-byte (: System.MemoryExtensions.IndexOf (-> (RoSpan byte) byte int)))
+  (index-of-either (: System.MemoryExtensions.IndexOfAny (-> (RoSpan byte) byte byte int))))
+
+;; The quote's byte, or -1 without quoting.
+(: (-> (Option char) int))
+(defun (quote-byte quote-char)
+  (match quote-char
+    (None -1)
+    ((Some c)
+     (def q (char->integer c))
+     (when (or (>= q 128) (= q 10) (= q 13))
+       (argument-error "#:quote-char has to be an ASCII character that does not end a line"))
+     q)))
+
+;; The index just after the first line feed from `from` that is not inside
+;; quotes, when `from` is inside quotes or not; None when there is none.
+(: (-> (Array byte) int int bool (Option int)))
+(defun (row-end-from b from q inside)
+  (let go ((i from) (inside inside))
+    (def rest (array->ro-span b #:from i))
+    (def j (if (< q 0) (index-of-byte rest 10uy) (index-of-either rest 10uy (cast byte q))))
+    (cond
+      ((< j 0) None)
+      ((not (= (array-ref b (+ i j)) 10uy)) (go (+ i j 1) (not inside)))
+      (inside (go (+ i j 1) inside))
+      (else (Some (+ i j 1))))))
+
+;; The number of quotes from `from` to `to`.
+(: (-> (Array byte) int int int int))
+(defun (quotes-in b from to q)
+  (if (< q 0) 0 (count-byte (array->ro-span b #:from from #:to to) (cast byte q))))
+
+;; The index just after the line feed that ends the row starting at `from`, a
+;; line feed inside quotes being part of the row; None when no line feed ends
+;; it, as for the last row of a text without a final line feed.
+(: (-> (Array byte) int (#:quote-char (Option char)) (Option int)))
+(defun (csv-row-end bytes from #:quote-char (Some #\"))
+  (when (or (< from 0) (> from (array-length bytes)))
+    (argument-error "csv-row-end: the index is not in the bytes"))
+  (row-end-from bytes from (quote-byte quote-char) #f))
+
+;; The bytes from `#:from`, a row's start, to the end cut into at most
+;; `parts` pieces of whole rows of about one size: the index where each
+;; piece starts, and the end. No piece is empty. None when the quotes do not
+;; close.
+(: (-> (Array byte) int (#:from int) (#:quote-char (Option char)) (Option (Array int))))
+(defun (csv-cut-rows bytes parts #:from 0 #:quote-char (Some #\"))
+  (def n (array-length bytes))
+  (when (< parts 1) (argument-error "csv-cut-rows: the number of pieces has to be 1 or more"))
+  (when (or (< from 0) (> from n)) (argument-error "csv-cut-rows: #:from is not in the bytes"))
+  (def q (quote-byte quote-char))
+  ;; Where each piece would start if all were of one size, and the end.
+  (def targets
+    {arraying (+ from (cast int (quotient (* (cast long (- n from)) (cast long k)) (cast long parts))))
+              (:for k (range 0 (+ parts 1)))})
+  (def counts {arraying (quotes-in bytes (array-ref targets k) (array-ref targets (+ k 1)) q)
+                        (:for k (range 0 parts))})
+  (if (odd? (loop (:for c counts) (:acc s (folding 0 (+ s c)))))
+      None
+      (Some (cuts-at bytes q targets counts from n))))
+
+;; The cuts: from the byte before each target, the end of the row it is in,
+;; so that a target just after a line feed is a cut. The quotes before the
+;; target are the sum of the counts before it; the byte before the target,
+;; when it is a quote, is not before that byte.
+(: (-> (Array byte) int (Array int) (Array int) int int (Array int)))
+(defun (cuts-at b q targets counts from n)
+  (def parts (array-length counts))
+  (def out (: (make-array (+ parts 1)) (Array int)))
+  (array-set! out 0 from)
+  (let go ((k 1) (before (array-ref counts 0)) (found 1))
+    (if (= k parts)
+        (finish-cuts out found n)
+        (match (let* ((target (array-ref targets k))
+                      (start (max from (- target 1)))
+                      (quote-before? (and (< start target) (>= q 0) (= (cast int (array-ref b start)) q))))
+                 (row-end-from b start q (odd? (if quote-before? (- before 1) before))))
+          (None (finish-cuts out found n))
+          ((Some c)
+           (def last (array-ref out (- found 1)))
+           (if (and (> c last) (< c n))
+               (begin
+                 (array-set! out found c)
+                 (go (+ k 1) (+ before (array-ref counts k)) (+ found 1)))
+               (go (+ k 1) (+ before (array-ref counts k)) found)))))))
+
+;; The `found` cuts and then the end, when the last cut is not the end.
+(: (-> (Array int) int int (Array int)))
+(defun (finish-cuts out found n)
+  (if (< (array-ref out (- found 1)) n)
+      (begin
+        (array-set! out found n)
+        (array-resize out (+ found 1)))
+      (array-resize out found)))
 
 ;; ===========================================================================
 ;; The writer

@@ -41,6 +41,36 @@
 (: (List (Vec string)))
 (def no-rows Nil)
 
+;; The index just after each line feed outside quotes, found byte by byte:
+;; the places where csv-cut-rows may cut.
+(: (-> (Array byte) (Vec int)))
+(defun (row-ends-by-bytes b)
+  (let go ((i 0) (inside #f) (ends (: [] (Vec int))))
+    (cond
+      ((= i (array-length b)) ends)
+      ((= (array-ref b i) 34uy) (go (+ i 1) (not inside) ends))
+      ((and (= (array-ref b i) 10uy) (not inside)) (go (+ i 1) inside (vec-add ends (+ i 1))))
+      (else (go (+ i 1) inside ends)))))
+
+;; Whether the cuts of the bytes from `from` into at most `parts` pieces are
+;; what csv-cut-rows says: from `from` to the end, rising, at row ends, and
+;; no more pieces than asked for.
+(: (-> (Array byte) int int bool))
+(defun (cuts-good? b parts from)
+  (match (csv-cut-rows b parts #:from from)
+    (None #f)
+    ((Some cuts)
+     (def ends (row-ends-by-bytes b))
+     (def k (array-length cuts))
+     (and (= (array-ref cuts 0) from)
+          (= (array-ref cuts (- k 1)) (array-length b))
+          (<= (- k 1) parts)
+          (all? (fun (i) (< (array-ref cuts i) (array-ref cuts (+ i 1)))) (range 0 (- k 1)))
+          (all? (fun (i) (any? (fun (e) (= e (array-ref cuts i))) ends)) (range 1 (- k 1)))))))
+
+(: (-> (Option (Array int)) (Option (Vec int))))
+(defun (cut-vec o) (match o ((Some a) (Some (array->vec a))) (None None)))
+
 (defun (main)
   ;; ---- What is read -------------------------------------------------------
   (expect "plain" (rows "a,b,c\n1,2,3\n") (Ok [["a" "b" "c"] ["1" "2" "3"]]))
@@ -238,4 +268,41 @@
   (write-csv-row one ["a" "b c"])
   (write-csv-row one ["d"] #:crlf? #t)
   (expect "a row at a time" (get-output-string one) "a,b c\nd\r\n")
+
+  ;; Rows of bytes, cut into pieces
+  (expect "the end of a row" (csv-row-end (string->bytes "a,b\n1,2\n") 0) (Some 4))
+  (expect "a line feed inside quotes is in the row"
+          (csv-row-end (string->bytes "\"x\ny\",1\n2,3\n") 0) (Some 8))
+  (expect "no line feed ends the last row" (csv-row-end (string->bytes "a,b") 0) None)
+  (expect "without quoting, a quote is a byte"
+          (csv-row-end (string->bytes "\"x\ny\",1\n") 0 #:quote-char None) (Some 3))
+  (def numbered (string->bytes "h\n1\n2\n3\n4\n"))
+  (expect "two pieces of two rows" (cut-vec (csv-cut-rows numbered 2 #:from 2)) (Some [2 6 10]))
+  (expect "one piece" (cut-vec (csv-cut-rows numbered 1 #:from 2)) (Some [2 10]))
+  (expect "no more pieces than rows" (cut-vec (csv-cut-rows numbered 9 #:from 2)) (Some [2 4 6 8 10]))
+  (expect "no rows, no piece" (cut-vec (csv-cut-rows (string->bytes "h\n") 3 #:from 2)) (Some [2]))
+  (expect "a quote that is not closed" (cut-vec (csv-cut-rows (string->bytes "h\n\"a\n") 2 #:from 2)) None)
+  (expect "the last row without a line feed"
+          (cut-vec (csv-cut-rows (string->bytes "1\n2\n3") 2)) (Some [0 2 5]))
+  (def quoted (string->bytes (csv->string (map (fun (i) [(int->string i)
+                                                        (if (even? i) "x\ny,\"z\"\r\n" "w")
+                                                        (if (= (% i 7) 0) (string-join {vecing "ab\n" (:for _k (range 0 40))} "") "")])
+                                               (range 0 300)))))
+  (def header-end (match (csv-row-end quoted 0) ((Some e) e) (None -1)))
+  (expect-true "pieces of whole rows, of 1 to 40 pieces, from the start and after a row"
+               (all? (fun (parts) (and (cuts-good? quoted parts 0) (cuts-good? quoted parts header-end)))
+                     (range 1 41)))
+  (expect-true "the cuts are at the rows parse-csv reads"
+               (match (csv-cut-rows quoted 7)
+                 ((Some cuts)
+                  (= (vec-length (match (parse-csv (bytes->string quoted)) ((Ok rs) rs) ((Err _) [])))
+                     (loop (:for i (range 0 (- (array-length cuts) 1)))
+                           (:acc n (folding 0 (+ n (match (parse-csv (bytes->string quoted #:start (array-ref cuts i)
+                                                                                  #:end (array-ref cuts (+ i 1))))
+                                                     ((Ok rs) (vec-length rs))
+                                                     ((Err _) -1000))))))))
+                 (None #f)))
+  (expect-true "no pieces is refused" (refused? (try (csv-cut-rows numbered 0) #:catch (System.ArgumentException))))
+  (expect-true "a start past the end is refused"
+               (refused? (try (csv-cut-rows numbered 1 #:from 11) #:catch (System.ArgumentException))))
   0)
