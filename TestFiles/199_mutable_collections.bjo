@@ -145,6 +145,35 @@
   (expect-true "cleared through one name" (mutablevec-empty? same))
   (expect "and the copy is untouched" (mutablevec-length other) 1))
 
+;; A block of elements: grow the vector, then write the new elements through a
+;; span over its storage.
+(: (-> (Span int) int void))
+(defun (fill-block! s first)
+  (loop (:for i (range 0 (span-length s)))
+        (:do (span-set! s i (+ first i)))))
+
+(: (-> void))
+(defun (vec-blocks)
+  (def v (vec-of (Cons 1 Nil)))
+  (mutablevec-grow! v 3)
+  (expect "grown by three" (mutablevec-length v) 4)
+  (fill-block! (mutablevec-span v 1 3) 2)
+  (expect "written through the span" (mutablevec->list v) (Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil)))))
+  (fill-block! (mutablevec-span v 0 1) 10)
+  (expect "a span at the start" (mutablevec-ref v 0) 10)
+  (mutablevec-grow! v 0)
+  (expect "grown by none" (mutablevec-length v) 4)
+  ;; Past the capacity: the storage moves, and the old elements move with it.
+  (mutablevec-grow! v 100)
+  (fill-block! (mutablevec-span v 4 100) 5)
+  (expect "grown past its capacity" (mutablevec-ref v 103) 104)
+  (expect "the first ones kept" (mutablevec-ref v 3) 4)
+  (expect-true "a negative count raises"
+               (err? (try (mutablevec-grow! v -1) #:catch (System.ArgumentOutOfRangeException))))
+  (expect-true "a span past the end raises"
+               (err? (try (span-length (mutablevec-span v 100 5)) #:catch (System.ArgumentOutOfRangeException))))
+  (expect "and nothing changed" (mutablevec-length v) 104))
+
 (: (-> void))
 (defun (vec-conversions)
   (def xs (Cons 1 (Cons 2 (Cons 3 Nil))))
@@ -580,6 +609,7 @@
   (vec-as-a-stack)
   (vec-ordering)
   (vec-aliasing)
+  (vec-blocks)
   (vec-conversions)
   (vec-traits)
   (vec-equality)

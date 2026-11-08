@@ -257,6 +257,46 @@
   (returns "A new vector with identical elements. Does not clone elements.")
   (see mutablevec->vec))
 
+(:doc mutablevec-grow!
+  (summary "Adds n elements at the end of a vector, with unspecified values.")
+  (arg xs "The vector to grow.")
+  (arg n "The number of elements to add. 0 or more.")
+  (see mutablevec-span)
+  (example """
+    (def v (mutablevec))
+    (mutablevec-add! v 1.0)
+    (mutablevec-grow! v 2)
+    (def s (mutablevec-span v 1 2))
+    (span-set! s 0 2.0)
+    (span-set! s 1 3.0)
+    v   ; #mvec(1 2 3)
+    """)
+  (reference """
+    For a loop that fills a vector one block at a time: grow the vector, then
+    write the new elements through @code{mutablevec-span}. This is how a
+    @code{BlockCollector} with a @code{MutableVec} accumulator implements
+    @code{block-grow}.
+
+    The new elements can hold values from before: the vector keeps its
+    storage when it shrinks. Write each element before you read it.
+
+    Raises ArgumentOutOfRangeException when @code{n} is less than 0.
+    """))
+
+(:doc mutablevec-span
+  (summary "A span over n elements of a vector, from index start.")
+  (arg xs "The vector.")
+  (arg start "The index of the first element.")
+  (arg n "The number of elements.")
+  (returns "A span over the storage of the vector. A write through the span writes the vector.")
+  (see mutablevec-grow!)
+  (reference """
+    The span is valid until the vector changes its length: when the vector
+    grows, it can move its elements to new storage.
+
+    Raises ArgumentOutOfRangeException when the range is not in the vector.
+    """))
+
 ;; ---------------------------------------------------------------------------
 ;; Conversions
 ;; ---------------------------------------------------------------------------

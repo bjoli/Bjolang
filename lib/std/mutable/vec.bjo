@@ -43,6 +43,7 @@
   mutablevec-contains? mutablevec-index-of
   mutablevec-reverse! mutablevec-sort! mutablevec-sort-by!
   mutablevec-copy
+  mutablevec-grow! mutablevec-span
   list->mutablevec mutablevec->list vec->mutablevec mutablevec->vec
   mutablevec->iarray
   seq->mutablevec mutablevec->seq mutablevec->array
@@ -93,7 +94,12 @@
   ;; stack-shaped loop can pop until it stops.
   (mutablevec-pop!          (: Bjolang.Runtime.MutableVecModule.TryPopBack (-> (MutableVec %a) (out %a) (Option %a))))
   ;; The elements where the vector keeps them. Valid until the vector grows.
-  (clr-as-span              (: System.Runtime.InteropServices.CollectionsMarshal.AsSpan (-> (MutableVec %a) (Span %a)))))
+  (clr-as-span              (: System.Runtime.InteropServices.CollectionsMarshal.AsSpan (-> (MutableVec %a) (Span %a))))
+  (clr-set-count            (: System.Runtime.InteropServices.CollectionsMarshal.SetCount (-> (MutableVec %a) int void))))
+
+(import/class
+  (ArgumentOutOfRangeException (: System.ArgumentOutOfRangeException
+                                  (-> string string ArgumentOutOfRangeException))))
 
 ;; Sorted by the element's own `Ord`. `mutablevec-sort-by!` takes the comparison
 ;; directly, for an order that is not the type's. Both are stable, as
@@ -101,6 +107,32 @@
 (: (-> (MutableVec %a) void) (where (Ord %a)))
 (defun (mutablevec-sort! xs)
   (mutablevec-sort-by! xs (fun (a b) (compare a b))))
+
+;; ---------------------------------------------------------------------------
+;; Blocks
+;; ---------------------------------------------------------------------------
+;;
+;; A loop that fills a vector a block at a time grows the vector, and then
+;; writes the new elements through a span.
+
+;; Adds `n` elements at the end. Their values are unspecified: the storage
+;; can keep values from before. Write each one before you read it.
+;; Raises ArgumentOutOfRangeException when `n` is less than 0.
+(: (-> (MutableVec %a) int void))
+(defun (mutablevec-grow! xs n)
+  (when (< n 0)
+    (raise (cast Exception
+                 (ArgumentOutOfRangeException.
+                  "n" (str "mutablevec-grow!: the count is " (int->string n) ", and it must be 0 or more.")))))
+  (clr-set-count xs (+ (mutablevec-length xs) n)))
+
+;; The `n` elements from index `start`, as a span over the storage of the
+;; vector. A write through the span writes the vector. The span is valid
+;; until the vector changes its length.
+;; Raises ArgumentOutOfRangeException when the range is not in the vector.
+(: (-> (MutableVec %a) int int (Span %a)))
+(defun (mutablevec-span xs start n)
+  (span-slice (clr-as-span xs) #:from start #:to (+ start n)))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions

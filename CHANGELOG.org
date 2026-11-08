@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~mutablevec-grow!~ and ~mutablevec-span~: a MutableVec filled a block at a time
+
+- ~(mutablevec-grow! v n)~ adds ~n~ elements at the end of ~v~, with
+  ~CollectionsMarshal.SetCount~. Their values are unspecified: a vector that
+  shrank keeps its storage, and the old values can be there. Raises
+  ~ArgumentOutOfRangeException~ when ~n~ is less than 0.
+- ~(mutablevec-span v start n)~ returns a ~(Span %a)~ over ~n~ elements of the
+  storage of ~v~, from ~start~. A write through it writes ~v~. It is valid
+  until ~v~ changes its length. Raises ~ArgumentOutOfRangeException~ when the
+  range is not in ~v~.
+- Why: a ~BlockCollector~ whose accumulator is a ~MutableVec~ needs
+  ~block-grow~ and ~block-span~. ~ArrayBuilder~ had them in the runtime, and
+  a ~MutableVec~ had nothing, so bjostat's quantile collectors used C# glue
+  for these two operations.
+- Tests: ~TestFiles/199_mutable_collections.bjo~ (~vec-blocks~).
+
 * A match on an Option or a Result tests only its first case
 
 - The runtime's ~Option~ and ~Result~ are structs with a flag and a field
