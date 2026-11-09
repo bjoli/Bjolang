@@ -1,0 +1,21 @@
+;; A (loop ...) of several levels is a loop in a loop: each level a `while` of
+;; its own, nested where the level around it enters it.
+;;
+;; - No dispatch between the levels.
+;; EXPECT-NO-CS: switch \(__state
+;; - Leaving an inner level goes to the top of the loop around it.
+;; EXPECT-CS: goto __top__
+;; - Three levels, three loops.
+;; EXPECT-CS: while \(true\) \{[\s\S]*while \(true\) \{[\s\S]*while \(true\) \{
+(export three)
+
+(import (std prelude))
+
+(: (-> (Array int) int int long))
+(defun (three a w h)
+  (loop (:for y (range 0 h))
+        (:subloop)
+        (:for x (range 0 w))
+        (:subloop)
+        (:for d (range -1 2))
+        (:acc s (summing (cast long (array-ref a (+ (+ x 1) (* y w) d)))))))

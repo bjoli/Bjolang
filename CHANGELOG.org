@@ -3,6 +3,49 @@
 
 What each change guarantees, and what it leaves open.
 
+* Each level of a ~(loop ...)~ is a ~while~ of its own, nested in the one around it
+
+- A ~(loop ...)~ of several levels was one group of members, one for each
+  level, and so one ~while (true) switch (__state)~ in the C#, with ~goto
+  case~ between the levels. Each member was a function of its own to the
+  desugaring, so entering a level copied every variable of the levels around
+  it into the level's own slots, and leaving it copied them back.
+- Now ~LoopDesugar~ makes each level after the first a loop of its own,
+  nested in the member of the level around it at the place that enters it.
+  A level carries only its own sequences, cursors and ~:with~ slots, and the
+  accumulators; it reads an enclosing level's variables where they are bound.
+  Leaving a level is a jump to the loop around it, which ~LoopLowering~ gives
+  its depth and ~Codegen~ emits as a ~goto~ to the top of that loop, as for a
+  named ~let~ nested in another.
+- A level that holds a ~(:subloop ...)~ form still has the form's members in
+  its group, so that level is still a dispatch over its members. A level
+  without one is a plain ~while~.
+- The values that enter a nested level are bound to temporaries first, in
+  slot order, so the order they are evaluated in is as before.
+- ~inferLetRec~: a group entered by a call to one of its members takes that
+  member's parameter types from the call's arguments before the bodies are
+  checked, as a named ~let~ (a group of one) already did. A level holding a
+  ~(:subloop ...)~ form is such a group of several members; a member access on
+  its loop variable was otherwise checked before the type was known.
+- The C# of the AoC solutions has no ~switch (__state ...)~ left (19 in 11
+  files before), the prelude none (23 before), and every changed file is
+  smaller: 2024 day 4 341 to 280 lines, the prelude 25641 to 25358. The
+  number of ~seq~ enumerators made and of ~yield return~s is the same, so
+  ~SeqFusion~ fuses what it fused before.
+- Measured on a 2000 x 2000 array, before and after: 2 levels 1.66 to
+  1.67 ms, 3 levels 7.40 to 6.60 ms, 4 levels with a call in the innermost
+  48.7 to 46.9 ms, a ~:with~ of the outer level read in the inner one 1.91 to
+  1.67 ms.
+- Left as it was: each level still carries the accumulators as slots of its
+  own, so they are copied on entering and leaving a level. A dead ~break;~
+  follows each inner ~while~, which only a ~goto~ leaves.
+- Tests: ~TestFiles/532_loop_levels_nested.bjo~ (an inner level's variable
+  used for a member access, also in a level with a ~(:subloop ...)~ form; an
+  inner ~:with~ started by a literal; a tuple ~:with~ in an inner level;
+  ~:abandon~ and ~:finish~ from the innermost of three levels; accumulators
+  stepped in 2, 3 and 4 levels). ~TestFiles/codegen/loop_levels_nested.bjo~:
+  three levels are three ~while~ loops, with no ~switch (__state~.
+
 * The sorts by ~Ord~: one stable sort, copied at each type; ~-unstable~ sorts
 
 - ~list-sort~, ~vec-sort~ and ~mutablevec-sort!~ give the same results as

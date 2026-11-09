@@ -145,8 +145,10 @@ type private Driver =
     | DAs of SExpr * SExpr * int * Range
 
 /// Where a group of loop members sits. The group of a `(loop ...)` has nothing
-/// around it. The group of a `:subloop` form is merged into its loop's group,
-/// so that `:finish` and `:abandon-subloop` are jumps to members of that group.
+/// around it. The members of a `:subloop` form's level 0 join the group of the
+/// level holding the form, so that `:abandon-subloop` and the resume after the
+/// form are jumps to members of that group. The form's inner levels are loops
+/// nested in its level 0, as a loop's are.
 type private GroupCtx =
     { /// Slots every member of the group carries ahead of its own: the slots of
       /// the level holding the form, and the names bound before the form in
@@ -758,10 +760,10 @@ and private splitCollector (fns: ParseFns) (s: SExpr) : Expr * SExpr =
 ///     (:yield e)               →  (:do (yield e))
 ///
 /// Every level, cursor, `:finish` and `:with` is the loop facility's, unchanged.
-/// The loop group is emitted inline as a `while`/`switch` in the sequence's own
-/// iterator method, and a `yield return` inside that switch is ordinary C# —
-/// which is the only reason this can be a rewrite rather than a second
-/// implementation. Levels included: a nested loop is one merged switch, not a
+/// The loop is emitted inline as `while` loops in the sequence's own iterator
+/// method, and a `yield return` inside them is ordinary C# — which is the only
+/// reason this can be a rewrite rather than a second implementation. Levels
+/// included: an inner level is a `while` nested in the one around it, not a
 /// function, so `:subloop` needs nothing special here.
 ///
 /// `:acc` is refused. A `seql` hands its elements out one at a time and has no
@@ -1440,35 +1442,30 @@ and private buildGroup
             | LSubloopForm(cs, export, cr) -> check (subloopExports cs export) cr false
             | _ -> ()
 
-    /// The slot vector of level `i`, in emission order.
+    /// The slot vector of level `i`, in emission order: what changes from one
+    /// iteration of the level to the next.
     ///
-    /// Every enclosing level's sequences and cursors are carried, because an
-    /// inner level has to be able to jump *back* to its parent with the parent's
-    /// cursors advanced — and every enclosing level's bindings too, because an
-    /// inner sequence or clause may name them and a member is a separate
-    /// function with no lexical view of its caller. Accumulators are on every
-    /// member: they are hoisted, and the finish block reads them wherever it is
-    /// reached from.
+    /// - The level's own sequences, cursors and `:with` slots.
+    /// - The accumulators, on every level: an inner level steps them, and the
+    ///   jump back out hands them to the level around it.
+    /// - Nothing of an enclosing level. Each level is a loop of its own,
+    ///   nested in the body of the level around it at the place that enters
+    ///   it, so an enclosing level's cursors, `:with` variables and bindings
+    ///   are read where they are bound. A jump back out names them there.
     ///
     /// Level 0's sequences are absent by design: they are loop-invariant, so
-    /// they sit in the prologue and are lexically in scope for the whole group.
-    /// A `:with` is carried exactly like a cursor, and from its own level
-    /// inward: an inner clause may name it, and the jump back out has to hand it
-    /// over unchanged. Unlike an accumulator it is *not* on every member — it
-    /// does not exist above the level that owns it, which is the same reason it
-    /// is out of scope in the finish block.
+    /// they sit in the prologue and are lexically in scope for the whole loop.
     ///
-    /// A `:subloop` form's group carries the enclosing loop's names first, and
-    /// its level 0's sequences like any inner level's: they are evaluated each
-    /// time the form is entered.
+    /// A `:subloop` form's level 0 is a member beside the level holding the
+    /// form, not nested in it, so it carries that level's names first
+    /// (`Carried`), and its sequences like any inner level's: they are
+    /// evaluated each time the form is entered. The form's own inner levels
+    /// are nested in its level 0 and read them there.
     let slotNames (i: int) : string list =
-        [ yield! ctx.Carried
-          for j in 0..i do
-              if j > 0 || isSub then yield! levels[j].SeqNames
-              yield! levels[j].CurNames
-              yield! levels[j].WithNames
-          for j in 0 .. i - 1 do
-              yield! levels[j].Bound
+        [ if i = 0 then yield! ctx.Carried
+          if i > 0 || isSub then yield! levels[i].SeqNames
+          yield! levels[i].CurNames
+          yield! levels[i].WithNames
           yield! accNames
           yield! subCollectors ]
 
@@ -1834,6 +1831,13 @@ and private buildGroup
 
         ELet(slot.Name, false, [], None, value, rest, cr)
 
+    /// The members of level `i`'s group: the level's member and the members of
+    /// its `:subloop` forms. Set once the clauses can be built; see
+    /// `levelGroupOf`. A cell, because entering a level builds it, and the
+    /// clauses that enter it are built from the levels around it.
+    let levelGroup : (int -> (string * bool * DefunArg list * FType option * Expr) list) ref =
+        ref (fun _ -> failwith "internal error: a loop level was entered before the levels were built")
+
     /// Entering level `i` from its parent: its sequences are evaluated *here*,
     /// because an inner sequence usually names an outer loop variable and so is
     /// not loop-invariant; its cursors are freshly started from them.
@@ -1849,6 +1853,14 @@ and private buildGroup
     ///
     /// `extra` fills more slots on the same jump: a `:subloop` form's
     /// accumulators, which start over on each entry to the form.
+    ///
+    /// Level `i` > 0 is a loop of its own, made here: a group of its member
+    /// (and the members of its `:subloop` forms), entered by a call. Every
+    /// value the call gives is bound to a temporary first, in slot order, so
+    /// that the call's arguments are names whose types are known when the
+    /// member's body is checked, as they were when the level was entered by a
+    /// jump from a member checked before it. A `:subloop` form's level 0 is a
+    /// member beside the level holding the form, and is entered by a jump.
     let enterLevelWith (i: int) (extra: Map<string, Expr>) (cr: Range) =
         let temps = levels[i].Fors |> List.map (fun _ -> Gensym.fresh "loopenter")
 
@@ -1860,10 +1872,39 @@ and private buildGroup
             @ Map.toList extra
             |> Map.ofList
 
+        let entry =
+            if i = 0 then
+                jump i overrides cr
+            else
+                let inits =
+                    slotNames i
+                    |> List.choose (fun n ->
+                        Map.tryFind n overrides
+                        |> Option.map (fun e ->
+                            match e with
+                            | EIdent _ -> n, None, e
+                            | _ -> n, Some(Gensym.fresh "loopinit"), e))
+
+                let named =
+                    inits
+                    |> List.map (fun (n, t, e) ->
+                        match t with
+                        | Some t -> n, EIdent(t, cr)
+                        | None -> n, e)
+                    |> Map.ofList
+
+                List.foldBack
+                    (fun (_, t, e) acc ->
+                        match t with
+                        | Some t -> ELetMono(t, e, acc, cr)
+                        | None -> acc)
+                    inits
+                    (ELetRec(levelGroup.Value i, jump i named cr, cr))
+
         List.foldBack
             (fun (t, (_, sequence, fr)) acc -> ELetMono(t, fns.Expr sequence, acc, fr))
             (List.zip temps levels[i].Fors)
-            (jump i overrides cr)
+            entry
 
     let enterLevel (i: int) (cr: Range) = enterLevelWith i Map.empty cr
 
@@ -1875,7 +1916,12 @@ and private buildGroup
 
     // Filled by `buildClauses` at each `:subloop` form: the form's members and
     // the member resuming after it, and the form's collectors.
-    let extraMembers = ResizeArray<string * bool * DefunArg list * FType option * Expr>()
+    //
+    // The members go into the group of the level holding the form, beside the
+    // level's own member. `levelGroup` gives each level a list of its own while
+    // its body is built, which is why this is a cell: building a level builds
+    // the levels inside it on the way.
+    let extraMembers = ref (ResizeArray<string * bool * DefunArg list * FType option * Expr>())
     let extraHoisted = ResizeArray<string * Expr * Range>()
 
     /// The names a member body has bound ahead of level `i`'s clauses: the
@@ -1967,14 +2013,15 @@ and private buildGroup
             // jump that enters its member. So the form's members follow the one
             // entering the form, and the resume member — which enters what comes
             // after — precedes the members of any form after this one.
-            extraMembers.AddRange sub.Members
+            let mine = extraMembers.Value
+            mine.AddRange sub.Members
             extraHoisted.AddRange sub.Hoisted
-            let at = extraMembers.Count
+            let at = mine.Count
 
             let resumeBody =
                 buildClauses level tl accsLeft (locals @ exports |> List.distinct)
 
-            extraMembers.Insert(at, (resumeName, true, resumeParams |> List.map (fun n -> MandatoryArg(n, None)), None, resumeBody))
+            mine.Insert(at, (resumeName, true, resumeParams |> List.map (fun n -> MandatoryArg(n, None)), None, resumeBody))
             sub.Entry
 
         // Ends the nearest `:subloop` form as if it had run out: exports from
@@ -2160,13 +2207,12 @@ and private buildGroup
             (List.zip levels[i].Fors (List.zip levels[i].SeqNames levels[i].CurNames))
             inner
 
-    /// Destructures the tuple-pattern `:with` slots of every level up to `i`.
+    /// Destructures the tuple-pattern `:with` slots of level `i`.
     ///
     /// A plain identifier needs nothing — it names its own slot, so it is
-    /// already a parameter. Only a tuple pattern has a gensym slot to unpack,
-    /// and it is unpacked at *every* level that carries it rather than once at
-    /// the owning one, so an inner level reads the same slot it was handed
-    /// instead of a copy passed down under the part names.
+    /// already a parameter. Only a tuple pattern has a gensym slot to unpack.
+    /// An inner level is nested in this level's member, so it reads the parts
+    /// bound here.
     ///
     /// This wraps the whole member body, ahead of the termination test, because
     /// a `:with`'s `end` is tested before anything else runs and names its own
@@ -2174,31 +2220,35 @@ and private buildGroup
     /// from `current`, which `bindCurrents` binds only once the test has passed.
     let bindWiths (i: int) (inner: Expr) =
         let tuplePatterned =
-            [ for j in 0..i do
-                  yield!
-                      List.zip levels[j].WithNames levels[j].Withs
-                      |> List.filter (fun (_, (p, _, _, _, _)) ->
-                          match p with
-                          | SAtom { Token = Symbol _ } -> false
-                          | _ -> true) ]
+            List.zip levels[i].WithNames levels[i].Withs
+            |> List.filter (fun (_, (p, _, _, _, _)) ->
+                match p with
+                | SAtom { Token = Symbol _ } -> false
+                | _ -> true)
 
         List.foldBack
             (fun (slot, (pat, _, _, _, wr)) acc -> bindLoopPattern pat (EIdent(slot, wr)) acc wr)
             tuplePatterned
             inner
 
-    // One member per level. Every level transition is a tail call by
-    // construction, and they are all in one group rather than nested: a jump
-    // across levels has to reach the *same* switch, and a nested group would
-    // bind it to the wrong one.
+    // One member per level, each a loop of its own, nested in the member of
+    // the level around it at the place that enters it. Every level transition
+    // is a tail call by construction: entering a level is the call that starts
+    // its loop, and leaving it is a jump to a loop around it, which
+    // `LoopLowering` gives the depth of and `Codegen` emits as a `goto` to the
+    // top of that loop. So each level is a `while` of its own in the C#, with
+    // no dispatch between levels and no copies of an enclosing level's
+    // variables.
     let asArgs (names: string list) = names |> List.map (fun n -> MandatoryArg(n, None))
 
-    // Each level is followed by the members its `:subloop` forms added, so a
+    // The level's member, then the members its `:subloop` forms added, so a
     // member is checked after the one that enters it.
-    let levelMembers =
-        levels
-        |> List.collect (fun lvl ->
-            let before = extraMembers.Count
+    let levelGroupOf (i: int) =
+        let lvl = levels[i]
+        let saved = extraMembers.Value
+        extraMembers.Value <- ResizeArray()
+
+        try
             let accsHere = accInfo |> List.filter (fun slot -> slot.Level = lvl.Index)
 
             // A level that one driver ends was ended by that driver's `done?`,
@@ -2313,20 +2363,24 @@ and private buildGroup
                     withsBound
 
             (lvl.Member, true, asArgs (slotNames lvl.Index), None, body)
-            :: (extraMembers |> Seq.skip before |> List.ofSeq))
+            :: List.ofSeq extraMembers.Value
+        finally
+            extraMembers.Value <- saved
+
+    levelGroup.Value <- levelGroupOf
 
     // The finish member. A loop's calls nothing, so `LetRecify` gives it a
-    // component of its own and it is bound ahead of the loop group rather than
-    // becoming a case in the same switch — which costs one call on the way out
-    // and saves a copy of the block at every other exit. A form's resumes the
-    // level holding the form, so it is a case like any other.
+    // component of its own and it is bound ahead of the loop rather than
+    // becoming a member of a level's group — which costs one call on the way
+    // out and saves a copy of the block at every other exit. A form's resumes
+    // the level holding the form, so it is a member of that level's group.
     let exitMember =
         if isSub then
             (exitName, true, asArgs (ctx.Carried @ accNames @ subCollectors), None, subExitBody)
         else
             (exitName, true, asArgs accNames, None, finishBlockBody)
 
-    let members = levelMembers @ [ exitMember ]
+    let members = levelGroupOf 0 @ [ exitMember ]
 
     // A loop's collectors are made once, before it starts: an accumulator of
     // the loop, a bare `(:subloop)`'s included, starts once and runs to the

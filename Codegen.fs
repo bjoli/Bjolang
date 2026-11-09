@@ -4957,12 +4957,13 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
             // and the loop name is not referenced as a first-class value or called non-tail-recursively.
             let flatLoopInfo = LoopLowering.flatLoopEntry members body
 
-            // The same recognition for a group of *several* members, which is
-            // what a multi-level loop is. `desugarLoop` emits
-            // `ELetRec(members, EApp(EIdent(levels[0].Member), initialArgs))`,
-            // and `LetRecify` has already split the finish member into an SCC of
-            // its own, so the group reaching here is exactly the level members
-            // entered by a call to one of them.
+            // The same recognition for a group of *several* members: a level
+            // of a `(loop ...)` that holds a `(:subloop ...)` form, whose
+            // members are the level's and the form's, or a mutually recursive
+            // named let. `LetRecify` has already split a loop's finish member
+            // into an SCC of its own, so the group reaching here is entered by
+            // a call to one of its members. A level without a form is a group
+            // of one, and takes the flat path above.
             //
             // Inlining it rather than emitting a local function is what lets a
             // `yield` inside a nested loop land in the enclosing iterator

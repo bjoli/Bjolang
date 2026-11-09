@@ -1,0 +1,85 @@
+;; Each level of a (loop ...) after the first is a loop of its own, nested in
+;; the level around it, and reads that level's variables where they are bound.
+;;
+;; - An inner level's loop variable has its type when the level's body is
+;;   checked: a member access on it, also in a level that holds a (:subloop
+;;   ...) form, whose group has more than one member.
+;; - An inner (:with ...) started by a bare literal takes its type from its
+;;   update.
+;; - A tuple (:with ...) in an inner level, and an outer one read inside it.
+;; - :abandon and :finish from the innermost of three levels.
+;; - An inner sequence named by an outer (:let ...).
+;; - Accumulators stepped in the inner levels of 2, 3 and 4 levels.
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (Version (: System.Version (-> int int Version))))
+
+(defun (main args)
+  ;; A member access on an inner level's loop variable.
+  (def rows [[(Version. 1 2) (Version. 3 4)] [(Version. 5 6)]])
+  (expect "member access in an inner level"
+          (loop (:for row rows) (:subloop) (:for v row) (:acc s (summing (.-Major v))))
+          9)
+  ;; An inner :with whose start is a bare literal, made long by its update.
+  (expect "an inner :with started by a literal"
+          (loop (:for y (range 0 3)) (:subloop)
+                (:for x (range 0 4)) (:with k 0 (+ k 10000000000L))
+                (:acc last (folding 0L k)))
+          30000000000L)
+  ;; A tuple-pattern :with in an inner level, and the outer one read inside.
+  (expect "tuple :with in an inner level, the outer :with read inside"
+          (loop (:for y (range 0 3)) (:with base 0 (+ base 100)) (:subloop)
+                (:for x (range 0 3)) (:with (Tuple a b) (Tuple 0 1) (Tuple b (+ a b)))
+                (:acc out (listing (+ base a))))
+          (list 0 1 1 100 101 101 200 201 201))
+  ;; :abandon from the innermost of three levels, and :finish from it.
+  (expect ":abandon from the innermost"
+          (loop (:for i (range 0 3)) (:subloop) (:for j (range 0 3)) (:subloop) (:for k (range 0 3))
+                (:abandon (= k 1))
+                (:acc out (listing (+ (* 100 i) (* 10 j) k))))
+          (list 0 10 20 100 110 120 200 210 220))
+  (expect ":finish from the innermost"
+          (loop (:for i (range 0 3)) (:subloop) (:for j (range 0 3)) (:subloop) (:for k (range 0 3))
+                (:finish (= (+ i j k) 3))
+                (:acc out (counting k)))
+          5)
+  ;; An inner level holding a :subloop form, so its group has several members,
+  ;; with a member access on its loop variable before and after the form.
+  (expect "member access in an inner level with a :subloop form"
+          (loop (:for row rows) (:subloop) (:for v row)
+                (:let major (.-Major v))
+                (:subloop (:for t (range 0 2)) (:acc twice (summing major)))
+                (:acc s (summing (+ twice (.-Minor v)))))
+          (+ (* 2 9) 12))
+  ;; An inner level over what the outer one bound, with a :let between.
+  (expect "an inner sequence named by an outer :let"
+          (loop (:for n (range 1 4)) (:let m (* n 2)) (:subloop) (:for x (range 0 m))
+                (:acc s (summing x)))
+          (+ 1 6 15))
+  ;; Accumulators stepped in the inner levels, on a 4 x 3 grid of the numbers
+  ;; 0 to 11.
+  (def (: g (Array int)) (vec->array (->vec (range 0 12))))
+  (expect "2 levels"
+          (loop (:for y (range 0 3)) (:subloop) (:for x (range 0 4))
+                (:acc s (summing (array-ref g (+ x (* y 4))))))
+          66)
+  (expect "3 levels, the neighbours on a row"
+          (loop (:for y (range 0 3)) (:subloop) (:for x (range 1 3)) (:subloop) (:for d (range -1 2))
+                (:acc s (summing (array-ref g (+ x d (* y 4))))))
+          ;; Each row r: (x=1: 0+1+2) + (x=2: 1+2+3) = 9, plus 6 * 4r.
+          (+ 9 33 57))
+  (expect "4 levels, a call in the innermost"
+          (loop (:for y (range 0 3)) (:subloop) (:for x (range 0 4)) (:subloop)
+                (:for dy (range 0 2)) (:subloop) (:for dx (range 0 2))
+                (:acc n (counting dx) #:when (and (< (+ x dx) 4) (< (+ y dy) 3))))
+          ;; 3 * 4 * 2 * 2 = 48 tuples. y + dy < 3 drops dy = 1 at y = 2: 40
+          ;; left. Of those, x + dx < 4 drops dx = 1 at x = 3: one in 8, 35.
+          35)
+  (expect "a :with counted in the outer level, read in the inner"
+          (loop (:for y (range 0 3)) (:with row-start 0 (+ row-start 4)) (:subloop)
+                (:for x (range 0 4))
+                (:acc s (summing (array-ref g (+ row-start x)))))
+          66)
+  0)

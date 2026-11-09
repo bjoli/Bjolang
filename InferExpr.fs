@@ -3353,20 +3353,27 @@ and private inferLetRec (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (bi
         shapes
         bindingMetas
 
-    // A named let is this group of one, applied to its initial values. The
-    // body is checked before the application, so a member access on a loop
+    // A group entered by a call to one of its members, applied to its initial
+    // values: a named let, and each level of a `(loop ...)` after the first.
+    // The body is checked after the members, so a member access on a loop
     // variable, as in `(.-Length s)`, found the variable's type unknown. A
-    // parameter that has no annotation therefore takes the type of its
-    // initial value first, where `initType` knows it without checking it.
-    match bindings, shapes, body with
-    | [ (name, true, args, _, _) ], [ Some s ], EApp(EIdent(callee, _), inits, _) when
-        callee = name && inits.Length = s.Mandatory.Length && inits.Length = args.Length
-        ->
-        List.zip3 args s.Mandatory inits
-        |> List.iter (fun (arg, (_, paramType), init) ->
-            match arg, initType env init with
-            | MandatoryArg(_, None), Some t -> unify env.Registry paramType t
-            | _ -> ())
+    // parameter of the entered member that has no annotation therefore takes
+    // the type of its initial value first, where `initType` knows it without
+    // checking it. The other members' parameters are pinned by the calls to
+    // them in the bodies checked before them, as before.
+    match body with
+    | EApp(EIdent(callee, _), inits, _) ->
+        match List.tryFindIndex (fun (n, _, _, _, _) -> n = callee) bindings with
+        | Some k ->
+            match bindings[k], shapes[k] with
+            | (_, true, args, _, _), Some s when inits.Length = s.Mandatory.Length && inits.Length = args.Length ->
+                List.zip3 args s.Mandatory inits
+                |> List.iter (fun (arg, (_, paramType), init) ->
+                    match arg, initType env init with
+                    | MandatoryArg(_, None), Some t -> unify env.Registry paramType t
+                    | _ -> ())
+            | _ -> ()
+        | None -> ()
     | _ -> ()
 
     let withMetas (start: Env) =
