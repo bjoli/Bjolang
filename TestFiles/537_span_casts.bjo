@@ -1,0 +1,56 @@
+;; span-> and ro-span->: the same memory as numbers of another type. Nothing
+;; is copied, a read-only span stays read-only, and the type comes from the
+;; use. A decimal and a length that is not a whole number of elements panic,
+;; which this file cannot show; `bool` and `char` are not numbers, so a span
+;; of them is a type error.
+(import (std prelude))
+(import (std simpletest))
+
+(import/extern
+  (string-bytes (: BjoString.Utf8String.AsSpan (-> string (RoSpan byte)))))
+
+;; A generic function: the cast is at the types of its call.
+(: (-> (RoSpan %a) int) (where (Num %a)))
+(defun (byte-count s)
+  (: (RoSpan byte))
+  (def bytes (ro-span-> s))
+  (ro-span-length bytes))
+
+(defun (main)
+  ;; Bytes written as longs, read as bytes.
+  (def bytes (: (make-array 16) (Array byte)))
+  (: (Span long))
+  (def longs (span-> (array->span bytes)))
+  (expect "the length of the longs" (span-length longs) 2)
+  (span-set! longs 1 -1L)
+  (span-set! longs 0 258L)
+  (expect "a write is to the bytes" (array-ref bytes 8) 255uy)
+  (expect "little-endian" (Tuple (array-ref bytes 0) (array-ref bytes 1) (array-ref bytes 2)) (Tuple 2uy 1uy 0uy))
+
+  ;; Read-only, the other way: bytes as ints.
+  (: (RoSpan int))
+  (def ints (ro-span-> (array->ro-span #[1uy 0uy 0uy 0uy 2uy 0uy 0uy 0uy])))
+  (expect "ints of bytes" (Tuple (ro-span-length ints) (ro-span-ref ints 1)) (Tuple 2 2))
+
+  ;; Doubles as their bits, and back.
+  (def doubles #[1.0 -2.5])
+  (: (RoSpan ulong))
+  (def bits (ro-span-> (array->ro-span doubles)))
+  (expect "the bits of 1.0" (ro-span-ref bits 0) 4607182418800017408UL)
+  (: (RoSpan double))
+  (def again (ro-span-> bits))
+  (expect "back to doubles" (ro-span-ref again 1) -2.5)
+
+  ;; A string's bytes, read-only, as words.
+  (: (RoSpan uint))
+  (def words (ro-span-> (string-bytes "abcdefgh")))
+  (expect "a string's bytes as words" (Tuple (ro-span-length words) (ro-span-ref words 0)) (Tuple 2 1684234849u))
+
+  ;; Generic.
+  (expect "generic, longs" (byte-count (array->ro-span #[1L 2L 3L])) 24)
+  (expect "generic, shorts" (byte-count (array->ro-span #[1s 2s])) 4)
+
+  ;; An empty span.
+  (: (Span double))
+  (def none (span-> (array->span (: (make-array 0) (Array byte)))))
+  (expect "an empty span" (span-length none) 0))

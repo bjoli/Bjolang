@@ -106,8 +106,8 @@
   ;; Spans.
   Span RoSpan
   array->span array->ro-span span->ro-span
-  span-length span-ref span-set! span-slice span->array
-  ro-span-length ro-span-ref ro-span-slice ro-span->array
+  span-length span-ref span-set! span-slice span->array span->
+  ro-span-length ro-span-ref ro-span-slice ro-span->array ro-span->
   ;; Transients.
   transientmap-empty map->transientmap transientmap->map
   transientmap-set! transientmap-set-all! transientmap-remove!
@@ -621,7 +621,22 @@
   (span->ro-span      (: Bjolang.Runtime.Spans.ReadOnly          (-> (Span %a) (RoSpan %a))))
   (ro-span-length     (: Bjolang.Runtime.Spans.Length            (-> (RoSpan %a) int)))
   (ro-span-ref        (: Bjolang.Runtime.Spans.Ref               (-> (RoSpan %a) int %a)))
-  (ro-span->array     (: Bjolang.Runtime.Spans.ToArray           (-> (RoSpan %a) (Array %a)))))
+  (ro-span->array     (: Bjolang.Runtime.Spans.ToArray           (-> (RoSpan %a) (Array %a))))
+  (clr-span->         (: Bjolang.Runtime.Spans.As                (-> (Span %a) (Span %b))))
+  (clr-ro-span->      (: Bjolang.Runtime.Spans.As                (-> (RoSpan %a) (RoSpan %b)))))
+
+;; The same memory as numbers of another type, as a (Span byte) as a
+;; (Span long). The use gives the type. Nothing is copied: a write through
+;; one span is a write through the other, and a read-only span gives a
+;; read-only one. Only plain numbers: the integers, float and double, which
+;; have no references in them, and whose every bit pattern is a value. A
+;; decimal or a bigint, and a length in bytes that is not a whole number of
+;; the new elements, is a panic.
+(: (-> (Span %a) (Span %b)) (where (Num %a) (Num %b)))
+(defun (span-> s) (clr-span-> s))
+
+(: (-> (RoSpan %a) (RoSpan %b)) (where (Num %a) (Num %b)))
+(defun (ro-span-> s) (clr-ro-span-> s))
 
 (: (-> (Array %a) (#:from int) (#:to int) (Span %a)))
 (defun (array->span a #:from 0 #:to (array-length a))

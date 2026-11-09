@@ -1,0 +1,43 @@
+;; A trait whose methods use the implementor where a .NET generic constrains
+;; it is a C# interface with the same constraint: here `where T_a : struct`,
+;; from Nullable<T>. A generic function with a `(where ...)` on it has the
+;; constraint too, as it takes the interface, and so does a trait that
+;; requires it.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class ((Nullable %a) (: System.Nullable)))
+
+(import/extern
+  (nullable-value (: System.Nullable.GetValueOrDefault (-> (Nullable %a) %a))))
+
+(def/trait (Wrapped %a)
+  (: wrap (-> %a (Nullable %a))))
+
+(impl (Wrapped int)
+  (defun (wrap x) (Nullable. (+ x 1))))
+
+(impl (Wrapped double)
+  (defun (wrap x) (Nullable. (* x 2.0))))
+
+;; Requires Wrapped, so its interface needs `struct` as well.
+(def/trait (Twice %a)
+  (where (Wrapped %a))
+  (: twice (-> %a %a)))
+
+(impl (Twice int)
+  (defun (twice x) (nullable-value (wrap (nullable-value (wrap x))))))
+
+;; Takes the interface of Wrapped at its own type variable.
+(: (-> %a %a) (where (Wrapped %a)))
+(defun (unwrap-wrap x) (nullable-value (wrap x)))
+
+(: (-> %a %a) (where (Twice %a)))
+(defun (twice-again x) (twice x))
+
+(defun (main)
+  (expect "a method over a constrained .NET generic" (unwrap-wrap 41) 42)
+  (expect "at another type" (unwrap-wrap 1.5) 3.0)
+  (expect "through a trait that requires it" (twice-again 1) 3)
+  0)

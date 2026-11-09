@@ -7200,6 +7200,19 @@ and private clrWhereBounds (registry: TraitRegistry) (constraints: TraitConstrai
             && withSuperclasses registry [ { other with Pins = [] } ]
                |> List.exists (fun s -> s.TraitName = c.TraitName && s.TargetType = c.TargetType))
 
+    // What the trait's interface requires of the implementor. See
+    // `ClrConstraints.traitBounds`.
+    let interfaceBounds =
+        constraints
+        |> List.collect (fun c ->
+            match c.TargetType, Map.tryFind c.TraitName registry.Traits with
+            | (TVar _ as target), Some info ->
+                let rename = Map.ofList [ "'" + typeParamKey info.ImplementorVar, target ]
+
+                ClrConstraints.traitBounds registry c.TraitName
+                |> List.map (fun b -> typeToString target, clrBoundText (substTypeVars rename) b)
+            | _ -> [])
+
     let bounds =
         constraints
         |> List.filter (implied >> not)
@@ -7227,7 +7240,16 @@ and private clrWhereBounds (registry: TraitRegistry) (constraints: TraitConstrai
                     | _ -> None)
             | None -> None)
 
-    bounds
+    interfaceBounds @ bounds
+
+/// A bound of `ClrConstraints` as C# writes it, with `rename` applied to the
+/// type an interface bound names.
+and private clrBoundText (rename: HMType -> HMType) (b: ClrConstraints.Bound) : string =
+    match b with
+    | ClrConstraints.ValueType -> "struct"
+    | ClrConstraints.ReferenceType -> "class"
+    | ClrConstraints.Constructor -> "new()"
+    | ClrConstraints.Implements t -> typeToString (rename t)
 
 /// The C# `where` clauses of these bounds, each a type parameter's name and a
 /// bound as C# writes it.
@@ -8473,7 +8495,16 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
             | Some(iface, _) -> $" : %s{iface}, BjolangRuntime.IEvidence"
             | None -> ""
 
-        appendLine ctx $"public interface %s{sanitizeIdent name}<%s{tyParams}>%s{bases} {{"
+        // What the methods' signatures require of the implementor, as C#
+        // refuses the interface without it.
+        let implementorWhere =
+            let target = TVar("'" + typeParamKey targetVar)
+
+            ClrConstraints.traitBounds ctx.Registry name
+            |> List.map (fun b -> typeToString target, clrBoundText id b)
+            |> formatWhere
+
+        appendLine ctx $"public interface %s{sanitizeIdent name}<%s{tyParams}>%s{bases}%s{implementorWhere} {{"
         withIndent ctx (fun ctx ->
             // The raw trait signature uses unprimed names (e.g. "col"),
             // but the TVars in the resolved HMType are primed (e.g. "'col").

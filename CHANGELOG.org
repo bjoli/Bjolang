@@ -3,6 +3,64 @@
 
 What each change guarantees, and what it leaves open.
 
+* A trait's interface has the constraints that its methods' .NET generics need
+
+- A trait whose method signatures use the implementor in a constrained .NET
+  generic, as ~(: f (-> (Array %a) (PrimitiveArray %a)))~, is a C#
+  interface with that constraint: ~where T_a : struct~. Before, C# refused
+  the interface (CS0453). The bounds come from the signatures of the trait
+  and of its superclasses (~ClrConstraints.traitBounds~).
+- A generic function with a ~(where ...)~ on such a trait has the same
+  bounds on its type variable, as it takes the interface
+  (~Codegen.clrWhereBounds~).
+- Tests: ~TestFiles/538_trait_clr_constraints.bjo~.
+
+* The objects that a span is made from are kept alive while it is used
+
+- A span over memory that a .NET object owns, as the native buffers of
+  Arrow, was valid only while something else kept the object: the JIT
+  can treat a variable as dead after its last use, and Arrow's
+  ~NativeMemoryManager~ frees the memory in its finalizer. A span holds no
+  reference to its owner.
+- Now the compiler keeps the owners with ~GC.KeepAlive~, which emits no
+  code (~SpanCheck.keepSpanOwners~, after the checks, before code
+  generation):
+  - A span bound by a local keeps them to the end of the local's scope, in
+    a ~finally~, so that a return, a loop jump and an exception keep them
+    too. A span is never in scope across a yield point, so the ~finally~
+    holds none.
+  - A span given to a call keeps them until the call returns.
+- The owners are the receiver and the arguments of .NET reference types of
+  the call that makes the span, and of the calls that make the spans it is
+  made from, as ~(ro-span-> (column-values c))~. Not an array: a span over
+  an array keeps it.
+- An owner that an expression makes is kept through a temporary when it is
+  the first thing the binding or the call evaluates, so the order of
+  evaluation stays. Otherwise the variables of .NET reference types the
+  expression takes its object from are kept: ~(column-values (as-doubles
+  a))~ keeps ~a~. A span that a function returns is kept by its caller.
+- Not covered: an owner made by an expression that is not evaluated first,
+  and a span in a loop variable.
+- Measured on bjostat's joins and columns: no change.
+- Tests: ~TestFiles/codegen/span_owners.bjo~.
+
+* ~span->~ and ~ro-span->~: the same memory as numbers of another type
+
+- ~(: (span-> (array->span bytes)) (Span long))~ sees a span of bytes as a
+  span of longs, and any plain number type as any other, with no copy
+  (~Bjolang.Runtime.Spans.As~). The use gives the type.
+- Only plain numbers: the integers, ~float~ and ~double~, which have no
+  references and no bit pattern that is not a value. ~bool~ and ~char~
+  are not ~Num~, so a span of them is a type error. ~decimal~ and
+  ~bigint~ are ~Num~ and not plain, so a span of them is a panic. The
+  test of the types is decided when the JIT compiles each instantiation.
+- A length in bytes that is not a whole number of the new elements is a
+  panic, not a cut, as ~MemoryMarshal.Cast~ makes it.
+- A read-only span gives a read-only one, so a string's bytes stay
+  read-only.
+- Tests: ~TestFiles/537_span_casts.bjo~; ~errors/span_cast_bool~,
+  ~span_cast_writable_string~. The two panics were run by hand.
+
 * A .NET struct can be constructed with no arguments
 
 - ~(HashCode.)~ of an imported struct with no parameterless constructor in

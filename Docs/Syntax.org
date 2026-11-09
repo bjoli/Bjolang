@@ -1356,7 +1356,7 @@ A span is a view of memory that is valid only while the call that made it runs. 
 | ~(span-slice s #:from #:to)~ | ~(ro-span-slice s #:from #:to)~ | a view of part of s                |
 | ~(span->array s)~            | ~(ro-span->array s)~            | a copy                             |
 | ~(span->ro-span s)~          |                                 |                                    |
-~#:from~ is 0 and ~#:to~ is the length unless given. Neither span type converts to the other implicitly. A span's own .NET members work too: ~(.-Length s)~, ~(.get_Item s i)~ for ~s[i]~, ~(.set_Item s i x)~ for ~s[i] = x~, and ~(.Slice s 1)~.
+~(span-> s)~ and ~(ro-span-> s)~ are the same memory as plain numbers of another type, the one the use gives, as a ~(Span byte)~ as a ~(Span long)~, with no copy. A read-only span gives a read-only one, a ~decimal~ or a ~bigint~ is a panic, and so is a length in bytes that is not a whole number of the new elements. ~#:from~ is 0 and ~#:to~ is the length unless given. Neither span type converts to the other implicitly. A span's own .NET members work too: ~(.-Length s)~, ~(.get_Item s i)~ for ~s[i]~, ~(.set_Item s i x)~ for ~s[i] = x~, and ~(.Slice s 1)~.
 A span cannot go where it could outlive the call that made it. The compiler refuses a span:
 - in another value: a vec, a list, a tuple, a record, a union case, an ~Option~ or a ~Result~;
 - as a type argument of a generic function, as in ~(println s)~;
@@ -1364,6 +1364,8 @@ A span cannot go where it could outlive the call that made it. The compiler refu
 - captured by a ~(fun ...)~, a local ~(defun ...)~, a loop that stays a local function, a ~(seq ...)~ or a hoisted form. Pass it as an argument;
 - in scope across a yield point of a bjoroutine, or across a ~(yield ...)~ of a ~(seq ...)~. Do the span work in a ~(defun ...)~ that the bjoroutine calls;
 - as a parameter or result of a bjoroutine, as an argument to ~(bjo ...)~, or as a module-level definition.
+
+*A span keeps what it is made from.* A span over memory that a .NET object owns, as the native buffers of Arrow, is valid only while the object is alive, and a span holds no reference to it. So the compiler keeps the objects of .NET reference types that a span is made from alive while the span can be used: to the end of the scope of a local that holds it, and until the return of a call that it is given to. ~(def s (column-values c))~ keeps ~c~. A span over an array needs nothing, as the array is kept by the span.
 
 *** Limits
 Destructuring .NET classes with constructor patterns is not supported. A static property or field of a generic type cannot be imported, and the constructor of a generic class cannot have ~#:exceptions~.

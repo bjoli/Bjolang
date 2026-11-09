@@ -3547,6 +3547,15 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         // ends. An error, not a warning: the program cannot run.
         EffectGraph.checkInitialisers env.Registry loopLoweredAst
 
+        // After the checks, which describe the program as written: the
+        // objects that spans are made from are kept alive while the spans
+        // are used. See SpanCheck, "The owners of spans".
+        let loopLoweredAst =
+            if codegen then
+                Timing.phase "span owners" (fun () -> SpanCheck.keepSpanOwners env.Registry loopLoweredAst)
+            else
+                loopLoweredAst
+
         // After inlining, which can leave a lambda as a local's value, and
         // after the checks, so that their messages describe the program as
         // written. Before the renaming below, which removes any shadowing that

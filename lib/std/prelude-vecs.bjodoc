@@ -1121,6 +1121,52 @@
   (arg s "The span.")
   (returns "A read-only span of the same elements."))
 
+(:doc span->
+  (summary "The same memory as numbers of another type. The use gives the type.")
+  (arg s "A span of plain numbers.")
+  (returns "A span of the same bytes, as numbers of the type the use gives.")
+  (see ro-span-> array->span span-set!)
+  (example """
+    (def bytes (: (make-array 16) (Array byte)))
+    (: (Span long))
+    (def longs (span-> (array->span bytes)))
+    (span-set! longs 1 -1L)
+    (array-ref bytes 8)   ; 255uy: the longs are the bytes
+    """)
+  (reference """
+    Nothing is copied: a write through one span is a write through the
+    other. The new length is the length in bytes divided by the size of the
+    new element.
+
+    @strong{Only plain numbers}: the integers, @code{float} and
+    @code{double}. They have no references in them, and every bit pattern
+    of them is a value, so a span seen as another type can hold nothing that
+    is not a number. A span of @code{decimal} or @code{bigint}, which are
+    numbers but not plain ones, is a panic.
+
+    @strong{Whole elements.} A length in bytes that is not a whole number of
+    the new elements, as 7 bytes as longs, is a panic. Slice the span first.
+
+    The order of the bytes in a number is the machine's, little-endian on
+    x64 and ARM64.
+    """))
+
+(:doc ro-span->
+  (summary "The same read-only memory as numbers of another type. The use gives the type.")
+  (arg s "A read-only span of plain numbers.")
+  (returns "A read-only span of the same bytes, as numbers of the type the use gives.")
+  (see span-> array->ro-span)
+  (example """
+    (: (RoSpan int))
+    (def ints (ro-span-> (array->ro-span #[1uy 0uy 0uy 0uy 2uy 0uy 0uy 0uy])))
+    (ro-span-ref ints 1)   ; 2
+    """)
+  (reference """
+    As @code{span->}, for a read-only span, and the result is read-only too.
+    So the bytes of a string, which are only given read-only, stay
+    read-only.
+    """))
+
 (:doc span-length
   (summary "How many elements a span has.")
   (arg s "The span.")

@@ -19,6 +19,7 @@
 // Bjolang converts neither to the other implicitly.
 
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Bjolang.Runtime;
 
@@ -61,4 +62,70 @@ public static class Spans {
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ReadOnlySpan<T> ReadOnly<T>(Span<T> span) => span;
+
+    // span-> and ro-span->: the same memory as numbers of another type.
+    //
+    // - Only plain numbers: no references inside, and every bit pattern is
+    //   a value. Not decimal, which has bit patterns that are not values,
+    //   and not BigInteger, which holds an array.
+    // - A read-only span gives a read-only span. So the bytes of a string,
+    //   which are only given read-only, stay read-only.
+    // - The length in bytes must be a whole number of the new elements.
+    //
+    // Both raise a Bjolang panic. The tests of typeof are decided when the
+    // JIT compiles each instantiation, so a call of plain types tests
+    // nothing at run time. There are no constraints on the type parameters:
+    // a generic Bjolang function over (Num %a) is a C# method over
+    // INumber<T>, which is not `struct`.
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Span<TTo> As<TFrom, TTo>(Span<TFrom> span) {
+        int length = CastLength<TFrom, TTo>(span.Length);
+        return MemoryMarshal.CreateSpan(
+            ref Unsafe.As<TFrom, TTo>(ref MemoryMarshal.GetReference(span)), length);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ReadOnlySpan<TTo> As<TFrom, TTo>(ReadOnlySpan<TFrom> span) {
+        int length = CastLength<TFrom, TTo>(span.Length);
+        return MemoryMarshal.CreateReadOnlySpan(
+            ref Unsafe.As<TFrom, TTo>(ref MemoryMarshal.GetReference(span)), length);
+    }
+
+    /// <summary>The number of TTo in `length` TFrom, or a panic.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int CastLength<TFrom, TTo>(int length) {
+        if (!IsPlain<TFrom>() || !IsPlain<TTo>())
+            NotPlain<TFrom, TTo>();
+        long bytes = (long)length * Unsafe.SizeOf<TFrom>();
+        int size = Unsafe.SizeOf<TTo>();
+        if (bytes % size != 0)
+            NotWhole<TFrom, TTo>(length);
+        return (int)(bytes / size);
+    }
+
+    /// <summary>Whether T is a plain number: no references, and every bit pattern a value.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsPlain<T>() =>
+        typeof(T) == typeof(byte) || typeof(T) == typeof(sbyte)
+        || typeof(T) == typeof(short) || typeof(T) == typeof(ushort)
+        || typeof(T) == typeof(int) || typeof(T) == typeof(uint)
+        || typeof(T) == typeof(long) || typeof(T) == typeof(ulong)
+        || typeof(T) == typeof(nint) || typeof(T) == typeof(nuint)
+        || typeof(T) == typeof(Int128) || typeof(T) == typeof(UInt128)
+        || typeof(T) == typeof(Half) || typeof(T) == typeof(float) || typeof(T) == typeof(double);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void NotPlain<TFrom, TTo>() {
+        var bad = IsPlain<TFrom>() ? typeof(TTo) : typeof(TFrom);
+        global::BjolangRuntime.Panic<int>(BjoString.Utf8String.FromUtf16(
+            $"span->: a span of {bad.Name} cannot be seen as numbers of another type. Only the plain number types can: the integers, float and double."), 1);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void NotWhole<TFrom, TTo>(int length) {
+        long bytes = (long)length * Unsafe.SizeOf<TFrom>();
+        global::BjolangRuntime.Panic<int>(BjoString.Utf8String.FromUtf16(
+            $"span->: {length} {typeof(TFrom).Name} are {bytes} bytes, which is not a whole number of {typeof(TTo).Name} of {Unsafe.SizeOf<TTo>()} bytes. Slice the span first."), 1);
+    }
 }

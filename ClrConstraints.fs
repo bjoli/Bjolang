@@ -317,6 +317,44 @@ let rec private substituteKeys (m: Map<string, HMType>) (t: HMType) : HMType =
     | TNum(carrier, unit) -> TNum(substituteKeys m carrier, unit)
     | other -> other
 
+/// What a trait requires of its implementor, for the .NET generics that the
+/// signatures of its methods, and of its superclasses' methods, use the
+/// implementor with. In the trait's own implementor variable.
+///
+/// The trait's interface is generic in the implementor, and C# refuses it
+/// unless it says these bounds; so does each generic method that takes its
+/// dictionary. `(-> (Array %a) (PrimitiveArray %a))` needs `struct`.
+let rec traitBounds (registry: TraitRegistry) (traitName: string) : Bound list =
+    match Map.tryFind traitName registry.Traits with
+    // A trait that stands for a .NET interface says its bounds as that
+    // interface. See `Codegen.clrWhereBounds`.
+    | Some info when info.ClrConstraint.IsNone ->
+        let key = Naming.typeParamKey info.ImplementorVar
+
+        let own =
+            info.Signatures
+            |> Map.toList
+            |> List.collect (fun (_, t) -> typeBounds (Set.singleton key) t)
+            |> List.filter (fun (k, _) -> k = key)
+            |> List.map snd
+
+        let inherited =
+            info.Superclasses
+            |> List.collect (fun s ->
+                match Map.tryFind s.TraitName registry.Traits with
+                | Some sInfo ->
+                    let rename = Map.ofList [ Naming.typeParamKey sInfo.ImplementorVar, TVar("'" + key) ]
+
+                    traitBounds registry s.TraitName
+                    |> List.map (fun b ->
+                        match b with
+                        | Implements t -> Implements(substituteKeys rename t)
+                        | other -> other)
+                | None -> [])
+
+        own @ inherited |> List.distinct
+    | _ -> []
+
 /// A generic function of the module: its type parameters, by key, and the
 /// declaration.
 type private Generic =

@@ -1,0 +1,43 @@
+;; The objects that a span is made from are kept alive while the span is used:
+;; a span over memory that a .NET object owns, as Arrow's native buffers, is
+;; valid only while the object is alive. Here the object is a MutableVec, a
+;; List<T>.
+(import (std prelude))
+(import (std mutable vec))
+
+;; A span bound by a local: the vec is kept to the end of the local's scope,
+;; in a finally.
+;; EXPECT-CS: finally \{\s*(#line[^\n]*\s*)?System\.GC\.KeepAlive\(xs\w*\);
+(: (-> (MutableVec int) int))
+(defun (sum-of xs)
+  (def s (mutablevec-span xs 0 (mutablevec-length xs)))
+  (loop (:for i (range 0 (span-length s))) (:acc (summing (span-ref s i)))))
+
+;; A span given to a call: the vec is kept until the call returns.
+;; EXPECT-CS: int __kept\w* = 
+;; EXPECT-CS: System\.GC\.KeepAlive\(ys\w*\);
+(: (-> (MutableVec int) int))
+(defun (count-of ys)
+  (span-length (mutablevec-span ys 0 (mutablevec-length ys))))
+
+;; An object an expression makes, and that is evaluated first, is kept
+;; through a temporary.
+;; EXPECT-CS: System\.GC\.KeepAlive\(__owner\w*\);
+(: (-> int int))
+(defun (fresh n)
+  (def s (mutablevec-span (list->mutablevec (list n n n)) 0 3))
+  (span-ref s 2))
+
+;; A span over an array keeps nothing: the GC follows the span to the array.
+;; EXPECT-NO-CS: KeepAlive\(arr
+(: (-> (Array int) int))
+(defun (of-array arr)
+  (def s (array->span arr))
+  (span-ref s 0))
+
+(defun (main)
+  (def v (list->mutablevec (list 1 2 3)))
+  (println (sum-of v))
+  (println (count-of v))
+  (println (fresh 7))
+  (println (of-array #[5 6])))

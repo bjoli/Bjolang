@@ -490,3 +490,204 @@ let rec private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
 let run (registry: TraitRegistry) (decls: TDecl list) : unit =
     decls
     |> List.iter (fun d -> Diagnostics.recover "span" (Some(tdeclRange d)) () (fun () -> checkDecl registry d))
+
+// ---------------------------------------------------------------------------
+// The owners of spans
+// ---------------------------------------------------------------------------
+//
+// A span over memory that a .NET object owns, as the native buffers of Arrow,
+// is valid only while the object is alive. A span holds no reference to the
+// object, the JIT can treat a variable as dead after its last use, and a
+// finalizer can then free the memory while a span still points into it. A
+// span over a managed array has no such problem: the GC follows the span to
+// the array.
+//
+// So the objects that a span is made from are kept alive while the span can
+// be used, with GC.KeepAlive, which emits no code:
+// - A span bound by a local: until the end of the local's scope, in a
+//   `finally`, so that also a return, a loop jump and an exception keep them.
+//   SpanCheck has refused a span in scope across a yield point, so the
+//   `finally` holds none.
+// - A span given to a call: until the call returns.
+//
+// The objects are the receiver and the arguments of .NET reference types of
+// the call that makes the span, and of each call that makes a span it is made
+// from. An object given by a variable is kept by that variable. An object
+// that is made by an expression is kept through a temporary when it is the
+// first thing the binding or the call evaluates, so that the order of
+// evaluation is the same. Otherwise the variables of .NET reference types
+// that the expression takes its object from are kept. A span that a function
+// returns is kept by its caller, which has the function's arguments.
+
+/// Whether a value of the type is a .NET object, which a span can be made
+/// from. Not an array: a span over an array keeps it alive.
+let private isOwnerType (registry: TraitRegistry) (t: HMType) : bool =
+    match DotNetInterop.tryClrTypeOf (Unification.prune registry t) with
+    | Some clr -> not clr.IsValueType && not clr.IsByRefLike && not clr.IsArray
+    | None -> false
+
+/// The operands of a call, in the order they are evaluated.
+let private operands (e: TypedExpr) : TypedExpr list =
+    match e.Node with
+    | TDotPropertyGet(receiver, _, _) -> [ receiver ]
+    | TDotMethodCall(receiver, _, args, _) -> receiver :: args
+    | TForeignStaticCall(_, _, args, _) -> args
+    | TApply({ Node = TIdent _ }, args, kwArgs) -> args @ List.map snd kwArgs
+    | TCast(inner, _) -> [ inner ]
+    | _ -> []
+
+/// The objects that the span `e` is made from, as the expressions that give
+/// them.
+let rec private ownerExprs (registry: TraitRegistry) (e: TypedExpr) : TypedExpr list =
+    operands e
+    |> List.collect (fun o ->
+        if isRefStruct o.Type then ownerExprs registry o
+        elif isOwnerType registry o.Type then [ o ]
+        else [])
+
+/// The variables of .NET reference types that `e` takes its value from,
+/// through calls and casts.
+let rec private ownerVariables (registry: TraitRegistry) (e: TypedExpr) : TypedExpr list =
+    match e.Node with
+    | TIdent _ when isOwnerType registry e.Type -> [ e ]
+    | _ -> operands e |> List.collect (ownerVariables registry)
+
+/// The object that `e` evaluates first, when an expression that is not a
+/// variable makes it and `e` is made from it.
+let rec private firstOwner (registry: TraitRegistry) (e: TypedExpr) : TypedExpr option =
+    match operands e with
+    | first :: _ when isRefStruct first.Type -> firstOwner registry first
+    | first :: _ when isOwnerType registry first.Type ->
+        match first.Node with
+        | TIdent _ -> None
+        | _ -> Some first
+    | _ -> None
+
+/// `e` with `target`, found by reference, replaced by `by`.
+let rec private replace (target: TypedExpr) (by: TypedExpr) (e: TypedExpr) : TypedExpr =
+    if LanguagePrimitives.PhysicalEquality e target then by
+    else TypeVisitor.mapChildren (replace target by) e
+
+let private keepAliveMeta: DotNetMethodMetadata =
+    { DeclaringType = "System.GC"
+      MethodName = "KeepAlive"
+      ParameterTypes = [ TypeConstants.objType ]
+      ReturnType = TypeConstants.voidType
+      IsStatic = true
+      Exceptions = []
+      Await = false
+      AmbientToken = false
+      Blocking = false
+      UsesType = false
+      TypeArguments = []
+      DeclaringTypeArguments = []
+      Outs = None
+      Syntax = ByName }
+
+/// `GC.KeepAlive` of each variable, one after the other, as a statement.
+let private keepAlive (r: Range) (variables: TypedExpr list) : TypedExpr =
+    let call (v: TypedExpr) : TypedExpr =
+        { Type = TypeConstants.voidType
+          Range = r
+          Node = TForeignStaticCall("System.GC", "KeepAlive", [ v ], Some keepAliveMeta) }
+
+    variables
+    |> List.map call
+    |> List.reduceBack (fun first rest ->
+        { Type = TypeConstants.voidType
+          Range = r
+          Node = TLet("_", false, noParams, first, rest) })
+
+/// The variables that keep the objects of `spans` alive, after `hoist` binds
+/// the first object that an expression makes. `spans` are expressions of
+/// span type in `e`.
+let private ownersOf (registry: TraitRegistry) (spans: TypedExpr list) : TypedExpr list =
+    spans
+    |> List.collect (ownerExprs registry)
+    |> List.collect (fun o ->
+        match o.Node with
+        | TIdent _ -> [ o ]
+        | _ -> ownerVariables registry o)
+    |> List.distinctBy (fun v ->
+        match v.Node with
+        | TIdent(name, _) -> name
+        | _ -> "")
+
+/// `e` with the first object that an expression makes bound to a temporary
+/// before it: the binding to wrap around `e`, and `e` with the temporary in
+/// its place.
+let private hoistFirstOwner (registry: TraitRegistry) (e: TypedExpr) : (string * TypedExpr) option * TypedExpr =
+    match firstOwner registry e with
+    | Some owner ->
+        let name = Gensym.fresh "__owner"
+        let variable = { owner with Node = TIdent(name, []) }
+        Some(name, owner), replace owner variable e
+    | None -> None, e
+
+let private wrapBinding (binding: (string * TypedExpr) option) (e: TypedExpr) : TypedExpr =
+    match binding with
+    | Some(name, value) ->
+        { e with Node = TLet(name, false, noParams, value, e) }
+    | None -> e
+
+let rec private keepOwners (registry: TraitRegistry) (expr: TypedExpr) : TypedExpr =
+    let isVoid (t: HMType) = Unification.prune registry t = TypeConstants.voidType
+
+    match expr.Node with
+    // A span bound by a local: its objects are kept to the end of its scope.
+    | TLet(name, false, lf, value, body) when isRefStruct value.Type ->
+        let value = keepOwners registry value
+        let body = keepOwners registry body
+        let binding, value = hoistFirstOwner registry value
+
+        match ownersOf registry [ value ] with
+        | [] -> wrapBinding binding { expr with Node = TLet(name, false, lf, value, body) }
+        | owners ->
+            let kept =
+                { body with Node = TTryFinally(body, keepAlive value.Range owners) }
+
+            wrapBinding binding { expr with Node = TLet(name, false, lf, value, kept) }
+    | _ ->
+        let expr = TypeVisitor.mapChildren (keepOwners registry) expr
+
+        // A span given to a call: its objects are kept until the call returns.
+        // A call that makes a span keeps nothing itself; the span's use does.
+        match operands expr with
+        | ops when not (isRefStruct expr.Type) && ops |> List.exists (fun o -> isRefStruct o.Type) ->
+            let binding, call =
+                match ops with
+                | first :: _ when isRefStruct first.Type -> hoistFirstOwner registry expr
+                | _ -> None, expr
+
+            match ownersOf registry (operands call |> List.filter (fun o -> isRefStruct o.Type)) with
+            | [] -> wrapBinding binding call
+            | owners ->
+                let keep = keepAlive call.Range owners
+
+                let kept =
+                    if isVoid call.Type then
+                        { call with Node = TLet("_", false, noParams, call, keep) }
+                    else
+                        let result = Gensym.fresh "__kept"
+
+                        let read =
+                            { call with Node = TIdent(result, []) }
+
+                        { call with
+                            Node =
+                                TLet(
+                                    result,
+                                    false,
+                                    noParams,
+                                    call,
+                                    { read with Node = TLet("_", false, noParams, keep, read) }
+                                ) }
+
+                wrapBinding binding kept
+        | _ -> expr
+
+/// The program with the objects that spans are made from kept alive while
+/// the spans are used. See "The owners of spans" above. Run after `run`,
+/// before code generation.
+let keepSpanOwners (registry: TraitRegistry) (decls: TDecl list) : TDecl list =
+    decls |> List.map (TypeVisitor.mapDecl (keepOwners registry))
