@@ -1,0 +1,21 @@
+;; A (:subloop ...) form that no exit leaves outward and that does not yield
+;; is a loop of its own, nested where it stands in the level holding it.
+;;
+;; - No dispatch: the form is not a member of the level's group.
+;; EXPECT-NO-CS: switch \(__state
+;; - The form ends with a `break`, and the level's clauses after it follow it.
+;; EXPECT-CS: break;[\s\S]*int s = \(s__\d+ \+ t__\d+\);
+;; - Two levels and the form, three loops.
+;; EXPECT-CS: while \(true\) \{[\s\S]*while \(true\) \{[\s\S]*while \(true\) \{
+(export form)
+
+(import (std prelude))
+
+(: (-> (Array int) int int int))
+(defun (form a w h)
+  (loop (:for y (range 0 h))
+        (:subloop)
+        (:for x (range 0 w))
+        (:subloop (:for d (range -1 2))
+                  (:acc t (summing (array-ref a (+ (+ x 1) (* y w) d)))))
+        (:acc s (summing t))))

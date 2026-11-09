@@ -3,6 +3,36 @@
 
 What each change guarantees, and what it leaves open.
 
+* A ~(:subloop ...)~ form that only ends by its finish is a ~while~ in the level holding it
+
+- A ~(:subloop ...)~ form was members in the group of the level holding it,
+  so that level was a ~while (true) switch (__state)~ in the C#. Each member
+  carried the level's variables and the form's collectors as slots of its
+  own, which the JIT could not keep all in registers.
+- Now a form is ~(:let exports (loop ...))~ run where it stands, a loop of
+  its own in value position, if it has none of these:
+  - a ~:finish~, ~:final~ or stopping ~:finish-let~, also in a form nested in
+    it;
+  - an ~:abandon-subloop~ of its own;
+  - a ~yield~, also in a form nested in it. ~SeqFusion~ splices a consumer in
+    at a yield in a level's member, and not in a loop in value position.
+  It reads the level's variables and its collectors where they are bound,
+  its finish gives the exports, and the clauses after it follow it. The C#
+  is a ~while~ that a ~break~ leaves. A form with one of the three keeps the
+  shape it had (~LoopDesugar.staysInGroup~).
+- Measured: three levels of 1000, 1000 and 3, the innermost a form, 2.08 to
+  2.23 ms in the old shape and 1.69 to 1.86 ms now; the same loop with three
+  plain levels 1.67 to 1.73 ms.
+- Left as it was: when a consumer stops early at a ~yield~ in a form, the
+  enclosing level's walk gets its ~iterable-end~ before the form's.
+- Tests: ~TestFiles/533_subloop_form_nested.bjo~ (a form with no exports,
+  two exports, ~=> (name expr)~ and ~:finish-subloop~, a form in a form that
+  ends the loop and around one that leaves by ~:abandon-subloop~, a yield in
+  a form and a consumer that stops early, a throw from a form in a form;
+  each against the same loop with an ~(:abandon-subloop #f)~, which keeps the
+  old shape). ~TestFiles/codegen/subloop_form_nested.bjo~: no
+  ~switch (__state~, and the clause after the form follows its ~break~.
+
 * Each level of a ~(loop ...)~ is a ~while~ of its own, nested in the one around it
 
 - A ~(loop ...)~ of several levels was one group of members, one for each

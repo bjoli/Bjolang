@@ -4958,8 +4958,9 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
             let flatLoopInfo = LoopLowering.flatLoopEntry members body
 
             // The same recognition for a group of *several* members: a level
-            // of a `(loop ...)` that holds a `(:subloop ...)` form, whose
-            // members are the level's and the form's, or a mutually recursive
+            // of a `(loop ...)` that holds a `(:subloop ...)` form that leaves
+            // outward or yields, whose members are the level's and the form's
+            // (see `LoopDesugar.staysInGroup`), or a mutually recursive
             // named let. `LetRecify` has already split a loop's finish member
             // into an SCC of its own, so the group reaching here is entered by
             // a call to one of its members. A level without a form is a group

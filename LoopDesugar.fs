@@ -145,16 +145,26 @@ type private Driver =
     | DAs of SExpr * SExpr * int * Range
 
 /// Where a group of loop members sits. The group of a `(loop ...)` has nothing
-/// around it. The members of a `:subloop` form's level 0 join the group of the
-/// level holding the form, so that `:abandon-subloop` and the resume after the
-/// form are jumps to members of that group. The form's inner levels are loops
-/// nested in its level 0, as a loop's are.
+/// around it. A `:subloop` form is one of:
+///
+/// - `Nested`: a loop of its own, in value position in the level holding it.
+///   The clauses after it follow it in that level's member.
+/// - Else its level 0 joins the group of the level holding the form, so that
+///   `:abandon-subloop`, `:finish` and the resume after the form are jumps to
+///   members of that group.
+///
+/// The form's inner levels are loops nested in its level 0, as a loop's are.
 type private GroupCtx =
     { /// Slots every member of the group carries ahead of its own: the slots of
       /// the level holding the form, and the names bound before the form in
       /// that level's iteration. Every member is a separate function, so these
       /// are how the form's clauses see them and how they are handed back.
+      /// A `Nested` form refuses these names but does not carry them.
       Carried: string list
+      /// The form is a loop of its own, in value position in the level holding
+      /// it, and its finish gives the exports as its value. Only for a form
+      /// for which `staysInGroup` is false.
+      Nested: bool
       /// `:finish` without a value: the enclosing loop's finish. `None` for a
       /// `(loop ...)`, whose own finish it is.
       OuterFinish: (Map<string, string> -> Range -> Expr) option
@@ -218,6 +228,43 @@ let rec private sexprSymbols (s: SExpr) : Set<string> =
     | SAtom { Token = Symbol n } -> Set.singleton n
     | SAtom _ -> Set.empty
     | SList(items, _) -> items |> List.map sexprSymbols |> Set.unionMany
+
+/// Whether a `:subloop` form must stay in the group of the level holding it.
+/// Returns true for a form that has:
+/// - a `:finish`, `:final` or stopping `:finish-let`, also in a form nested
+///   in it, which ends the whole loop;
+/// - its own `:abandon-subloop`, which goes on with the level holding it;
+/// - a `yield`, also in a form nested in it. `SeqFusion` splices a consumer
+///   in at a yield in a level's member, and not in a loop in value position.
+let private staysInGroup (clauses: LoopClause list) : bool =
+    let rec endsLoop (cls: LoopClause list) =
+        cls
+        |> List.exists (function
+            | LFinish _
+            | LFinal _
+            | LRefutableLet(_, _, true, _) -> true
+            | LSubloopForm(inner, _, _) -> endsLoop inner
+            | _ -> false)
+
+    let mentions (f: SExpr) =
+        let names = sexprSymbols f
+        Set.contains "yield" names || Set.contains "yield-from" names
+
+    let rec yields (cls: LoopClause list) =
+        cls
+        |> List.exists (function
+            | LDo(es, _) -> es |> List.exists mentions
+            | LLet(_, v, _)
+            | LRefutableLet(_, v, _, _) -> mentions v
+            | LSubloopForm(inner, _, _) -> yields inner
+            | _ -> false)
+
+    endsLoop clauses
+    || yields clauses
+    || clauses
+       |> List.exists (function
+           | LAbandonSubloop _ -> true
+           | _ -> false)
 
 // ---------------------------------------------------------------------------
 // The guard that ends live cursors when the loop is left abnormally
@@ -1121,6 +1168,7 @@ and private desugarPlaced
             userLoopName
             finishForm
             { Carried = []
+              Nested = false
               OuterFinish = None
               AbandonSubloop = None
               Resume = None
@@ -1359,7 +1407,13 @@ and private buildGroup
     /// enclosing level's variables. A loop's own collectors are made once,
     /// before it starts, and are not carried. Neither is a bare `(:subloop)`'s
     /// accumulator's, which belongs to the whole loop.
-    let subCollectors = if isSub then accInfo |> List.map (fun slot -> slot.Collector) else []
+    /// A `Nested` form's members read its collectors where they are bound.
+    let subCollectors =
+        if isSub && not ctx.Nested then accInfo |> List.map (fun slot -> slot.Collector) else []
+
+    /// The enclosing level's names this group's level 0 and finish carry. A
+    /// `Nested` form reads them where they are bound.
+    let carriedSlots = if ctx.Nested then [] else ctx.Carried
 
     /// The accumulators a named loop may override, which are the ones the author
     /// can write: an `:acc` that gave no name has none to put after `#:`, and
@@ -1456,13 +1510,13 @@ and private buildGroup
     /// Level 0's sequences are absent by design: they are loop-invariant, so
     /// they sit in the prologue and are lexically in scope for the whole loop.
     ///
-    /// A `:subloop` form's level 0 is a member beside the level holding the
-    /// form, not nested in it, so it carries that level's names first
-    /// (`Carried`), and its sequences like any inner level's: they are
-    /// evaluated each time the form is entered. The form's own inner levels
-    /// are nested in its level 0 and read them there.
+    /// A `:subloop` form's level 0 carries its sequences like any inner
+    /// level's: they are evaluated each time the form is entered. If it is a
+    /// member beside the level holding the form, not `Nested`, it also
+    /// carries that level's names first (`Carried`) and its collectors. The
+    /// form's own inner levels are nested in its level 0 and read them there.
     let slotNames (i: int) : string list =
-        [ if i = 0 then yield! ctx.Carried
+        [ if i = 0 then yield! carriedSlots
           if i > 0 || isSub then yield! levels[i].SeqNames
           yield! levels[i].CurNames
           yield! levels[i].WithNames
@@ -1763,7 +1817,7 @@ and private buildGroup
     let ownFinishAliased (aliases: Map<string, string>) (cr: Range) =
         EApp(
             EIdent(exitName, cr),
-            ctx.Carried @ accNames @ subCollectors
+            carriedSlots @ accNames @ subCollectors
             |> List.map (fun n -> EIdent(Map.tryFind n aliases |> Option.defaultValue n, cr)),
             cr
         )
@@ -1831,6 +1885,16 @@ and private buildGroup
 
         ELet(slot.Name, false, [], None, value, rest, cr)
 
+    // The finish member. A loop's calls nothing, so `LetRecify` gives it a
+    // component of its own and it is bound ahead of the loop rather than
+    // becoming a member of a level's group — which costs one call on the way
+    // out and saves a copy of the block at every other exit. A form's resumes
+    // the level holding the form, so it is a member of that level's group. A
+    // `Nested` form's gives the exports, and is bound ahead of the form.
+    let exitMember =
+        let args = carriedSlots @ accNames @ subCollectors |> List.map (fun n -> MandatoryArg(n, None))
+        (exitName, true, args, None, (if isSub then subExitBody else finishBlockBody))
+
     /// The members of level `i`'s group: the level's member and the members of
     /// its `:subloop` forms. Set once the clauses can be built; see
     /// `levelGroupOf`. A cell, because entering a level builds it, and the
@@ -1860,7 +1924,9 @@ and private buildGroup
     /// that the call's arguments are names whose types are known when the
     /// member's body is checked, as they were when the level was entered by a
     /// jump from a member checked before it. A `:subloop` form's level 0 is a
-    /// member beside the level holding the form, and is entered by a jump.
+    /// member beside the level holding the form, and is entered by a jump. A
+    /// `Nested` form's level 0 is a loop of its own as level `i` > 0 is, and
+    /// its group also holds the form's finish member.
     let enterLevelWith (i: int) (extra: Map<string, Expr>) (cr: Range) =
         let temps = levels[i].Fors |> List.map (fun _ -> Gensym.fresh "loopenter")
 
@@ -1873,9 +1939,11 @@ and private buildGroup
             |> Map.ofList
 
         let entry =
-            if i = 0 then
+            if i = 0 && not ctx.Nested then
                 jump i overrides cr
             else
+                let group = if i = 0 then levelGroup.Value 0 @ [ exitMember ] else levelGroup.Value i
+
                 let inits =
                     slotNames i
                     |> List.choose (fun n ->
@@ -1899,7 +1967,7 @@ and private buildGroup
                         | Some t -> ELetMono(t, e, acc, cr)
                         | None -> acc)
                     inits
-                    (ELetRec(levelGroup.Value i, jump i named cr, cr))
+                    (ELetRec(group, jump i named cr, cr))
 
         List.foldBack
             (fun (t, (_, sequence, fr)) acc -> ELetMono(t, fns.Expr sequence, acc, fr))
@@ -1982,6 +2050,43 @@ and private buildGroup
                 cr
             )
 
+        // A nested loop that no exit leaves outward and that does not yield
+        // (see `staysInGroup`): `(:let exports (loop ...))` run where it
+        // stands. It is a loop of its own in value
+        // position, which reads this level's names where they are bound, and
+        // its finish gives the exports. The clauses after it follow it here.
+        | LSubloopForm(subClauses, export, cr) :: tl when not (staysInGroup subClauses) ->
+            let exports = subloopExports subClauses export
+
+            let value (vr: Range) =
+                match exports with
+                | [ n ] -> EIdent(n, vr)
+                | ns -> ETuple(ns |> List.map (fun n -> EIdent(n, vr)), vr)
+
+            let sub =
+                buildGroup
+                    fns
+                    cr
+                    None
+                    None
+                    { Carried = slotNames level @ locals |> List.distinct
+                      Nested = true
+                      OuterFinish = Some(fun _ _ -> failwith "internal error: a nested :subloop form left the loop")
+                      AbandonSubloop = None
+                      Resume = Some value
+                      Export = export
+                      Live = ctx.Live @ groupCursors level
+                      Guards = ctx.Guards }
+                    subClauses
+
+            extraHoisted.AddRange sub.Hoisted
+            let rest = buildClauses level tl accsLeft (locals @ exports |> List.distinct)
+
+            match exports with
+            | [ n ] -> ELetMono(n, sub.Entry, rest, cr)
+            | [] -> ELet("_", false, [], None, sub.Entry, rest, cr)
+            | ns -> ELetTuple(ns, sub.Entry, rest, cr)
+
         // A nested loop. Its levels are members of this group; entering it is a
         // jump to its level 0, and its finish jumps to a member that runs the
         // clauses after it with the exports bound. Both carry this level's
@@ -2000,6 +2105,7 @@ and private buildGroup
                     None
                     None
                     { Carried = carried
+                      Nested = false
                       OuterFinish = Some(fun aliases fr -> finishBlockAliased aliases level fr)
                       AbandonSubloop = Some(fun ar -> advanceLevel level ar)
                       Resume =
@@ -2369,18 +2475,8 @@ and private buildGroup
 
     levelGroup.Value <- levelGroupOf
 
-    // The finish member. A loop's calls nothing, so `LetRecify` gives it a
-    // component of its own and it is bound ahead of the loop rather than
-    // becoming a member of a level's group — which costs one call on the way
-    // out and saves a copy of the block at every other exit. A form's resumes
-    // the level holding the form, so it is a member of that level's group.
-    let exitMember =
-        if isSub then
-            (exitName, true, asArgs (ctx.Carried @ accNames @ subCollectors), None, subExitBody)
-        else
-            (exitName, true, asArgs accNames, None, finishBlockBody)
-
-    let members = levelGroupOf 0 @ [ exitMember ]
+    // A `Nested` form's entry builds its group; see `enterLevelWith`.
+    let members = if ctx.Nested then [] else levelGroupOf 0 @ [ exitMember ]
 
     // A loop's collectors are made once, before it starts: an accumulator of
     // the loop, a bare `(:subloop)`'s included, starts once and runs to the

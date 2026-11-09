@@ -1,0 +1,189 @@
+;; A (:subloop ...) form that no exit leaves outward is a loop of its own, in
+;; value position in the level holding it. Each case is checked against the
+;; same loop with an (:abandon-subloop #f) in the form, which leaves outward
+;; and so keeps the form in the group of the level holding it.
+;;
+;; - A form with no exports, run for its effects.
+;; - Several exports, and => (name expr).
+;; - :finish-subloop.
+;; - A form in a form that ends the whole loop, and one in a form that
+;;   leaves by :abandon-subloop.
+;; - A yield inside a form, with a consumer that stops early: each walk is
+;;   ended once. Such a form stays in the group, so that SeqFusion fuses the
+;;   consumer in at the yield.
+;; - A throw from a form in a form: inner walks are cleaned up first.
+(import (std simpletest))
+(import (std mutable vec))
+
+(import/class
+  (Exception (: System.Exception))
+  (Boom (: System.InvalidOperationException)))
+
+;; An `iterable-end` call adds the walk's name to the log, and an
+;; `iterable-cleanup` call the name and a `!`.
+(type (: Res (Struct (: name string) (: n int) (: log (MutableVec string)))))
+
+(impl (Iterable Res)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start s) 0)
+  (defun (iterable-done? s c) (>= c (record-ref s n)))
+  (defun (iterable-current s c) c)
+  (defun (iterable-next s c) (+ c 1))
+  (defun (iterable-end s c) (mutablevec-add! (record-ref s log) (record-ref s name)))
+  (defun (iterable-cleanup s c) (mutablevec-add! (record-ref s log) (str (record-ref s name) "!"))))
+
+(: (-> (MutableVec string) string int Res))
+(defun (res log name n) (Res (name name) (n n) (log log)))
+
+(: (-> int))
+(defun (boom) (raise (cast Exception (Boom. "boom"))))
+
+;; The log that `walk` makes, given a fresh log. An exception that `walk`
+;; raises is caught here.
+(: (-> (-> (MutableVec string) void) (List string)))
+(defun (ends-of walk)
+  (def log (mutablevec))
+  (ignore (try (walk log) #:catch (System.InvalidOperationException)))
+  (mutablevec->list log))
+
+;; No exports: the form runs for its effects.
+(: (-> (List (List int)) (List int)))
+(defun (effects rows)
+  (def out (mutablevec))
+  (loop (:for row rows)
+        (:subloop (:for y row) (:do (mutablevec-add! out y)))
+        (:do (mutablevec-add! out -1)))
+  (mutablevec->list out))
+
+(: (-> (List (List int)) (List int)))
+(defun (effects-old rows)
+  (def out (mutablevec))
+  (loop (:for row rows)
+        (:subloop (:for y row) (:abandon-subloop #f) (:do (mutablevec-add! out y)))
+        (:do (mutablevec-add! out -1)))
+  (mutablevec->list out))
+
+;; Two exports and a level variable read in the form and after it.
+(: (-> (List (List int)) (List (Tuple int int int))))
+(defun (two-exports rows)
+  (loop (:for row rows) (:with k 0 (+ k 1))
+        (:subloop (:for y row) (:acc s (summing (* k y))) (:acc n (counting y)))
+        (:acc out (listing (Tuple k s n)))))
+
+(: (-> (List (List int)) (List (Tuple int int int))))
+(defun (two-exports-old rows)
+  (loop (:for row rows) (:with k 0 (+ k 1))
+        (:subloop (:for y row) (:abandon-subloop #f) (:acc s (summing (* k y))) (:acc n (counting y)))
+        (:acc out (listing (Tuple k s n)))))
+
+;; => (name expr) and :finish-subloop.
+(: (-> (List (List int)) (List int)))
+(defun (capped rows)
+  (loop (:for row rows)
+        (:subloop (:for y row) (:acc s (summing y)) (:finish-subloop (> s 4)) => (c (* 10 s)))
+        (:acc out (listing c))))
+
+(: (-> (List (List int)) (List int)))
+(defun (capped-old rows)
+  (loop (:for row rows)
+        (:subloop (:for y row) (:abandon-subloop #f) (:acc s (summing y)) (:finish-subloop (> s 4)) => (c (* 10 s)))
+        (:acc out (listing c))))
+
+;; A form in value position inside a form that ends the whole loop.
+(: (-> (List (List (List int))) int))
+(defun (inside-finishing blocks)
+  (loop (:for block blocks)
+        (:subloop (:for row block)
+                  (:subloop (:for y row) (:acc s (summing y)))
+                  (:finish (> s 100))
+                  (:acc t (summing s)))
+        (:acc total (summing t))
+        => (- 0 total)))
+
+(: (-> (List (List (List int))) int))
+(defun (inside-finishing-old blocks)
+  (loop (:for block blocks)
+        (:subloop (:for row block)
+                  (:subloop (:for y row) (:abandon-subloop #f) (:acc s (summing y)))
+                  (:finish (> s 100))
+                  (:acc t (summing s)))
+        (:acc total (summing t))
+        => (- 0 total)))
+
+;; A form in value position whose own inner form leaves it by
+;; :abandon-subloop.
+(: (-> (List (List (List int))) (List int)))
+(defun (around-abandoning blocks)
+  (loop (:for block blocks)
+        (:subloop (:for row block)
+                  (:subloop (:for y row) (:abandon-subloop (< y 0)) (:acc s (summing y)))
+                  (:acc t (summing s)))
+        (:acc out (listing t))))
+
+(: (-> (List (List (List int))) (List int)))
+(defun (around-abandoning-old blocks)
+  (loop (:for block blocks)
+        (:subloop (:for row block)
+                  (:abandon-subloop #f)
+                  (:subloop (:for y row) (:abandon-subloop (< y 0)) (:acc s (summing y)))
+                  (:acc t (summing s)))
+        (:acc out (listing t))))
+
+;; A yield inside the form, and a consumer that stops after `k` elements.
+(: (-> int (MutableVec string) void))
+(defun (yield-inside k log)
+  (ignore (->list (take k (seql (:for x (res log "outer" 3))
+                                (:subloop (:for y (res log "inner" 3))
+                                          (:yield (+ (* 10 x) y))
+                                          (:acc (counting y))))))))
+
+(: (-> int (MutableVec string) void))
+(defun (yield-inside-old k log)
+  (ignore (->list (take k (seql (:for x (res log "outer" 3))
+                                (:subloop (:for y (res log "inner" 3))
+                                          (:abandon-subloop #f)
+                                          (:yield (+ (* 10 x) y))
+                                          (:acc (counting y))))))))
+
+;; A throw from a form in a form.
+(: (-> (MutableVec string) void))
+(defun (throw-inside log)
+  (loop (:for x (res log "outer" 3))
+        (:subloop (:for y (res log "mid" 3))
+                  (:subloop (:for z (res log "inner" 3))
+                            (:do (when (and (= x 1) (= y 1) (= z 1)) (ignore (boom))))))))
+
+(: (-> (MutableVec string) void))
+(defun (throw-inside-old log)
+  (loop (:for x (res log "outer" 3))
+        (:subloop (:for y (res log "mid" 3))
+                  (:abandon-subloop #f)
+                  (:subloop (:for z (res log "inner" 3))
+                            (:abandon-subloop #f)
+                            (:do (when (and (= x 1) (= y 1) (= z 1)) (ignore (boom))))))))
+
+(defun (main args)
+  (def rows '((1 2) () (3 4 5)))
+  (def blocks '(((1 2) (3 -1 9)) ((4 4 4) (1))))
+  (expect "no exports" (effects rows) '(1 2 -1 -1 3 4 5 -1))
+  (expect "no exports, as the old shape" (effects rows) (effects-old rows))
+  (expect "two exports" (two-exports rows) (list (Tuple 0 0 2) (Tuple 1 0 0) (Tuple 2 24 3)))
+  (expect "two exports, as the old shape" (two-exports rows) (two-exports-old rows))
+  (expect ":finish-subloop and =>" (capped rows) '(30 0 70))
+  (expect ":finish-subloop and =>, as the old shape" (capped rows) (capped-old rows))
+  (expect "inside a form that ends the loop" (inside-finishing blocks) -27)
+  (expect "inside a form that ends the loop, ended" (inside-finishing '(((1) (200)) ((5)))) 0)
+  (expect "inside a form that ends the loop, as the old shape"
+          (Tuple (inside-finishing blocks) (inside-finishing '(((1) (200)) ((5)))))
+          (Tuple (inside-finishing-old blocks) (inside-finishing-old '(((1) (200)) ((5))))))
+  (expect "around a form that abandons" (around-abandoning blocks) '(3 13))
+  (expect "around a form that abandons, as the old shape" (around-abandoning blocks) (around-abandoning-old blocks))
+  (expect "a yield inside, all of it" (ends-of (fun (log) (yield-inside 100 log))) (ends-of (fun (log) (yield-inside-old 100 log))))
+  (expect "a yield inside, stopped early" (ends-of (fun (log) (yield-inside 4 log))) (ends-of (fun (log) (yield-inside-old 4 log))))
+  (expect "a yield inside, stopped early, each walk ended once"
+          (list-sort (ends-of (fun (log) (yield-inside 4 log))))
+          (list "inner" "outer"))
+  (expect "a throw from a form in a form" (ends-of throw-inside) (list "inner!" "mid!" "outer!"))
+  (expect "a throw from a form in a form, as the old shape" (ends-of throw-inside) (ends-of throw-inside-old))
+  0)
