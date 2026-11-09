@@ -38,24 +38,19 @@
 (import (only (std random) current-random random-u64))
 (import (only (std datetime) Instant now instant->unix-milliseconds unix-milliseconds->instant))
 (import (only (std crypto hash) HashAlgorithm make-hasher hasher-add! hasher-add-string! hasher-finish!))
+(import (only (std atomic) Atomic make-atomic atomic-update!))
 
 (:doc #:file "uuid.bjodoc")
 
+;; The constructor that takes the fields in the order of the bytes:
+;; `(uint, ushort, ushort, byte x 8)` is bytes 0-3, 4-5, 6-7 and 8-15,
+;; big-endian.
 (import/class
-  (Guid (: System.Guid)))
+  (Guid (: System.Guid (-> uint ushort ushort byte byte byte byte byte byte byte byte Guid))))
 
 (import/extern
-  (shim-v4          (: Bjolang.Runtime.UuidModule.V4 (-> ulong ulong (out ulong) (Tuple ulong ulong))))
-  (shim-v7          (: Bjolang.Runtime.UuidModule.V7 (-> long ulong ulong (out ulong) (Tuple ulong ulong))))
-  (shim-from-digest (: Bjolang.Runtime.UuidModule.FromDigest (-> (Array byte) int (out ulong) (Tuple ulong ulong))))
-  (shim-to-bytes    (: Bjolang.Runtime.UuidModule.ToBytes (-> ulong ulong (Array byte))))
-  (shim-from-bytes  (: Bjolang.Runtime.UuidModule.TryFromBytes
-                       (-> (Array byte) (out ulong) (out ulong) (Option (Tuple ulong ulong)))))
-  (shim-format      (: Bjolang.Runtime.UuidModule.Format (-> ulong ulong bool string)))
-  (shim-parse       (: Bjolang.Runtime.UuidModule.TryParse
-                       (-> string (out ulong) (out ulong) (Option (Tuple ulong ulong)))))
-  (shim-to-guid     (: Bjolang.Runtime.UuidModule.ToGuid (-> ulong ulong Guid)))
-  (shim-from-guid   (: Bjolang.Runtime.UuidModule.FromGuid (-> Guid (out ulong) (Tuple ulong ulong)))))
+  ;; With `#t`: the 16 bytes in the order of the text.
+  (clr-guid-bytes (: System.Guid.ToByteArray (-> Guid bool (Array byte)))))
 
 ;; `hi` is the first 8 bytes, `lo` the last 8. Opaque, so every `Uuid` is one
 ;; that a function here made. `type/derive` does not take `#:opaque`, so `Eq`
@@ -72,16 +67,48 @@
     (def by-hi (compare (struct-ref a hi) (struct-ref b hi)))
     (if (= by-hi 0) (compare (struct-ref a lo) (struct-ref b lo)) by-hi)))
 
-(: (-> (Tuple ulong ulong) Uuid))
-(defun (from-halves halves)
-  (def (hi lo) halves)
-  (Uuid (hi hi) (lo lo)))
-
 (: (-> Uuid ulong))
 (defun (hi-of u) (struct-ref u hi))
 
 (: (-> Uuid ulong))
 (defun (lo-of u) (struct-ref u lo))
+
+;; ---------------------------------------------------------------------------
+;; Bits and bytes
+;; ---------------------------------------------------------------------------
+
+;; Everything in `hi` except the 4 version bits, bits 12 to 15.
+(: ulong)
+(def version-mask 0xFFFFFFFFFFFF0FFF)
+
+;; Everything in `lo` except the 2 variant bits at the top.
+(: ulong)
+(def variant-mask 0x3FFFFFFFFFFFFFFF)
+
+;; The variant of RFC 9562: the top two bits of `lo` are 10.
+(: ulong)
+(def rfc-variant 0x8000000000000000)
+
+(: (-> ulong int ulong))
+(defun (with-version hi version)
+  (bitwise-ior (bitwise-and hi version-mask) (shift-left (cast ulong version) 12)))
+
+(: (-> ulong ulong))
+(defun (with-variant lo) (bitwise-ior (bitwise-and lo variant-mask) rfc-variant))
+
+;; The 8 bytes from `start`, big-endian.
+(: (-> (Array byte) int ulong))
+(defun (read-u64 bytes start)
+  (let go ((i start) (v 0UL))
+    (if (= i (+ start 8))
+        v
+        (go (+ i 1) (bitwise-ior (shift-left v 8) (cast ulong (array-ref bytes i)))))))
+
+;; Writes `v` into the 8 bytes from `start`, big-endian.
+(: (-> (Array byte) int ulong void))
+(defun (write-u64! bytes start v)
+  (loop (:for i (range 0 8))
+        (:do (array-set! bytes (+ start i) (cast byte (shift-right-logical v (* 8 (- 7 i))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Making one
@@ -90,24 +117,66 @@
 ;; 122 random bits.
 (: (-> (#:rng RandomSource) Uuid))
 (defun (uuid-v4 #:rng (parameter-ref current-random))
-  (from-halves (shim-v4 (random-u64 #:rng rng) (random-u64 #:rng rng))))
+  (def r1 (random-u64 #:rng rng))
+  (def r2 (random-u64 #:rng rng))
+  (Uuid (hi (with-version r1 4)) (lo (with-variant r2))))
+
+;; A version 7 uuid without its version and variant bits: the 48 bits of the
+;; time and then the 74 random bits, as one 122-bit number. `high` is its top
+;; 58 bits and `low` its bottom 64.
+(type (: V7Bits (Struct (: high ulong) (: low ulong))))
+
+(: (-> V7Bits V7Bits bool))
+(defun (v7-greater? a b)
+  (or (> (struct-ref a high) (struct-ref b high))
+      (and (= (struct-ref a high) (struct-ref b high))
+           (> (struct-ref a low) (struct-ref b low)))))
+
+;; `b` plus 1.
+(: (-> V7Bits V7Bits))
+(defun (v7-next b)
+  (def bottom (+ (struct-ref b low) 1UL))
+  (V7Bits (high (if (= bottom 0UL) (+ (struct-ref b high) 1UL) (struct-ref b high)))
+          (low bottom)))
+
+;; The last version 7 value that this process made.
+(: (Atomic V7Bits))
+(def last-v7 (make-atomic (V7Bits (high 0UL) (low 0UL))))
 
 ;; The Unix time in milliseconds, then 74 random bits. The uuids that this
 ;; process makes always increase, also when two are made in one millisecond
 ;; and when the clock steps back.
+;;
+;; - A value that is not greater than the last one is the last one plus 1, as
+;;   RFC 9562 section 6.2 allows.
+;; - `last-v7` changes in one atomic step, so this holds across threads.
 (: (-> (#:clock Clock) (#:rng RandomSource) Uuid))
 (defun (uuid-v7 #:clock (parameter-ref current-clock) #:rng (parameter-ref current-random))
-  (from-halves (shim-v7 (instant->unix-milliseconds (now #:clock clock))
-                        (random-u64 #:rng rng)
-                        (random-u64 #:rng rng))))
+  (def ms (bitwise-and (cast ulong (instant->unix-milliseconds (now #:clock clock))) 0xFFFFFFFFFFFF))
+  (def r1 (random-u64 #:rng rng))
+  (def r2 (random-u64 #:rng rng))
+  (def candidate (V7Bits (high (bitwise-ior (shift-left ms 10) (bitwise-and r1 0x3FF)))
+                         (low r2)))
+  (def chosen
+    (atomic-update! last-v7 (fun (last) (if (v7-greater? candidate last) candidate (v7-next last)))))
+  (def top (struct-ref chosen high))
+  (def bottom (struct-ref chosen low))
+  ;; 48 bits of time, the version, then the top 12 random bits.
+  (def rand-a (bitwise-and (bitwise-ior (shift-left top 2) (shift-right-logical bottom 62)) 0xFFF))
+  (Uuid (hi (bitwise-ior (shift-left (shift-right-logical top 10) 16) (bitwise-ior 0x7000 rand-a)))
+        (lo (with-variant bottom))))
 
-;; A digest of the namespace's 16 bytes and the name's UTF-8 bytes.
+;; A digest of the namespace's 16 bytes and the name's UTF-8 bytes. The uuid
+;; is the first 16 bytes of the digest, with the version and the variant set.
+;; SHA-1 and MD5 digests are 20 and 16 bytes.
 (: (-> HashAlgorithm int Uuid string Uuid))
 (defun (name-based algorithm version namespace name)
   (def h (make-hasher #:algorithm algorithm))
   (hasher-add! h (uuid->bytes namespace))
   (hasher-add-string! h name)
-  (from-halves (shim-from-digest (hasher-finish! h) version)))
+  (def digest (hasher-finish! h))
+  (Uuid (hi (with-version (read-u64 digest 0) version))
+        (lo (with-variant (read-u64 digest 8)))))
 
 ;; The same namespace and name always give the same uuid. SHA-1.
 (: (-> Uuid string Uuid))
@@ -146,30 +215,77 @@
 ;; Text and bytes
 ;; ---------------------------------------------------------------------------
 
+(: (Array byte))
+(def lower-digits (string->bytes "0123456789abcdef"))
+
+(: (Array byte))
+(def upper-digits (string->bytes "0123456789ABCDEF"))
+
+;; Whether the 32 hex digits have a hyphen before digit `i`.
+(: (-> int bool))
+(defun (hyphen-before? i) (or (= i 8) (= i 12) (= i 16) (= i 20)))
+
 ;; 8-4-4-4-12 hex digits, lower case unless `#:upper #t`.
 (: (-> Uuid (#:upper bool) string))
-(defun (uuid->string u #:upper #f) (shim-format (hi-of u) (lo-of u) upper))
+(defun (uuid->string u #:upper #f)
+  (def digits (if upper upper-digits lower-digits))
+  (def sb (stringbuilder-empty))
+  (loop (:for i (range 0 32))
+        (:do (when (hyphen-before? i) (stringbuilder-add-code! sb 45))
+             (let ((word (if (< i 16) (hi-of u) (lo-of u)))
+                   (shift (* 4 (- 15 (% i 16)))))
+               (stringbuilder-add-code!
+                 sb (cast int (array-ref digits (cast int (bitwise-and (shift-right-logical word shift) 15UL))))))))
+  (stringbuilder->string sb))
 
-;; Only the 36-character form, in upper or lower case.
+;; 0 to 15 for an ASCII hex digit in either case, -1 for any other byte.
+(: (-> byte int))
+(defun (hex-value b)
+  (def c (cast int b))
+  (cond
+    ((and (>= c 48) (<= c 57)) (- c 48))
+    ((and (>= c 65) (<= c 70)) (- c 55))
+    ((and (>= c 97) (<= c 102)) (- c 87))
+    (else -1)))
+
+;; Only the 36-character form, in upper or lower case: no braces, no
+;; `urn:uuid:`, and no form without hyphens, so that one uuid has one text in
+;; each case.
 (: (-> string (Option Uuid)))
 (defun (string->uuid text)
-  (match (shim-parse text)
-    ((Some halves) (Some (from-halves halves)))
-    (None None)))
+  (def bytes (string->bytes text))
+  (if (not (= (array-length bytes) 36))
+      None
+      ;; `i` indexes the text, `digit` counts the hex digits read.
+      (let go ((i 0) (digit 0) (h 0UL) (l 0UL))
+        (cond
+          ((= i 36) (Some (Uuid (hi h) (lo l))))
+          ((or (= i 8) (= i 13) (= i 18) (= i 23))
+           (if (= (array-ref bytes i) 45uy) (go (+ i 1) digit h l) None))
+          (else
+           (def v (hex-value (array-ref bytes i)))
+           (cond
+             ((< v 0) None)
+             ((< digit 16) (go (+ i 1) (+ digit 1) (bitwise-ior (shift-left h 4) (cast ulong v)) l))
+             (else (go (+ i 1) (+ digit 1) h (bitwise-ior (shift-left l 4) (cast ulong v))))))))))
 
 (: (-> string bool))
-(defun (uuid-string? text) (some? (shim-parse text)))
+(defun (uuid-string? text) (some? (string->uuid text)))
 
 ;; 16 bytes, in network byte order.
 (: (-> Uuid (Array byte)))
-(defun (uuid->bytes u) (shim-to-bytes (hi-of u) (lo-of u)))
+(defun (uuid->bytes u)
+  (def (: bytes (Array byte)) (make-array 16))
+  (write-u64! bytes 0 (hi-of u))
+  (write-u64! bytes 8 (lo-of u))
+  bytes)
 
 ;; `None` unless there are exactly 16 bytes.
 (: (-> (Array byte) (Option Uuid)))
 (defun (bytes->uuid bytes)
-  (match (shim-from-bytes bytes)
-    ((Some halves) (Some (from-halves halves)))
-    (None None)))
+  (if (= (array-length bytes) 16)
+      (Some (Uuid (hi (read-u64 bytes 0)) (lo (read-u64 bytes 8))))
+      None))
 
 (impl (Written Uuid)
   (defun (written u) (uuid->string u))
@@ -201,7 +317,16 @@
 ;; A Guid keeps its first three fields in the machine's byte order, and its
 ;; `CompareTo` does not compare the bytes in order. Compare the `Uuid`.
 (: (-> Uuid Guid))
-(defun (uuid->guid u) (shim-to-guid (hi-of u) (lo-of u)))
+(defun (uuid->guid u)
+  (def b (uuid->bytes u))
+  (def hi (hi-of u))
+  (Guid. (cast uint (shift-right-logical hi 32))
+         (cast ushort (shift-right-logical hi 16))
+         (cast ushort hi)
+         (array-ref b 8) (array-ref b 9) (array-ref b 10) (array-ref b 11)
+         (array-ref b 12) (array-ref b 13) (array-ref b 14) (array-ref b 15)))
 
 (: (-> Guid Uuid))
-(defun (guid->uuid g) (from-halves (shim-from-guid g)))
+(defun (guid->uuid g)
+  (def b (clr-guid-bytes g #t))
+  (Uuid (hi (read-u64 b 0)) (lo (read-u64 b 8))))

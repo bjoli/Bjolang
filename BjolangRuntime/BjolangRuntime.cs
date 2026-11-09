@@ -1568,9 +1568,6 @@ public static partial class BjolangRuntime {
     // So they are in `prelude.bjo` now, and had to leave here rather than stay
     // as unused overloads: both would be in scope at a call site and C# reports
     // the pair as an ambiguous call.
-    //
-    // `SchemeList.Map`, `Filter`, `Fold`, `FoldRight` and `ForEach` are still
-    // there and still used by the collection traits.
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T listsubref<T>(SchemeList.SchemeList<T> list, int index) => SchemeList.SchemeList.Item(list, index);

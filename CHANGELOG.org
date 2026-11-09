@@ -3,6 +3,35 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std uuid)~ is written in Bjolang, with no C# shim
+
+- ~BjolangRuntime/BjoUuid.cs~ (~UuidModule~) is removed. Its nine shims are
+  functions in ~lib/std/uuid.bjo~: masks and shifts on ~ulong~, big-endian
+  reads and writes of the bytes, the text form and its parser.
+- ~uuid-v7~ keeps the last value in an ~(Atomic V7Bits)~ and changes it with
+  ~atomic-update!~, in place of a C# lock on a ~UInt128~. The values that one
+  process makes still always increase, also across threads.
+- ~uuid->guid~ uses the ~Guid(uint, ushort, ushort, byte x 8)~ constructor,
+  and ~guid->uuid~ uses ~Guid.ToByteArray(bigEndian: true)~.
+- The results are the same: checked against the C# shims before they were
+  removed, with 20 000 version 4 and 20 000 version 7 uuids (the clock
+  forwards, the same, and back) and parser edge cases.
+- Tests: ~TestFiles/362_uuid.bjo~ adds 8 compute threads that each make 5 000
+  version 7 uuids in one millisecond: each thread's increase, and none is
+  made twice. With a read and a set in place of ~atomic-update!~ this test
+  fails.
+
+* Code that nothing called is removed from the runtime
+
+- ~SchemeList~: ~Fold~, ~FoldRight~, ~ForEach~, ~Map~, ~Filter~ and ~Slice~,
+  as instance and static methods. ~list-map~ and the others are in
+  ~prelude.bjo~. Without ~Slice~, a C# list pattern on a ~SchemeList~ cannot
+  bind the rest (~.. var rest~); a bare ~..~ still works.
+- ~Utf8String.PadLeft~ and ~PadRight~: ~string-pad-left~ and
+  ~string-pad-right~ are in ~prelude.bjo~.
+- ~Cml/SimpleChannel.cs~ moves to ~bench/Bench/~. Only the benchmarks use
+  it, as a channel that ~choose~ cannot take. ~Cml/StressTest~ links it.
+
 * ~atomic-array-increment!~: an element of an array of ints, plus 1, as one atomic step
 
 - ~(atomic-array-increment! a i)~ in ~(std atomic)~ adds 1 to element ~i~ of

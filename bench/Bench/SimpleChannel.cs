@@ -16,6 +16,10 @@ using System.Runtime.CompilerServices;
 
 namespace Bjoml;
 
+// A benchmark baseline, not part of the runtime: nothing in Bjolang uses it.
+// bench/Bench compares the CML channel with it, and Cml/StressTest links this
+// file. It uses only the runtime's public API (`Scheduler.Dispatch`).
+
 /// <summary>
 /// A high-performance, point-to-point unbuffered rendezvous channel.
 ///
@@ -24,7 +28,6 @@ namespace Bjoml;
 /// fiber-to-fiber (and task-to-task) rendezvous with zero GC allocations and direct
 /// inline continuation resumption.
 /// </summary>
-[NonUserCode]
 public sealed class SimpleChannel<T>
 {
     private readonly object _lock = new();
@@ -97,7 +100,6 @@ public sealed class SimpleChannel<T>
         return isSync ? SimpleAwaitable<T>.Completed(syncVal) : SimpleAwaitable<T>.Pending(node!);
     }
 
-    [NonUserCode]
     public sealed class SimpleNode<TValue>
     {
         private const int MaxCached = 128;
@@ -143,7 +145,6 @@ public sealed class SimpleChannel<T>
         }
     }
 
-    [NonUserCode]
     public readonly struct SimpleAwaitable<TValue> : ICriticalNotifyCompletion
     {
         private readonly SimpleNode<TValue>? _node;

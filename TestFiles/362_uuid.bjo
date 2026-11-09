@@ -7,6 +7,7 @@
 (import (std random))
 (import (std datetime))
 (import (std uuid))
+(import (only (std parallel) computing-each))
 
 (import/class
   (Guid (: System.Guid)))
@@ -76,6 +77,17 @@
   (def earlier (match (unix-milliseconds->instant 1600000000000L) ((Some i) i) (None (panic! "time"))))
   (expect "a clock that steps back still gives a greater one"
           (less? (vec-ref burst 999) (uuid-v7 #:clock (fixed-clock earlier utc))) #t)
+  ;; 8 parts on the compute threads, each making 5 000 in one millisecond.
+  (def parts (computing-each 8 (fun (p)
+                                 (loop (:for i (range 0 5000))
+                                       (:acc out (vecing (uuid-v7 #:clock stopped))) => out))))
+  (expect "on 8 threads, each thread's increase"
+          (vec-map increasing? parts) [#t #t #t #t #t #t #t #t])
+  (expect "and none is made twice"
+          (increasing? (list->vec (list-sort (loop (:for v parts)
+                                                   (:acc all (folding (list) (list-append (vec->list v) all)))
+                                                   => all))))
+          #t)
 
   ;; ---- Text ----------------------------------------------------------------
   (expect "upper case" (uuid->string uuid-ns-dns #:upper #t) "6BA7B810-9DAD-11D1-80B4-00C04FD430C8")
