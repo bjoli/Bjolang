@@ -3293,17 +3293,40 @@
   (#:bjo  (clr-stream-flush-await s)))
 
 (import/extern
-  (clr-copy-count       (: Bjolang.Runtime.BjoStreams.CopyCount      (-> Stream Stream long void) #:blocking))
-  (clr-copy-count-await (: Bjolang.Runtime.BjoStreams.CopyCountAsync (-> Stream Stream long void) #:async))
-  (clr-stream-length    (: System.IO.Stream.Length (-> Stream long) #:get))
-  (clr-new-guid         (: System.Guid.NewGuid (-> System.Guid)))
-  (clr-guid-text        (: System.Guid.ToString (-> System.Guid string string))))
+  (clr-stream-read       (: System.IO.Stream.Read      (-> Stream (Array byte) int int int) #:blocking))
+  (clr-stream-read-await (: System.IO.Stream.ReadAsync (-> Stream (Array byte) int int int) #:async))
+  (clr-stream-length     (: System.IO.Stream.Length (-> Stream long) #:get))
+  (clr-new-guid          (: System.Guid.NewGuid (-> System.Guid)))
+  (clr-guid-text         (: System.Guid.ToString (-> System.Guid string string))))
+
+;; Up to `n` bytes into the start of `buffer`; the number read, 0 at the end.
+(: (-> Stream (Array byte) int int))
+(defbjouble (stream-read-some! s buffer n)
+  (#:sync (clr-stream-read s buffer 0 n))
+  (#:bjo  (clr-stream-read-await s buffer 0 n)))
+
+;; The first `n` bytes of `buffer`.
+(: (-> Stream (Array byte) int void))
+(defbjouble (stream-write-some! s buffer n)
+  (#:sync (clr-stream-write s buffer 0 n))
+  (#:bjo  (clr-stream-write-await s buffer 0 n)))
 
 ;; At most `count` bytes: what the source held when it was opened.
+;;
+;; - `Stream.CopyTo` copies to the end of the source. When the target is the
+;;   source under another name, opened to append, the end moves away as fast
+;;   as the copy writes, and the file grows until the disk is full. Copying
+;;   the length that the source had when it was opened ends.
+;; - Stops early when the source ends before `count` bytes.
 (: (-> Stream Stream long void))
-(defbjouble (stream-copy-count! from to count)
-  (#:sync (clr-copy-count from to count))
-  (#:bjo  (clr-copy-count-await from to count)))
+(defun (stream-copy-count! from to count)
+  (def buffer (make-array (cast int (min 81920L (max count 1L)))))
+  (let go ((left count))
+    (when (> left 0L)
+      (def n (stream-read-some! from buffer (cast int (min (cast long (array-length buffer)) left))))
+      (when (> n 0)
+        (stream-write-some! to buffer n)
+        (go (- left (cast long n)))))))
 
 ;; Copies a file from `from` to `to`.
 ;;

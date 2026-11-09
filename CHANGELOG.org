@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~stream-copy-count!~ is written in Bjolang, with no C# shim
+
+- ~BjolangRuntime/BjoStreams.cs~ is removed. ~stream-copy-count!~ in
+  ~prelude.bjo~ is one ~defun~: a loop over two new twins,
+  ~stream-read-some!~ and ~stream-write-some!~, which call ~Stream.Read~ and
+  ~Write~, or ~ReadAsync~ and ~WriteAsync~ with the fiber's cancellation.
+  The compiler makes the suspending copy of the loop.
+- As before: the buffer is ~min(81920, max(count, 1))~ bytes, the copy stops
+  after ~count~ bytes or at the end of the source, and ~file-copy~ with
+  ~Append~ onto the source under another name ends.
+- Checked: ~file-copy~ in each mode, plain and from a bjoroutine, of files of
+  0, 1, 4096, 81919, 81920, 81921, 163840 and 250000 bytes.
+- Tests: ~TestFiles/249_files.bjo~, unchanged.
+
 * ~(std crypto hash)~ is written in Bjolang, with no C# shim
 
 - ~BjolangRuntime/BjoCrypto.cs~ (~CryptoModule~) is removed. ~hash.bjo~
