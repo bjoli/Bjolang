@@ -64,8 +64,11 @@
     returned @code{#t}, and must then do nothing.
 
     When an exception or a non-local exit leaves the loop, the loop calls
-    @code{iterable-cleanup} instead. A cursor that holds a resource releases
-    it in both.
+    @code{iterable-cleanup} instead. When the consumer of a lazy @code{seql}
+    stops early, the cursors that the @code{seql} has open get one of the
+    two: @code{iterable-end} if the consumer was fused into the
+    @code{seql}'s loop, and @code{iterable-cleanup} if not. A cursor that
+    holds a resource releases it in both.
 
     The default does nothing. Implement it for a cursor that holds a resource
     for the traversal.
@@ -81,7 +84,9 @@
     that is live when an exception or a non-local exit (such as @code{ret} of
     a @code{with-return}) leaves the loop, inner levels first. A lazy
     @code{seql} whose consumer stops early calls it on the cursors it has
-    open too. Each cursor gets the call once at most.
+    open too, unless the consumer was fused into the @code{seql}'s loop:
+    those cursors then get @code{iterable-end}. Each cursor gets one of the
+    two calls at most.
 
     The default does nothing, and with it the loop has no @code{try} around
     it and keeps no record of its cursors. A cursor that holds a resource,
