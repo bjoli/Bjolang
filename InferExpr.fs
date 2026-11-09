@@ -1640,6 +1640,38 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
           Node = TIdent(n, []) }
 
     match info.Kind with
+    // A property of a generic type as a value: a function of the receiver,
+    // at the declared signature.
+    | ExternGet
+    | ExternSet when info.GenericTypeArgs.IsSome ->
+        let paramTypes, retType, _, _, _ = instantiateGenericExtern env.Registry where info
+        let argNames = paramTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
+        let argExprs: TypedExpr list = List.map2 identOf argNames paramTypes
+
+        let body: TypedExpr =
+            match info.Kind, argExprs with
+            | ExternGet, [ recv ] ->
+                { Type = retType
+                  Range = r
+                  Node = TDotPropertyGet(recv, info.MemberName, retType) }
+            | _, [ recv; value ] ->
+                { Type = TypeConstants.voidType
+                  Range = r
+                  Node = TDotPropertySet(recv, info.MemberName, value) }
+            | _ ->
+                failwithf
+                    $"Type Error at %s{where}: '%s{name}' names a member of the generic type '%s{info.ClrType}', which is used through its receiver."
+
+        let funType =
+            match info.Kind with
+            | ExternGet -> tfun paramTypes body.Type
+            | _ -> tfun paramTypes (lambdaResult TypeConstants.voidType)
+
+        funType,
+        { Type = funType
+          Range = r
+          Node = TLambda(argNames, body) }
+
     // A static read *is* the value, re-read wherever the name stands —
     // `TForeignStaticGet` emits the member access itself, so a property like
     // `DateTime.Now` still means "now" at each mention.
@@ -1721,7 +1753,7 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
         // instantiation, whatever the context settles it to, because a C#
         // delegate cannot be generic.
         | Some _ ->
-            let paramTypes, retType, typeArgs, outs = instantiateGenericExtern env.Registry where info
+            let paramTypes, retType, typeArgs, ownerArgs, outs = instantiateGenericExtern env.Registry where info
 
             let methodParams =
                 if info.IsInstance then List.tail paramTypes else paramTypes
@@ -1729,7 +1761,7 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
             let argNames = paramTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
             let argExprs: TypedExpr list = List.map2 identOf argNames paramTypes
 
-            let meta = Some(genericExternMeta info typeArgs outs methodParams retType)
+            let meta = Some(genericExternMeta info typeArgs ownerArgs outs methodParams retType)
 
             let node =
                 if info.IsInstance then
@@ -2168,6 +2200,36 @@ and private inferDotMethod (env: Env) (name: string) (args: Expr list) (r: Range
             inferFieldRead env targetType typedTarget methodName r
         else
 
+        // A generic .NET type with a type variable in its arguments, as
+        // `(Rom %a)` in a generic function, has no closed .NET type. Its
+        // method is resolved on the generic definition.
+        settleLiterals [ targetType ]
+
+        match DotNetInterop.openReceiverDefinition (prune env.Registry targetType) with
+        | Some(definition, typeArgs) ->
+            let typedArgs = rest |> List.map (infer env)
+            settleLiterals (typedArgs |> List.map fst)
+            let argTypes = typedArgs |> List.map (fst >> prune env.Registry)
+
+            let resolved =
+                DotNetInterop.resolveOpenReceiverMethod where definition typeArgs methodName argTypes
+
+            List.iter2
+                (fun argType paramType -> unify env.Registry argType (seenParamType paramType))
+                argTypes
+                resolved.ParameterTypes
+
+            let coercedArgs =
+                reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes
+
+            let retType = seenType resolved.ReturnType
+
+            retType,
+            { Type = retType
+              Range = r
+              Node = TDotMethodCall(typedTarget, methodName, coercedArgs, Some(metadataOf resolved [])) }
+        | None ->
+
         let clrTarget = receiverClrType where name targetType
 
         let typedArgs = rest |> List.map (infer env)
@@ -2199,41 +2261,28 @@ and private inferClassConstruct (env: Env) (name: string) (args: Expr list) (r: 
     let info = env.Registry.ClrClasses[alias]
     let where = Lexer.formatPos r
 
-    // A generic class is known to .NET by its arity, `Dictionary`2`, and an
-    // import of one names it as a type only: the construction would have
-    // nowhere to take its type arguments from.
-    match DotNetInterop.tryResolveType info.ClrName with
-    | None ->
-        match [ 1..8 ] |> List.tryFind (fun n -> (DotNetInterop.tryResolveType $"%s{info.ClrName}`%d{n}").IsSome) with
-        | Some arity ->
-            failwithf
-                $"Type Error at %s{where}: '%s{alias}' is %s{info.ClrName}, a generic class taking %d{arity} type argument(s), and (%s{alias}.) cannot construct one: an imported generic class is a type only. Make one through a static generic method, imported with a signature that says its type, as (set-empty (: Set.SetModule.Empty (-> (Set %%a)))) does."
-        | None -> ()
-    | Some _ -> ()
-
-    let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrName
-
     let typedArgs = args |> List.map (infer env)
     let argTypes = typedArgs |> List.map fst
 
+    // The arguments select the constructor. The declared signature is
+    // checked at the import (`checkDeclaredConstructor`), and here it only
+    // gives the type of the literals of a call with as many arguments.
     match info.CtorType |> Option.map (prune env.Registry) with
-    | Some(TFun(declared, _, _)) -> pinLiteralsToParameters env.Registry declared argTypes
+    | Some(TFun(declared, _, _)) when declared.Length = argTypes.Length ->
+        pinLiteralsToParameters env.Registry declared argTypes
     | _ -> ()
 
     settleLiterals argTypes
+
+    match info.TypeParams with
+    | _ :: _ -> inferGenericConstruct env info typedArgs r
+    | [] ->
+
+    let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrName
     let resolved = DotNetInterop.resolveConstructor where clrType argTypes
 
     let coercedArgs =
         reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes
-
-    // The declared signature is enforced against the overload reflection
-    // chose, rather than used in place of it. Writing one down is how a
-    // reader of the source learns what the constructor takes without
-    // consulting the BCL; getting it wrong is an error rather than a
-    // silently ignored comment.
-    match info.CtorType with
-    | Some declared -> unify env.Registry declared (tfun (resolved.ParameterTypes |> List.map seenParamType) resolved.ReturnType)
-    | None -> ()
 
     let retType = wrapForeignExceptions info.CtorExceptions resolved.ReturnType
 
@@ -2246,6 +2295,70 @@ and private inferClassConstruct (env: Env) (name: string) (args: Expr list) (r: 
     { Type = retType
       Range = r
       Node = TNewObject(resolved.DeclaringType, coercedArgs, Some meta) }
+
+// `(ClassName. args...)` of a generic .NET type, as `(Rom. bytes 0 n)`.
+//
+// - The arguments give the type arguments, through the constructors that can
+//   take them. A type argument that no argument gives is a fresh
+//   metavariable, so the use of the value gives it, as `(: (CList string))`.
+// - When all type arguments are known, the closed type selects the
+//   constructor, with the conversions of an ordinary constructor.
+// - Otherwise exactly one constructor must fit. Its parameters are unified
+//   with the arguments.
+//
+// The emitted C# names the closed type, as `new System.ReadOnlyMemory<byte>(...)`.
+and private inferGenericConstruct
+    (env: Env)
+    (info: ClrClassInfo)
+    (typedArgs: (HMType * TypedExpr) list)
+    (r: Range)
+    : HMType * TypedExpr =
+    let where = Lexer.formatPos r
+    let arity = info.TypeParams.Length
+    let definition = DotNetInterop.resolveType $" at %s{where}" $"%s{info.ClrName}`%d{arity}"
+    let argTypes = typedArgs |> List.map (fst >> prune env.Registry)
+
+    let typeParams, solved, fits = DotNetInterop.genericConstructorFits where definition argTypes
+
+    let typeArgs =
+        solved
+        |> List.map (function
+            | Some t -> t
+            | None -> freshMeta ())
+
+    let resultType = TCon(info.ClrName, typeArgs)
+
+    let paramTypes =
+        match DotNetInterop.tryClrTypeOf resultType with
+        | Some closed -> (DotNetInterop.resolveConstructor where closed argTypes).ParameterTypes
+        | None ->
+            match fits with
+            | [ ps ] ->
+                let subst = Map.ofList (List.zip typeParams typeArgs)
+                let paramTypes = ps |> List.map (substTypeVars subst)
+
+                List.iter2
+                    (fun argType paramType -> unify env.Registry argType (seenParamType paramType))
+                    argTypes
+                    paramTypes
+
+                paramTypes
+            | _ ->
+                failwithf
+                    $"Type Error at %s{where}: these arguments fit more than one constructor of '%s{DotNetInterop.showType resultType}', and its type arguments are not known here, so the constructor cannot be selected. Annotate the value, or the arguments."
+
+    let coercedArgs =
+        reconcileForeignArgs env.Registry (typedArgs |> List.map snd) paramTypes
+
+    let meta =
+        { ClrType = info.ClrName
+          ParameterTypes = paramTypes
+          Exceptions = [] }
+
+    resultType,
+    { Type = resultType
+      Range = r
+      Node = TNewObject(info.ClrName, coercedArgs, Some meta) }
 
 // A .NET member named by `import/extern`, applied. As above, a binding of
 // the same name shadows the alias rather than the other way round.
@@ -2279,6 +2392,35 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
                 $"Type Error at %s{where}: '%s{name}' names the instance member '%s{info.ClrType}.%s{info.MemberName}', so its first argument is the object to use it on, but it was given none."
 
     match info.Kind with
+    // A property of a generic type, read or written. The import resolved it
+    // against the declared signature, so the call unifies the arguments with
+    // that signature, as for a generic method.
+    | ExternGet
+    | ExternSet when info.GenericTypeArgs.IsSome ->
+        let paramTypes, retType, _, _, _ = instantiateGenericExtern env.Registry where info
+
+        if args.Length <> paramTypes.Length then
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' takes %d{paramTypes.Length} argument(s), but was given %d{args.Length}."
+
+        let typedArgs = args |> List.map (infer env)
+        List.iter2 (fun (argType, _) paramType -> unify env.Registry argType paramType) typedArgs paramTypes
+
+        match info.Kind, typedArgs with
+        | ExternGet, [ (_, recv) ] ->
+            retType,
+            { Type = retType
+              Range = r
+              Node = TDotPropertyGet(recv, info.MemberName, retType) }
+        | _, [ (_, recv); (_, value) ] ->
+            TypeConstants.voidType,
+            { Type = TypeConstants.voidType
+              Range = r
+              Node = TDotPropertySet(recv, info.MemberName, value) }
+        | _ ->
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' names a member of the generic type '%s{info.ClrType}', which is used through its receiver."
+
     // A property read. There is no overload set and no conversion to make:
     // the member has one type, and the only thing the call site supplies is
     // the receiver.
@@ -2348,7 +2490,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
     // polymorphic call — instantiate, unify, done — and the only thing that
     // makes it foreign is where the body ends up.
     | ExternMethod when info.GenericTypeArgs.IsSome ->
-        let paramTypes, retType, typeArgs, outs = instantiateGenericExtern env.Registry where info
+        let paramTypes, retType, typeArgs, ownerArgs, outs = instantiateGenericExtern env.Registry where info
 
         if args.Length <> paramTypes.Length then
             let what =
@@ -2379,7 +2521,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
         let resultType = wrapForeignExceptions info.Exceptions retType
 
         let meta =
-            Some(genericExternMeta info typeArgs outs methodParams retType)
+            Some(genericExternMeta info typeArgs ownerArgs outs methodParams retType)
 
         resultType,
         { Type = resultType

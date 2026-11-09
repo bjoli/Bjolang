@@ -1265,6 +1265,41 @@ A generic method may be imported ~#:async~ and ~#:cancellable~ too. The declared
 
 A ~string~ in the signature of a generic import fits a ~System.String~ parameter or result, and ~(Array string)~ fits ~string[]~. The call converts them, as it does for an ordinary import.
 
+**** Constructing generic types and using their members
+A generic class is constructed as an ordinary one. The arguments select the constructor, and they give the type arguments. A type argument that no argument gives comes from the use of the value:
+#+BEGIN_SRC scheme
+(import/class
+  ((Rom %a)   (: System.ReadOnlyMemory (-> (Array %a) (Rom %a))))
+  ((CList %a) (: System.Collections.Generic.List (-> (CList %a)))))
+
+(def whole (Rom. bytes))          ;; new System.ReadOnlyMemory<byte>(bytes)
+(def part (Rom. bytes 1 3))       ;; a constructor that was not declared
+
+(: (CList string))
+(def names (CList.))              ;; new System.Collections.Generic.List<string>()
+#+END_SRC
+- The declared constructor signature must name a constructor of the class. It is checked at the import.
+- A call can use any constructor. This is also true of an ordinary class.
+- In a generic function, where a type argument is a type variable, exactly one constructor must fit the arguments.
+- A type argument that nothing gives is ~object~.
+- ~#:exceptions~ is not supported on the constructor of a generic class.
+
+~import/extern~ names a member of a generic type by the type's plain name, without the arity mark. The signature must name the type, as the receiver or in the parameters or the result. That gives the type arguments:
+#+BEGIN_SRC scheme
+(import/extern
+  (array->rom (: System.ReadOnlyMemory.op_Implicit (-> (Array %a) (Rom %a))))  ; static
+  (rom-slice  (: System.ReadOnlyMemory.Slice (-> (Rom %a) int int (Rom %a))))   ; instance
+  (rom-length (: System.ReadOnlyMemory.Length (-> (Rom %a) int) #:get))
+  (set-comparer (: System.Collections.Generic.HashSet.CreateSetComparer
+                   (-> (EqCmp (HSet %a))))))                                     ; static, by its result
+#+END_SRC
+- A static method is called as ~System.ReadOnlyMemory<byte>.Method(...)~ in the C#.
+- ~get_Item~ and ~set_Item~ are written as an indexer, ~x[k]~ and ~x[k] = v~.
+- When the plain name is also a non-generic type, as ~System.Collections.Generic.KeyValuePair~, the type that has the member is used.
+- A static property or field of a generic type cannot be imported yet. Use a static method, or a C# shim.
+
+~(.Method x ...)~ on a generic type works also when a type argument is a type variable, as ~(.Slice m 1)~ for ~m~ of type ~(Rom %a)~ in a generic function. Exactly one instance method of that name must fit the arguments.
+
 **** Constraints
 A .NET type parameter can have constraints, as ~where T : struct~ or ~where T : System.Enum~. Bjolang checks them at each call of a generic import and at each generic .NET type it uses. A type that breaks one is a type error:
 #+BEGIN_SRC text
@@ -1331,7 +1366,7 @@ A span cannot go where it could outlive the call that made it. The compiler refu
 - as a parameter or result of a bjoroutine, as an argument to ~(bjo ...)~, or as a module-level definition.
 
 *** Limits
-Destructuring .NET classes with constructor patterns and generic class imports (except as types) are not supported.
+Destructuring .NET classes with constructor patterns is not supported. A static property or field of a generic type cannot be imported, and the constructor of a generic class cannot have ~#:exceptions~.
 
 ** ~try~ — failures as values
 ~try~ guards expressions. ~#:catch~ turns listed exceptions into ~Err~. ~#:finally~ runs cleanup.

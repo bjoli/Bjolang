@@ -906,7 +906,15 @@ type ClrExternInfo =
       ///
       /// An import with `(out T)` parameters is resolved the same way, generic
       /// or not, so it always has this — empty for a non-generic method.
+      ///
+      /// A member of a generic type is resolved at the import too, so it has
+      /// this, empty when the method itself is not generic.
       GenericTypeArgs: HMType list option
+      /// For a static member of a generic type: the type's own type
+      /// arguments, in terms of `DeclaredType`'s variables. C# writes them
+      /// after the type name. Empty for every other member. A call
+      /// instantiates them with `GenericTypeArgs`.
+      DeclaringTypeArgs: HMType list
       /// The `(out T)` parameters. `DeclaredType` is then the binding's type:
       /// the declared arrow without them, answering the declared result.
       Outs: ExternOuts option
@@ -974,6 +982,10 @@ type DotNetMethodMetadata =
       /// same answer. It also covers the calls C# could not infer at all — a
       /// nullary `Empty<T>()`, whose argument comes from the context.
       TypeArguments: HMType list
+      /// For a static member of a generic type: the type arguments C# writes
+      /// after the type name, as in `ReadOnlyMemory<byte>.Empty`. Empty for
+      /// every other call.
+      DeclaringTypeArguments: HMType list
       /// The out parameters the emitter declares and passes between the
       /// arguments. With these, `ReturnType` is still the method's own, and
       /// the call's value is what `Form` builds from it and the outs.

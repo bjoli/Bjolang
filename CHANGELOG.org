@@ -3,6 +3,86 @@
 
 What each change guarantees, and what it leaves open.
 
+* A .NET struct can be constructed with no arguments
+
+- ~(HashCode.)~ of an imported struct with no parameterless constructor in
+  its metadata is ~new System.HashCode()~, as C# has it
+  (~DotNetInterop.resolveConstructor~). Before, it was "has no public
+  constructor", and since constructor signatures are checked at the
+  import, so was the import.
+- A method that changes the struct, as ~HashCode.Add~, changes the
+  binding it is called on.
+- Tests: ~TestFiles/536_struct_default_constructor.bjo~.
+
+* An instance member of Bjolang's string can be imported, and nothing can make its bytes writable
+
+- ~(: BjoString.Utf8String.AsSpan (-> string (RoSpan byte)))~ imports: the
+  receiver of an instance member is the reflected type as Bjolang sees it
+  (~mapClrType~ in ~externTarget~), so ~BjoString.Utf8String~ is ~string~.
+  Before, it was the .NET name, and a string did not fit it. The same holds
+  for the other types of that table, as ~Bjolang.Runtime.BjoChar~.
+- A string's bytes are read-only. BjoString gives them only as a
+  ~ReadOnlySpan<byte>~ and a ~ReadOnlyMemory<byte>~, and a declared
+  ~(Span byte)~ is refused. ~System.Runtime.InteropServices.MemoryMarshal~,
+  ~SequenceMarshal~ and ~System.Runtime.CompilerServices.Unsafe~ can make
+  such a view writable or give its array, so naming one of them is an
+  error, in an import, an annotation, a ~cast~ or a ~:is~
+  (~DotNetInterop.checkNameable~). Nothing in the standard library named
+  them. The code the compiler emits still uses them.
+- Not closed: ~System.Runtime.InteropServices.Marshal~ and ~GCHandle~ read
+  and write memory by address, and reflection reads private fields. A
+  program that uses them can change a string's bytes.
+- Tests: ~TestFiles/535_string_members.bjo~; ~errors/string_bytes_writable~,
+  ~memory_marshal_refused~, ~sequence_marshal_refused~, ~unsafe_refused~.
+
+* Generic .NET types can be constructed, and their members imported
+
+- ~(Rom. bytes)~ constructs an imported generic class, as
+  ~new System.ReadOnlyMemory<byte>(bytes)~. Before, an imported generic class
+  was a type only. The arguments give the type arguments, through the
+  constructors that can take them (~DotNetInterop.genericConstructorFits~).
+  A type argument that no argument gives is a metavariable, so the use of
+  the value gives it, as ~(: (CList string))~ before ~(def names (CList.))~.
+  When the type arguments are all known, the closed type selects the
+  constructor with the ordinary rules. In a generic function exactly one
+  constructor must fit.
+- Changed, for every class: the arguments of a call select the
+  constructor, so a call can use a constructor that was not declared. The
+  declared signature must name a constructor of the class, and it is
+  checked once, at the import (~checkDeclaredConstructor~). Before, each
+  call was unified with the declared signature, so a call with other
+  arguments was a type error. The declared signature still gives the type
+  of the literals of a call with as many arguments.
+- ~import/extern~ names a member of a generic type by the plain name of the
+  type: a static or instance method, an operator such as ~op_Implicit~, and
+  an instance property or field with ~#:get~ or ~#:set~. It is resolved at
+  the import against the declared signature, as a generic method is
+  (~resolveGenericMethod~, ~resolveGenericTypeMember~). The type's own
+  parameters are solved with the method's, and an instance member's
+  receiver is matched against the type. A static member must get every
+  type argument from the signature. The C# writes them after the type
+  name (~DeclaringTypeArguments~, ~staticCallTarget~).
+- ~get_Item~ and ~set_Item~ imported on a generic type are written as an
+  indexer in the C#. A type that renames its indexer with ~[IndexerName]~ is
+  not recognized.
+- ~(.Method x ...)~ where ~x~ is a generic .NET type with a type variable in
+  its arguments, as ~(Rom %a)~ in a generic function, is resolved on the
+  generic definition (~resolveOpenReceiverMethod~). Exactly one instance
+  method of that name and arity must fit. Generic methods are not
+  candidates there.
+- The member lookup of every ~import/extern~ uses the generic definition
+  when the plain name does not have the member. So
+  ~System.Collections.Generic.KeyValuePair.Key~ is the struct's, and
+  ~KeyValuePair.Create~ the static class's.
+- Not done: a static property or field of a generic type, which is
+  rejected at the import; ~#:exceptions~ on the constructor of a generic
+  class; property reads ~(.-Name x)~ on a receiver with a type variable.
+- Tests: ~TestFiles/534_generic_clr_types.bjo~; ~errors/generic_ctor_no_fit~,
+  ~generic_ctor_declared~, ~generic_static_property~,
+  ~generic_member_mismatch~, ~generic_member_no_signature~ and
+  ~generic_type_constraint~. ~errors/generic_class_constructed~ is removed:
+  it expected the old error.
+
 * The docs say which call a ~seql~'s cursors get when its consumer stops early
 
 - ~iterable-end~ and ~iterable-cleanup~ (~lib/std/prelude-seqs.bjodoc~):

@@ -2000,6 +2000,35 @@ and private checkImportClass (env: Env) (sigs: Sigs) (specs: ClassImportSpec lis
             baseInfos
             specs
 
+    // The declared constructor signature must name a constructor of the
+    // class. It is checked here, once: a call selects its constructor by its
+    // arguments, so a call can use a constructor that was not declared.
+    let checkDeclaredConstructor (info: ClrClassInfo) (spec: ClassImportSpec) =
+        let where = Lexer.formatPos spec.Range
+
+        match info.CtorType with
+        | Some(TFun(declaredParams, declaredResult, _)) ->
+            match declaredResult with
+            | TCon(name, _) when name = info.ClrName -> ()
+            | other ->
+                failwithf
+                    $"Type Error at %s{where}: the constructor signature of '%s{info.Alias}' returns %s{DotNetInterop.showType other}. A constructor returns the class, %s{DotNetInterop.showType (classAliasTarget info)}."
+
+            if info.TypeParams.IsEmpty then
+                let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrName
+                DotNetInterop.resolveConstructor where clrType declaredParams |> ignore
+            else
+                let definition =
+                    DotNetInterop.resolveType $" at %s{where}" $"%s{info.ClrName}`%d{info.TypeParams.Length}"
+
+                DotNetInterop.genericConstructorFits where definition declaredParams |> ignore
+        | Some other ->
+            failwithf
+                $"Type Error at %s{where}: the constructor signature of '%s{info.Alias}' is %s{DotNetInterop.showType other}, which is not a function type."
+        | None -> ()
+
+    List.iter2 checkDeclaredConstructor infos specs
+
     let finalRegistry =
         infos
         |> List.fold (fun (reg: TraitRegistry) info -> { reg with ClrClasses = Map.add info.Alias info reg.ClrClasses }) registryWithAliases
@@ -2049,11 +2078,9 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                 failwithf
                     $"Syntax error at %s{where}: (out T) marks an out parameter of a method, and #:get and #:set name a property or field."
 
-            let clrType =
-                if declaresOuts then
-                    DotNetInterop.resolveNamedTypeOrGeneric spec.Range typeName memberName
-                else
-                    DotNetInterop.resolveNamedType spec.Range typeName
+            // A generic type is written by its plain name. Its arity comes
+            // from the definition that has the member.
+            let clrType = DotNetInterop.resolveNamedTypeOrGeneric spec.Range typeName memberName
 
             // Whether the member is static or an instance one is read off
             // the metadata rather than written in the clause. There is
@@ -2298,15 +2325,86 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
             // the .NET strings its call converts.
             let noStrings = ([], None)
 
-            let genericTypeArgs, declaredType, (stringIns, stringResult) =
+            // A member of a generic type definition, as
+            // `ReadOnlyMemory<T>.Slice`, is resolved here against its
+            // declared signature, which gives the type's arguments.
+            let genericOwner = clrType.IsGenericTypeDefinition
+
+            let genericMember () =
+                let declared =
+                    match declaredType with
+                    | Some t -> t
+                    | None ->
+                        failwithf
+                            $"Type Error at %s{where}: '%s{spec.ClrTarget}' is a member of the generic type '%s{DotNetInterop.csharpTypeName clrType}', so this import needs a declared signature. The signature gives the type arguments. Write one, as in (: %s{spec.ClrTarget} (-> (MyType %%a) ...))."
+
+                if not isInstance && kind <> ExternMethod then
+                    failwithf
+                        $"Type Error at %s{where}: '%s{spec.ClrTarget}' is a static property or field of the generic type '%s{DotNetInterop.csharpTypeName clrType}'. import/extern cannot name one yet. Use a static method of the type, or a C# shim."
+
+                match kind, declared with
+                | ExternGet, TFun([ receiver ], memberType, _) ->
+                    let own = DotNetInterop.resolveMemberRead where clrType memberName false
+
+                    DotNetInterop.resolveGenericTypeMember where clrType memberName own (Some receiver) memberType
+                    |> ignore
+
+                    Some [], [], declaredType, noStrings
+                | ExternSet, TFun([ receiver; memberType ], _, _) ->
+                    let own = DotNetInterop.resolveMemberWrite where clrType memberName false
+
+                    DotNetInterop.resolveGenericTypeMember where clrType memberName own (Some receiver) memberType
+                    |> ignore
+
+                    Some [], [], declaredType, noStrings
+                | ExternGet, _ ->
+                    failwithf
+                        $"Type Error at %s{where}: '%s{spec.Alias}' reads a property of a generic type, so its declared type is a function of the receiver, as (-> (MyType %%a) int)."
+                | ExternSet, _ ->
+                    failwithf
+                        $"Type Error at %s{where}: '%s{spec.Alias}' writes a property of a generic type, so its declared type is a function of the receiver and the value, as (-> (MyType %%a) int void)."
+                | ExternMethod, TFun(declaredParams, declaredReturn, _) ->
+                    let receiver, methodParams =
+                        if not isInstance then
+                            None, declaredParams
+                        else
+                            match declaredParams with
+                            | recv :: rest -> Some recv, rest
+                            | [] ->
+                                failwithf
+                                    $"Type Error at %s{where}: '%s{spec.Alias}' names the instance method '%s{DotNetInterop.csharpTypeName clrType}.%s{memberName}', whose receiver is its first argument, but its declared type takes none."
+
+                    let resolved =
+                        DotNetInterop.resolveGenericMethod
+                            where
+                            (not isInstance)
+                            clrType
+                            memberName
+                            receiver
+                            methodParams
+                            declaredReturn
+                            awaited
+                            threadsToken
+
+                    Some resolved.TypeArguments,
+                    resolved.DeclaringTypeArguments,
+                    normalize declaredParams declaredReturn resolved.ReturnType,
+                    (resolved.StringIns, resolved.StringResult)
+                | ExternMethod, _ ->
+                    failwithf
+                        $"Type Error at %s{where}: '%s{spec.Alias}' names a method, so its declared type has to be a function type."
+
+            let genericTypeArgs, declaringTypeArgs, declaredType, (stringIns, stringResult) =
                 if outImport.IsSome then
-                    outImport |> Option.map (fun (_, typeArgs, _) -> typeArgs), declaredType, noStrings
+                    outImport |> Option.map (fun (_, typeArgs, _) -> typeArgs), [], declaredType, noStrings
+                elif genericOwner then
+                    genericMember ()
                 elif kind <> ExternMethod then
-                    None, declaredType, noStrings
+                    None, [], declaredType, noStrings
                 elif not (DotNetInterop.isGenericOnlyMethod (not isInstance) clrType memberName) then
                     match mixedGeneric () with
-                    | Some resolved -> resolved
-                    | None -> None, declaredType, noStrings
+                    | Some(typeArgs, declared, strings) -> typeArgs, [], declared, strings
+                    | None -> None, [], declaredType, noStrings
                 else
                     match declaredType with
                     | Some(TFun(declaredParams, declaredReturn, _)) ->
@@ -2329,12 +2427,14 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                                 (not isInstance)
                                 clrType
                                 memberName
+                                None
                                 methodParams
                                 declaredReturn
                                 awaited
                                 threadsToken
 
                         Some resolved.TypeArguments,
+                        [],
                         normalize declaredParams declaredReturn resolved.ReturnType,
                         (resolved.StringIns, resolved.StringResult)
                     | Some _ ->
@@ -2357,6 +2457,7 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
               IsInstance = isInstance
               DeclaredType = declaredType
               GenericTypeArgs = genericTypeArgs
+              DeclaringTypeArgs = declaringTypeArgs
               Outs = outImport |> Option.map (fun (_, _, outs) -> outs)
               StringIns = stringIns
               StringResult = stringResult

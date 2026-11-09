@@ -129,7 +129,7 @@ let internal classInfoOfSpec (spec: ClassImportSpec) : ClrClassInfo =
 
     if clrType.IsGenericTypeDefinition && not spec.Exceptions.IsEmpty then
         failwithf
-            $"Type Error at %s{where}: #:exceptions describes the constructor, and a generic class is imported as a type only. Reach its constructor through a static factory imported with import/extern."
+            $"Type Error at %s{where}: #:exceptions is not supported on the constructor of a generic class yet. Catch the exception with try, or import a static factory with import/extern and #:exceptions."
 
     checkExceptionTypes where spec.Exceptions
 
@@ -417,12 +417,19 @@ let internal reconcileForeignArgs
 /// under these names and then go their own way.
 let internal externTarget (info: ClrExternInfo) (r: Range) : string * System.Type * HMType =
     let where = Lexer.formatPos r
-    let clrType =
-        match info.Outs with
-        | Some _ -> DotNetInterop.resolveNamedTypeOrGeneric r info.ClrType info.MemberName
-        | None -> DotNetInterop.resolveNamedType r info.ClrType
+    // `ClrType` is the plain name, also for a member of a generic type.
+    let clrType = DotNetInterop.resolveNamedTypeOrGeneric r info.ClrType info.MemberName
 
-    where, clrType, TCon(info.ClrType, [])
+    // The receiver as Bjolang sees it: `BjoString.Utf8String` is `string`,
+    // so that an instance member of Bjolang's string takes a string. A
+    // member of a generic type gets its receiver from the signature instead.
+    let receiverType =
+        if clrType.IsGenericTypeDefinition then
+            TCon(info.ClrType, [])
+        else
+            DotNetInterop.mapClrType clrType
+
+    where, clrType, receiverType
 
 /// The metadata of a *generic* `import/extern` call.
 ///
@@ -433,6 +440,7 @@ let internal externTarget (info: ClrExternInfo) (r: Range) : string * System.Typ
 let internal genericExternMeta
     (info: ClrExternInfo)
     (typeArgs: HMType list)
+    (declaringTypeArgs: HMType list)
     (outs: ExternOuts option)
     (methodParams: HMType list)
     (retType: HMType)
@@ -470,6 +478,7 @@ let internal genericExternMeta
       ParameterTypes = methodParams
       ReturnType = methodReturn
       TypeArguments = typeArgs
+      DeclaringTypeArguments = declaringTypeArgs
       Outs = outs
       IsStatic = not info.IsInstance
       Exceptions = info.Exceptions
@@ -480,7 +489,14 @@ let internal genericExternMeta
       AmbientToken = (info.IsAsync || info.Cancellable) && not info.Uncancellable
       Blocking = info.IsBlocking
       UsesType = info.UsesType
-      Syntax = ByName }
+      // An indexer's accessors are written `x[k]` and `x[k] = v` in C#.
+      // `get_Item` and `set_Item` are the names C# gives them. A type that
+      // renames its indexer with [IndexerName] is not recognized here.
+      Syntax =
+        match info.IsInstance, info.MemberName with
+        | true, "get_Item" -> IndexerGet
+        | true, "set_Item" -> IndexerSet
+        | _ -> ByName }
 
 /// A foreign call's node: an instance member keeps its receiver, a static one
 /// names the type it was declared on.
@@ -562,6 +578,7 @@ let internal metadataOf (resolved: DotNetInterop.ResolvedCall) (exceptions: stri
       // import fills this in from its declared signature instead — see
       // `instantiateGenericExtern`.
       TypeArguments = []
+      DeclaringTypeArguments = []
       Outs = None
       IsStatic = resolved.IsStatic
       Exceptions = exceptions
@@ -604,12 +621,14 @@ let internal instantiateGenericExtern (registry: TraitRegistry) (where: string) 
         | Some o -> o.Types, [ o.MethodReturn ]
         | None -> [], []
 
-    let packed = TTuple [ declared; TTuple typeArgs; TTuple outTypes; TTuple outReturn ]
+    let packed =
+        TTuple [ declared; TTuple typeArgs; TTuple info.DeclaringTypeArgs; TTuple outTypes; TTuple outReturn ]
+
     let vars = freeTVars registry packed |> List.distinct
     let instantiated, _, _ = instantiate registry (Scheme(vars, [], packed))
 
     match instantiated with
-    | TTuple [ TFun(paramTypes, retType, _); TTuple instantiatedArgs; TTuple instantiatedOuts; TTuple instantiatedReturn ] ->
+    | TTuple [ TFun(paramTypes, retType, _); TTuple instantiatedArgs; TTuple instantiatedOwnerArgs; TTuple instantiatedOuts; TTuple instantiatedReturn ] ->
         let outs =
             info.Outs
             |> Option.map (fun o ->
@@ -617,7 +636,13 @@ let internal instantiateGenericExtern (registry: TraitRegistry) (where: string) 
                     Types = instantiatedOuts
                     MethodReturn = List.head instantiatedReturn })
 
-        paramTypes, retType, instantiatedArgs, outs
+        paramTypes, retType, instantiatedArgs, instantiatedOwnerArgs, outs
+    // A property of a generic type: the declared type is the member's type,
+    // or a function of the receiver.
+    | TTuple [ memberType; TTuple instantiatedArgs; TTuple instantiatedOwnerArgs; TTuple _; TTuple _ ] when
+        info.Kind <> ExternMethod
+        ->
+        [], memberType, instantiatedArgs, instantiatedOwnerArgs, None
     | _ ->
         failwithf
             $"Type Error at %s{where}: the declared signature of '%s{info.Alias}' is not a function type, so it cannot name a method."

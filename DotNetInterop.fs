@@ -255,6 +255,19 @@ let resolveType (context: string) (fullName: string) : Type =
 /// which is what makes the re-read declarations of an imported module answer to
 /// their own package: they were written there, under its manifest.
 let checkNameable (r: Lexer.Range) (fullName: string) (t: Type) : unit =
+    // These types make a writable span, a writable memory or the array of a
+    // read-only one, or read and write memory with no checks. A Bjolang
+    // string gives its bytes as a read-only span and a read-only memory, and
+    // those bytes must not change: every string is valid UTF-8, and cursors,
+    // searches and slices depend on it.
+    match t.FullName with
+    | "System.Runtime.InteropServices.MemoryMarshal"
+    | "System.Runtime.InteropServices.SequenceMarshal"
+    | "System.Runtime.CompilerServices.Unsafe" ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: '%s{t.FullName}' cannot be used from Bjolang. It can make a read-only span or memory writable, or read and write memory with no checks, and the bytes of a Bjolang string must never change. Use the members of the span, the memory or the collection itself, or write a C# function that does the one thing that is needed."
+    | _ -> ()
+
     let location =
         try
             t.Assembly.Location
@@ -287,16 +300,21 @@ let resolveNamedType (r: Lexer.Range) (fullName: string) : Type =
     checkNameable r fullName t
     t
 
-/// The declaring type of `memberName`: the plain name if it has a method of
-/// that name, else a generic definition of that name that does. Only an import
-/// with out parameters can name an instance method of a generic type, and it
-/// writes the type's plain name. Both are asked because a name may be both:
-/// `System.Collections.Generic.KeyValuePair` is a static class, and
-/// ``KeyValuePair`2`` the struct.
+/// The declaring type of `memberName`: the plain name if it has a method,
+/// property or field of that name, else a generic definition of that name
+/// that has one. An import writes a generic type by its plain name, as
+/// `System.ReadOnlyMemory.Slice`. Both are examined because a name can be
+/// both: `System.Collections.Generic.KeyValuePair` is a static class, and
+/// ``KeyValuePair`2`` is the struct.
 let resolveNamedTypeOrGeneric (r: Lexer.Range) (fullName: string) (memberName: string) : Type =
     let hasMethod (t: Type) =
-        t.GetMethods(BindingFlags.Public ||| BindingFlags.Static ||| BindingFlags.Instance)
-        |> Array.exists (fun m -> m.Name = memberName)
+        t.GetMember(memberName, BindingFlags.Public ||| BindingFlags.Static ||| BindingFlags.Instance)
+        |> Array.exists (fun m ->
+            match m.MemberType with
+            | MemberTypes.Method
+            | MemberTypes.Property
+            | MemberTypes.Field -> true
+            | _ -> false)
 
     let generic () =
         [ 1..8 ]
@@ -1157,6 +1175,11 @@ type ResolvedGenericMethod =
       /// angle brackets, each solved to a Bjolang type in terms of the declared
       /// signature's own variables.
       TypeArguments: HMType list
+      /// For a static member of a generic type: the type's own type
+      /// arguments, solved the same way. C# writes them after the type name,
+      /// as in `ReadOnlyMemory<T>.Empty`. Empty for every other member: an
+      /// instance member gets them from its receiver.
+      DeclaringTypeArguments: HMType list
       /// The parameter types as the *declaration* has them, receiver excluded.
       /// Not the method's own: they are the same types, and these are the ones
       /// a call site unifies against.
@@ -1247,11 +1270,21 @@ let awaitedResultType (t: Type) : HMType option =
 /// takes a `CancellationToken` after the declared parameters, which nobody
 /// writes. Neither changes what the caller sees, so `ParameterTypes` is the
 /// declared parameters and `ReturnType` the awaited answer.
+///
+/// A member of a generic type definition, as `ReadOnlyMemory<T>.Slice`, is
+/// resolved here too, whether or not the method itself is generic:
+/// - The type's own parameters are solved with the method's.
+/// - `declaredReceiver` is the declared type of an instance member's
+///   receiver. It is matched against the type, so it can give the type's
+///   parameters.
+/// - A static member must get all of the type's parameters from the
+///   signature. They are in `DeclaringTypeArguments`.
 let resolveGenericMethod
     (where: string)
     (isStatic: bool)
     (t: Type)
     (name: string)
+    (declaredReceiver: HMType option)
     (declaredParams: HMType list)
     (declaredReturn: HMType)
     (awaited: bool)
@@ -1259,7 +1292,27 @@ let resolveGenericMethod
     : ResolvedGenericMethod =
 
     let flags = if isStatic then staticFlags else instanceFlags
-    let candidates = genericMethods t name flags
+
+    let candidates =
+        if t.IsGenericTypeDefinition then
+            t.GetMethods flags
+            |> Array.filter (fun m ->
+                m.Name = name
+                && not (m.GetParameters() |> Array.exists (fun p -> p.ParameterType.IsByRef || p.ParameterType.IsPointer)))
+            |> Array.toList
+        else
+            genericMethods t name flags
+
+    let typeLevelParams =
+        if t.IsGenericTypeDefinition then
+            t.GetGenericArguments() |> Array.map (fun p -> "'" + p.Name) |> Array.toList
+        else
+            []
+
+    let receiverPairs =
+        match declaredReceiver with
+        | Some recv when t.IsGenericTypeDefinition -> [ mapClrType t, recv ]
+        | _ -> []
 
     if candidates.IsEmpty then
         let note =
@@ -1268,7 +1321,8 @@ let resolveGenericMethod
             |> Seq.cast<MethodBase>
             |> byrefNote
 
-        failwithf $"Type Error at %s{where}: '%s{t.FullName}' has no generic method named '%s{name}'.%s{note}"
+        let kind = if t.IsGenericTypeDefinition then "" else "generic "
+        failwithf $"Type Error at %s{where}: '%s{csharpTypeName t}' has no %s{kind}method named '%s{name}'.%s{note}"
 
     /// How many of a method's parameters a call is obliged to pass.
     ///
@@ -1314,7 +1368,13 @@ let resolveGenericMethod
             $"Type Error at %s{where}: '%s{t.FullName}.%s{name}' takes %s{shownArities} argument(s), but the declared signature has %d{declaredParams.Length}%s{token}."
 
     let attempt (m: MethodInfo) =
-        let typeParams = m.GetGenericArguments() |> Array.map (fun p -> "'" + p.Name) |> Set.ofArray
+        let methodLevelParams =
+            if m.IsGenericMethodDefinition then
+                m.GetGenericArguments() |> Array.map (fun p -> "'" + p.Name) |> Array.toList
+            else
+                []
+
+        let typeParams = Set.ofList (typeLevelParams @ methodLevelParams)
 
         // Only as many as were declared: the rest are optional and the call
         // simply leaves them out.
@@ -1361,7 +1421,7 @@ let resolveGenericMethod
             if viewed methodReturn declaredReturn then Some methodReturn else None
 
         let solved =
-            List.zip (methodReturn :: methodParams) (declaredReturn :: matchedParams)
+            receiverPairs @ List.zip (methodReturn :: methodParams) (declaredReturn :: matchedParams)
             |> List.fold
                 (fun acc (fromMethod, declared) ->
                     if viewed fromMethod declared then
@@ -1373,10 +1433,12 @@ let resolveGenericMethod
         match solved with
         | None -> None
         | Some solution ->
-            let ordered =
-                m.GetGenericArguments()
-                |> Array.map (fun p -> Map.tryFind ("'" + p.Name) solution)
-                |> Array.toList
+            // The method's own parameters, then the type's when C# has to
+            // write them: for a static member only.
+            let wanted =
+                methodLevelParams @ (if isStatic then typeLevelParams else [])
+
+            let ordered = wanted |> List.map (fun p -> Map.tryFind p solution)
 
             let returnType =
                 match stringResult with
@@ -1388,7 +1450,10 @@ let resolveGenericMethod
             // angle brackets, and inventing an answer is exactly the guessing
             // this design does not do.
             if ordered |> List.forall Option.isSome then
-                Some(m, (ordered |> List.map Option.get, returnType, stringIns, stringResult))
+                let solvedArgs = ordered |> List.map Option.get
+                let methodArgs = List.truncate methodLevelParams.Length solvedArgs
+                let typeArgs = List.skip methodLevelParams.Length solvedArgs
+                Some(m, (methodArgs, typeArgs, returnType, stringIns, stringResult))
             else
                 None
 
@@ -1433,8 +1498,9 @@ let resolveGenericMethod
             |> keepCheapest (fun (m: MethodInfo) -> m.GetParameters().Length)
 
     match fitting with
-    | [ (_, (typeArgs, returnType, stringIns, stringResult)) ] ->
+    | [ (_, (typeArgs, declaringTypeArgs, returnType, stringIns, stringResult)) ] ->
         { TypeArguments = typeArgs
+          DeclaringTypeArguments = declaringTypeArgs
           ParameterTypes = declaredParams
           ReturnType = returnType
           DeclaringType = t.FullName
@@ -1509,7 +1575,7 @@ let tryResolveMixedGenericMethod
         None
     else
         try
-            Some(resolveGenericMethod where isStatic t name declaredParams declaredReturn awaited threadsToken)
+            Some(resolveGenericMethod where isStatic t name None declaredParams declaredReturn awaited threadsToken)
         with _ ->
             None
 
@@ -2348,16 +2414,26 @@ let resolveConstructor (where: string) (targetType: Type) (argTypes: HMType list
         |> Array.toList
         |> List.map (fun c -> c.GetParameters(), c)
 
-    if candidates.IsEmpty then
+    // A struct has a parameterless constructor in C#, `new HashCode()`, and
+    // none in metadata unless it declares one.
+    let structDefault =
+        targetType.IsValueType
+        && argTypes.IsEmpty
+        && not (candidates |> List.exists (fun (ps, _) -> ps.Length = 0))
+
+    if candidates.IsEmpty && not structDefault then
         failwithf $"Type Error at %s{where}: '%s{targetType.FullName}' has no public constructor."
 
-    let ps, _ =
-        try
-            selectOverload $"the constructor of '%s{targetType.FullName}'" where candidates argTypes
-        with ex ->
-            match targetType.GetConstructors instanceFlags |> Seq.cast<MethodBase> |> byrefNote with
-            | "" -> raise ex
-            | n -> failwith (ex.Message.TrimEnd() + n + "\n  Constructors with out parameters are not supported.")
+    let ps =
+        if structDefault then
+            [||]
+        else
+            try
+                selectOverload $"the constructor of '%s{targetType.FullName}'" where candidates argTypes |> fst
+            with ex ->
+                match targetType.GetConstructors instanceFlags |> Seq.cast<MethodBase> |> byrefNote with
+                | "" -> raise ex
+                | n -> failwith (ex.Message.TrimEnd() + n + "\n  Constructors with out parameters are not supported.")
 
     { ParameterTypes = ps |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList
       ReturnType = mapClrType targetType
@@ -2366,6 +2442,168 @@ let resolveConstructor (where: string) (targetType: Type) (argTypes: HMType list
       Name = ".ctor"
       Syntax = ByName
       IsStatic = false }
+
+/// The constructors of a generic type definition that can take these
+/// arguments, and the type arguments they give.
+///
+/// - Only the parameters that contain a type parameter of `t` are compared
+///   with the arguments. The other parameters are checked later, by
+///   `resolveConstructor` on the closed type, or by unification.
+/// - A struct with no parameterless constructor in metadata still has one
+///   in C#, so `(Pair.)` fits it.
+///
+/// Returns the type arguments in the order of `t`'s parameters, `None` where
+/// no argument gives one, and the parameter types of each constructor that
+/// fits, in terms of `t`'s parameters (`'T`). Raises when no constructor
+/// fits, or when two that fit give different type arguments.
+let genericConstructorFits
+    (where: string)
+    (t: Type)
+    (argTypes: HMType list)
+    : string list * HMType option list * HMType list list =
+    let typeParams = t.GetGenericArguments() |> Array.map (fun p -> "'" + p.Name) |> Array.toList
+    let typeParamSet = Set.ofList typeParams
+
+    let rec mentions (ty: HMType) =
+        match ty with
+        | TVar v -> typeParamSet.Contains v
+        | TCon(_, args)
+        | TTuple args -> List.exists mentions args
+        | TFun(args, ret, _) -> List.exists mentions (ret :: args)
+        | _ -> false
+
+    let ctors =
+        t.GetConstructors instanceFlags
+        |> Array.filter (fun c ->
+            not (c.GetParameters() |> Array.exists (fun p -> p.ParameterType.IsByRef || p.ParameterType.IsPointer)))
+        |> Array.map (fun c -> c.GetParameters() |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList)
+        |> Array.toList
+
+    let ctors =
+        if t.IsValueType && not (ctors |> List.exists List.isEmpty) then [] :: ctors else ctors
+
+    if ctors.IsEmpty then
+        failwithf $"Type Error at %s{where}: '%s{csharpTypeName t}' has no public constructor."
+
+    let solve (ps: HMType list) =
+        List.zip ps argTypes
+        |> List.filter (fun (p, _) -> mentions p)
+        |> List.fold
+            (fun acc (p, arg) -> acc |> Option.bind (fun s -> solveTypeParams typeParamSet s p arg))
+            (Some Map.empty)
+
+    let fits =
+        ctors
+        |> List.filter (fun ps -> ps.Length = argTypes.Length)
+        |> List.choose (fun ps -> solve ps |> Option.map (fun s -> ps, s))
+
+    let shapes () =
+        ctors
+        |> List.map (fun ps -> "  (-> " + (ps |> List.map showType |> String.concat " ") + ")")
+        |> String.concat "\n"
+
+    if fits.IsEmpty then
+        let shownArgs = argTypes |> showTypesTogether |> String.concat " "
+
+        failwithf
+            $"Type Error at %s{where}: no constructor of '%s{csharpTypeName t}' takes the arguments (%s{shownArgs}). Its constructors are:\n%s{shapes ()}"
+
+    let solved =
+        typeParams
+        |> List.map (fun p ->
+            match fits |> List.choose (fun (_, s) -> Map.tryFind p s) |> List.distinct with
+            | [] -> None
+            | [ one ] -> Some one
+            | _ ->
+                failwithf
+                    $"Type Error at %s{where}: the arguments fit more than one constructor of '%s{csharpTypeName t}', and the constructors give different types for its parameter %s{p.TrimStart '''}. Annotate the arguments. Its constructors are:\n%s{shapes ()}")
+
+    typeParams, solved, fits |> List.map fst
+
+/// The generic type definition and the type arguments of a receiver type
+/// that is a generic .NET type with a type variable in its arguments, as
+/// `(System.ReadOnlyMemory %a)` in a generic function. `None` for every other
+/// type, including a closed one, which `tryClrTypeOf` gives.
+let openReceiverDefinition (receiver: HMType) : (Type * HMType list) option =
+    let rec hasTypeVar (t: HMType) =
+        match t with
+        | TVar _ -> true
+        | TCon(_, args)
+        | TTuple args -> List.exists hasTypeVar args
+        | TFun(args, ret, _) -> List.exists hasTypeVar (ret :: args)
+        | _ -> false
+
+    match receiver with
+    | TCon(name, (_ :: _ as args)) when List.exists hasTypeVar args && (tryClrTypeOf receiver).IsNone ->
+        tryResolveType $"%s{name}`%d{args.Length}"
+        |> Option.filter (fun d -> d.IsGenericTypeDefinition)
+        |> Option.map (fun d -> d, args)
+    | _ -> None
+
+/// Resolves `(.Method recv args...)` where `recv` is a generic type with a
+/// type variable in its arguments. See `openReceiverDefinition`.
+///
+/// - The candidates are the instance methods of the definition with this
+///   name and number of parameters. Generic methods are not candidates.
+/// - The type's parameters are replaced by the receiver's type arguments.
+/// - An argument fits a parameter of the same type, a span parameter as its
+///   array, and any parameter when its type is not known yet.
+///
+/// Exactly one method must fit. The caller unifies the arguments with its
+/// parameters.
+let resolveOpenReceiverMethod
+    (where: string)
+    (definition: Type)
+    (typeArgs: HMType list)
+    (name: string)
+    (argTypes: HMType list)
+    : ResolvedCall =
+    let subst =
+        List.zip (definition.GetGenericArguments() |> Array.map (fun p -> "'" + p.Name) |> Array.toList) typeArgs
+        |> Map.ofList
+
+    let candidates =
+        definition.GetMethods instanceFlags
+        |> Array.filter (fun m ->
+            let ps = m.GetParameters()
+
+            m.Name = name
+            && not m.IsGenericMethodDefinition
+            && ps.Length = argTypes.Length
+            && not (ps |> Array.exists (fun p -> p.ParameterType.IsByRef || p.ParameterType.IsPointer)))
+        |> Array.toList
+        |> List.map (fun m ->
+            let ps =
+                m.GetParameters()
+                |> Array.map (fun p -> substTypeVars subst (mapClrType p.ParameterType))
+                |> Array.toList
+
+            m, ps, substTypeVars subst (mapClrResultType m.ReturnType))
+
+    let fitsArg (p: HMType) (a: HMType) =
+        match a with
+        | TMeta _ -> true
+        | _ -> a = p || spanArrayViewOf p = Some a || clrStringViewOf p = Some a
+
+    let shown = showType (TCon(clrTypeName definition, typeArgs))
+
+    match candidates |> List.filter (fun (_, ps, _) -> List.forall2 fitsArg ps argTypes) with
+    | [ (m, ps, ret) ] ->
+        { ParameterTypes = ps
+          ReturnType = ret
+          RawReturnType = m.ReturnType
+          DeclaringType = clrTypeName definition
+          Name = name
+          IsStatic = false
+          Syntax = ByName }
+    | [] ->
+        let shownArgs = argTypes |> showTypesTogether |> String.concat " "
+
+        failwithf
+            $"Type Error at %s{where}: '%s{shown}' has no instance method '%s{name}' that takes the arguments (%s{shownArgs})."
+    | _ ->
+        failwithf
+            $"Type Error at %s{where}: more than one overload of '%s{shown}.%s{name}' fits these arguments. Annotate the arguments, or import the method with import/extern and a signature."
 
 /// Resolves a member read — `(.-Name x)`, `Class.Member`, or a `#:get` import —
 /// as a property first, then a field, matching `resolveMemberWrite`.
@@ -2440,3 +2678,58 @@ let resolveMemberWrite (where: string) (declaringType: Type) (name: string) (isS
                 $"Type Error at %s{where}: '%s{declaringType.FullName}.%s{name}' is init-only, so it can only be assigned while the object is being constructed. Import it with #:get."
 
         mapClrType prop.PropertyType
+
+/// Checks a `#:get` or `#:set` import of a property or field of a generic
+/// type definition against its declared signature.
+///
+/// - `memberType` is the member's type on the definition, from
+///   `resolveMemberRead` or `resolveMemberWrite`. It contains the type's
+///   parameters as type variables.
+/// - `declaredReceiver` is the declared receiver of an instance member.
+/// - `declaredMember` is the declared type of the value read or written.
+///
+/// Returns the type's own type arguments in terms of the signature's
+/// variables, in the order of the type's parameters. Raises when the
+/// signature does not match, or does not give every type argument.
+let resolveGenericTypeMember
+    (where: string)
+    (t: Type)
+    (name: string)
+    (memberType: HMType)
+    (declaredReceiver: HMType option)
+    (declaredMember: HMType)
+    : HMType list =
+    let typeParams = t.GetGenericArguments() |> Array.map (fun p -> "'" + p.Name) |> Array.toList
+
+    let pairs =
+        (match declaredReceiver with
+         | Some recv -> [ mapClrType t, recv ]
+         | None -> [])
+        @ [ memberType, declaredMember ]
+
+    let solved =
+        pairs
+        |> List.fold
+            (fun acc (own, declared) -> acc |> Option.bind (fun s -> solveTypeParams (Set.ofList typeParams) s own declared))
+            (Some Map.empty)
+
+    let shown =
+        match declaredReceiver with
+        | Some recv -> showType (tfun [ recv ] declaredMember)
+        | None -> showType declaredMember
+
+    match solved with
+    | None ->
+        let own =
+            match declaredReceiver with
+            | Some _ -> showType (tfun [ mapClrType t ] memberType)
+            | None -> showType memberType
+
+        failwithf
+            $"Type Error at %s{where}: the declared type %s{shown} does not match '%s{csharpTypeName t}.%s{name}', which is %s{own}."
+    | Some solution ->
+        match typeParams |> List.tryFind (fun p -> not (solution.ContainsKey p)) with
+        | Some missing ->
+            failwithf
+                $"Type Error at %s{where}: the declared type %s{shown} of '%s{csharpTypeName t}.%s{name}' does not give the type parameter %s{missing.TrimStart '''} of the type. Name the type in the signature, as (%s{name} (: ... (-> (MyType %%a) ...)))."
+        | None -> typeParams |> List.map (fun p -> solution[p])

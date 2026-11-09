@@ -1,0 +1,93 @@
+;; Generic .NET types: construct them, and use the members they declare.
+;;
+;; - `(Rom. ...)` constructs a generic type. The arguments select the
+;;   constructor, and the arguments or the use give the type arguments.
+;; - An `import/extern` of a member of a generic type is written without the
+;;   arity mark. The signature names the type, so it gives the type arguments.
+;; - Both work in a generic Bjolang function, where a type argument is a type
+;;   variable.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  ;; One declared constructor. The other constructors are available too.
+  ((Rom %a)   (: System.ReadOnlyMemory (-> (Array %a) (Rom %a))))
+  ((CList %a) (: System.Collections.Generic.List (-> (CList %a))))
+  ((KV %k %v) (: System.Collections.Generic.KeyValuePair (-> %k %v (KV %k %v))))
+  ((HSet %a)  (: System.Collections.Generic.HashSet))
+  ((EqCmp %a) (: System.Collections.Generic.IEqualityComparer)))
+
+(import/extern
+  ;; A static operator of a generic type.
+  (array->rom  (: System.ReadOnlyMemory.op_Implicit (-> (Array %a) (Rom %a))))
+  ;; Instance methods and a property of a generic type.
+  (rom-slice   (: System.ReadOnlyMemory.Slice (-> (Rom %a) int int (Rom %a))))
+  (rom-length  (: System.ReadOnlyMemory.Length (-> (Rom %a) int) #:get))
+  (rom->array  (: System.ReadOnlyMemory.ToArray (-> (Rom %a) (Array %a))))
+  (clist-add!  (: System.Collections.Generic.List.Add (-> (CList %a) %a void)))
+  (clist-count (: System.Collections.Generic.List.Count (-> (CList %a) int) #:get))
+  (clist-ref   (: System.Collections.Generic.List.get_Item (-> (CList %a) int %a)))
+  (kv-key      (: System.Collections.Generic.KeyValuePair.Key (-> (KV %k %v) %k) #:get))
+  (kv-value    (: System.Collections.Generic.KeyValuePair.Value (-> (KV %k %v) %v) #:get))
+  ;; A static method of a generic type. Only the result gives the type argument.
+  (set-comparer (: System.Collections.Generic.HashSet.CreateSetComparer (-> (EqCmp (HSet %a)))))
+  (hset-add!    (: System.Collections.Generic.HashSet.Add (-> (HSet %a) %a bool))))
+
+;; A generic Bjolang function: the type argument is a type variable here.
+(: (-> (Array %a) int int (Rom %a)))
+(defun (window xs from n)
+  (rom-slice (Rom. xs) from n))
+
+(: (-> (Rom %a) (Rom %a)))
+(defun (drop-first m)
+  (.Slice m 1))
+
+(defun (main)
+  (def bytes #[1uy 2uy 3uy 4uy 5uy])
+
+  ;; Constructors: the declared one, and one that was not declared.
+  (def whole (Rom. bytes))
+  (expect "constructor of the whole array" (rom-length whole) 5)
+  (def part (Rom. bytes 1 3))
+  (expect "constructor of part of the array" (array->vec (rom->array part)) [2uy 3uy 4uy])
+
+  ;; Members of a generic type.
+  (expect "op_Implicit" (rom-length (array->rom bytes)) 5)
+  (expect "instance method" (array->vec (rom->array (rom-slice whole 3 2))) [4uy 5uy])
+  (expect "member call" (array->vec (rom->array (.Slice whole 4))) [5uy])
+  (expect "property by member call" (.-Length part) 3)
+
+  ;; In a generic function.
+  (expect "generic function, bytes" (array->vec (rom->array (window bytes 0 2))) [1uy 2uy])
+  (expect "generic function, strings" (array->vec (rom->array (window #["a" "b" "c"] 1 2))) ["b" "c"])
+  (expect "member call on a type variable" (array->vec (rom->array (drop-first whole))) [2uy 3uy 4uy 5uy])
+
+  ;; The type argument comes from the use.
+  (: (CList string))
+  (def names (CList.))
+  (clist-add! names "x")
+  (clist-add! names "y")
+  (expect "list constructed with no arguments" (clist-count names) 2)
+  (expect "list element" (clist-ref names 1) "y")
+
+  (: (CList long))
+  (def sized (CList. 16))
+  (clist-add! sized 7L)
+  (expect "list constructed with a capacity" (clist-count sized) 1)
+
+  ;; Two type arguments, both from the arguments.
+  (def pair (KV. "k" 42))
+  (expect "key" (kv-key pair) "k")
+  (expect "value" (kv-value pair) 42)
+
+  ;; A static method whose type argument only the result gives.
+  (: (EqCmp (HSet int)))
+  (def cmp (set-comparer))
+  (: (HSet int))
+  (def s1 (HSet.))
+  (: (HSet int))
+  (def s2 (HSet.))
+  (ignore (hset-add! s1 3))
+  (ignore (hset-add! s2 3))
+  (expect "static method of a generic type" (.Equals cmp s1 s2) #t))

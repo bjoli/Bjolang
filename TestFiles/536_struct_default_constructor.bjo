@@ -1,0 +1,24 @@
+;; A .NET struct can be constructed with no arguments, as `new HashCode()` in
+;; C#, though its metadata has no parameterless constructor. A method that
+;; changes the struct changes the binding it is called on.
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (HashCode (: System.HashCode (-> HashCode))))
+
+(import/extern
+  (hash-add! (: System.HashCode.Add (-> HashCode %a void)))
+  (hash-value (: System.HashCode.ToHashCode (-> HashCode int))))
+
+(: (-> int int))
+(defun (hash-of x)
+  (def hc (HashCode.))
+  (hash-add! hc x)
+  (hash-value hc))
+
+(defun (main)
+  (def empty (hash-value (HashCode.)))
+  (expect "a value changes the hash" (= (hash-of 1) empty) #f)
+  (expect "two values have two hashes" (= (hash-of 1) (hash-of 2)) #f)
+  (expect "one value has one hash" (= (hash-of 7) (hash-of 7)) #t))

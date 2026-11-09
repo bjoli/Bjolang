@@ -1880,6 +1880,17 @@ let private foreignTypeArguments (meta: DotNetMethodMetadata option) =
         "<" + (m.TypeArguments |> List.map typeArgToString |> String.concat ", ") + ">"
     | _ -> ""
 
+/// The declaring type of a static call, as C# writes it: with the type
+/// arguments of a generic type, as in `System.ReadOnlyMemory<byte>`.
+let private staticCallTarget (clrType: string) (meta: DotNetMethodMetadata option) =
+    match meta with
+    | Some m when not m.DeclaringTypeArguments.IsEmpty ->
+        clrTypeSpelling clrType
+        + "<"
+        + (m.DeclaringTypeArguments |> List.map typeArgToString |> String.concat ", ")
+        + ">"
+    | _ -> clrTypeSpelling clrType
+
 /// A view met while a label was emitted.
 ///
 /// The label carries `Name` as a `var` designation where the view stood, and
@@ -3494,7 +3505,13 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         append ctx ")"
 
     | TNewObject (clrName, args, _) ->
-        append ctx $"new %s{clrTypeSpelling clrName}("
+        // A generic type is written closed, as `System.ReadOnlyMemory<byte>`.
+        let constructed =
+            match expr.Type with
+            | TCon(name, _ :: _) when name = clrName -> typeToString expr.Type
+            | _ -> clrTypeSpelling clrName
+
+        append ctx $"new %s{constructed}("
         for i, emit in List.indexed (prepareOperands ctx args) do
             if i > 0 then append ctx ", "
             emit ctx
@@ -3561,7 +3578,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
 
         if awaits then append ctx (if awaitsVoid then "await " else "(await ")
 
-        append ctx $"%s{clrTypeSpelling clrType}.%s{methodName}("
+        append ctx $"%s{staticCallTarget clrType meta}.%s{methodName}("
         for i, emit in List.indexed (prepareOperands ctx args) do
             if i > 0 then append ctx ", "
             emit ctx
@@ -4063,7 +4080,7 @@ and private generateGuardedCall (ctx: CodegenContext) (target: BlockTarget) (exp
             | Some call when not meta.Await && not meta.AmbientToken -> append c call
             | _ ->
                 let argList = String.concat ", " (withToken meta names)
-                append c (callText meta $"%s{clrTypeSpelling clrType}.%s{methodName}(%s{argList})"))
+                append c (callText meta $"%s{staticCallTarget clrType (Some meta)}.%s{methodName}(%s{argList})"))
 
     // A constructor always produces a value and is never awaited.
     | TNewObject (clrName, args, Some meta) ->

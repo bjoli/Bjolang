@@ -1,0 +1,16 @@
+;; An instance member of Bjolang's string, imported. BjoString.Utf8String is
+;; `string`, so the receiver is a string, and the bytes are read-only.
+(import (std prelude))
+(import (std simpletest))
+
+(import/extern
+  (string-bytes (: BjoString.Utf8String.AsSpan (-> string (RoSpan byte))))
+  (string-byte-length (: BjoString.Utf8String.ByteLength (-> string int) #:get)))
+
+(defun (main)
+  (def s "héj")
+  (expect "a property" (string-byte-length s) 4)
+  (expect "a byte of the span" (ro-span-ref (string-bytes s) 1) 195uy)
+  (expect "the length of the span" (ro-span-length (string-bytes s)) 4)
+  (def f string-byte-length)
+  (expect "a property as a value" (f "ab") 2))
