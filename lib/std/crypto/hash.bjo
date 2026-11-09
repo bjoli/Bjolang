@@ -12,8 +12,8 @@
 
 ;; std/crypto/hash.bjo — digests, HMAC and password hashing.
 ;;
-;; The work is done by .NET's System.Security.Cryptography, through
-;; Bjolang.Runtime.CryptoModule. A string is hashed as its UTF-8 bytes.
+;; The work is done by .NET's System.Security.Cryptography, called directly.
+;; A string is hashed as its UTF-8 bytes.
 ;;
 ;; Passwords are hashed with PBKDF2, because it is the password hash that .NET
 ;; has. The result is a PHC string that holds the algorithm, the iteration
@@ -51,31 +51,45 @@
 (type (: HashAlgorithm (Union Md5 Sha1 Sha256 Sha384 Sha512 Sha3-256 Sha3-384 Sha3-512)))
 
 (import/class
-  (Hasher (: System.Security.Cryptography.IncrementalHash)))
+  (Hasher (: System.Security.Cryptography.IncrementalHash))
+  (HashAlgorithmName (: System.Security.Cryptography.HashAlgorithmName (-> string HashAlgorithmName)))
+  (Stream (: System.IO.Stream))
+  ;; Path, mode, access, share, buffer size, and whether reads are async.
+  (FileStream (: System.IO.FileStream (-> string FileMode FileAccess FileShare int bool FileStream)))
+  (FileMode (: System.IO.FileMode))
+  (FileAccess (: System.IO.FileAccess))
+  (FileShare (: System.IO.FileShare))
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
 
 (import/extern
-  (shim-supported      (: Bjolang.Runtime.CryptoModule.IsSupported     (-> string bool)))
-  (shim-hash           (: Bjolang.Runtime.CryptoModule.Hash            (-> string (Array byte) (Array byte))))
-  (shim-hash-string    (: Bjolang.Runtime.CryptoModule.HashString      (-> string string (Array byte))))
-  (shim-hash-file      (: Bjolang.Runtime.CryptoModule.HashFile        (-> string string (Array byte)) #:blocking))
-  (shim-hash-file-await (: Bjolang.Runtime.CryptoModule.HashFileAsync  (-> string string (Array byte)) #:async))
-  (shim-hmac           (: Bjolang.Runtime.CryptoModule.Hmac            (-> string (Array byte) (Array byte) (Array byte))))
-  (shim-hmac-string    (: Bjolang.Runtime.CryptoModule.HmacString      (-> string (Array byte) string (Array byte))))
-  (shim-make-hasher    (: Bjolang.Runtime.CryptoModule.MakeHasher      (-> string Hasher)))
-  (shim-make-hmac      (: Bjolang.Runtime.CryptoModule.MakeHmacHasher  (-> string (Array byte) Hasher)))
-  (shim-hasher-add     (: Bjolang.Runtime.CryptoModule.HasherAdd       (-> Hasher (Array byte) void)))
-  (shim-hasher-add-str (: Bjolang.Runtime.CryptoModule.HasherAddString (-> Hasher string void)))
-  (shim-hasher-finish  (: Bjolang.Runtime.CryptoModule.HasherFinish    (-> Hasher (Array byte))))
-  (shim-fixed-equal    (: Bjolang.Runtime.CryptoModule.FixedTimeEquals (-> (Array byte) (Array byte) bool)))
-  (shim-to-hex         (: Bjolang.Runtime.CryptoModule.ToHex           (-> (Array byte) string)))
-  (shim-from-hex       (: Bjolang.Runtime.CryptoModule.TryFromHex
-                          (-> string (out (Array byte)) (Option (Array byte)))))
-  (shim-password-hash  (: Bjolang.Runtime.CryptoModule.PasswordHash
-                          (-> string (Array byte) string int string)))
-  (shim-password-verify (: Bjolang.Runtime.CryptoModule.PasswordVerify (-> string string bool)))
-  (shim-derive-key     (: Bjolang.Runtime.CryptoModule.DeriveKey
-                          (-> string (Array byte) string int int (Array byte))))
-  (shim-needs-rehash   (: Bjolang.Runtime.CryptoModule.PasswordNeedsRehash (-> string string int bool))))
+  (clr-sha3-256?       (: System.Security.Cryptography.SHA3_256.IsSupported #:get))
+  (clr-sha3-384?       (: System.Security.Cryptography.SHA3_384.IsSupported #:get))
+  (clr-sha3-512?       (: System.Security.Cryptography.SHA3_512.IsSupported #:get))
+  (clr-hash            (: System.Security.Cryptography.CryptographicOperations.HashData
+                          (-> HashAlgorithmName (Array byte) (Array byte))))
+  (clr-hash-stream     (: System.Security.Cryptography.CryptographicOperations.HashData
+                          (-> HashAlgorithmName Stream (Array byte)) #:blocking))
+  (clr-hash-stream-await (: System.Security.Cryptography.CryptographicOperations.HashDataAsync
+                            (-> HashAlgorithmName Stream (Array byte)) #:async))
+  (clr-hmac            (: System.Security.Cryptography.CryptographicOperations.HmacData
+                          (-> HashAlgorithmName (Array byte) (Array byte) (Array byte))))
+  (clr-make-hasher     (: System.Security.Cryptography.IncrementalHash.CreateHash
+                          (-> HashAlgorithmName Hasher)))
+  (clr-make-hmac       (: System.Security.Cryptography.IncrementalHash.CreateHMAC
+                          (-> HashAlgorithmName (Array byte) Hasher)))
+  (clr-hasher-add      (: System.Security.Cryptography.IncrementalHash.AppendData (-> Hasher (Array byte) void)))
+  ;; The digest; the hasher is reset, and an HMAC hasher keeps its key.
+  (clr-hasher-finish   (: System.Security.Cryptography.IncrementalHash.GetHashAndReset (-> Hasher (Array byte))))
+  (clr-fixed-equal     (: System.Security.Cryptography.CryptographicOperations.FixedTimeEquals
+                          (-> (RoSpan byte) (RoSpan byte) bool)))
+  (clr-pbkdf2          (: System.Security.Cryptography.Rfc2898DeriveBytes.Pbkdf2
+                          (-> (Array byte) (Array byte) int HashAlgorithmName int (Array byte))))
+  (clr-to-hex          (: System.Convert.ToHexStringLower (-> (Array byte) string)))
+  ;; Raises `FormatException` for an odd length or a character that is not a hex digit.
+  (clr-from-hex        (: System.Convert.FromHexString (-> string (Array byte))))
+  (clr-to-base64       (: System.Convert.ToBase64String (-> (Array byte) string)))
+  ;; Raises `FormatException` for text that is not base64.
+  (clr-from-base64     (: System.Convert.FromBase64String (-> string (Array byte)))))
 
 ;; .net algorithm names. 
 (: (-> HashAlgorithm string))
@@ -90,9 +104,17 @@
     (Sha3-384 "SHA3-384")
     (Sha3-512 "SHA3-512")))
 
+(: (-> HashAlgorithm HashAlgorithmName))
+(defun (clr-name a) (HashAlgorithmName. (algorithm-name a)))
+
 ;; SHA-3 needs OpenSSL 1.1.1 or later, or Windows 11. The others are always there.
 (: (-> HashAlgorithm bool))
-(defun (hash-algorithm-supported? a) (shim-supported (algorithm-name a)))
+(defun (hash-algorithm-supported? a)
+  (match a
+    (Sha3-256 clr-sha3-256?)
+    (Sha3-384 clr-sha3-384?)
+    (Sha3-512 clr-sha3-512?)
+    (_ #t)))
 
 ;; In bytes.
 (: (-> HashAlgorithm int))
@@ -113,25 +135,36 @@
 
 (: (-> (Array byte) (#:algorithm HashAlgorithm) (Array byte)))
 (defun (hash-bytes data #:algorithm Sha256)
-  (shim-hash (algorithm-name algorithm) data))
+  (clr-hash (clr-name algorithm) data))
 
 (: (-> string (#:algorithm HashAlgorithm) (Array byte)))
 (defun (hash-string text #:algorithm Sha256)
-  (shim-hash-string (algorithm-name algorithm) text))
+  (clr-hash (clr-name algorithm) (string->bytes text)))
+
+;; The file opened for reading, other readers allowed, as `File.OpenRead`
+;; opens it. With `async`, reads do not park a thread.
+(: (-> string bool FileStream))
+(defun (open-for-hash path async)
+  (FileStream. path FileMode.Open FileAccess.Read FileShare.Read 4096 async))
 
 ;; The file is read a buffer at a time, so a large file is never all in memory.
+;; Raises as opening the file does, for example `FileNotFoundException`.
 (: (-> string (#:algorithm HashAlgorithm) (Array byte)))
 (defbjouble (hash-file path #:algorithm Sha256)
-  (#:sync (shim-hash-file (algorithm-name algorithm) path))
-  (#:bjo  (shim-hash-file-await (algorithm-name algorithm) path)))
+  (#:sync (let ((file (open-for-hash path #f)))
+            (try (clr-hash-stream (clr-name algorithm) (cast Stream file))
+                 #:finally (.Dispose file))))
+  (#:bjo  (let ((file (open-for-hash path #t)))
+            (try (clr-hash-stream-await (clr-name algorithm) (cast Stream file))
+                 #:finally (.Dispose file)))))
 
 (: (-> (Array byte) (Array byte) (#:algorithm HashAlgorithm) (Array byte)))
 (defun (hmac-bytes key data #:algorithm Sha256)
-  (shim-hmac (algorithm-name algorithm) key data))
+  (clr-hmac (clr-name algorithm) key data))
 
 (: (-> (Array byte) string (#:algorithm HashAlgorithm) (Array byte)))
 (defun (hmac-string key text #:algorithm Sha256)
-  (shim-hmac-string (algorithm-name algorithm) key text))
+  (clr-hmac (clr-name algorithm) key (string->bytes text)))
 
 ;; ---------------------------------------------------------------------------
 ;; Incremental
@@ -141,22 +174,22 @@
 
 (: (-> (#:algorithm HashAlgorithm) Hasher))
 (defun (make-hasher #:algorithm Sha256)
-  (shim-make-hasher (algorithm-name algorithm)))
+  (clr-make-hasher (clr-name algorithm)))
 
 (: (-> (Array byte) (#:algorithm HashAlgorithm) Hasher))
 (defun (make-hmac-hasher key #:algorithm Sha256)
-  (shim-make-hmac (algorithm-name algorithm) key))
+  (clr-make-hmac (clr-name algorithm) key))
 
 (: (-> Hasher (Array byte) void))
-(defun (hasher-add! h data) (shim-hasher-add h data))
+(defun (hasher-add! h data) (clr-hasher-add h data))
 
 (: (-> Hasher string void))
-(defun (hasher-add-string! h text) (shim-hasher-add-str h text))
+(defun (hasher-add-string! h text) (clr-hasher-add h (string->bytes text)))
 
 ;; The digest of all that was added. The hasher is then empty, and can be used
 ;; again. An HMAC hasher keeps its key.
 (: (-> Hasher (Array byte)))
-(defun (hasher-finish! h) (shim-hasher-finish h))
+(defun (hasher-finish! h) (clr-hasher-finish h))
 
 ;; ---------------------------------------------------------------------------
 ;; Comparing and printing
@@ -166,15 +199,18 @@
 ;; not depend on where the arrays differ. Arrays of different lengths are not
 ;; equal, and the time can show the lengths.
 (: (-> (Array byte) (Array byte) bool))
-(defun (constant-time-equal? a b) (shim-fixed-equal a b))
+(defun (constant-time-equal? a b) (clr-fixed-equal (array->ro-span a) (array->ro-span b)))
 
 ;; Lower case.
 (: (-> (Array byte) string))
-(defun (bytes->hex bytes) (shim-to-hex bytes))
+(defun (bytes->hex bytes) (clr-to-hex bytes))
 
 ;; Either case. `None` for an odd length or a character that is not a hex digit.
 (: (-> string (Option (Array byte))))
-(defun (hex->bytes text) (shim-from-hex text))
+(defun (hex->bytes text)
+  (match (try (clr-from-hex text) #:catch (System.FormatException))
+    ((Ok bytes) (Some bytes))
+    ((Err _) None)))
 
 ;; ---------------------------------------------------------------------------
 ;; Passwords
@@ -188,11 +224,143 @@
 (: int)
 (def salt-length 16)
 
+;; A stored password is a PHC string: `$pbkdf2-sha256$i=600000$<salt>$<hash>`.
+;; The salt and the hash are standard base64 without padding, as the PHC
+;; format specifies.
+
+(: (-> string %a))
+(defun (refuse message) (raise (cast Exception (ArgumentException. message))))
+
+;; The PHC id of a password algorithm. Raises `ArgumentException` for an
+;; algorithm that is not SHA-256, SHA-384 or SHA-512.
+(: (-> HashAlgorithm string))
+(defun (phc-id a)
+  (match a
+    (Sha256 "pbkdf2-sha256")
+    (Sha384 "pbkdf2-sha384")
+    (Sha512 "pbkdf2-sha512")
+    (_ (refuse (str "Passwords are hashed with SHA256, SHA384 or SHA512, not "
+                    (algorithm-name a) ".")))))
+
+(: (-> string (Option HashAlgorithm)))
+(defun (algorithm-of-phc-id id)
+  (cond
+    ((= id "pbkdf2-sha256") (Some Sha256))
+    ((= id "pbkdf2-sha384") (Some Sha384))
+    ((= id "pbkdf2-sha512") (Some Sha512))
+    (else None)))
+
+;; The length of a password hash: the digest length. Raises
+;; `ArgumentException` for an algorithm that is not a password algorithm.
+(: (-> HashAlgorithm int))
+(defun (password-hash-length a)
+  (match a
+    ((or Sha256 Sha384 Sha512) (digest-length a))
+    (_ (refuse (str "Not a password algorithm: " (algorithm-name a) ".")))))
+
+;; Base64 without the `=` padding at the end.
+(: (-> (Array byte) string))
+(defun (to-base64 bytes)
+  (def padding (match (% (array-length bytes) 3) (0 0) (1 2) (_ 1)))
+  (string-drop-right (clr-to-base64 bytes) padding))
+
+;; Base64 with or without its padding. `None` for text that is not base64.
+(: (-> string (Option (Array byte))))
+(defun (from-base64 text)
+  (def padded
+    (match (% (string-length text) 4)
+      (0 (Some text))
+      (2 (Some (str text "==")))
+      (3 (Some (str text "=")))
+      (_ None)))
+  (match padded
+    ((Some t)
+     (match (try (clr-from-base64 t) #:catch (System.FormatException))
+       ((Ok bytes) (Some bytes))
+       ((Err _) None)))
+    (None None)))
+
+;; One or more ASCII digits, as an int of at least 1. `None` for anything
+;; else: a sign, a space, or a number too big for an int.
+(: (-> string (Option int)))
+(defun (positive-int text)
+  (def bytes (string->bytes text))
+  (def n (array-length bytes))
+  (let go ((i 0) (v 0L))
+    (cond
+      ((= i n) (if (and (> n 0) (>= v 1L)) (Some (cast int v)) None))
+      (else
+       (def b (cast int (array-ref bytes i)))
+       (def next (+ (* v 10L) (cast long (- b 48))))
+       (if (and (>= b 48) (<= b 57) (<= next 2147483647L))
+           (go (+ i 1) next)
+           None)))))
+
+(: (-> string (Array byte) HashAlgorithm int int (Array byte)))
+(defun (pbkdf2 password salt algorithm iterations length)
+  (clr-pbkdf2 (string->bytes password) salt iterations (clr-name algorithm) length))
+
+;; What a PHC string holds.
+(type (: Phc (Record (: phc-algorithm HashAlgorithm)
+                     (: phc-iterations int)
+                     (: phc-salt (Array byte))
+                     (: phc-hash (Array byte)))))
+
+;; Raises `ArgumentException` when `encoded` is not a PHC string of PBKDF2
+;; with SHA-256, SHA-384 or SHA-512, at least 1 iteration, and a salt and a
+;; hash that are not empty.
+(: (-> string Phc))
+(defun (parse-phc encoded)
+  (def parts (string-split encoded "$"))
+  (def fail "Not a password hash: expected $pbkdf2-<sha256|sha384|sha512>$i=<n>$<salt>$<hash>.")
+  ;; The leading `$` makes the first part empty.
+  (if (not (and (= (vec-length parts) 5) (= (vec-ref parts 0) "")))
+      (refuse fail)
+      (let ((algorithm (algorithm-of-phc-id (vec-ref parts 1)))
+            (count (if (string-starts-with? (vec-ref parts 2) "i=")
+                       (positive-int (string-drop (vec-ref parts 2) 2))
+                       None))
+            (salt (from-base64 (vec-ref parts 3)))
+            (hash (from-base64 (vec-ref parts 4))))
+        (match (Tuple algorithm count salt hash)
+          ((Tuple (Some a) (Some n) (Some s) (Some h))
+           (if (or (= (array-length s) 0) (= (array-length h) 0))
+               (refuse fail)
+               (Phc (phc-algorithm a) (phc-iterations n) (phc-salt s) (phc-hash h))))
+          (_ (refuse fail))))))
+
+;; Raises `ArgumentException` for an algorithm that is not a password
+;; algorithm, fewer than 1 iteration, or a salt shorter than 8 bytes.
+(: (-> string (Array byte) HashAlgorithm int string))
+(defun (encode-password-hash password salt algorithm iterations)
+  (def id (phc-id algorithm))
+  (when (< iterations 1) (refuse "The iteration count must be at least 1."))
+  (when (< (array-length salt) 8) (refuse "The salt must be at least 8 bytes."))
+  (def digest (pbkdf2 password salt algorithm iterations (password-hash-length algorithm)))
+  (str "$" id "$i=" (int->string iterations) "$" (to-base64 salt) "$" (to-base64 digest)))
+
+(: (-> string string bool))
+(defun (password-verify-now password stored)
+  (def phc (parse-phc stored))
+  (def expected (record-ref phc phc-hash))
+  (def candidate (pbkdf2 password (record-ref phc phc-salt) (record-ref phc phc-algorithm)
+                         (record-ref phc phc-iterations) (array-length expected)))
+  (constant-time-equal? candidate expected))
+
+;; Raises `ArgumentException` for an algorithm that is not a password
+;; algorithm, fewer than 1 iteration, or a length less than 1.
+(: (-> string (Array byte) HashAlgorithm int int (Array byte)))
+(defun (derive-key-now password salt algorithm iterations length)
+  (ignore (password-hash-length algorithm))
+  (when (< iterations 1) (refuse "The iteration count must be at least 1."))
+  (when (< length 1) (refuse "The key length must be at least 1."))
+  (pbkdf2 password salt algorithm iterations length))
+
 (: (-> string HashAlgorithm int string))
 (defun (password-hash-now password algorithm iterations)
   (def salt (make-array salt-length))
   (random-bytes! salt)
-  (shim-password-hash password salt (algorithm-name algorithm) iterations))
+  (encode-password-hash password salt algorithm iterations))
 
 ;; The value of a thread's result, or its exception raised again.
 (: (-> (Result Exception %a) %a))
@@ -210,15 +378,18 @@
 ;; This is an error in the stored data, not a wrong password.
 (: (-> string string bool))
 (defbjouble (password-verify password stored)
-  (#:sync (shim-password-verify password stored))
-  (#:bjo  (unwrap-thread (sync (spawn/thread #(shim-password-verify password stored))))))
+  (#:sync (password-verify-now password stored))
+  (#:bjo  (unwrap-thread (sync (spawn/thread #(password-verify-now password stored))))))
 
 ;; True when `stored` was made with another algorithm or with fewer iterations.
 ;; Check this after a correct `password-verify`, and store a new hash of the
 ;; password if it is true.
 (: (-> string (#:algorithm HashAlgorithm) (#:iterations int) bool))
 (defun (password-needs-rehash? stored #:algorithm Sha256 #:iterations default-password-iterations)
-  (shim-needs-rehash stored (algorithm-name algorithm) iterations))
+  (def phc (parse-phc stored))
+  (or (not (= (algorithm-name (record-ref phc phc-algorithm)) (algorithm-name algorithm)))
+      (< (record-ref phc phc-iterations) iterations)
+      (not (= (array-length (record-ref phc phc-hash)) (password-hash-length algorithm)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Keys
@@ -230,7 +401,6 @@
 (: (-> string (Array byte) (#:algorithm HashAlgorithm) (#:iterations int) (#:length int) (Array byte)))
 (defbjouble (derive-key password salt #:algorithm Sha256 #:iterations default-password-iterations
                         #:length 32)
-  (#:sync (shim-derive-key password salt (algorithm-name algorithm) iterations length))
+  (#:sync (derive-key-now password salt algorithm iterations length))
   (#:bjo  (unwrap-thread
-           (sync (spawn/thread #(shim-derive-key password salt (algorithm-name algorithm)
-                                                 iterations length))))))
+           (sync (spawn/thread #(derive-key-now password salt algorithm iterations length))))))

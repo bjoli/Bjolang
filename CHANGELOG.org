@@ -3,6 +3,25 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std crypto hash)~ is written in Bjolang, with no C# shim
+
+- ~BjolangRuntime/BjoCrypto.cs~ (~CryptoModule~) is removed. ~hash.bjo~
+  calls ~CryptographicOperations~, ~IncrementalHash~,
+  ~Rfc2898DeriveBytes.Pbkdf2~ and ~Convert~ directly, with a
+  ~HashAlgorithmName~ that it makes, and ~FixedTimeEquals~ on spans.
+- The PHC password format (writing, parsing, verifying, rehash check) and
+  the checks of ~derive-key~ are Bjolang. They raise ~ArgumentException~
+  with the same messages as before.
+- ~hash-file~ opens the file as ~File.OpenRead~ does. In a bjoroutine the
+  file is opened for async reads and hashed with ~HashDataAsync~. The file is
+  closed however the hash ends.
+- The results are the same: checked against the C# shims before they were
+  removed, with 2 000 SHA-512 digests and hex round trips of random data,
+  hex edge cases, PHC strings made from one salt, and 19 stored strings,
+  good and bad, through ~password-verify~ and ~password-needs-rehash?~ at
+  four algorithms. Also checked: what raises, and with which message.
+- Tests: ~TestFiles/360_crypto_hash.bjo~, unchanged.
+
 * ~(std uuid)~ is written in Bjolang, with no C# shim
 
 - ~BjolangRuntime/BjoUuid.cs~ (~UuidModule~) is removed. Its nine shims are
