@@ -1,7 +1,9 @@
 ;; A loop calls `iterable-end` on each cursor it leaves before `done?` answered
 ;; true, and `iterable-cleanup` on each cursor that is live when an exception
 ;; or a non-local exit such as `ret` of a `with-return` leaves it. Each cursor
-;; gets one call at most, and an inner level's cursor before an outer level's.
+;; gets one call at most, and an inner level's cursor before an outer level's,
+;; on every exit: :finish, :final, a :finish-let that stops, and a consumer
+;; that stops at a yield.
 (import (std simpletest))
 (import (std mutable vec))
 
@@ -104,10 +106,40 @@
           (ends-of (fun (log) (loop (:for x (res log "a" 5)))))
           (list))
   ;; `a` ends the level. Which driver it was is not known at the exit, so both
-  ;; get the call, and `a` must ignore it. No walk gets a second one.
+  ;; get the call, and `a` must ignore it. No walk gets a second one. The
+  ;; last driver gets it first, as from the guard.
   (expect "a walk to the end with two drivers"
           (ends-of (fun (log) (loop (:for x (res log "a" 3)) (:for y (res log "b" 5)))))
-          (list "a" "b"))
+          (list "b" "a"))
+  ;; Each exit that leaves walks before their end ends the inner walk first.
+  (expect ":finish from an inner level"
+          (ends-of (fun (log) (loop (:for x (res log "outer" 3)) (:subloop) (:for y (res log "inner" 3))
+                                    (:finish (= y 1)))))
+          (list "inner" "outer"))
+  (expect ":finish with a value from the innermost of three levels"
+          (ends-of (fun (log) (ignore (loop (:for x (res log "a" 3)) (:subloop) (:for y (res log "b" 3))
+                                            (:subloop) (:for z (res log "c" 3))
+                                            (:finish (= z 1) z)
+                                            => 0))))
+          (list "c" "b" "a"))
+  (expect ":final in an inner level"
+          (ends-of (fun (log) (loop (:for x (res log "outer" 3)) (:subloop) (:for y (res log "inner" 3))
+                                    (:final (= y 1)))))
+          (list "inner" "outer"))
+  (expect "a :finish-let that stops in an inner level"
+          (ends-of (fun (log) (loop (:for x (res log "outer" 3)) (:subloop) (:for y (res log "inner" 3))
+                                    (:finish-let (Some v) (if (= y 1) None (Some y))))))
+          (list "inner" "outer"))
+  (expect ":finish from a :subloop form"
+          (ends-of (fun (log) (loop (:for x (res log "outer" 3))
+                                    (:subloop (:for y (res log "inner" 3)) (:finish (= y 1))))))
+          (list "inner" "outer"))
+  (expect "a seql that take stops at a yield in a :subloop form"
+          (ends-of (fun (log) (ignore (->list (take 2 (seql (:for x (res log "outer" 3))
+                                                            (:subloop (:for y (res log "inner" 3))
+                                                                      (:yield y)
+                                                                      (:acc (counting y)))))))))
+          (list "inner" "outer"))
   (expect "an inner level that runs to its end on each outer element"
           (ends-of (fun (log) (loop (:for x (res log "outer" 3)) (:subloop) (:for y (res log "inner" 2)))))
           (list))

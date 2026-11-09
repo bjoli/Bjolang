@@ -3,6 +3,28 @@
 
 What each change guarantees, and what it leaves open.
 
+* A loop ends an inner level's walk before an outer level's, on every exit
+
+- An exit that leaves walks before their end calls ~iterable-end~ on each.
+  On a ~:finish~ (with or without a value), a ~:final~ or a stopping
+  ~:finish-let~ from an inner level, and when a consumer stopped at a
+  ~yield~ in a ~(:subloop ...)~ form, the outer level's walk got its call
+  first. A ~:finish~ from inside a form, and the guard on a throw, already
+  ended the inner walk first.
+- Now ~ending~ in ~LoopDesugar~ makes the calls in the reverse order of the
+  cursors it is given, which are outer levels first. So every exit ends
+  inner levels first, as the guard does.
+- Changed: when a level with several drivers is ended, the last driver gets
+  its call first; it was the first driver. The guard has this order too.
+- Left as it was: a consumer that stops early gives the walks an
+  ~iterable-end~ where ~SeqFusion~ fused it into the loop, and an
+  ~iterable-cleanup~ from the enumerator's ~finally~ where it did not.
+- Tests: ~TestFiles/406_loop_end_on_throw.bjo~: ~:finish~ from an inner
+  level, ~:finish~ with a value from the innermost of three, ~:final~ and a
+  stopping ~:finish-let~ in an inner level, ~:finish~ from a form, and ~take~
+  stopping at a ~yield~ in a form, each inner first. Two drivers in a level:
+  the last first.
+
 * A ~(:subloop ...)~ form that only ends by its finish is a ~while~ in the level holding it
 
 - A ~(:subloop ...)~ form was members in the group of the level holding it,

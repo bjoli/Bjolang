@@ -1568,6 +1568,10 @@ and private buildGroup
     /// cursor holding a resource for the walk, such as an open file, releases
     /// it now. The guard cell is cleared before the call, so an `iterable-end`
     /// that throws is not called again by the guard.
+    ///
+    /// `cursors` are outer levels first. The calls are in the reverse order,
+    /// as the guard's: inner levels first, and in a level the last driver
+    /// first.
     let ending (cursors: (string * string) list) (cr: Range) (rest: Expr) =
         List.foldBack
             (fun (sn, cn) acc ->
@@ -1575,7 +1579,7 @@ and private buildGroup
                     cn
                     cr
                     (ELet("_", false, [], None, call "iterable-end" [ EIdent(sn, cr); EIdent(cn, cr) ] cr, acc, cr)))
-            cursors
+            (List.rev cursors)
             rest
 
     /// Level `i` one step on: its cursors advanced and its `:with` slots
