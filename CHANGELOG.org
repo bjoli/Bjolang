@@ -3,6 +3,50 @@
 
 What each change guarantees, and what it leaves open.
 
+* The sorts by ~Ord~: one stable sort, copied at each type; ~-unstable~ sorts
+
+- ~list-sort~, ~vec-sort~ and ~mutablevec-sort!~ give the same results as
+  before, and stay stable. They all use the new ~(array-sort! arr)~: a merge
+  sort over runs of 16 sorted by insertion, which sorts an array in place.
+  It is exported from ~(std eq)~ and re-exported by the prelude, so the
+  compiler copies it into each caller at the element type, and ~compare~ is
+  a direct call. Before, ~vec-sort~ and ~mutablevec-sort!~ called ~compare~
+  through a function value.
+- New, for when the order of equal elements does not matter:
+  ~array-sort-unstable!~, ~vec-sort-unstable~, ~list-sort-unstable~
+  (~(std eq)~, re-exported by the prelude) and ~mutablevec-sort-unstable!~.
+  They sort with .NET's ~Array.Sort~ and ~(ord-comparer)~
+  (~SortModule.SortUnstable~ in ~BjolangRuntime/BjoSort.cs~). The caller
+  chooses: no sort decides by the element type whether stability can be
+  seen.
+- When ~compare~ raises, every sort raises that exception. ~Array.Sort~
+  wraps it in an ~InvalidOperationException~, which ~SortUnstable~ takes
+  off. The list, vec and mutable vector sorts sort a copy, so their input is
+  as it was. The contents of an array given to ~array-sort!~ or
+  ~array-sort-unstable!~ are then unspecified.
+- ~mutablevec-sort-by!~ and ~vec-sort-by~ are unchanged. The C# stable sort
+  behind ~mutablevec-sort-by!~ moved from ~BjoMutable.cs~ to ~BjoSort.cs~.
+- A ~compare~ with side effects is called in the order of the new merge sort.
+- Measured on 500 000 elements (strings: 100 000), in ms, before, now
+  stable, now unstable: ~vec-sort~ of longs 44.5, 33.6, 24.0; of ints 0..999
+  36.1, 25.1, 15.5; of doubles 52.6, 39.1, 29.9; of ~(int, int)~ 40.8, 27.8,
+  34.3; of strings 18.4, 18.6, 13.3. ~mutablevec-sort!~ of longs 42.4, 34.4,
+  25.3; of ~(int, int)~ 41.1, 32.0, 36.8. ~list-sort~ of longs 39.8, 41.2,
+  31.9; of ~(int, int)~ 38.8, 39.4, 44.8. Building the list takes most of a
+  list sort. The unstable sorts are slower for tuples: .NET compares a
+  ~ValueTuple~ through its generic ~CompareTo~, where ~array-sort!~ calls
+  ~compare~ directly.
+- Tests: ~TestFiles/531_sort_order.bjo~. The stable sorts against
+  ~vec-sort-by~ for 11 types and every length from 0 to 100; records with
+  one key, a thousand ~0.0~ and ~-0.0~, and ~1.0M~ and ~1.00M~ keep their
+  order. The unstable sorts give a sorted permutation for each type. A
+  newtype of ~long~ with its own ~Ord~ sorts by it, also through a generic
+  function. A ~compare~ that raises ~ArgumentException~: each sort raises it,
+  and the mutable vector is as it was. The test fails with an unstable
+  insertion or merge step, and without the unwrapping in ~SortUnstable~.
+  ~codegen/monomorphise_local_annotations.bjo~ also asks for the copy
+  ~array-sort!__at_int~.
+
 * ~stream-copy-count!~ is written in Bjolang, with no C# shim
 
 - ~BjolangRuntime/BjoStreams.cs~ is removed. ~stream-copy-count!~ in

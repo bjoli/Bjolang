@@ -41,7 +41,7 @@
   mutablevec-remove-at! mutablevec-remove! mutablevec-remove-where!
   mutablevec-pop! mutablevec-clear!
   mutablevec-contains? mutablevec-index-of
-  mutablevec-reverse! mutablevec-sort! mutablevec-sort-by!
+  mutablevec-reverse! mutablevec-sort! mutablevec-sort-unstable! mutablevec-sort-by!
   mutablevec-copy
   mutablevec-grow! mutablevec-span
   list->mutablevec mutablevec->list vec->mutablevec mutablevec->vec
@@ -101,12 +101,31 @@
   (ArgumentOutOfRangeException (: System.ArgumentOutOfRangeException
                                   (-> string string ArgumentOutOfRangeException))))
 
+;; The elements of `sorted`, which has the vector's length, into the vector.
+(: (-> (MutableVec %a) (Array %a) void))
+(defun (write-back! xs sorted)
+  (def items (clr-as-span xs))
+  (loop (:for i (range 0 (array-length sorted)))
+        (:do (span-set! items i (array-ref sorted i)))))
+
 ;; Sorted by the element's own `Ord`. `mutablevec-sort-by!` takes the comparison
 ;; directly, for an order that is not the type's. Both are stable, as
-;; `list-sort` is: equal elements keep their order.
+;; `list-sort` is: equal elements keep their order. A copy is sorted with
+;; `array-sort!` and written back once the sort is done, so when a comparison
+;; raises, the vector is as it was.
 (: (-> (MutableVec %a) void) (where (Ord %a)))
 (defun (mutablevec-sort! xs)
-  (mutablevec-sort-by! xs (fun (a b) (compare a b))))
+  (def sorted (mutablevec->array xs))
+  (array-sort! sorted)
+  (write-back! xs sorted))
+
+;; As `mutablevec-sort!`, with `array-sort-unstable!`: equal elements can
+;; change places. When a comparison raises, the vector is as it was.
+(: (-> (MutableVec %a) void) (where (Ord %a)))
+(defun (mutablevec-sort-unstable! xs)
+  (def sorted (mutablevec->array xs))
+  (array-sort-unstable! sorted)
+  (write-back! xs sorted))
 
 ;; ---------------------------------------------------------------------------
 ;; Blocks

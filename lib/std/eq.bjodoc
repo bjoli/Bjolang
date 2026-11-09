@@ -178,10 +178,9 @@
     (list-sort (list 3 1 2))   ; (1 2 3)
     """)
   (reference """
-    Performs a stable merge sort in O(n log n) time. Merges iterative runs
-    using temporary array buffers and constructs the resulting list in a single
-    pass to avoid stack overflows. Lists with fewer than two items return
-    unmodified.
+    Copies the items into an array, sorts it with @code{array-sort!}, and
+    builds the result list in one pass. O(n log n). A list of fewer than two
+    items is returned as it is.
     """))
 
 (:doc vec-sort
@@ -194,8 +193,91 @@
     (vec-sort [(Tuple 2 "b") (Tuple 1 "z")])     ; [(1, z) (2, b)]
     """)
   (reference """
-    The merge sort of @code{list-sort}, over an array: O(n log n), and
-    O(n) extra space. A vec of fewer than two items is returned as it is.
+    Copies the items into an array and sorts it with @code{array-sort!}:
+    O(n log n). A vec of fewer than two items is returned as it is.
+    """))
+
+(:doc array-sort!
+  (summary "Sorts an array in place using compare. Stable.")
+  (arg arr "The array to sort.")
+  (see list-sort vec-sort compare)
+  (example """
+    (def a (vec->array [3 1 2]))
+    (array-sort! a)
+    (array->vec a)                               ; [1 2 3]
+    """)
+  (reference """
+    O(n log n), O(n) extra space. Equal items keep their order.
+
+    @itemlist{
+      @item{A merge sort over runs of 16 sorted by insertion. The compiler
+            copies it into each caller at the element type, so
+            @code{compare} is a direct call.}
+      @item{When @code{compare} raises, the contents of the array are
+            unspecified: an item can be lost or be there twice.
+            @code{list-sort}, @code{vec-sort} and @code{mutablevec-sort!} sort
+            a copy, so their input is as it was.}
+      @item{@code{array-sort-unstable!} is faster when the order of equal
+            items does not matter.}
+    }
+    """))
+
+(:doc array-sort-unstable!
+  (summary "Sorts an array in place using compare. Not stable.")
+  (arg arr "The array to sort.")
+  (see array-sort! vec-sort-unstable list-sort-unstable compare)
+  (example """
+    (def a (vec->array [3 1 2]))
+    (array-sort-unstable! a)
+    (array->vec a)                               ; [1 2 3]
+    """)
+  (reference """
+    .NET's @code{Array.Sort} (introsort), with the comparer of
+    @code{ord-comparer}. O(n log n) and no extra array.
+
+    @itemlist{
+      @item{Equal items can change places. For a type whose equal values are
+            the same value, such as an int, the result is that of
+            @code{array-sort!}. For records, tuples, strings, doubles
+            (@code{0.0} and @code{-0.0}) and decimals (@code{1.0M} and
+            @code{1.00M}), it can differ.}
+      @item{Faster than @code{array-sort!} for numbers and strings, which
+            .NET compares itself: 1.3 to 1.6 times on 500 000 of them. Slower
+            for tuples and records, whose order .NET asks through a generic
+            comparer, where @code{array-sort!} calls @code{compare} directly.}
+      @item{When @code{compare} raises, the same exception is raised, and the
+            contents of the array are unspecified: an item can be lost or be
+            there twice.}
+      @item{A @code{compare} that is not a total order can raise
+            @code{ArgumentException}.}
+    }
+    """))
+
+(:doc vec-sort-unstable
+  (summary "Returns a sorted copy of a vec using compare. Not stable.")
+  (arg v "The vec to sort.")
+  (returns "A vec of the same items, in ascending order. Equal items can be in any order.")
+  (see vec-sort array-sort-unstable! compare)
+  (example """
+    (vec-sort-unstable [3 1 2])                  ; [1 2 3]
+    """)
+  (reference """
+    Copies the items into an array and sorts it with
+    @code{array-sort-unstable!}. When @code{compare} raises, the vec is as it
+    was, as it always is.
+    """))
+
+(:doc list-sort-unstable
+  (summary "Returns a sorted copy of a list using compare. Not stable.")
+  (arg xs "The list to sort.")
+  (returns "A list of the same items, in ascending order. Equal items can be in any order.")
+  (see list-sort array-sort-unstable! compare)
+  (example """
+    (list-sort-unstable (list 3 1 2))            ; (1 2 3)
+    """)
+  (reference """
+    Copies the items into an array, sorts it with
+    @code{array-sort-unstable!}, and builds the result list in one pass.
     """))
 
 (:doc vec-sort-by

@@ -13,7 +13,9 @@
 ;; std/eq.bjo — equality and hashing.
 (export = eq-hash
         Ord compare less? greater? at-most? at-least?
-        least greatest list-sort vec-sort vec-sort-by list-min list-max
+        least greatest list-sort vec-sort vec-sort-by array-sort!
+        list-sort-unstable vec-sort-unstable array-sort-unstable!
+        list-min list-max
         not)
 
 (:doc #:file "eq.bjodoc")
@@ -61,40 +63,103 @@
 (defun (greatest a b) (if (at-least? a b) a b))
 
 ;; --- Sorting ---------------------------------------------------------------
-;; Merge sort. Stable. Uses builtins only.
+;; Two kinds, in the order of the elements' Ord:
 ;;
-;; Bottom-up over two arrays rather than recursive over the list, so a long
-;; list neither overflows the stack nor allocates a cons cell per element per
-;; level: runs of width 1, 2, 4, ... merge from one array into the other, and
-;; the list is rebuilt once at the end.
-(: (-> (List %a) (List %a)) (where (Ord %a)))
-(defun (list-sort xs)
-  (def n (list-length xs))
+;; - `array-sort!`, `list-sort`, `vec-sort` (and `mutablevec-sort!`): stable,
+;;   equal elements keep their order. The merge sort in `array-sort!`. It is
+;;   exported, so the compiler copies it into each caller at the element type,
+;;   and `compare` is a direct call.
+;; - The `-unstable` ones: .NET's introsort (`Bjolang.Runtime.SortModule`),
+;;   with `(ord-comparer)`. Equal elements can change places. Faster, and for
+;;   a type whose equal values are the same value, such as an int, the result
+;;   is the same.
+;;
+;; The list and vec sorts sort a copy, so when `compare` raises their input is
+;; as it was.
+
+(import/class
+  ((Comparer %a) (: System.Collections.Generic.IComparer)))
+
+(import/extern
+  (clr-sort-unstable! (: Bjolang.Runtime.SortModule.SortUnstable (-> (Array %a) (Comparer %a) void)))
+  (clr-vec->array     (: BjolangRuntime.vecsubgtarray (-> (Vec %a) (Array %a))))
+  (clr-list->array    (: BjolangRuntime.listsubgtarray (-> (List %a) (Array %a)))))
+
+;; Sorts `arr` in place, in the order of the elements' Ord. Stable.
+;;
+;; - Insertion sort over runs of 16, then bottom-up merges between `arr` and
+;;   one buffer. A merge takes from the left run on a tie, which keeps the sort
+;;   stable.
+;; - When `compare` raises, the contents of `arr` are unspecified: an element
+;;   can be lost or be there twice.
+(: (-> (Array %a) void) (where (Ord %a)))
+(defun (array-sort! arr)
+  (def n (array-length arr))
+  (def run 16)
 
   (defun (smaller (: a int) b) (if (< a b) a b))
 
-  ;; src[lo, mid) and src[mid, hi) into dst[lo, hi), answering hi: where the
-  ;; next pair of runs starts. Ties take the left run, which is what keeps the
-  ;; sort stable.
+  ;; The elements in [lo, hi), in order.
+  (defun (insert-run lo hi)
+    (let next ((i (+ lo 1)))
+      (when (< i hi)
+        (let ((x (array-ref arr i)))
+          (let shift ((j (- i 1)))
+            (if (if (>= j lo) (> (compare (array-ref arr j) x) 0) #f)
+                (let ()
+                  (array-set! arr (+ j 1) (array-ref arr j))
+                  (shift (- j 1)))
+                (array-set! arr (+ j 1) x))))
+        (next (+ i 1)))))
+
+  ;; src[lo, mid) and src[mid, hi) into dst[lo, hi).
   (defun (merge-runs (: src (Array %a)) dst lo mid hi)
     (let go ((l lo) (r mid) (k lo))
-      (if (< k hi)
-          (if (if (< l mid)
-                  (if (< r hi) (at-most? (array-ref src l) (array-ref src r)) #t)
-                  #f)
-              (let ()
-                (array-set! dst k (array-ref src l))
-                (go (+ l 1) r (+ k 1)))
-              (let ()
-                (array-set! dst k (array-ref src r))
-                (go l (+ r 1) (+ k 1))))
-          k)))
+      (when (< k hi)
+        (if (if (< l mid)
+                (if (< r hi) (<= (compare (array-ref src l) (array-ref src r)) 0) #t)
+                #f)
+            (let ()
+              (array-set! dst k (array-ref src l))
+              (go (+ l 1) r (+ k 1)))
+            (let ()
+              (array-set! dst k (array-ref src r))
+              (go l (+ r 1) (+ k 1)))))))
 
   (defun (merge-pass src dst width)
     (let go ((lo 0))
       (if (< lo n)
-          (go (merge-runs src dst lo (smaller (+ lo width) n) (smaller (+ lo (* 2 width)) n)))
+          (let ()
+            (merge-runs src dst lo (smaller (+ lo width) n) (smaller (+ lo (* 2 width)) n))
+            (go (+ lo (* 2 width))))
           dst)))
+
+  (let runs ((lo 0))
+    (when (< lo n)
+      (insert-run lo (smaller (+ lo run) n))
+      (runs (+ lo run))))
+  (when (> n run)
+    (def sorted
+      (let go ((src arr) (dst (make-array n)) (width run))
+        (if (< width n)
+            (go (merge-pass src dst width) src (* width 2))
+            src)))
+    (when (not (eq? sorted arr))
+      (let copy ((i 0))
+        (when (< i n)
+          (array-set! arr i (array-ref sorted i))
+          (copy (+ i 1)))))))
+
+;; Sorts `arr` in place, in the order of the elements' Ord. Not stable.
+;;
+;; - When `compare` raises, it raises the same exception, and the contents of
+;;   `arr` are unspecified.
+(: (-> (Array %a) void) (where (Ord %a)))
+(defun (array-sort-unstable! arr) (clr-sort-unstable! arr (ord-comparer)))
+
+(: (-> (List %a) (List %a)) (where (Ord %a)))
+(defun (list-sort xs)
+  (def n (list-length xs))
 
   (defun (fill arr)
     (let go ((i 0) (rest xs))
@@ -105,15 +170,12 @@
           arr)))
 
   (defun (sorted)
-    (def done
-      (let go ((src (fill (make-array n))) (dst (make-array n)) (width 1))
-        (if (< width n)
-            (go (merge-pass src dst width) src (* width 2))
-            src)))
+    (def (: arr (Array %a)) (fill (make-array n)))
+    (array-sort! arr)
     (let go ((i (- n 1)) (acc Nil))
       (if (< i 0)
           acc
-          (go (- i 1) (Cons (array-ref done i) acc)))))
+          (go (- i 1) (Cons (array-ref arr i) acc)))))
 
   (if (< n 2) xs (sorted)))
 
@@ -168,7 +230,33 @@
 
 ;; A vec in the order of its elements' Ord. Stable.
 (: (-> (Vec %a) (Vec %a)) (where (Ord %a)))
-(defun (vec-sort v) (vec-sort-by (fun (a b) (compare a b)) v))
+(defun (vec-sort v)
+  (if (< (vec-length v) 2)
+      v
+      (let ((arr (clr-vec->array v)))
+        (array-sort! arr)
+        (array->vec arr))))
+
+;; A vec in the order of its elements' Ord. Not stable.
+(: (-> (Vec %a) (Vec %a)) (where (Ord %a)))
+(defun (vec-sort-unstable v)
+  (if (< (vec-length v) 2)
+      v
+      (let ((arr (clr-vec->array v)))
+        (array-sort-unstable! arr)
+        (array->vec arr))))
+
+;; A list in the order of its elements' Ord. Not stable.
+(: (-> (List %a) (List %a)) (where (Ord %a)))
+(defun (list-sort-unstable xs)
+  (if (if (list-empty? xs) #t (list-empty? (list-tail xs)))
+      xs
+      (let ((arr (clr-list->array xs)))
+        (array-sort-unstable! arr)
+        (let go ((i (- (array-length arr) 1)) (acc Nil))
+          (if (< i 0)
+              acc
+              (go (- i 1) (Cons (array-ref arr i) acc)))))))
 
 ;; Private left fold for list min/max.
 (: (-> (-> %a %b %b) %b (List %a) %b))

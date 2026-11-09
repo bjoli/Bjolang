@@ -1,0 +1,212 @@
+;; The sorts by Ord.
+;;
+;; - list-sort, vec-sort, mutablevec-sort! and array-sort! are stable. Each
+;;   result is checked against vec-sort-by, a stable merge sort with the same
+;;   compare, and records with one key, a thousand 0.0 and -0.0, and 1.0M and
+;;   1.00M keep their order.
+;; - The -unstable ones give a sorted permutation of the input, for every type.
+;;   For ints it is the stable result.
+;; - A newtype over long with its own Ord is long at run time, and still sorts
+;;   by its own compare, also through a generic function.
+;; - When compare raises, every sort raises that exception, not .NET's
+;;   InvalidOperationException around it, and a list, vec or mutable vector is
+;;   as it was.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std random))
+(import (std mutable vec))
+
+(import/class (Refused (: System.ArgumentException (-> string Refused))))
+
+;; Ordered from the greatest down: not the order of long, which it is at run time.
+(type (: Down (Newtype long)))
+(impl (Eq Down) #:via long)
+(impl (Ord Down)
+  (defun (compare a b)
+    (def (Down x) a)
+    (def (Down y) b)
+    (compare y x)))
+
+;; Ordered by key only, so two items with one key are equal and still differ.
+(type (: Item (Record (: key int) (: tag string))))
+(impl (Eq Item)
+  (defun (= a b) (and (= (record-ref a key) (record-ref b key)) (= (record-ref a tag) (record-ref b tag))))
+  (defun (eq-hash a) (eq-hash (record-ref a key))))
+(impl (Ord Item)
+  (defun (compare a b) (compare (record-ref a key) (record-ref b key))))
+
+;; Raises ArgumentException when it compares the key 13 with anything.
+(type (: Touchy (Struct (: n int))))
+(impl (Ord Touchy)
+  (defun (compare a b)
+    (when (or (= (struct-ref a n) 13) (= (struct-ref b n) 13))
+      (raise (cast Exception (Refused. "13"))))
+    (compare (struct-ref a n) (struct-ref b n))))
+
+;; Whether the four stable sorts give what the stable merge sort gives.
+(: (-> (Vec %a) bool) (where (Ord %a)))
+(defun (stable-sorts-agree? v)
+  (def want (vec-sort-by compare v))
+  (def m (vec->mutablevec v))
+  (mutablevec-sort! m)
+  (def a (vec->array v))
+  (array-sort! a)
+  (and (= (vec-sort v) want)
+       (= (list-sort (vec->list v)) (vec->list want))
+       (= (mutablevec->vec m) want)
+       (= (array->vec a) want)))
+
+;; How many times each value is in `v`, by its Eq.
+(: (-> (Vec %a) (Map %a int)) (where (Eq %a)))
+(defun (counts v)
+  (loop (:for x v)
+        (:acc m (folding (map-empty) (map-set m x (+ (map-ref-or m x 0) 1))))
+        => m))
+
+;; Whether `got` is in order and holds each value as many times as `v` does.
+(: (-> (Vec %a) (Vec %a) bool) (where (Ord %a)))
+(defun (sorted-permutation? v got)
+  (and (= (vec-length got) (vec-length v))
+       (loop (:for i (range 1 (vec-length got)))
+             (:acc ok (folding #t (and ok (<= (compare (vec-ref got (- i 1)) (vec-ref got i)) 0))))
+             => ok)
+       (= (counts got) (counts v))))
+
+;; Whether the four unstable sorts each give a sorted permutation of `v`.
+(: (-> (Vec %a) bool) (where (Ord %a)))
+(defun (unstable-sorts-agree? v)
+  (def m (vec->mutablevec v))
+  (mutablevec-sort-unstable! m)
+  (def a (vec->array v))
+  (array-sort-unstable! a)
+  (and (sorted-permutation? v (vec-sort-unstable v))
+       (sorted-permutation? v (list->vec (list-sort-unstable (vec->list v))))
+       (sorted-permutation? v (mutablevec->vec m))
+       (sorted-permutation? v (array->vec a))))
+
+;; A generic caller: the dictionary comes from its caller.
+(: (-> (Vec %a) (Vec %a)) (where (Ord %a)))
+(defun (generic-sort v) (vec-sort v))
+
+(: (-> (Vec %a) (Vec %a)) (where (Ord %a)))
+(defun (generic-sort-unstable v) (vec-sort-unstable v))
+
+(: (-> RandomSource int int int))
+(defun (draw rng lo hi) (random-int lo hi #:rng rng))
+
+;; Whether `thunk` raises ArgumentException, which Touchy's compare raises.
+(: (-> (-> %a) bool))
+(defun (refused? thunk) (err? (try (thunk) #:catch (System.ArgumentException))))
+
+(defun (main args)
+  (def rng (make-random/seed64 7UL))
+  ;; 1000 values from a small range, so that many are equal.
+  (: (-> (-> int %a) (Vec %a)))
+  (defun (values f) {vecing (f (draw rng -50 50)) (:for _i (range 0 1000))})
+
+  ;; ---- Each type, stable and unstable --------------------------------------
+  (def ints (values (fun (x) x)))
+  (expect "int" (stable-sorts-agree? ints) #t)
+  (expect "int, unstable" (unstable-sorts-agree? ints) #t)
+  (expect "int, unstable is the stable result" (vec-sort-unstable ints) (vec-sort ints))
+  (def longs (values (fun (x) (* (cast long x) 1000000000000L))))
+  (expect "long" (stable-sorts-agree? longs) #t)
+  (expect "long, unstable" (unstable-sorts-agree? longs) #t)
+  (def shorts (values (fun (x) (cast short x))))
+  (expect "short" (and (stable-sorts-agree? shorts) (unstable-sorts-agree? shorts)) #t)
+  (def ulongs (values (fun (x) (cast ulong (+ x 50)))))
+  (expect "ulong" (and (stable-sorts-agree? ulongs) (unstable-sorts-agree? ulongs)) #t)
+  (def int128s (values (fun (x) (cast int128 x))))
+  (expect "int128" (and (stable-sorts-agree? int128s) (unstable-sorts-agree? int128s)) #t)
+  (def chars (values (fun (x) (integer->char (+ x 100)))))
+  (expect "char" (and (stable-sorts-agree? chars) (unstable-sorts-agree? chars)) #t)
+  (def bools (values (fun (x) (> x 0))))
+  (expect "bool" (and (stable-sorts-agree? bools) (unstable-sorts-agree? bools)) #t)
+  (def doubles (values (fun (x) (/ (cast double x) 4.0))))
+  (expect "double" (and (stable-sorts-agree? doubles) (unstable-sorts-agree? doubles)) #t)
+  (def strings (values (fun (x) (int->string x))))
+  (expect "string" (and (stable-sorts-agree? strings) (unstable-sorts-agree? strings)) #t)
+  (def tuples (values (fun (x) (Tuple (% x 3) x))))
+  (expect "tuples" (and (stable-sorts-agree? tuples) (unstable-sorts-agree? tuples)) #t)
+  (def records (values (fun (x) (Item (key (% x 5)) (tag (int->string x))))))
+  (expect "records" (and (stable-sorts-agree? records) (unstable-sorts-agree? records)) #t)
+  (expect "a sort of ints" (vec-sort [3 -1 2 2 0]) [-1 0 2 2 3])
+  ;; Every length around the runs of 16 and the merge widths.
+  (expect "each length from 0 to 100"
+          (loop (:for n (range 0 101))
+                (:acc ok (folding #t (and ok
+                                          (let ((v {vecing (Tuple (draw rng 0 5) i) (:for i (range 0 n))}))
+                                            (and (stable-sorts-agree? v) (unstable-sorts-agree? v))))))
+                => ok)
+          #t)
+
+  ;; ---- Stable where it can be seen -----------------------------------------
+  (def items (vec-map (fun (i) (Item (key (% i 3)) (tag (int->string i)))) (->vec (range 0 9))))
+  (expect "records with one key keep their order"
+          (vec-map (fun (it) (record-ref it tag)) (vec-sort items))
+          ["0" "3" "6" "1" "4" "7" "2" "5" "8"])
+  (expect "in a list too"
+          (list-map (fun (it) (record-ref it tag)) (list-sort (vec->list items)))
+          (list "0" "3" "6" "1" "4" "7" "2" "5" "8"))
+  (def mitems (vec->mutablevec items))
+  (mutablevec-sort! mitems)
+  (expect "and in a mutable vector"
+          (vec-map (fun (it) (record-ref it tag)) (mutablevec->vec mitems))
+          ["0" "3" "6" "1" "4" "7" "2" "5" "8"])
+  (expect "0.0 and -0.0 keep their order"
+          (vec-map double->string (vec-sort [1.0 0.0 -0.0 -1.0 -0.0 0.0]))
+          ["-1" "0" "-0" "-0" "0" "1"])
+  ;; Enough of them for several merges.
+  (def signs {vecing (if (= (draw rng 0 2) 0) 0.0 -0.0) (:for _i (range 0 1000))})
+  (def mixed (vec-add (vec-add (vec-add signs 3.0) -2.0) 1.0))
+  (: (-> (Vec double) (Vec string)))
+  (defun (zeros v) {vecing (double->string x) (:for x v) (:when (= x 0.0))})
+  (expect "a thousand 0.0 and -0.0 keep their order" (zeros (vec-sort mixed)) (zeros mixed))
+  (expect "1.0M and 1.00M keep their order"
+          (vec-map decimal->string (vec-sort [2M 1.00M 1.0M 1M]))
+          ["1.00" "1.0" "1" "2"])
+
+  ;; ---- An Ord that is not the run-time type's ------------------------------
+  (def downs (vec-map (fun (x) (Down (cast long x))) [3 1 2 5 4]))
+  (: (-> (Vec Down) (Vec long)))
+  (defun (unwrap v) (vec-map (fun (d) (def (Down x) d) x) v))
+  (expect "a newtype over long sorts by its own compare" (unwrap (vec-sort downs)) [5L 4L 3L 2L 1L])
+  (expect "unstable too" (unwrap (vec-sort-unstable downs)) [5L 4L 3L 2L 1L])
+  (expect "through a generic function" (unwrap (generic-sort downs)) [5L 4L 3L 2L 1L])
+  (expect "unstable, through a generic function" (unwrap (generic-sort-unstable downs)) [5L 4L 3L 2L 1L])
+  (expect "long through the same generic function" (generic-sort [3L 1L 2L]) [1L 2L 3L])
+  (expect "list-sort of the newtype"
+          (unwrap (list->vec (list-sort (vec->list downs)))) [5L 4L 3L 2L 1L])
+  (def mdowns (vec->mutablevec downs))
+  (mutablevec-sort-unstable! mdowns)
+  (expect "mutablevec-sort-unstable! of the newtype" (unwrap (mutablevec->vec mdowns)) [5L 4L 3L 2L 1L])
+  (def adowns (vec->array downs))
+  (array-sort! adowns)
+  (expect "array-sort! of the newtype" (unwrap (array->vec adowns)) [5L 4L 3L 2L 1L])
+
+  ;; ---- A compare that raises -------------------------------------------------
+  (def touchy (vec-map (fun (x) (Touchy (n x))) (vec-add (vec-reverse (->vec (range 1 41))) 13)))
+  (def mtouchy (vec->mutablevec touchy))
+  (expect-true "mutablevec-sort! raises what compare raises" (refused? #(mutablevec-sort! mtouchy)))
+  (expect "and the vector is as it was" (mutablevec->vec mtouchy) touchy)
+  (expect-true "mutablevec-sort-unstable! raises what compare raises"
+               (refused? #(mutablevec-sort-unstable! mtouchy)))
+  (expect "and the vector is as it was, unstable" (mutablevec->vec mtouchy) touchy)
+  (expect-true "vec-sort raises it" (refused? #(vec-sort touchy)))
+  (expect-true "vec-sort-unstable raises it" (refused? #(vec-sort-unstable touchy)))
+  (expect-true "list-sort-unstable raises it" (refused? #(list-sort-unstable (vec->list touchy))))
+  (expect-true "array-sort-unstable! raises it" (refused? #(array-sort-unstable! (vec->array touchy))))
+
+  ;; ---- Short ones ------------------------------------------------------------
+  (def (: none (Vec long)) (vec-empty))
+  (expect "an empty vec" (vec-sort none) none)
+  (expect "an empty vec, unstable" (vec-sort-unstable none) none)
+  (expect "an empty list" (list-sort (vec->list none)) (list))
+  (expect "an empty list, unstable" (list-sort-unstable (vec->list none)) (list))
+  (expect "one element" (vec-sort [7L]) [7L])
+  (expect "one element, unstable" (list-sort-unstable (list 7L)) (list 7L))
+  (def mnone (vec->mutablevec none))
+  (mutablevec-sort-unstable! mnone)
+  (expect "an empty mutable vector" (mutablevec-length mnone) 0)
+  0)
