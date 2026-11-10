@@ -15,8 +15,8 @@
 ;; `(scan line '(long "-" long))` reads two longs with a dash between them and
 ;; answers them as a tuple. The pattern is a quoted list, read when the macro
 ;; expands: the expansion is straight-line code over the line's bytes, one
-;; step of `BjoScan.cs` per item, with no pattern left to interpret at run
-;; time. A number step answers a value and the next position as a value
+;; step per item, with no pattern left to interpret at run time. The steps
+;; are written #:inline, so each one is copied into the code that scans. A number step answers a value and the next position as a value
 ;; tuple, so a pattern of numbers allocates nothing. A text step answers only
 ;; the next position, and the value is a slice made after it, so text that
 ;; `(:skip ...)` drops allocates nothing either.
@@ -26,33 +26,311 @@
 ;; not match. Where the rest of the pattern would be copied into two places —
 ;; after a repetition, an option or a choice — it is a local function instead,
 ;; a join point, so the expansion grows with the pattern and not faster.
-(import (std prelude) (std syntax-match))
+(import (std prelude) (std syntax-match) (std interop))
 
 (:doc #:file "scan.bjodoc")
 
 (export scan-lit scan-byte scan-lit8 scan-ws scan-int scan-long scan-double scan-char scan-word
         scan-rest scan-chars scan-until scan-until-byte scan-slice scan-end? scan-fail scan-message)
 
-;; What the expansion calls. Exported, because a template reaches a helper of
-;; its own module only through the module's exports.
+;; ---------------------------------------------------------------------------
+;; The steps
+;; ---------------------------------------------------------------------------
+
+;; What the expansion calls. They are exported, because a template reaches a
+;; helper of its own module only through the module's exports. They are
+;; #:inline, so an importer copies each step into the code that scans, and
+;; the constant width that the macro gives is known there.
+;;
+;; A position is a byte offset into the line's UTF-8 bytes, from 0 to the
+;; byte length. Each step takes the position it starts at and answers the
+;; position after what it read, or -1 when the text there does not match. A
+;; step that reads a number or a character answers it with the position, as
+;; a tuple, so nothing is allocated. A step that reads text answers only the
+;; position, and `scan-slice` makes the text when the pattern keeps it.
+;;
+;; A step that takes a width reads no more than that many characters, and
+;; reads to the end of the line when the width is negative.
+;;
+;; A step never raises on text that does not match. The macro decides what a
+;; failure does: `scan` calls `scan-fail`, and `try-scan` makes an `Err` with
+;; `scan-message`.
+
+(import/class
+  (FormatException (: System.FormatException (-> string FormatException))))
+
+;; The line's bytes are read-only, and a part of the line is made by
+;; `SliceBytes`, which refuses an offset in the middle of a character.
 (import/extern
-  (scan-lit     (: Bjolang.Runtime.BjoScan.Lit     (-> string int string int)))
-  (scan-byte    (: Bjolang.Runtime.BjoScan.Byte    (-> string int int int)))
-  (scan-lit8    (: Bjolang.Runtime.BjoScan.Lit8    (-> string int long int int)))
-  (scan-ws      (: Bjolang.Runtime.BjoScan.Ws      (-> string int int)))
-  (scan-int     (: Bjolang.Runtime.BjoScan.Int     (-> string int int (Tuple int int))))
-  (scan-long    (: Bjolang.Runtime.BjoScan.Long    (-> string int int (Tuple long int))))
-  (scan-double  (: Bjolang.Runtime.BjoScan.Double  (-> string int int (Tuple double int))))
-  (scan-char    (: Bjolang.Runtime.BjoScan.Char    (-> string int (Tuple char int))))
-  (scan-word    (: Bjolang.Runtime.BjoScan.Word    (-> string int int int)))
-  (scan-rest    (: Bjolang.Runtime.BjoScan.Rest    (-> string int int int)))
-  (scan-chars   (: Bjolang.Runtime.BjoScan.Chars   (-> string int long long int int)))
-  (scan-until   (: Bjolang.Runtime.BjoScan.Until   (-> string int long long int int)))
-  (scan-until-byte (: Bjolang.Runtime.BjoScan.UntilByte (-> string int int int int)))
-  (scan-slice   (: Bjolang.Runtime.BjoScan.Slice   (-> string int int string)))
-  (scan-end?    (: Bjolang.Runtime.BjoScan.End     (-> string int bool)))
-  (scan-fail    (: Bjolang.Runtime.BjoScan.Fail    (-> string int string %a)))
-  (scan-message (: Bjolang.Runtime.BjoScan.Message (-> string int string string))))
+  (line-bytes  (: BjoString.Utf8String.AsSpan (-> string (RoSpan byte))))
+  (line-length (: BjoString.Utf8String.ByteLength (-> string int) #:get))
+  (line-part   (: BjoString.Utf8String.SliceBytes (-> string int int string)))
+  (bytes-part  (: Bjolang.Runtime.Spans.Slice (-> (RoSpan byte) int int (RoSpan byte))))
+  (bytes-start-with? (: System.MemoryExtensions.StartsWith (-> (RoSpan byte) (RoSpan byte) bool)))
+  (bytes-find  (: System.MemoryExtensions.IndexOf (-> (RoSpan byte) byte int)))
+  (bytes-long  (: System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian (-> (RoSpan byte) long)))
+  (bytes-double
+   (: System.Buffers.Text.Utf8Parser.TryParse
+      (-> (RoSpan byte) (out double) (out int) System.Char (Tuple bool double int)))))
+
+;; Whether a byte is whitespace, as a space in a pattern matches it: the
+;; ASCII blanks. One unsigned compare tests a range, as one branch.
+(: (-> int bool))
+(defun (blank? b) #:inline (or (= b 32) (<= (cast uint (- b 9)) 4u)))
+
+(: (-> (RoSpan byte) int int))
+(defun (byte-at b i) #:inline (cast int (ro-span-ref b i)))
+
+;; The end of `width` characters from `pos`, or the end of the bytes.
+(: (-> (RoSpan byte) int int int))
+(defun (count-end b pos width)
+  (def n (ro-span-length b))
+  (let go ((i pos) (k 0))
+    (if (and (< k width) (< i n))
+        (let ((c (byte-at b i)))
+          (go (+ i (cond ((< c 128) 1) ((>= c 240) 4) ((>= c 224) 3) (else 2))) (+ k 1)))
+        i)))
+
+;; The bytes of the line that a step with a width can read: all of them when
+;; the width is negative. A loop that stops at their length tests each index
+;; once, because .NET then knows it is in the span.
+(: (-> string int int (RoSpan byte)))
+(defun (within s pos width) #:inline
+  (def b (line-bytes s))
+  (if (< width 0) b (bytes-part b 0 (count-end b pos width))))
+
+;; The text of `literal`, exactly.
+(: (-> string int string int))
+(defun (scan-lit s pos literal) #:inline
+  (def b (line-bytes s))
+  (def want (line-bytes literal))
+  (if (bytes-start-with? (bytes-part b pos (ro-span-length b)) want)
+      (+ pos (ro-span-length want))
+      -1))
+
+;; One ASCII byte, exactly. What a literal of one character compiles to.
+(: (-> string int int int))
+(defun (scan-byte s pos code) #:inline
+  (def b (line-bytes s))
+  (if (and (< pos (ro-span-length b)) (= (byte-at b pos) code)) (+ pos 1) -1))
+
+;; A literal of 2 to 8 bytes, exactly. `bytes` holds the literal's bytes with
+;; the first in the lowest byte, so that one 64-bit read and compare matches
+;; it.
+(: (-> string int long int int))
+(defun (scan-lit8 s pos bytes length) #:inline
+  (def b (line-bytes s))
+  (def left (- (ro-span-length b) pos))
+  (cond
+    ((< left length) -1)
+    ((< left 8) (lit-tail b pos bytes length))
+    ((= (bitwise-and (bytes-long (bytes-part b pos (+ pos 8)))
+                     (if (= length 8) -1L (- (shift-left 1L (* 8 length)) 1L)))
+        bytes)
+     (+ pos length))
+    (else -1)))
+
+;; `scan-lit8` with fewer than 8 bytes left in the line. Out of line, so that
+;; each literal of a pattern does not copy the loop.
+(: (-> (RoSpan byte) int long int int))
+(defun (lit-tail b pos bytes length)
+  (let go ((i 0) (acc 0L))
+    (cond
+      ((< i length)
+       (go (+ i 1) (bitwise-ior acc (shift-left (cast long (ro-span-ref b (+ pos i))) (* 8 i)))))
+      ((= acc bytes) (+ pos length))
+      (else -1))))
+
+;; Any amount of whitespace, none included. Never fails.
+(: (-> string int int))
+(defun (scan-ws s pos) #:inline
+  (def b (line-bytes s))
+  (def n (ro-span-length b))
+  (let go ((i pos))
+    (cond
+      ((>= i n) i)
+      ((blank? (byte-at b i)) (go (+ i 1)))
+      (else i))))
+
+;; The digits from `first` to `stop`, more than 18 of them, as a number of
+;; at most `hi`, or `hi + 1` when the sign is a minus. Out of line, because
+;; most of such digits are leading zeros or too many. The digits are added up
+;; below zero, where the least long fits, and each one is checked.
+(: (-> (RoSpan byte) int int bool long (Tuple long int)))
+(defun (long-digits b first stop negative? hi)
+  (def lo (if negative? (- (- 0L hi) 1L) (- 0L hi)))
+  (let go ((i first) (acc 0L))
+    (cond
+      ((= i stop) (Tuple (if negative? acc (- 0L acc)) i))
+      (else
+       (def d (cast long (- (byte-at b i) 48)))
+       (if (< acc (/ (+ lo d) 10L))
+           (Tuple 0L -1)
+           (go (+ i 1) (- (* acc 10L) d)))))))
+
+;; An optional sign and one or more decimal digits from `pos`, as a number of
+;; at most `hi`, or `hi + 1` when the sign is a minus, and the position after
+;; them. The position is -1 when there is no digit or the number is too big.
+;; Up to 18 digits cannot overflow a long, so the check comes after the loop.
+(: (-> (RoSpan byte) int long (Tuple long int)))
+(defun (read-digits b pos hi) #:inline
+  (def* (end (ro-span-length b))
+        (c (if (< pos end) (byte-at b pos) 0))
+        (negative? (= c 45))
+        (first (if (or negative? (= c 43)) (+ pos 1) pos)))
+  (def (acc . stop)
+    (let go ((i first) (acc 0L))
+      (if (< i end)
+          (let ((d (- (byte-at b i) 48)))
+            (if (<= (cast uint d) 9u) (go (+ i 1) (+ (* acc 10L) (cast long d))) (Tuple acc i)))
+          (Tuple acc i))))
+  (cond
+    ((= stop first) (Tuple 0L -1))
+    ((> (- stop first) 18) (long-digits b first stop negative? hi))
+    ((> (if negative? (- acc 1L) acc) hi) (Tuple 0L -1))
+    (negative? (Tuple (- 0L acc) stop))
+    (else (Tuple acc stop))))
+
+;; An int: an optional sign and decimal digits. A number too big for an int
+;; does not match.
+(: (-> string int int (Tuple int int)))
+(defun (scan-int s pos width) #:inline
+  (def (v . q) (read-digits (within s pos width) pos 2147483647L))
+  (Tuple (cast int v) q))
+
+;; A long, as `scan-int` reads an int.
+(: (-> string int int (Tuple long int)))
+(defun (scan-long s pos width) #:inline
+  (read-digits (within s pos width) pos 9223372036854775807L))
+
+;; A double, as `string->double` reads one: `1.5`, `-2`, `3e8`.
+(: (-> string int int (Tuple double int)))
+(defun (scan-double s pos width) #:inline
+  (def b (within s pos width))
+  (let (((ok? v used) (bytes-double (bytes-part b pos (ro-span-length b)) (clr-default))))
+    (if ok? (Tuple v (+ pos used)) (Tuple 0.0 -1))))
+
+;; The low 6 bits of a continuation byte.
+(: (-> (RoSpan byte) int int))
+(defun (continued b i) #:inline (bitwise-and (byte-at b i) 63))
+
+;; The character that starts with the byte `c` at `pos`, which is not ASCII,
+;; and the position after it. The line is valid UTF-8.
+(: (-> (RoSpan byte) int int (Tuple char int)))
+(defun (decode-char b pos c)
+  (cond
+    ((>= c 240)
+     (Tuple (integer->char (bitwise-ior (bitwise-ior (shift-left (bitwise-and c 7) 18)
+                                                     (shift-left (continued b (+ pos 1)) 12))
+                                        (bitwise-ior (shift-left (continued b (+ pos 2)) 6)
+                                                     (continued b (+ pos 3)))))
+            (+ pos 4)))
+    ((>= c 224)
+     (Tuple (integer->char (bitwise-ior (bitwise-ior (shift-left (bitwise-and c 15) 12)
+                                                     (shift-left (continued b (+ pos 1)) 6))
+                                        (continued b (+ pos 2))))
+            (+ pos 3)))
+    (else
+     (Tuple (integer->char (bitwise-ior (shift-left (bitwise-and c 31) 6) (continued b (+ pos 1))))
+            (+ pos 2)))))
+
+;; One character, whatever it is.
+(: (-> string int (Tuple char int)))
+(defun (scan-char s pos) #:inline
+  (def b (line-bytes s))
+  (if (>= pos (ro-span-length b))
+      (Tuple (integer->char 0) -1)
+      (let ((c (byte-at b pos)))
+        (if (< c 128) (Tuple (integer->char c) (+ pos 1)) (decode-char b pos c)))))
+
+;; One or more characters up to whitespace or the end.
+(: (-> string int int int))
+(defun (scan-word s pos width) #:inline
+  (def b (within s pos width))
+  (def end (ro-span-length b))
+  (def stop
+    (let go ((i pos))
+      (cond
+        ((>= i end) i)
+        ((blank? (byte-at b i)) i)
+        (else (go (+ i 1))))))
+  (if (= stop pos) -1 stop))
+
+;; The rest of the line, which may be empty. Never fails.
+(: (-> string int int int))
+(defun (scan-rest s pos width) #:inline
+  (if (< width 0) (line-length s) (count-end (line-bytes s) pos width)))
+
+;; Whether an ASCII set holds a byte. The set is a 128-bit mask in two
+;; halves: bit c of `low` is character c, and bit c - 64 of `high` is
+;; character c from 64. A byte from 128 up is in no set.
+(: (-> int long long bool))
+(defun (in-set? c low high) #:inline
+  (if (< c 64)
+      (not (= (bitwise-and (shift-right-logical low c) 1L) 0L))
+      (and (< c 128) (not (= (bitwise-and (shift-right-logical high (- c 64)) 1L) 0L)))))
+
+;; One or more characters of an ASCII set.
+(: (-> string int long long int int))
+(defun (scan-chars s pos low high width) #:inline
+  (def b (within s pos width))
+  (def end (ro-span-length b))
+  (def stop
+    (let go ((i pos))
+      (cond
+        ((>= i end) i)
+        ((in-set? (byte-at b i) low high) (go (+ i 1)))
+        (else i))))
+  (if (= stop pos) -1 stop))
+
+;; Any characters up to one of an ASCII set or the end, none included. Never
+;; fails. A character that is not ASCII is in no set, so the end is never
+;; inside one.
+(: (-> string int long long int int))
+(defun (scan-until s pos low high width) #:inline
+  (def b (within s pos width))
+  (def end (ro-span-length b))
+  (let go ((i pos))
+    (cond
+      ((>= i end) i)
+      ((in-set? (byte-at b i) low high) i)
+      (else (go (+ i 1))))))
+
+;; Any characters up to one ASCII byte or the end, none included. Never
+;; fails. A vectorized search, which is what `scan-until` with one character
+;; compiles to.
+(: (-> string int int int int))
+(defun (scan-until-byte s pos stop width) #:inline
+  (def b (within s pos width))
+  (def end (ro-span-length b))
+  (def found (bytes-find (bytes-part b pos end) (cast byte stop)))
+  (if (< found 0) end (+ pos found)))
+
+;; The text from `from` to `to`, which shares the line's bytes. What a text
+;; item's value is.
+(: (-> string int int string))
+(defun (scan-slice s from to) #:inline (line-part s from (- to from)))
+
+;; Whether `pos` is the end of the line.
+(: (-> string int bool))
+(defun (scan-end? s pos) #:inline (= pos (line-length s)))
+
+;; Why the line does not match: what was expected, at which column, and the
+;; line. The column counts characters from 1.
+(: (-> string int string string))
+(defun (scan-message s pos expected)
+  (def b (line-bytes s))
+  (def column
+    (let go ((i 0) (k 1))
+      (if (< i pos)
+          (go (+ i 1) (if (= (bitwise-and (byte-at b i) 192) 128) k (+ k 1)))
+          k)))
+  (str "scan: expected " expected " at column " (int->string column) " of \"" s "\""))
+
+;; Raises a FormatException that says why the line does not match.
+(: (-> string int string %a))
+(defun (scan-fail s pos expected)
+  (raise (cast Exception (FormatException. (scan-message s pos expected)))))
 
 ;; ---------------------------------------------------------------------------
 ;; The pattern
@@ -147,7 +425,7 @@
     (("hex") (Some "0123456789abcdefABCDEF"))
     (else None)))
 
-;; A set of ASCII characters as the two halves `BjoScan.cs` tests a byte
+;; A set of ASCII characters as the two halves `in-set?` tests a byte
 ;; against.
 (: (-> string (Tuple long long)))
 (defun (mask text)

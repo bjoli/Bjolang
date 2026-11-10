@@ -13,7 +13,7 @@
 ;; std/eq.bjo — equality and hashing.
 (export = eq-hash
         Ord compare less? greater? at-most? at-least?
-        least greatest list-sort vec-sort vec-sort-by array-sort!
+        least greatest list-sort vec-sort vec-sort-by array-sort! array-sort-by!
         list-sort-unstable vec-sort-unstable array-sort-unstable!
         list-min list-max
         not)
@@ -184,16 +184,34 @@
 ;; since ties take the left run. Answers the array that holds the result, which
 ;; is arr or one of the same length.
 (: (-> (-> %a %a int) (Array %a) (Array %a)))
+;;
+;; The local functions take the array and the comparison as arguments, and
+;; capture nothing. A captured variable is a field that .NET reads again
+;; after each call of `cmp`, and checks the index against again.
 (defun (sort-array-by cmp arr)
   (def n (array-length arr))
+  (def run 16)
 
   (defun (smaller (: a int) b) (if (< a b) a b))
 
-  (defun (merge-runs (: src (Array %a)) dst lo mid hi)
+  ;; The elements in [lo, hi), in order, as `array-sort!` sorts its runs.
+  (defun (insert-run (: c (-> %a %a int)) (: a (Array %a)) lo hi)
+    (let next ((i (+ lo 1)))
+      (when (< i hi)
+        (let ((x (array-ref a i)))
+          (let shift ((j (- i 1)))
+            (if (if (>= j lo) (> (c (array-ref a j) x) 0) #f)
+                (let ()
+                  (array-set! a (+ j 1) (array-ref a j))
+                  (shift (- j 1)))
+                (array-set! a (+ j 1) x))))
+        (next (+ i 1)))))
+
+  (defun (merge-runs (: c (-> %a %a int)) (: src (Array %a)) dst lo mid hi)
     (let go ((l lo) (r mid) (k lo))
       (if (< k hi)
           (if (if (< l mid)
-                  (if (< r hi) (<= (cmp (array-ref src l) (array-ref src r)) 0) #t)
+                  (if (< r hi) (<= (c (array-ref src l) (array-ref src r)) 0) #t)
                   #f)
               (let ()
                 (array-set! dst k (array-ref src l))
@@ -203,16 +221,34 @@
                 (go l (+ r 1) (+ k 1))))
           k)))
 
-  (defun (merge-pass src dst width)
+  (defun (merge-pass (: c (-> %a %a int)) src dst (: m int) width)
     (let go ((lo 0))
-      (if (< lo n)
-          (go (merge-runs src dst lo (smaller (+ lo width) n) (smaller (+ lo (* 2 width)) n)))
+      (if (< lo m)
+          (go (merge-runs c src dst lo (smaller (+ lo width) m) (smaller (+ lo (* 2 width)) m)))
           dst)))
 
-  (let go ((src arr) (dst (make-array n)) (width 1))
-    (if (< width n)
-        (go (merge-pass src dst width) src (* width 2))
-        src)))
+  (let runs ((lo 0))
+    (when (< lo n)
+      (insert-run cmp arr lo (smaller (+ lo run) n))
+      (runs (+ lo run))))
+  (if (> n run)
+      (let go ((src arr) (dst (make-array n)) (width run))
+        (if (< width n)
+            (go (merge-pass cmp src dst n width) src (* width 2))
+            src))
+      arr))
+
+;; Sorts `arr` in place, in the order of a comparison, as `sort-array-by`
+;; orders it. Stable. When `cmp` raises, the contents of `arr` are
+;; unspecified.
+(: (-> (-> %a %a int) (Array %a) void))
+(defun (array-sort-by! cmp arr)
+  (def sorted (sort-array-by cmp arr))
+  (when (not (eq? sorted arr))
+    (let copy ((i 0))
+      (when (< i (array-length arr))
+        (array-set! arr i (array-ref sorted i))
+        (copy (+ i 1))))))
 
 ;; A vec in order of a comparison, as `sort-array-by` orders an array.
 (: (-> (-> %a %a int) (Vec %a) (Vec %a)))

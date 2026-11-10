@@ -29,6 +29,7 @@
 ;; **Not a key.** The `Eq` implementation at the bottom is structural, and
 ;; `eq-hash` refuses: there is no honest number for a value whose elements move.
 (import (std prelude))
+(import (only (std interop) as-delegate))
 
 (:doc #:file "vec.bjodoc")
 
@@ -53,49 +54,80 @@
 ;; handed to any other `import/extern` that takes a `List<T>` is accepted as it
 ;; stands, with nothing to unwrap.
 (import/class
-  ((MutableVec %a) (: System.Collections.Generic.List)))
+  ((MutableVec %a) (: System.Collections.Generic.List))
+  ((Predicate %a) (: System.Predicate)))
 
 ;; ---------------------------------------------------------------------------
 ;; The vector
 ;; ---------------------------------------------------------------------------
 
+;; `List<T>`'s own members. `get_Item` and `set_Item` are its indexer.
 (import/extern
-  (mutablevec               (: Bjolang.Runtime.MutableVecModule.Empty        (-> (MutableVec %a))))
-  (mutablevec-with-capacity (: Bjolang.Runtime.MutableVecModule.WithCapacity (-> int (MutableVec %a))))
-  (mutablevec-length        (: Bjolang.Runtime.MutableVecModule.Count        (-> (MutableVec %a) int)))
-  (mutablevec-empty?        (: Bjolang.Runtime.MutableVecModule.IsEmpty      (-> (MutableVec %a) bool)))
+  (mutablevec-length        (: System.Collections.Generic.List.Count     (-> (MutableVec %a) int) #:get))
   ;; Throws when the index is out of range, which is what `Refable` asks of an
   ;; indexed collection. `mutablevec-try-ref` is the checked one.
-  (mutablevec-ref           (: Bjolang.Runtime.MutableVecModule.Get          (-> (MutableVec %a) int %a)))
-  (mutablevec-set!          (: Bjolang.Runtime.MutableVecModule.Set          (-> (MutableVec %a) int %a void)))
-  (mutablevec-add!          (: Bjolang.Runtime.MutableVecModule.Add          (-> (MutableVec %a) %a void)))
-  (mutablevec-add-all!      (: Bjolang.Runtime.MutableVecModule.AddRange     (-> (MutableVec %a) (Seq %a) void)))
-  (mutablevec-insert!       (: Bjolang.Runtime.MutableVecModule.Insert       (-> (MutableVec %a) int %a void)))
-  (mutablevec-remove-at!    (: Bjolang.Runtime.MutableVecModule.RemoveAt     (-> (MutableVec %a) int void)))
-  (mutablevec-remove!       (: Bjolang.Runtime.MutableVecModule.Remove       (-> (MutableVec %a) %a bool)))
-  (mutablevec-remove-where! (: Bjolang.Runtime.MutableVecModule.RemoveWhere  (-> (MutableVec %a) (-> %a bool) int)))
-  (mutablevec-clear!        (: Bjolang.Runtime.MutableVecModule.Clear        (-> (MutableVec %a) void)))
-  (mutablevec-contains?     (: Bjolang.Runtime.MutableVecModule.Contains     (-> (MutableVec %a) %a bool)))
+  (mutablevec-ref           (: System.Collections.Generic.List.get_Item  (-> (MutableVec %a) int %a)))
+  (mutablevec-set!          (: System.Collections.Generic.List.set_Item  (-> (MutableVec %a) int %a void)))
+  (mutablevec-add!          (: System.Collections.Generic.List.Add       (-> (MutableVec %a) %a void)))
+  (mutablevec-add-all!      (: System.Collections.Generic.List.AddRange  (-> (MutableVec %a) (Seq %a) void)))
+  (mutablevec-insert!       (: System.Collections.Generic.List.Insert    (-> (MutableVec %a) int %a void)))
+  (mutablevec-remove-at!    (: System.Collections.Generic.List.RemoveAt  (-> (MutableVec %a) int void)))
+  ;; Removes the first element equal to `x`, and answers whether there was one.
+  (mutablevec-remove!       (: System.Collections.Generic.List.Remove    (-> (MutableVec %a) %a bool)))
+  (mutablevec-clear!        (: System.Collections.Generic.List.Clear     (-> (MutableVec %a) void)))
+  (mutablevec-contains?     (: System.Collections.Generic.List.Contains  (-> (MutableVec %a) %a bool)))
   ;; -1 when there is none, which is what .NET answers and what an `Option`
   ;; would cost an allocation to say.
-  (mutablevec-index-of      (: Bjolang.Runtime.MutableVecModule.IndexOf      (-> (MutableVec %a) %a int)))
-  (mutablevec-reverse!      (: Bjolang.Runtime.MutableVecModule.Reverse      (-> (MutableVec %a) void)))
-  (mutablevec-sort-by!      (: Bjolang.Runtime.MutableVecModule.SortBy       (-> (MutableVec %a) (-> %a %a int) void)))
-  (mutablevec-copy          (: Bjolang.Runtime.MutableVecModule.Copy         (-> (MutableVec %a) (MutableVec %a))))
-  (mutablevec->array        (: Bjolang.Runtime.MutableVecModule.ToArray      (-> (MutableVec %a) (Array %a))))
-  (mutablevec->seq          (: Bjolang.Runtime.MutableVecModule.AsEnumerable (-> (MutableVec %a) (Seq %a))))
-  (seq->mutablevec          (: Bjolang.Runtime.MutableVecModule.FromEnumerable (-> (Seq %a) (MutableVec %a))))
+  (mutablevec-index-of      (: System.Collections.Generic.List.IndexOf   (-> (MutableVec %a) %a int)))
+  (mutablevec-reverse!      (: System.Collections.Generic.List.Reverse   (-> (MutableVec %a) void)))
+  (mutablevec->array        (: System.Collections.Generic.List.ToArray   (-> (MutableVec %a) (Array %a))))
+  (clr-remove-all           (: System.Collections.Generic.List.RemoveAll (-> (MutableVec %a) (Predicate %a) int)))
   ;; The way to build an `IArray` one element at a time: add to a vector, then
   ;; copy it once. `iarray-add` copies the whole array each time.
   (mutablevec->iarray       (: Bjolang.Runtime.IArrayModule.FromList (-> (MutableVec %a) (IArray %a))))
-
-  (mutablevec-try-ref       (: Bjolang.Runtime.MutableVecModule.TryGet     (-> (MutableVec %a) int (out %a) (Option %a))))
-  ;; The last element, removed. `None` leaves the vector as it was, so a
-  ;; stack-shaped loop can pop until it stops.
-  (mutablevec-pop!          (: Bjolang.Runtime.MutableVecModule.TryPopBack (-> (MutableVec %a) (out %a) (Option %a))))
   ;; The elements where the vector keeps them. Valid until the vector grows.
   (clr-as-span              (: System.Runtime.InteropServices.CollectionsMarshal.AsSpan (-> (MutableVec %a) (Span %a))))
   (clr-set-count            (: System.Runtime.InteropServices.CollectionsMarshal.SetCount (-> (MutableVec %a) int void))))
+
+(: (-> (MutableVec %a)))
+(defun (mutablevec) (MutableVec.))
+
+;; Room for `capacity` elements before the first regrow. The length is still 0.
+(: (-> int (MutableVec %a)))
+(defun (mutablevec-with-capacity capacity) (MutableVec. capacity))
+
+(: (-> (Seq %a) (MutableVec %a)))
+(defun (seq->mutablevec xs) (MutableVec. xs))
+
+;; The vector itself, seen as a sequence: nothing is copied.
+(: (-> (MutableVec %a) (Seq %a)))
+(defun (mutablevec->seq v) #:inline (cast (Seq %a) v))
+
+(: (-> (MutableVec %a) (MutableVec %a)))
+(defun (mutablevec-copy v) (MutableVec. (mutablevec->seq v)))
+
+(: (-> (MutableVec %a) bool))
+(defun (mutablevec-empty? v) #:inline (= (mutablevec-length v) 0))
+
+(: (-> (MutableVec %a) int (Option %a)))
+(defun (mutablevec-try-ref v i) #:inline
+  (if (and (>= i 0) (< i (mutablevec-length v))) (Some (mutablevec-ref v i)) None))
+
+;; The last element, removed. `None` leaves the vector as it was, so a
+;; stack-shaped loop can pop until it stops.
+(: (-> (MutableVec %a) (Option %a)))
+(defun (mutablevec-pop! v)
+  (def last (- (mutablevec-length v) 1))
+  (if (< last 0)
+      None
+      (let ((x (mutablevec-ref v last)))
+        (mutablevec-remove-at! v last)
+        (Some x))))
+
+;; Removes every element that `pred` accepts, and returns how many it removed.
+(: (-> (MutableVec %a) (-> %a bool) int))
+(defun (mutablevec-remove-where! v pred)
+  (clr-remove-all v (: (as-delegate pred) (Predicate %a))))
 
 (import/class
   (ArgumentOutOfRangeException (: System.ArgumentOutOfRangeException
@@ -126,6 +158,14 @@
   (def sorted (mutablevec->array xs))
   (array-sort-unstable! sorted)
   (write-back! xs sorted))
+
+;; As `mutablevec-sort!`, in the order of `cmp`, with `array-sort-by!`.
+;; Stable. When `cmp` raises, the vector is as it was.
+(: (-> (MutableVec %a) (-> %a %a int) void))
+(defun (mutablevec-sort-by! v cmp)
+  (def sorted (mutablevec->array v))
+  (array-sort-by! cmp sorted)
+  (write-back! v sorted))
 
 ;; ---------------------------------------------------------------------------
 ;; Blocks

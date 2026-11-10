@@ -31,6 +31,7 @@
 ;; For `hashset->seq` and `seq->hashset`, which the two conversions at the bottom are
 ;; written with. The persistent set is a module of its own.
 (import (std hashset))
+(import (only (std interop) as-delegate))
 
 (:doc #:file "set.bjodoc")
 
@@ -55,50 +56,108 @@
 ;; taking a `HashSet<T>` is accepted as it stands.
 (import/class
   ((MutableSet %a) (: System.Collections.Generic.HashSet))
-  ((MutableSetEnumerator %a) (: Bjolang.Runtime.MutableSetEnumerator)))
+  ((MutableSetEnumerator %a) (: Bjolang.Runtime.MutableSetEnumerator))
+  ((Predicate %a) (: System.Predicate))
+  (ClrObject (: System.Object))
+  (ArgumentException (: System.ArgumentException (-> string string ArgumentException))))
 
 ;; ---------------------------------------------------------------------------
 ;; The set
 ;; ---------------------------------------------------------------------------
 
+;; `HashSet<T>`'s own members. The ones that take another collection take a
+;; `Seq`, so a set is given to them as one.
 (import/extern
-  (mutableset            (: Bjolang.Runtime.MutableSetModule.Empty       (-> (MutableSet %a))))
-  (mutableset-length     (: Bjolang.Runtime.MutableSetModule.Count       (-> (MutableSet %a) int)))
-  (mutableset-empty?     (: Bjolang.Runtime.MutableSetModule.IsEmpty     (-> (MutableSet %a) bool)))
-  ;; Makes x a member. Adding one that is already a member is not a failure:
-  ;; afterwards it is a member, which is all `add!` says.
-  (mutableset-add!       (: Bjolang.Runtime.MutableSetModule.Add         (-> (MutableSet %a) %a void)))
-  ;; Adds an element that must be new, and raises when it is not.
-  (mutableset-add-new!   (: Bjolang.Runtime.MutableSetModule.AddNew      (-> (MutableSet %a) %a void)))
-  ;; The equal element already there, or None when x was added. What
-  ;; `mutableset-try-add-new!` is made of.
-  (add-or-existing!      (: Bjolang.Runtime.MutableSetModule.AddOrExisting (-> (MutableSet %a) %a (out %a) (Option %a))))
-  (mutableset-add-all!   (: Bjolang.Runtime.MutableSetModule.AddRange    (-> (MutableSet %a) (Seq %a) void)))
-  (mutableset-remove!    (: Bjolang.Runtime.MutableSetModule.Remove      (-> (MutableSet %a) %a bool)))
-  (mutableset-remove-all! (: Bjolang.Runtime.MutableSetModule.RemoveRange (-> (MutableSet %a) (Seq %a) void)))
-  ;; How many went.
-  (mutableset-remove-where! (: Bjolang.Runtime.MutableSetModule.RemoveWhere (-> (MutableSet %a) (-> %a bool) int)))
-  (mutableset-clear!     (: Bjolang.Runtime.MutableSetModule.Clear       (-> (MutableSet %a) void)))
-  (mutableset-contains?  (: Bjolang.Runtime.MutableSetModule.Contains    (-> (MutableSet %a) %a bool)))
-  (mutableset-copy       (: Bjolang.Runtime.MutableSetModule.Copy        (-> (MutableSet %a) (MutableSet %a))))
-  (mutableset->seq       (: Bjolang.Runtime.MutableSetModule.AsEnumerable   (-> (MutableSet %a) (Seq %a))))
-  (seq->mutableset       (: Bjolang.Runtime.MutableSetModule.FromEnumerable (-> (Seq %a) (MutableSet %a))))
-
-  ;; --- Set algebra, written into the first argument ---
-  (mutableset-union!                (: Bjolang.Runtime.MutableSetModule.Union           (-> (MutableSet %a) (MutableSet %a) void)))
-  (mutableset-intersect!            (: Bjolang.Runtime.MutableSetModule.Intersect       (-> (MutableSet %a) (MutableSet %a) void)))
-  (mutableset-difference!           (: Bjolang.Runtime.MutableSetModule.Except          (-> (MutableSet %a) (MutableSet %a) void)))
-  (mutableset-symmetric-difference! (: Bjolang.Runtime.MutableSetModule.SymmetricExcept (-> (MutableSet %a) (MutableSet %a) void)))
-
-  ;; --- Comparisons, which write nothing ---
-  (mutableset-subset?    (: Bjolang.Runtime.MutableSetModule.IsSubsetOf   (-> (MutableSet %a) (MutableSet %a) bool)))
-  (mutableset-superset?  (: Bjolang.Runtime.MutableSetModule.IsSupersetOf (-> (MutableSet %a) (MutableSet %a) bool)))
-  (mutableset-overlaps?  (: Bjolang.Runtime.MutableSetModule.Overlaps     (-> (MutableSet %a) (MutableSet %a) bool)))
+  (mutableset-length     (: System.Collections.Generic.HashSet.Count        (-> (MutableSet %a) int) #:get))
+  (clr-add               (: System.Collections.Generic.HashSet.Add          (-> (MutableSet %a) %a bool)))
+  (clr-try-get           (: System.Collections.Generic.HashSet.TryGetValue  (-> (MutableSet %a) %a (out %a) (Option %a))))
+  (mutableset-add-all!   (: System.Collections.Generic.HashSet.UnionWith    (-> (MutableSet %a) (Seq %a) void)))
+  (mutableset-remove!    (: System.Collections.Generic.HashSet.Remove       (-> (MutableSet %a) %a bool)))
+  (mutableset-remove-all! (: System.Collections.Generic.HashSet.ExceptWith  (-> (MutableSet %a) (Seq %a) void)))
+  (clr-remove-where      (: System.Collections.Generic.HashSet.RemoveWhere  (-> (MutableSet %a) (Predicate %a) int)))
+  (mutableset-clear!     (: System.Collections.Generic.HashSet.Clear        (-> (MutableSet %a) void)))
+  (mutableset-contains?  (: System.Collections.Generic.HashSet.Contains     (-> (MutableSet %a) %a bool)))
+  (clr-intersect         (: System.Collections.Generic.HashSet.IntersectWith (-> (MutableSet %a) (Seq %a) void)))
+  (clr-symmetric-except  (: System.Collections.Generic.HashSet.SymmetricExceptWith (-> (MutableSet %a) (Seq %a) void)))
+  (clr-subset?           (: System.Collections.Generic.HashSet.IsSubsetOf   (-> (MutableSet %a) (Seq %a) bool)))
+  (clr-superset?         (: System.Collections.Generic.HashSet.IsSupersetOf (-> (MutableSet %a) (Seq %a) bool)))
+  (clr-overlaps?         (: System.Collections.Generic.HashSet.Overlaps     (-> (MutableSet %a) (Seq %a) bool)))
+  (clr-text              (: System.Object.ToString                          (-> ClrObject string)))
 
   ;; A walk with .NET's protocol: `next!` is `MoveNext`, `current` is `Current`.
   (mutableset-enumerator         (: Bjolang.Runtime.MutableSetModule.Enumerator (-> (MutableSet %a) (MutableSetEnumerator %a))))
   (mutableset-enumerator-next!   (: Bjolang.Runtime.MutableSetModule.MoveNext   (-> (MutableSetEnumerator %a) bool)))
   (mutableset-enumerator-current (: Bjolang.Runtime.MutableSetModule.Current    (-> (MutableSetEnumerator %a) %a))))
+
+(: (-> (MutableSet %a)))
+(defun (mutableset) (MutableSet.))
+
+(: (-> (Seq %a) (MutableSet %a)))
+(defun (seq->mutableset xs) (MutableSet. xs))
+
+;; The set itself, seen as a sequence: nothing is copied.
+(: (-> (MutableSet %a) (Seq %a)))
+(defun (mutableset->seq s) #:inline (cast (Seq %a) s))
+
+;; A set with the same members. .NET copies another `HashSet` with the same
+;; equality without hashing its members again.
+(: (-> (MutableSet %a) (MutableSet %a)))
+(defun (mutableset-copy s) (MutableSet. (mutableset->seq s)))
+
+(: (-> (MutableSet %a) bool))
+(defun (mutableset-empty? s) #:inline (= (mutableset-length s) 0))
+
+;; Makes x a member. Adding one that is already a member is not a failure:
+;; afterwards it is a member, which is all `add!` says.
+(: (-> (MutableSet %a) %a void))
+(defun (mutableset-add! s x) #:inline (ignore (clr-add s x)))
+
+;; The equal element already there, or None when x was added. What
+;; `mutableset-try-add-new!` is made of.
+(: (-> (MutableSet %a) %a (Option %a)))
+(defun (add-or-existing! s x)
+  (match (clr-try-get s x)
+    ((Some old) (Some old))
+    (None (ignore (clr-add s x)) None)))
+
+;; Adds an element that must be new, and raises when it is not.
+(: (-> (MutableSet %a) %a void))
+(defun (mutableset-add-new! s x)
+  (when (not (clr-add s x))
+    (raise (cast Exception
+                 (ArgumentException. (str "The element is already in the set: "
+                                          (clr-text (cast ClrObject x)))
+                                     "value")))))
+
+;; Removes every member that `pred` accepts, and returns how many it removed.
+(: (-> (MutableSet %a) (-> %a bool) int))
+(defun (mutableset-remove-where! s pred)
+  (clr-remove-where s (: (as-delegate pred) (Predicate %a))))
+
+;; --- Set algebra, written into the first argument ---
+
+(: (-> (MutableSet %a) (MutableSet %a) void))
+(defun (mutableset-union! a b) (mutableset-add-all! a (mutableset->seq b)))
+
+(: (-> (MutableSet %a) (MutableSet %a) void))
+(defun (mutableset-intersect! a b) (clr-intersect a (mutableset->seq b)))
+
+(: (-> (MutableSet %a) (MutableSet %a) void))
+(defun (mutableset-difference! a b) (mutableset-remove-all! a (mutableset->seq b)))
+
+(: (-> (MutableSet %a) (MutableSet %a) void))
+(defun (mutableset-symmetric-difference! a b) (clr-symmetric-except a (mutableset->seq b)))
+
+;; --- Comparisons, which write nothing ---
+
+(: (-> (MutableSet %a) (MutableSet %a) bool))
+(defun (mutableset-subset? a b) (clr-subset? a (mutableset->seq b)))
+
+(: (-> (MutableSet %a) (MutableSet %a) bool))
+(defun (mutableset-superset? a b) (clr-superset? a (mutableset->seq b)))
+
+(: (-> (MutableSet %a) (MutableSet %a) bool))
+(defun (mutableset-overlaps? a b) (clr-overlaps? a (mutableset->seq b)))
 
 ;; `mutableset-add-new!` with the failure as a value: `(Err y)` carries the
 ;; equal element already in the set, which is what interning a value needs.
