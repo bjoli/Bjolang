@@ -3,6 +3,29 @@
 
 What each change guarantees, and what it leaves open.
 
+* A ~#(...)~ inside another is a function of its own
+
+- ~#(wrap e #(f &))~ is a thunk: the inner ~#(...)~'s ~&~ is its own
+  parameter, not the outer one's. Before, the reader read the inner one
+  first, into ~(fun (&1) ...)~, and the outer one then counted that ~&1~ as
+  its own, and became a function of one argument. Now the reader names
+  each ~#(...)~'s parameters afresh (~renamePlaceholders~ in Pipeline.fs), so
+  an enclosing one sees only the ~&~s that are its.
+- Tests: ~TestFiles/539_nested_shorthand.bjo~: a thunk around a lambda,
+  both with an argument, numbered placeholders inside, three deep.
+
+* A ~bjoroutine~ indents as a body, as ~fun~ does
+
+- ~(bjoroutine (x) body ...)~ indents its body two spaces in from its
+  bracket, in ~bjo-mode~ and in ~bjo fmt~. Before, both lined the body up
+  under the parameters, as the arguments of a call. It is in
+  ~bjo-indent-forms~ (bjomode.el) and ~rule-of~ (bjo/format.bjo) with one
+  form before the body, as ~fun~ is.
+- Code laid out before keeps its old indentation until it is laid out
+  again; ~bjo fmt~ and ~indent-region~ now move such bodies.
+- Tests: the ~fun~ and ~bjoroutine~ snippets of bjomode-tests.el, which
+  ERT and the fmt test of run_bjo_tests.py both check.
+
 * A trait's interface has the constraints that its methods' .NET generics need
 
 - A trait whose method signatures use the implementor in a constrained .NET

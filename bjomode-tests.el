@@ -155,6 +155,26 @@
     (else \"word\")))
 ")
 
+(bjo-deftest-indent fun
+  "A `fun' has its parameters, then a body two spaces in."
+  "(defun (f)
+  (map (fun (x)
+         (def y (* x 2))
+         (+ y 1))
+       xs))
+")
+
+(bjo-deftest-indent bjoroutine
+  "A `bjoroutine' is the lambda of a bjoroutine, and indents as `fun' does."
+  "(defun (f)
+  (route-post \"/echo\" (bjoroutine (req)
+                        (def b (request-body req))
+                        (text b)))
+  (def g (bjoroutine (x)
+           (+ x 1)))
+  g)
+")
+
 (bjo-deftest-indent defbjouble
   "A `defbjouble' branch, `(#:sync ...)', has a body two spaces in."
   "(defbjouble (port-eof? p)

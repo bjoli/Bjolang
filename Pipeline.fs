@@ -25,11 +25,11 @@ let unionLexerRanges (r1: Lexer.Range) (r2: Lexer.Range) : Lexer.Range =
     { r1 with End = r2.End }
 
 /// `&` as a spelling of `&1` inside `#(...)`.
-/// 
+///
 /// A nested `#(...)` needs no exception. The reader has already turned it into
-/// a `fun` of its own, with its own `&` rewritten, before this runs — which is
-/// also what keeps `&` inside a `#(...)` inside a `->` the lambda's rather
-/// than the thread's.
+/// a `fun` of its own, its placeholders renamed (see `renamePlaceholders`),
+/// before this runs — which is also what keeps `&` inside a `#(...)` inside a
+/// `->` the lambda's rather than the thread's.
 let rec expandBareArg (expr: SExpr) : SExpr =
     match expr with
     | SAtom({ Token = Lexer.Symbol "&" } as atom) -> SAtom { atom with Token = Lexer.Symbol "&1" }
@@ -45,6 +45,19 @@ let rec collectPositionalArgs (expr: SExpr) : Set<int> =
     | SList(items, _) ->
         items |> List.map collectPositionalArgs |> Set.unionMany
     | _ -> Set.empty
+
+/// `expr` with each placeholder of `names` written as its fresh name.
+///
+/// A `#(...)`'s parameters are its `&1`, `&2`… and the reader reads an inner
+/// `#(...)` before the one around it. Kept as `&1`, the inner one's parameter
+/// would be counted as the outer one's too: `#(wrap e #(f &))` was a function
+/// of one argument rather than a thunk. Renamed, it is a name like any other.
+let rec private renamePlaceholders (names: Map<string, string>) (expr: SExpr) : SExpr =
+    match expr with
+    | SAtom({ Token = Lexer.Symbol sym } as atom) when names.ContainsKey sym ->
+        SAtom { atom with Token = Lexer.Symbol names[sym] }
+    | SList(items, r) -> SList(List.map (renamePlaceholders names) items, r)
+    | other -> other
 
 /// Folds `#'` into `(syntax-quote form)`.
 ///
@@ -176,10 +189,11 @@ let rec private readIn (opener: LexedToken option) (tokens: LexedToken list) : S
             let bodySList = expandBareArg rawBody
             let argIndices = collectPositionalArgs bodySList
             let maxArg = if Set.isEmpty argIndices then 0 else Set.maxElement argIndices
-            let paramNames = [ for i in 1 .. maxArg -> $"&{i}" ]
+            let names = Map.ofList [ for i in 1 .. maxArg -> $"&{i}", Gensym.fresh $"&{i}" ]
+            let paramNames = [ for i in 1 .. maxArg -> names[$"&{i}"] ]
             let funToken = SAtom { Token = Lexer.Symbol "fun"; Range = hr }
             let paramList = SList(paramNames |> List.map (fun p -> SAtom { Token = Lexer.Symbol p; Range = hr }), hr)
-            let lambdaSExpr = SList([ funToken; paramList; bodySList ], getRange bodySList)
+            let lambdaSExpr = SList([ funToken; paramList; renamePlaceholders names bodySList ], getRange bodySList)
             loop (lambdaSExpr :: acc) afterList
 
         // Array literal: #[items...] → (array-literal items...)

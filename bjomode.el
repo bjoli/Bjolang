@@ -172,7 +172,7 @@ fenced, and a hash macro's name is an expression prefix; see
     (def/mutable . 1) (def/trait . 1) (def/macro . 1) (def/pattern . 1)
     (type/derive . 1)
     (when . 1) (unless . 1) (match . 1) (case . 1)
-    (with-open . 1) (parameterize . 1) (parameterize* . 1) (fun . 1)
+    (with-open . 1) (parameterize . 1) (parameterize* . 1) (fun . 1) (bjoroutine . 1)
     (let* . 1) (syntax-match . 1) (when-let . 1) (if-let . 1)
     (with-cancel . 1) (with-deadline . 1) (with-response . 1) (with-run . 1)
     ;; `(with-return ret body ...)' — the escape's name comes first, as the
