@@ -342,6 +342,84 @@ let resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType = re
 let resolveTypeAnnotationEarly (registry: TraitRegistry) (ptype: FType) : HMType =
     resolveWith false registry ptype
 
+// ---------------------------------------------------------------------------
+// Spelling a type back as a surface type
+// ---------------------------------------------------------------------------
+
+let private traverse (f: 'a -> 'b option) (xs: 'a list) : 'b list option =
+    let rec go acc rest =
+        match rest with
+        | [] -> Some(List.rev acc)
+        | x :: tail ->
+            match f x with
+            | Some y -> go (y :: acc) tail
+            | None -> None
+
+    go [] xs
+
+/// The inverse of `resolveTypeAnnotation`.
+///
+/// - A type variable is spelled only when `variables` is set. A copy's
+///   signature (`Monomorphise`) must be ground. A body spliced into a generic
+///   caller (`TraitInline`) names the caller's type variables.
+/// - A type that is not known yet (`TMeta`) is never spelled.
+let rec hmToFType (variables: bool) (r: Range) (t: HMType) : FType option =
+    let go = hmToFType variables r
+
+    match t with
+    | TCon(name, []) -> Some(TName(name, r))
+    | TCon(name, args) -> traverse go args |> Option.map (fun a -> TApp(name, a, r))
+    | TTuple args -> traverse go args |> Option.map (fun a -> TApp("Tuple", a, r))
+    | TFun(args, ret, eff) ->
+        let head =
+            match groundEffect eff with
+            | ESync -> Some "->"
+            | EAsync -> Some "-bjo->"
+            | _ -> None
+
+        match head, traverse go (args @ [ ret ]) with
+        | Some h, Some parts -> Some(TApp(h, parts, r))
+        | _ -> None
+    | TAssoc(traitName, assocName, implementor) ->
+        go implementor
+        |> Option.map (fun i -> TApp("assoc", [ TName(traitName, r); TName(assocName, r); i ], r))
+    | TNum(carrier, unit) ->
+        go carrier
+        |> Option.map (fun c -> TApp("units", c :: (Units.toMetadataParts unit |> List.map (fun p -> TName(p, r))), r))
+    | TVar n when variables -> Some(TName(n, r))
+    | TVar _
+    | TMeta _ -> None
+
+/// `t` as a surface type, or `None` if it cannot be spelled as one faithfully.
+/// `variables` is as for `hmToFType`.
+///
+/// The result is checked: it is resolved again and compared with `t`. A type
+/// constructor whose name is also an alias key, a primitive under a second
+/// spelling, and the internal name of a `dyn` type, which is not surface
+/// syntax, all resolve to a different type. Each of them gives `None`.
+let spellType (registry: TraitRegistry) (variables: bool) (r: Range) (t: HMType) : FType option =
+    // An arrow's effect may be a solved cell, and `hmToFType` writes the arrow
+    // head the cell resolved to. The comparison below is between a type that
+    // has been through the parser and one that has not, so both sides are put
+    // in the same terms first.
+    let rec settle (t: HMType) =
+        match t with
+        | TCon(n, args) -> TCon(n, List.map settle args)
+        | TFun(args, ret, eff) -> TFun(List.map settle args, settle ret, groundEffect eff)
+        | TTuple args -> TTuple(List.map settle args)
+        | TAssoc(traitName, assocName, implementor) -> TAssoc(traitName, assocName, settle implementor)
+        | other -> other
+
+    // `prune` raises when an associated type is projected out of a type with
+    // no implementation. That gives `None`, not a failure.
+    match (try Some(settle (prune registry t)) with _ -> None) with
+    | None -> None
+    | Some pruned ->
+
+    match hmToFType variables r pruned with
+    | Some ft when (try settle (resolveTypeAnnotation registry ft) = pruned with _ -> false) -> Some ft
+    | _ -> None
+
 
 // ---------------------------------------------------------------------------
 // Inline-trait signature templates

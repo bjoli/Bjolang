@@ -593,12 +593,25 @@ let metadata
 
             $"%s{publishedAliasPrefix}%s{modTag}__%s{alias}"
 
-    /// The aliases a body names, and what each is published as.
+    /// The `import/class` alias whose constructor `n` names, as `MutableHeap`
+    /// for `MutableHeap.`.
+    let constructedClass (n: string) =
+        if n.Length > 1 && n.EndsWith "." then
+            Map.tryFind (n.Substring(0, n.Length - 1)) env.Registry.ClrClasses
+        else
+            None
+
+    /// The aliases a body names, and what each is published as. A constructor
+    /// of an `import/class` alias, `(MutableHeap. ...)`, is published as an
+    /// `import/class` of its own under the same kind of name.
     let bodyExternSubst (bound: Set<string>) (body: Ast.Expr) =
         AlphaRename.freeNames bound body
         |> Set.toList
-        |> List.filter (fun n -> Map.containsKey n env.Registry.ClrExterns)
-        |> List.map (fun n -> n, publishedAliasOf n)
+        |> List.choose (fun n ->
+            if Map.containsKey n env.Registry.ClrExterns then
+                Some(n, publishedAliasOf n)
+            else
+                constructedClass n |> Option.map (fun info -> n, publishedAliasOf info.Alias + "."))
         |> Map.ofList
 
     let caseOfSeveral (n: string) =
@@ -622,10 +635,25 @@ let metadata
         | _ -> None
 
     /// The key a spelling of a declared type stands for here.
+    ///
+    /// An `import/class` alias is keyed to the .NET type it stands for, which
+    /// is a name that resolves to the same type in every module. The name is
+    /// the one the alias resolves to, so a nested type such as
+    /// ``PriorityQueue`2+UnorderedItemsCollection`` is keyed as the
+    /// signatures of the published externs spell it.
     let typeKeyOf (n: string) =
         match Map.tryFind n env.Registry.TypeSpellings with
         | Some a when a.OriginalName.Contains "." -> Some a.OriginalName
-        | _ -> None
+        | Some _ -> None
+        | None ->
+            let variable (p: string) = TypedAST.TVar(if p.StartsWith "'" then p else "'" + p)
+
+            match Map.tryFind n env.Registry.ClrClasses, Map.tryFind n env.Registry.Aliases with
+            | Some _, Some(parameters, TypedAST.TCon(clrName, args)) when
+                clrName.Contains "." && args = List.map variable parameters
+                ->
+                Some clrName
+            | _ -> None
 
     /// The key a spelling of a trait stands for here.
     let traitKeyOf (n: string) =
@@ -689,6 +717,14 @@ let metadata
                |> Option.map (fun i -> { i with Alias = published })))
         |> List.distinctBy (fun i -> i.Alias)
 
+    // The classes a body constructs, under the names they are published as.
+    let classesToPublish =
+        externsNamedByBodies
+        |> List.choose (fun (written, published) ->
+            constructedClass written
+            |> Option.map (fun info -> { info with Alias = published.Substring(0, published.Length - 1) }))
+        |> List.distinctBy (fun info -> info.Alias)
+
     let exportedExternAliases =
         exports
         |> List.filter (fun n -> Map.containsKey n env.Registry.ClrExterns)
@@ -728,6 +764,26 @@ let metadata
             else
                 let args = String.concat " " quotedArgs
                 $"(type (: (%s{info.Alias} %s{args}) (%s{info.ClrName} %s{args})))")
+
+    /// A class that a published body constructs, as an `import/class` under
+    /// its published name. The importer has a constructor to call.
+    let serializeClassImport (info: TypedAST.ClrClassInfo) =
+        let head =
+            match info.TypeParams with
+            | [] -> info.Alias
+            | ps -> "(" + String.concat " " (info.Alias :: (ps |> List.map (fun p -> "'" + p.TrimStart '\''))) + ")"
+
+        let ctor =
+            match info.CtorType with
+            | Some t -> " " + Codegen.serializeHMType t
+            | None -> ""
+
+        let exceptions =
+            match info.CtorExceptions with
+            | [] -> ""
+            | es -> " #:exceptions (" + String.concat " " es + ")"
+
+        $"(import/class (%s{head} (: %s{info.ClrName}%s{ctor}%s{exceptions})))"
 
     if isLibrary && not externsNamedByBodies.IsEmpty then
         Diagnostics.progress (
@@ -1314,6 +1370,7 @@ let metadata
             // mention one, and a declaration is read in the order it is written.
             let typeDecls =
                 classTypeDecls
+                @ (classesToPublish |> List.map serializeClassImport)
                 @ (typesToExport |> List.map serializeTypeDef)
                 @ (grammarsToExport |> List.map serializeGrammar)
 

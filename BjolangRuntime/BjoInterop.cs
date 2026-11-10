@@ -82,6 +82,11 @@ public static class BjoInterop
     }
 
     // Makes `source => (p1, ..., pn) => (R)((S)source).Invoke((Q1)p1, ..., (Qn)pn)`.
+    //
+    // When the two delegate types have the same parameter and result types, as
+    // `Func<T, bool>` and `Predicate<T>`, the converter binds a delegate of the
+    // new type to the method and target of the function. A call of it is then
+    // a call of the function, with no second delegate between.
     private static Func<Delegate, Delegate> Build((Type, Type) key)
     {
         var (delegateType, sourceType) = key;
@@ -93,6 +98,30 @@ public static class BjoInterop
         if (targetParams.Length != sourceParams.Length)
             throw new ArgumentException(
                 $"as-delegate: {delegateType} takes {targetParams.Length} arguments, the function {sourceParams.Length}");
+
+        if (SameSignature(target, source))
+        {
+            var wrap = Wrapper(delegateType, sourceType, target, source, targetParams, sourceParams);
+            return new Rebinder(delegateType, wrap).Convert;
+        }
+
+        return Wrapper(delegateType, sourceType, target, source, targetParams, sourceParams);
+    }
+
+    private static bool SameSignature(MethodInfo target, MethodInfo source)
+    {
+        if (target.ReturnType != source.ReturnType) return false;
+        var a = target.GetParameters();
+        var b = source.GetParameters();
+        for (var i = 0; i < a.Length; i++)
+            if (a[i].ParameterType != b[i].ParameterType) return false;
+        return true;
+    }
+
+    private static Func<Delegate, Delegate> Wrapper(
+        Type delegateType, Type sourceType, MethodInfo target, MethodInfo source,
+        ParameterInfo[] targetParams, ParameterInfo[] sourceParams)
+    {
 
         // Loops and not LINQ: a lambda here would be user code to a debugger.
         var sourceParam = Expression.Parameter(typeof(Delegate), "source");
@@ -122,4 +151,14 @@ public static class BjoInterop
 
     private static Expression Fit(Expression e, Type type) =>
         e.Type == type ? e : Expression.Convert(e, type);
+
+    /// A function as a delegate of another type with the same signature: the
+    /// same method and target, bound again. A delegate with more than one
+    /// target is wrapped instead.
+    [NonUserCode]
+    private sealed class Rebinder(Type delegateType, Func<Delegate, Delegate> wrap)
+    {
+        public Delegate Convert(Delegate d) =>
+            d.HasSingleTarget ? Delegate.CreateDelegate(delegateType, d.Target, d.Method) : wrap(d);
+    }
 }

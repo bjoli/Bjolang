@@ -874,6 +874,19 @@ let private operatorCall (methodName: string) (returnType: HMType) (args: string
     | _, [ a ], _, Some op -> Some $"(%s{op}(%s{a}))"
     | _ -> None
 
+/// How C# writes the runtime's `Spans.Ref` and `Spans.Length`, which the
+/// prelude's span functions import: as an index into the span and its
+/// `Length`. `None` for any other method.
+///
+/// A call copies the span, also when .NET inlines it. In a large method,
+/// such as code that `scan` expands to, the copies stop .NET from proving
+/// that an index is in the span, and each read is then checked twice.
+let private spanAccess (clrType: string) (methodName: string) (args: string list) : string option =
+    match clrType, methodName, args with
+    | "Bjolang.Runtime.Spans", "Ref", [ s; i ] -> Some $"(%s{s})[%s{i}]"
+    | "Bjolang.Runtime.Spans", "Length", [ s ] -> Some $"(%s{s}).Length"
+    | _ -> None
+
 /// A numeric literal, spelled for the type the checker gave it.
 ///
 /// Two things happen here that did not used to. The digits are no longer
@@ -1186,21 +1199,27 @@ and private serializeExprNode (here: string) (e: Ast.Expr) : string =
     // shape, and a `(fun ...)` bound by `let` reads back as a lambda value.
     // A function whose body names an outer binding of its own name stays a
     // `let`: as a `defun` that name would read back as the function itself.
-    | Ast.ELet(n, true, args, None, value, body, _)
+    // The annotation of a function is its return type, written after `:`.
+    | Ast.ELet(n, true, args, ann, value, body, _)
         when not (Set.contains n (Ast.freeNames (Set.ofList (Ast.mandatoryNames args)) value)) ->
         list [ "let"; "()"
-               list [ "defun"; list (n :: serializableDefunParams args); serializeExprAt here value ]
+               serializeLocalDefun here n args ann value
                serializeExprAt here body ]
 
+    // An annotation is written as `(: value T)`, which reads back as an
+    // annotation. A `cast` converts and does not check, and a value such as
+    // `as-delegate` takes its type from the annotation.
     | Ast.ELet(n, isFun, args, ann, value, body, _) ->
-        let valueStr =
-            if isFun then list [ "fun"; list (serializableParams args); serializeExprAt here value ]
-            else serializeExprAt here value
+        let annotatedValue (v: string) =
+            match ann with
+            | Some t -> list [ ":"; v; serializeFType t ]
+            | None -> v
 
         let annotated =
-            match ann with
-            | Some t -> list [ "cast"; serializeFType t; valueStr ]
-            | None -> valueStr
+            if isFun then
+                list [ "fun"; list (serializableParams args); annotatedValue (serializeExprAt here value) ]
+            else
+                annotatedValue (serializeExprAt here value)
 
         // We emit exactly one binding per `let`. This isn't just for neatness:
         // if we grouped multiple bindings into a single `let`, the variables
@@ -1213,9 +1232,16 @@ and private serializeExprNode (here: string) (e: Ast.Expr) : string =
         // one mutually-recursive group by the reader.
         let defs =
             bindings
-            |> List.map (fun (n, isFun, args, _, value) ->
-                if isFun then list [ "defun"; list (n :: serializableDefunParams args); serializeExprAt here value ]
-                else list [ "def"; n; serializeExprAt here value ])
+            |> List.map (fun (n, isFun, args, ann, value) ->
+                if isFun then
+                    serializeLocalDefun here n args ann value
+                else
+                    let binder =
+                        match ann with
+                        | Some t -> list [ ":"; n; serializeFType t ]
+                        | None -> n
+
+                    list [ "def"; binder; serializeExprAt here value ])
 
         list ([ "let"; "()" ] @ defs @ [ serializeExprAt here body ])
 
@@ -1310,6 +1336,28 @@ and private serializeExprNode (here: string) (e: Ast.Expr) : string =
         list [ "try"; serializeExprAt here body; "#:finally"; serializeExprAt here cleanup ]
     | Ast.ETryCatch _ -> failwith "an inline template body may not contain try/catch"
     | Ast.EHoist(body, _) -> list [ "please-hoist-i-promise-i-am-not-naughty"; serializeExprAt here body ]
+
+/// A local `defun` as it was written: its parameters with their types, and
+/// its return type after `:`.
+and private serializeLocalDefun
+    (here: string)
+    (name: string)
+    (args: Ast.DefunArg list)
+    (ret: Ast.FType option)
+    (value: Ast.Expr)
+    : string =
+    let returns =
+        match ret with
+        | Some t -> [ ":"; serializeFType t ]
+        | None -> []
+
+    "("
+    + String.concat
+        " "
+        ([ "defun"; "(" + String.concat " " (name :: serializableDefunParams args) + ")" ]
+         @ returns
+         @ [ serializeExprAt here value ])
+    + ")"
 
 /// A pattern, written back as source.
 ///
@@ -3518,6 +3566,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         append ctx ")"
 
     | TForeignStaticCall (clrType, methodName, args, meta) ->
+        let baseMethodName = methodName
         let methodName = methodName + foreignTypeArguments meta
 
         // An `#:async` import. Two things are added and neither is optional —
@@ -3554,10 +3603,11 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         // An operator, which C# does not call by name. Its pieces go around
         // the operands as `operatorCall` places them.
         let operatorPieces =
-            match meta with
-            | Some m when not awaits && not ambient ->
-                let holes = args |> List.mapi (fun i _ -> $"__operand_%d{i}__")
+            let holes = args |> List.mapi (fun i _ -> $"__operand_%d{i}__")
 
+            match spanAccess clrType baseMethodName holes, meta with
+            | Some text, _ when not awaits && not ambient -> Some(text, holes)
+            | _, Some m when not awaits && not ambient ->
                 operatorCall methodName m.ReturnType holes
                 |> Option.map (fun text -> text, holes)
             | _ -> None

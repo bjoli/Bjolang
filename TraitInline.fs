@@ -602,7 +602,8 @@ type private Ctx =
 
 /// How much a declaration may grow by function splices: `GrowthFactor` times
 /// its own size, and at least `GrowthFloor` nodes, so that a small function
-/// can take a few calls. One node is about 1.5 to 2 bytes of IL.
+/// can take a few calls. One node is about 1.5 to 2 bytes of IL. A copy of an
+/// ordinary function written `#:inline` does not count (see `spliceTemplate`).
 [<Literal>]
 let private GrowthFactor = 2
 
@@ -691,6 +692,79 @@ let private landingPad (env: Env) (tref: TraitRef) (implKey: string) (tyArgs: HM
 
     { expr with Node = TApply(callee, args, kwArgs) }
 
+/// The type variables of a template's signature, and the types that one call
+/// gives them.
+type private CallTypes =
+    { /// Every type variable of the signature, without its `'`.
+      Known: Set<string>
+      /// Each variable that the call gives a type, with the type.
+      Given: (string * HMType) list }
+
+/// The `CallTypes` of a call to a function with this binding. `tArgs` are the
+/// type arguments of the call, in the order of the scheme's type variables.
+let private functionTypes (binding: Binding option) (tArgs: HMType list) : CallTypes =
+    match binding with
+    | Some b ->
+        let (Scheme(vars, _, _)) = b.Scheme
+        let typeVars = schemeTypeVars b.Scheme
+
+        { Known = vars |> List.map AlphaRename.bareVar |> Set.ofList
+          Given = if typeVars.Length = tArgs.Length then List.zip typeVars tArgs else [] }
+    | None -> { Known = Set.empty; Given = [] }
+
+/// The `CallTypes` of a call to a method of an implementation. `tyArgs` are
+/// what `TraitRef.Resolved` holds: the types of the implementation's type
+/// variables, in the order of `Traits.instantiateImplPrefix`.
+let private implTypes (env: Env) (traitName: string) (implKey: string) (tyArgs: HMType list) : CallTypes =
+    match Map.tryFind (traitName, implKey) env.Registry.ImplTargets with
+    | Some target ->
+        let vars = target.FixedPrefix |> List.collect typeVarsOf |> List.distinct
+
+        { Known = vars |> List.map AlphaRename.bareVar |> Set.ofList
+          Given = if vars.Length = tyArgs.Length then List.zip vars tyArgs else [] }
+    | None -> { Known = Set.empty; Given = [] }
+
+/// The types that a spliced body writes, at the call: a substitution for
+/// `AlphaRename.substBodyTypes`.
+///
+/// - A type variable of the signature is replaced by the type that the call
+///   gives it, as a surface type. Inside a generic caller, that type can be a
+///   variable of the caller. A type that cannot be spelled is left as
+///   written: the copy then does not check, and the call stays.
+/// - Any other type variable is the body's own, as the `%b` of a local
+///   function's signature. It gets a fresh name, so that it is not taken for
+///   a variable of the caller.
+///
+/// The types are spelled at a range with no file: they are not names that
+/// the source wrote, so `DotNetInterop.checkNameable` does not apply to them.
+let private spliceTypes (env: Env) (r: Lexer.Range) (types: CallTypes) (parts: Ast.Expr list) : Map<string, Ast.FType> =
+    let written = parts |> List.map AlphaRename.bodyTypeVars |> Set.unionMany
+
+    if written.IsEmpty then
+        Map.empty
+    else
+
+    let at = { r with File = "" }
+
+    let given =
+        types.Given
+        |> List.choose (fun (v, t) ->
+            let v = AlphaRename.bareVar v
+
+            if Set.contains v written then
+                Annotations.spellType env.Registry true at (eraseUnits (prune env.Registry t))
+                |> Option.map (fun ft -> v, ft)
+            else
+                None)
+
+    let own =
+        written
+        |> Seq.filter (fun v -> not (Set.contains v types.Known))
+        |> Seq.map (fun v -> v, Ast.TName(Gensym.fresh ("'" + v), at))
+        |> List.ofSeq
+
+    Map.ofList (given @ own)
+
 let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     match expr.Node with
     | TTraitCall(tref, args, kwArgs) ->
@@ -763,6 +837,7 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
                     []
                     expr
                     TraitMethod
+                    (implTypes ctx.Env tref.Trait implKey tyArgs)
                     (fun () -> landingPad ctx.Env tref implKey tyArgs args [] expr)
             | _ -> landingPad ctx.Env tref implKey tyArgs args kwArgs expr
 
@@ -941,16 +1016,21 @@ and private inlineFunctionCall
 
     // A spliced body calls a function by its qualified name, which is not a
     // key in `Bindings`; the name the function was written as is.
-    let unconstrained =
-        let binding =
-            match Map.tryFind name ctx.Env.Bindings, origin with
-            | Some b, _ -> Some b
-            | None, Some(_, original) -> Map.tryFind original ctx.Env.Bindings
-            | None, None -> None
+    let binding =
+        match Map.tryFind name ctx.Env.Bindings, origin with
+        | Some b, _ -> Some b
+        | None, Some(_, original) -> Map.tryFind original ctx.Env.Bindings
+        | None, None -> None
 
+    let unconstrained =
         match binding with
         | Some { Scheme = Scheme(_, [], _) } -> true
         | _ -> false
+
+    let tArgs =
+        match callee.Node with
+        | TIdent(_, tArgs) -> tArgs
+        | _ -> []
 
     match template with
     | Some(key, tpl) when
@@ -964,7 +1044,7 @@ and private inlineFunctionCall
         && not (callSuspends callee.Type)
         && not (wantsSuspendingCopy callee.Type)
         ->
-        spliceTemplate ctx key $"'%s{name}'" tpl args [] call GivenFunction (fun () -> call)
+        spliceTemplate ctx key $"'%s{name}'" tpl args [] call GivenFunction (functionTypes binding tArgs) (fun () -> call)
     | _ -> call
 
 /// Inlines a plain call to a function written `#:inline`, here or in a
@@ -1038,7 +1118,13 @@ and private inlineOptedIn
             && not (Map.containsKey original ctx.Env.Registry.DoubleDefs)
             && (not suspending || (ctx.CanSuspend && not (args |> List.exists passesFunction)))
         then
-            Some(spliceTemplate ctx key $"'%s{name}'" tpl args kwArgs call (OptedIn suspending) (fun () -> call))
+            let tArgs =
+                match callee.Node with
+                | TIdent(_, tArgs) -> tArgs
+                | _ -> []
+
+            let types = functionTypes (Map.tryFind name ctx.Env.Bindings) tArgs
+            Some(spliceTemplate ctx key $"'%s{name}'" tpl args kwArgs call (OptedIn suspending) types (fun () -> call))
         else
             Some call
 
@@ -1051,6 +1137,7 @@ and private spliceTemplate
     (kwArgs: (string * TypedExpr) list)
     (expr: TypedExpr)
     (kind: SpliceKind)
+    (types: CallTypes)
     (fallback: unit -> TypedExpr)
     : TypedExpr =
 
@@ -1072,9 +1159,18 @@ and private spliceTemplate
         let body =
             AlphaRename.reachHidden isBound tpl.Qualification (ColourTwins.resolveIn suspending tpl.Body.Value)
 
+        // The types the body and its defaults write, at this call (see
+        // `spliceTypes`). The source names the types it was checked at, and
+        // re-inference resolves each name again.
+        let defaults = if tpl.Keywords.IsEmpty then [] else tpl.Defaults.Value
+        let typeSubst = spliceTypes ctx.Env expr.Range types (body :: defaults)
+
+        let atCall (e: Ast.Expr) =
+            if typeSubst.IsEmpty then e else AlphaRename.substBodyTypes typeSubst e
+
         // A keyword parameter is a parameter of the body as a mandatory one
         // is, and is freshened with them.
-        let freshBody, subst = AlphaRename.freshen (tpl.Params @ tpl.Keywords) body
+        let freshBody, subst = AlphaRename.freshen (tpl.Params @ tpl.Keywords) (atCall body)
         let freshOf (p: string) = Map.tryFind p subst |> Option.defaultValue p
         let freshParams = tpl.Params |> List.map freshOf
 
@@ -1103,7 +1199,7 @@ and private spliceTemplate
                 |> List.indexed
                 |> List.filter (fun (_, (k, _)) -> not (supplied k))
                 |> List.map (fun (i, (k, d)) ->
-                    let d = AlphaRename.reachHidden isBound tpl.Qualification d
+                    let d = AlphaRename.reachHidden isBound tpl.Qualification (atCall d)
                     let d, _ = AlphaRename.freshen [] d
                     i, freshOf k, AlphaRename.renameFree subst d)
 
@@ -1147,27 +1243,45 @@ and private spliceTemplate
             else
                 spliceEnv
 
-        // 3. Re-infer the body expression directly. Never re-wrapped as a
-        //    lambda first: `infer`'s `EFun` case binds each parameter to a fresh
-        //    metavariable in a scope of its own, which would throw away the
-        //    concrete argument types just supplied.
-        let bodyType, typedBody = InferExpr.infer spliceEnv freshBody
-        unify ctx.Env.Registry (eraseUnits (prune ctx.Env.Registry bodyType)) (eraseUnits (prune ctx.Env.Registry expr.Type))
+        // The caller's type variables, which the arguments and the call's type
+        // arguments name, are one type for the whole copy, as a signature's
+        // variables are for its body (see `Unification.scopedTypeVars`). A
+        // local function of the copy is not generalized over them.
+        let callerVars =
+            (types.Given |> List.map snd) @ (parameterTypes |> List.map snd)
+            |> List.collect (freeTVars ctx.Env.Registry)
+            |> Set.ofList
 
-        //    Each default the call needs is checked against its parameter's
-        //    type, as `CheckDecl` checks it at home: `#:by 1` of a walk in
-        //    doubles is a double.
-        let typedDefaults =
-            missing
-            |> List.map (fun (i, name, d) ->
-                let expected = keywordType i
-                let t, typed = InferExpr.inferChecked expected spliceEnv d
-                unify ctx.Env.Registry (eraseUnits (prune ctx.Env.Registry t)) expected
-                name, typed)
+        let outerScoped = Unification.scopedTypeVars
+        Unification.scopedTypeVars <- Set.union outerScoped callerVars
 
-        // Obligations raised by the body — a `bind` calling `bind` — are
-        // discharged here, before anything looks at the result.
-        Traits.solvePending spliceEnv
+        let typedBody, typedDefaults =
+            try
+                // 3. Re-infer the body expression directly. Never re-wrapped as a
+                //    lambda first: `infer`'s `EFun` case binds each parameter to a fresh
+                //    metavariable in a scope of its own, which would throw away the
+                //    concrete argument types just supplied.
+                let bodyType, typedBody = InferExpr.infer spliceEnv freshBody
+                unify ctx.Env.Registry (eraseUnits (prune ctx.Env.Registry bodyType)) (eraseUnits (prune ctx.Env.Registry expr.Type))
+
+                //    Each default the call needs is checked against its parameter's
+                //    type, as `CheckDecl` checks it at home: `#:by 1` of a walk in
+                //    doubles is a double.
+                let typedDefaults =
+                    missing
+                    |> List.map (fun (i, name, d) ->
+                        let expected = keywordType i
+                        let t, typed = InferExpr.inferChecked expected spliceEnv d
+                        unify ctx.Env.Registry (eraseUnits (prune ctx.Env.Registry t)) expected
+                        name, typed)
+
+                // Obligations raised by the body — a `bind` calling `bind` — are
+                // discharged here, before anything looks at the result.
+                Traits.solvePending spliceEnv
+                typedBody, typedDefaults
+            finally
+                Unification.scopedTypeVars <- outerScoped
+
         let typedBody = TypeEnv.resolveOpenCaseNames typedBody
 
         // 4. Free names now say which module they came from.
@@ -1194,13 +1308,22 @@ and private spliceTemplate
         // A function splice costs the declaration's budget its body's size,
         // and its own nested splices take theirs from the same budget. If the
         // splice is given up, what it took is given back.
+        //
+        // An ordinary function written `#:inline` costs nothing: its author
+        // asked for the copy at every call, as `AggressiveInlining` asks .NET.
+        // The budget had left the later steps of a `scan` pattern as calls,
+        // and `bench/scan` 50% slower than steps that .NET inlined. Its body
+        // cannot name itself (see `publishBodies`), so the copies end. A
+        // bjoroutine's copy changes where its caller goes on, and keeps its
+        // cost.
         let budgetBefore = ctx.Budget.Value
 
         let cost =
             match kind with
-            | TraitMethod -> 0
+            | TraitMethod
+            | OptedIn false -> 0
             | GivenFunction
-            | OptedIn _ -> typedSize typedBody + (qualifiedDefaults |> List.sumBy (snd >> typedSize))
+            | OptedIn true -> typedSize typedBody + (qualifiedDefaults |> List.sumBy (snd >> typedSize))
 
         let parts = qualified :: (qualifiedDefaults |> List.map snd)
 
@@ -1370,7 +1493,7 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
 /// `GrowthFactor` times its size, at least `GrowthFloor` nodes. The calls in
 /// loops are inlined first, as they run the most, and the other calls take
 /// what is left in the second pass. Trait splices are made in the first pass
-/// and do not count.
+/// and do not count, nor do copies of an ordinary function written `#:inline`.
 and private inlineInTwoPasses (ctx: Ctx) (decl: TDecl) : TDecl =
     let size = TypeVisitor.foldDecl (fun n e -> n + 1 - TypeVisitor.guardNodesAt e) 0 decl
     let budget = ref (max GrowthFloor (GrowthFactor * size))

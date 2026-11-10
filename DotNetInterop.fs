@@ -2472,30 +2472,49 @@ let genericConstructorFits
         | TFun(args, ret, _) -> List.exists mentions (ret :: args)
         | _ -> false
 
-    let ctors =
+    let reflected =
         t.GetConstructors instanceFlags
         |> Array.filter (fun c ->
             not (c.GetParameters() |> Array.exists (fun p -> p.ParameterType.IsByRef || p.ParameterType.IsPointer)))
-        |> Array.map (fun c -> c.GetParameters() |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList)
+        |> Array.map (fun c -> c.GetParameters() |> Array.map (fun p -> p.ParameterType) |> Array.toList)
         |> Array.toList
 
-    let ctors =
-        if t.IsValueType && not (ctors |> List.exists List.isEmpty) then [] :: ctors else ctors
+    let reflected =
+        if t.IsValueType && not (reflected |> List.exists List.isEmpty) then [] :: reflected else reflected
+
+    let ctors = reflected |> List.map (List.map mapClrType)
 
     if ctors.IsEmpty then
         failwithf $"Type Error at %s{where}: '%s{csharpTypeName t}' has no public constructor."
 
-    let solve (ps: HMType list) =
-        List.zip ps argTypes
-        |> List.filter (fun (p, _) -> mentions p)
-        |> List.fold
-            (fun acc (p, arg) -> acc |> Option.bind (fun s -> solveTypeParams typeParamSet s p arg))
-            (Some Map.empty)
+    // A parameter of a primitive type, as the `int capacity` of
+    // `List<T>(int)`, does not take a generic type, a tuple or a function.
+    // Without this test it fitted every argument, since only the parameters
+    // that mention a type parameter are compared, and `(PriorityQueue. c)`
+    // with an `IComparer<P>` fitted two constructors where the type arguments
+    // are not known.
+    let cannotTake (p: Type) (arg: HMType) =
+        p.IsPrimitive
+        && (match arg with
+            | TCon(_, _ :: _)
+            | TTuple _
+            | TFun _ -> true
+            | _ -> false)
+
+    let solve (clr: Type list) (ps: HMType list) =
+        if List.exists2 cannotTake clr argTypes then
+            None
+        else
+            List.zip ps argTypes
+            |> List.filter (fun (p, _) -> mentions p)
+            |> List.fold
+                (fun acc (p, arg) -> acc |> Option.bind (fun s -> solveTypeParams typeParamSet s p arg))
+                (Some Map.empty)
 
     let fits =
-        ctors
-        |> List.filter (fun ps -> ps.Length = argTypes.Length)
-        |> List.choose (fun ps -> solve ps |> Option.map (fun s -> ps, s))
+        List.zip reflected ctors
+        |> List.filter (fun (_, ps) -> ps.Length = argTypes.Length)
+        |> List.choose (fun (clr, ps) -> solve clr ps |> Option.map (fun s -> ps, s))
 
     let shapes () =
         ctors

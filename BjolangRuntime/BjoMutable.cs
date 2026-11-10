@@ -17,128 +17,23 @@ using System.Runtime.InteropServices;
 
 namespace Bjolang.Runtime;
 
-// The mutable collections, as static modules over the .NET ones.
+// What the mutable collections need that Bjolang cannot write.
 //
-// The values these hand back are `List<T>`, `Dictionary<K,V>`, `HashSet<T>`
-// and `PriorityQueue<T,P>` themselves — nothing is wrapped — so anything else
-// imported from .NET that takes one of those accepts a Bjolang mutable
-// collection unchanged.
+// `std/mutable/vec`, `set` and `heap` import the members of `List<T>`,
+// `HashSet<T>` and `PriorityQueue<T,P>` themselves. What is left here:
 //
-// A module rather than `import/extern` straight onto the BCL type, because
-// two things the interop cannot reach are needed to use one at all:
-// `import/class` declares no constructor for a generic class, and an accessor
-// import takes no index so there is no indexer. Everything below is one of
-// those two or a one-line forward.
+// - The map, `MutableMapModule`: its `null` key is kept in a subclass of
+//   `Dictionary<K,V>`, and `AddOrExisting` takes a `ref` to the entry.
+// - The walks of the map and the set: a .NET struct enumerator in a heap cell,
+//   which a caller can hold and step.
 //
 // A partial answer is `bool TryXyz(..., out ...)`, the outs marked
 // `[MaybeNullWhen(false)]`, as in the rest of the runtime's interfaces.
 // Bjolang imports it with `(out T)` and gets an `Option`.
 //
-// Equality is .NET's throughout — `EqualityComparer<T>.Default` for the
-// dictionary and the set, `Comparer<P>.Default` for the heap's priorities.
-// That is the same equality `Map` and `Set` file their keys under, so the four
-// agree with each other; it is not the `Eq` trait in `std/eq`.
-
-// ---------------------------------------------------------------------------
-// MutableVec — List<T>
-// ---------------------------------------------------------------------------
-
-[NonUserCode]
-public static class MutableVecModule {
-    public static List<T> Empty<T>() => new();
-
-    /// Room for `capacity` elements before the first regrow. The count is
-    /// still zero.
-    public static List<T> WithCapacity<T>(int capacity) => new(capacity);
-
-    public static List<T> FromEnumerable<T>(IEnumerable<T> items) => new(items);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static IEnumerable<T> AsEnumerable<T>(List<T> xs) => xs;
-
-    public static List<T> Copy<T>(List<T> xs) => new(xs);
-
-    public static T[] ToArray<T>(List<T> xs) => xs.ToArray();
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int Count<T>(List<T> xs) => xs.Count;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsEmpty<T>(List<T> xs) => xs.Count == 0;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static T Get<T>(List<T> xs, int index) => xs[index];
-
-    public static bool TryGet<T>(List<T> xs, int index, [MaybeNullWhen(false)] out T value)
-    {
-        if (index >= 0 && index < xs.Count)
-        {
-            value = xs[index];
-            return true;
-        }
-
-        value = default;
-        return false;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Set<T>(List<T> xs, int index, T value) => xs[index] = value;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Add<T>(List<T> xs, T value) => xs.Add(value);
-
-    public static void AddRange<T>(List<T> xs, IEnumerable<T> items) => xs.AddRange(items);
-
-    public static void Insert<T>(List<T> xs, int index, T value) => xs.Insert(index, value);
-
-    public static void RemoveAt<T>(List<T> xs, int index) => xs.RemoveAt(index);
-
-    /// Removes the first element equal to `value`, and answers whether there
-    /// was one.
-    public static bool Remove<T>(List<T> xs, T value) => xs.Remove(value);
-
-    /// Removes every element the predicate accepts, and answers how many went.
-    public static int RemoveWhere<T>(List<T> xs, Func<T, bool> predicate) =>
-        xs.RemoveAll(new Predicate<T>(predicate.Invoke));
-
-    /// The last element, removed. False when the list was empty, which is the
-    /// case a stack-shaped caller has to test anyway.
-    public static bool TryPopBack<T>(List<T> xs, [MaybeNullWhen(false)] out T value) {
-        if (xs.Count == 0)
-        {
-            value = default;
-            return false;
-        }
-
-        var last = xs.Count - 1;
-        value = xs[last];
-        xs.RemoveAt(last);
-        return true;
-    }
-
-    public static void Clear<T>(List<T> xs) => xs.Clear();
-
-    public static bool Contains<T>(List<T> xs, T value) => xs.Contains(value);
-
-    /// The index of the first element equal to `value`, or -1.
-    public static int IndexOf<T>(List<T> xs, T value) => xs.IndexOf(value);
-
-    public static void Reverse<T>(List<T> xs) => xs.Reverse();
-
-    /// Stable, as `list-sort` is: equal elements keep their order. `List.Sort`
-    /// is introsort, which does not keep it.
-    ///
-    /// A copy is sorted and written back once the sort is done, so a `compare`
-    /// that throws leaves the list as it was. Sorted in place, an element in
-    /// the middle of a move would be in the list twice and another not at all.
-    public static void SortBy<T>(List<T> xs, Func<T, T, int> compare)
-    {
-        var items = CollectionsMarshal.AsSpan(xs);
-        var sorted = items.ToArray();
-        SortModule.StableSort(sorted.AsSpan(), new FunctionOrder<T>(compare));
-        sorted.CopyTo(items);
-    }
-}
+// Equality is .NET's throughout, `EqualityComparer<T>.Default`. That is the
+// same equality `Map` and `Set` file their keys under; it is not the `Eq`
+// trait in `std/eq`.
 
 // ---------------------------------------------------------------------------
 // MutableMap — Dictionary<K,V>
@@ -385,74 +280,10 @@ public sealed class MutableMapEnumerator<K, V> where K : notnull {
 // MutableSet — HashSet<T>
 // ---------------------------------------------------------------------------
 
+/// The walk of a `HashSet<T>`, which `std/mutable/set` imports. The rest of
+/// the set is imported from `HashSet<T>` itself.
 [NonUserCode]
 public static class MutableSetModule {
-    public static HashSet<T> Empty<T>() => new();
-
-    public static HashSet<T> FromEnumerable<T>(IEnumerable<T> items) => new(items);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static IEnumerable<T> AsEnumerable<T>(HashSet<T> set) => set;
-
-    public static HashSet<T> Copy<T>(HashSet<T> set) => new(set);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int Count<T>(HashSet<T> set) => set.Count;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsEmpty<T>(HashSet<T> set) => set.Count == 0;
-
-    /// Makes the element a member. One that is already a member stays as it is.
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Add<T>(HashSet<T> set, T value) => set.Add(value);
-
-    /// Adds the element when it is new, and answers false. When an equal one
-    /// is there already, changes nothing, and answers true with that one, which
-    /// is what interning needs.
-    public static bool AddOrExisting<T>(HashSet<T> set, T value, [MaybeNullWhen(false)] out T existing) {
-        if (set.TryGetValue(value, out existing)) return true;
-        set.Add(value);
-        return false;
-    }
-
-    /// Adds the element, which must be new.
-    public static void AddNew<T>(HashSet<T> set, T value) {
-        if (!set.Add(value))
-            throw new ArgumentException($"The element is already in the set: {value}", nameof(value));
-    }
-
-    public static void AddRange<T>(HashSet<T> set, IEnumerable<T> items) => set.UnionWith(items);
-
-    /// Answers whether the element was there.
-    public static bool Remove<T>(HashSet<T> set, T value) => set.Remove(value);
-
-    public static void RemoveRange<T>(HashSet<T> set, IEnumerable<T> items) => set.ExceptWith(items);
-
-    /// Removes every element the predicate accepts, and answers how many went.
-    public static int RemoveWhere<T>(HashSet<T> set, Func<T, bool> predicate) =>
-        set.RemoveWhere(new Predicate<T>(predicate.Invoke));
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool Contains<T>(HashSet<T> set, T value) => set.Contains(value);
-
-    public static void Clear<T>(HashSet<T> set) => set.Clear();
-
-    // --- Set algebra, written into the receiver ----------------------------
-
-    public static void Union<T>(HashSet<T> set, HashSet<T> other) => set.UnionWith(other);
-
-    public static void Intersect<T>(HashSet<T> set, HashSet<T> other) => set.IntersectWith(other);
-
-    public static void Except<T>(HashSet<T> set, HashSet<T> other) => set.ExceptWith(other);
-
-    public static void SymmetricExcept<T>(HashSet<T> set, HashSet<T> other) => set.SymmetricExceptWith(other);
-
-    public static bool IsSubsetOf<T>(HashSet<T> set, HashSet<T> other) => set.IsSubsetOf(other);
-
-    public static bool IsSupersetOf<T>(HashSet<T> set, HashSet<T> other) => set.IsSupersetOf(other);
-
-    public static bool Overlaps<T>(HashSet<T> set, HashSet<T> other) => set.Overlaps(other);
-
     // --- Walking -----------------------------------------------------------
 
     public static MutableSetEnumerator<T> Enumerator<T>(HashSet<T> set) => new(set);
@@ -475,67 +306,4 @@ public sealed class MutableSetEnumerator<T> {
     public MutableSetEnumerator(HashSet<T> set) {
         Enumerator = set.GetEnumerator();
     }
-}
-
-// ---------------------------------------------------------------------------
-// MutableHeap — PriorityQueue<T,P>
-// ---------------------------------------------------------------------------
-
-[NonUserCode]
-public static class MutableHeapModule {
-    /// Ordered by `Comparer<P>.Default`, least priority first.
-    public static PriorityQueue<T, P> Empty<T, P>() => new();
-
-    /// Ordered by a comparison of the caller's, which is what lets a priority
-    /// be ordered by the `Ord` trait rather than by .NET.
-    public static PriorityQueue<T, P> WithComparison<T, P>(Func<P, P, int> compare) =>
-        new(Comparer<P>.Create(new Comparison<P>(compare.Invoke)));
-
-    public static PriorityQueue<T, P> FromEnumerable<T, P>(IEnumerable<(T element, P priority)> items) {
-        var heap = new PriorityQueue<T, P>();
-        heap.EnqueueRange(items);
-        return heap;
-    }
-
-    /// A copy that keeps the comparer, so a heap built by `WithComparison`
-    /// copies to one ordered the same way.
-    public static PriorityQueue<T, P> Copy<T, P>(PriorityQueue<T, P> heap) =>
-        new(heap.UnorderedItems, heap.Comparer);
-
-    /// The contents in *no* order — heap order is only observable by popping.
-    public static IEnumerable<(T, P)> AsEnumerable<T, P>(PriorityQueue<T, P> heap) {
-        foreach (var (element, priority) in heap.UnorderedItems) yield return (element, priority);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int Count<T, P>(PriorityQueue<T, P> heap) => heap.Count;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsEmpty<T, P>(PriorityQueue<T, P> heap) => heap.Count == 0;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Add<T, P>(PriorityQueue<T, P> heap, T element, P priority) => heap.Enqueue(element, priority);
-
-    public static void AddRange<T, P>(PriorityQueue<T, P> heap, IEnumerable<(T element, P priority)> items) =>
-        heap.EnqueueRange(items);
-
-    public static bool TryPeek<T, P>(
-        PriorityQueue<T, P> heap,
-        [MaybeNullWhen(false)] out T element,
-        [MaybeNullWhen(false)] out P priority) =>
-        heap.TryPeek(out element, out priority);
-
-    public static bool TryPop<T, P>(
-        PriorityQueue<T, P> heap,
-        [MaybeNullWhen(false)] out T element,
-        [MaybeNullWhen(false)] out P priority) =>
-        heap.TryDequeue(out element, out priority);
-
-    /// Pushes and pops as one operation, answering what came off — which may be
-    /// the element just pushed. The count never grows, so this is how a heap is
-    /// kept to a bound without two rebalances per element.
-    public static T AddPop<T, P>(PriorityQueue<T, P> heap, T element, P priority) =>
-        heap.EnqueueDequeue(element, priority);
-
-    public static void Clear<T, P>(PriorityQueue<T, P> heap) => heap.Clear();
 }

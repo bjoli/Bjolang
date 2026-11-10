@@ -145,72 +145,19 @@ let private copyName (name: string) (keys: string list) =
 // Spelling a ground type back as a surface type
 // ---------------------------------------------------------------------------
 
-/// The inverse of `Annotations.resolveTypeAnnotation`, over ground types only.
+/// `t` as a surface type with no type variable in it, or `None`. See
+/// `Annotations.spellType`.
 ///
 /// The copy's signature is a `DSignature`, so the substituted type has to be an
-/// `FType`; nothing else in the compiler goes in this direction, because
-/// nothing else generates a signature from a type it inferred.
-let rec private hmToFType (r: Lexer.Range) (t: HMType) : FType option =
-    match t with
-    | TCon(name, []) -> Some(TName(name, r))
-    | TCon(name, args) -> traverse (hmToFType r) args |> Option.map (fun a -> TApp(name, a, r))
-    | TTuple args -> traverse (hmToFType r) args |> Option.map (fun a -> TApp("Tuple", a, r))
-    | TFun(args, ret, eff) ->
-        let head =
-            match groundEffect eff with
-            | ESync -> Some "->"
-            | EAsync -> Some "-bjo->"
-            | _ -> None
-
-        match head, traverse (hmToFType r) (args @ [ ret ]) with
-        | Some h, Some parts -> Some(TApp(h, parts, r))
-        | _ -> None
-    | TAssoc(traitName, assocName, implementor) ->
-        hmToFType r implementor
-        |> Option.map (fun i -> TApp("assoc", [ TName(traitName, r); TName(assocName, r); i ], r))
-    | TNum(carrier, unit) ->
-        hmToFType r carrier
-        |> Option.map (fun c -> TApp("units", c :: (Units.toMetadataParts unit |> List.map (fun p -> TName(p, r))), r))
-    | TVar _
-    | TMeta _ -> None
-
-/// `t` as a surface type, or `None` if it cannot be spelled as one faithfully.
-///
-/// The answer is checked by resolving it again and comparing: a type
-/// constructor whose name is also an alias key, a primitive under a second
-/// spelling, and the internal name of a `dyn` type — which is not surface
-/// syntax at all — all resolve back to something else, and this is what turns
-/// each of them into a declined specialisation rather than a copy with the
-/// wrong signature.
+/// `FType`.
 let private spellGround (registry: TraitRegistry) (r: Lexer.Range) (t: HMType) : FType option =
-    // An arrow's effect may be a solved cell, and `hmToFType` writes the arrow
-    // head the cell resolved to. The comparison below is between a type that
-    // has been through the parser and one that has not, so both sides are put
-    // in the same terms first.
-    let rec settle (t: HMType) =
-        match t with
-        | TCon(n, args) -> TCon(n, List.map settle args)
-        | TFun(args, ret, eff) -> TFun(List.map settle args, settle ret, groundEffect eff)
-        | TTuple args -> TTuple(List.map settle args)
-        | TAssoc(traitName, assocName, implementor) -> TAssoc(traitName, assocName, settle implementor)
-        | other -> other
-
-    // `prune` raises when an associated type is projected out of a type with no
-    // implementation. That is a declined specialisation rather than a failure:
-    // the generic original will report it at the call site if it is real.
-    match (try Some(settle (prune registry t)) with _ -> None) with
-    | None -> None
-    | Some pruned ->
-
-    match hmToFType r pruned with
-    | Some ft when (try settle (Annotations.resolveTypeAnnotation registry ft) = pruned with _ -> false) -> Some ft
-    | _ -> None
+    Annotations.spellType registry false r t
 
 // ---------------------------------------------------------------------------
 // Substituting into a written signature
 // ---------------------------------------------------------------------------
 
-let private bareVar (v: string) = v.TrimStart '\''
+let private bareVar = AlphaRename.bareVar
 
 /// Replaces the type variables of a type with what a call site gave them.
 let rec private substHM (subst: Map<string, HMType>) (t: HMType) : HMType =
@@ -570,95 +517,6 @@ let private collect (env: Env) (cands: Map<string, Candidate>) (decls: TDecl lis
     |> Map.ofList
 
 // ---------------------------------------------------------------------------
-// Substituting into the types a body writes
-// ---------------------------------------------------------------------------
-
-/// A written type with its type variables replaced by surface types.
-let rec private substFType (subst: Map<string, FType>) (ft: FType) : FType =
-    match ft with
-    | TName(n, _) when n.StartsWith "'" -> Map.tryFind (bareVar n) subst |> Option.defaultValue ft
-    | TName _ -> ft
-    | TApp(n, args, r) -> TApp(n, List.map (substFType subst) args, r)
-    | TArrow(mandatory, keywords, rest, ret, colour, r) ->
-        TArrow(
-            List.map (substFType subst) mandatory,
-            keywords |> List.map (fun (k, t) -> k, substFType subst t),
-            Option.map (substFType subst) rest,
-            substFType subst ret,
-            colour,
-            r
-        )
-
-/// A copy's body with every type it writes at the copy's instantiation.
-///
-/// A local parameter written `(: src (Array %a))` names the signature's type
-/// variable, and that is what keeps the local function from being generalized
-/// on its own. The copy's signature is concrete, so a variable left in the
-/// body would belong to no signature, and the local would be generalized over
-/// it and take the constraint with it.
-let rec private substBodyTypes (subst: Map<string, FType>) (expr: Expr) : Expr =
-    let go = substBodyTypes subst
-    let ty = substFType subst
-    let pattern = Ast.mapPatternSteps go
-
-    match expr with
-    | EInt _
-    | EString _
-    | EChar _
-    | EBool _
-    | EResolved _
-    | EQuotedSymbol _
-    | EKeyword _
-    | EIdent _ -> expr
-    | ETuple(items, r) -> ETuple(List.map go items, r)
-    | EList(items, r) -> EList(List.map go items, r)
-    | EVec(items, r) -> EVec(List.map go items, r)
-    | EArray(items, r) -> EArray(List.map go items, r)
-    | ESplice(e, r) -> ESplice(go e, r)
-    | EApp(target, args, r) -> EApp(go target, List.map go args, r)
-    | ECast(t, e, r) -> ECast(ty t, go e, r)
-    | EDynPack(traitName, e, r) -> EDynPack(traitName, go e, r)
-    | ELet(name, isFun, args, ann, value, body, r) ->
-        ELet(name, isFun, substArgs subst args, Option.map ty ann, go value, go body, r)
-    | ELetMono(name, value, body, r) -> ELetMono(name, go value, go body, r)
-    | ELetRec(bindings, body, r) ->
-        ELetRec(
-            bindings
-            |> List.map (fun (n, isFun, args, ann, value) -> n, isFun, substArgs subst args, Option.map ty ann, go value),
-            go body,
-            r
-        )
-    | ELetTuple(names, value, body, r) -> ELetTuple(names, go value, go body, r)
-    | ELetMutable(name, ann, value, body, r) -> ELetMutable(name, Option.map ty ann, go value, go body, r)
-    | ESet(name, value, r) -> ESet(name, go value, r)
-    | EIf(c, t, f, r) -> EIf(go c, go t, go f, r)
-    | EWhen(c, body, negated, r) -> EWhen(go c, go body, negated, r)
-    | EFun(args, body, colour, r) -> EFun(args, go body, colour, r)
-    | ERecordUpdate(target, fields, r) -> ERecordUpdate(target, fields |> List.map (fun (k, v) -> k, go v), r)
-    | ERecordSet(target, fields, r) -> ERecordSet(target, fields |> List.map (fun (k, v) -> k, go v), r)
-    | EGetField(target, field, r) -> EGetField(go target, field, r)
-    | EMatch(target, clauses, r) ->
-        EMatch(go target, clauses |> List.map (fun (p, g, b) -> pattern p, Option.map go g, go b), r)
-    | ETryFinally(body, cleanup, r) -> ETryFinally(go body, go cleanup, r)
-    | ETryCatch(body, exceptions, r) -> ETryCatch(go body, exceptions, r)
-    | EHoist(body, r) -> EHoist(go body, r)
-    | ESeq(body, r) -> ESeq(go body, r)
-    | EBjo(body, kind, r) -> EBjo(go body, kind, r)
-    | ETaskEvent(body, r) -> ETaskEvent(go body, r)
-    | EYield(value, r) -> EYield(go value, r)
-    | EYieldFrom(value, r) -> EYieldFrom(go value, r)
-    | EWithReturn(name, body, r) -> EWithReturn(name, go body, r)
-    | EDefMatch(binder, scrutinee, failure, sequel, r) ->
-        EDefMatch(pattern binder, go scrutinee, Ast.mapDefFailure go pattern failure, go sequel, r)
-
-and private substArgs (subst: Map<string, FType>) (args: DefunArg list) : DefunArg list =
-    args
-    |> List.map (function
-        | MandatoryArg(n, Some t) -> MandatoryArg(n, Some(substFType subst t))
-        | KeywordArg(n, value) -> KeywordArg(n, substBodyTypes subst value)
-        | other -> other)
-
-// ---------------------------------------------------------------------------
 // Generation
 // ---------------------------------------------------------------------------
 
@@ -736,8 +594,8 @@ let private generate
             |> List.choose (fun (v, t) -> spellGround env.Registry cand.SigRange t |> Option.map (fun ft -> v, ft))
             |> Map.ofList
 
-        let body = substBodyTypes typeSubst body
-        let args = substArgs typeSubst cand.Args
+        let body = AlphaRename.substBodyTypes typeSubst body
+        let args = AlphaRename.substArgs typeSubst cand.Args
 
         // An imported body is checked under the module it was *written* in, not
         // the one it is landing in: it may name something its own module is
@@ -780,7 +638,7 @@ let private generate
                     { Params = mandatoryNames args
                       Keywords = []
                       Defaults = noDefaults
-                      Body = Lazy<_>.CreateFromValue(substBodyTypes typeSubst renamed)
+                      Body = Lazy<_>.CreateFromValue(AlphaRename.substBodyTypes typeSubst renamed)
                       Qualification = cand.Qualification
                       OriginModule = Option.defaultValue env.CurrentModule cand.Origin
                       Inline = true

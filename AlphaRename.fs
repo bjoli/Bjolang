@@ -293,6 +293,125 @@ let keyChosenCases (chosen: Lexer.Range -> string -> string option) (body: Expr)
 
     go body
 
+// ---------------------------------------------------------------------------
+// The types a body writes
+// ---------------------------------------------------------------------------
+
+/// A type variable's name without its `'`, as a scheme and a written type
+/// may spell it with or without one.
+let bareVar (v: string) = v.TrimStart '\''
+
+/// A written type with its type variables replaced by surface types.
+let rec substFType (subst: Map<string, FType>) (ft: FType) : FType =
+    match ft with
+    | TName(n, _) when n.StartsWith "'" -> Map.tryFind (bareVar n) subst |> Option.defaultValue ft
+    | TName _ -> ft
+    | TApp(n, args, r) -> TApp(n, List.map (substFType subst) args, r)
+    | TArrow(mandatory, keywords, rest, ret, colour, r) ->
+        TArrow(
+            List.map (substFType subst) mandatory,
+            keywords |> List.map (fun (k, t) -> k, substFType subst t),
+            Option.map (substFType subst) rest,
+            substFType subst ret,
+            colour,
+            r
+        )
+
+/// A body with `ty` applied to every type it writes: the annotations of its
+/// bindings and parameters, and the targets of its casts.
+let rec mapBodyTypes (ty: FType -> FType) (expr: Expr) : Expr =
+    let go = mapBodyTypes ty
+    let pattern = Ast.mapPatternSteps go
+
+    match expr with
+    | EInt _
+    | EString _
+    | EChar _
+    | EBool _
+    | EResolved _
+    | EQuotedSymbol _
+    | EKeyword _
+    | EIdent _ -> expr
+    | ETuple(items, r) -> ETuple(List.map go items, r)
+    | EList(items, r) -> EList(List.map go items, r)
+    | EVec(items, r) -> EVec(List.map go items, r)
+    | EArray(items, r) -> EArray(List.map go items, r)
+    | ESplice(e, r) -> ESplice(go e, r)
+    | EApp(target, args, r) -> EApp(go target, List.map go args, r)
+    | ECast(t, e, r) -> ECast(ty t, go e, r)
+    | EDynPack(traitName, e, r) -> EDynPack(traitName, go e, r)
+    | ELet(name, isFun, args, ann, value, body, r) ->
+        ELet(name, isFun, mapArgTypes ty args, Option.map ty ann, go value, go body, r)
+    | ELetMono(name, value, body, r) -> ELetMono(name, go value, go body, r)
+    | ELetRec(bindings, body, r) ->
+        ELetRec(
+            bindings
+            |> List.map (fun (n, isFun, args, ann, value) -> n, isFun, mapArgTypes ty args, Option.map ty ann, go value),
+            go body,
+            r
+        )
+    | ELetTuple(names, value, body, r) -> ELetTuple(names, go value, go body, r)
+    | ELetMutable(name, ann, value, body, r) -> ELetMutable(name, Option.map ty ann, go value, go body, r)
+    | ESet(name, value, r) -> ESet(name, go value, r)
+    | EIf(c, t, f, r) -> EIf(go c, go t, go f, r)
+    | EWhen(c, body, negated, r) -> EWhen(go c, go body, negated, r)
+    | EFun(args, body, colour, r) -> EFun(args, go body, colour, r)
+    | ERecordUpdate(target, fields, r) -> ERecordUpdate(target, fields |> List.map (fun (k, v) -> k, go v), r)
+    | ERecordSet(target, fields, r) -> ERecordSet(target, fields |> List.map (fun (k, v) -> k, go v), r)
+    | EGetField(target, field, r) -> EGetField(go target, field, r)
+    | EMatch(target, clauses, r) ->
+        EMatch(go target, clauses |> List.map (fun (p, g, b) -> pattern p, Option.map go g, go b), r)
+    | ETryFinally(body, cleanup, r) -> ETryFinally(go body, go cleanup, r)
+    | ETryCatch(body, exceptions, r) -> ETryCatch(go body, exceptions, r)
+    | EHoist(body, r) -> EHoist(go body, r)
+    | ESeq(body, r) -> ESeq(go body, r)
+    | EBjo(body, kind, r) -> EBjo(go body, kind, r)
+    | ETaskEvent(body, r) -> ETaskEvent(go body, r)
+    | EYield(value, r) -> EYield(go value, r)
+    | EYieldFrom(value, r) -> EYieldFrom(go value, r)
+    | EWithReturn(name, body, r) -> EWithReturn(name, go body, r)
+    | EDefMatch(binder, scrutinee, failure, sequel, r) ->
+        EDefMatch(pattern binder, go scrutinee, Ast.mapDefFailure go pattern failure, go sequel, r)
+
+/// The parameters' types, and the defaults of keyword parameters, with `ty`
+/// applied.
+and mapArgTypes (ty: FType -> FType) (args: DefunArg list) : DefunArg list =
+    args
+    |> List.map (function
+        | MandatoryArg(n, Some t) -> MandatoryArg(n, Some(ty t))
+        | KeywordArg(n, value) -> KeywordArg(n, mapBodyTypes ty value)
+        | other -> other)
+
+/// A body with every type it writes at the types `subst` gives its type
+/// variables.
+///
+/// A local parameter written `(: src (Array %a))` names the signature's type
+/// variable, and that is what keeps the local function from being generalized
+/// on its own. A copy at other types has to name those types, or the variable
+/// belongs to no signature, and the local is generalized over it.
+let substBodyTypes (subst: Map<string, FType>) (expr: Expr) : Expr = mapBodyTypes (substFType subst) expr
+
+/// `substBodyTypes` for an argument list.
+let substArgs (subst: Map<string, FType>) (args: DefunArg list) : DefunArg list = mapArgTypes (substFType subst) args
+
+/// The type variables the types of `expr` name, without their `'`.
+let bodyTypeVars (expr: Expr) : Set<string> =
+    let found = System.Collections.Generic.HashSet<string>()
+
+    let rec visit (ft: FType) =
+        match ft with
+        | TName(n, _) when n.StartsWith "'" -> found.Add(bareVar n) |> ignore
+        | TName _ -> ()
+        | TApp(_, args, _) -> List.iter visit args
+        | TArrow(mandatory, keywords, rest, ret, _, _) ->
+            List.iter visit mandatory
+            keywords |> List.iter (snd >> visit)
+            Option.iter visit rest
+            visit ret
+
+    mapBodyTypes (fun t -> visit t; t) expr |> ignore
+    Set.ofSeq found
+
 /// Rewrites the free names of a body that was written somewhere else to name
 /// the module they actually came from — `Origin_Module::helper`.
 ///

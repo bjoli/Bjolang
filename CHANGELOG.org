@@ -3,6 +3,173 @@
 
 What each change guarantees, and what it leaves open.
 
+* A copied body means at the call what it meant where it was written
+
+- A copy of a function written ~#:inline~, of a function given a known
+  function, or of a trait method is the body checked again at the call.
+  Before it is checked, each type variable of the signature that the
+  body's annotations and casts name is replaced by the type the call
+  gives it (~TraitInline.spliceTypes~). For a trait method these are the
+  implementation's variables. Inside a generic caller the type is the
+  caller's own variable. Before, the variable was a rigid one that no
+  type matched: ~(: (as-delegate pred) (Predicate %a))~ did not check at
+  ~int~, the compiler warned, and the call stayed a call.
+- A type variable that only the body names, as the ~%b~ of a local
+  function's signature, gets a fresh name at each copy, so that it is not
+  taken for a variable of the caller. The caller's variables are one type
+  in the copy, as a signature's are in its body: a local function of the
+  copy is not generalized over them.
+- A published body names an ~import/class~ alias of its module by the
+  .NET type that the alias stands for (~Exports.typeKeyOf~), also a nested
+  generic type such as ~PriorityQueue`2+UnorderedItemsCollection~. A call
+  of an alias's constructor, ~(MutableHeap. ...)~, is published with an
+  ~import/class~ of its own under a ~clr_import__~ name, as a foreign
+  method is. Before, the importer's copy failed with "there is no type
+  named 'Predicate'" or "Unbound variable: MutableHeap.".
+- A published body keeps its annotations as annotations. ~(: v T)~ was
+  written back as ~(cast T v)~, which does not check and gives
+  ~as-delegate~ no type, and a local ~defun~'s return type as a cast of
+  the function. Now they are written as ~(: v T)~ and ~(defun (f (: x T))
+  : R body)~, and the definitions of a body block keep theirs.
+- ~Monomorphise~ uses the same substitution
+  (~AlphaRename.substBodyTypes~, ~Annotations.spellType~), and does what it
+  did.
+- ~mutablevec-remove-where!~, ~mutableset-remove-where!~ and
+  ~mutableheap-by~ are no longer ~#:no-inline~, and ~mutablevec->seq~ and
+  ~mutableset->seq~ are ~#:inline~ again.
+- Over the 662 test programs, the warnings of a copy that failed went from
+  33 to 1. The copies of 210's ~Refable~ of a stopwatch and of 245's
+  ~+duration~ of a ~Time~ call a constructor, and are made now. The one
+  left is 274's ~set!~ of a ~def/mutable~ through a facade, which is not
+  about types.
+- Not closed: a trait method's own type variables (not the
+  implementation's) are not replaced in an implementation's body, so such
+  a copy fails as before and the call stays. A type that cannot be spelled
+  (an arrow whose colour is not known) leaves its variable as written.
+- Measured: the C# of bench/scan is the same before and after, and that
+  of bench/mutable differs only where ~mutablevec-remove-where!~ and
+  ~mutableheap-by~ are now copies. bench/mutable, alternated, 2 rounds:
+  remove-where +1%, +1%; heap by a comparison 0%, 0%.
+- Tests: ~TestFiles/541_inline_annotations.bjo~ (with
+  ~inc/annotated_inline.bjo~) runs each case: in this module and from
+  another, at a concrete type and in a generic caller, a variable of the
+  body's own, trait methods, a constructor.
+  ~TestFiles/codegen/inline_annotations.bjo~ checks that each call is a
+  copy; before the change, all of its patterns matched calls. 540 and 199
+  without the ~#:no-inline~, with no warning, and the std build with the
+  same warnings as before.
+
+* ~(std mutable vec)~, ~set~ and ~heap~ import .NET's members, and their C# modules are gone
+
+- ~MutableVecModule~, ~MutableHeapModule~ and all of ~MutableSetModule~
+  but its walk are deleted from BjoMutable.cs: the modules import the
+  members of ~List<T>~, ~HashSet<T>~ and ~PriorityQueue<T,P>~ themselves,
+  the indexer as ~get_Item~ and ~set_Item~, and construct them with
+  ~(MutableVec.)~ and the like. What was C# logic is Bjolang:
+  ~mutablevec-try-ref~, ~mutablevec-pop!~, ~mutableset-add-new!~ and the
+  interning lookup of ~mutableset-try-add-new!~. Names, signatures and
+  results are as they were.
+- ~mutablevec-sort-by!~ sorts with the new ~array-sort-by!~ (below), and
+  ~SortModule.StableSort~ is gone from BjoSort.cs.
+- ~remove-where!~ and ~mutableheap-by~ give .NET a ~Predicate~ and a
+  ~Comparison~ through ~as-delegate~.
+- Stays C#: the map (its ~null~ key is a subclass of ~Dictionary~, and
+  ~AddOrExisting~ takes a ~ref~ to the entry), and the walks of the map and
+  the set (a struct enumerator in a heap cell).
+- ~mutablevec->seq~, ~mutablevec-remove-where!~,
+  ~mutableset-remove-where!~ and ~mutableheap-by~ have annotations with
+  the signature's ~%a~ or a type alias of their module. They are copied
+  into their callers since the change above.
+- Measured, bench/mutable/mutable.bjo, the C# modules and these
+  alternated, 2 rounds: add and ref, pop, set add and contains: no
+  change; set and try-ref −13% and −54%; remove-where −23%; sort-by
+  −18%, −20%; heap add and pop −4%; heap by a comparison −7%; set algebra
+  +4%, +6% (the same .NET calls).
+- Tests: the mutable collection tests (199, 236, 278, 291, 405, 406, 431,
+  472) as they were; bjostat's, bjogui's and bjoweb's tests.
+
+* ~array-sort-by!~ sorts an array in place by a comparison
+
+- Stable, the merge sort of ~vec-sort-by~, exported from ~(std eq)~ and
+  the prelude. ~sort-array-by~, under ~vec-sort-by~ too, now sorts runs of
+  16 by insertion before it merges, as ~array-sort!~ does, and its local
+  functions capture nothing: a captured array was read again from its
+  closure after each call of the comparison.
+
+* A constructor parameter of a primitive type does not take a generic type
+
+- ~DotNetInterop.genericConstructorFits~ compares only the parameters that
+  mention a type parameter of the type, so ~List<T>(int capacity)~ fitted
+  every one-argument call. Where the type arguments were not known, as in
+  a generic function, ~(PriorityQueue. comparer)~ fitted two constructors
+  and was an error. Now a parameter of a primitive type does not fit an
+  argument of a generic type, a tuple or a function.
+- Tests: ~TestFiles/540_generic_ctor_open.bjo~.
+
+* ~as-delegate~ to a delegate type of the same signature binds the same method
+
+- ~Func<T, bool>~ to ~Predicate<T>~, or ~Func<T, T, int>~ to
+  ~Comparison<T>~, is now ~Delegate.CreateDelegate~ with the function's
+  method and target (~BjoInterop.Rebinder~). Before, the delegate called a
+  compiled wrapper that called the function. A function of more than one
+  target, and a delegate type with other types, still get the wrapper.
+- Tests: ~TestFiles/540_generic_ctor_open.bjo~, with a function and with a
+  closure.
+
+* ~(std scan)~'s steps are Bjolang, and BjoScan.cs is gone
+
+- The 17 steps that ~scan~ and ~try-scan~ expand to are in scan.bjo,
+  written ~#:inline~, with the names, signatures and results they had. An
+  importer copies each step into the code that scans. They read the line
+  through ~Utf8String.AsSpan~, which is read-only, and make a text value
+  with ~Utf8String.SliceBytes~, which refuses an offset outside the line or
+  in a character. The old ~Slice~ trusted its offsets.
+- A number of more than 18 digits, a literal near the end of the line and
+  a character that is not ASCII go to small functions out of line. The
+  rest is in the copy.
+- ~scan-message~ joins UTF-8 strings. The C# step made a .NET string and
+  converted it. ~try-scan~ of a line that does not match is 35% faster; the
+  cause is not measured.
+- Measured, bench/scan/scan.bjo, the C# steps and these alternated, 3 runs
+  each, medians per 1000 lines: ints 8.72/8.78 µs, words 24.5/26.8 µs
+  (+9%), csv 42.8/42.8 µs, chars 24.8/24.9 µs, repeat 35.6/35.2 µs,
+  try-fail 84.8/53.6 µs.
+- Tests: ~TestFiles/404_scan.bjo~ and the 13 ~scan_*~ error tests, as
+  they were; ~TestFiles/codegen/scan_steps_inline.bjo~.
+
+* A copy of an ordinary ~#:inline~ function is outside the growth budget
+
+- ~TraitInline~ lets a declaration grow by function splices to 2 times its
+  size, at least 300 nodes. A copy of a function written ~#:inline~ took
+  from that budget too, so in a long ~scan~ pattern the later steps stayed
+  calls, and bench/scan's words was 50% slower than with steps that .NET
+  inlined. Now such a copy costs nothing, as ~AggressiveInlining~ asks .NET
+  for the copy whatever the size. Its body cannot name itself, so the
+  copies end.
+- A bjoroutine written ~#:inline~ keeps its cost: its copy changes where
+  its caller goes on. A call given a known function is inlined within the
+  budget, as before.
+- The DLLs of ~lib/~ (62) and of bjostat's ~src/~ (10) are byte for byte
+  the same size with and without the change: only ~scan~ had hit the
+  budget.
+
+* A span is indexed as C# indexes it
+
+- ~ro-span-ref~, ~span-ref~, ~ro-span-length~ and ~span-length~ import
+  ~Bjolang.Runtime.Spans.Ref~ and ~Length~. Their calls are now emitted as
+  ~(s)[i]~ and ~(s).Length~ (~Codegen.spanAccess~). Each call copied the
+  span, also where .NET inlined it, and in a large method the copies kept
+  .NET from proving an index in range: each byte was checked twice.
+- bench/scan's chars: 26.2 to 24.9 µs, with the SliceBytes change below.
+
+* ~Utf8String.SliceBytes~ of a string that is all of its array tests the type once
+
+- It took the span, the array and the start through three type tests of
+  the string's data. Now one exact type test finds a whole array, and the
+  checks of the range and the boundaries are the same on both paths. The
+  throws are out of line, and the method is ~AggressiveInlining~.
+- Tests: the 36 BjoString tests.
+
 * A ~#(...)~ inside another is a function of its own
 
 - ~#(wrap e #(f &))~ is a thunk: the inner ~#(...)~'s ~&~ is its own
