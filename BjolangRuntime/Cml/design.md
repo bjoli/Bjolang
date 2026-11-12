@@ -2549,9 +2549,36 @@ within their noise. The first two changes without the third gave the rings
 the same gain and the service none.
 
 What is left of the token is the protocol itself: `op.Watch()`, `Arm`'s
-compare-exchange, the reads of the token, and `End`. Removing more means a
-park that only records where it is, with the token finding the parks
-through the scope when it fires.
+compare-exchange, the reads of the token, and `End`.
+
+**Cancellation by the scope — measured, not kept.** The idea: the token
+keeps no waiters. A scope keeps the cells of its live children, and when
+its token fires it withdraws their parks. That removes the registration on
+the token (the stripe lock, the waiter list, the prune and the `Gone`
+state). A process-wide barrier when the token fires could then replace
+`Arm`'s compare-exchange: at a normal scope end every child has landed, so
+there is nothing to withdraw and no barrier. The price is two cancellation
+protocols, because a token that no scope owns (`make-cancel`, a
+`current-cancel` bound by hand) has no children to go through.
+
+Its ceiling was measured on `main` (.NET 10) with two unsound builds,
+the three run in turn for 10 rounds: H1 never registers a cell on the
+token, and H2 also arms with a plain store. Retiring and reusing cells was
+kept, since the scope's set of cells would cost the same.
+
+                               base      H1                H2
+    Ring                       63.5 ns   -1.6%  (6/10)     -2.4%  (7/10)
+    Ring (put/get)             71.0 ns   -2.8%  (6/10)     -2.1%  (6/10)
+    Ring (nested scope)        62.0 ns   -1.6%  (7/10)     -2.4%  (9/10)
+    Spawn burst                221 ns    -0.7%             +2.0%
+    service, all cores, CPU              +0.7%             -0.1%
+    service, 4 cores, CPU                -0.1%             -0.3%
+
+Only H2's nested-scope ring had an interval clear of zero. Registration is
+already cheap (see "A finished fiber's watch goes to the next" and the
+striped waiters), and so is the compare-exchange. What a watched park
+costs now is recording the park and reading the token, which any design
+keeps. Not worth two protocols.
 
 ---
 
