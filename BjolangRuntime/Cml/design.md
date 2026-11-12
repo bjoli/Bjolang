@@ -2506,11 +2506,52 @@ Two arrays allocated around the token, as a first test, gave -4.6% CPU and
 -4.4% wall on all cores. The counter's line alone gave -3.8% CPU. The tail
 moved within its noise in each run.
 
-What is left of the token on the service is the watch per park, about 6%
-on all cores and 4 cores alike: `Cell`'s second read of the environment,
-the reference stores into the watch, `op.Watch()`, `End` and the larger
-awaiter struct. Removing it means a park that only records where it is,
-with the token finding the parks through the scope when it fires.
+What was left of the token on the service was the watch per park, about 6%
+on all cores and 4 cores alike. Three parts of it were changed:
+
+**Fewer stores per watched park — kept.**
+
+- *One read of the environment.* `AmbientRace` returns the environment, not
+  only its token, and `SyncOp` and `ChanPut` carry it, so `Cell` does not
+  read `Dyn.Current` again: one thread-static read and one type test less a
+  watched sync. Measured alone: within noise (ring -1.9%, service on all
+  cores -1.6% wall, CPU no difference).
+- *A reference into the watch only when it changes.* A `FiberWatch` lives
+  long, so each reference store into it goes through the write barrier. A
+  fiber in a loop parks on the same site, with the same resume (its own
+  box), and often with the same op, since a recycled op goes back to the
+  head of its thread's free list. `AttachDirect`, `AttachResume` and
+  `AttachChoose` compare first, and `End` no longer clears the fields. A
+  stale field is never used: the token reads the fields while the state is
+  armed at one generation, and takes the park only with a compare-exchange
+  from that state; the owner writes the fields only between parks, and each
+  park arms at a new generation. `Retire` clears them, so that a cell left
+  by a fiber that has ended does not keep its box.
+- *A smaller awaiter.* `SyncAwaiter` held the site and the cell as two
+  fields. A watched park's site is in the cell, so one field holds the site
+  (no token) or the cell (watched), and the kind byte tells which: two
+  references copied into the box at a suspension, in place of three.
+
+All three against the runtime before, 12 rounds as above:
+
+                                         old       new    change, 95% interval      rounds lower
+    Ring                                79.5      71.5    -7.5%  (-14.5 .. -4.4)    10/12
+    Ring (put/get)                      85.5      79.5    -7.0%  (-9.9 .. -3.5)     11/12
+    Skewed choose(8), put              181.0     175.0    -3.3%  (-4.1 .. -1.4)     12/12
+    service, all cores, wall ms        220.0     216.0    -1.8%  (-3.6 .. -0.9)     10/12
+    service, all cores, CPU ms        4995.5    4873.5    -2.7%  (-3.5 .. -0.6)      9/12
+    service, 4 cores, wall ms          387.5     378.0    -2.6%  (-3.5 .. -1.2)     10/12
+    service, 4 cores, CPU ms          1531.0    1493.5    -2.5%  (-3.5 .. -0.8)     10/12
+    service, 4 cores, p99 us            2163      2112    -3.9%  (-6.4 .. -1.6)     10/12
+
+The nested-scope ring, the spawn burst and the other choose row moved
+within their noise. The first two changes without the third gave the rings
+the same gain and the service none.
+
+What is left of the token is the protocol itself: `op.Watch()`, `Arm`'s
+compare-exchange, the reads of the token, and `End`. Removing more means a
+park that only records where it is, with the token finding the parks
+through the scope when it fires.
 
 ---
 

@@ -101,13 +101,18 @@ public static partial class BjolangRuntime {
     /// that `await` compiles.
     public static SyncOp<T> sync<T>(IEvent<T> ev) => new SyncOp<T>(ev, AmbientRace());
 
-    /// The token a `sync` here races, or null when there is nothing to lose
-    /// to. The comparison against `RootCancel` is what makes a program that
-    /// binds `(current-cancel)` to its own default free as well: that token has
-    /// no other half and can never fire.
-    private static Promise<CancelReason>? AmbientRace() {
-        var token = Dyn.Current.Cancel;
-        return ReferenceEquals(token, RootCancel) ? null : token;
+    /// The environment whose token a `sync` here races, or null when there is
+    /// nothing to lose to. The comparison against `RootCancel` is what makes a
+    /// program that binds `(current-cancel)` to its own default free as well:
+    /// that token has no other half and can never fire.
+    ///
+    /// The environment, not only the token: a watched park also needs the
+    /// environment's park cell (see `SyncOp.Cell`), and `Dyn.Current` is a
+    /// thread-static read and a type test. So a sync reads it once.
+    private static DynEnv? AmbientRace() {
+        var env = Dyn.Current;
+        var token = env.Cancel;
+        return token is null || ReferenceEquals(token, RootCancel) ? null : env;
     }
 
     /// `(chan-put ch v)` — hand `v` over, and return when it has been taken.
@@ -130,23 +135,27 @@ public static partial class BjolangRuntime {
     public readonly struct ChanPut<T> {
         private readonly Channel<T> _ch;
         private readonly T _value;
-        private readonly Promise<CancelReason>? _token;
 
-        internal ChanPut(Channel<T> ch, T value, Promise<CancelReason>? token) {
-            _ch = ch; _value = value; _token = token;
+        /// The environment whose token this races, or null. Its token is not
+        /// null.
+        private readonly DynEnv? _env;
+
+        internal ChanPut(Channel<T> ch, T value, DynEnv? env) {
+            _ch = ch; _value = value; _env = env;
         }
 
         public SyncAwaiter<Unit> GetAwaiter() {
             if (_ch.TryDirectSend(_value)) return SyncAwaiter<Unit>.Ready(default);
 
             var side = _ch.SendSide;
-            if (_token is null)
+            if (_env is null)
                 return new SyncAwaiter<Unit>(side, PutOp<T>.RentDirect(_value), null);
 
-            if (_token.IsCompleted)
-                return SyncAwaiter<Unit>.Cancelled(_token.GetAwaiter().GetResult());
+            var token = _env.Cancel!;
+            if (token.IsCompleted)
+                return SyncAwaiter<Unit>.Cancelled(token.GetAwaiter().GetResult());
 
-            return SyncOp<Unit>.Watched(side, PutOp<T>.RentDirect(_value), _token);
+            return SyncOp<Unit>.Watched(side, PutOp<T>.RentDirect(_value), _env, token);
         }
     }
 
@@ -158,9 +167,12 @@ public static partial class BjolangRuntime {
     [NonUserCode]
     public readonly struct SyncOp<T> {
         private readonly IEvent<T> _ev;
-        private readonly Promise<CancelReason>? _token;
 
-        internal SyncOp(IEvent<T> ev, Promise<CancelReason>? token) { _ev = ev; _token = token; }
+        /// The environment whose token this races, or null. Its token is not
+        /// null.
+        private readonly DynEnv? _env;
+
+        internal SyncOp(IEvent<T> ev, DynEnv? env) { _ev = ev; _env = env; }
 
         public SyncAwaiter<T> GetAwaiter() {
             if (FiberTrace.Enabled) FiberTrace.NoteEvent(_ev);
@@ -171,7 +183,7 @@ public static partial class BjolangRuntime {
             if (_ev is INowable<T> now && now.TryNow(out var ready))
                 return SyncAwaiter<T>.Ready(ready);
 
-            if (_token is null) {
+            if (_env is null) {
                 // Nothing to race: a single channel operation parks with the
                 // fiber's resume in it and no claim at all.
                 if (_ev is IDirectSyncable<T> unwatched)
@@ -187,22 +199,23 @@ public static partial class BjolangRuntime {
             // A single channel operation parks one op, and one op can carry a
             // claim, so cancellation is a claim on that op rather than a second
             // published branch: no `SyncState`, no closure, no awaiter.
-            if (_ev is IDirectSyncable<T> direct) return Direct(direct, _token);
+            var token = _env.Cancel!;
+            if (_ev is IDirectSyncable<T> direct) return Direct(direct, _env, token);
 
             // A lone timer is a single park too, in the wheel, and the token
             // withdraws it as it withdraws an op. See `SleepNode`.
             if (_ev is ISleepEvent sleep && sleep.SleepMs() is > 0 and var ms)
-                return Sleeping(SleepSite(ms), _token);
+                return Sleeping(SleepSite(ms), _env, token);
 
             // A `choose` has branches to arbitrate between, so the token is one
             // more branch of its `SyncState` rather than a claim on one op.
-            return Chosen(_ev, _token);
+            return Chosen(_ev, _env, token);
         }
 
         /// The fiber's registration on `token`, made the first time this fiber
-        /// syncs in this scope.
-        private static FiberWatch Cell(Promise<CancelReason> token) {
-            var env = Dyn.Current;
+        /// syncs in this scope. <paramref name="env"/> is the current
+        /// environment, and <paramref name="token"/> is its token.
+        private static FiberWatch Cell(DynEnv env, Promise<CancelReason> token) {
             var cell = env.Park;
 
             // A scope entered since the last sync brings a different token with
@@ -234,8 +247,8 @@ public static partial class BjolangRuntime {
         /// Armed after the branches are published and before this returns.
         /// Until the fiber registers its continuation nothing can resume it,
         /// so the arm cannot land on a later park of the same fiber.
-        private static SyncAwaiter<T> Chosen(IEvent<T> ev, Promise<CancelReason> token) {
-            var cell = Cell(token);
+        private static SyncAwaiter<T> Chosen(IEvent<T> ev, DynEnv env, Promise<CancelReason> token) {
+            var cell = Cell(env, token);
 
             // The branches first: publish order is priority, so one that is
             // available commits here and the cell is never armed.
@@ -264,14 +277,14 @@ public static partial class BjolangRuntime {
         /// or not it is on the channel's list (see `Withdrawal`). Arming after
         /// the op was published would race the fiber: a partner could resume
         /// it on another thread, and the arm would land on its next park.
-        private static SyncAwaiter<T> Direct(IDirectSyncable<T> ev, Promise<CancelReason> token) {
+        private static SyncAwaiter<T> Direct(IDirectSyncable<T> ev, DynEnv env, Promise<CancelReason> token) {
             // The token may have fired while this fiber was running, in which
             // case its registration has already been walked. Nothing is rented
             // and nothing is published.
             if (token.IsCompleted)
                 return SyncAwaiter<T>.Cancelled(token.GetAwaiter().GetResult());
 
-            return Watched(ev, ev.RentPark(), token);
+            return Watched(ev, ev.RentPark(), env, token);
         }
 
         /// A sleep's node as the park site of this sync. `T` is `Unit` for
@@ -281,11 +294,11 @@ public static partial class BjolangRuntime {
         /// A sleep, watched by this fiber's registration: `Watched` with the
         /// node as its site and no op. The node is not in the wheel yet; that
         /// happens in `UnsafeOnCompleted`, as an op's park does.
-        private static SyncAwaiter<T> Sleeping(IParkable<T> node, Promise<CancelReason> token) {
+        private static SyncAwaiter<T> Sleeping(IParkable<T> node, DynEnv env, Promise<CancelReason> token) {
             if (token.IsCompleted)
                 return SyncAwaiter<T>.Cancelled(token.GetAwaiter().GetResult());
 
-            var cell = Cell(token);
+            var cell = Cell(env, token);
             cell.AttachDirect(node, null!, 0);
             int gen = cell.Arm();
 
@@ -302,8 +315,8 @@ public static partial class BjolangRuntime {
         /// The watched park of an op already rented, which is `Direct` once
         /// it has its op, and all of `chan-put`, whose op the caller rents
         /// because it holds the value. The token has been checked once.
-        internal static SyncAwaiter<T> Watched(IParkable<T> site, Operation op, Promise<CancelReason> token) {
-            var cell = Cell(token);
+        internal static SyncAwaiter<T> Watched(IParkable<T> site, Operation op, DynEnv env, Promise<CancelReason> token) {
+            var cell = Cell(env, token);
             int opGen = op.Watch();
             cell.AttachDirect(site, op, opGen);
             int gen = cell.Arm();
@@ -521,6 +534,8 @@ public static partial class BjolangRuntime {
             int status = System.Threading.Volatile.Read(ref cell._state) & StatusMask;
             if (status != Idle && status != Gone) return;
 
+            cell.Forget();
+
             var slots = t_retired ??= new FiberWatch?[RetiredSlots];
             for (int i = 0; i < slots.Length; i++) {
                 if (slots[i] is null) {
@@ -566,21 +581,47 @@ public static partial class BjolangRuntime {
         }
 
         /// The channel operation this park is about to hand over.
+        ///
+        /// A reference is stored only when it changes. This object lives long,
+        /// so each reference store into it goes through the write barrier, and a
+        /// fiber in a loop parks on the same site, often with the same pooled
+        /// op. The fields are not cleared when a park ends (see
+        /// <see cref="End"/>), so a field that is not stored still holds the
+        /// value of this park.
         internal void AttachDirect(IParkSite site, Operation op, int opGen) {
-            _parked = site;
-            _detail = op;
+            if (!ReferenceEquals(_parked, site)) _parked = site;
+            if (!ReferenceEquals(_detail, op)) _detail = op;
             _number = opGen;
         }
 
-        /// The resume the token runs if it withdraws the op from the list.
-        internal void AttachResume(IResume resume) => _resume = resume;
+        /// The site of the park in progress, or of the last one. Read by the
+        /// owner's awaiter, which holds no copy of its own.
+        internal object? ParkedSite => _parked;
 
-        /// A `choose`, whose token branch commits through its state.
+        /// The resume the token runs if it withdraws the op from the list.
+        /// Stored only when it changes, as in <see cref="AttachDirect"/>: it is
+        /// the fiber's own box, the same for every park of the same frame.
+        internal void AttachResume(IResume resume) {
+            if (!ReferenceEquals(_resume, resume)) _resume = resume;
+        }
+
+        /// A `choose`, whose token branch commits through its state. The state
+        /// is pooled with its awaiter, so both are often the ones of the last
+        /// park, and are stored only when they change.
         internal void AttachChoose(ICancellableAwaiter aw, SyncState state, long gen, int tokenBranch) {
-            _parked = aw;
-            _detail = state;
+            if (!ReferenceEquals(_parked, aw)) _parked = aw;
+            if (!ReferenceEquals(_detail, state)) _detail = state;
             _detailGen = gen;
             _number = tokenBranch;
+        }
+
+        /// Drop the references of the last park. For a cell that a fiber that
+        /// has ended leaves behind, so that it does not keep that fiber's box
+        /// alive. Only the owner calls this, on an idle cell.
+        private void Forget() {
+            _resume = null;
+            _parked = null;
+            _detail = null;
         }
 
         /// Publish the park to the token, and answer the generation it is
@@ -643,18 +684,18 @@ public static partial class BjolangRuntime {
         /// Plain stores. An armed or taken cell is left alone by the prune, the
         /// token only moves it from armed to taken, and a park that never armed
         /// leaves the state as it is, since the prune may have marked it gone.
-        /// The fields are cleared after the state, and the token tolerates
-        /// finding them cleared: it only reaches them for a park it has taken,
-        /// and a park that is ending has nothing left to cancel.
+        ///
+        /// The fields keep the values of this park, so that the next park
+        /// stores only what changes (see <see cref="AttachDirect"/>). The token
+        /// cannot use stale values: it reads the fields while the state is
+        /// armed at one generation, and takes the park only if the state is
+        /// still that, with a compare-exchange. The owner writes the fields
+        /// only between parks, and each park arms at a new generation.
         internal void End() {
             int s = System.Threading.Volatile.Read(ref _state);
             int status = s & StatusMask;
             if (status == Armed || status == Done)
                 System.Threading.Volatile.Write(ref _state, (s & ~StatusMask) | Idle);
-
-            _resume = null;
-            _parked = null;
-            _detail = null;
         }
 
         /// An idle cell is droppable and says so, marking itself unregistered in
@@ -705,8 +746,8 @@ public static partial class BjolangRuntime {
                 return;
             }
 
-            // Cleared by the owner ending the park as the reads were made.
-            // A sleep's site is its node, and it has no op.
+            // Only a cell that was retired has no site; it is not armed, so this
+            // is a guard. A sleep's site is its node, and it has no op.
             if (parked is not IParkSite site) return;
             var op = detail as Operation;
             if (op is null && site is not SleepNode) return;
@@ -730,11 +771,15 @@ public static partial class BjolangRuntime {
         private const byte Ready_ = 0;
         private const byte Direct_ = 1;
         private const byte Event_ = 2;
+        private const byte Watched_ = 3;
 
         /// Where a single operation parks: the channel, its send side or a
         /// timer node. Null for an event; the trace has the event from
         /// `FiberTrace.NoteEvent`.
-        object? ITraceAwaiter.TraceTarget => _kind == Direct_ ? _direct : null;
+        object? ITraceAwaiter.TraceTarget =>
+            _kind == Direct_ ? _link
+            : _kind == Watched_ ? Unsafe.As<FiberWatch>(_link!).ParkedSite
+            : null;
 
         /// What the sync ended up with, told apart by `_kind`: the parked op
         /// (direct), the `EventAwaiter` (event), or, when the sync was over
@@ -745,11 +790,15 @@ public static partial class BjolangRuntime {
         /// is a slot the copy has to put through the write barrier.
         private readonly object? _obj;
 
-        /// Where the direct form's op is parked. The channel, or its send side.
-        private readonly IParkable<T>? _direct;
-
-        /// The fiber's registration on the token, when the sync races one.
-        private readonly FiberWatch? _cell;
+        /// Told apart by `_kind`, as `_obj` is. For a single operation with no
+        /// token (direct), where the op is parked: the channel, its send side
+        /// or a timer node. For one watched by the fiber's registration
+        /// (watched), the registration, which holds the site as well (see
+        /// `FiberWatch.AttachDirect`). For an event, the registration or null.
+        ///
+        /// One field for the site and the registration, for the reason given
+        /// on `_obj`.
+        private readonly object? _link;
 
         private readonly T _ready;
         private readonly byte _kind;
@@ -758,20 +807,26 @@ public static partial class BjolangRuntime {
         /// `choose` under the fiber's registration, whose park has to be given
         /// back when it ends.
         internal SyncAwaiter(EventAwaiter<T> aw, FiberWatch? cell) {
-            _obj = aw; _direct = null; _cell = cell;
+            _obj = aw; _link = cell;
             _ready = default!; _kind = Event_;
         }
 
         /// A single channel operation. The op is rented, and armed under the
         /// cell when there is one, but not yet handed to the channel; that
         /// happens in <see cref="UnsafeOnCompleted"/>.
+        ///
+        /// With a cell, the cell must already hold <paramref name="direct"/> as
+        /// its site (`FiberWatch.AttachDirect`). It holds it until the park
+        /// ends: the owner writes the cell only between parks.
         internal SyncAwaiter(IParkable<T> direct, Operation op, FiberWatch? cell) {
-            _obj = op; _direct = direct; _cell = cell;
-            _ready = default!; _kind = Direct_;
+            _obj = op;
+            if (cell is null) { _link = direct; _kind = Direct_; }
+            else { _link = cell; _kind = Watched_; }
+            _ready = default!;
         }
 
         private SyncAwaiter(T ready, CancelReason? why) {
-            _obj = why; _direct = null; _cell = null;
+            _obj = why; _link = null;
             _ready = ready; _kind = Ready_;
         }
 
@@ -798,15 +853,19 @@ public static partial class BjolangRuntime {
                 return _ready;
             }
 
-            if (_kind == Direct_) {
+            if (_kind == Direct_)
+                return Unsafe.As<IParkable<T>>(_link!).TakeParked(Unsafe.As<Operation>(_obj!));
+
+            if (_kind == Watched_) {
                 // A withdrawn op belongs to the channel's sweep now and is not
-                // touched again; the reason is on the cell.
-                if (_cell is { } cell) {
-                    var cancelled = cell.TakeReason();
-                    cell.End();
-                    if (cancelled is CancelReason stopped) throw new Bjolang.Runtime.Cancelled(stopped);
-                }
-                return _direct!.TakeParked(Unsafe.As<Operation>(_obj!));
+                // touched again; the reason is on the cell. The site is read
+                // before `End`, while the cell still holds this park.
+                var cell = Unsafe.As<FiberWatch>(_link!);
+                var site = Unsafe.As<IParkable<T>>(cell.ParkedSite!);
+                var cancelled = cell.TakeReason();
+                cell.End();
+                if (cancelled is CancelReason stopped) throw new Bjolang.Runtime.Cancelled(stopped);
+                return site.TakeParked(Unsafe.As<Operation>(_obj!));
             }
 
             // Back to idle before anything can throw, so that a cancelled sync
@@ -817,7 +876,7 @@ public static partial class BjolangRuntime {
             try {
                 v = Unsafe.As<EventAwaiter<T>>(_obj!).TakeResult(out cancelReason);
             } finally {
-                _cell?.End();
+                Unsafe.As<FiberWatch?>(_link)?.End();
             }
 
             if (cancelReason is CancelReason reason) throw new Bjolang.Runtime.Cancelled(reason);
@@ -835,7 +894,7 @@ public static partial class BjolangRuntime {
         /// Never reached in the ready case: `IsCompleted` was true, and the
         /// await contract does not ask for a continuation then.
         private void Park(IResume k) {
-            if (_kind != Direct_) {
+            if (_kind == Event_) {
                 Unsafe.As<EventAwaiter<T>>(_obj!).Park(k);
                 return;
             }
@@ -843,15 +902,16 @@ public static partial class BjolangRuntime {
             // Copied out first. From the moment the op is parked a partner may
             // resume this fiber on another thread, and the state machine then
             // overwrites the field this awaiter lives in with its next one.
-            var cell = _cell;
-            var direct = _direct!;
             var op = Unsafe.As<Operation>(_obj!);
 
-            if (cell is null) {
+            if (_kind == Direct_) {
                 // No token: nothing can withdraw the op.
-                if (direct.Park(op, k) != ParkResult.Parked) Scheduler.Enqueue(k);
+                if (Unsafe.As<IParkable<T>>(_link!).Park(op, k) != ParkResult.Parked) Scheduler.Enqueue(k);
                 return;
             }
+
+            var cell = Unsafe.As<FiberWatch>(_link!);
+            var direct = Unsafe.As<IParkable<T>>(cell.ParkedSite!);
 
             cell.AttachResume(k);
 
