@@ -2647,6 +2647,79 @@ same loop over a `choose` of the two receives with no wraps is 93 ns and
 syncing side. `cmlbench` has no `choose` of wraps at a sync and does not
 change.
 
+
+### Where a request's bytes go now — measured, not yet acted on
+
+`dotnet-trace collect --profile gc-verbose` on `bench/service`, four cores,
+1000 clients x 1000 requests, a warm-up rep and two timed ones, read with
+TraceEvent: the `AllocationTick` events (one per about 100 KB) by type,
+and for each type the frames that allocated it. The samples give 641 B a
+request. The program counts 626 B a request itself, so they cover nearly
+all of it. One type's figure is a sum of samples, so it is near, not
+exact.
+
+The mix matters. Of ten requests a client sends, nine are one `request`
+and one is a `multi-get`, which spawns four fibers that each make one. So
+there are 1.3 `request`s and 0.4 spawns for each request counted.
+
+    B/req   share   what
+     197     31%    the spawns of multi-get, about 490 B each
+                      detach's report (SyncState 27, Waiter 22,
+                        Action 26, closure 9): 84
+                      FiberCore 29, the thunk's Func 26 and its
+                        closure 15, the child's DynEnv 25, a box 9,
+                        multi-get's CalledFiber 8: 112
+     151     24%    the reply channel of each request: Channel 97,
+                      its SpinGate 30, its ChannelSendSide 24
+     149     23%    events built again at each sync: the two
+                      WrapChoose2 (the shard's loop and the reply with
+                      its timeout) 59 each, TimeoutEvent 31
+     133     21%    what the protocol needs: Req 53, an armed
+                      TimeoutNode 43, pool misses of called fibers and
+                      ops 34, queue growth 2
+       8      1%    the benchmark's arrays of samples
+
+Go is at 490 B a request on the same scenario.
+
+What each would take, largest first. Together the first four are about
+280 B a request.
+
+- **No event object for a lowered sync, about 118 B.** The kept sink of
+  "A choose of wraps at a sync is one event" is made once, but the
+  `WrapChoose2` that carries the branches to it is still made at each
+  sync, also where nothing in it changes, as in the shard's loop. If the
+  sync gave the branches to the kept sink directly, and the sink were the
+  root event, nothing would be made. That needs a sync entry that gets
+  the awaiter's state before it publishes, also on the token race's path
+  (`RentPublished`). It applies to every lowered `choose` and `select`.
+- **`(ignore (bjo e))` with a landing, about 75 B.** `detach` joins a
+  promise that is already started, with `Cml.Sync` and a closure, to
+  report a failure. A spawn form gives its fiber an `UnhandledReporter`
+  landing instead, one object (`Scope.cs`). The compiler could emit
+  `(ignore (bjo e))` and `(detach (bjo e))` as such a spawn. It applies to
+  every detached spawn.
+- **The channel's gate in the channel, about 30 B.** `SpinGate` is an
+  object around one `int`. As a field of `Channel<T>`, with the hold as a
+  method on it, every channel is one object less. The runtime alone.
+- **One timeout event for one duration, about 31 B.** `(timeout d)` makes
+  a `TimeoutEvent` at each call, and the service calls it with the same
+  constant each time. The event is relative to its sync, so one can be
+  offered again. `timeout` could keep the last one it made, by
+  milliseconds.
+- **The send side in the channel, about 24 B.** Not as simple as the gate:
+  `Channel<T>` is the `IParkable<T>` of a receive, and the send side is an
+  `IParkable<Unit>`. C# does not let one class implement both, as they
+  are the same interface when `T` is `Unit`. It needs a park interface
+  for sends of its own.
+- **The spawn's thunk, about 42 B.** `bjo` passes a closure and its `Func`.
+  A spawn that takes a static delegate and the arguments, at a few
+  arities, would make neither.
+
+`DynEnv` is the child's copy of an environment that has a token (see "A
+registration per call, found by its allocations"), and stays. `Req`, the
+reply channel itself and the armed timer are the protocol, and Go makes
+the same.
+
 ---
 
 ## 6. Known issues
