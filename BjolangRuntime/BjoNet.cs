@@ -334,6 +334,7 @@ public sealed class BjoTcpListener : IDisposable {
     [NonUserCode]
     private sealed class Waiter {
         public SyncState State = null!;
+        public long Gen;   // the generation published at; see SyncState
         public int EventId;
         public Action<AcceptResult> OnSync = null!;
         public Waiter? Next;
@@ -453,7 +454,7 @@ public sealed class BjoTcpListener : IDisposable {
             while (cur is not null) {
                 // Lost elsewhere in its own sync block, and swept the next time
                 // anything walks the list.
-                if (cur.State.IsSynchronized) {
+                if (cur.State.IsSynchronizedAt(cur.Gen)) {
                     cur = UnlinkLocked(prev, cur);
                     continue;
                 }
@@ -472,7 +473,7 @@ public sealed class BjoTcpListener : IDisposable {
             _taking = true;
         }
 
-        if (chosen.State.TryCommit(chosen.EventId)) {
+        if (chosen.State.TryCommit(chosen.Gen, chosen.EventId)) {
             EndTake();
             chosen.Handover(this);
             return true;
@@ -549,7 +550,7 @@ public sealed class BjoTcpListener : IDisposable {
         ThrowIfDisposed();
         Interlocked.Increment(ref _published);
 
-        var w = new Waiter { State = state, EventId = eventId, OnSync = onSync };
+        var w = new Waiter { State = state, Gen = state.Gen, EventId = eventId, OnSync = onSync };
         lock (_lock) { AppendLocked(w); }
         Deliver();
     }

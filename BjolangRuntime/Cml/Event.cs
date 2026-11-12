@@ -121,6 +121,7 @@ public static class Cml
     /// </summary>
     internal static void PublishRoot<T>(IEvent<T> ev, SyncState state, Action<T> continuation)
     {
+        long gen = state.Gen;
         try
         {
             ev.Publish(state, SyncState.RootEventId, continuation);
@@ -133,7 +134,7 @@ public static class Cml
             // ended. So the sync is committed to an id no branch has: every
             // parked branch is withdrawn, and every nack fires, since every
             // subtree lost. The exception is then the sync's answer.
-            if (state.TryCommit(Aborted)) throw;
+            if (state.TryCommit(gen, Aborted)) throw;
 
             // The sync was committed before the exception: a branch won while
             // the others were being published and a later guard raised, or the
@@ -611,7 +612,7 @@ public class AlwaysEvent<T> : IEvent<T>
         // TryCommit rather than TryClaim + MarkSynchronized: a bare TryClaim treats
         // a transient C (some other branch mid-pairing) as "already lost" and
         // silently drops an event that is always enabled.
-        if (sharedState.TryCommit(eventId))
+        if (sharedState.TryCommit(sharedState.Gen, eventId))
             Scheduler.DispatchOwn(onSync, _value);
     }
 }

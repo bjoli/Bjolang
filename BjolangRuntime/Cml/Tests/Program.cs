@@ -33,6 +33,7 @@ public static class Program
         NetTests.RunAll();
         StmTests.RunAll();
         RandomTests.RunAll();
+        PooledStateTests.RunAll();
 
         return Harness.Report();
     }

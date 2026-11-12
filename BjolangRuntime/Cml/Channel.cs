@@ -625,7 +625,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 {
                     if (curr.State != null)
                     {
-                        var pairing = state.TryPair(curr.State);
+                        var pairing = state.TryPair(curr.State, curr.StateGen);
                         if (pairing == SyncState.Pairing.Paired)
                         {
                             if (prev == null) _takersHead = next;
@@ -779,7 +779,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 {
                     if (curr.State != null)
                     {
-                        var pairing = state.TryPair(curr.State);
+                        var pairing = state.TryPair(curr.State, curr.StateGen);
                         if (pairing == SyncState.Pairing.Paired)
                         {
                             if (prev == null) _giversHead = next;

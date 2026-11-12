@@ -579,7 +579,7 @@ public static class FiberTests
         var t = new Thread(() =>
         {
             started.Set();
-            committed = state.TryCommit(1);
+            committed = state.TryCommit(state.Gen, 1);
         })
         { IsBackground = true };
         t.Start();

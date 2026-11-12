@@ -242,14 +242,15 @@ public static partial class BjolangRuntime {
             var aw = EventAwaiter<T>.RentPublished(ev, out var state);
             if (state.IsSynchronized) return new SyncAwaiter<T>(aw, cell);
 
+            long stateGen = state.Gen;
             int tokenBranch = state.NextEventId();
-            cell.AttachChoose(aw, state, tokenBranch);
+            cell.AttachChoose(aw, state, stateGen, tokenBranch);
             int gen = cell.Arm();
 
             // The token may have fired before the arm, and its walk of its
             // waiters then found the cell idle. Arming is interlocked and this
             // read follows it, so one of the two sides always sees the other.
-            if (token.IsCompleted && cell.TryTake(gen) && state.TryCommit(tokenBranch))
+            if (token.IsCompleted && cell.TryTake(gen) && state.TryCommit(stateGen, tokenBranch))
                 ((ICancellableAwaiter)aw).OnCancelled(token.GetAwaiter().GetResult());
 
             return new SyncAwaiter<T>(aw, cell);
@@ -455,6 +456,11 @@ public static partial class BjolangRuntime {
         private object? _detail;
         private int _number;
 
+        /// The generation of the `SyncState` in `_detail`, for a choose. The
+        /// state is pooled with its awaiter, so a token that fires after the
+        /// sync has ended must find it at a later generation and lose.
+        private long _detailGen;
+
         /// The parked fiber's resume. Written before the op is handed to the
         /// channel, and read by the token only after a withdrawal under the
         /// channel's lock found the op on the list, so the lock publishes it.
@@ -570,9 +576,10 @@ public static partial class BjolangRuntime {
         internal void AttachResume(IResume resume) => _resume = resume;
 
         /// A `choose`, whose token branch commits through its state.
-        internal void AttachChoose(ICancellableAwaiter aw, SyncState state, int tokenBranch) {
+        internal void AttachChoose(ICancellableAwaiter aw, SyncState state, long gen, int tokenBranch) {
             _parked = aw;
             _detail = state;
+            _detailGen = gen;
             _number = tokenBranch;
         }
 
@@ -683,6 +690,7 @@ public static partial class BjolangRuntime {
             var parked = _parked;
             var detail = _detail;
             int number = _number;
+            long detailGen = _detailGen;
 
             if (System.Threading.Interlocked.CompareExchange(
                     ref _state, (s & ~StatusMask) | Done, s) != s) return;
@@ -692,7 +700,7 @@ public static partial class BjolangRuntime {
                 // claimed by a branch being paired, and treating that as a loss
                 // would drop a cancellation that did happen. False means a
                 // branch won, and the value it delivered stands.
-                if (choice.TryCommit(number))
+                if (choice.TryCommit(detailGen, number))
                     ((ICancellableAwaiter)parked!).OnCancelled(_token.GetAwaiter().GetResult());
                 return;
             }

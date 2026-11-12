@@ -3,6 +3,38 @@
 
 What each change guarantees, and what it leaves open.
 
+* A ~choose~ allocates no ~SyncState~: the state is pooled with its awaiter
+
+- Before, each sync that was not a single channel operation made a new
+  ~SyncState~: 56 B for each ~choose~, ~wrap~, ~guard~ or ~with-nack~ that a
+  fiber syncs on. Now each pooled ~EventAwaiter~ keeps one state and uses it
+  again at its next sync. A warm ~choose~ allocates nothing.
+- A branch that loses can stay in a channel, a promise, an inbox, a port or
+  the timer wheel after its sync ended. Thus the state word now holds a
+  generation beside the phase (~gen << 2 | phase~, 64 bits), and
+  ~SyncState.Renew~ starts the next one. Each reference that outlives the
+  publish keeps the generation it was published at (~Operation.StateGen~,
+  and a ~Gen~ field in each waiter), and uses ~TryCommit(gen, id)~,
+  ~TrySyncWaiting(gen)~, ~TryPair(partner, gen)~, ~TryClaim(gen)~ or
+  ~IsSynchronizedAt(gen)~. For a later generation these return "lost".
+- The cancellation watch of a fiber keeps the generation of the ~choose~ it
+  watches, so a token that fires after the sync ended can not commit the
+  next sync of the same awaiter.
+- The methods without a generation (~TryClaim()~, ~ResetClaim~,
+  ~IsSynchronized~, ~MarkSynchronized~, the nack and id methods) are for the
+  owner while it publishes, or for a thread that has won the state at its
+  generation and has not resumed the owner yet.
+- ~Cml.Sync(ev, k)~ and the scope landing still make a state of their own,
+  which is never renewed.
+- Measured with ~vtcml/bench~ (3 processes each side): skewed ~choose(8)~
+  from 56 to 0 B and from 168 to 158 ns per sync; a ping-pong over
+  ~choose(2)~ from 112 to 0 B and from 162 to 152 ns per round trip. The
+  other rows did not change past noise. A parked op is 8 B larger.
+- ~Cml/Tests/PooledStateTests.cs~ checks that an old generation loses every
+  transition, and that stale promise waiters and timers do not complete a
+  later sync. With ~Renew~ not advancing the generation, the first and the
+  promise test fail.
+
 * A copied body means at the call what it meant where it was written
 
 - A copy of a function written ~#:inline~, of a function given a known

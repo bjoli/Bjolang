@@ -63,6 +63,13 @@ internal interface IParkSite
 public abstract class Operation
 {
     public SyncState? State;
+
+    /// <summary>
+    /// The generation of <see cref="State"/> this op was published at. The
+    /// state is pooled, so a test of it is a test at this generation.
+    /// </summary>
+    internal long StateGen;
+
     public int EventId;
 
     /// <summary>
@@ -111,14 +118,14 @@ public abstract class Operation
         return g;
     }
 
-    public bool IsSynchronized => State != null && State.IsSynchronized;
+    public bool IsSynchronized => State != null && State.IsSynchronizedAt(StateGen);
 
     /// <summary>
     /// Takes this op for a caller holding no claim of its own: a direct send or
     /// receive. Waits out a transient claim on the op's state rather than
     /// skipping it; see <see cref="SyncState.TrySyncWaiting"/>.
     /// </summary>
-    public bool TrySync() => State != null && State.TrySyncWaiting();
+    public bool TrySync() => State != null && State.TrySyncWaiting(StateGen);
 
     /// <summary>
     /// Win a direct op. Caller holds the channel's lock. Unwatched ops cannot be
@@ -182,6 +189,7 @@ public sealed class PutOp<T> : Operation
             return new PutOp<T>
             {
                 State = state,
+                StateGen = state is null ? 0 : state.Gen,
                 EventId = eventId,
                 Value = value,
                 ResumeGive = resumeGive
@@ -191,6 +199,7 @@ public sealed class PutOp<T> : Operation
         _free = op.Next;
         op.Next = null;
         op.State = state;
+        op.StateGen = state is null ? 0 : state.Gen;
         op.Published = false;
         op.EventId = eventId;
         op.Value = value;
@@ -261,6 +270,7 @@ public sealed class GetOp<T> : Operation
             return new GetOp<T>
             {
                 State = state,
+                StateGen = state is null ? 0 : state.Gen,
                 EventId = eventId,
                 ResumeGet = resumeGet
             };
@@ -269,6 +279,7 @@ public sealed class GetOp<T> : Operation
         _free = op.Next;
         op.Next = null;
         op.State = state;
+        op.StateGen = state is null ? 0 : state.Gen;
         op.Published = false;
         op.EventId = eventId;
         op.ResumeGet = resumeGet;

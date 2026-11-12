@@ -620,6 +620,7 @@ public sealed class BjoInputPort : TextReader {
     [NonUserCode]
     private abstract class Waiter {
         public SyncState State = null!;
+        public long Gen;   // the generation published at; see SyncState
         public int EventId;
         public Waiter? Next;
 
@@ -781,7 +782,7 @@ public sealed class BjoInputPort : TextReader {
                 // Lost elsewhere in its own sync block, and swept the next time
                 // anything walks the list — the way a channel reclaims the ops
                 // of a choose that lost.
-                if (cur.State.IsSynchronized) {
+                if (cur.State.IsSynchronizedAt(cur.Gen)) {
                     cur = UnlinkLocked(prev, cur);
                     continue;
                 }
@@ -800,7 +801,7 @@ public sealed class BjoInputPort : TextReader {
             _taking = true;
         }
 
-        if (chosen.State.TryCommit(chosen.EventId)) {
+        if (chosen.State.TryCommit(chosen.Gen, chosen.EventId)) {
             EndTake();
             chosen.Handover();
             return true;
@@ -834,7 +835,7 @@ public sealed class BjoInputPort : TextReader {
             if (_waiters is null || _refill is not null || _disposed || Finished) return;
 
             for (var w = _waiters; w is not null; w = w.Next)
-                if (!w.State.IsSynchronized && w.Want > want)
+                if (!w.State.IsSynchronizedAt(w.Gen) && w.Want > want)
                     want = w.Want;
         }
 
@@ -891,7 +892,7 @@ public sealed class BjoInputPort : TextReader {
         ThrowIfDisposed();
         Interlocked.Increment(ref _published);
 
-        var w = new ReadWaiter { State = state, EventId = eventId, OnSync = onSync, Count = count };
+        var w = new ReadWaiter { State = state, Gen = state.Gen, EventId = eventId, OnSync = onSync, Count = count };
         using (Hold()) AppendLocked(w);
         Deliver();
     }
@@ -900,7 +901,7 @@ public sealed class BjoInputPort : TextReader {
         ThrowIfDisposed();
         Interlocked.Increment(ref _published);
 
-        var w = new EofWaiter { State = state, EventId = eventId, OnSync = onSync };
+        var w = new EofWaiter { State = state, Gen = state.Gen, EventId = eventId, OnSync = onSync };
         using (Hold()) AppendLocked(w);
         Deliver();
     }

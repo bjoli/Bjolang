@@ -621,21 +621,21 @@ public class Promise<T> : IEvent<Result<T>>,
         if (IsCompleted)
         {
             // From inside the publish, so this sync's own sink; see Deliver.
-            if (state.TryCommit(eventId)) Scheduler.DispatchOwn(onSync, Outcome);
+            if (state.TryCommit(state.Gen, eventId)) Scheduler.DispatchOwn(onSync, Outcome);
             return;
         }
 
         Register(new Waiter(this, state, eventId, onSync));
     }
 
-    private void Deliver(SyncState state, int eventId, Action<Result<T>> onSync)
+    private void Deliver(SyncState state, long gen, int eventId, Action<Result<T>> onSync)
     {
         // TryCommit, not TryClaim. This waiter can run on a completely different
         // thread long after Publish returned, and may well find the state transiently
         // Claimed by a sibling branch still being published. Treating that as "someone
         // else won" would drop a completion that actually happened, and the choose
         // would then wait forever on an event that already fired.
-        if (!state.TryCommit(eventId)) return;
+        if (!state.TryCommit(gen, eventId)) return;
 
         Scheduler.Dispatch(onSync, Outcome);
     }
@@ -645,6 +645,7 @@ public class Promise<T> : IEvent<Result<T>>,
     {
         private readonly Promise<T> _owner;
         private readonly SyncState _state;
+        private readonly long _gen;   // the generation published at; see SyncState
         private readonly int _eventId;
         private readonly Action<Result<T>> _onSync;
 
@@ -652,14 +653,15 @@ public class Promise<T> : IEvent<Result<T>>,
         {
             _owner = owner;
             _state = state;
+            _gen = state.Gen;
             _eventId = eventId;
             _onSync = onSync;
         }
 
-        public override void Signal() => _owner.Deliver(_state, _eventId, _onSync);
+        public override void Signal() => _owner.Deliver(_state, _gen, _eventId, _onSync);
 
         /// <summary>Our sync block was won by another branch; we can be dropped.</summary>
-        public override bool IsAbandoned => _state.IsSynchronized;
+        public override bool IsAbandoned => _state.IsSynchronizedAt(_gen);
     }
 
     // ---- the hosted language's join ---------------------------------------
@@ -703,7 +705,7 @@ public class Promise<T> : IEvent<Result<T>>,
     {
         if (IsCompleted)
         {
-            if (state.TryCommit(eventId)) Scheduler.DispatchOwn(onSync, ForJoin(Outcome));
+            if (state.TryCommit(state.Gen, eventId)) Scheduler.DispatchOwn(onSync, ForJoin(Outcome));
             return;
         }
 
@@ -712,9 +714,9 @@ public class Promise<T> : IEvent<Result<T>>,
 
     /// <summary>See <see cref="Deliver"/>, which this is with the conversion.</summary>
     private void DeliverJoin(
-        SyncState state, int eventId, Action<global::BjolangRuntime.Result<Exception, T>> onSync)
+        SyncState state, long gen, int eventId, Action<global::BjolangRuntime.Result<Exception, T>> onSync)
     {
-        if (!state.TryCommit(eventId)) return;
+        if (!state.TryCommit(gen, eventId)) return;
         Scheduler.Dispatch(onSync, ForJoin(Outcome));
     }
 
@@ -723,6 +725,7 @@ public class Promise<T> : IEvent<Result<T>>,
     {
         private readonly Promise<T> _owner;
         private readonly SyncState _state;
+        private readonly long _gen;   // the generation published at; see SyncState
         private readonly int _eventId;
         private readonly Action<global::BjolangRuntime.Result<Exception, T>> _onSync;
 
@@ -732,14 +735,15 @@ public class Promise<T> : IEvent<Result<T>>,
         {
             _owner = owner;
             _state = state;
+            _gen = state.Gen;
             _eventId = eventId;
             _onSync = onSync;
         }
 
-        public override void Signal() => _owner.DeliverJoin(_state, _eventId, _onSync);
+        public override void Signal() => _owner.DeliverJoin(_state, _gen, _eventId, _onSync);
 
         /// <summary>Our sync block was won by another branch; we can be dropped.</summary>
-        public override bool IsAbandoned => _state.IsSynchronized;
+        public override bool IsAbandoned => _state.IsSynchronizedAt(_gen);
     }
 
     /// <summary>
@@ -790,7 +794,7 @@ internal sealed class PromiseValue<T> : IEvent<T>, INowable<T>
     {
         if (_promise.IsCompleted)
         {
-            if (state.TryCommit(eventId)) Scheduler.DispatchOwn(onSync, _promise.Outcome.Value);
+            if (state.TryCommit(state.Gen, eventId)) Scheduler.DispatchOwn(onSync, _promise.Outcome.Value);
             return;
         }
 
@@ -801,9 +805,9 @@ internal sealed class PromiseValue<T> : IEvent<T>, INowable<T>
     /// <c>TryCommit</c>, not <c>TryClaim</c>, for the reason
     /// <see cref="Promise{T}"/>'s own delivery gives.
     /// </summary>
-    private void Deliver(SyncState state, int eventId, Action<T> onSync)
+    private void Deliver(SyncState state, long gen, int eventId, Action<T> onSync)
     {
-        if (!state.TryCommit(eventId)) return;
+        if (!state.TryCommit(gen, eventId)) return;
         Scheduler.Dispatch(onSync, _promise.Outcome.Value);
     }
 
@@ -812,6 +816,7 @@ internal sealed class PromiseValue<T> : IEvent<T>, INowable<T>
     {
         private readonly PromiseValue<T> _owner;
         private readonly SyncState _state;
+        private readonly long _gen;   // the generation published at; see SyncState
         private readonly int _eventId;
         private readonly Action<T> _onSync;
 
@@ -819,13 +824,14 @@ internal sealed class PromiseValue<T> : IEvent<T>, INowable<T>
         {
             _owner = owner;
             _state = state;
+            _gen = state.Gen;
             _eventId = eventId;
             _onSync = onSync;
         }
 
-        public override void Signal() => _owner.Deliver(_state, _eventId, _onSync);
+        public override void Signal() => _owner.Deliver(_state, _gen, _eventId, _onSync);
 
-        public override bool IsAbandoned => _state.IsSynchronized;
+        public override bool IsAbandoned => _state.IsSynchronizedAt(_gen);
     }
 }
 

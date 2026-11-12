@@ -58,10 +58,12 @@ internal interface ICancellableAwaiter
 /// reason: one of these per await was 2 of the 3 allocations on the fiber choose
 /// path (the object, plus the method-group conversion of <c>OnSync</c> minting a
 /// fresh <c>Action&lt;T&gt;</c> per sync — a pooled instance carries its delegate
-/// for life). The third, <see cref="SyncState"/>, must NOT be pooled: losing
-/// choose branches linger in channels and are reclaimed lazily (see the B7 notes
-/// in <c>Channel.cs</c>), so a recycled state back in W would make a stale parked
-/// op look live again.
+/// for life). The third, <see cref="SyncState"/>, is pooled WITH the awaiter:
+/// each awaiter keeps one state and starts its next generation at each sync
+/// (<see cref="SyncState.Renew"/>). Losing choose branches linger in channels
+/// and are reclaimed lazily (see the B7 notes in <c>Channel.cs</c>), but each one
+/// keeps the generation it was published at, and a state at a later generation
+/// is lost to it. See "Generations" on <see cref="SyncState"/>.
 ///
 /// The recycle point is <see cref="GetResult"/>, which the await contract calls
 /// exactly once, after completion. Losing branches keep dead references to the
@@ -132,8 +134,24 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
         return aw;
     }
 
-    /// <summary>A state whose wraps are applied on this awaiter's fiber.</summary>
-    private SyncState NewState() => new SyncState { WrapHost = this };
+    /// <summary>
+    /// This awaiter's own state, made at its first general sync. Its wraps are
+    /// applied on this awaiter's fiber.
+    /// </summary>
+    private SyncState? _state;
+
+    /// <summary>
+    /// The state for the sync that starts now: this awaiter's own, at its next
+    /// generation. The previous sync's result has been read (the awaiter is
+    /// rented only after <see cref="TakeResult"/>), so nothing of it can commit.
+    /// </summary>
+    private SyncState NewState()
+    {
+        var state = _state;
+        if (state is null) return _state = new SyncState { WrapHost = this };
+        state.Renew();
+        return state;
+    }
 
     /// <summary>
     /// Called once by the thread that committed, which then resumes the fiber

@@ -12,6 +12,7 @@
  */
 
 using System;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace Bjoml;
@@ -61,6 +62,24 @@ public class NackNode
 /// <item><c>S</c> Synchronized — paired, terminal.</item>
 /// </list>
 ///
+/// # Generations
+///
+/// A state is pooled with the awaiter that owns it (<see cref="EventAwaiter{T}"/>),
+/// and is used again for that awaiter's next sync. The word holds a generation
+/// beside the phase: <c>gen &lt;&lt; 2 | phase</c>. <see cref="Renew"/> starts the
+/// next generation.
+///
+/// - The owner publishes at the current generation. A method without a
+///   generation argument (<see cref="TryClaim"/>, <see cref="ResetClaim"/>,
+///   <see cref="IsSynchronized"/>, <see cref="MarkSynchronized"/>, the nack and
+///   id methods) is for the owner while it publishes, or for a thread that has
+///   won the state at its generation.
+/// - Anything that keeps a reference past the publish (a parked op, a waiter, a
+///   timer, a cancellation watch) keeps <see cref="Gen"/> with it, read at publish,
+///   and uses the methods that take it. For a later generation these return
+///   "lost", so a stale branch can not commit a sync it does not belong to.
+/// - The word is 64 bits, so the generation does not wrap.
+///
 /// Borrowed from Hopac Core: choice branches are indexed with sequential integers 0, 1, 2, ...
 /// Subtrees are tracked as contiguous intervals [I0, I1). A nack fires only when the
 /// winning branch index lies OUTSIDE [I0, I1), completely avoiding dictionary allocations,
@@ -72,11 +91,13 @@ public class SyncState
     public const int W = 0;
     public const int C = 1;
     public const int S = 2;
+    private const long PhaseMask = 3;
 
     /// <summary>Root event index.</summary>
     public const int RootEventId = 0;
 
-    private int _value = W;
+    /// <summary><c>gen &lt;&lt; 2 | phase</c>. See "Generations".</summary>
+    private long _value = W;
     // Minting starts after the root id. A with-nack published at the root owns
     // [RootEventId, CurrentEventId), and a branch reserved after it (such as the
     // cancellation token's) must fall outside that interval for the nack to fire.
@@ -105,6 +126,32 @@ public class SyncState
     // lives in Channel<T> instead, where a park is already visible under a lock that
     // is already held.
 
+    /// <summary>
+    /// The current generation. Read by the owner while it publishes, and kept
+    /// with every reference to this state that outlives the publish.
+    /// </summary>
+    public long Gen => Volatile.Read(ref _value) >> 2;
+
+    /// <summary>
+    /// Start the next generation, for the next sync of the owning awaiter.
+    ///
+    /// PRECONDITION: the previous sync is over and its result read. Every
+    /// reference that a branch of it left behind has the old generation and
+    /// is dead from here on.
+    /// </summary>
+    internal void Renew()
+    {
+        long next = ((Volatile.Read(ref _value) >> 2) + 1) << 2 | W;
+        _eventIdCounter = RootEventId + 1;
+        _winningEventId = -1;
+        _nacks = null;
+        // Written last: the reset fields are published with the new word.
+        Volatile.Write(ref _value, next);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static long Word(long gen, int phase) => gen << 2 | (long)phase;
+
     /// <summary>The next event index to be minted.</summary>
     public int CurrentEventId => Volatile.Read(ref _eventIdCounter);
 
@@ -116,18 +163,28 @@ public class SyncState
 
     // ---- state transitions -------------------------------------------------
 
-    /// <summary>W -&gt; C. Take exclusive ownership so we can pair against another state.</summary>
-    public bool TryClaim() => Interlocked.CompareExchange(ref _value, C, W) == W;
+    /// <summary>
+    /// W -&gt; C. Take exclusive ownership so we can pair against another state.
+    /// Owner only: the current generation.
+    /// </summary>
+    public bool TryClaim()
+    {
+        long v = Volatile.Read(ref _value);
+        if ((v & PhaseMask) != W) return false;
+        return Interlocked.CompareExchange(ref _value, (v & ~PhaseMask) | C, v) == v;
+    }
 
     /// <summary>
-    /// W -&gt; S. Called on the OPPOSING party's state by a thread that already holds
-    /// C on its own. Does not fire nacks; the caller follows up with
-    /// <see cref="MarkSynchronized"/>.
+    /// W -&gt; C at <paramref name="gen"/>, for a branch that claims the state
+    /// after the publish, from another thread (an STM attempt that runs again).
+    /// False if the state is not W at that generation.
     /// </summary>
-    public bool TrySync() => Interlocked.CompareExchange(ref _value, S, W) == W;
+    public bool TryClaim(long gen) =>
+        Interlocked.CompareExchange(ref _value, Word(gen, C), Word(gen, W)) == Word(gen, W);
 
     /// <summary>C -&gt; W. Release a claim we could not turn into a pairing.</summary>
-    public void ResetClaim() => Volatile.Write(ref _value, W);
+    public void ResetClaim() =>
+        Volatile.Write(ref _value, (Volatile.Read(ref _value) & ~PhaseMask) | W);
 
     /// <summary>
     /// W -&gt; S on a partner, waiting out a transient <c>C</c>, for a caller that
@@ -141,14 +198,19 @@ public class SyncState
     ///
     /// Returns false only when the partner was synchronized by someone else.
     /// </summary>
-    public bool TrySyncWaiting()
+    public bool TrySyncWaiting(long gen)
     {
+        long w = Word(gen, W), c = Word(gen, C);
         var sw = new SpinWait();
         while (true)
         {
-            int v = Volatile.Read(ref _value);
-            if (v == S) return false;
-            if (v == W && Interlocked.CompareExchange(ref _value, S, W) == W) return true;
+            long v = Volatile.Read(ref _value);
+            if (v == w)
+            {
+                if (Interlocked.CompareExchange(ref _value, Word(gen, S), w) == w) return true;
+                continue;
+            }
+            if (v != c) return false;   // S, or a later generation
             sw.SpinOnce();
         }
     }
@@ -205,18 +267,19 @@ public class SyncState
     /// ever waits for a state of higher order. So every chain of waiting ends
     /// at a thread that is making progress.
     /// </summary>
-    public Pairing TryPair(SyncState partner)
+    public Pairing TryPair(SyncState partner, long partnerGen)
     {
+        long w = Word(partnerGen, W), c = Word(partnerGen, C);
         var sw = new SpinWait();
         while (true)
         {
-            int v = Volatile.Read(ref partner._value);
-            if (v == S) return Pairing.Lost;
-            if (v == W)
+            long v = Volatile.Read(ref partner._value);
+            if (v == w)
             {
-                if (Interlocked.CompareExchange(ref partner._value, S, W) == W) return Pairing.Paired;
+                if (Interlocked.CompareExchange(ref partner._value, Word(partnerGen, S), w) == w) return Pairing.Paired;
                 continue;
             }
+            if (v != c) return Pairing.Lost;   // S, or a later generation
 
             if (Order < partner.Order)
             {
@@ -225,12 +288,23 @@ public class SyncState
             }
 
             ResetClaim();
-            while (Volatile.Read(ref partner._value) == C) sw.SpinOnce();
+            while (Volatile.Read(ref partner._value) == c) sw.SpinOnce();
             return Pairing.Retry;
         }
     }
 
-    public bool IsSynchronized => Volatile.Read(ref _value) == S;
+    /// <summary>Owner only: the current generation has a winner.</summary>
+    public bool IsSynchronized => (Volatile.Read(ref _value) & PhaseMask) == S;
+
+    /// <summary>
+    /// The sync at <paramref name="gen"/> is over: it has a winner, or this
+    /// state has moved on to a later generation.
+    /// </summary>
+    public bool IsSynchronizedAt(long gen)
+    {
+        long v = Volatile.Read(ref _value);
+        return v != Word(gen, W) && v != Word(gen, C);
+    }
 
     /// <summary>
     /// Atomic W -&gt; C -&gt; S for events that commit on their own initiative rather
@@ -244,19 +318,24 @@ public class SyncState
     ///
     /// Returns false only when the block was genuinely won by someone else.
     /// </summary>
-    public bool TryCommit(int eventId)
+    public bool TryCommit(long gen, int eventId)
     {
+        long w = Word(gen, W), c = Word(gen, C);
         var sw = new SpinWait();
         while (true)
         {
-            int v = Volatile.Read(ref _value);
-            if (v == S) return false;                 // lost for real
-            if (v == W && Interlocked.CompareExchange(ref _value, C, W) == W)
+            long v = Volatile.Read(ref _value);
+            if (v == w)
             {
-                MarkSynchronized(eventId);
-                return true;
+                if (Interlocked.CompareExchange(ref _value, c, w) == w)
+                {
+                    MarkSynchronized(eventId);
+                    return true;
+                }
+                continue;
             }
-            sw.SpinOnce();                            // v == C: transient, retry
+            if (v != c) return false;                 // lost for real, or a later generation
+            sw.SpinOnce();                            // C: transient, retry
         }
     }
 
@@ -265,7 +344,8 @@ public class SyncState
     ///
     /// PRECONDITION: the caller must already own this state, having driven it to
     /// <c>C</c> via <see cref="TryClaim"/>/<see cref="TryCommit"/> or to <c>S</c>
-    /// via <see cref="TrySync"/>. Calling it on an unowned state blindly stomps
+    /// via <see cref="TrySyncWaiting"/>/<see cref="TryPair"/>, and must not have
+    /// resumed the owner yet. Calling it on an unowned state blindly stomps
     /// another thread's claim.
     /// </summary>
     public void MarkSynchronized(int winningEventId)
@@ -280,7 +360,9 @@ public class SyncState
         // stores into the list and fences, then its caller reads the state
         // (TimeoutNode.Arm, WithNackEvent.Publish). So if this read finds no
         // nack, the caller sees S and fires its nack itself.
-        Interlocked.Exchange(ref _value, S);
+        // The caller owns the state at its generation, so the generation is
+        // stable here.
+        Interlocked.Exchange(ref _value, (Volatile.Read(ref _value) & ~PhaseMask) | S);
         if (Volatile.Read(ref _nacks) is null) return;
 
         NackNode? toFireHead = null;

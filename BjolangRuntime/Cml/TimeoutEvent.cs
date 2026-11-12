@@ -142,6 +142,7 @@ internal sealed class TimeoutNode : WheelNode
     private const int Done = 1;
 
     private readonly SyncState _state;
+    private readonly long _gen;   // the generation published at; see SyncState
     private readonly int _eventId;
     private readonly Action<Unit> _onSync;
     private int _gate;
@@ -149,6 +150,7 @@ internal sealed class TimeoutNode : WheelNode
     private TimeoutNode(SyncState state, int eventId, Action<Unit> onSync)
     {
         _state = state;
+        _gen = state.Gen;
         _eventId = eventId;
         _onSync = onSync;
     }
@@ -160,7 +162,7 @@ internal sealed class TimeoutNode : WheelNode
         // of taking a pointless trip through the wheel.
         if (ms <= 0)
         {
-            if (state.TryCommit(eventId)) Scheduler.DispatchOwn(onSync, default);
+            if (state.TryCommit(state.Gen, eventId)) Scheduler.DispatchOwn(onSync, default);
             return;
         }
 
@@ -226,7 +228,7 @@ internal sealed class TimeoutNode : WheelNode
         // sibling — the same argument as Promise.Deliver.
         // Queued, not run here: the tick fires every due node in turn, and a
         // fiber run here would delay all the nodes after it.
-        if (_state.TryCommit(_eventId)) Scheduler.Enqueue(_onSync, default);
+        if (_state.TryCommit(_gen, _eventId)) Scheduler.Enqueue(_onSync, default);
     }
 }
 

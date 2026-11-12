@@ -725,6 +725,7 @@ internal sealed class StmAttempt<T> : StmAttempt
 {
     private readonly Func<Tx, T> _body;
     private readonly SyncState _state;
+    private readonly long _gen;   // the generation published at; see SyncState
     private readonly int _eventId;
     private readonly Action<StmOutcome<T>> _deliver;
     private readonly object? _context;
@@ -735,13 +736,14 @@ internal sealed class StmAttempt<T> : StmAttempt
     {
         _body = body;
         _state = state;
+        _gen = state.Gen;
         _eventId = eventId;
         _deliver = deliver;
         _context = context;
         _resume = Resume;
     }
 
-    internal override bool IsLost => _state.IsSynchronized;
+    internal override bool IsLost => _state.IsSynchronizedAt(_gen);
 
     internal override void Wake() => Scheduler.Enqueue(_resume);
 
@@ -765,7 +767,7 @@ internal sealed class StmAttempt<T> : StmAttempt
     private void RunUntilParked()
     {
         var spin = new SpinWait();
-        while (!_state.IsSynchronized)
+        while (!_state.IsSynchronizedAt(_gen))
         {
             var tx = new Tx();
             switch (Stm.RunBody(tx, _body, out var value, out var error))
@@ -786,7 +788,7 @@ internal sealed class StmAttempt<T> : StmAttempt
                     break;
 
                 case Ran.Failed:
-                    if (_state.TryCommit(_eventId))
+                    if (_state.TryCommit(_gen, _eventId))
                         Scheduler.Dispatch(_deliver, new StmOutcome<T>(default!, error));
                     return;
 
@@ -803,9 +805,9 @@ internal sealed class StmAttempt<T> : StmAttempt
     private bool Claim()
     {
         var spin = new SpinWait();
-        while (!_state.TryClaim())
+        while (!_state.TryClaim(_gen))
         {
-            if (_state.IsSynchronized) return false;
+            if (_state.IsSynchronizedAt(_gen)) return false;
             spin.SpinOnce(sleep1Threshold: -1);
         }
         return true;
@@ -823,7 +825,7 @@ internal sealed class StmAttempt<T> : StmAttempt
         tx.AddWaiters(block);
         Interlocked.MemoryBarrier();
 
-        if (_state.IsSynchronized || tx.Validate()) return true;
+        if (_state.IsSynchronizedAt(_gen) || tx.Validate()) return true;
 
         // A write that fired the block runs the transaction again. Only one
         // of the two may do that.

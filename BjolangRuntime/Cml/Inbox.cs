@@ -234,7 +234,7 @@ public sealed class Inbox<T>
             return HandOver.Dead;
         }
 
-        if (r.State.TryCommit(r.EventId))
+        if (r.State.TryCommit(r.Gen, r.EventId))
         {
             InboxWake.Resume(r.OnSync, item);
             return HandOver.Delivered;
@@ -368,7 +368,7 @@ public sealed class Inbox<T>
 
         if (room)
         {
-            if (state.TryCommit(eventId))
+            if (state.TryCommit(state.Gen, eventId))
             {
                 lock (_gate)
                 {
@@ -445,7 +445,7 @@ public sealed class Inbox<T>
 
         Settle();
 
-        if (state.TryCommit(eventId))
+        if (state.TryCommit(state.Gen, eventId))
         {
             // Committed, so the item is the receiver's and cannot come back.
             // It was the last one if the inbox is closed and drained, and only
@@ -565,7 +565,7 @@ public sealed class Inbox<T>
 
         // `Settle` checks for a drained inbox after its last step, on this
         // thread, so it sees the count this lands.
-        if (r.State.TryCommit(r.EventId)) InboxWake.Resume(r.OnSync, value);
+        if (r.State.TryCommit(r.Gen, r.EventId)) InboxWake.Resume(r.OnSync, value);
         else GiveBack(value);
 
         Landed();
@@ -729,7 +729,7 @@ public sealed class Inbox<T>
 
             // Withdrawn: its sync block was won by another branch, or by the
             // ambient cancellation token.
-            if (!n.State.IsSynchronized) return n;
+            if (!n.State.IsSynchronizedAt(n.Gen)) return n;
         }
 
         return null;
@@ -761,7 +761,7 @@ public sealed class Inbox<T>
         for (var n = _recvHead; n is not null;)
         {
             var next = n.Next;
-            if (n.State.IsSynchronized)
+            if (n.State.IsSynchronizedAt(n.Gen))
             {
                 if (prev is null) _recvHead = next;
                 else prev.Next = next;
@@ -899,6 +899,7 @@ public sealed class Inbox<T>
     private sealed class RecvNode
     {
         public readonly SyncState State;
+        public readonly long Gen;   // the generation published at; see SyncState
         public readonly int EventId;
         public readonly Action<T> OnSync;
         public RecvNode? Next;
@@ -906,6 +907,7 @@ public sealed class Inbox<T>
         public RecvNode(SyncState state, int eventId, Action<T> onSync)
         {
             State = state;
+            Gen = state.Gen;
             EventId = eventId;
             OnSync = onSync;
         }
@@ -928,6 +930,7 @@ public sealed class Inbox<T>
 
         private readonly TaskCompletionSource<Unit>? _tcs;
         private readonly SyncState? _state;
+        private readonly long _gen;   // the generation published at; see SyncState
         private readonly int _eventId;
         private readonly Action<Unit>? _onSync;
 
@@ -944,6 +947,7 @@ public sealed class Inbox<T>
         {
             Value = value;
             _state = state;
+            _gen = state.Gen;
             _eventId = eventId;
             _onSync = onSync;
         }
@@ -951,12 +955,12 @@ public sealed class Inbox<T>
         public Task<Unit> Task => _tcs!.Task;
 
         public bool IsDead =>
-            _state is not null ? _state.IsSynchronized : Volatile.Read(ref _settled) != 0;
+            _state is not null ? _state.IsSynchronizedAt(_gen) : Volatile.Read(ref _settled) != 0;
 
         /// <summary>Claim this park for the inbox. Exactly one claimant can.</summary>
         public bool TryWin() =>
             _state is not null
-                ? _state.TryCommit(_eventId)
+                ? _state.TryCommit(_gen, _eventId)
                 : Interlocked.Exchange(ref _settled, 1) == 0;
 
         /// <summary>The item is in; tell whoever was waiting for it.</summary>
@@ -1113,7 +1117,7 @@ internal sealed class Gate<T> : IEvent<T>, INowable<T>
         while (woken is not null)
         {
             var next = woken.Next;
-            if (woken.State.TryCommit(woken.EventId)) InboxWake.Resume(woken.OnSync, value);
+            if (woken.State.TryCommit(woken.Gen, woken.EventId)) InboxWake.Resume(woken.OnSync, value);
             woken = next;
         }
     }
@@ -1140,7 +1144,7 @@ internal sealed class Gate<T> : IEvent<T>, INowable<T>
             value = _value;
         }
 
-        if (state.TryCommit(eventId)) Scheduler.DispatchOwn(onSync, value);
+        if (state.TryCommit(state.Gen, eventId)) Scheduler.DispatchOwn(onSync, value);
     }
 
     bool INowable<T>.TryNow(out T value)
@@ -1168,7 +1172,7 @@ internal sealed class Gate<T> : IEvent<T>, INowable<T>
         Node? prev = null;
         for (var n = _waiters; n is not null; n = n.Next)
         {
-            if (n.State.IsSynchronized)
+            if (n.State.IsSynchronizedAt(n.Gen))
             {
                 if (prev is null) _waiters = n.Next;
                 else prev.Next = n.Next;
@@ -1186,6 +1190,7 @@ internal sealed class Gate<T> : IEvent<T>, INowable<T>
     private sealed class Node
     {
         public readonly SyncState State;
+        public readonly long Gen;   // the generation published at; see SyncState
         public readonly int EventId;
         public readonly Action<T> OnSync;
         public Node? Next;
@@ -1193,6 +1198,7 @@ internal sealed class Gate<T> : IEvent<T>, INowable<T>
         public Node(SyncState state, int eventId, Action<T> onSync, Node? next)
         {
             State = state;
+            Gen = state.Gen;
             EventId = eventId;
             OnSync = onSync;
             Next = next;
