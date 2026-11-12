@@ -210,8 +210,27 @@ public static partial class BjolangRuntime {
         /// The scope's cancellation token. Fires at most once, and everything
         /// started under the scope inherits it as the ambient token, so firing
         /// it stops the whole subtree.
+        ///
+        /// A <see cref="PaddedToken"/>: every `sync` under the scope reads it.
         /// </summary>
-        public readonly Promise<CancelReason> Token = new();
+        public readonly Promise<CancelReason> Token = new PaddedToken();
+
+        /// <summary>
+        /// A token with 64 bytes of padding after its fields.
+        ///
+        /// Every `sync` under the scope reads the token, from every core. The
+        /// objects allocated after it (the scope's first children, for example)
+        /// are written all the time. On one cache line with the token, each
+        /// such write made the next read of the token on every other core miss.
+        /// The line before the token is the end of this scope, and its hot
+        /// field, <see cref="_outstanding"/>, has a line of its own.
+        /// </summary>
+        [NonUserCode]
+        private sealed class PaddedToken : Promise<CancelReason> {
+#pragma warning disable CS0169 // the padding is never read
+            private long _pad0, _pad1, _pad2, _pad3, _pad4, _pad5, _pad6, _pad7;
+#pragma warning restore CS0169
+        }
 
         /// <summary>
         /// Park cells of fibers that ended under <see cref="Token"/>, that no
@@ -254,8 +273,31 @@ public static partial class BjolangRuntime {
         /// only reach zero after <see cref="Close"/> has given up the body's
         /// reference, and Close sets the bit before it does. So "the scope is
         /// empty" is exactly `int.MinValue`, and there is never a borrow.
+        ///
+        /// It has a cache line of its own (see <see cref="OwnLine"/>). Each
+        /// spawn and each landing child writes it, from its own core.
+        /// <see cref="Token"/> is allocated directly after this object, and
+        /// every `sync` under the scope reads the token. On one line, each
+        /// write made the next read on every other core miss.
         /// </summary>
-        private int _outstanding = 1;
+        private OwnLine _outstanding = new(1);
+
+        /// <summary>
+        /// An <c>int</c> with 64 bytes of padding before and after it, so that no
+        /// other field and no other object shares its cache line.
+        ///
+        /// Measured with <see cref="PaddedToken"/> on bench/service, closed
+        /// loop, all 24 hardware threads: CPU time 4% lower and wall time 3%
+        /// lower. On 4 cores there was no difference. See "The token's line"
+        /// in Cml/design.md.
+        /// </summary>
+        [NonUserCode]
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit, Size = 132)]
+        private struct OwnLine {
+            [System.Runtime.InteropServices.FieldOffset(64)] public int Value;
+
+            public OwnLine(int value) { Value = value; }
+        }
 
         /// The sign bit of <see cref="_outstanding"/>. After it is set, a spawn
         /// into this scope does nothing — see <see cref="TryEnlist"/>.
@@ -423,7 +465,7 @@ public static partial class BjolangRuntime {
         }
 
         /// <summary>Has closing started? Read by the daemon and detached spawns.</summary>
-        internal bool IsClosed => System.Threading.Volatile.Read(ref _outstanding) < 0;
+        internal bool IsClosed => System.Threading.Volatile.Read(ref _outstanding.Value) < 0;
 
         /// <summary>How many handles the scope is still holding. Test hook.</summary>
         internal int OwnedCount { get { lock (_gate) return _ownedCount; } }
@@ -562,11 +604,11 @@ public static partial class BjolangRuntime {
             // Both this and the `Or` in `Close` are atomic read-modify-writes on
             // one word, so they are totally ordered against each other: either
             // this child is counted before closing began, or it sees the bit.
-            if (System.Threading.Interlocked.Increment(ref _outstanding) >= 0) return true;
+            if (System.Threading.Interlocked.Increment(ref _outstanding.Value) >= 0) return true;
 
             // Closed after all. Give the count back — and if that empties the
             // scope, say so, exactly as a landing would.
-            if (System.Threading.Interlocked.Decrement(ref _outstanding) == ClosedBit)
+            if (System.Threading.Interlocked.Decrement(ref _outstanding.Value) == ClosedBit)
                 _allDone.TrySetResult(default);
 
             return false;
@@ -681,12 +723,12 @@ public static partial class BjolangRuntime {
                     // One read answers both questions, and answers them for the
                     // state this child left behind rather than for some later
                     // one.
-                    int left = System.Threading.Interlocked.Decrement(ref _outstanding);
+                    int left = System.Threading.Interlocked.Decrement(ref _outstanding.Value);
                     closed = left < 0;
                     none = left == ClosedBit;
                 }
             } else {
-                none = System.Threading.Interlocked.Decrement(ref _outstanding) == ClosedBit;
+                none = System.Threading.Interlocked.Decrement(ref _outstanding.Value) == ClosedBit;
             }
 
             // Only once closing has begun. Close reads the same list under the
@@ -854,9 +896,9 @@ public static partial class BjolangRuntime {
                 // Closed first, then the body's own reference is given up. In
                 // that order the count cannot reach zero between the two: the
                 // body still holds one while the bit is being set.
-                System.Threading.Interlocked.Or(ref _outstanding, ClosedBit);
+                System.Threading.Interlocked.Or(ref _outstanding.Value, ClosedBit);
                 if (_failures is { Count: > 0 }) firstFailure = _failures[0];
-                none = System.Threading.Interlocked.Decrement(ref _outstanding) == ClosedBit;
+                none = System.Threading.Interlocked.Decrement(ref _outstanding.Value) == ClosedBit;
             }
 
             // A child failed while the body was still running, so nothing has

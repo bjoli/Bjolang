@@ -2451,6 +2451,67 @@ tiering, kept its last delegate alive while it waited for the next
 with DOTNET_TieredCompilation=0). In the compute loop of (std parallel)
 nothing was kept with the fix above, so the loop is unchanged.
 
+### The token's line
+
+**What the token costs now (12 November, .NET 11 rc.3).** Each hack below
+was A/B tested against the committed runtime: the two `BjolangRuntime.dll`
+builds were copied in turn into `bin/compiler`, and the order was flipped
+each round. Each round ran `cmlbench.exe` and the closed loop of
+`bench/service` (6 reps, the first left out) on all cores and on 4 cores.
+Median of the rounds, with the paired difference:
+
+                              baseline  token off  unwatched park
+    Ring                         81.5 ns    -28%        -26%
+    Ring (put/get)               86.0 ns    -26%        -23%
+    service, all cores, wall    227.5 ms    -13%        -5.5%
+    service, all cores, CPU      5081 ms    -13%        -6.9%
+    service, 4 cores, wall      381.5 ms    -6.7%       -5.5%
+
+"Token off" is `AmbientRace` returning null. "Unwatched park" reads the
+token and checks `IsCompleted`, but parks as if there were no token: no
+`Cell`, `Watch`, attach, `Arm` or `End`. The skewed choose and the spawn
+burst did not change in either. On the ring, the watch machinery is all of
+the cost. On the service on all cores, half of the cost stays when only the
+token is read, which pointed at the read itself.
+
+**An arm without the compare-exchange — measured, not kept.** The idea: make
+`Arm` a plain store, and move the fence to the rare side, with
+`Interlocked.MemoryBarrierProcessWide` when a token fires. The ceiling was
+measured with a plain store and no other change (unsound: it loses the race
+with the prune and the lost-wake-up fence). 12 rounds: every cmlbench row
+within noise, the service on all cores -1.2% CPU and the same wall time, on
+4 cores -1.3% wall, each interval across zero. The compare-exchange is on a
+line that its owner already holds, so it is cheap. A sound version would
+also need a gate: every scope fires its token when it ends, and a barrier
+that interrupts every core at each scope end would cost more than it saves.
+Not worth that protocol.
+
+**False sharing on the token — kept.** A `Scope`'s field initializer
+allocates its token directly after the scope object. At the end of the
+scope is `_outstanding`, which each spawn and each landing child writes
+from its own core, and after the token come the objects allocated next.
+Every `sync` under the scope reads the token's `_waiters`. The counter now
+has a line of its own (`OwnLine`, 64 bytes on each side, in the scope), and
+the token has 64 bytes of padding after its fields (`PaddedToken`). Neither
+is an extra object. Allocation per request did not change (1253 B).
+12 rounds against the committed runtime:
+
+                                  old      new    new - old, 95% interval
+    service, all cores, CPU ms   5112     4917    -5.3% .. -1.4%  (10/12 lower)
+    service, all cores, wall ms   228      220    -5.7% .. -0.2%  (9/12 lower)
+    service, 4 cores              no difference
+    cmlbench                      no difference (12 rounds, three builds)
+
+Two arrays allocated around the token, as a first test, gave -4.6% CPU and
+-4.4% wall on all cores. The counter's line alone gave -3.8% CPU. The tail
+moved within its noise in each run.
+
+What is left of the token on the service is the watch per park, about 6%
+on all cores and 4 cores alike: `Cell`'s second read of the environment,
+the reference stores into the watch, `op.Watch()`, `End` and the larger
+awaiter struct. Removing it means a park that only records where it is,
+with the token finding the parks through the scope when it fires.
+
 ---
 
 ## 6. Known issues
