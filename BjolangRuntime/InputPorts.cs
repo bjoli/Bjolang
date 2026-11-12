@@ -174,22 +174,6 @@ public static class InputPorts {
     // for a second time: asking again would start a second read, and the
     // first would take a line or character nobody receives.
 
-    public static bool PortEof(BjoInputPort port) => port.Eof();
-
-    public static ValueTask<bool> PortEofAsync(BjoInputPort port, CancellationToken cancel = default) =>
-        port.EofAsync(cancel);
-
-    /// One UTF-16 code unit, or -1, for a reader that works in code units.
-    public static int ReadUnit(BjoInputPort port) => port.Read();
-
-    public static ValueTask<int> ReadUnitAsync(BjoInputPort port, CancellationToken cancel = default) =>
-        port.ReadUnitValueAsync(cancel);
-
-    public static Utf8String ReadRest(BjoInputPort port) => port.ReadToEndUtf8();
-
-    public static ValueTask<Utf8String> ReadRestAsync(BjoInputPort port, CancellationToken cancel = default) =>
-        port.ReadToEndUtf8Async(cancel);
-
     // --- Lines --------------------------------------------------------------
 
     /// The message both halves of `read-line` fail with: one string, because

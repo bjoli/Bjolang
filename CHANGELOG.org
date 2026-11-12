@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* Input port and number pass-throughs are imported directly
+
+- ~InputPorts.PortEof~, ~ReadUnit~ and ~ReadRest~, and their async forms, only
+  called a ~BjoInputPort~ method. The prelude, ~(std run)~ and the tests now
+  import ~Eof~, ~EofAsync~, ~Read~, ~ReadUnitValueAsync~, ~ReadToEndUtf8~ and
+  ~ReadToEndUtf8Async~ instead, and the six are gone.
+- ~BjoNum.ParseInt~, ~ParseDouble(Utf8String)~, ~DoubleToString~,
+  ~IntToString~, ~LongToString~ and ~ByteToString~ only called
+  ~BjoString.Utf8Number~. The prelude imports ~Utf8Number.ParseInt~,
+  ~ParseDouble~ and ~Format~, with a signature to pick the overload, and the
+  six are gone. ~BjoShow~ calls ~Utf8Number.Format~.
+- Kept in C#:
+  - ~ReadLineOrThrow~ and ~ReadCharOrThrow~: the builtins
+    ~reader-read-line!~ and ~reader-read-char!~ call them too, so the rule
+    that the end of input raises has one place.
+  - The other ~OrThrow~ and ~Opt~ reads, which sit beside them.
+  - ~ReadLineOpt~: it turns an ~int~ into a .NET enum, which an import can
+    not do.
+  - ~BjoNum.ParseLong~, which has parse styles of its own, and the
+    ~Utf8StringBuilder~ overloads that ~(text json)~ and ~(text bjodat)~ use.
+
 * The output port writes are imported from the port directly
 
 - Before, the prelude and ~(std ports)~ imported each write, flush,

@@ -117,7 +117,7 @@ public static class BjoShow
         if (double.IsNaN(d)) return Utf8String.FromUtf16("+nan.0");
         if (double.IsPositiveInfinity(d)) return Utf8String.FromUtf16("+inf.0");
         if (double.IsNegativeInfinity(d)) return Utf8String.FromUtf16("-inf.0");
-        var text = BjoNum.DoubleToString(d);
+        var text = Utf8Number.Format(d);
         foreach (var b in text.AsSpan())
         {
             if (b == (byte)'.' || b == (byte)'e' || b == (byte)'E') return text;

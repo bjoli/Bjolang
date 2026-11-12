@@ -112,25 +112,11 @@ public static class BjoNum {
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static T Bottom<T>() => NumBounds.Bound<T>(false);
 
-    public static double ParseDouble(Utf8String s) => Utf8Number.ParseDouble(s);
-
-    public static Utf8String DoubleToString(double d) => Utf8Number.Format(d);
-
-    // Integers too. `sv-SE` writes its minus as U+2212 MINUS SIGN, so
-    // `(-100).ToString()` there is not a string any parser expects — it is not
-    // even ASCII.
-    public static int ParseInt(Utf8String s) => Utf8Number.ParseInt(s);
-
-    // The same styles as `ParseInt`: a sign, digits, and white space at
-    // either end.
+    // In the invariant culture: `sv-SE` writes its minus as U+2212 MINUS SIGN,
+    // which no parser expects. The same styles as `Utf8Number.ParseInt`: a
+    // sign, digits, and white space at either end.
     public static long ParseLong(Utf8String s) =>
         long.Parse(s.AsSpan(), NumberStyles.Integer, CultureInfo.InvariantCulture);
-
-    public static Utf8String IntToString(int n) => Utf8Number.Format(n);
-
-    public static Utf8String LongToString(long n) => Utf8Number.Format(n);
-
-    public static Utf8String ByteToString(byte n) => Utf8Number.Format(n);
 
     // `decimal`, `bigint`, `int128` and `uint128`, which have no reader in
     // Utf8Number. Through .NET's own parsers, in the invariant culture. An
