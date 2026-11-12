@@ -714,6 +714,20 @@ output has a ~.bjopublish~ file in it; a directory without one that is not
 empty is refused, so a mistyped ~-o~ cannot delete something else. ~bjo init~'s
 ~.gitignore~ leaves ~publish/~ out.
 
+*Everything in the output is precompiled with ReadyToRun*, so that the
+program JIT-compiles little when it starts:
+
+- The runtime, the standard library and the NuGet packages are copied
+  precompiled, as the build uses them. A package with ~(precompile #f)~ is
+  copied as IL.
+- The program's ~.exe~ and the modules under ~app/~ and ~packages/~ are
+  precompiled in the output after the copy. The builds of the project stay
+  IL, so that a rebuild after an edit is not slower.
+- The precompiled code is for the machine that publishes. On another CPU or
+  operating system, or another major version of .NET, the runtime ignores it
+  and JIT-compiles the IL, which each file still holds.
+- ~BJOLANG_NO_R2R=1~ turns it off.
+
 A single file publishes the same way: ~bjo publish -o out tool.bjo~. Inside a
 project it is built against the project's packages and carries their resources;
 outside one it has neither.

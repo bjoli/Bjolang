@@ -1566,6 +1566,26 @@ GREETER_CORE = (
     '  (string-trim (file-read-text (path-combine (clr-directory-of dll) ".." "data" "greeting.txt"))))\n')
 
 
+def has_native_code(path):
+    """Whether the assembly at `path` is ReadyToRun: its CLI header names a
+    managed native header."""
+    import struct
+    data = Path(path).read_bytes()
+    pe = struct.unpack_from("<I", data, 0x3c)[0]
+    magic = struct.unpack_from("<H", data, pe + 24)[0]
+    directories = pe + 24 + (96 if magic == 0x10b else 112)
+    rva, size = struct.unpack_from("<II", data, directories + 14 * 8)
+    if not size:
+        return False
+    sections = struct.unpack_from("<H", data, pe + 6)[0]
+    optional = struct.unpack_from("<H", data, pe + 20)[0]
+    for i in range(sections):
+        virtual_size, address, _, raw = struct.unpack_from("<IIII", data, pe + 24 + optional + 40 * i + 8)
+        if address <= rva < address + max(virtual_size, 1):
+            return struct.unpack_from("<I", data, rva - address + raw + 68)[0] > 0
+    return False
+
+
 @test("publish")
 def test_publish(work, c):
     greeter = work / "greeter"
@@ -1594,6 +1614,13 @@ def test_publish(work, c):
     c.that("the table names only paths inside the output",
            table and all(not line.split("\t")[2].startswith("/") for line in table.splitlines()), table)
     c.that("and no build records are copied", not list(out.rglob("*.bjobuild")))
+    # The builds are IL, so that a rebuild runs no crossgen2. The published
+    # copies are precompiled.
+    c.that("the build of a dependency's module is IL",
+           not has_native_code(greeter / "src" / "core.dll"))
+    for made in ("main.exe", "packages/greeter/src/core.dll"):
+        c.that(f"the published {made} is precompiled",
+               (out / made).exists() and has_native_code(out / made))
 
     # Moved elsewhere, and with the package it was built from gone, it still
     # runs and still finds its resource: everything it loads is inside.

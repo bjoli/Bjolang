@@ -955,6 +955,11 @@
          (def dir (path-absolute out))
          (def (Some name) (path-filename program)
            :default program)
+         ;; The copies of the program's modules, precompiled in place. The
+         ;; builds stay IL, so that a rebuild after an edit runs no crossgen2.
+         (def status (exec "dotnet" (list->vec (list compiler-dll "--precompile-published" dir))))
+         (unless (= status 0)
+           (println #"bjo publish: precompiling the published modules failed (exit code ${(int->string status)}). They are left as IL."))
          (println #"Published ${program} to ${dir}: ${n} files.")
          (def (Some native) (path-filename (record-ref rec aot))
            :default "")

@@ -3,6 +3,28 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~bjo publish~ precompiles the program's own modules
+
+- Before, a published program had its runtime, standard library and (since
+  the change below) NuGet packages precompiled, and its own modules as IL:
+  the ~.exe~, ~app/~ and ~packages/~.
+- Now ~bjo publish~ runs the compiler's ~--precompile-published~ on the
+  output after the copy. It precompiles, in place, each plain IL assembly
+  under ~app/~ and ~packages/~ and the program's ~.exe~, against every
+  assembly in the output.
+- ~external/~ is left as it is, so a NuGet package with ~(precompile #f)~
+  stays IL. A C# glue assembly, which is there too, also stays IL.
+- The builds stay IL: a rebuild after an edit runs no crossgen2.
+- A failure leaves the assembly as IL, with a note. A failure of the whole
+  step is reported, and the publish is still made.
+- ~BJOLANG_NO_R2R~ turns it off.
+- Measured on bjomarks-gui, time to the first window, 20 rounds: 640 to 610
+  ms against a publish with only the packages precompiled. All 79 assemblies
+  in its output are now ReadyToRun.
+- The publish test in ~run_bjo_tests.py~ checks that a dependency's module
+  is IL in its build and precompiled in the output, and that ~main.exe~ is
+  precompiled.
+
 * NuGet packages are precompiled with ReadyToRun
 
 - Before, a program JIT-compiled every method of its NuGet packages that it

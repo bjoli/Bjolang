@@ -641,6 +641,49 @@ let private otherFrameworkGlobs () : string list =
             |> Option.map (fun (_, d) -> Path.Combine(d, "*.dll")))
         |> Array.toList
 
+/// Whether `path` is a managed assembly with no native code yet.
+let private isPlainIL (path: string) : bool =
+    try
+        use stream = File.OpenRead path
+        use pe = new System.Reflection.PortableExecutable.PEReader(stream)
+        let cor = pe.PEHeaders.CorHeader
+        not (isNull cor) && cor.ManagedNativeHeaderDirectory.Size = 0
+    with _ ->
+        false
+
+/// `--precompile-published <dir>`: precompiles the Bjolang modules of a
+/// program that `bjo publish` copied to `dir`, in place.
+/// - Precompiles each plain IL assembly under `app/` and `packages/`, and the
+///   program's `.exe` in `dir` itself.
+/// - Leaves the rest as it is: `runtime/` and `lib/` are precompiled already,
+///   and `external/` holds the NuGet packages, which `precompilePackages`
+///   precompiled unless a package said `(precompile #f)`.
+/// - References every assembly in `dir`.
+/// - Does nothing with `BJOLANG_NO_R2R`. A failure leaves the IL, with a note.
+/// - Returns a process exit code.
+let precompilePublished (dir: string) : int =
+    if Paths.readyToRun then
+        let under sub =
+            let d = Path.Combine(dir, sub)
+            if Directory.Exists d then Directory.GetFiles(d, "*.dll", SearchOption.AllDirectories) |> Array.toList
+            else []
+
+        let programs = Directory.GetFiles(dir, "*.exe") |> Array.toList
+        let targets = under "app" @ under "packages" @ programs |> List.filter isPlainIL
+        let references = Directory.GetFiles(dir, "*.dll", SearchOption.AllDirectories) |> Array.toList
+        let globs = otherFrameworkGlobs ()
+
+        if not targets.IsEmpty then
+            printfn $"Precompiling %d{targets.Length} published modules with ReadyToRun..."
+
+        targets
+        |> List.toArray
+        |> Array.Parallel.iter (fun target ->
+            let output = target + ".r2r"
+            if precompileTo target output (programs @ references) globs then AtomicFile.move output target)
+
+    0
+
 /// `--precompile-packages <dir> <inputs>`: fills the cache from the `inputs`
 /// file and writes `<dir>/r2r.txt`. Returns a process exit code. See above.
 let precompilePackages (dir: string) (inputsFile: string) : int =

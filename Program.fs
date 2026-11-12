@@ -245,6 +245,9 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     // Run by bjo after a NuGet restore. See `Build.precompilePackages`.
     | "--precompile-packages" :: dir :: inputs :: _ ->
         exit (Build.precompilePackages dir inputs)
+    // Run by `bjo publish` after the copy. See `Build.precompilePublished`.
+    | "--precompile-published" :: dir :: _ ->
+        exit (Build.precompilePublished dir)
     | "--repl" :: rest -> parseArgs rest { opts with Repl = true }
     | "--lib" :: rest -> parseArgs rest { opts with IsLibrary = true }
     | "--batch" :: rest -> parseArgs rest { opts with Batch = true }
