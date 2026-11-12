@@ -924,6 +924,38 @@ A ~Clock~ is a record of functions, so a program can make its own:
 
 ~with-fake-fs~ is a handler frame, not a scope: a fiber spawned inside it keeps the fake, but nothing waits for it, so the body's assertions and ~with-test~'s leak check run before it is done. Spawn inside a ~with-scope~ of your own inside it.
 
+** Syncing on one of several events: ~select~ =(std prelude)=
+
+~(select branch ...)~ syncs on the events of its branches. When one event commits, the form runs the body of that branch. It replaces a ~choose~ of ~wrap~ forms followed by a ~match~ on the tags they made:
+
+#+BEGIN_SRC scheme
+;; With choose:
+(match (sync (choose (wrap (chan-recv requests) (fun (r) (Some r)))
+                     (wrap (chan-recv quit) (fun (q) None))))
+  ((Some r) (handle r))
+  (None 'stopped))
+
+;; With select:
+(select
+  ((chan-recv requests) r (handle r))
+  ((chan-recv quit) _ 'stopped)
+  (#:timeout (seconds 5) 'idle))
+#+END_SRC
+
+- ~(event pattern body ...)~ : ~event~ is any event, also one made with ~guard~ or ~with-nack~. When it commits, its value is matched against ~pattern~ and the body runs. The pattern must match every value of the event. A pattern that can fail is a compile error.
+- ~(#:timeout duration body ...)~ : a branch on ~(timeout duration)~.
+- ~(#:else body ...)~ : runs when no other branch can commit at once. The form then does not wait. It must be the last branch.
+
+Rules:
+- *Types*: each event has its own value type. The bodies have one type, which is the type of the form.
+- *Order*: the events are offered in the order written. When several can commit at once, the first one wins, as with ~choose~. A branch that loses runs no body, and the nack of a ~with-nack~ in it fires.
+- *Bodies*: they run after the sync, in the code that the form is in. In a bjoroutine a body can suspend: it can ~sync~ and call a bjoroutine.
+- *Colour*: in a bjoroutine the form suspends, as ~sync~ does. In a ~defun~ it parks the thread, as ~sync/blocking~ does.
+- *Cancellation*: the same as for ~sync~. When the scope is cancelled while the form waits, the form raises ~Cancelled~ and no body runs.
+- *Cost*: the form expands to a ~choose~ of ~wrap~ forms and a ~match~ on nested ~Ok~ and ~Err~ tags. Each sync builds the same events as that code written by hand. A ~Result~ is a struct, so the tags allocate nothing.
+
+A list of events that is only known at run time stays ~(sync (choose ...))~ over that list.
+
 ** Waiting from an ordinary function =(std prelude)=
 
 ~sync~ is a yield point, so only a ~defbjo~ may write it. A plain ~defun~ therefore cannot take a value off a channel, join a promise, or wait for a timeout. ~(sync/blocking ev)~ takes any event and parks the *calling thread* rather than suspending a fiber:

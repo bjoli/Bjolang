@@ -4870,6 +4870,117 @@
 
 
 ;; ---------------------------------------------------------------------------
+;; Select
+;; ---------------------------------------------------------------------------
+
+;; `(select branch ...)` - sync on the events of the branches, then run the
+;; body of the branch whose event committed.
+;;
+;; - Branches:
+;;   - `(event pattern body ...)`: `event` is any `(Event %a)`. When it
+;;     commits, its value is matched against `pattern` and `body` runs.
+;;   - `(#:timeout duration body ...)`: a branch on `(timeout duration)`.
+;;   - `(#:else body ...)`: runs when no other branch can commit at once. The
+;;     sync does not wait. It must be the last branch.
+;; - Types: each event has its own value type. The bodies have one type, which
+;;   is the type of the form.
+;; - Order: the events are offered in the order written. When several can
+;;   commit at once, the first one wins, as with `choose`.
+;; - Bodies run after the sync, in the code that the form is in. In a
+;;   bjoroutine a body can suspend. A branch that loses runs no body, and a
+;;   `with-nack` in its event fires.
+;; - Colour: in a bjoroutine the form suspends, as `sync`. In a `defun` it
+;;   parks the thread, as `sync/blocking`.
+;; - Errors: a pattern that can fail to match makes the form a non-exhaustive
+;;   `match`, which is a compile error.
+;;
+;; Expansion: `wrap` tags each value with nested `Ok` and `Err`, one `choose`
+;; takes the tagged events, and a `match` on the tag runs the body.
+(def/macro (select form inject compare)
+  (syntax-match form
+    ((_) (syntax-error form "select takes branches: (select (event pattern body ...) ... (#:timeout duration body ...) (#:else body ...))"))
+    ((_ (#:else body ...)) (syntax-error form "select needs a branch with an event, not only (#:else ...). Without one, write the body."))
+    ((_ branch ...) (select-form (select-arms branch)))
+    (bad (syntax-error bad "select takes branches: (select (event pattern body ...) ... (#:timeout duration body ...) (#:else body ...))"))))
+
+;; One branch of a `select`: its event, its pattern and its body as one form.
+(type (: SelectArm (Union (: Arm Syntax Syntax Syntax))))
+
+;; The branches of a `select`, in the order written.
+(: (-> (List Syntax) (List SelectArm)))
+(defun (select-arms branches)
+  (match branches
+    (Nil Nil)
+    ((Cons branch rest)
+     (syntax-match branch
+       ((#:else body ...)
+        (match rest
+          (Nil (list (Arm #'(always unit) (SSym (string->symbol "_")) (one-form body branch))))
+          ((Cons after _)
+           (list (select-arm-error after "(#:else ...) must be the last branch of a select: it runs only when no branch above it can commit at once.")))))
+       ((#:timeout duration body ...)
+        (Cons (Arm #'(timeout ,duration) (SSym (string->symbol "_")) (one-form body branch))
+              (select-arms rest)))
+       ((#:timeout)
+        (list (select-arm-error branch "(#:timeout ...) is (#:timeout duration body ...).")))
+       ((event pattern body ...)
+        (match event
+          ((SKey _)
+           (list (select-arm-error event "A select branch starts with an event, #:timeout or #:else.")))
+          (_ (Cons (Arm event pattern (one-form body branch)) (select-arms rest)))))
+       (bad
+        (list (select-arm-error bad "A select branch is (event pattern body ...), (#:timeout duration body ...) or (#:else body ...).")))))))
+
+;; Raises the syntax error. Typed as an arm, for the lists above.
+(: (-> Syntax string SelectArm))
+(defun (select-arm-error at message)
+  (def stx (syntax-error at message))
+  (Arm stx stx stx))
+
+;; The `match` on the sync of all the arms.
+(: (-> (List SelectArm) Syntax))
+(defun (select-form arms)
+  (def last (- (list-length arms) 1))
+  (def event
+    (match arms
+      ((Cons (Arm only _ _) Nil) only)
+      (_ #'(choose ,@(select-wraps arms 0 last)))))
+  #'(match (by-colour (#:sync (sync/blocking ,event)) (#:bjo (sync ,event)))
+      ,@(select-clauses arms 0 last)))
+
+;; Each arm's event, with its value tagged by `select-tag`.
+(: (-> (List SelectArm) int int (List Syntax)))
+(defun (select-wraps arms i last)
+  (match arms
+    (Nil Nil)
+    ((Cons (Arm event _ _) rest)
+     (Cons #'(wrap ,event (fun (v) ,(select-tag i last #'v)))
+           (select-wraps rest (+ i 1) last)))))
+
+;; Each arm's `match` clause: the arm's tag, and a `match` of the value on the
+;; arm's pattern. The inner `match` is what a pattern that can fail is
+;; reported on, so the message names the event's values, not the tags.
+(: (-> (List SelectArm) int int (List Syntax)))
+(defun (select-clauses arms i last)
+  (match arms
+    (Nil Nil)
+    ((Cons (Arm _ pattern body) rest)
+     (Cons #'(,(select-tag i last #'v) (match v (,pattern ,body)))
+           (select-clauses rest (+ i 1) last)))))
+
+;; The tag of arm `i` of `last + 1` arms around `x`, as an expression or a
+;; pattern. Arm 0 is `(Ok x)`, arm 1 is `(Err (Ok x))`, and the last arm is
+;; `x` inside `last` `Err`s. One arm has no tag.
+(: (-> int int Syntax Syntax))
+(defun (select-tag i last x)
+  (if (= last 0)
+      x
+      (if (= i 0)
+          #'(Ok ,x)
+          #'(Err ,(select-tag (- i 1) (- last 1) x)))))
+
+
+;; ---------------------------------------------------------------------------
 ;; Container formats
 ;; ---------------------------------------------------------------------------
 ;; A container is written with its elements written, and displayed with them

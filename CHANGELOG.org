@@ -3,6 +3,44 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~select~ syncs on one of several events and runs that branch's body
+
+- Before, a choice between events was a ~choose~ of ~wrap~ forms that
+  tagged each value, and a ~match~ on the tag after the ~sync~. Each branch
+  was written twice: once to tag it and once to untag it.
+- Now ~(select branch ...)~ is a macro in the prelude. A branch is
+  ~(event pattern body ...)~, ~(#:timeout duration body ...)~, or
+  ~(#:else body ...)~ as the last branch.
+  - Each event has its own value type. The bodies have one type.
+  - The events are offered in the order written, as by ~choose~. ~#:else~
+    is an ~always~ offered last, so it wins only when nothing above it can
+    commit at once.
+  - The bodies run after the sync, in the code that the form is in. In a
+    bjoroutine a body can suspend.
+  - In a ~defun~ the form parks the thread, with ~by-colour~, as
+    ~with-scope~ does.
+  - The user's pattern is matched in a ~match~ of its own, so a pattern
+    that can fail is reported with the event's values (~None reaches no
+    clause~), not with the tags.
+- Expansion: ~wrap~ tags the value of branch /i/ with nested ~Ok~ and ~Err~,
+  one ~choose~ takes the tagged events, and a ~match~ on the tag runs the
+  body. One branch has no tag and no ~choose~. ~Result~ is a struct, so the
+  tags allocate nothing. Each sync still builds one ~wrap~ event and one
+  delegate per branch, and the ~choose~, as the code written by hand does.
+- Tests: ~TestFiles/544_select.bjo~ (each branch kind, a timeout that fires
+  and one that does not, ~#:else~ taken and not taken, branches of
+  different value types, bodies that suspend, a ~with-nack~ branch that
+  loses, a deadline while the form waits, the form in a ~defun~), and eight
+  error tests ~TestFiles/errors/select_*.bjo~.
+- Not covered:
+  - ~#:else~ depends on publish order. ~Cml.RandomizeChoice~, which the
+    language does not expose, rotates the branches, and then ~#:else~ can
+    win when another branch is ready.
+  - No compiler lowering yet. The ~wrap~ events, their delegates and the
+    ~choose~ are still built at each sync.
+- Not measured: the expansion builds the same events as the hand-written
+  form, so no change in speed is expected.
+
 * Input port and number pass-throughs are imported directly
 
 - ~InputPorts.PortEof~, ~ReadUnit~ and ~ReadRest~, and their async forms, only

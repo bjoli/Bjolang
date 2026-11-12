@@ -1,0 +1,156 @@
+;; `select`: sync on one of several events, then run the body of the branch
+;; whose event committed.
+;;
+;; The tests here are for each kind of branch, for branches whose events have
+;; different value types, for bodies that suspend, for the nack of a branch
+;; that loses, for a cancelled scope while the form waits, and for the form in
+;; a `defun`, where it parks the thread.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Entry (Union (: Kv int string))))
+
+;; Never available, so it always loses. When it loses, it sends "nacked" on
+;; `report`.
+(: (-> (Event Unit) (Chan string) void))
+(defbjo (on-nack nack report)
+  (def _lost (sync nack))
+  (sync (chan-send report "nacked")))
+
+(: (-> (Chan string) (Event int)))
+(defun (always-loses report)
+  (with-nack
+    (fun (nack)
+      (def _watcher (bjo (on-nack nack report)))
+      (never))))
+
+;; Sends `v` on `ch`.
+(: (-> (Chan %a) %a void))
+(defbjo (feed ch v) (sync (chan-send ch v)))
+
+;; A worker loop: adds the jobs until `quit`, then sends the total.
+(: (-> (Chan int) (Chan bool) (Chan int) void))
+(defbjo (worker jobs quit results)
+  (let go ((total 0))
+    (select
+      ((chan-recv jobs) j (go (+ total j)))
+      ((chan-recv quit) _ (sync (chan-send results total))))))
+
+;; A bjoroutine that the bodies call, so that a body suspends.
+(: (-> int int))
+(defbjo (slow-double n)
+  (sync (timeout (milliseconds 1)))
+  (* n 2))
+
+;; The form in a `defun`. It parks the thread.
+(: (-> (Chan int) string))
+(defun (poll-blocking ch)
+  (select
+    ((chan-recv ch) n (int->string n))
+    (#:else "nothing")))
+
+(: (-> (Chan int) (Chan string) string))
+(defbjo (pick ints strings)
+  (select
+    ((chan-recv ints) n (string-append "int " (int->string n)))
+    ((chan-recv strings) s (string-append "string " s))
+    (#:timeout (milliseconds 50) "timed out")))
+
+(defbjo (main args)
+  (def ints (make-chan))
+  (def strings (make-chan))
+
+  ;; Branches with different value types.
+  (ignore (bjo (feed strings "hi")))
+  (expect "a string branch" (pick ints strings) "string hi")
+  (ignore (bjo (feed ints 7)))
+  (expect "an int branch" (pick ints strings) "int 7")
+
+  ;; A timeout that fires, and one that does not.
+  (expect "the timeout fires" (pick ints strings) "timed out")
+  (expect "the timeout does not fire when a branch is ready"
+          (select
+            ((always 3) n n)
+            (#:timeout (milliseconds 1) 0))
+          3)
+
+  ;; `#:else`.
+  (expect "else is taken when nothing is ready"
+          (select ((chan-recv ints) n n) (#:else -1))
+          -1)
+  (expect "else is not taken when a branch is ready"
+          (select ((always 5) n n) (#:else -1))
+          5)
+  (ignore (bjo (feed ints 9)))
+  (sync (timeout (milliseconds 20)))
+  (expect "else is not taken when a sender is parked"
+          (select ((chan-recv ints) n n) (#:else -1))
+          9)
+  (expect "an expired timeout beats else"
+          (select (#:timeout (milliseconds 0) "timeout") (#:else "else"))
+          "timeout")
+
+  ;; Order: when several branches are ready, the first one wins.
+  (expect "the first ready branch wins"
+          (select ((always "a") a a) ((always "b") b b))
+          "a")
+
+  ;; One branch only.
+  (expect "one branch" (select ((always 4) n (+ n 1))) 5)
+
+  ;; A pattern that destructures the value.
+  (expect "a pattern on the value"
+          (select ((always (Kv 1 "x")) (Kv n s) (string-append (int->string n) s)))
+          "1x")
+
+  ;; Bodies that suspend.
+  (expect "a body that calls a bjoroutine"
+          (select ((always 21) n (slow-double n)) (#:else 0))
+          42)
+  (def out (make-chan))
+  (ignore (bjo (feed ints 1)))
+  (def echo
+    (bjo (select
+           ((chan-recv ints) n
+            (sync (chan-send out (+ n 1)))
+            "sent")
+           (#:timeout (seconds 5) "timed out"))))
+  (expect "a body that syncs" (sync (chan-recv out)) 2)
+  (expect "and then returns"
+          (match (sync (promise-join echo)) ((Ok s) s) ((Err e) "failed"))
+          "sent")
+
+  ;; A branch that loses is nacked.
+  (def report (make-chan))
+  (expect "the winner still wins"
+          (select ((always-loses report) n n) ((always 42) n n))
+          42)
+  (expect "and the losing branch was told" (sync (chan-recv report)) "nacked")
+
+  ;; A worker loop.
+  (def jobs (make-chan))
+  (def quit (make-chan))
+  (def results (make-chan))
+  (ignore (bjo (worker jobs quit results)))
+  (sync (chan-send jobs 1))
+  (sync (chan-send jobs 2))
+  (sync (chan-send jobs 3))
+  (sync (chan-send quit #t))
+  (expect "a worker loop" (sync (chan-recv results)) 6)
+
+  ;; A cancelled scope ends a select that waits.
+  (def stopped
+    (try (with-deadline (milliseconds 30)
+           (select ((chan-recv (make-chan)) n "received")))
+         #:catch (System.Exception)))
+  (expect "a deadline ends the wait"
+          (match stopped ((Ok s) s) ((Err e) "cancelled"))
+          "cancelled")
+
+  ;; In a `defun`.
+  (expect "in a defun, else" (poll-blocking ints) "nothing")
+  (ignore (bjo (feed ints 8)))
+  (sync (timeout (milliseconds 20)))
+  (expect "in a defun, a branch" (poll-blocking ints) "8")
+  0)

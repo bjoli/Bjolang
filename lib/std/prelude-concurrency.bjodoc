@@ -188,6 +188,43 @@
     offered in.
     """))
 
+(:doc select
+  (summary "Syncs on the events of its branches, then runs the body of the branch whose event committed.")
+  (form (select branch ...))
+  (rest branch "@code{(event pattern body ...)}, @code{(#:timeout duration body ...)} or @code{(#:else body ...)}.")
+  (see choose sync timeout with-nack)
+  (example """
+    (select
+      ((chan-recv requests) r (handle r))
+      ((chan-recv quit) _ 'stopped)
+      (#:timeout (seconds 5) 'idle))
+    """)
+  (reference """
+    The value of the form is the value of the body that ran.
+
+    In @code{(event pattern body ...)}, event is any event. When it commits,
+    its value is matched against pattern and body runs.
+    @code{(#:timeout duration body ...)} is a branch on
+    @code{(timeout duration)}. @code{(#:else body ...)} runs when no other
+    branch can commit at once, and the form then does not wait. It must be
+    the last branch.
+
+    Each event has its own value type. The bodies have one type, which is the
+    type of the form. A pattern must match every value of its event: a
+    pattern that can fail is a compile error.
+
+    The events are offered in the order written, as by @code{choose}: when
+    several can commit at once, the first one wins. A branch that loses runs
+    no body, and the nack of a @code{with-nack} in it fires.
+
+    The bodies run after the sync, in the code that the form is in. In a
+    bjoroutine a body can suspend: it can sync, and call a bjoroutine. In a
+    @code{defun} the form parks the thread, as @code{sync/blocking} does.
+
+    It expands to a @code{choose} of @code{wrap}s and a @code{match}, so each
+    sync builds the same events as that form written by hand.
+    """))
+
 (:doc wrap
   (summary "An event that applies a function to another event's value upon commit.")
   (arg ev "The event.")
