@@ -111,6 +111,7 @@
        "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/compile.txt\" Lines=\"@(_BjoCompile->'%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
        "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/runtime.txt\" Lines=\"@(_BjoRuntime->'%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
        "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/native.txt\" Lines=\"@(_BjoNative->'%(NuGetPackageId)&#9;%(AssetType)&#9;%(RuntimeIdentifier)&#9;%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
+       "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/packages.txt\" Lines=\"@(_BjoRuntime->'%(NuGetPackageId)&#9;%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
        "  </Target>\n"))
 
 (: (-> (List NuGetPackage) (List string) string))
@@ -375,7 +376,9 @@
        (= (string-trim (file-read-text stamp-file)) stamp)
        (list-current? (path-combine dir "compile.txt"))
        (list-current? (path-combine dir "runtime.txt"))
-       (native-current? (path-combine dir "native.txt"))))
+       (native-current? (path-combine dir "native.txt"))
+       ;; Written by a target added later: a restore without it is redone.
+       (file-exists? (path-combine dir "packages.txt"))))
 
 
 ;; ---------------------------------------------------------------------------
@@ -452,6 +455,102 @@
       (str "bjo: restoring the NuGet packages failed. MSBuild said:\n" output)
       (str "bjo: restoring the NuGet packages failed:\n"
            (string-join (list->vec explained) "\n"))))
+
+;; ---------------------------------------------------------------------------
+;; ReadyToRun copies
+;; ---------------------------------------------------------------------------
+;;
+;; After a restore, the package assemblies are precompiled with ReadyToRun by
+;; the compiler's `--precompile-packages`, into a cache outside the NuGet
+;; cache. `Build.fs` describes the cache and the files in the restore's
+;; directory.
+;;
+;; - Each package is precompiled unless an entry for its id says
+;;   `(precompile #f)`.
+;; - The root project's entry wins. Without one, a dependency's `#f` turns it
+;;   off.
+;; - A package that is not declared (a transitive one) is opted out by
+;;   declaring it with `(precompile #f)`.
+;; - `BJOLANG_NO_R2R` turns it all off.
+
+;; What the entries in `packages` for the id `key` (lowercase) say.
+(: (-> (List NuGetPackage) string (List bool)))
+(defun (said-about packages key)
+  (loop (:for p packages)
+        (:when (= (string-downcase (nuget-id p)) key))
+        (:when-let (Some b) (nuget-precompile p))
+        (:acc out (listing b))
+        => out))
+
+;; Whether the package `id` is precompiled.
+(: (-> (List NuGetPackage) (List Declaring) string bool))
+(defun (precompiled? own deps id)
+  (def key (string-downcase id))
+  (match (said-about own key)
+    ((Cons b _) b)
+    (Nil (not (any? #(any? not (said-about (declared-by &) key)) deps)))))
+
+;; The NuGet packages a dependency declares.
+(: (-> Declaring (List NuGetPackage)))
+(defun (declared-by d) (record-ref (record-ref d package) packages))
+
+;; The lines of `r2r-inputs.txt`: `r2r` or `il`, a tab, and the path, for each
+;; package assembly in `packages.txt`. The glue's assemblies have no package
+;; id there, and are left out.
+(: (-> string (List NuGetPackage) (List Declaring) string))
+(defun (precompile-inputs dir own deps)
+  (match (listed (path-combine dir "packages.txt"))
+    (None "")
+    ((Some lines)
+     (string-join
+       (list->vec
+         (loop (:for line lines)
+               (:let fields (string-split line "\t"))
+               (:when (and (= (vec-length fields) 2) (not (= (vec-ref fields 0) ""))))
+               (:acc out (listing (str (if (precompiled? own deps (vec-ref fields 0)) "r2r" "il")
+                                       "\t" (vec-ref fields 1))))
+               => out))
+       "\n"))))
+
+;; Whether every copy `r2r.txt` names is still there.
+(: (-> string bool))
+(defun (copies-current? file)
+  (match (listed file)
+    (None #f)
+    ((Some lines)
+     (all? (fun (line)
+             (def fields (string-split line "\t"))
+             (and (= (vec-length fields) 2) (file-exists? (vec-ref fields 1))))
+           lines))))
+
+;; Fills the cache for the restore in `dir`, unless the last run had the same
+;; inputs and its copies are all still there.
+(: precompile-packages #:sync (-> string (List NuGetPackage) (List Declaring) (Result string Unit)))
+(defun (precompile-packages dir own deps)
+  (with-return ret
+    (match (get-environment-variable "BJOLANG_NO_R2R")
+      ((Some v) (unless (or (= v "") (= v "0")) (ret (Ok unit))))
+      (None unit))
+    (def inputs (precompile-inputs dir own deps))
+    (def inputs-file (path-combine dir "r2r-inputs.txt"))
+    (when (and (file-exists? inputs-file)
+               (= (file-read-text inputs-file) inputs)
+               (copies-current? (path-combine dir "r2r.txt")))
+      (ret (Ok unit)))
+    ;; The compiler reads the inputs from the file. It is written again after
+    ;; a success, so that a failed run is tried again next time.
+    (def pending (path-combine dir "r2r-inputs.pending"))
+    (file-write-text pending inputs)
+    (def arguments (list->vec (list (path-combine (compiler-dir) "Bjolang.dll") "--precompile-packages" dir pending)))
+    (match (run/output '(dotnet ,arguments))
+      ((Err e) (Err (str "bjo: could not run the compiler: " (error-message e))))
+      ((Ok (Tuple 0 out))
+       (unless (= (string-trim out) "") (println (string-trim out)))
+       (file-write-text inputs-file inputs)
+       (Ok unit))
+      ((Ok (Tuple code out))
+       (Err (str "bjo: precompiling the NuGet packages failed (exit code " (int->string code) "):\n"
+                 (string-trim out)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; restore-packages
@@ -559,7 +658,9 @@
                    "\n"))
 
     (when (restore-current? dir (stamp-of generated lock-file))
-      (ret (Ok (Some dir))))
+      (ret (match (precompile-packages dir packages deps)
+             ((Err e) (Err e))
+             ((Ok _) (Ok (Some dir))))))
 
     (unless (some? (which "dotnet"))
       (ret (Err (str "bjo: the build "
@@ -599,4 +700,5 @@
     ;; After the restore, which may have written the lock file, and after the
     ;; glue is built: a build that failed is tried again next time.
     (file-write-text (path-combine dir "stamp") (stamp-of generated lock-file))
+    (def (Ok _) (precompile-packages dir packages deps) :propagate)
     (Ok (Some dir))))

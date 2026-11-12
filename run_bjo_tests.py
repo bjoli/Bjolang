@@ -1133,7 +1133,9 @@ def make_feed(work):
                   f'<None Include="{decoy}" Pack="true" PackagePath="runtimes/{decoy_rid}/native/" />'))
         for p in packed:
             p.result()
-    return feed, {"NUGET_PACKAGES": str(work / "nuget-cache")}, real
+    # The ReadyToRun copies of the packages go to $XDG_CACHE_HOME/bjolang/r2r.
+    return feed, {"NUGET_PACKAGES": str(work / "nuget-cache"),
+                  "XDG_CACHE_HOME": str(work / "cache")}, real
 
 
 def nuget_config(directory, feed):
@@ -1211,6 +1213,28 @@ def test_nuget(work, c):
     again = run_bjo(app, "build", env=env)
     c.says("an unchanged second build is up to date", again, "Up to date")
     c.that("and starts no restore", restore_mark(app) == restored)
+
+    # ReadyToRun: the program loads a precompiled copy of the package's
+    # assembly from the cache, and `(precompile #f)` keeps the copy as IL.
+    r2r = app / ".bjo" / "nuget" / "root" / "r2r.txt"
+    copies = [line.split("\t") for line in r2r.read_text().splitlines()] if r2r.exists() else []
+    greeter = [copy for original, copy in copies if original.endswith("Bjo.TestGreeter.dll")]
+    c.that("r2r.txt maps the package's assembly to a copy in the cache",
+           len(greeter) == 1 and greeter[0].startswith(str(work / "cache")))
+    source = Path(greeter[0] + ".source") if greeter else work / "missing"
+    c.that("and the copy is precompiled", source.exists() and source.read_text().startswith("r2r "))
+    record = app / "src" / "main.bjobuild"
+    c.that("the program links the copy",
+           bool(greeter) and record.exists() and greeter[0] in record.read_text())
+    manifest = app / "manifest.bjodat"
+    manifest.write_text(manifest.read_text().replace('(version "1.0.0"))',
+                                                     '(version "1.0.0") (precompile #f))'))
+    c.says("a package with (precompile #f) builds and runs",
+           run_bjo(app, "run", env=env), "hello, bjo from 1.0.0")
+    c.that("and its copy is IL", source.exists() and source.read_text().startswith("il "))
+    nuget_app(app, feed, [(GREETER, "1.0.0")])
+    c.worked("without it the program builds", run_bjo(app, "build", env=env))
+    c.that("and the copy is precompiled again", source.exists() and source.read_text().startswith("r2r "))
 
     # A cleared package cache is a restore to redo, not a build that fails.
     shutil.rmtree(work / "nuget-cache")

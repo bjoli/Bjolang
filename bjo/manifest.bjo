@@ -42,7 +42,7 @@
   Git Local Registry Source
   ;; The manifest
   Dep Package
-  NuGetPackage nuget-id nuget-version
+  NuGetPackage nuget-id nuget-version nuget-precompile
   RuntimeSetting runtime-settings
   module-name->string
   ;; What `def/bjodat-type` generated for the two records people read.
@@ -292,16 +292,26 @@
 ;; means 9.0.3 or newer, "[9.0.3]" exactly that, and ranges and floating
 ;; versions mean what NuGet says they mean. It is a string rather than a
 ;; `Version` because bjo never reads it.
+;;
+;; `(precompile #f)` keeps the package's assemblies as IL: they are not
+;; precompiled with ReadyToRun. Absent, the package is precompiled. The root
+;; project's entry for an id wins over a dependency's, so a root can turn it
+;; back on with `(precompile #t)`. See `bjo/nuget.bjo`.
 (def/bjodat-type
   (: NuGetPackage (Record #:tag nuget
                           (: id string)
-                          (: version string))))
+                          (: version string)
+                          (: precompile (Option bool) #:optional))))
 
 (: (-> NuGetPackage string))
 (defun (nuget-id p) (record-ref p id))
 
 (: (-> NuGetPackage string))
 (defun (nuget-version p) (record-ref p version))
+
+;; What the entry says about precompiling: `None` when it says nothing.
+(: (-> NuGetPackage (Option bool)))
+(defun (nuget-precompile p) (record-ref p precompile))
 
 ;; One .NET runtime setting of the program, `(gc-server #t)`, as the compiler's
 ;; `--runtime` takes it: `name=value`. The names are those of

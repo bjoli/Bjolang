@@ -464,31 +464,39 @@ let private runProcess (fileName: string) (args: string) (env: (string * string)
 //
 // `BJOLANG_NO_R2R=1` turns both off (see `Paths.readyToRun`).
 
+/// The NuGet package cache: `NUGET_PACKAGES`, or `~/.nuget/packages`.
+let private nugetPackagesDir () : string =
+    match System.Environment.GetEnvironmentVariable "NUGET_PACKAGES" with
+    | null | "" ->
+        Path.Combine(System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile, ".nuget", "packages")
+    | dir -> dir
+
 /// The crossgen2 that the compiler's own ReadyToRun publish restored, if it
 /// is there: the package for this machine, at the version of the running
-/// runtime, or else the newest one of the same major version.
-let private crossgen2: Lazy<string option> =
+/// runtime, or else the newest one of the same major version. Returns the
+/// executable and the package version.
+///
+/// Looked for in `NUGET_PACKAGES` and in `~/.nuget/packages`: a build can set
+/// `NUGET_PACKAGES` to a cache of its own, which the compiler's publish did
+/// not restore into.
+let private crossgen2: Lazy<(string * string) option> =
     lazy
-        (let packages =
-            match System.Environment.GetEnvironmentVariable "NUGET_PACKAGES" with
-            | null | "" ->
-                Path.Combine(System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile, ".nuget", "packages")
-            | dir -> dir
-
-         let dir = Path.Combine(packages, "microsoft.netcore.app.crossgen2." + portableRid ())
+        (let home = Path.Combine(System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile, ".nuget", "packages")
          let running = System.Environment.Version
 
          let versions =
-             if Directory.Exists dir then
+             [ nugetPackagesDir (); home ]
+             |> List.distinct
+             |> List.map (fun packages -> Path.Combine(packages, "microsoft.netcore.app.crossgen2." + portableRid ()))
+             |> List.filter Directory.Exists
+             |> List.collect (fun dir ->
                  Directory.GetDirectories dir
                  |> Array.choose (fun d ->
                      match System.Version.TryParse(Path.GetFileName d) with
                      | true, v when v.Major = running.Major -> Some(v, d)
                      | _ -> None)
-                 |> Array.sortByDescending fst
-                 |> Array.toList
-             else
-                 []
+                 |> Array.toList)
+             |> List.sortByDescending fst
 
          let chosen =
              match versions |> List.tryFind (fun (v, _) -> v = running) with
@@ -499,17 +507,18 @@ let private crossgen2: Lazy<string option> =
          |> Option.bind (fun (_, d) ->
              [ "crossgen2"; "crossgen2.exe" ]
              |> List.map (fun name -> Path.Combine(d, "tools", name))
-             |> List.tryFind File.Exists))
+             |> List.tryFind File.Exists
+             |> Option.map (fun exe -> exe, Path.GetFileName d)))
 
-/// Precompiles `dll` in place, with crossgen2, against `references` and the
-/// shared framework. A failure leaves the IL assembly as it is, which runs the
-/// same, and says why.
-let private precompile (dll: string) (references: string list) : unit =
+/// Precompiles `input` into `output` with crossgen2.
+/// - References: `references` that exist, and the shared framework's
+///   implementation. `frameworkGlobs` adds more, as `dir/*.dll` patterns.
+/// - Returns true when `output` was written. On a failure, writes nothing,
+///   prints why, and returns false: the IL assembly runs the same.
+let private precompileTo (input: string) (output: string) (references: string list) (frameworkGlobs: string list) : bool =
     match crossgen2.Value with
-    | None -> ()
-    | Some exe ->
-        let output = dll + ".r2r"
-
+    | None -> false
+    | Some(exe, _) ->
         // The implementation of the framework, not its reference assemblies:
         // crossgen2 needs `System.Private.CoreLib`, which only the runtime has.
         let frameworkDir = Path.GetDirectoryName(typeof<obj>.Assembly.Location)
@@ -527,16 +536,19 @@ let private precompile (dll: string) (references: string list) : unit =
             |> List.map (fun r -> $"-r \"%s{r}\"")
             |> String.concat " "
 
-        let framework = Path.Combine(frameworkDir, "*.dll")
+        let globs =
+            Path.Combine(frameworkDir, "*.dll") :: frameworkGlobs
+            |> List.map (fun g -> $"-r \"%s{g}\"")
+            |> String.concat " "
 
         let args =
-            $"\"%s{dll}\" -o \"%s{output}\" -O --targetos %s{os} --targetarch %s{arch} -r \"%s{framework}\" %s{refs}"
+            $"\"%s{input}\" -o \"%s{output}\" -O --targetos %s{os} --targetarch %s{arch} %s{globs} %s{refs}"
 
         let exitCode, stdout, stderr =
             Timing.phase "readytorun" (fun () -> runProcess exe args [])
 
         if exitCode = 0 && File.Exists output then
-            AtomicFile.move output dll
+            true
         else
             try File.Delete output with _ -> ()
 
@@ -547,7 +559,161 @@ let private precompile (dll: string) (references: string list) : unit =
                 |> Array.tryHead
                 |> Option.defaultValue $"exit code %d{exitCode}"
 
-            Diagnostics.progress $"Note: %s{Path.GetFileName dll} is not precompiled with ReadyToRun: %s{said}"
+            Diagnostics.progress $"Note: %s{Path.GetFileName input} is not precompiled with ReadyToRun: %s{said}"
+            false
+
+/// Precompiles `dll` in place, against `references` and the shared framework.
+/// A failure leaves the IL assembly as it is.
+let private precompile (dll: string) (references: string list) : unit =
+    let output = dll + ".r2r"
+
+    if precompileTo dll output references [] then
+        AtomicFile.move output dll
+
+// ---------------------------------------------------------------------------
+// ReadyToRun copies of NuGet packages
+// ---------------------------------------------------------------------------
+//
+// `bjo` restores a project's packages, then runs
+// `--precompile-packages <dir> <inputs>`, with the restore's directory:
+//
+//   <inputs>        written by bjo: one line per package assembly, `r2r` or
+//                   `il`, a tab, and its path in the NuGet cache
+//   <dir>/r2r.txt   written here: one line per assembly, its path in the
+//                   NuGet cache, a tab, and the path of its copy. `NuGetRefs`
+//                   loads the copy instead
+//
+// The copies are in `$XDG_CACHE_HOME/bjolang/r2r/<rid>/<crossgen2 version>/`,
+// at the same path below it as the original has below the NuGet cache. Thus a
+// package's assemblies stay side by side, and `bjo publish` lays them out as
+// it lays out the NuGet cache.
+//
+// - Every assembly gets a copy, also when it is not precompiled (`il`, a
+//   failed crossgen2, or an assembly that already has native code), and its
+//   `.pdb` beside it when the package has one.
+// - Each copy has a `.source` file beside it: the mode and a SHA-256 of the
+//   original. A copy whose `.source` matches is used again, also after a
+//   failure, so a failure is not tried again on each restore.
+// - The NuGet cache itself is never written to.
+// - Without crossgen2, r2r.txt is empty, and the originals are loaded.
+
+/// The root of the ReadyToRun copies for this machine and crossgen2.
+let private packageCacheDir (crossgenVersion: string) : string =
+    let cache =
+        match System.Environment.GetEnvironmentVariable "XDG_CACHE_HOME" with
+        | null | "" ->
+            Path.Combine(System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile, ".cache")
+        | dir -> dir
+
+    Path.Combine(cache, "bjolang", "r2r", portableRid (), crossgenVersion)
+
+/// Whether `dll` already has native code: it was published with ReadyToRun.
+let private hasNativeCode (dll: string) : bool =
+    try
+        use stream = File.OpenRead dll
+        use pe = new System.Reflection.PortableExecutable.PEReader(stream)
+        let cor = pe.PEHeaders.CorHeader
+        not (isNull cor) && cor.ManagedNativeHeaderDirectory.Size > 0
+    with _ ->
+        false
+
+/// The implementation directories of the shared frameworks besides
+/// `Microsoft.NETCore.App`, at the running major version, as `dir/*.dll`. A
+/// package built against ASP.NET Core needs them as references.
+let private otherFrameworkGlobs () : string list =
+    let core = Path.GetDirectoryName(typeof<obj>.Assembly.Location)
+    let shared = Path.GetDirectoryName(Path.GetDirectoryName core)
+    let major = System.Environment.Version.Major
+
+    if not (Directory.Exists shared) then
+        []
+    else
+        Directory.GetDirectories shared
+        |> Array.filter (fun d -> Path.GetFileName d <> "Microsoft.NETCore.App")
+        |> Array.choose (fun framework ->
+            Directory.GetDirectories framework
+            |> Array.choose (fun d ->
+                match System.Version.TryParse((Path.GetFileName d).Split('-').[0]) with
+                | true, v when v.Major = major -> Some(v, d)
+                | _ -> None)
+            |> Array.sortByDescending fst
+            |> Array.tryHead
+            |> Option.map (fun (_, d) -> Path.Combine(d, "*.dll")))
+        |> Array.toList
+
+/// `--precompile-packages <dir> <inputs>`: fills the cache from the `inputs`
+/// file and writes `<dir>/r2r.txt`. Returns a process exit code. See above.
+let precompilePackages (dir: string) (inputsFile: string) : int =
+    let mapFile = Path.Combine(dir, "r2r.txt")
+
+    let inputs =
+        if File.Exists inputsFile then
+            File.ReadAllLines inputsFile
+            |> Array.choose (fun line ->
+                match line.Split('\t') with
+                | [| mode; path |] when path <> "" -> Some((mode = "r2r"), path)
+                | _ -> None)
+            |> Array.toList
+        else
+            []
+
+    let packages = Path.GetFullPath(nugetPackagesDir ()).TrimEnd(Path.DirectorySeparatorChar) + string Path.DirectorySeparatorChar
+
+    let mapped =
+        match crossgen2.Value with
+        | None -> []
+        | Some(_, version) ->
+            let root = packageCacheDir version
+            let references = inputs |> List.map snd
+            let globs = otherFrameworkGlobs ()
+
+            let jobs =
+                inputs
+                |> List.filter (fun (_, path) -> Path.GetFullPath(path).StartsWith(packages, System.StringComparison.Ordinal))
+                |> List.map (fun (wanted, path) ->
+                    let full = Path.GetFullPath path
+                    let copy = Path.Combine(root, full.Substring packages.Length)
+                    let hash = System.Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes full))
+                    let stamp = (if wanted then "r2r " else "il ") + hash
+                    let current = File.Exists copy && File.Exists(copy + ".source") && File.ReadAllText(copy + ".source") = stamp
+                    full, copy, wanted, stamp, current)
+
+            let work = jobs |> List.filter (fun (_, _, _, _, current) -> not current)
+
+            if not work.IsEmpty then
+                let n = work |> List.filter (fun (_, _, wanted, _, _) -> wanted) |> List.length
+                let noun = if n = 1 then "assembly" else "assemblies"
+
+                if n > 0 then
+                    printfn $"Precompiling %d{n} NuGet %s{noun} with ReadyToRun, once per version..."
+
+            work
+            |> List.toArray
+            |> Array.Parallel.iter (fun (full: string, copy: string, wanted: bool, stamp: string, _) ->
+                Directory.CreateDirectory(Path.GetDirectoryName copy) |> ignore
+                let temp = copy + "." + System.Guid.NewGuid().ToString("N") + ".tmp"
+
+                let compiled =
+                    wanted && not (hasNativeCode full) && precompileTo full temp references globs
+
+                if not compiled then File.Copy(full, temp, true)
+                AtomicFile.move temp copy
+
+                // The symbols still match: a ReadyToRun image keeps the IL and
+                // its debug directory.
+                let pdb = Path.ChangeExtension(full, ".pdb")
+                if File.Exists pdb then AtomicFile.copy pdb (Path.ChangeExtension(copy, ".pdb"))
+
+                File.WriteAllText(copy + ".source", stamp))
+
+            jobs |> List.map (fun (full, copy, _, _, _) -> full + "\t" + copy)
+
+    let text = String.concat "\n" (List.sort mapped)
+
+    if not (File.Exists mapFile) || File.ReadAllText mapFile <> text then
+        File.WriteAllText(mapFile, text)
+
+    0
 
 /// Whether `outputFilePath` is a module of the installed standard library.
 let private isStandardLibraryOutput (outputFilePath: string) =

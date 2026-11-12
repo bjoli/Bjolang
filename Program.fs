@@ -242,6 +242,9 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "--solve-units" :: path :: _ ->
         Units.runSolverFile path
         exit 0
+    // Run by bjo after a NuGet restore. See `Build.precompilePackages`.
+    | "--precompile-packages" :: dir :: inputs :: _ ->
+        exit (Build.precompilePackages dir inputs)
     | "--repl" :: rest -> parseArgs rest { opts with Repl = true }
     | "--lib" :: rest -> parseArgs rest { opts with IsLibrary = true }
     | "--batch" :: rest -> parseArgs rest { opts with Batch = true }

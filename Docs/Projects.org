@@ -224,13 +224,47 @@ restores again when one of those changes, or when a package file it resolved
 to is gone, for example because the NuGet cache was cleared. A project that
 names no packages never runs ~dotnet~ for this at all.
 
+*Package assemblies are precompiled with ReadyToRun.* After a restore, ~bjo~
+compiles each package assembly to native code with crossgen2, as the standard
+library is, so that a program starts without JIT-compiling the packages first.
+On bjomarks-gui, an Avalonia program, the time to its first window went from
+1034 to 636 ms.
+
+- The precompiled copies are in ~$XDG_CACHE_HOME/bjolang/r2r/~ (by default
+  ~~/.cache/bjolang/r2r/~), at the same path below it as the package has in the
+  NuGet cache. The NuGet cache itself is not changed.
+- A copy is made once for each package version, and is shared by every
+  project that uses it. Removing the cache is safe: the next build makes it
+  again.
+- A copy keeps the IL. If the native code does not match where the program
+  runs (another CPU, another major version of .NET), the runtime JIT-compiles
+  the IL as before.
+- An assembly that crossgen2 cannot compile is copied as IL, with a note, and
+  is not tried again until its package changes.
+- ~bjo publish~ copies the precompiled assemblies, laid out as the NuGet cache
+  is.
+
+*A package can be kept as IL with ~(precompile #f)~*:
+
+#+begin_src scheme
+  (packages (nuget (id "Some.Package") (version "1.2.0") (precompile #f)))
+#+end_src
+
+- It applies to the assemblies of the package with that id. A package that
+  is not declared, one that another package depends on, is kept as IL by
+  declaring it with ~(precompile #f)~.
+- A dependency can say it for the packages it declares. The project being
+  built wins over its dependencies: its own entry for that id, ~#t~ or ~#f~,
+  is what applies.
+- ~BJOLANG_NO_R2R=1~ turns precompiling off for everything.
+
 ~.bjo/~ is generated and should not be committed. ~bjo init~'s ~.gitignore~
 already leaves it out.
 
 Current limitations:
 - *The built program only runs on the machine that built it.* It loads the
-  package assemblies and native libraries from the NuGet cache, where the
-  restore left them, and nothing copies them next to the program until there
+  package assemblies from the ReadyToRun cache and the native libraries from
+  the NuGet cache, and nothing copies them next to the program until there
   is a ~bjo publish~. That is also why the native files are picked for the
   building machine's RID.
 - *The compiler loads the package assemblies into its own process* to read

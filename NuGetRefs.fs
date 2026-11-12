@@ -52,6 +52,26 @@ let private compileList (dir: string) = Path.Combine(dir, "compile.txt")
 let private runtimeList (dir: string) = Path.Combine(dir, "runtime.txt")
 let private nativeList (dir: string) = Path.Combine(dir, "native.txt")
 
+/// The ReadyToRun copies of the runtime assemblies, written by
+/// `Build.precompilePackages`: `original TAB copy` per line.
+let private readyToRunList (dir: string) = Path.Combine(dir, "r2r.txt")
+
+/// Original path -> the copy to load instead. Empty when there is no list,
+/// or when `BJOLANG_NO_R2R` turns ReadyToRun off. A copy that is not there
+/// is left out, and the original is loaded.
+let private readyToRunCopies (dir: string) : Map<string, string> =
+    let file = readyToRunList dir
+
+    if not Paths.readyToRun || not (File.Exists file) then
+        Map.empty
+    else
+        File.ReadAllLines file
+        |> Array.choose (fun line ->
+            match line.Split('\t') with
+            | [| original; copy |] when File.Exists copy -> Some(original, copy)
+            | _ -> None)
+        |> Map.ofArray
+
 /// The runtime identifiers whose assets this machine can use, best first:
 /// the RID .NET reports, then the portable ones NuGet packages are published
 /// for. A distribution's own build of .NET reports e.g. `fedora.43-x64`,
@@ -175,11 +195,15 @@ let load (dir: string) : unit =
         |> List.filter (fun a -> a.Kind = "runtime" && a.Path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
         |> List.map (fun a -> AssemblyName.GetAssemblyName(a.Path).Name, a.Path)
 
+    let copies = readyToRunCopies full
+    let loaded path = Map.tryFind path copies |> Option.defaultValue path
+
     let runtime =
         readList (runtimeList full)
         |> List.map (fun path -> AssemblyName.GetAssemblyName(path).Name, path)
         |> List.filter (fun (name, _) -> not (specific |> List.exists (fun (n, _) -> n = name)))
         |> fun portable -> portable @ specific
+        |> List.map (fun (name, path) -> name, loaded path)
 
     let native =
         assets
@@ -247,6 +271,7 @@ let listFiles () : string list =
     | Some r ->
         [ compileList r.Dir; runtimeList r.Dir ]
         @ (if File.Exists(nativeList r.Dir) then [ nativeList r.Dir ] else [])
+        @ (if File.Exists(readyToRunList r.Dir) then [ readyToRunList r.Dir ] else [])
     | None -> []
 
 /// Do the packages count as an input of this module?

@@ -17,8 +17,9 @@
 ;;     <out>/runtime/...              the Bjolang runtime assemblies
 ;;     <out>/app/...                  the project's own modules and resources
 ;;     <out>/packages/<name>/...      each dependency, as under its directory
-;;     <out>/external/...             anything else, such as NuGet packages,
-;;                                    below the deepest directory they share
+;;     <out>/external/...             NuGet packages, as below the NuGet
+;;                                    cache; anything else below the deepest
+;;                                    directory it shares with the rest
 
 (export PublishedPackage Publication publish published-marker)
 
@@ -115,6 +116,32 @@
         (match (package-of (record-ref p packages) path)
           ((Some (Tuple package rel)) (Some (path-combine (package-prefix package) rel)))
           (None None)))))))
+
+;; The NuGet cache, where `dotnet` puts packages.
+(: (-> string))
+(defun (nuget-packages-dir)
+  (match (get-environment-variable "NUGET_PACKAGES")
+    ((Some dir) #:when (not (= dir "")) dir)
+    (_ (path-combine (option-value (get-environment-variable "HOME") "/") ".nuget" "packages"))))
+
+;; The path of a NuGet package's file below its store, or `None` for a file
+;; that is in neither store:
+;; - the NuGet cache
+;; - the compiler's ReadyToRun cache, `.../bjolang/r2r/<rid>/<crossgen2
+;;   version>/`, which has the same layout. See `Build.precompilePackages`.
+;; A package's assemblies are in the second and its native libraries in the
+;; first, so both are laid out as the NuGet cache is.
+(: (-> string (Option string)))
+(defun (package-store-path path)
+  (match (below (nuget-packages-dir) path)
+    ((Some rel) (Some rel))
+    (None
+     (let go ((parts (vec->list (string-split (path-absolute path) "/"))))
+       (match parts
+         ((Cons "bjolang" (Cons "r2r" (Cons _ (Cons _ (Cons first rest)))))
+          (Some (string-join (list->vec (Cons first rest)) "/")))
+         ((Cons _ more) (go more))
+         (Nil None))))))
 
 ;; The longest list both start with.
 (: (-> (List string) (List string) (List string)))
@@ -269,15 +296,18 @@
                                       (record-ref p natives))))
     (def external-root
       (common-directory (loop (:for (Tuple _ _ path) files)
-                              (:acc paths (listing path) #:when (not (some? (known-destination p path))))
+                              (:acc paths (listing path) #:when (and (not (some? (known-destination p path)))
+                                                                     (not (some? (package-store-path path)))))
                               => paths)))
     (defun (destination path)
       (match (known-destination p path)
         ((Some rel) rel)
         (None (path-combine "external"
-                            (match (below external-root path)
+                            (match (package-store-path path)
                               ((Some rel) rel)
-                              (None (clr-file-name path)))))))
+                              (None (match (below external-root path)
+                                      ((Some rel) rel)
+                                      (None (clr-file-name path)))))))))
 
     (def program (record-ref p program))
 

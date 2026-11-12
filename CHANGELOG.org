@@ -3,6 +3,48 @@
 
 What each change guarantees, and what it leaves open.
 
+* NuGet packages are precompiled with ReadyToRun
+
+- Before, a program JIT-compiled every method of its NuGet packages that it
+  called. The standard library was precompiled, and the packages were not.
+  For an Avalonia program that is most of the start: bjomarks-gui
+  JIT-compiled 13,549 methods before its first window, about 8,500 of them
+  in Avalonia, AvaUnion, Skia and Tmds.DBus.
+- Now, after a restore, ~bjo~ runs the compiler's ~--precompile-packages~.
+  It writes a copy of each package assembly to
+  ~$XDG_CACHE_HOME/bjolang/r2r/<rid>/<crossgen2 version>/~, at the path the
+  assembly has below the NuGet cache. ~NuGetRefs~ loads the copies through
+  ~r2r.txt~, so the type checker, the program's resolver and ~bjo publish~
+  use them.
+- Every assembly gets a copy, also when it is kept as IL: a package with
+  ~(precompile #f)~, an assembly that already has native code, or one that
+  crossgen2 rejects. Thus a package's assemblies stay together, and the
+  package's ~.pdb~ is copied beside them.
+- A copy is used again while its ~.source~ file matches: the mode and a
+  SHA-256 of the original. A failure is not tried again until the package
+  changes. The NuGet cache is never written to.
+- ~(nuget (id ...) (version ...) (precompile #f))~ keeps a package as IL.
+  The root project's entry for an id wins over a dependency's. Otherwise a
+  dependency's ~#f~ applies.
+- The restore's MSBuild target also writes ~packages.txt~ (package id and
+  path). A restore without it is done again once.
+- ~bjo publish~ now lays out a NuGet file below its store, the NuGet cache
+  or the ReadyToRun cache, not below the deepest directory all external
+  files share. For bjomarks-gui the published files are the same 139 at the
+  same paths as before.
+- crossgen2 is looked for in ~NUGET_PACKAGES~ and in ~~/.nuget/packages~.
+  Before, a ~NUGET_PACKAGES~ of a build's own hid it.
+- ~--aot~ is not changed: it compiles against the compile assets.
+- Measured on bjomarks-gui, time from start to the first visible window, 20
+  rounds: 1034 to 636 ms. 30 assemblies took 3 s to precompile, 28 MB in the
+  cache. Precompiling the project's own modules too gave 26 ms more, and is
+  not done.
+- ~run_bjo_tests.py~ checks that the program links a precompiled copy, that
+  ~(precompile #f)~ makes it IL, and that removing that makes it precompiled
+  again. With the .NET 11 RC SDK installed, the NuGet tests fail before this
+  change too: that SDK restores a ~net10.0~ project offline only when the
+  10.0 targeting packs are at the patch it expects.
+
 * A write from a bjoroutine that needs no I/O does not suspend
 
 - Before, each ~OutputPorts~ write a bjoroutine calls (~write-string~,
