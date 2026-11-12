@@ -121,8 +121,8 @@ public class SyncState
     internal IWrapHost? WrapHost;
 
     /// <summary>
-    /// The sinks of the <see cref="WrapChoose2{T0, T1, R}"/> (or the 3- or
-    /// 4-branch form) last published at the root of this state.
+    /// The sink of the <c>WrapChoose</c> (<see cref="WrapChooseSink2{T0, T1, R}"/>,
+    /// or the 3- or 4-branch one) last published at the root of this state.
     ///
     /// - Kept across generations, so a warm sync of the same form makes no
     ///   sink and no delegates.

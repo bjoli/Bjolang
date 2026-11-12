@@ -3,6 +3,32 @@
 
 What each change guarantees, and what it leaves open.
 
+* The event of a lowered sync comes from a free slot of the thread
+
+- Before, a lowered ~(sync (choose (wrap ...) ...))~, and so a ~select~,
+  made its ~WrapChoose~ event at each sync: 48, 64 or 80 B.
+- Now the compiler emits ~Cml.WrapChooseOnce~. It takes the event from a
+  free slot of the thread and writes the branches into it. The event's
+  publish reads them, clears them and puts the event back before it
+  publishes a branch. A warm sync allocates nothing.
+  - The event must be synced at once, and once. The compiler emits it only
+    as the whole argument of a ~sync~ or ~sync/blocking~. ~Cml.WrapChoose~
+    is still there for an event that is kept.
+  - A rented event that is never published is dropped.
+  - While ~FiberTrace~ is on, each rent makes a new event.
+  - Both kinds publish through one sink class, ~WrapChooseSinkN~, so they
+    use the same kept sink. ~WrapChoose.cs~ is now made by a script from one
+    template for the three arities.
+- Tests: four more in ~Cml/Tests/WrapChooseTests.cs~ (no object per warm
+  sync, an event that is not published, stale branches, and a ping-pong
+  where a publish resumes the partner inline on the same thread).
+- Measured on ~bench/service~, the build before against this one, 10 runs
+  each: all cores 724 to 599 B a request and 3 to 2 collections a rep;
+  wall, CPU and the tail did not change past noise. 4 cores 625 to 504 B,
+  15 to 12 collections, p99 2.23 to 2.06 ms, p99.9 3.35 to 3.01 ms; CPU
+  +0.5%, wall within noise. The figures are in ~design.md~, "The event of
+  a lowered sync comes from the thread".
+
 * A ~choose~ of ~wrap~ forms at a ~sync~ is one event, which keeps its sinks
 
 - Before, ~(sync (choose (wrap e0 f0) (wrap e1 f1)))~ made a ~WrapEvent~

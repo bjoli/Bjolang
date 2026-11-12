@@ -4765,9 +4765,10 @@ and private generateApply
         append ctx ")"
 
     // `(sync (choose (wrap e0 f0) (wrap e1 f1)))`, with two to four branches,
-    // and the same under `sync/blocking`: one `WrapChoose` event in place of
-    // the `choose` and its `WrapEvent`s. The pooled sync state keeps its
-    // sinks, so a warm sync makes no `WrapSink` and no delegate. `select`
+    // and the same under `sync/blocking`: one `WrapChooseOnce` event in place
+    // of the `choose` and its `WrapEvent`s. The event comes from a free slot
+    // of the thread and goes back when it is published, and the pooled sync
+    // state keeps its sink, so a warm sync allocates nothing. `select`
     // expands to this form. The events and functions are evaluated in the
     // order written, as before.
     | TIdent (name, _) when
@@ -4781,7 +4782,7 @@ and private generateApply
 
         let lowered =
             { args.Head with
-                Node = TForeignStaticCall("Bjoml.Cml", $"WrapChoose<%s{typeArgs}>", operands, None) }
+                Node = TForeignStaticCall("Bjoml.Cml", $"WrapChooseOnce<%s{typeArgs}>", operands, None) }
 
         generateApply ctx expr target [ lowered ] []
 

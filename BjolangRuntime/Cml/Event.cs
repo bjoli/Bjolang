@@ -195,6 +195,20 @@ public static class Cml
     public static IEvent<R> WrapChoose<T0, T1, T2, T3, R>(IEvent<T0> e0, Func<T0, R> f0, IEvent<T1> e1, Func<T1, R> f1,
                                                           IEvent<T2> e2, Func<T2, R> f2, IEvent<T3> e3, Func<T3, R> f3) =>
         new WrapChoose4<T0, T1, T2, T3, R>(e0, f0, e1, f1, e2, f2, e3, f3);
+
+    // The same, for one sync at once: the event is taken from a free slot of
+    // the thread, so it must be synced at once, and once. What the compiler
+    // emits. See WrapChoose.cs.
+    public static IEvent<R> WrapChooseOnce<T0, T1, R>(IEvent<T0> e0, Func<T0, R> f0, IEvent<T1> e1, Func<T1, R> f1) =>
+        WrapChooseOnce2<T0, T1, R>.Rent(e0, f0, e1, f1);
+
+    public static IEvent<R> WrapChooseOnce<T0, T1, T2, R>(IEvent<T0> e0, Func<T0, R> f0, IEvent<T1> e1, Func<T1, R> f1,
+                                                          IEvent<T2> e2, Func<T2, R> f2) =>
+        WrapChooseOnce3<T0, T1, T2, R>.Rent(e0, f0, e1, f1, e2, f2);
+
+    public static IEvent<R> WrapChooseOnce<T0, T1, T2, T3, R>(IEvent<T0> e0, Func<T0, R> f0, IEvent<T1> e1, Func<T1, R> f1,
+                                                              IEvent<T2> e2, Func<T2, R> f2, IEvent<T3> e3, Func<T3, R> f3) =>
+        WrapChooseOnce4<T0, T1, T2, T3, R>.Rent(e0, f0, e1, f1, e2, f2, e3, f3);
     
     public static IEvent<T> Guard<T>(Func<IEvent<T>> generator) => new GuardEvent<T>(generator);
     

@@ -952,7 +952,7 @@ Rules:
 - *Bodies*: they run after the sync, in the code that the form is in. In a bjoroutine a body can suspend: it can ~sync~ and call a bjoroutine.
 - *Colour*: in a bjoroutine the form suspends, as ~sync~ does. In a ~defun~ it parks the thread, as ~sync/blocking~ does.
 - *Cancellation*: the same as for ~sync~. When the scope is cancelled while the form waits, the form raises ~Cancelled~ and no body runs.
-- *Cost*: the form expands to a ~choose~ of ~wrap~ forms and a ~match~ on nested ~Ok~ and ~Err~ tags. A ~Result~ is a struct, so the tags allocate nothing. The compiler emits a ~choose~ of two to four ~wrap~ forms at a ~sync~ as one event, which keeps its sinks on the fiber's pooled sync state: a warm sync of up to four branches allocates one object of 48 to 80 B. With five branches or more, each sync makes a ~wrap~ event per branch, and a sink and a delegate per branch it offers. The same is true of a ~choose~ of ~wrap~ forms written by hand.
+- *Cost*: the form expands to a ~choose~ of ~wrap~ forms and a ~match~ on nested ~Ok~ and ~Err~ tags. A ~Result~ is a struct, so the tags allocate nothing. The compiler emits a ~choose~ of two to four ~wrap~ forms at a ~sync~ as one event, which the thread keeps and which keeps its sink on the fiber's pooled sync state: a warm sync of up to four branches allocates nothing. With five branches or more, each sync makes a ~wrap~ event per branch, and a sink and a delegate per branch it offers. The same is true of a ~choose~ of ~wrap~ forms written by hand.
 
 A list of events that is only known at run time stays ~(sync (choose ...))~ over that list.
 

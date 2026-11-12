@@ -2684,7 +2684,8 @@ Go is at 490 B a request on the same scenario.
 What each would take, largest first. Together the first four are about
 280 B a request.
 
-- **No event object for a lowered sync, about 118 B.** The kept sink of
+- **No event object for a lowered sync, about 118 B.** Done; see the
+  next section. The kept sink of
   "A choose of wraps at a sync is one event" is made once, but the
   `WrapChoose2` that carries the branches to it is still made at each
   sync, also where nothing in it changes, as in the shard's loop. If the
@@ -2719,6 +2720,60 @@ What each would take, largest first. Together the first four are about
 registration per call, found by its allocations"), and stays. `Req`, the
 reply channel itself and the armed timer are the protocol, and Go makes
 the same.
+
+
+### The event of a lowered sync comes from the thread — kept
+
+The first item above. The compiler emits `Cml.WrapChooseOnce` in place of
+`Cml.WrapChoose`. It returns a `WrapChooseOnce2`, `3` or `4` from a free
+slot of the thread (a `[ThreadStatic]` field of the closed type), with
+the branches written into it.
+
+- Its `Publish` reads the branches into locals, clears them and puts the
+  event back in the slot before it publishes a branch. A sync that the
+  publish resumes inline on this thread can take it at once.
+- A sync uses its event only for that one publish: `EventAwaiter.Rent` and
+  `RentPublished` both publish it at once, and nothing keeps it. So the
+  event can be synced at once, and once. The compiler emits it only as
+  the whole argument of a `sync`. `Cml.WrapChoose` stays for an event that
+  is kept.
+- A rented event that is never published is dropped. The next rent makes
+  a new one.
+- While `FiberTrace` is on, each rent is a new event, as a trace keeps
+  the event it noted.
+- Both kinds publish through one sink class (`WrapChooseSinkN`), so they
+  share the kept sink.
+
+A warm sync allocates nothing (`WrapChooseTests`; the rest, about 1 B a
+sync, is a fiber that moves to a worker whose slots are still empty). On
+the ping between two fibers, 48 to 0 B a handover, and the time did not
+change past noise.
+
+`bench/service`, the same runtime, the build from before
+(`WrapChoose`) against this one, run in turn, 10 runs each, median and
+the quartiles of the paired difference:
+
+    all cores           before   after    after - before
+      B/request         724      599      -125 [-126, -124]
+      wall ms           201.5    201.0    +2 [-2, +3]
+      cpu ms            4582     4588     +28 [+4, +46]
+      p99 us            966      964      -2 [-147, +111]
+      p99.9 us          2633     2604     +165 [-283, +489]
+      gcs / pause ms    3 / 6.5  2 / 5.5
+    4 cores
+      B/request         625      504      -121 [-123, -119]
+      wall ms           343.5    345.0    +2 [-1, +3]
+      cpu ms            1347     1358     +7.5 [+4, +25]
+      p99 us            2226     2061     -184 [-241, -130]
+      p99.9 us          3349     3010     -353 [-461, -197]
+      gcs / pause ms    15 / 11  12 / 9
+
+On four cores, where the GC runs about five times as often, three
+collections fewer a rep take 8% off p99 and 10% off p99.9. On all cores
+there were three collections a rep before, and nothing else moved. The
+CPU cost, about 0.5%, is likely the two accesses to the thread's slot at
+each sync (see "Every thread-static access is a `__tls_get_addr` call").
+`bench/service` is now at about 500 B a request on four cores, as Go is.
 
 ---
 

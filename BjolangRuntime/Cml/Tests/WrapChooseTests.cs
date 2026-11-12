@@ -36,6 +36,10 @@ public static class WrapChooseTests
         Run("published below the root, it makes its own sink", BelowTheRoot);
         Run("a warm sync allocates only the event", AllocatesOnlyTheEvent);
         Run("stale branches do not take values", StaleBranches, 60_000);
+        Run("a once event: no object per warm sync", OnceAllocatesNothing);
+        Run("a once event that is not published is dropped", OnceNotPublished);
+        Run("once events: stale branches do not take values", OnceStaleBranches, 60_000);
+        Run("once events: a ping-pong keeps every value", OncePingPong, 60_000);
     }
 
     private static void EachBranchMaps()
@@ -227,5 +231,112 @@ public static class WrapChooseTests
             Interlocked.Increment(ref counts[at]);
         }
         return 0;
+    }
+
+    private static void OnceAllocatesNothing()
+    {
+        long perSync = Bjo.RunToCompletion(() => OnceAllocLoop());
+        // An object per sync is 24 B or more. What is left is the fiber moving
+        // to a worker whose free slot, awaiter and kept sink are still empty,
+        // about 1 B a sync on average.
+        Assert(perSync < 8, $"a warm sync allocated {perSync} B");
+    }
+
+    private static async Fiber<long> OnceAllocLoop()
+    {
+        var always = Cml.Always(1);
+        var never = Cml.Never<int>();
+        for (int i = 0; i < 1000; i++)
+            await global::BjolangRuntime.sync(Cml.WrapChooseOnce(always, Same, never, Same));
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 10_000; i++)
+            await global::BjolangRuntime.sync(Cml.WrapChooseOnce(always, Same, never, Same));
+        return (GC.GetAllocatedBytesForCurrentThread() - before) / 10_000;
+    }
+
+    /// <summary>
+    /// A rented event that is never published leaves the slot empty. The next
+    /// rent makes a new event, which is not the dropped one.
+    /// </summary>
+    private static void OnceNotPublished()
+    {
+        var r = Bjo.RunToCompletion(async () =>
+        {
+            var dropped = Cml.WrapChooseOnce<int, int, string>(Cml.Always(1), v => "dropped", Cml.Never<int>(), v => "x");
+            var used = Cml.WrapChooseOnce<int, int, string>(Cml.Always(2), v => $"used {v}", Cml.Never<int>(), v => "x");
+            Assert(!ReferenceEquals(dropped, used), "a rented event was rented again before it was published");
+            return await global::BjolangRuntime.sync(used);
+        });
+        AssertEqual("used 2", r, "the value of the event that was synced");
+    }
+
+    private static void OnceStaleBranches()
+    {
+        const int Receivers = 4, PerSender = 20_000;
+        var hot = new Channel<int>();
+        var cold = new Channel<long>();
+        var counts = new int[2 * PerSender];
+
+        var senders = new[]
+        {
+            Bjo.Spawn(() => SendInts(hot, PerSender)),
+            Bjo.Spawn(() => SendLongs(cold, PerSender)),
+        };
+        var receivers = new Promise<int>[Receivers];
+        for (int r = 0; r < Receivers; r++)
+            receivers[r] = Bjo.Spawn(() => OnceReceive(hot, cold, 2 * PerSender / Receivers, counts));
+
+        foreach (var s in senders) s.ToTask().GetAwaiter().GetResult();
+        foreach (var r in receivers) r.ToTask().GetAwaiter().GetResult();
+
+        for (int i = 0; i < counts.Length; i++)
+            if (counts[i] != 1) Assert(false, $"value {i} arrived {counts[i]} times");
+    }
+
+    private static async Fiber<int> OnceReceive(Channel<int> hot, Channel<long> cold, int n, int[] counts)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            int at = await global::BjolangRuntime.sync(Cml.WrapChooseOnce<int, long, int>(
+                hot, v => v, cold, v => (int)v));
+            Interlocked.Increment(ref counts[at]);
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Two fibers send each other a counter, each receiving through a once
+    /// event of the same types. A receive that pairs with a parked partner can
+    /// resume it inline, on the thread that is still publishing, and that
+    /// partner rents from the same slot. Each value must arrive once, in
+    /// order.
+    /// </summary>
+    private static void OncePingPong()
+    {
+        const int Rounds = 50_000;
+        var toA = new Channel<int>();
+        var toB = new Channel<int>();
+        var quit = new Channel<int>();
+        var a = Bjo.Spawn(() => Bounce(toA, toB, quit, Rounds, true));
+        var b = Bjo.Spawn(() => Bounce(toB, toA, quit, Rounds, false));
+        AssertEqual(Rounds, a.ToTask().GetAwaiter().GetResult(), "rounds seen by a");
+        AssertEqual(Rounds, b.ToTask().GetAwaiter().GetResult(), "rounds seen by b");
+    }
+
+    private static async Fiber<int> Bounce(Channel<int> inbox, Channel<int> outbox, Channel<int> quit, int rounds, bool starts)
+    {
+        int expected = starts ? 1 : 0;
+        if (starts) await outbox.Send(0);
+        int seen = 0;
+        while (seen < rounds)
+        {
+            int v = await global::BjolangRuntime.sync(Cml.WrapChooseOnce<int, int, int>(
+                inbox, x => x, quit, x => -1));
+            if (v != expected) throw new AssertionException($"expected {expected}, got {v}");
+            seen++;
+            expected = v + 2;
+            if (!(starts && seen == rounds)) await outbox.Send(v + 1);
+        }
+        return seen;
     }
 }
