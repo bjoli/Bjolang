@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* The output port writes are imported from the port directly
+
+- Before, the prelude and ~(std ports)~ imported each write, flush,
+  shutdown and close through ~OutputPorts~: one static method each, which
+  called the port and returned ~Bjoml.Unit~. Its doc said that no ~void~
+  can stand for a type argument. That is no longer so: an import takes a
+  ~void~ method, or one that returns ~Task~ or ~ValueTask~ with ~#:async~,
+  as ~void~.
+- Now they import ~BjoOutputPort~'s own methods (~WriteText~,
+  ~WriteTextLineAsync~, ~WriteScalar~, ~FlushValueAsync~, ~ShutdownAsync~ and
+  the rest), and ~BjolangRuntime.CloseOutputAsync~. The 15 wrappers and
+  ~AsUnit~ are gone. ~OutputPorts~ keeps only the methods that make ports.
+- A bjoroutine's write is now an ~await~ of the port's ~ValueTask~ in its own
+  state machine. A write that completed does not suspend it, so the fast
+  path from "A write from a bjoroutine that needs no I/O does not suspend"
+  needs no wrapper.
+- ~BjoOutputPort.WriteBytesAsync(byte[])~ is new: an import can not make the
+  ~ReadOnlyMemory<byte>~ the other overload takes.
+- ~write-bytes!~ with a null array: an array from Bjolang is never null, so
+  the wrappers' null checks are not kept.
+- Measured with ~async-ports.bjo~ (8 processes, the build against itself for
+  the noise, about 5%): ~writeln~ 30 ns and the file case 63-66 ns per line,
+  against 31.7 and 64.6 ns with the wrappers. No change past noise.
+
 * ~bjo publish~ precompiles the program's own modules
 
 - Before, a published program had its runtime, standard library and (since

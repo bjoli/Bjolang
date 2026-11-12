@@ -308,6 +308,13 @@ public sealed class BjoOutputPort : TextWriter {
         return WaitedWriteAsync(bytes, cancel);
     }
 
+    /// <summary>
+    /// `write-bytes!` from a bjoroutine. An array, because a Bjolang import
+    /// cannot make a <see cref="ReadOnlyMemory{T}"/> from one.
+    /// </summary>
+    public ValueTask WriteBytesAsync(byte[] bytes, CancellationToken cancel = default) =>
+        WriteBytesAsync(bytes.AsMemory(), cancel);
+
     private async ValueTask HeldWriteAsync(ReadOnlyMemory<byte> bytes, CancellationToken cancel) {
         try {
             await PutLockedAsync(bytes, cancel).ConfigureAwait(false);
@@ -752,13 +759,8 @@ public sealed class BjoOutputPort : TextWriter {
 }
 
 /// <summary>
-/// Making output ports, and the writes the prelude and `(std ports)` import.
-///
-/// Every write answers <see cref="Bjoml.Unit"/>, not C# `void`, for the reason
-/// `BjolangRuntime.unit` gives: no `void` can stand for a type argument. The
-/// suspending halves take a trailing <see cref="CancellationToken"/> and do not
-/// name it in the Bjolang signature: an `#:async` import fills in the ambient
-/// token at the call site.
+/// Making output ports. The writes, flushes and closes are imported from
+/// <see cref="BjoOutputPort"/> and <see cref="BjolangRuntime"/> directly.
 /// </summary>
 [NonUserCode]
 public static class OutputPorts {
@@ -803,84 +805,6 @@ public static class OutputPorts {
     public static Utf8String GetString(BjoOutputPort port) => port.GetString();
 
     public static byte[] GetBytes(BjoOutputPort port) => port.GetBytes();
-
-    // --- Writing --------------------------------------------------------------
-
-    public static Bjoml.Unit Write(BjoOutputPort port, Utf8String s) {
-        port.WriteText(s);
-        return default;
-    }
-
-    public static ValueTask<Bjoml.Unit> WriteAsync(
-        BjoOutputPort port, Utf8String s, CancellationToken cancel = default) =>
-        AsUnit(port.WriteTextAsync(s, cancel));
-
-    public static Bjoml.Unit WriteLine(BjoOutputPort port, Utf8String s) {
-        port.WriteTextLine(s);
-        return default;
-    }
-
-    public static ValueTask<Bjoml.Unit> WriteLineAsync(
-        BjoOutputPort port, Utf8String s, CancellationToken cancel = default) =>
-        AsUnit(port.WriteTextLineAsync(s, cancel));
-
-    public static Bjoml.Unit WriteChar(BjoOutputPort port, BjoChar c) {
-        port.WriteScalar(c);
-        return default;
-    }
-
-    public static ValueTask<Bjoml.Unit> WriteCharAsync(
-        BjoOutputPort port, BjoChar c, CancellationToken cancel = default) =>
-        AsUnit(port.WriteScalarAsync(c, cancel));
-
-    public static Bjoml.Unit WriteBytes(BjoOutputPort port, byte[] bytes) {
-        ArgumentNullException.ThrowIfNull(bytes);
-        port.WriteBytes(bytes);
-        return default;
-    }
-
-    public static ValueTask<Bjoml.Unit> WriteBytesAsync(
-        BjoOutputPort port, byte[] bytes, CancellationToken cancel = default) =>
-        bytes is null
-            ? ValueTask.FromException<Bjoml.Unit>(new ArgumentNullException(nameof(bytes)))
-            : AsUnit(port.WriteBytesAsync(bytes, cancel));
-
-    /// The unit result of a port operation.
-    /// - Completes synchronously when the operation did.
-    /// - Otherwise awaits it in a state machine of its own.
-    private static ValueTask<Bjoml.Unit> AsUnit(ValueTask pending) {
-        if (!pending.IsCompletedSuccessfully) return Awaited(pending);
-        pending.GetAwaiter().GetResult();
-        return default;
-
-        static async ValueTask<Bjoml.Unit> Awaited(ValueTask pending) {
-            await pending.ConfigureAwait(false);
-            return default;
-        }
-    }
-
-    // --- Flushing, the half-close, closing --------------------------------------
-
-    public static Bjoml.Unit Flush(BjoOutputPort port) {
-        port.Flush();
-        return default;
-    }
-
-    public static ValueTask<Bjoml.Unit> FlushAsync(BjoOutputPort port, CancellationToken cancel = default) =>
-        AsUnit(port.FlushValueAsync(cancel));
-
-    public static Bjoml.Unit Shutdown(BjoOutputPort port) {
-        port.Shutdown();
-        return default;
-    }
-
-    public static ValueTask<Bjoml.Unit> ShutdownAsync(BjoOutputPort port, CancellationToken cancel = default) =>
-        AsUnit(port.ShutdownAsync(cancel));
-
-    public static Bjoml.Unit Close(BjoOutputPort port) => BjolangRuntime.CloseOutput(port);
-
-    public static ValueTask<Bjoml.Unit> CloseAsync(BjoOutputPort port, CancellationToken cancel = default) =>
-        BjolangRuntime.CloseOutputAsync(port, cancel);
 
     /// <summary>
     /// A <see cref="TextWriter"/>'s side of <see cref="FromTextWriter"/>: UTF-8
