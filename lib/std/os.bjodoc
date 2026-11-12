@@ -1,0 +1,591 @@
+;; Docs for std/os.bjo, read through (:doc #:file "os.bjodoc"). The texts are
+;; samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "The operating system the program runs on, the machine and the process, the user's standard folders, and signals.")
+  (see windows? linux? os-platform? windows-version-at-least? os-description processor-count config-directory
+       with-signal-cancel on-signal signal-subscribe)
+  (example """
+    (import (std os))
+
+    (: num-lock? (-> (Option bool)))
+    (defun (num-lock? )
+      (cond
+        ((windows?) (Some (windows-num-lock?)))   ; from a module of its own
+        ((linux?) (linux-num-lock?))
+        (else None)))
+    """)
+  (example """
+    (when (windows-version-at-least? 10 #:build 22000)
+      (displayln "Windows 11"))
+    """)
+  (reference """
+    A program is built once and runs on every system, so the choice is made
+    when it runs. Each check is a call of the .NET method itself. .NET's
+    core library is built for one system, so on that system the method
+    returns a constant: the JIT removes the branch that cannot run, and the
+    check costs nothing.
+
+    Code for another system can be in a module of its own, imported
+    everywhere. A module's definitions run the first time something in it
+    is used, so on a system where nothing calls it, it does nothing. Every
+    module must still compile on the machine that builds it: a .NET method
+    that exists only on one system, as @code{Console.NumberLock} on Windows,
+    is declared everywhere and throws where it is not supported.
+
+    The facts about the machine and the process are .NET's
+    @code{RuntimeInformation} and @code{Environment}. The folders are
+    @code{Environment.GetFolderPath}, which follows the XDG variables on
+    Linux, and a cache folder, which .NET does not have. A folder is given
+    whether or not it exists yet: create it before you write to it.
+
+    @strong{Signals.} A program that does nothing about signals ends at
+    once on Ctrl-C or SIGTERM: no @code{finally} runs and no scope releases
+    what it owns. @code{with-signal-cancel} is a scope that the first of its
+    signals cancels, so the program cleans up and goes on. A second signal
+    does the default action and ends the program. @code{on-signal} calls a
+    function for each signal that comes, as for SIGHUP to read the
+    configuration again. @code{signal-subscribe} and @code{signal-recv} give
+    the signals as values to a fiber.
+    """)
+  (example """
+    ;; Where a program keeps its settings.
+    (def settings (path-combine (config-directory) "my-app" "settings.bjodat"))
+    (directory-create (path-directory settings))
+    """)
+  (example """
+    (defbjo (main args)
+      (match (with-signal-cancel [Interrupt Terminate]
+               (serve config))
+        ((Ok _) 0)
+        ((Err s) (displayln (str "stopped by " (signal-name s))) 0)))
+    """))
+
+(:doc windows?
+  (summary "Whether the program runs on Windows.")
+  (returns "#t on Windows.")
+  (see windows-version-at-least? os-platform?))
+
+(:doc linux?
+  (summary "Whether the program runs on Linux. Not on Android, which has android?.")
+  (returns "#t on Linux.")
+  (see android? os-platform?))
+
+(:doc macos?
+  (summary "Whether the program runs on macOS. Not on Mac Catalyst, which has mac-catalyst?.")
+  (returns "#t on macOS.")
+  (see macos-version-at-least? mac-catalyst? os-platform?))
+
+(:doc freebsd?
+  (summary "Whether the program runs on FreeBSD.")
+  (returns "#t on FreeBSD.")
+  (see freebsd-version-at-least? os-platform?))
+
+(:doc android?
+  (summary "Whether the program runs on Android.")
+  (returns "#t on Android.")
+  (see android-version-at-least? linux?))
+
+(:doc ios?
+  (summary "Whether the program runs on iOS. Also true on Mac Catalyst, which runs iOS programs.")
+  (returns "#t on iOS and Mac Catalyst.")
+  (see ios-version-at-least? mac-catalyst?))
+
+(:doc mac-catalyst?
+  (summary "Whether the program runs on Mac Catalyst, iOS on a Mac.")
+  (returns "#t on Mac Catalyst.")
+  (see mac-catalyst-version-at-least? ios? macos?))
+
+(:doc tvos?
+  (summary "Whether the program runs on tvOS.")
+  (returns "#t on tvOS.")
+  (see tvos-version-at-least?))
+
+(:doc watchos?
+  (summary "Whether the program runs on watchOS.")
+  (returns "#t on watchOS.")
+  (see watchos-version-at-least?))
+
+(:doc browser?
+  (summary "Whether the program runs in a browser, as WebAssembly.")
+  (returns "#t in a browser.")
+  (see wasi?))
+
+(:doc wasi?
+  (summary "Whether the program runs on WASI, WebAssembly outside a browser.")
+  (returns "#t on WASI.")
+  (see browser?))
+
+(:doc os-platform?
+  (summary "Whether the program runs on the system of this name.")
+  (arg platform "The name, in any case: \"Windows\", \"Linux\", \"macOS\" or \"OSX\", \"FreeBSD\", \"Android\", \"iOS\", \"MacCatalyst\", \"tvOS\", \"watchOS\", \"Browser\" or \"WASI\".")
+  (returns "#t on that system. A name that is no system is #f.")
+  (see os-platform-version-at-least? windows? linux?)
+  (example """
+    (os-platform? "linux")   ; #t on Linux
+    """)
+  (reference """
+    As the checks of their own, @code{"iOS"} is also true on Mac Catalyst.
+    """))
+
+(:doc windows-version-at-least?
+  (summary "Whether the program runs on Windows of this version or later.")
+  (arg major "The major version.")
+  (key minor "The minor version. 0 unless given.")
+  (key build "The build number. 0 unless given.")
+  (key revision "The revision. 0 unless given.")
+  (returns "#t on Windows of that version or later; #f on any other system.")
+  (see windows?)
+  (example """
+    (windows-version-at-least? 10 #:build 22000)   ; Windows 11 or later
+    """))
+
+(:doc macos-version-at-least?
+  (summary "Whether the program runs on macOS of this version or later.")
+  (arg major "The major version.")
+  (key minor "The minor version. 0 unless given.")
+  (key build "The build number. 0 unless given.")
+  (returns "#t on macOS of that version or later; #f on any other system.")
+  (see macos?)
+  (example """
+    (macos-version-at-least? 14)   ; Sonoma or later
+    """))
+
+(:doc freebsd-version-at-least?
+  (summary "Whether the program runs on FreeBSD of this version or later.")
+  (arg major "The major version.")
+  (key minor "The minor version. 0 unless given.")
+  (key build "The build number. 0 unless given.")
+  (key revision "The revision. 0 unless given.")
+  (returns "#t on FreeBSD of that version or later; #f on any other system.")
+  (see freebsd?))
+
+(:doc android-version-at-least?
+  (summary "Whether the program runs on Android of this version or later.")
+  (arg major "The major version.")
+  (key minor "The minor version. 0 unless given.")
+  (key build "The build number. 0 unless given.")
+  (key revision "The revision. 0 unless given.")
+  (returns "#t on Android of that version or later; #f on any other system.")
+  (see android?))
+
+(:doc ios-version-at-least?
+  (summary "Whether the program runs on iOS, or Mac Catalyst, of this version or later.")
+  (arg major "The major version.")
+  (key minor "The minor version. 0 unless given.")
+  (key build "The build number. 0 unless given.")
+  (returns "#t on iOS or Mac Catalyst of that version or later; #f on any other system.")
+  (see ios?))
+
+(:doc mac-catalyst-version-at-least?
+  (summary "Whether the program runs on Mac Catalyst of this version or later.")
+  (arg major "The major version.")
+  (key minor "The minor version. 0 unless given.")
+  (key build "The build number. 0 unless given.")
+  (returns "#t on Mac Catalyst of that version or later; #f on any other system.")
+  (see mac-catalyst?))
+
+(:doc tvos-version-at-least?
+  (summary "Whether the program runs on tvOS of this version or later.")
+  (arg major "The major version.")
+  (key minor "The minor version. 0 unless given.")
+  (key build "The build number. 0 unless given.")
+  (returns "#t on tvOS of that version or later; #f on any other system.")
+  (see tvos?))
+
+(:doc watchos-version-at-least?
+  (summary "Whether the program runs on watchOS of this version or later.")
+  (arg major "The major version.")
+  (key minor "The minor version. 0 unless given.")
+  (key build "The build number. 0 unless given.")
+  (returns "#t on watchOS of that version or later; #f on any other system.")
+  (see watchos?))
+
+(:doc os-platform-version-at-least?
+  (summary "Whether the program runs on the system of this name, of this version or later.")
+  (arg platform "The name, as os-platform? takes it.")
+  (arg major "The major version.")
+  (key minor "The minor version. 0 unless given.")
+  (key build "The build number. 0 unless given.")
+  (key revision "The revision. 0 unless given.")
+  (returns "#t on that system, of that version or later.")
+  (see os-platform?)
+  (reference """
+    The version is the one .NET reads for the system. On Linux it is the
+    kernel's, as 6.18.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The machine and the process
+;; ---------------------------------------------------------------------------
+
+(:doc os-description
+  (summary "The operating system, as a person reads it.")
+  (returns "A string, as \"Fedora Linux 43\" or \"Microsoft Windows 10.0.22631\".")
+  (see os-version os-architecture)
+  (reference """
+    .NET's @code{RuntimeInformation.OSDescription}. Its form differs from
+    system to system, so it is for a report or a log, not to be read by a
+    program: on Linux it is the distribution's name, from
+    @code{/etc/os-release}.
+    """))
+
+(:doc os-version
+  (summary "The version of the operating system, as .NET reads it.")
+  (returns "The parts of the version, most significant first, as [10 0 22631 0] on Windows.")
+  (see os-description windows-version-at-least? os-platform-version-at-least?)
+  (example """
+    (os-version)   ; [6 18 13 200] on Linux 6.18.13-200
+    """)
+  (reference """
+    On Linux it is the kernel's version. A part that .NET does not know is
+    left out, so there are two to four parts. To compare it with a version,
+    use the version checks, as @code{windows-version-at-least?}.
+    """))
+
+(:doc os-architecture
+  (summary "The processor architecture of the operating system.")
+  (returns "Its name in lower case: \"x64\", \"arm64\", \"x86\", \"arm\", \"armv6\", \"wasm\", \"s390x\", \"loongarch64\", \"ppc64le\" or \"riscv64\".")
+  (see process-architecture runtime-identifier)
+  (reference """
+    The names are .NET's, as a runtime identifier such as
+    @code{linux-arm64} writes them. A 32-bit process on a 64-bit system
+    has another @code{process-architecture}.
+    """))
+
+(:doc process-architecture
+  (summary "The processor architecture this process runs as.")
+  (returns "Its name in lower case, as os-architecture gives it.")
+  (see os-architecture))
+
+(:doc runtime-identifier
+  (summary "The runtime identifier of .NET in this process, as \"linux-x64\" or \"win-arm64\".")
+  (returns "A string.")
+  (see os-architecture dotnet-description)
+  (reference """
+    A .NET built by a Linux distribution can give one of its own, as
+    @code{fedora.43-x64}.
+    """))
+
+(:doc dotnet-description
+  (summary "The .NET that runs the program, as \".NET 10.0.4\".")
+  (returns "A string, for a report or a log.")
+  (see runtime-identifier))
+
+(:doc processor-count
+  (summary "How many processors this process may use.")
+  (returns "At least 1.")
+  (see available-memory)
+  (reference """
+    .NET's @code{Environment.ProcessorCount}: the processors of the
+    machine, less what a container's CPU limit or the process's affinity
+    leaves out.
+    """))
+
+(:doc available-memory
+  (summary "How much memory this process may use, in bytes.")
+  (returns "A long.")
+  (see processor-count)
+  (reference """
+    The limit the GC works to: the machine's memory, or a smaller limit set
+    for a container or for the process. It is not the memory that is free
+    at the moment.
+    """))
+
+(:doc machine-name
+  (summary "The name of this computer on the network.")
+  (returns "A string.")
+  (see user-name))
+
+(:doc user-name
+  (summary "The name of the user the process runs as.")
+  (returns "A string.")
+  (see machine-name privileged? home-directory))
+
+(:doc process-id
+  (summary "This process's id, as the operating system gives it.")
+  (returns "An int."))
+
+(:doc process-path
+  (summary "The executable that runs this process.")
+  (returns "(Some path), or None when the system does not tell.")
+  (see process-id)
+  (reference """
+    A program run by @code{dotnet} is run by the @code{dotnet} host, so
+    this is the host's path, not the program's.
+    """))
+
+(:doc privileged?
+  (summary "Whether the process runs with the rights of an administrator.")
+  (returns "#t as root on Unix, and when elevated on Windows.")
+  (see user-name))
+
+;; ---------------------------------------------------------------------------
+;; The user's folders
+;; ---------------------------------------------------------------------------
+
+(:doc home-directory
+  (summary "The user's home directory.")
+  (returns "Its path: HOME on Unix, the user's profile on Windows.")
+  (see config-directory data-directory cache-directory)
+  (reference """
+    Raises when the system has none, as when HOME is not set and the user
+    has no home in the password database. The other folders raise in the
+    same way.
+    """))
+
+(:doc config-directory
+  (summary "The folder for a program's configuration, which is the user's own.")
+  (returns "Its path. Put a program's files in a folder of its own in it.")
+  (see data-directory cache-directory home-directory)
+  (reference """
+    @code{XDG_CONFIG_HOME} on Linux when it is set to an absolute path,
+    else @code{~/.config}; the roaming application data, @code{%APPDATA%},
+    on Windows; @code{~/Library/Application Support} on macOS, the same
+    folder as @code{data-directory}'s. It may not exist yet.
+    """))
+
+(:doc data-directory
+  (summary "The folder for the data a program keeps for the user on this machine.")
+  (returns "Its path. Put a program's files in a folder of its own in it.")
+  (see config-directory cache-directory)
+  (reference """
+    @code{XDG_DATA_HOME} on Linux when it is set to an absolute path, else
+    @code{~/.local/share}; the local application data,
+    @code{%LOCALAPPDATA%}, on Windows; @code{~/Library/Application Support}
+    on macOS. It may not exist yet.
+    """))
+
+(:doc cache-directory
+  (summary "The folder for files a program can make again, which may be deleted.")
+  (returns "Its path. Put a program's files in a folder of its own in it.")
+  (see data-directory temp-directory)
+  (reference """
+    @code{XDG_CACHE_HOME} on Linux and the other Unix systems when it is set
+    to an absolute path, else @code{~/.cache}; the local application data
+    on Windows; @code{~/Library/Caches} on macOS. .NET has no such folder,
+    so this follows the XDG Base Directory specification and the systems'
+    own conventions. It may not exist yet.
+    """))
+
+(:doc documents-directory
+  (summary "The user's folder for documents.")
+  (returns "Its path: on Linux the XDG documents folder, as ~/Documents.")
+  (see desktop-directory home-directory))
+
+(:doc desktop-directory
+  (summary "The user's desktop folder.")
+  (returns "Its path: on Linux the XDG desktop folder, as ~/Desktop.")
+  (see documents-directory home-directory))
+
+(:doc temp-directory
+  (summary "The folder for temporary files.")
+  (returns "Its path, without a separator at the end.")
+  (see make-temp-directory cache-directory)
+  (reference """
+    @code{TMPDIR} on Unix when it is set, else @code{/tmp}; @code{TMP} or
+    @code{TEMP} on Windows. Other users can write to it too: for files of
+    your own, make a directory with @code{make-temp-directory}.
+    """))
+
+(:doc make-temp-directory
+  (summary "A new, empty directory in the temp folder.")
+  (key prefix "The start of its name. Empty unless given.")
+  (returns "Its path. Its name is prefix and characters of its own.")
+  (see temp-directory directory-delete-tree)
+  (example """
+    (def work (make-temp-directory #:prefix "my-app-"))   ; "/tmp/my-app-x3kQ9z"
+    ;; ...
+    (directory-delete-tree work)
+    """)
+  (reference """
+    On Unix only its owner may read, write or enter it. It stays until it
+    is deleted.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Signals
+;; ---------------------------------------------------------------------------
+
+(:doc Signal
+  (summary "A POSIX signal: a message from the system or from another process to this process.")
+  (case Hangup "SIGHUP: the terminal closed. Many daemons read their configuration again on it. On Windows, the console closed.")
+  (case Interrupt "SIGINT: Ctrl-C in a terminal, also on Windows.")
+  (case Quit "SIGQUIT: Ctrl-\\ in a terminal. On Windows, Ctrl-Break.")
+  (case Terminate "SIGTERM: a request to stop, as from kill or systemd. On Windows, log off or shut down.")
+  (case Child "SIGCHLD: a child process stopped or ended.")
+  (case Continue "SIGCONT: the process continues after a stop.")
+  (case WindowChanged "SIGWINCH: the terminal changed its size.")
+  (case TerminalInput "SIGTTIN: a background process read from the terminal.")
+  (case TerminalOutput "SIGTTOU: a background process wrote to the terminal.")
+  (case TerminalStop "SIGTSTP: Ctrl-Z in a terminal.")
+  (case User1 "SIGUSR1, for the program's own use: 10 on Linux, 30 on macOS and FreeBSD.")
+  (case User2 "SIGUSR2, for the program's own use: 12 on Linux, 31 on macOS and FreeBSD.")
+  (case OtherSignal "A signal by its number on this system, as (OtherSignal 34) for SIGRTMIN on Linux.")
+  (see signal-subscribe with-signal-cancel signal-name)
+  (reference """
+    Windows has only @code{Hangup}, @code{Interrupt}, @code{Quit} and
+    @code{Terminate}, and a subscription to another signal raises there.
+    Microsoft's documentation says that Windows ends the process soon
+    after @code{Hangup} and @code{Terminate}, whatever the program does.
+    """))
+
+(:doc Signals
+  (summary "A subscription to signals, from signal-subscribe.")
+  (see signal-subscribe signal-recv signal-unsubscribe!))
+
+(:doc signal-subscribe
+  (summary "Subscribes to signals, so that they come as values from signal-recv.")
+  (arg signals "A Vec of the signals. A signal that is given twice counts once.")
+  (returns "The subscription. The ambient scope owns it.")
+  (raises System.PlatformNotSupportedException "When this system does not have one of the signals, or cannot handle it, as SIGKILL.")
+  (raises System.ArgumentException "For (OtherSignal n) with n below 1.")
+  (raises Bjolang.Runtime.ScopeEnded "When there is no ambient scope, as in the initialiser of a module-level value.")
+  (see signal-recv signal-unsubscribe! with-signal-cancel)
+  (example """
+    (with-scope
+      (def signals (signal-subscribe [Hangup Terminate]))
+      (let loop ()
+        (match (sync (signal-recv signals))
+          (Hangup (read-configuration!) (loop))
+          (_ unit))))
+    """)
+  (reference """
+    While the subscription lives, its signals do not do their default
+    action: SIGTERM does not end the process, and Ctrl-Z does not stop it.
+    The default action of @code{Child}, @code{Continue} and
+    @code{WindowChanged} is to do nothing, and .NET's own handling of them
+    stays. The subscription ends with its scope, or at
+    @code{signal-unsubscribe!}, and then the default action is back. When
+    it raises, it has subscribed to nothing.
+
+    .NET calls the handler on a thread of its own. The handler puts the
+    signal in an inbox with room for one, and each kind of signal has its
+    own inbox. So signals of one kind that come before the program
+    receives them are merged into one, as in OCaml and Racket. Signals of
+    two kinds are two. Every subscription to a signal receives it.
+
+    A signal that is ignored when the program starts stays ignored, and
+    does not come. A shell starts a background job with SIGINT and SIGQUIT
+    ignored.
+    """))
+
+(:doc signal-recv
+  (summary "Returns the CML event of the next signal of a subscription.")
+  (arg s "The subscription.")
+  (returns "An event that yields the signal.")
+  (see signal-subscribe with-signal-cancel)
+  (reference """
+    In a @code{choose} that another branch wins, it takes nothing. When
+    signals of more than one kind wait, which one comes first is not given.
+    After the subscription ends, it never fires.
+    """))
+
+(:doc signal-unsubscribe!
+  (summary "Ends a subscription before its scope ends.")
+  (arg s "The subscription.")
+  (see signal-subscribe)
+  (reference """
+    The signals do their default action again, and the signals that wait
+    are dropped. A second call does nothing.
+    """))
+
+(:doc on-signal
+  (summary "Calls a function for each of the signals that comes, for as long as the scope lives.")
+  (arg signals "A Vec of the signals.")
+  (arg handler "What to call with the signal: an ordinary function or a bjoroutine.")
+  (raises System.PlatformNotSupportedException "As signal-subscribe.")
+  (see signal-subscribe with-signal-cancel in-scope)
+  (example """
+    (defun (main)
+      (on-signal [Interrupt] (fun (s) (println "Ctrl-C: carrying on")))
+      (do-the-work)
+      0)
+    """)
+  (example """
+    ;; From code deeper down, for the whole program.
+    (def program (current-scope))      ; in main
+    ...
+    (in-scope program
+      (on-signal [Hangup] (fun (s) (read-configuration!))))
+    """)
+  (reference """
+    A daemon of the ambient scope calls the handler. So the handler has the
+    parameters and effect handlers of the call to @code{on-signal}, and it
+    runs at the same time as the code that called it: share state with it
+    through @code{(std atomic)} or a channel. Only one call runs at a
+    time. A signal that comes during a call waits, merged with the others
+    of its kind.
+
+    The signals do not do their default action while the handler is there:
+    Ctrl-C does not end the program. When the scope ends, the handler and
+    the subscription end together, and the default action is back. In
+    @code{main} that is the end of the program. To handle a signal for the
+    whole program from code deeper down, call it with @code{in-scope} and
+    the scope of @code{main}.
+
+    When the handler raises, the signals do their default action again,
+    and the failure is written to standard error as an unhandled exception
+    of the daemon. Nothing else would receive the signals.
+    """))
+
+(:doc signal-name
+  (summary "The POSIX name of a signal.")
+  (arg s "The signal.")
+  (returns "As \"SIGINT\" for Interrupt, and \"signal 34\" for (OtherSignal 34).")
+  (see Signal))
+
+(:doc with-signal-cancel
+  (summary "Runs body in a scope that the first of the signals cancels.")
+  (form (with-signal-cancel signals body ...))
+  (arg signals "A Vec of the signals, as [Interrupt Terminate].")
+  (rest body "What to run. The form returns (Ok v) when the body returns v, and (Err s) when the signal s stopped the body.")
+  (see signal-subscribe with-cancel with-deadline Signal)
+  (example """
+    (defbjo (main args)
+      (match (with-signal-cancel [Interrupt Terminate]
+               (serve config))
+        ((Ok _) 0)
+        ((Err Interrupt) 130)
+        ((Err _) 143)))
+    """)
+  (reference """
+    Without it, Ctrl-C and SIGTERM end the program at once. With it, the
+    first signal cancels the scope with @code{(Requested "SIGINT")} and the
+    like: every @code{sync} in the scope that has to wait raises
+    @code{Cancelled}, the scope waits for its fibers, and it releases what
+    it owns. Then the form returns @code{(Err s)}.
+
+    At the first signal the form gives the signals back to the system. So
+    a second signal does the default action, and ends the program at once,
+    also while it cleans up.
+
+    As with @code{with-deadline}, a body that returns has its value, also
+    when the signal stopped its fibers. A failure of the body or of a fiber
+    is raised, also after a signal. A cancellation from an outer scope is
+    raised too. A signal that this system does not have raises as in
+    @code{signal-subscribe}, before the body runs.
+    """))
+
+(:doc signal-cancel-arm!
+  (summary "Subscribes a scope to signals, so that the first one cancels it. with-signal-cancel writes calls to it.")
+  (arg signals "The signals.")
+  (arg cancel "The cancel thunk of the scope.")
+  (see with-signal-cancel)
+  (reference """
+    It is exported because the template of @code{with-signal-cancel} names
+    it.
+    """))
+
+(:doc signal-cancel-result
+  (summary "The value of with-signal-cancel, from the outcome of its scope. with-signal-cancel writes calls to it.")
+  (arg signals "The signals.")
+  (arg outcome "The value of the body, or the exception that it left with.")
+  (arg token "The token of the scope.")
+  (returns "(Ok v) for a value, and (Err s) when the signal s cancelled the scope and the body left because of it.")
+  (raises System.Exception "The exception of the body, in every other case.")
+  (see with-signal-cancel)
+  (reference """
+    It is exported because the template of @code{with-signal-cancel} names
+    it.
+    """))

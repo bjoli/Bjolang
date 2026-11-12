@@ -1,0 +1,29 @@
+;; Each check of (std os) is the .NET call itself, where it is made, so that
+;; the JIT reads it as a constant and removes the branch that cannot run. A
+;; fact read from a .NET property is the read of the property.
+
+(export pick at-least by-name cores)
+
+(import (std prelude))
+(import (std os))
+
+;; EXPECT-CS: System\.OperatingSystem\.IsWindows\(\)
+;; EXPECT-CS: System\.OperatingSystem\.IsLinux\(\)
+(: (-> string))
+(defun (pick) (cond ((windows?) "w") ((linux?) "l") (else "?")))
+
+;; The keyword parameters are filled in at the call, and no wrapper is called.
+;; EXPECT-CS: System\.OperatingSystem\.IsWindowsVersionAtLeast\(10, 0, 22000, 0\)
+;; EXPECT-NO-CS: windowssubversionsubatsubleast
+(: (-> bool))
+(defun (at-least) (windows-version-at-least? 10 #:build 22000))
+
+;; EXPECT-CS: System\.OperatingSystem\.IsOSPlatform\(
+(: (-> string bool))
+(defun (by-name s) (os-platform? s))
+
+;; A fact about the machine is the read of .NET's property.
+;; EXPECT-CS: System\.Environment\.ProcessorCount
+;; EXPECT-NO-CS: processorsubcount\(
+(: (-> int))
+(defun (cores) (processor-count))

@@ -35,6 +35,105 @@ What each change guarantees, and what it leaves open.
   later sync. With ~Renew~ not advancing the generation, the first and the
   promise test fail.
 
+* ~(std os)~ has signals, and ~with-signal-cancel~ lets a program clean up on Ctrl-C
+
+- Before, SIGINT and SIGTERM ended a program at once: no ~finally~ ran and
+  no scope released what it owned. That is still the default.
+- ~Signal~ is a union: ~Hangup~, ~Interrupt~, ~Quit~, ~Terminate~,
+  ~Child~, ~Continue~, ~WindowChanged~, ~TerminalInput~,
+  ~TerminalOutput~, ~TerminalStop~, ~User1~, ~User2~ and
+  ~(OtherSignal n)~ for the system's number ~n~. ~User1~ and ~User2~ are
+  10 and 12 on Linux, 30 and 31 on macOS and FreeBSD. ~signal-name~ gives
+  the POSIX name, as ~"SIGINT"~.
+- ~(with-signal-cancel [Interrupt Terminate] body ...)~ is a scope that
+  the first of the signals cancels, with ~(Requested "SIGINT")~ and the
+  like. It returns ~(Ok v)~ when the body returns ~v~, and ~(Err s)~ when
+  the signal ~s~ stopped the body; a failure is raised, also after a
+  signal. At the first signal it gives the signals back to the system, so
+  a second one does the default action and ends the program, also during
+  the cleanup.
+- ~signal-subscribe~ subscribes the ambient scope to signals, and the
+  event ~signal-recv~ gives them as values. While the subscription lives,
+  the default action of a signal that ends or stops the process does not
+  occur. Signals of one kind that wait are merged into one, as in OCaml
+  and Racket: each kind has an inbox with room for one. ~signal-unsubscribe!~
+  ends a subscription early and drops what waits.
+- ~(on-signal [Interrupt] handler)~ calls ~handler~ with each signal that
+  comes, for as long as the ambient scope lives, with no CML in the
+  caller's code. A daemon of the scope calls it, one call at a time, with
+  the dynamic environment of the call to ~on-signal~. The daemon and the
+  subscription end together with the scope; ~in-scope~ with ~main~'s scope
+  installs one for the whole program from code deeper down. The handler is
+  ~-bjo->~, so an ordinary function fits too and ~on-signal~ stays an
+  ordinary function; with ~-?->~ a bjoroutine handler would have made it a
+  bjoroutine, which a ~defun~ ~main~ cannot call. When the handler raises,
+  the signals do their default action again and the failure is reported on
+  standard error: a dead daemon with a live subscription would swallow the
+  signals without a word.
+- A signal that the system does not have raises before anything is
+  subscribed: on Windows all but ~Hangup~, ~Interrupt~, ~Quit~ and
+  ~Terminate~; SIGKILL; ~(OtherSignal 0)~.
+- The runtime has ~Bjolang.Runtime.SignalGroup~: .NET's
+  ~PosixSignalRegistration~ takes an ~Action~, and a Bjolang function is a
+  ~Func~, so the registrations are made in C#. A handler may dispose its
+  own group, and a group disposed while it is made registers nothing more.
+- A signal ignored when the program starts stays ignored: a shell starts a
+  background job with SIGINT and SIGQUIT ignored, and .NET then does not
+  register a handler. Seen when the tests ran as background jobs.
+- Not checked on Windows or macOS: the tests have only run on Linux.
+- Tests: ~TestFiles/543_std_os_signals.bjo~ sends signals to itself and to
+  a child with kill(1): merging, kinds apart, two subscriptions, the end of
+  a subscription, the raises; ~with-signal-cancel~ in both colours, its
+  value, the reason, the releases, a failure after the signal, a deadline
+  from outside; ~on-signal~ with an ordinary handler, which sees the
+  parameter of the call, and with a bjoroutine; and in a child, one
+  SIGTERM, a second during the cleanup (exit 143), SIGTERM after the scope
+  (exit 143), a subscription that raised, ~on-signal~ until its scope ends,
+  and a handler that raised (reported, then exit 143). It sends no SIGINT,
+  for the reason above; SIGINT was checked by hand. 36 runs at once passed.
+
+* ~(std os)~ says which operating system the program runs on
+
+- All of .NET's ~OperatingSystem.IsXYZ~: ~windows?~, ~linux?~, ~macos?~,
+  ~freebsd?~, ~android?~, ~ios?~, ~mac-catalyst?~, ~tvos?~, ~watchos?~,
+  ~browser?~, ~wasi?~ and ~os-platform?~ by name, and the version checks
+  ~windows-version-at-least?~, ~macos-version-at-least?~ and the others
+  for each system that has one, with .NET's optional minor version, build
+  and revision as keywords.
+- Each is the .NET call where it is written: the version checks are
+  ~#:inline~, so no wrapper is called. .NET's core library is built for
+  one system, so the call is a constant there, and the JIT removes the
+  branch that cannot run. Seen in the disassembly of
+  ~(cond ((windows?) "w") ((linux?) "l") ...)~ on Linux: the first compile
+  calls both, the optimised one returns ~"l"~ and calls nothing.
+- No compile-time choice: a module is built once and runs on every system.
+  Code for one system goes in a module of its own; a module's definitions
+  run when something in it is first used, so where nothing calls it, it
+  does nothing.
+- The machine and the process: ~os-description~, ~os-version~ (the parts,
+  as ~[6 18 13 200]~), ~os-architecture~ and ~process-architecture~ (in
+  lower case, as a runtime identifier writes them), ~runtime-identifier~,
+  ~dotnet-description~, ~processor-count~, ~available-memory~ (the GC's
+  limit, which a container's limit lowers), ~machine-name~, ~user-name~,
+  ~process-id~, ~process-path~ and ~privileged?~. Each is a function. One
+  that reads a .NET property is ~#:inline~, so the call is the read.
+- The user's folders: ~home-directory~, ~config-directory~,
+  ~data-directory~, ~documents-directory~ and ~desktop-directory~ are
+  ~Environment.GetFolderPath~, which follows the XDG variables on Linux.
+  ~cache-directory~ is this module's own, as .NET has none: ~XDG_CACHE_HOME~
+  when it is an absolute path, else ~~/.cache~; ~~/Library/Caches~ on macOS;
+  the local data folder on Windows. ~temp-directory~ is ~Path.GetTempPath~
+  without its separator at the end, and ~make-temp-directory~ makes a new
+  directory in it that only its owner can enter. A folder is given whether
+  or not it exists; one the system has none of raises.
+- Not checked on Windows or macOS: the tests have only run on Linux, and the
+  folders there are described as .NET documents them.
+- Tests: ~TestFiles/542_std_os.bjo~ (each check against .NET's
+  ~RuntimeInformation.IsOSPlatform~ and against the others, the versions,
+  the keywords; the facts, the version against the version checks; the
+  folders, the temp directories, the XDG variables on Linux),
+  ~TestFiles/codegen/std_os_direct.bjo~ (the calls in the C#).
+
 * A copied body means at the call what it meant where it was written
 
 - A copy of a function written ~#:inline~, of a function given a known

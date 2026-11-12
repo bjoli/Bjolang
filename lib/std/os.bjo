@@ -1,0 +1,548 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; The operating system the program runs on, the machine and the process, and
+;; the user's standard folders.
+;;
+;; - Which system: .NET's `OperatingSystem.IsXYZ`. Each check is a call of the
+;;   .NET method itself, at the call. .NET's core library is built for one
+;;   OS, so the method returns a constant, and the JIT removes the branch that
+;;   cannot run. A program is built once and chooses at run time.
+;; - The machine and the process: `RuntimeInformation`, `Environment` and the
+;;   GC's memory limit.
+;; - The folders: `Environment.GetFolderPath`, which follows the XDG
+;;   variables on Linux, and the cache folder, which it does not have.
+;; - The signals: .NET's `PosixSignalRegistration`, through
+;;   `Bjolang.Runtime.SignalGroup`, and an inbox for each kind of signal.
+
+(import (std prelude))
+(import (std syntax-match))
+(import (std inbox))
+
+(:doc #:file "os.bjodoc")
+
+(export
+  ;; Which system.
+  windows? linux? macos? freebsd? android? ios? mac-catalyst? tvos? watchos? browser? wasi?
+  os-platform?
+  windows-version-at-least? macos-version-at-least? freebsd-version-at-least?
+  android-version-at-least? ios-version-at-least? mac-catalyst-version-at-least?
+  tvos-version-at-least? watchos-version-at-least? os-platform-version-at-least?
+  ;; The machine and the process.
+  os-description os-version os-architecture process-architecture runtime-identifier
+  dotnet-description processor-count available-memory machine-name user-name
+  process-id process-path privileged?
+  ;; The user's folders.
+  home-directory config-directory data-directory cache-directory
+  documents-directory desktop-directory temp-directory make-temp-directory
+  ;; Signals.
+  Signal Signals signal-subscribe signal-recv signal-unsubscribe! signal-name
+  on-signal with-signal-cancel
+  ;; Named by the template of `with-signal-cancel`, so they have to be
+  ;; reachable where it expands.
+  signal-cancel-arm! signal-cancel-result)
+
+(import/extern
+  (windows?      (: System.OperatingSystem.IsWindows (-> bool)))
+  (linux?        (: System.OperatingSystem.IsLinux (-> bool)))
+  (macos?        (: System.OperatingSystem.IsMacOS (-> bool)))
+  (freebsd?      (: System.OperatingSystem.IsFreeBSD (-> bool)))
+  (android?      (: System.OperatingSystem.IsAndroid (-> bool)))
+  (ios?          (: System.OperatingSystem.IsIOS (-> bool)))
+  (mac-catalyst? (: System.OperatingSystem.IsMacCatalyst (-> bool)))
+  (tvos?         (: System.OperatingSystem.IsTvOS (-> bool)))
+  (watchos?      (: System.OperatingSystem.IsWatchOS (-> bool)))
+  (browser?      (: System.OperatingSystem.IsBrowser (-> bool)))
+  (wasi?         (: System.OperatingSystem.IsWasi (-> bool)))
+  (os-platform?  (: System.OperatingSystem.IsOSPlatform (-> string bool))))
+
+;; The version checks take .NET's trailing optional parameters as keywords.
+;; Each wrapper is copied into its calls, so the call is .NET's.
+(import/extern
+  (clr-windows-at-least      (: System.OperatingSystem.IsWindowsVersionAtLeast (-> int int int int bool)))
+  (clr-macos-at-least        (: System.OperatingSystem.IsMacOSVersionAtLeast (-> int int int bool)))
+  (clr-freebsd-at-least      (: System.OperatingSystem.IsFreeBSDVersionAtLeast (-> int int int int bool)))
+  (clr-android-at-least      (: System.OperatingSystem.IsAndroidVersionAtLeast (-> int int int int bool)))
+  (clr-ios-at-least          (: System.OperatingSystem.IsIOSVersionAtLeast (-> int int int bool)))
+  (clr-mac-catalyst-at-least (: System.OperatingSystem.IsMacCatalystVersionAtLeast (-> int int int bool)))
+  (clr-tvos-at-least         (: System.OperatingSystem.IsTvOSVersionAtLeast (-> int int int bool)))
+  (clr-watchos-at-least      (: System.OperatingSystem.IsWatchOSVersionAtLeast (-> int int int bool)))
+  (clr-platform-at-least     (: System.OperatingSystem.IsOSPlatformVersionAtLeast
+                                (-> string int int int int bool))))
+
+(: (-> int (#:minor int) (#:build int) (#:revision int) bool))
+(defun (windows-version-at-least? major #:minor 0 #:build 0 #:revision 0) #:inline
+  (clr-windows-at-least major minor build revision))
+
+(: (-> int (#:minor int) (#:build int) bool))
+(defun (macos-version-at-least? major #:minor 0 #:build 0) #:inline
+  (clr-macos-at-least major minor build))
+
+(: (-> int (#:minor int) (#:build int) (#:revision int) bool))
+(defun (freebsd-version-at-least? major #:minor 0 #:build 0 #:revision 0) #:inline
+  (clr-freebsd-at-least major minor build revision))
+
+(: (-> int (#:minor int) (#:build int) (#:revision int) bool))
+(defun (android-version-at-least? major #:minor 0 #:build 0 #:revision 0) #:inline
+  (clr-android-at-least major minor build revision))
+
+(: (-> int (#:minor int) (#:build int) bool))
+(defun (ios-version-at-least? major #:minor 0 #:build 0) #:inline
+  (clr-ios-at-least major minor build))
+
+(: (-> int (#:minor int) (#:build int) bool))
+(defun (mac-catalyst-version-at-least? major #:minor 0 #:build 0) #:inline
+  (clr-mac-catalyst-at-least major minor build))
+
+(: (-> int (#:minor int) (#:build int) bool))
+(defun (tvos-version-at-least? major #:minor 0 #:build 0) #:inline
+  (clr-tvos-at-least major minor build))
+
+(: (-> int (#:minor int) (#:build int) bool))
+(defun (watchos-version-at-least? major #:minor 0 #:build 0) #:inline
+  (clr-watchos-at-least major minor build))
+
+(: (-> string int (#:minor int) (#:build int) (#:revision int) bool))
+(defun (os-platform-version-at-least? platform major #:minor 0 #:build 0 #:revision 0) #:inline
+  (clr-platform-at-least platform major minor build revision))
+
+;; ---------------------------------------------------------------------------
+;; The machine and the process
+;; ---------------------------------------------------------------------------
+
+(import/class
+  (Architecture (: System.Runtime.InteropServices.Architecture))
+  (ClrVersion (: System.Version))
+  (ClrOperatingSystem (: System.OperatingSystem))
+  (GCMemoryInfo (: System.GCMemoryInfo)))
+
+;; A static property is imported as a value. Each is given as a function, as
+;; the checks above are, and copied into its calls, so the call is the read of
+;; the property.
+(import/extern
+  (clr-os-description   (: System.Runtime.InteropServices.RuntimeInformation.OSDescription (-> string) #:get))
+  (clr-runtime-identifier
+   (: System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier (-> string) #:get))
+  (clr-dotnet-description
+   (: System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription (-> string) #:get))
+  (clr-os-architecture  (: System.Runtime.InteropServices.RuntimeInformation.OSArchitecture (-> Architecture) #:get))
+  (clr-process-architecture
+   (: System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture (-> Architecture) #:get))
+  (clr-os               (: System.Environment.OSVersion (-> ClrOperatingSystem) #:get))
+  (clr-os-version       (: System.OperatingSystem.Version (-> ClrOperatingSystem ClrVersion) #:get))
+  (clr-major            (: System.Version.Major (-> ClrVersion int) #:get))
+  (clr-minor            (: System.Version.Minor (-> ClrVersion int) #:get))
+  (clr-build            (: System.Version.Build (-> ClrVersion int) #:get))
+  (clr-revision         (: System.Version.Revision (-> ClrVersion int) #:get))
+  (clr-processor-count  (: System.Environment.ProcessorCount (-> int) #:get))
+  (clr-machine-name     (: System.Environment.MachineName (-> string) #:get))
+  (clr-user-name        (: System.Environment.UserName (-> string) #:get))
+  (clr-process-id       (: System.Environment.ProcessId (-> int) #:get))
+  (clr-process-path     (: System.Environment.ProcessPath (-> string) #:get))
+  (clr-privileged?      (: System.Environment.IsPrivilegedProcess (-> bool) #:get))
+  (clr-memory-info      (: System.GC.GetGCMemoryInfo (-> GCMemoryInfo)))
+  (clr-total-available  (: System.GCMemoryInfo.TotalAvailableMemoryBytes (-> GCMemoryInfo long) #:get)))
+
+(: (-> string))
+(defun (os-description) #:inline clr-os-description)
+
+(: (-> string))
+(defun (runtime-identifier) #:inline clr-runtime-identifier)
+
+(: (-> string))
+(defun (dotnet-description) #:inline clr-dotnet-description)
+
+(: (-> int))
+(defun (processor-count) #:inline clr-processor-count)
+
+(: (-> string))
+(defun (machine-name) #:inline clr-machine-name)
+
+(: (-> string))
+(defun (user-name) #:inline clr-user-name)
+
+(: (-> int))
+(defun (process-id) #:inline clr-process-id)
+
+(: (-> bool))
+(defun (privileged?) #:inline clr-privileged?)
+
+;; .NET's name of an architecture, in lower case, as a runtime identifier
+;; writes it.
+(: (-> Architecture string))
+(defun (architecture-name a) (string-downcase (.ToString a)))
+
+(: (-> string))
+(defun (os-architecture) (architecture-name clr-os-architecture))
+
+(: (-> string))
+(defun (process-architecture) (architecture-name clr-process-architecture))
+
+;; The parts of the version that .NET has: a part it does not know is -1, and
+;; is left out.
+(: (-> (Vec int)))
+(defun (os-version)
+  (def v (clr-os-version clr-os))
+  (vec-filter (fun (n) (>= n 0)) [(clr-major v) (clr-minor v) (clr-build v) (clr-revision v)]))
+
+;; The memory the GC may use: the machine's, or the limit of the container or
+;; of the process.
+(: (-> long))
+(defun (available-memory) (clr-total-available (clr-memory-info)))
+
+;; .NET has null when it cannot tell, which arrives as "".
+(: (-> (Option string)))
+(defun (process-path)
+  (def p clr-process-path)
+  (if (string-empty? p) None (Some p)))
+
+;; ---------------------------------------------------------------------------
+;; The user's folders
+;; ---------------------------------------------------------------------------
+
+(import/class
+  (SpecialFolder (: System.Environment+SpecialFolder))
+  (SpecialFolderOption (: System.Environment+SpecialFolderOption))
+  (ClrDirectoryInfo (: System.IO.DirectoryInfo))
+  (InvalidOperationException (: System.InvalidOperationException (-> string InvalidOperationException))))
+
+(import/extern
+  (clr-folder-path       (: System.Environment.GetFolderPath (-> SpecialFolder SpecialFolderOption string)))
+  (clr-temp-path         (: System.IO.Path.GetTempPath (-> string)))
+  (clr-trim-separator    (: System.IO.Path.TrimEndingDirectorySeparator (-> string string)))
+  (clr-rooted?           (: System.IO.Path.IsPathRooted (-> string bool)))
+  (clr-create-temp       (: System.IO.Directory.CreateTempSubdirectory (-> string ClrDirectoryInfo)))
+  (clr-full-name         (: System.IO.DirectoryInfo.FullName (-> ClrDirectoryInfo string) #:get)))
+
+;; The path of a special folder, whether or not it exists yet. Raises when
+;; the system has none, as when HOME is not set and the user has no home in
+;; the password database.
+(: (-> SpecialFolder string string))
+(defun (folder-path folder what)
+  (def p (clr-folder-path folder SpecialFolderOption.DoNotVerify))
+  (if (string-empty? p)
+      (raise (cast Exception (InvalidOperationException. (str "This system has no " what "."))))
+      p))
+
+(: (-> string))
+(defun (home-directory) (folder-path SpecialFolder.UserProfile "home directory"))
+
+(: (-> string))
+(defun (config-directory) (folder-path SpecialFolder.ApplicationData "folder for configuration"))
+
+(: (-> string))
+(defun (data-directory) (folder-path SpecialFolder.LocalApplicationData "folder for data"))
+
+(: (-> string))
+(defun (documents-directory) (folder-path SpecialFolder.MyDocuments "folder for documents"))
+
+(: (-> string))
+(defun (desktop-directory) (folder-path SpecialFolder.Desktop "desktop folder"))
+
+;; .NET has no special folder for a cache. On Windows it is the local data
+;; folder, on macOS `~/Library/Caches`, and elsewhere `XDG_CACHE_HOME`, or
+;; `~/.cache` when that is not set or not an absolute path, as the XDG Base
+;; Directory specification says.
+(: (-> string))
+(defun (cache-directory)
+  (cond
+    ((windows?) (data-directory))
+    ((macos?) (path-combine (home-directory) "Library" "Caches"))
+    (else
+     (match (get-environment-variable "XDG_CACHE_HOME")
+       ((Some p) (if (clr-rooted? p) p (path-combine (home-directory) ".cache")))
+       (None (path-combine (home-directory) ".cache"))))))
+
+;; The folder for temporary files: `TMPDIR` on Unix, `TMP` or `TEMP` on
+;; Windows, else the system's. Without the separator .NET ends it with.
+(: (-> string))
+(defun (temp-directory) (clr-trim-separator (clr-temp-path)))
+
+;; A new, empty directory in the temp folder, with a name of its own after
+;; `prefix`. On Unix only its owner may read or write it.
+(: (-> (#:prefix string) string))
+(defun (make-temp-directory #:prefix "")
+  (clr-full-name (clr-create-temp prefix)))
+
+;; ---------------------------------------------------------------------------
+;; Signals
+;; ---------------------------------------------------------------------------
+;;
+;; - While a subscription lives, its signals do not do their default action,
+;;   as ending or stopping the process. The ambient scope owns the
+;;   subscription, so the default action is back when the scope ends.
+;; - .NET calls the handler on a thread that is not a fiber. The handler posts
+;;   the signal to an inbox with room for one item. Each kind of signal has
+;;   its own inbox, so a signal of a kind that already waits is merged with
+;;   it, as in OCaml and Racket. A fiber receives from the inboxes.
+;; - `with-signal-cancel` cancels its scope at the first signal and gives the
+;;   signals back to the system, so a second signal does the default action.
+
+(type (: Signal (Union Hangup Interrupt Quit Terminate Child Continue WindowChanged
+                       TerminalInput TerminalOutput TerminalStop User1 User2
+                       (: OtherSignal int))))
+
+(import/class
+  (SignalGroup (: Bjolang.Runtime.SignalGroup (-> SignalGroup)))
+  (PlatformNotSupportedException
+   (: System.PlatformNotSupportedException (-> string PlatformNotSupportedException)))
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException)))
+  (HandlerFailed (: System.InvalidOperationException (-> string Exception HandlerFailed))))
+
+(import/extern
+  (clr-group-add!    (: Bjolang.Runtime.SignalGroup.Add (-> SignalGroup int bool (-> void) void)))
+  (clr-cancellation? (: Bjolang.Runtime.SignalGroup.IsCancellation (-> Exception bool))))
+
+(type (: Signals #:opaque (Struct (: group SignalGroup) (: inboxes (Vec (Inbox Signal))))))
+
+(: (-> string PlatformNotSupportedException))
+(defun (unsupported message) (PlatformNotSupportedException. message))
+
+(: (-> Signal string))
+(defun (signal-name s)
+  (match s
+    (Hangup "SIGHUP")
+    (Interrupt "SIGINT")
+    (Quit "SIGQUIT")
+    (Terminate "SIGTERM")
+    (Child "SIGCHLD")
+    (Continue "SIGCONT")
+    (WindowChanged "SIGWINCH")
+    (TerminalInput "SIGTTIN")
+    (TerminalOutput "SIGTTOU")
+    (TerminalStop "SIGTSTP")
+    (User1 "SIGUSR1")
+    (User2 "SIGUSR2")
+    ((OtherSignal n) (str "signal " (int->string n)))))
+
+;; The four that Windows has: the console's close button, Ctrl-C, Ctrl-Break,
+;; and log off or shut down.
+(: (-> Signal bool))
+(defun (windows-signal? s)
+  (match s
+    (Hangup #t)
+    (Interrupt #t)
+    (Quit #t)
+    (Terminate #t)
+    (_ #f)))
+
+;; Whether the default action of the signal ends or stops the process, which
+;; a subscription prevents. The default action of the other three is to do
+;; nothing, and .NET's own handling of them stays.
+(: (-> Signal bool))
+(defun (cancels-default? s)
+  (match s
+    (Child #f)
+    (Continue #f)
+    (WindowChanged #f)
+    (_ #t)))
+
+;; SIGUSR1 and SIGUSR2 have one number on Linux and another on the BSDs and
+;; Apple's systems.
+(: (-> Signal int int int))
+(defun (user-signal-code s linux bsd)
+  (cond
+    ((or (linux?) (android?)) linux)
+    ((or (macos?) (freebsd?) (ios?) (tvos?) (watchos?) (mac-catalyst?)) bsd)
+    (else
+     (raise (cast Exception (unsupported (str "The number of " (signal-name s) " on this system"
+                                              " is not known. Use (OtherSignal n).")))))))
+
+;; The number of the signal for .NET's `PosixSignal`: negative for .NET's own
+;; names, and the system's number for the others.
+;;
+;; - Raises when this system cannot have the signal.
+;; - Raises for `(OtherSignal n)` with `n` below 1: .NET reads a negative
+;;   number as one of its own names.
+(: (-> Signal int))
+(defun (signal-code s)
+  (cond
+    ((or (browser?) (wasi?))
+     (raise (cast Exception (unsupported "This system has no signals."))))
+    ((and (windows?) (not (windows-signal? s)))
+     (raise (cast Exception (unsupported (str "Windows has no " (signal-name s) ".")))))
+    (else
+     (match s
+       (Hangup -1)
+       (Interrupt -2)
+       (Quit -3)
+       (Terminate -4)
+       (Child -5)
+       (Continue -6)
+       (WindowChanged -7)
+       (TerminalInput -8)
+       (TerminalOutput -9)
+       (TerminalStop -10)
+       (User1 (user-signal-code s 10 30))
+       (User2 (user-signal-code s 12 31))
+       ((OtherSignal n)
+        (if (> n 0)
+            n
+            (raise (cast Exception (ArgumentException.
+                                    (str "OtherSignal takes a signal number above 0, not "
+                                         (int->string n) "."))))))))))
+
+;; Each signal once, in the order given.
+(: (-> (Vec Signal) (Vec Signal)))
+(defun (distinct-signals signals)
+  (let go ((rest (vec->list signals)) (kept []))
+    (match rest
+      (Nil kept)
+      ((Cons s more) (go more (if (vec-contains kept s) kept (vec-add kept s)))))))
+
+;; Registers the handler in `handlers` for each signal in `kinds`, whose
+;; numbers are `codes`. Raises when the system cannot handle one, as SIGKILL.
+;; The caller disposes the group then.
+(: (-> SignalGroup (Vec Signal) (Vec int) (Vec (-> void)) void))
+(defun (add-handlers! group kinds codes handlers)
+  (loop (:for s kinds)
+        (:for code codes)
+        (:for handler handlers)
+        (:do (match (try (clr-group-add! group code (cancels-default? s) handler)
+                      #:catch (System.Exception))
+               ((Ok _) unit)
+               ((Err e)
+                (raise (cast Exception (unsupported (str "This system cannot handle " (signal-name s)
+                                                         ": " (.-Message e))))))))))
+
+;; Subscribes to `signals`.
+;;
+;; - While the subscription lives, the signals do not do their default
+;;   action. The ambient scope owns it, and ends it when the scope ends.
+;; - Raises before it registers anything when a signal is not on this
+;;   system, and when there is no ambient scope.
+(: (-> (Vec Signal) Signals))
+(defun (signal-subscribe signals)
+  (def kinds (distinct-signals signals))
+  (def codes (->vec (map signal-code kinds)))
+  (def inboxes (->vec (map (fun (_) (make-inbox 1 DropNewest)) kinds)))
+  (def subscription (Signals (group (SignalGroup.)) (inboxes inboxes)))
+  (def owned (own! (fun () (signal-unsubscribe! subscription))))
+  (def handlers
+    (loop (:for s kinds)
+          (:for ib inboxes)
+          (:acc hs (vecing (fun () (ignore (inbox-post! ib s)))))))
+  (match (try (add-handlers! (struct-ref subscription group) kinds codes handlers)
+              #:catch (System.Exception))
+    ((Ok _) subscription)
+    ((Err e) (release! owned) (raise e))))
+
+;; The event of the next signal. In a `choose` that another branch wins, it
+;; takes nothing. When signals of more than one kind wait, which one comes
+;; first is not given. After the subscription ends, it never fires.
+(: (-> Signals (Event Signal)))
+(defun (signal-recv s)
+  (match (vec->list (struct-ref s inboxes))
+    (Nil (never))
+    ((Cons ib more)
+     (let go ((rest more) (e (inbox-recv ib)))
+       (match rest
+         (Nil e)
+         ((Cons next after) (go after (choose e (inbox-recv next)))))))))
+
+;; Ends the subscription now: the signals do their default action again, and
+;; signals that wait are dropped. A second call does nothing.
+(: (-> Signals void))
+(defun (signal-unsubscribe! s)
+  (.Dispose (struct-ref s group))
+  (for-each inbox-abort! (struct-ref s inboxes)))
+
+;; Calls `handler` with each of `signals` that comes, for as long as the
+;; ambient scope lives.
+;;
+;; - A daemon of the scope calls it, so it has the dynamic environment of
+;;   this call, and the scope does not wait for it. The subscription and the
+;;   daemon end together, with the scope.
+;; - One call at a time. A signal that comes during a call waits, merged
+;;   with the others of its kind.
+;; - The handler is a bjoroutine, and an ordinary function is one too. Not
+;;   `-?->`: with a bjoroutine, that would make this a bjoroutine, though it
+;;   only gives the handler to the daemon, and `main` could not call it.
+(: (-> (Vec Signal) (-bjo-> Signal void) void))
+(defun (on-signal signals handler)
+  (def subscription (signal-subscribe signals))
+  (spawn/daemon (handle-signals subscription handler)))
+
+;; The daemon of `on-signal`. When the handler raises, it ends the
+;; subscription, so the signals do their default action again, and raises
+;; for the report of the daemon. Nothing else would receive the signals, and
+;; they would be lost without a word. A cancellation is raised as it is: the
+;; scope ends.
+(: (-bjo-> Signals (-bjo-> Signal void) void))
+(defbjo (handle-signals subscription handler)
+  (def s (sync (signal-recv subscription)))
+  (match (try (handler s) #:catch (System.Exception))
+    ((Ok _) (handle-signals subscription handler))
+    ((Err e)
+     (signal-unsubscribe! subscription)
+     (if (clr-cancellation? e)
+         (raise e)
+         (raise (cast Exception (HandlerFailed. (str "The handler of " (signal-name s) " raised, so "
+                                                     "its signals do their default action again.")
+                                                e)))))))
+
+;; `(with-signal-cancel signals body ...)` - a scope that the first of
+;; `signals` cancels.
+;;
+;; - Returns `(Ok v)` when the body returns `v`, and `(Err s)` when the signal
+;;   `s` stopped the body. The scope's reason is `(Requested "SIGINT")` and
+;;   the like.
+;; - At the first signal it gives the signals back to the system, so a second
+;;   signal does the default action, as ending the process at once.
+;; - A failure of the body is raised again, also after a signal.
+(def/macro (with-signal-cancel form inject compare)
+  (syntax-match form
+    ((_ signals first body ...)
+     #'(let ()
+         (def kinds ,signals)
+         (def scope (scope-open! 0))
+         (signal-cancel-result
+          kinds
+          (try (scope-form scope (cancel)
+                 (signal-cancel-arm! kinds cancel)
+                 ,first ,@body)
+               #:catch (System.Exception))
+          (scope-token scope))))
+    (bad (syntax-error bad "with-signal-cancel takes a Vec of signals and a body: (with-signal-cancel [Interrupt Terminate] body ...)"))))
+
+;; Subscribes the scope that `cancel` cancels to `signals`. The first signal
+;; ends the subscription and then cancels the scope, so the signals do their
+;; default action again before anything sees the cancellation.
+(: (-> (Vec Signal) (-> CancelReason void) void))
+(defun (signal-cancel-arm! signals cancel)
+  (def kinds (distinct-signals signals))
+  (def codes (->vec (map signal-code kinds)))
+  (def group (own-disposable (SignalGroup.)))
+  (add-handlers! group kinds codes
+                 (->vec (map (fun (s) (fun ()
+                                        (.Dispose group)
+                                        (cancel (Requested (signal-name s)))))
+                             kinds))))
+
+;; The value of `with-signal-cancel`, from the outcome of its scope and the
+;; scope's token.
+;;
+;; - The body returned: its value.
+;; - One of `signals` cancelled the scope, and the body left because of it:
+;;   that signal.
+;; - Else: the body's exception, raised again.
+(: (-> (Vec Signal) (Result Exception %a) CancelToken (Result Signal %a)))
+(defun (signal-cancel-result signals outcome token)
+  (match outcome
+    ((Ok v) (Ok v))
+    ((Err e)
+     (match (cancel-reason token)
+       ((Some (Requested who))
+        (match (find (fun (s) (= (signal-name s) who)) signals)
+          ((Some s) (if (clr-cancellation? e) (Err s) (raise e)))
+          (None (raise e))))
+       (_ (raise e))))))

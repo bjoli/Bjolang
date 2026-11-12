@@ -1,0 +1,165 @@
+;; (std os): the checks say what .NET says, on whatever system the tests run
+;; on, and so do the facts about the machine and the process. The folders
+;; are absolute paths, and follow the XDG variables on Linux.
+;; codegen/std_os_direct.bjo checks that each check is the .NET call itself.
+(import (std prelude))
+(import (std simpletest))
+(import (std os))
+
+(import/extern
+  (runtime-is (: System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform (-> OSPlatform bool)))
+  (platform-named (: System.Runtime.InteropServices.OSPlatform.Create (-> string OSPlatform))))
+
+(import/class
+  (OSPlatform (: System.Runtime.InteropServices.OSPlatform)))
+
+(: (-> string bool))
+(defun (runtime-says name) (runtime-is (platform-named name)))
+
+(import/extern (rooted? (: System.IO.Path.IsPathRooted (-> string bool))))
+
+;; The name of the system the tests run on, as os-platform? takes it.
+(: (-> string))
+(defun (this-system)
+  (cond ((windows?) "windows") ((linux?) "linux") ((macos?) "macos") (else "freebsd")))
+
+(def architectures
+  (list "x86" "x64" "arm" "arm64" "wasm" "s390x" "loongarch64" "armv6" "ppc64le" "riscv64"))
+
+;; Runs `f` with an environment variable set to `value`, and puts it back.
+(: (-> string string (-> %a) %a))
+(defun (with-variable name value f)
+  (def old (get-environment-variable name))
+  (set-environment-variable! name value)
+  (try
+    (f)
+    #:finally (set-environment-variable! name (option-ref-or old ""))))
+
+(: (-> void))
+(defun (machine-and-process)
+  (expect "a description of the system" (string-empty? (os-description)) #f)
+  (expect "a known architecture of the system"
+          (any? (fun (a) (= a (os-architecture))) architectures)
+          #t)
+  (expect "a known architecture of the process"
+          (any? (fun (a) (= a (process-architecture))) architectures)
+          #t)
+  (expect "the runtime identifier ends with the architecture"
+          (string-ends-with? (runtime-identifier) (str "-" (process-architecture)))
+          #t)
+  (expect "the .NET" (string-starts-with? (dotnet-description) ".NET") #t)
+
+  ;; The version is the one the version checks compare with.
+  (def v (os-version))
+  (expect "two to four parts" (and (>= (vec-length v) 2) (<= (vec-length v) 4)) #t)
+  (expect "no part is negative" (all? (fun (n) (>= n 0)) v) #t)
+  (expect "the version checks agree"
+          (os-platform-version-at-least? (this-system) (vec-ref v 0) #:minor (vec-ref v 1))
+          #t)
+  (expect "and a later major version is not this one"
+          (os-platform-version-at-least? (this-system) (+ (vec-ref v 0) 1))
+          #f)
+
+  (expect "at least one processor" (>= (processor-count) 1) #t)
+  (expect "some memory" (> (available-memory) 0L) #t)
+  (expect "a machine name" (string-empty? (machine-name)) #f)
+  (expect "a user name" (string-empty? (user-name)) #f)
+  (expect "a process id" (> (process-id) 0) #t)
+  (expect "the executable exists"
+          (match (process-path) ((Some p) (file-exists? p)) (None #f))
+          #t)
+  (unless (windows?)
+    (expect "privileged is root" (privileged?) (= (user-name) "root"))))
+
+(: (-> void))
+(defun (folders)
+  (def home (home-directory))
+  (expect "the home directory exists" (directory-exists? home) #t)
+  (expect "the folders are absolute paths"
+          (all? rooted?
+                (list home (config-directory) (data-directory) (cache-directory)
+                      (documents-directory) (desktop-directory) (temp-directory)))
+          #t)
+
+  (expect "the temp folder exists" (directory-exists? (temp-directory)) #t)
+  (expect "and has no separator at the end"
+          (or (string-ends-with? (temp-directory) "/") (string-ends-with? (temp-directory) "\\"))
+          #f)
+
+  (def a (make-temp-directory #:prefix "bjo-542-"))
+  (def b (make-temp-directory #:prefix "bjo-542-"))
+  (expect "a temp directory is made" (directory-exists? a) #t)
+  (expect "and is empty" (vec-length (directory-files a)) 0)
+  (expect "in the temp folder" (path-directory a) (Some (temp-directory)))
+  (expect "with the prefix" (string-starts-with? (option-ref-or (path-filename a) "") "bjo-542-") #t)
+  (expect "and each is new" (= a b) #f)
+  (directory-delete a)
+  (directory-delete b)
+
+  ;; The XDG variables, on Linux. The cache folder is this module's own.
+  (when (linux?)
+    (expect "XDG_CONFIG_HOME"
+            (with-variable "XDG_CONFIG_HOME" "/tmp/bjo-542-config" config-directory)
+            "/tmp/bjo-542-config")
+    (expect "XDG_DATA_HOME"
+            (with-variable "XDG_DATA_HOME" "/tmp/bjo-542-data" data-directory)
+            "/tmp/bjo-542-data")
+    (expect "XDG_CACHE_HOME"
+            (with-variable "XDG_CACHE_HOME" "/tmp/bjo-542-cache" cache-directory)
+            "/tmp/bjo-542-cache")
+    (expect "a relative XDG_CACHE_HOME is not used"
+            (with-variable "XDG_CACHE_HOME" "relative/cache" cache-directory)
+            (path-combine home ".cache"))
+    (expect "no XDG_CACHE_HOME"
+            (with-variable "XDG_CACHE_HOME" "" cache-directory)
+            (path-combine home ".cache"))))
+
+(defun (main)
+  ;; One of the systems the tests can run on, and only one.
+  (expect "one desktop system"
+          (count (filter (fun (b) b) (list (windows?) (linux?) (macos?) (freebsd?))))
+          1)
+
+  ;; The same answer as .NET's other way to ask.
+  (expect "windows?" (windows?) (runtime-says "WINDOWS"))
+  (expect "linux?" (linux?) (runtime-says "LINUX"))
+  (expect "macos?" (macos?) (runtime-says "OSX"))
+  (expect "freebsd?" (freebsd?) (runtime-says "FREEBSD"))
+
+  ;; By name, in any case.
+  (expect "os-platform? of linux" (os-platform? "linux") (linux?))
+  (expect "os-platform? of WINDOWS" (os-platform? "WINDOWS") (windows?))
+  (expect "os-platform? of macOS" (os-platform? "macOS") (macos?))
+  (expect "a name that is no system" (os-platform? "Plan 9") #f)
+
+  ;; Not on a desktop system.
+  (expect "android?" (android?) #f)
+  (expect "ios?" (ios?) #f)
+  (expect "mac-catalyst?" (mac-catalyst?) #f)
+  (expect "tvos?" (tvos?) #f)
+  (expect "watchos?" (watchos?) #f)
+  (expect "browser?" (browser?) #f)
+  (expect "wasi?" (wasi?) #f)
+
+  ;; Any version of the system is at least 0, and none is 99999.
+  (expect "windows at least 0" (windows-version-at-least? 0) (windows?))
+  (expect "macos at least 0" (macos-version-at-least? 0) (macos?))
+  (expect "freebsd at least 0" (freebsd-version-at-least? 0) (freebsd?))
+  (expect "android at least 0" (android-version-at-least? 0) (android?))
+  (expect "ios at least 0" (ios-version-at-least? 0) (ios?))
+  (expect "mac catalyst at least 0" (mac-catalyst-version-at-least? 0) (mac-catalyst?))
+  (expect "tvos at least 0" (tvos-version-at-least? 0) (tvos?))
+  (expect "watchos at least 0" (watchos-version-at-least? 0) (watchos?))
+  (expect "windows at least 99999" (windows-version-at-least? 99999) #f)
+  (expect "macos at least 99999" (macos-version-at-least? 99999) #f)
+  (expect "the keywords"
+          (windows-version-at-least? 0 #:minor 0 #:build 0 #:revision 0)
+          (windows?))
+  (expect "by name, at least 0" (os-platform-version-at-least? "linux" 0) (linux?))
+  (expect "by name, at least 99999" (os-platform-version-at-least? "linux" 99999) #f)
+  (expect "by name, the keywords"
+          (os-platform-version-at-least? "macos" 0 #:minor 0 #:build 0 #:revision 0)
+          (macos?))
+
+  (machine-and-process)
+  (folders))
