@@ -1,0 +1,49 @@
+;; A `choose` of two to four `wrap`s that is the whole argument of a `sync`
+;; is one `Cml.WrapChoose` event, with no `WrapEvent` and no `choose`.
+;; `select` expands to that form. A `choose` with a branch that is not a
+;; `wrap`, one that reaches `sync` through a variable, and one of five or
+;; more branches are left as they are.
+
+;; EXPECT-CS: sync\(Bjoml\.Cml\.WrapChoose<int, BjoString\.Utf8String, BjolangRuntime\.Result
+;; EXPECT-CS: syncdivblocking\(Bjoml\.Cml\.WrapChoose<int, int, int, int, BjoString\.Utf8String>
+;; EXPECT-CS: choose<BjoString\.Utf8String>\(wrap\(chansubrecv\(ints\)
+;; EXPECT-CS: choose<int>\(chansubrecv\(ints\), wrap\(
+;; EXPECT-CS: sync\(choose\(new Bjoml\.IEvent<int>\[\] \{ wrap\(chansubrecv\(ch\)
+
+(import (std prelude))
+
+;; Lowered: a select.
+(: (-> (Chan int) (Chan string) string))
+(defbjo (by-select ints strings)
+  (select
+    ((chan-recv ints) n (int->string n))
+    ((chan-recv strings) s s)))
+
+;; Lowered: four wraps under sync/blocking.
+(: (-> (Chan int) string))
+(defun (four ch)
+  (sync/blocking (choose (wrap (chan-recv ch) (fun (v) "a"))
+                         (wrap (chan-recv ch) (fun (v) "b"))
+                         (wrap (chan-recv ch) (fun (v) "c"))
+                         (wrap (chan-recv ch) (fun (v) "d")))))
+
+;; Not lowered: the event is a variable.
+(: (-> (Chan int) string))
+(defbjo (through-a-variable ints)
+  (def ev (choose (wrap (chan-recv ints) (fun (v) "x"))
+                  (wrap (chan-recv ints) (fun (v) "y"))))
+  (sync ev))
+
+;; Not lowered: one branch is not a wrap.
+(: (-> (Chan int) int))
+(defbjo (one-bare ints)
+  (sync (choose (chan-recv ints) (wrap (chan-recv ints) (fun (v) (+ v 1))))))
+
+;; Not lowered: five wraps.
+(: (-> (Chan int) int))
+(defbjo (five ch)
+  (sync (choose (wrap (chan-recv ch) (fun (v) 1))
+                (wrap (chan-recv ch) (fun (v) 2))
+                (wrap (chan-recv ch) (fun (v) 3))
+                (wrap (chan-recv ch) (fun (v) 4))
+                (wrap (chan-recv ch) (fun (v) 5)))))

@@ -3,6 +3,42 @@
 
 What each change guarantees, and what it leaves open.
 
+* A ~choose~ of ~wrap~ forms at a ~sync~ is one event, which keeps its sinks
+
+- Before, ~(sync (choose (wrap e0 f0) (wrap e1 f1)))~ made a ~WrapEvent~
+  per branch and the ~choose~ at each sync. Each branch that it published
+  also made a ~WrapSink~ and an ~Action~ delegate. That is about 280 B a
+  sync for two branches that park. ~select~ expands to this form.
+- Now the compiler emits it, with two to four branches, under ~sync~ or
+  ~sync/blocking~, as ~Cml.WrapChoose(e0, f0, e1, f1, ...)~
+  (~BjolangRuntime/Cml/WrapChoose.cs~).
+  - One event of 48, 64 or 80 B. Its sink and the sink's delegates are kept
+    on the pooled ~SyncState~ (~KeptSink~), and used again at the next root
+    publish of the same form. A publish below the root makes its own sink.
+  - The same meaning: publish order and rotation, event ids and nacks, and
+    the functions deferred to the syncing side, as ~WrapSink~ does.
+  - A branch of an old generation that still holds the sink's delegates
+    can not call them, by the generation rules of the pooled state.
+- Not lowered: a ~choose~ that reaches the ~sync~ through a name or a
+  function, one with a branch that is not a ~wrap~, and one of five or more
+  branches. These are as before.
+- After a sync that the token won, the kept sink holds that sync's
+  functions until the state's next root publish.
+- Tests: ~Cml/Tests/WrapChooseTests.cs~ (each arity, priority, a ~wrap~
+  inside a branch, a function that raises, a nack, two below the root, the
+  allocation of a warm sync, stale branches of many generations), and
+  ~TestFiles/codegen/wrap_choose.bjo~ for where the lowering applies and
+  where it does not.
+- Measured on ~bench/service~: one source in three versions on the same
+  compiler and runtime, run in turn, 10 runs each. With the ~choose~ bound
+  to a name (the old code) against the lowered ~choose~ and against
+  ~select~: all cores 1288 to 724 B a request, wall 226 to 199 ms, CPU
+  5010 to 4560 ms, 5 to 3 collections, p99 1.42 to 0.96 ms, p99.9 4.9 to
+  2.8 ms. 4 cores 1197 to 625 B, wall 387 to 344 ms, CPU 1520 to 1348 ms,
+  29 to 15 collections; p99 and p99.9 did not change past noise.
+  ~select~ is the same as the lowered ~choose~ within noise. The figures
+  are in ~design.md~, "A choose of wraps at a sync is one event".
+
 * ~select~ syncs on one of several events and runs that branch's body
 
 - Before, a choice between events was a ~choose~ of ~wrap~ forms that

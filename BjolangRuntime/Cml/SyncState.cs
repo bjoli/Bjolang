@@ -120,6 +120,20 @@ public class SyncState
     /// </summary>
     internal IWrapHost? WrapHost;
 
+    /// <summary>
+    /// The sinks of the <see cref="WrapChoose2{T0, T1, R}"/> (or the 3- or
+    /// 4-branch form) last published at the root of this state.
+    ///
+    /// - Kept across generations, so a warm sync of the same form makes no
+    ///   sink and no delegates.
+    /// - Only a root publish reads or writes it. One sync has one root, so
+    ///   one sync uses the kept sink at most once.
+    /// - A branch of an old generation that is still parked holds the sink's
+    ///   delegates. It can not call them: it loses every transition at a
+    ///   later generation.
+    /// </summary>
+    internal object? KeptSink;
+
     // B7 cleanup is deliberately NOT tracked here. SyncState used to remember every
     // channel a block parked in so that committing could drive cleanup, and that cost
     // 36 ns/op on Select/Choose — see the B7 section of BjolangRuntime/Cml/design.md. The trigger

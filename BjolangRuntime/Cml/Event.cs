@@ -183,6 +183,18 @@ public static class Cml
     public static IEvent<T> Choose<T>(params IEvent<T>[] events) => new ChooseEvent<T>(events);
     
     public static IEvent<U> Wrap<T, U>(IEvent<T> ev, Func<T, U> mapper) => new WrapEvent<T, U>(ev, mapper);
+
+    // `(sync (choose (wrap e0 f0) ...))`, as one event. See WrapChoose.cs.
+    public static IEvent<R> WrapChoose<T0, T1, R>(IEvent<T0> e0, Func<T0, R> f0, IEvent<T1> e1, Func<T1, R> f1) =>
+        new WrapChoose2<T0, T1, R>(e0, f0, e1, f1);
+
+    public static IEvent<R> WrapChoose<T0, T1, T2, R>(IEvent<T0> e0, Func<T0, R> f0, IEvent<T1> e1, Func<T1, R> f1,
+                                                      IEvent<T2> e2, Func<T2, R> f2) =>
+        new WrapChoose3<T0, T1, T2, R>(e0, f0, e1, f1, e2, f2);
+
+    public static IEvent<R> WrapChoose<T0, T1, T2, T3, R>(IEvent<T0> e0, Func<T0, R> f0, IEvent<T1> e1, Func<T1, R> f1,
+                                                          IEvent<T2> e2, Func<T2, R> f2, IEvent<T3> e3, Func<T3, R> f3) =>
+        new WrapChoose4<T0, T1, T2, T3, R>(e0, f0, e1, f1, e2, f2, e3, f3);
     
     public static IEvent<T> Guard<T>(Func<IEvent<T>> generator) => new GuardEvent<T>(generator);
     

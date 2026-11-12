@@ -2580,6 +2580,73 @@ striped waiters), and so is the compare-exchange. What a watched park
 costs now is recording the park and reading the token, which any design
 keeps. Not worth two protocols.
 
+
+### A choose of wraps at a sync is one event — kept
+
+`(sync (choose (wrap e0 f0) (wrap e1 f1)))` made, at each sync, a
+`WrapEvent` per branch and the `choose`. Then, for each branch it
+published, a `WrapSink` and the `Action` delegate of its `Commit`. The
+wrap functions themselves are static lambdas and cost nothing. That is
+about 280 B a sync for two branches that both park. "At a fixed rate"
+above found delegates to be about 20% of the bytes of `bench/service`.
+
+Now the compiler emits that form, with two to four branches, as
+`Cml.WrapChoose(e0, f0, e1, f1, ...)` (`WrapChoose.cs`). It is also what
+`select` expands to.
+
+- One event: `WrapChoose2`, `3` or `4`, of 48, 64 or 80 B.
+- Its sink, with a delegate per branch, is kept on the pooled `SyncState`
+  (`SyncState.KeptSink`) and used again at the state's next root publish
+  of the same form. A warm sync makes no sink and no delegate.
+- Only a root publish uses the kept sink, and one sync has one root. A
+  publish below the root makes a sink of its own.
+- A loser of an old generation that is still parked holds the sink's
+  delegates. It cannot call them, by the generation rules of the pooled
+  state.
+- Same meaning as before: the same publish order (and rotation under
+  `RandomizeChoice`), the same event ids, so the nacks fire as before, and
+  the functions are deferred to the syncing side as `WrapSink` defers
+  them.
+- The sink clears its functions and its continuation before it delivers.
+  After a sync that the token won, they stay until the state's next root
+  publish.
+
+Measured as one program in three versions, built by the same compiler on
+the same runtime. *base* binds the `choose` to a name before the `sync`,
+which the lowering does not see: that is the code from before. *choose*
+is `service.bjo` as it is, now lowered. *select* writes both of its
+choices with `select`. The three ran in turn, with the order turned each
+round. Each figure is the median over 10 runs (each run is the median of
+its 5 reps), and the paired difference against *base* has its quartiles:
+
+    all cores             base     choose   select   choose - base            select - base
+      wall ms             225.5    199.0    202.0    -24.0 [-26, -22]         -22.5 [-27, -18]
+      cpu ms              5010     4560     4589     -468 [-477, -419]        -396 [-454, -368]
+      B/request           1288     724      724      -565                     -564
+      p99 us              1425     962      929      -428 [-543, -261]        -458 [-576, -265]
+      p99.9 us            4910     2844     2578     -1968 [-2452, -1198]     -2276 [-2871, -691]
+      gcs / pause ms      5 / 13.5 3 / 7    3 / 7
+    4 cores
+      wall ms             387.0    344.0    350.0    -42.5 [-48, -37]         -36.0 [-38, -33]
+      cpu ms              1520     1348     1384     -171 [-182, -153]        -141 [-152, -134]
+      B/request           1197     625      626      -571                     -571
+      p99 us              2097     2204     2118     +82 [+17, +133]          +46 [-22, +69]
+      p99.9 us            3292     3236     3193     -51 [-163, +186]         -84 [-217, +168]
+      gcs / pause ms      29 / 22  15 / 11  15 / 11
+
+Each request syncs twice on a two-branch choice of wraps: the shard's
+receive and the client's reply with its timeout. That is the 565 B. On all
+cores, fewer collections are most of the gain in the tail. On four cores
+the tail is set by CPU, as "A service, against Go and Hopac" found, and
+p99 did not move past noise.
+
+A ping between two fibers, one of them in a loop over `select` on two
+channels: 147 ns and 281 B a handover before, 115 ns and 48 B after. The
+same loop over a `choose` of the two receives with no wraps is 93 ns and
+32 B. The rest of the gap is the deferred delivery of the function, on the
+syncing side. `cmlbench` has no `choose` of wraps at a sync and does not
+change.
+
 ---
 
 ## 6. Known issues

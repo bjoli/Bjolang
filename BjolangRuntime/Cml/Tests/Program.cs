@@ -34,6 +34,7 @@ public static class Program
         StmTests.RunAll();
         RandomTests.RunAll();
         PooledStateTests.RunAll();
+        WrapChooseTests.RunAll();
 
         return Harness.Report();
     }

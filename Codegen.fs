@@ -2478,6 +2478,29 @@ let rec private eventElement (t: HMType) : HMType option =
     | TMeta { Value = Some inner } -> eventElement inner
     | _ -> None
 
+/// The `choose` of two to four `wrap`s that is the whole argument of a `sync`:
+/// each branch's event and function, the element type of each event, and the
+/// element type of the `choose`. None when a branch is not a `wrap`.
+let private wrapChoice (ctx: CodegenContext) (args: TypedExpr list) : ((TypedExpr * TypedExpr) list * HMType list * HMType) option =
+    match args with
+    | [ { Node = TApply({ Node = TIdent(choose, _) }, [ { Node = TArrayMake items } ], []) } as chosen ] when
+        builtinNamed ctx choose = Some "choose" && items.Length >= 2 && items.Length <= 4
+        ->
+        let branch (item: TypedExpr) =
+            match item.Node with
+            | TApply({ Node = TIdent(wrap, _) }, [ ev; f ], []) when builtinNamed ctx wrap = Some "wrap" ->
+                eventElement ev.Type |> Option.map (fun element -> (ev, f), element)
+            | _ -> None
+
+        let branches = List.map branch items
+
+        match List.forall Option.isSome branches, eventElement chosen.Type with
+        | true, Some result ->
+            let found = List.choose id branches
+            Some(List.map fst found, List.map snd found, result)
+        | _ -> None
+    | _ -> None
+
 /// The `chan-send` call that is the whole argument of a `sync`: its callee,
 /// the channel and the value.
 let private directSend (ctx: CodegenContext) (args: TypedExpr list) : (TypedExpr * TypedExpr * TypedExpr) option =
@@ -4740,6 +4763,27 @@ and private generateApply
             emit ctx
 
         append ctx ")"
+
+    // `(sync (choose (wrap e0 f0) (wrap e1 f1)))`, with two to four branches,
+    // and the same under `sync/blocking`: one `WrapChoose` event in place of
+    // the `choose` and its `WrapEvent`s. The pooled sync state keeps its
+    // sinks, so a warm sync makes no `WrapSink` and no delegate. `select`
+    // expands to this form. The events and functions are evaluated in the
+    // order written, as before.
+    | TIdent (name, _) when
+        kwArgs.IsEmpty
+        && (builtinNamed ctx name = Some "sync" || builtinNamed ctx name = Some "sync/blocking")
+        && (wrapChoice ctx args).IsSome
+        ->
+        let branches, elements, result = (wrapChoice ctx args).Value
+        let typeArgs = elements @ [ result ] |> List.map typeArgToString |> String.concat ", "
+        let operands = branches |> List.collect (fun (ev, f) -> [ ev; f ])
+
+        let lowered =
+            { args.Head with
+                Node = TForeignStaticCall("Bjoml.Cml", $"WrapChoose<%s{typeArgs}>", operands, None) }
+
+        generateApply ctx expr target [ lowered ] []
 
     // `(sync (chan-send ch v))` is `(chan-put ch v)`: the same handover,
     // raced against the same token, without the send event that `sync` would
