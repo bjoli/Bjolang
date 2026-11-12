@@ -3,6 +3,32 @@
 
 What each change guarantees, and what it leaves open.
 
+* A write from a bjoroutine that needs no I/O does not suspend
+
+- Before, each ~OutputPorts~ write a bjoroutine calls (~write-string~,
+  ~writeln~, ~write-char~, ~write-bytes!~, ~flush-port~, ~shutdown!~) was an
+  ~async~ method that ran its state machine on every call, even when the
+  write only copied bytes into the buffer. ~BjoOutputPort.WriteTextLineAsync~
+  was one more, with four awaits. Reads already returned a completed
+  ~ValueTask~ when they could.
+- Now each wrapper returns a completed ~ValueTask~ when the port's operation
+  completed synchronously, and awaits it in a state machine only when it did
+  not.
+- ~WriteTextLineAsync~ and ~WriteScalarAsync~ first try the gate without
+  waiting (~TryPutNow~). When the bytes fit in the buffer and the buffer mode
+  does not make them go out, they are put there and nothing suspends.
+  Otherwise the suspending path runs as before. ~WriteScalarAsync~ no longer
+  allocates a 4-byte array for each character, only when it suspends.
+- ~TryPutNow~ does not raise. On a disposed or shut-down port it returns
+  false, and the suspending path raises as before.
+- A wrapper whose port call raises synchronously (~WriteBytesAsync~ on a
+  disposed port) now raises at the call instead of returning a faulted
+  ~ValueTask~. An awaiting caller sees the same exception at the same place.
+- Measured with ~bench/runtime-async/async-ports.bjo~ on .NET 10 (10
+  processes each side): ~writeln~ to a string port from 64.7 to 31.7 ns per
+  line, writing and reading a file from 87.4 to 64.6 ns per line.
+  ~read-line~ and the control case did not change.
+
 * A ~choose~ allocates no ~SyncState~: the state is pooled with its awaiter
 
 - Before, each sync that was not a single channel operation made a new
