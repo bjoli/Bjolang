@@ -385,19 +385,11 @@ let shadowedBy (identity: FileIdentity) (file: string) : PackageRoot option =
 /// compiled program installs probes exactly these directories, and because the
 /// compiler reflects on them at type-check time to resolve `import/class` and
 /// `import/extern`.
-///
-/// The three collection assemblies carry a `Bjo` prefix that their namespaces
-/// do not: `Set.Set<T>` lives in `BjoSet.dll`.
-///
-/// Körtidens assemblies heter efter sin fil, modulerna efter sin katalog
-/// (`Naming.assemblyName`). `Set` och `(std set)` är därför två namn, inte ett
-/// som förr — assemblynamn jämförs utan hänsyn till skiftläge.
 let private runtimeAssemblyNames =
     [ "BjolangRuntime"
       "Collections"
       "SchemeList"
       "Map"
-      "BjoSet"
       "BjoString"
       "BjoRx" ]
 

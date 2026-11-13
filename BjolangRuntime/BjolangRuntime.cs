@@ -862,7 +862,7 @@ public static partial class BjolangRuntime {
     // `next` returns advanced. See `VecCursor<T>`.
     //
     // The collections with a project of their own carry their own cursor —
-    // `Map.MapCursor`, `Set.SetCursor` — and bind to it through `import/class`.
+    // `Map.MapCursor` — and bind to it through `import/class`.
     // This one is here because `Vec`'s type is a builtin.
 
     /// <summary>

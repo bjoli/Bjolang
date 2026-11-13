@@ -11,7 +11,18 @@
 ;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
 
 ;; std/hashset.bjo — the unordered hash set.
-;; CHAMP trie of elements.
+;;
+;; A CHAMP trie: a node holds up to 32 slots, picked by 5 bits of the
+;; element's hash at its depth. A slot holds an element or a child.
+;;
+;; - The nodes are C# classes in BjolangRuntime/HashTries/Set, one class for
+;;   each size, so that a node is one object. `NodeOps` does the operations
+;;   on one node. This module does everything that spans nodes.
+;; - A leaf holds only elements. A branch holds elements and children. A
+;;   collision node holds elements whose full hashes are equal.
+;; - A child is never a leaf of one element: removal puts such an element in
+;;   the parent's slot. The empty set is the empty leaf.
+;; - A transient owns the nodes it copied, and edits those in place.
 
 (export
   ;; The types.
@@ -21,6 +32,7 @@
   hashset-empty hashset-add hashset-add-all hashset-remove hashset-remove-all
   hashset-contains? hashset-length hashset-empty? hashset-clear hashset-union
   hashset-map hashset-filter hashset-fold hashset-for-each hashset-iter hashset-any? hashset-find
+  hashset-split
   ;; Conversions
   list->hashset hashset->list vec->hashset hashset->vec seq->hashset hashset->seq
   hashset->str
@@ -37,191 +49,1046 @@
 
 (:doc #:file "hashset.bjodoc")
 
-;; The types.
 (import/class
-  ((HashSet %a) (: Set.Set))
-  ((HashSetBuilder %a) (: Set.SetBuilder))
-  ((TransientHashSet %a) (: Set.TransientSet))
-  ((HashSetCursor %a) (: Set.SetCursor))
+  ((Node %a) (: Bjolang.Runtime.HashTries.SetNodes.Node))
   ;; What a set compares its elements with. See `eq-comparer`.
   ((EqualityComparer %a) (: System.Collections.Generic.IEqualityComparer)))
+
+(import/extern
+  (owner-next     (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.OwnerNext     (-> long)))
+  (empty-node     (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Empty         (-> (Node %a))))
+  (node-kind      (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Kind          (-> (Node %a) int)))
+  (node-size      (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Size          (-> (Node %a) int)))
+  (child-count    (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.ChildCount    (-> (Node %a) int)))
+  (element        (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Element       (-> (Node %a) int %a)))
+  (child          (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Child         (-> (Node %a) int (Node %a))))
+  (element-map    (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.ElementMap    (-> (Node %a) int)))
+  (child-map      (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.ChildMap      (-> (Node %a) int)))
+  (collision-hash (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.CollisionHash (-> (Node %a) int)))
+  (same-node?     (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Same          (-> (Node %a) (Node %a) bool)))
+  (fragment       (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Fragment      (-> int int int)))
+  (hash-of        (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Hash          (-> (EqualityComparer %a) %a int)))
+  (same-element?  (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Equal         (-> (EqualityComparer %a) %a %a bool)))
+  (same-comparer? (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.SameComparer  (-> (EqualityComparer %a) (EqualityComparer %a) bool)))
+  (probe          (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Probe         (-> (Node %a) %a int int (EqualityComparer %a) int)))
+  (element-at     (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.ElementAt     (-> (Node %a) int int %a)))
+  (with-element   (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.WithElement   (-> (Node %a) %a int int long (Node %a))))
+  (with-subtree   (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.WithSubtree   (-> (Node %a) int int (Node %a) long (Node %a))))
+  (with-child     (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.WithChild     (-> (Node %a) int (Node %a) long (Node %a))))
+  (leaf-of-one    (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Single        (-> %a int int long (Node %a))))
+  (leaf-of-two    (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Pair          (-> %a int %a int int long (Node %a))))
+  (branch-around  (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Wrap          (-> (Node %a) int int long (Node %a))))
+  (branch-of-two  (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Fork          (-> %a int (Node %a) int int long (Node %a))))
+  (collision-of-two (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Collision   (-> %a %a int long (Node %a))))
+  (without-element (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.WithoutElement
+                      (-> (Node %a) %a int int (EqualityComparer %a) long (Node %a))))
+  (without-child  (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.WithoutChild  (-> (Node %a) int int int long (Node %a))))
+  (with-child-inlined (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.WithChildInlined
+                         (-> (Node %a) int %a int int long (Node %a))))
+  (assemble       (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.Assemble
+                     (-> int (Array %a) int (Array (Node %a)) int long (Node %a))))
+  (collision-of   (: Bjolang.Runtime.HashTries.SetNodes.NodeOps.CollisionOf   (-> (Array %a) int int long (Node %a)))))
+
+;; The kinds `node-kind` returns.
+(def leaf-kind 0)
+(def collision-kind 2)
+
+;; The owner of the nodes no transient owns. They are never edited in place.
+(: no-owner long)
+(def no-owner 0)
+
+(: (-> (Node %a) bool))
+(defun (leaf? n) (= (node-kind n) leaf-kind))
+
+(: (-> (Node %a) bool))
+(defun (collision? n) (= (node-kind n) collision-kind))
+
+;; The elements under `n`. Nodes hold no counts, so this visits every node.
+(: (-> (Node %a) int))
+(defun (count-under n)
+  (loop (:for i (range 0 (child-count n)))
+        (:acc c (folding (node-size n) (+ c (count-under (child n i)))))
+        => c))
 
 ;; ---------------------------------------------------------------------------
 ;; The set
 ;; ---------------------------------------------------------------------------
 
-(import/extern
-  (clr-hashset-empty  (: Set.SetModule.Empty          (-> (EqualityComparer %a) (HashSet %a))))
-  (clr-hashset-comparer (: Set.SetModule.Comparer     (-> (HashSet %a) (EqualityComparer %a))))
-  (hashset-add        (: Set.SetModule.Add            (-> (HashSet %a) %a (HashSet %a))))
-  (hashset-add-all    (: Set.SetModule.AddRange       (-> (HashSet %a) (Seq %a) (HashSet %a))))
-  (hashset-remove     (: Set.SetModule.Remove         (-> (HashSet %a) %a (HashSet %a))))
-  (hashset-remove-all (: Set.SetModule.RemoveRange    (-> (HashSet %a) (Seq %a) (HashSet %a))))
-  (hashset-contains?  (: Set.SetModule.Contains       (-> (HashSet %a) %a bool)))
-  (hashset-length     (: Set.SetModule.Count          (-> (HashSet %a) int)))
-  (hashset-empty?     (: Set.SetModule.IsEmpty        (-> (HashSet %a) bool)))
-  (hashset-clear      (: Set.SetModule.Clear          (-> (HashSet %a) (HashSet %a))))
-  ;; The union.
-  (hashset-union      (: Set.SetModule.Merge          (-> (HashSet %a) (HashSet %a) (HashSet %a))))
-  (clr-hashset-map    (: Set.SetModule.Map            (-> (-> %a %b) (HashSet %a) (EqualityComparer %b) (HashSet %b))))
-  (clr-hashset-filter (: Set.SetModule.Filter         (-> (-> %a bool) (HashSet %a) (HashSet %a))))
-  (clr-hashset-fold   (: Set.SetModule.Fold           (-> (-> %a %s %s) %s (HashSet %a) %s)))
-  (clr-hashset-iter   (: Set.SetModule.Iter           (-> (-> %a bool) (HashSet %a) bool)))
-  (hashset-any?       (: Set.SetModule.Exists         (-> (-> %a bool) (HashSet %a) bool)))
-  ;; The first element satisfying `pred`, as an `Option`.
-  (hashset-find       (: Set.SetModule.TryFindKey     (-> (-> %a bool) (HashSet %a) (out %a) (Option %a))))
-  (clr-seq->hashset   (: Set.SetModule.FromEnumerable (-> (Seq %a) (EqualityComparer %a) (HashSet %a))))
-  (hashset->seq       (: Set.SetModule.AsEnumerable   (-> (HashSet %a) (Seq %a))))
-  (hashset-cursor          (: Set.SetModule.Cursor        (-> (HashSet %a) (HashSetCursor %a))))
-  (hashset-cursor-done?    (: Set.SetModule.CursorDone    (-> (HashSetCursor %a) bool)))
-  (hashset-cursor-current  (: Set.SetModule.CursorCurrent (-> (HashSetCursor %a) %a)))
-  (hashset-cursor-next     (: Set.SetModule.CursorNext    (-> (HashSetCursor %a) (HashSetCursor %a)))))
+;; - `count` is -1 for a part made by `hashset-split` until it is first asked
+;;   for, so that the part counts itself in its own fiber. It is written at
+;;   most once, with the same value by every thread that writes it.
+(type (: (HashSet %a) #:opaque
+         (Record (: root (Node %a))
+                 (: count int #:mutable)
+                 (: comparer (EqualityComparer %a)))))
 
-;; ---------------------------------------------------------------------------
-;; Builders
-;; ---------------------------------------------------------------------------
-
-
-(import/extern
-  (clr-hashsetbuilder-empty (: Set.SetBuilderModule.Empty    (-> (EqualityComparer %a) (HashSetBuilder %a))))
-  (hashset->hashsetbuilder      (: Set.SetBuilderModule.FromSet  (-> (HashSet %a) (HashSetBuilder %a))))
-  (hashsetbuilder-add!      (: Set.SetBuilderModule.Add      (-> (HashSetBuilder %a) %a void)))
-  (hashsetbuilder-add-all!  (: Set.SetBuilderModule.AddRange (-> (HashSetBuilder %a) (Seq %a) void)))
-  (hashsetbuilder-length    (: Set.SetBuilderModule.Count    (-> (HashSetBuilder %a) int)))
-  (hashsetbuilder->hashset      (: Set.SetBuilderModule.Build    (-> (HashSetBuilder %a) (HashSet %a))))
-
-  ;; --- Transients ---
-  (clr-transienthashset-empty    (: Set.TransientSetModule.Empty          (-> (EqualityComparer %a) (TransientHashSet %a))))
-  (hashset->transienthashset         (: Set.TransientSetModule.FromPersistent (-> (HashSet %a) (TransientHashSet %a))))
-  (transienthashset->hashset         (: Set.TransientSetModule.ToPersistent   (-> (TransientHashSet %a) (HashSet %a))))
-  (transienthashset-add!         (: Set.TransientSetModule.Add            (-> (TransientHashSet %a) %a void)))
-  (transienthashset-add-all!     (: Set.TransientSetModule.AddRange       (-> (TransientHashSet %a) (Seq %a) void)))
-  (transienthashset-remove!      (: Set.TransientSetModule.Remove         (-> (TransientHashSet %a) %a void)))
-  (transienthashset-remove-all!  (: Set.TransientSetModule.RemoveRange    (-> (TransientHashSet %a) (Seq %a) void)))
-  (transienthashset-contains?    (: Set.TransientSetModule.Contains       (-> (TransientHashSet %a) %a bool)))
-  (transienthashset-length       (: Set.TransientSetModule.Count          (-> (TransientHashSet %a) int)))
-  (transienthashset-empty?       (: Set.TransientSetModule.IsEmpty        (-> (TransientHashSet %a) bool))))
-
-;; ---------------------------------------------------------------------------
-;; Where a set comes from
-;; ---------------------------------------------------------------------------
+(: (-> (EqualityComparer %a) (HashSet %a)))
+(defun (empty-with cmp) (HashSet (root (empty-node)) (count 0) (comparer cmp)))
 
 ;; What makes a set out of nothing asks for the element's Eq, and the set
 ;; compares elements with it — the same answer `=` gives, also for two cases of
 ;; a union that `=` equates. One made from a set keeps that set's.
 (: (-> (HashSet %a)) (where (Eq %a)))
-(defun (hashset-empty) (clr-hashset-empty (eq-comparer)))
+(defun (hashset-empty) (empty-with (eq-comparer)))
 
-(: (-> (Seq %a) (HashSet %a)) (where (Eq %a)))
-(defun (seq->hashset xs) (clr-seq->hashset xs (eq-comparer)))
+;; An empty set that compares elements as `s` does.
+(: (-> (HashSet %a) (HashSet %a)))
+(defun (hashset-clear s) (empty-with (.comparer s)))
 
-(: (-> (HashSetBuilder %a)) (where (Eq %a)))
-(defun (hashsetbuilder-empty) (clr-hashsetbuilder-empty (eq-comparer)))
+(: (-> (HashSet %a) int))
+(defun (hashset-length s)
+  (def n (.count s))
+  (if (>= n 0)
+      n
+      (begin
+        (def counted (count-under (.root s)))
+        (record-set! s (count counted))
+        counted)))
+
+(: (-> (HashSet %a) bool))
+(defun (hashset-empty? s) (= (hashset-length s) 0))
+
+;; ---------------------------------------------------------------------------
+;; Lookup
+;; ---------------------------------------------------------------------------
+
+(: (-> (Node %a) %a int int (EqualityComparer %a) bool))
+(defun (contains-in? n x h shift cmp)
+  (def c (probe n x h shift cmp))
+  (if (>= c 0)
+      (contains-in? (child n c) x h (+ shift 5) cmp)
+      (= c -1)))
+
+(: (-> (HashSet %a) %a bool))
+(defun (hashset-contains? s x)
+  (def cmp (.comparer s))
+  (contains-in? (.root s) x (hash-of cmp x) 0 cmp))
+
+;; ---------------------------------------------------------------------------
+;; Add and remove
+;; ---------------------------------------------------------------------------
+
+;; A node at `shift` of the two different elements `a` and `b`: a leaf if
+;; their fragments differ there, a collision node if their hashes are equal,
+;; else a branch around the node one level down.
+(: (-> %a int %a int int long (Node %a)))
+(defun (join a ha b hb shift owner)
+  (cond
+    ((= ha hb) (collision-of-two a b ha owner))
+    ((= (fragment ha shift) (fragment hb shift))
+     (branch-around (join a ha b hb (+ shift 5) owner) ha shift owner))
+    (else (leaf-of-two a ha b hb shift owner))))
+
+;; The collision node `col`, at `shift`, and `x`, whose hash differs from its
+;; elements' hash, under one node at `shift`.
+(: (-> (Node %a) %a int int long (Node %a)))
+(defun (split-collision col x hx shift owner)
+  (def hc (collision-hash col))
+  (if (= (fragment hc shift) (fragment hx shift))
+      (branch-around (split-collision col x hx (+ shift 5) owner) hc shift owner)
+      (branch-of-two x hx col hc shift owner)))
+
+;; Adds `x` to the subtree `n` at `shift`. Returns the new subtree, and
+;; whether `x` is new. An equal element already there is kept, and `n`
+;; itself returned.
+(: (-> (Node %a) %a int int (EqualityComparer %a) long (Tuple (Node %a) bool)))
+(defun (insert n x h shift cmp owner)
+  (def c (probe n x h shift cmp))
+  (cond
+    ((>= c 0)
+     (def ch (child n c))
+     (def (Tuple r added?) (insert ch x h (+ shift 5) cmp owner))
+     (Tuple (if (same-node? r ch) n (with-child n c r owner)) added?))
+    ((= c -1) (Tuple n #f))
+    ((= c -2) (Tuple (with-element n x h shift owner) #t))
+    ((collision? n) (Tuple (split-collision n x h shift owner) #t))
+    (else
+     (def y (element-at n h shift))
+     (Tuple (with-subtree n h shift (join y (hash-of cmp y) x h (+ shift 5) owner) owner) #t))))
+
+;; Removes the element equal to `x` from the subtree `n` at `shift`. Returns
+;; the new subtree, and whether there was one. A child left empty is
+;; dropped, and a child left with one element is put in its parent's slot.
+(: (-> (Node %a) %a int int (EqualityComparer %a) long (Tuple (Node %a) bool)))
+(defun (delete n x h shift cmp owner)
+  (def c (probe n x h shift cmp))
+  (cond
+    ((= c -1) (Tuple (without-element n x h shift cmp owner) #t))
+    ((< c 0) (Tuple n #f))
+    (else
+     (def ch (child n c))
+     (def (Tuple r removed?) (delete ch x h (+ shift 5) cmp owner))
+     (cond
+       ((not removed?) (Tuple n #f))
+       ((and (leaf? r) (= (node-size r) 0)) (Tuple (without-child n c h shift owner) #t))
+       ((and (leaf? r) (= (node-size r) 1)) (Tuple (with-child-inlined n c (element r 0) h shift owner) #t))
+       ((same-node? r ch) (Tuple n #t))
+       (else (Tuple (with-child n c r owner) #t))))))
+
+(: (-> (HashSet %a) %a (HashSet %a)))
+(defun (hashset-add s x)
+  (def cmp (.comparer s))
+  (def (Tuple r added?) (insert (.root s) x (hash-of cmp x) 0 cmp no-owner))
+  (if added?
+      (HashSet (root r) (count (+ (hashset-length s) 1)) (comparer cmp))
+      s))
+
+(: (-> (HashSet %a) %a (HashSet %a)))
+(defun (hashset-remove s x)
+  (def cmp (.comparer s))
+  (def (Tuple r removed?) (delete (.root s) x (hash-of cmp x) 0 cmp no-owner))
+  (if removed?
+      (HashSet (root r) (count (- (hashset-length s) 1)) (comparer cmp))
+      s))
+
+(: (-> (HashSet %a) (Seq %a) (HashSet %a)))
+(defun (hashset-add-all s xs)
+  (def t (hashset->transienthashset s))
+  (transienthashset-add-all! t xs)
+  (transienthashset->hashset t))
+
+(: (-> (HashSet %a) (Seq %a) (HashSet %a)))
+(defun (hashset-remove-all s xs)
+  (def t (hashset->transienthashset s))
+  (transienthashset-remove-all! t xs)
+  (transienthashset->hashset t))
+
+;; ---------------------------------------------------------------------------
+;; Transients
+;; ---------------------------------------------------------------------------
+
+;; A set that edits in place the nodes it copied.
+;; `transienthashset->hashset` returns a set of its contents and gives it a
+;; new owner, so that the set does not change after.
+(type (: (TransientHashSet %a) #:opaque
+         (Record (: root (Node %a) #:mutable)
+                 (: count int #:mutable)
+                 (: owner long #:mutable)
+                 (: comparer (EqualityComparer %a)))))
 
 (: (-> (TransientHashSet %a)) (where (Eq %a)))
-(defun (transienthashset-empty) (clr-transienthashset-empty (eq-comparer)))
+(defun (transienthashset-empty) (hashset->transienthashset (hashset-empty)))
+
+(: (-> (HashSet %a) (TransientHashSet %a)))
+(defun (hashset->transienthashset s)
+  (TransientHashSet (root (.root s)) (count (hashset-length s)) (owner (owner-next)) (comparer (.comparer s))))
+
+(: (-> (TransientHashSet %a) (HashSet %a)))
+(defun (transienthashset->hashset t)
+  (record-set! t (owner (owner-next)))
+  (HashSet (root (.root t)) (count (.count t)) (comparer (.comparer t))))
+
+(: (-> (TransientHashSet %a) %a void))
+(defun (transienthashset-add! t x)
+  (def cmp (.comparer t))
+  (def (Tuple r added?) (insert (.root t) x (hash-of cmp x) 0 cmp (.owner t)))
+  (record-set! t (root r))
+  (when added? (record-set! t (count (+ (.count t) 1)))))
+
+(: (-> (TransientHashSet %a) %a void))
+(defun (transienthashset-remove! t x)
+  (def cmp (.comparer t))
+  (def (Tuple r removed?) (delete (.root t) x (hash-of cmp x) 0 cmp (.owner t)))
+  (when removed? (record-set! t (root r) (count (- (.count t) 1)))))
+
+(: (-> (TransientHashSet %a) (Seq %a) void))
+(defun (transienthashset-add-all! t xs)
+  (loop (:for x xs) (:do (transienthashset-add! t x))))
+
+(: (-> (TransientHashSet %a) (Seq %a) void))
+(defun (transienthashset-remove-all! t xs)
+  (loop (:for x xs) (:do (transienthashset-remove! t x))))
+
+(: (-> (TransientHashSet %a) %a bool))
+(defun (transienthashset-contains? t x)
+  (def cmp (.comparer t))
+  (contains-in? (.root t) x (hash-of cmp x) 0 cmp))
+
+(: (-> (TransientHashSet %a) int))
+(defun (transienthashset-length t) (.count t))
+
+(: (-> (TransientHashSet %a) bool))
+(defun (transienthashset-empty? t) (= (.count t) 0))
 
 ;; ---------------------------------------------------------------------------
-;; Sets, where the callback may suspend
+;; Cursors
 ;; ---------------------------------------------------------------------------
 
-(: (-> (-?-> %a %b) (HashSet %a) (HashSet %b)) (where (Eq %b)))
-(defbjouble (hashset-map f s)
-  (#:sync (clr-hashset-map f s (eq-comparer)))
-  (#:bjo
-    (def b (hashsetbuilder-empty))
-    (let go ((c (hashset-cursor s)))
-      (cond
-        ((hashset-cursor-done? c) (hashsetbuilder->hashset b))
-        (else
-          (hashsetbuilder-add! b (f (hashset-cursor-current c)))
-          (go (hashset-cursor-next c)))))))
+;; A position in an iteration of a set, a struct, so that an iteration
+;; allocates nothing. The elements come in the trie's order: a node's own
+;; elements, then those under its children, in order.
+;;
+;; - The cursor is on element `i` of `node`, of `end` elements.
+;; - `path` is the child index at each level above `node`, 5 bits a level
+;;   above the low 4 bits, which hold the depth of `node`. `last-run` marks a
+;;   node with no elements after it: a root that is a leaf.
+;; - At the end of a node, `advance` follows `path` from the root again.
+(type (: (HashSetCursor %a) #:opaque
+         (Struct (: node (Node %a))
+                 (: i int)
+                 (: end int)
+                 (: root (Node %a))
+                 (: path long))))
 
-(: (-> (-?-> %a bool) (HashSet %a) (HashSet %a)))
-(defbjouble (hashset-filter keep? s)
-  (#:sync (clr-hashset-filter keep? s))
-  (#:bjo
-    (def b (clr-hashsetbuilder-empty (clr-hashset-comparer s)))
-    (let go ((c (hashset-cursor s)))
-      (cond
-        ((hashset-cursor-done? c) (hashsetbuilder->hashset b))
-        (else
-          (def x (hashset-cursor-current c))
-          (when (keep? x)
-            (hashsetbuilder-add! b x))
-          (go (hashset-cursor-next c)))))))
+(def depth-bits 4)
+(def index-bits 5)
+(: last-run long)
+(def last-run -1)
 
+(: (-> long int int))
+(defun (index-at path level)
+  (cast System.Int32 (bitwise-and (shift-right-logical path (+ depth-bits (* index-bits level))) 31)))
+
+;; `path` with the index `index` at `level`, and the depth `depth`.
+(: (-> long int int int long))
+(defun (path-to path level index depth)
+  (def shift (+ depth-bits (* index-bits level)))
+  (def (: mask long) (bitwise-ior (shift-left 31 shift) 15))
+  (bitwise-ior (bitwise-and path (bitwise-not mask))
+               (shift-left (cast System.Int64 index) shift)
+               (cast System.Int64 depth)))
+
+(: (-> (Node %a) (HashSetCursor %a)))
+(defun (cursor-of root)
+  (if (leaf? root)
+      (HashSetCursor (node root) (i 0) (end (node-size root)) (root root) (path last-run))
+      (enter root root 0)))
+
+;; The cursor on the first element of `n`, at `path`, or after it if it has
+;; none.
+(: (-> (Node %a) (Node %a) long (HashSetCursor %a)))
+(defun (enter n root path)
+  (def size (node-size n))
+  (if (> size 0)
+      (HashSetCursor (node n) (i 0) (end size) (root root) (path path))
+      (advance root path)))
+
+;; The cursor on the first element after the node at `path`: under its first
+;; child, else under the next sibling of it or of its nearest ancestor that
+;; has one. A done cursor if there is none.
+(: (-> (Node %a) long (HashSetCursor %a)))
+(defun (advance root path)
+  (def depth (cast System.Int32 (bitwise-and path 15)))
+  ;; The deepest level whose child index can move right, and its node.
+  (def/mutable level -1)
+  (def/mutable parent root)
+  (def/mutable n root)
+  (loop (:for d (range 0 depth))
+        (:do (def i (index-at path d))
+             (when (< (+ i 1) (child-count n))
+               (set! level d)
+               (set! parent n))
+             (set! n (child n i))))
+  (cond
+    ((> (child-count n) 0) (enter (child n 0) root (path-to path depth 0 (+ depth 1))))
+    ((>= level 0)
+     (def next (+ (index-at path level) 1))
+     (enter (child parent next) root (path-to path level next (+ level 1))))
+    (else (HashSetCursor (node root) (i 0) (end 0) (root root) (path last-run)))))
+
+(: (-> (HashSetCursor %a) bool))
+(defun (cursor-done? c) (>= (.i c) (.end c)))
+
+(: (-> (HashSetCursor %a) %a))
+(defun (cursor-element c) (element (.node c) (.i c)))
+
+(: (-> (HashSetCursor %a) (HashSetCursor %a)))
+(defun (cursor-step c)
+  (def i (+ (.i c) 1))
+  (if (or (< i (.end c)) (= (.path c) last-run))
+      (record-set c (i i))
+      (advance (.root c) (.path c))))
+
+(impl (Iterable (HashSet %a))
+  (type %elem %a)
+  (type %cursor (HashSetCursor %a))
+  (defun (iterable-start s) (cursor-of (.root s)))
+  (defun (iterable-done? s c) (cursor-done? c))
+  (defun (iterable-current s c) (cursor-element c))
+  (defun (iterable-next s c) (cursor-step c))
+  (defun (count s) (hashset-length s)))
+
+;; ---------------------------------------------------------------------------
+;; Iteration and rebuilding
+;; ---------------------------------------------------------------------------
+
+;; Folds `f` over the elements in the trie's order. Recursive over the trie,
+;; which reads each node once.
 (: (-> (-?-> %a %s %s) %s (HashSet %a) %s))
-(defbjouble (hashset-fold f init s)
-  (#:sync (clr-hashset-fold f init s))
-  (#:bjo
-    ;; `f` before the step, as in `map-fold`.
-    (let go ((acc init) (c (hashset-cursor s)))
-      (if (hashset-cursor-done? c)
-          acc
-          (go (f (hashset-cursor-current c) acc) (hashset-cursor-next c))))))
+(defun (hashset-fold f init s) (fold-node f init (.root s)))
+
+(: (-> (-?-> %a %s %s) %s (Node %a) %s))
+(defun (fold-node f acc n)
+  (def own (loop (:for i (range 0 (node-size n)))
+                 (:acc s (folding acc (f (element n i) s)))
+                 => s))
+  (loop (:for i (range 0 (child-count n)))
+        (:acc s (folding own (fold-node f s (child n i))))
+        => s))
+
+(: (-> (-?-> %a void) (HashSet %a) void))
+(defun (hashset-for-each f s)
+  (loop (:for x s) (:do (f x))))
+
+;; Calls `f` until it returns #f. Returns whether it never did.
+(: (-> (-?-> %a bool) (HashSet %a) bool))
+(defun (hashset-iter f s)
+  (let go ((c (cursor-of (.root s))))
+    (cond
+      ((cursor-done? c) #t)
+      ((f (cursor-element c)) (go (cursor-step c)))
+      (else #f))))
 
 (: (-> (-?-> %a bool) (HashSet %a) bool))
-(defbjouble (hashset-iter f s)
-  (#:sync (clr-hashset-iter f s))
-  (#:bjo
-    (let go ((c (hashset-cursor s)))
-      (cond ((hashset-cursor-done? c) #t)
-            ((f (hashset-cursor-current c)) (go (hashset-cursor-next c)))
-            (else #f)))))
+(defun (hashset-any? pred s)
+  (let go ((c (cursor-of (.root s))))
+    (cond
+      ((cursor-done? c) #f)
+      ((pred (cursor-element c)) #t)
+      (else (go (cursor-step c))))))
+
+;; The first element in the trie's order that `pred` accepts.
+(: (-> (-?-> %a bool) (HashSet %a) (Option %a)))
+(defun (hashset-find pred s)
+  (let go ((c (cursor-of (.root s))))
+    (cond
+      ((cursor-done? c) None)
+      (:def x (cursor-element c))
+      ((pred x) (Some x))
+      (else (go (cursor-step c))))))
+
+;; `f` of each element, compared by `%b`'s Eq.
+(: (-> (-?-> %a %b) (HashSet %a) (HashSet %b)) (where (Eq %b)))
+(defun (hashset-map f s)
+  (def b (builder-with (eq-comparer) (max 16 (hashset-length s))))
+  (loop (:for x s) (:do (hashsetbuilder-add! b (f x))))
+  (hashsetbuilder->hashset b))
+
+;; The elements `keep?` accepts. Returns `s` when it accepts every element.
+(: (-> (-?-> %a bool) (HashSet %a) (HashSet %a)))
+(defun (hashset-filter keep? s)
+  (def b (builder-with (.comparer s) (max 16 (hashset-length s))))
+  (loop (:for x s) (:do (when (keep? x) (hashsetbuilder-add! b x))))
+  (if (= (.count b) (hashset-length s)) s (hashsetbuilder->hashset b)))
+
+;; ---------------------------------------------------------------------------
+;; Union
+;; ---------------------------------------------------------------------------
+
+(: (-> int int bool))
+(defun (has? map bit) (not (= (bitwise-and map bit) 0)))
+
+;; The levels of leaves and branches: shifts 0 to 30. Below them are only
+;; collision nodes.
+(def levels 7)
+
+;; The union of the subtrees `a` and `b`, both at `shift`. Of two equal
+;; elements the one in `a` is kept. Returns the union, and how many elements
+;; of `b` are in `a`. Returns `a` itself when `b` adds nothing to it.
+;; - `xs` and `kids` hold 32 slots for each level, where a node at that level
+;;   gathers its elements and children.
+(: (-> (EqualityComparer %a) (Node %a) (Node %a) int (Array %a) (Array (Node %a)) (Tuple (Node %a) int)))
+(defun (union-of cmp a b shift xs kids)
+  (cond
+    ((same-node? a b) (Tuple a (count-under a)))
+    ((collision? a) (union-collision cmp a b shift))
+    ((collision? b) (union-into-collision cmp a b shift))
+    (else (union-nodes cmp a b shift xs kids))))
+
+;; The union of the collision node `a` and the node `b`.
+(: (-> (EqualityComparer %a) (Node %a) (Node %a) int (Tuple (Node %a) int)))
+(defun (union-collision cmp a b shift)
+  (def h (collision-hash a))
+  (cond
+    ((and (collision? b) (= (collision-hash b) h))
+     (loop (:for i (range 0 (node-size b)))
+           (:acc r (folding (Tuple a 0)
+                            (begin
+                              (def (Tuple n o) r)
+                              (def y (element b i))
+                              (if (contains-in? n y h shift cmp)
+                                  (Tuple n (+ o 1))
+                                  (Tuple (with-element n y h shift no-owner) o)))))
+           => r))
+    ((and (leaf? b) (= (node-size b) 1))
+     (def y (element b 0))
+     (def hy (hash-of cmp y))
+     (cond
+       ((not (= hy h)) (Tuple (split-collision a y hy shift no-owner) 0))
+       ((contains-in? a y h shift cmp) (Tuple a 1))
+       (else (Tuple (with-element a y h shift no-owner) 0))))
+    (else
+     ;; The elements of `a` into `b`, each replacing an equal one in `b`.
+     (loop (:for i (range 0 (node-size a)))
+           (:acc r (folding (Tuple b 0)
+                            (begin
+                              (def (Tuple n o) r)
+                              (def x (element a i))
+                              (def (Tuple without removed?) (delete n x h shift cmp no-owner))
+                              (def (Tuple added-to _) (insert without x h shift cmp no-owner))
+                              (Tuple added-to (if removed? (+ o 1) o)))))
+           => r))))
+
+;; The union of the leaf or branch `a` and the collision node `b`.
+(: (-> (EqualityComparer %a) (Node %a) (Node %a) int (Tuple (Node %a) int)))
+(defun (union-into-collision cmp a b shift)
+  (def h (collision-hash b))
+  (if (and (leaf? a) (= (node-size a) 1))
+      (begin
+        (def x (element a 0))
+        (def hx (hash-of cmp x))
+        (cond
+          ((not (= hx h)) (Tuple (split-collision b x hx shift no-owner) 0))
+          ((contains-in? b x h shift cmp)
+           (def n (node-size b))
+           (def (: xs (Array %a)) (make-array n))
+           (loop (:for i (range 0 n))
+                 (:do (def y (element b i))
+                      (array-set! xs i (if (same-element? cmp x y) x y))))
+           (Tuple (collision-of xs n h no-owner) 1))
+          (else (Tuple (with-element b x h shift no-owner) 0))))
+      ;; Insert keeps an equal element of `a`.
+      (loop (:for i (range 0 (node-size b)))
+            (:acc r (folding (Tuple a 0)
+                             (begin
+                               (def (Tuple n o) r)
+                               (def (Tuple added-to added?) (insert n (element b i) h shift cmp no-owner))
+                               (Tuple added-to (if added? o (+ o 1))))))
+            => r)))
+
+;; The union of two leaves or branches, slot by slot.
+(: (-> (EqualityComparer %a) (Node %a) (Node %a) int (Array %a) (Array (Node %a)) (Tuple (Node %a) int)))
+(defun (union-nodes cmp a b shift xs kids)
+  (def ea (element-map a))
+  (def ca (child-map a))
+  (def eb (element-map b))
+  (def cb (child-map b))
+  (def down (+ shift 5))
+  (def base (* 32 (/ shift 5)))
+  (def/mutable ia 0)
+  (def/mutable ja 0)
+  (def/mutable ib 0)
+  (def/mutable jb 0)
+  ;; The next free slots of this level in `xs` and `kids`.
+  (def/mutable ne base)
+  (def/mutable nk base)
+  (def/mutable em 0)
+  (def/mutable cm 0)
+  (def/mutable changed? #f)
+  (def/mutable overlap 0)
+  ;; The occupied slots, lowest first.
+  (def/mutable m (bitwise-ior (bitwise-ior ea ca) (bitwise-ior eb cb)))
+  (loop (:while (not (= m 0)))
+        (:do (def bit (bitwise-and m (- 0 m)))
+             (set! m (bitwise-xor m bit))
+             (def ea? (has? ea bit))
+             (def ca? (has? ca bit))
+             (def eb? (has? eb bit))
+             (def cb? (has? cb bit))
+             (cond
+               ((and ea? eb?)
+                (def x (element a ia))
+                (def y (element b ib))
+                (if (same-element? cmp x y)
+                    (begin (set! overlap (+ overlap 1))
+                           (array-set! xs ne x) (set! ne (+ ne 1)) (set! em (bitwise-ior em bit)))
+                    (begin
+                      (set! changed? #t)
+                      (array-set! kids nk (join x (hash-of cmp x) y (hash-of cmp y) down no-owner))
+                      (set! nk (+ nk 1))
+                      (set! cm (bitwise-ior cm bit)))))
+               ((or ca? cb?)
+                ;; A child on either side, and a child or an element on the other.
+                (def left (cond (ca? (child a ja))
+                                (ea? (begin (def x (element a ia)) (leaf-of-one x (hash-of cmp x) down no-owner)))
+                                (else (child b jb))))
+                (def right (cond (cb? (child b jb))
+                                 (eb? (begin (def y (element b ib)) (leaf-of-one y (hash-of cmp y) down no-owner)))
+                                 (else left)))
+                (def (Tuple n o)
+                  (if (and (or ca? ea?) (or cb? eb?))
+                      (union-of cmp left right down xs kids)
+                      (Tuple left 0)))
+                (set! overlap (+ overlap o))
+                (unless (and ca? (same-node? n (child a ja))) (set! changed? #t))
+                (array-set! kids nk n)
+                (set! nk (+ nk 1))
+                (set! cm (bitwise-ior cm bit)))
+               (ea? (array-set! xs ne (element a ia)) (set! ne (+ ne 1)) (set! em (bitwise-ior em bit)))
+               (eb? (set! changed? #t)
+                    (array-set! xs ne (element b ib)) (set! ne (+ ne 1)) (set! em (bitwise-ior em bit)))
+               (else unit))
+             (when ea? (set! ia (+ ia 1)))
+             (when ca? (set! ja (+ ja 1)))
+             (when eb? (set! ib (+ ib 1)))
+             (when cb? (set! jb (+ jb 1)))))
+  (if changed?
+      (Tuple (assemble em xs cm kids base no-owner) overlap)
+      (Tuple a overlap)))
+
+
+
+;; The elements of `s` and of `other`. Of two equal elements the one in `s`
+;; is kept, and the union compares elements as `s` does. Two sets that
+;; compare alike share the nodes that only one of them has.
+(: (-> (HashSet %a) (HashSet %a) (HashSet %a)))
+(defun (hashset-union s other)
+  (def cmp (.comparer s))
+  (cond
+    ((hashset-empty? other) s)
+    ((not (same-comparer? cmp (.comparer other)))
+     (def t (hashset->transienthashset s))
+     (loop (:for x other) (:do (transienthashset-add! t x)))
+     (transienthashset->hashset t))
+    ((hashset-empty? s) other)
+    (else
+     (def (Tuple r overlap) (union-of cmp (.root s) (.root other) 0 (make-array (* 32 levels)) (make-array (* 32 levels))))
+     (cond
+       ((same-node? r (.root s)) s)
+       ((same-node? r (.root other)) other)
+       (else (HashSet (root r)
+                      (count (- (+ (hashset-length s) (hashset-length other)) overlap))
+                      (comparer cmp)))))))
+
+;; ---------------------------------------------------------------------------
+;; Builders
+;; ---------------------------------------------------------------------------
+
+;; Elements added with their hashes, made into a trie at the end by sorting
+;; them on 5 bits of hash a level.
+(type (: (HashSetBuilder %a) #:opaque
+         (Record (: hashes (Array int) #:mutable)
+                 (: elements (Array %a) #:mutable)
+                 (: count int #:mutable)
+                 (: comparer (EqualityComparer %a)))))
+
+(: (-> (EqualityComparer %a) int (HashSetBuilder %a)))
+(defun (builder-with cmp capacity)
+  (HashSetBuilder (hashes (make-array capacity)) (elements (make-array capacity)) (count 0) (comparer cmp)))
+
+(: (-> (HashSetBuilder %a)) (where (Eq %a)))
+(defun (hashsetbuilder-empty) (builder-with (eq-comparer) 16))
+
+;; A builder that holds the elements of `s`.
+(: (-> (HashSet %a) (HashSetBuilder %a)))
+(defun (hashset->hashsetbuilder s)
+  (def b (builder-with (.comparer s) (max 16 (hashset-length s))))
+  (loop (:for x s) (:do (hashsetbuilder-add! b x)))
+  b)
+
+(: (-> (HashSetBuilder %a) %a void))
+(defun (hashsetbuilder-add! b x)
+  (def n (.count b))
+  (when (= n (array-length (.elements b)))
+    (record-set! b (hashes (array-resize (.hashes b) (* 2 n))) (elements (array-resize (.elements b) (* 2 n)))))
+  (array-set! (.hashes b) n (hash-of (.comparer b) x))
+  (array-set! (.elements b) n x)
+  (record-set! b (count (+ n 1))))
+
+(: (-> (HashSetBuilder %a) (Seq %a) void))
+(defun (hashsetbuilder-add-all! b xs)
+  (loop (:for x xs) (:do (hashsetbuilder-add! b x))))
+
+;; The number of elements added, an element added twice counted twice.
+(: (-> (HashSetBuilder %a) int))
+(defun (hashsetbuilder-length b) (.count b))
+
+(: (-> (Array int) int int bool))
+(defun (one-hash? hs from n)
+  (def h (array-ref hs from))
+  (loop (:for i (range (+ from 1) (+ from n)))
+        (:acc ok (folding #t (and ok (= (array-ref hs i) h))))
+        => ok))
+
+;; The distinct elements of `xs` from `from`, `n` of them, into the start of
+;; `out`. Of equal elements the last one is kept. Returns how many.
+(: (-> (EqualityComparer %a) (Array %a) int int (Array %a) int))
+(defun (distinct-into cmp xs from n out)
+  (def/mutable k 0)
+  (loop (:for i (range from (+ from n)))
+        (:do (def x (array-ref xs i))
+             (def at (let find ((j 0))
+                       (cond ((= j k) -1)
+                             ((same-element? cmp (array-ref out j) x) j)
+                             (else (find (+ j 1))))))
+             (if (< at 0)
+                 (begin (array-set! out k x) (set! k (+ k 1)))
+                 (array-set! out at x))))
+  k)
+
+;; Groups this small are sorted in place by insertion rather than counted
+;; into 32 buckets.
+(def small-group 12)
+
+;; Where `build-node` sorts and gathers: 32 slots for each level.
+(type (: (BuildScratch %a) #:opaque
+         (Record (: counts (Array int))
+                 (: starts (Array int))
+                 (: ends (Array int))
+                 (: own (Array %a))
+                 (: kids (Array (Node %a))))))
+
+;; The node at `shift` of the `n` entries of `hs` and `xs` from `from`, which
+;; have at least two hashes. Sorts them into `to-hs` and `to-xs` on the
+;; fragment at `shift`, and builds each group's child from there, with the
+;; arrays swapped. Returns the node and how many elements it holds.
+(: (-> (EqualityComparer %a) (Array int) (Array %a) (Array int) (Array %a) int int int (BuildScratch %a)
+       (Tuple (Node %a) int)))
+(defun (build-node cmp hs xs to-hs to-xs from n shift sc)
+  (if (<= n small-group)
+      (build-small cmp hs xs to-hs to-xs from n shift sc)
+      (build-sorted cmp hs xs to-hs to-xs from n shift sc)))
+
+;; `build-node` for a small group: sorts it in place on the fragment at
+;; `shift`, then takes its runs of one fragment in order.
+(: (-> (EqualityComparer %a) (Array int) (Array %a) (Array int) (Array %a) int int int (BuildScratch %a)
+       (Tuple (Node %a) int)))
+(defun (build-small cmp hs xs to-hs to-xs from n shift sc)
+  (def end (+ from n))
+  (loop (:for i (range (+ from 1) end))
+        (:do (def h (array-ref hs i))
+             (def x (array-ref xs i))
+             (def f (fragment h shift))
+             (def/mutable j i)
+             (loop (:while (and (> j from) (> (fragment (array-ref hs (- j 1)) shift) f)))
+                   (:do (array-set! hs j (array-ref hs (- j 1)))
+                        (array-set! xs j (array-ref xs (- j 1)))
+                        (set! j (- j 1))))
+             (array-set! hs j h)
+             (array-set! xs j x)))
+  (def base (* 32 (/ shift 5)))
+  (def own (.own sc))
+  (def kids (.kids sc))
+  (def/mutable ne base)
+  (def/mutable nk base)
+  (def/mutable em 0)
+  (def/mutable cm 0)
+  (def/mutable total 0)
+  (def/mutable i from)
+  (loop (:while (< i end))
+        (:do (def f (fragment (array-ref hs i) shift))
+             (def/mutable j (+ i 1))
+             (loop (:while (and (< j end) (= (fragment (array-ref hs j) shift) f))) (:do (set! j (+ j 1))))
+             (def c (- j i))
+             (def bit (shift-left 1 f))
+             (cond
+               ((= c 1)
+                (set! total (+ total 1))
+                (array-set! own ne (array-ref xs i))
+                (set! ne (+ ne 1))
+                (set! em (bitwise-ior em bit)))
+               ((one-hash? hs i c)
+                (def (: group (Array %a)) (make-array c))
+                (def k (distinct-into cmp xs i c group))
+                (set! total (+ total k))
+                (if (= k 1)
+                    (begin (array-set! own ne (array-ref group 0)) (set! ne (+ ne 1)) (set! em (bitwise-ior em bit)))
+                    (begin (array-set! kids nk (collision-of group k (array-ref hs i) no-owner))
+                           (set! nk (+ nk 1))
+                           (set! cm (bitwise-ior cm bit)))))
+               (else
+                (def (Tuple kid k) (build-node cmp hs xs to-hs to-xs i c (+ shift 5) sc))
+                (set! total (+ total k))
+                (array-set! kids nk kid)
+                (set! nk (+ nk 1))
+                (set! cm (bitwise-ior cm bit))))
+             (set! i j)))
+  (Tuple (assemble em own cm kids base no-owner) total))
+
+;; `build-node` for a big group: counts it into 32 buckets on the fragment
+;; at `shift` and moves it into `to-hs` and `to-xs` by bucket.
+(: (-> (EqualityComparer %a) (Array int) (Array %a) (Array int) (Array %a) int int int (BuildScratch %a)
+       (Tuple (Node %a) int)))
+(defun (build-sorted cmp hs xs to-hs to-xs from n shift sc)
+  (def base (* 32 (/ shift 5)))
+  (def counts (.counts sc))
+  (def starts (.starts sc))
+  (def ends (.ends sc))
+  (def own (.own sc))
+  (def kids (.kids sc))
+  (loop (:for f (range base (+ base 32))) (:do (array-set! counts f 0)))
+  (loop (:for i (range from (+ from n)))
+        (:do (def f (+ base (fragment (array-ref hs i) shift)))
+             (array-set! counts f (+ (array-ref counts f) 1))))
+  (def/mutable o from)
+  (loop (:for f (range base (+ base 32)))
+        (:do (array-set! starts f o)
+             (array-set! ends f o)
+             (set! o (+ o (array-ref counts f)))))
+  (loop (:for i (range from (+ from n)))
+        (:do (def f (+ base (fragment (array-ref hs i) shift)))
+             (def p (array-ref ends f))
+             (array-set! to-hs p (array-ref hs i))
+             (array-set! to-xs p (array-ref xs i))
+             (array-set! ends f (+ p 1))))
+  (def/mutable ne base)
+  (def/mutable nk base)
+  (def/mutable em 0)
+  (def/mutable cm 0)
+  (def/mutable total 0)
+  (loop (:for f (range 0 32))
+        (:do (def c (array-ref counts (+ base f)))
+             (def s (array-ref starts (+ base f)))
+             (def bit (shift-left 1 f))
+             (cond
+               ((= c 0) unit)
+               ((= c 1)
+                (set! total (+ total 1))
+                (array-set! own ne (array-ref to-xs s))
+                (set! ne (+ ne 1))
+                (set! em (bitwise-ior em bit)))
+               ((one-hash? to-hs s c)
+                (def (: group (Array %a)) (make-array c))
+                (def k (distinct-into cmp to-xs s c group))
+                (set! total (+ total k))
+                (if (= k 1)
+                    (begin (array-set! own ne (array-ref group 0)) (set! ne (+ ne 1)) (set! em (bitwise-ior em bit)))
+                    (begin (array-set! kids nk (collision-of group k (array-ref to-hs s) no-owner))
+                           (set! nk (+ nk 1))
+                           (set! cm (bitwise-ior cm bit)))))
+               (else
+                (def (Tuple kid k) (build-node cmp to-hs to-xs hs xs s c (+ shift 5) sc))
+                (set! total (+ total k))
+                (array-set! kids nk kid)
+                (set! nk (+ nk 1))
+                (set! cm (bitwise-ior cm bit))))))
+  (Tuple (assemble em own cm kids base no-owner) total))
+
+(: (-> (HashSetBuilder %a) (HashSet %a)))
+(defun (hashsetbuilder->hashset b)
+  (def cmp (.comparer b))
+  (def n (.count b))
+  (def hs (.hashes b))
+  (def xs (.elements b))
+  (cond
+    ((= n 0) (empty-with cmp))
+    ((one-hash? hs 0 n)
+     (def (: group (Array %a)) (make-array n))
+     (def k (distinct-into cmp xs 0 n group))
+     (def h (array-ref hs 0))
+     (HashSet (root (if (= k 1) (leaf-of-one (array-ref group 0) h 0 no-owner) (collision-of group k h no-owner)))
+              (count k)
+              (comparer cmp)))
+    (else
+     ;; The build reorders the builder's entries, which leaves the builder
+     ;; holding the same elements.
+     (def sc (BuildScratch (counts (make-array (* 32 levels))) (starts (make-array (* 32 levels)))
+                           (ends (make-array (* 32 levels))) (own (make-array (* 32 levels)))
+                           (kids (make-array (* 32 levels)))))
+     (def (Tuple root k) (build-node cmp hs xs (make-array n) (make-array n) 0 n 0 sc))
+     (HashSet (root root) (count k) (comparer cmp)))))
+
+;; ---------------------------------------------------------------------------
+;; Splitting
+;; ---------------------------------------------------------------------------
+
+;; A slot of some node, for `hashset-split`: an element, or a child.
+;; - `path` holds the fragments of the nodes above, 5 bits a level, the
+;;   root's lowest. `depth` is the level of the node; 0 is the root.
+;; - `node` is the child, or the node that holds the element.
+;; - `index` is the element's index in `node`, or -1 for a child.
+(type (: (SplitUnit %a) #:opaque
+         (Struct (: path long)
+                 (: node (Node %a))
+                 (: depth int)
+                 (: bit int)
+                 (: index int))))
+
+(: (-> (SplitUnit %a) bool))
+(defun (unit-element? u) (>= (.index u) 0))
+
+;; Whether the unit is a leaf or a branch, which can be replaced by its slots.
+(: (-> (SplitUnit %a) bool))
+(defun (expands? u) (and (not (unit-element? u)) (not (collision? (.node u)))))
+
+;; The slots of `n`, at `depth` under `path`, onto `out`: its elements, then
+;; its children, as iteration has them.
+(: (-> (Node %a) int long (ListBuilder (SplitUnit %a)) void))
+(defun (add-units n depth path out)
+  (def/mutable m (element-map n))
+  (def/mutable i 0)
+  (loop (:while (not (= m 0)))
+        (:do (listbuilder-add! out (SplitUnit (path path) (node n) (depth depth) (bit (trailing-zero-count m)) (index i)))
+             (set! i (+ i 1))
+             (set! m (bitwise-and m (- m 1)))))
+  (set! m (child-map n))
+  (set! i 0)
+  (loop (:while (not (= m 0)))
+        (:do (listbuilder-add! out (SplitUnit (path path) (node (child n i)) (depth depth) (bit (trailing-zero-count m)) (index -1)))
+             (set! i (+ i 1))
+             (set! m (bitwise-and m (- m 1))))))
+
+(: (-> int int))
+(defun (trailing-zero-count m)
+  (let go ((m m) (k 0)) (if (= (bitwise-and m 1) 1) k (go (shift-right-logical m 1) (+ k 1)))))
+
+;; The node at `depth` for the units from `from` below `to`, which all lie
+;; at or below it on one path. A node of one element and no child, below the
+;; root, is returned as a leaf of it with #t, for the parent's slot, as
+;; removal would put it.
+(: (-> (Array (SplitUnit %a)) int int int (Tuple (Node %a) bool)))
+(defun (build-part units from to depth)
+  (def (: own (Array %a)) (make-array 32))
+  (def (: kids (Array (Node %a))) (make-array 32))
+  ;; The slots by fragment first, then packed in fragment order.
+  (def (: by-bit-x (Array %a)) (make-array 32))
+  (def (: by-bit-n (Array (Node %a))) (make-array 32))
+  (def/mutable em 0)
+  (def/mutable cm 0)
+  (let go ((i from))
+    (when (< i to)
+      (def u (array-ref units i))
+      (if (= (.depth u) depth)
+          (begin
+            (if (unit-element? u)
+                (begin (array-set! by-bit-x (.bit u) (element (.node u) (.index u)))
+                       (set! em (bitwise-ior em (shift-left 1 (.bit u)))))
+                (begin (array-set! by-bit-n (.bit u) (.node u))
+                       (set! cm (bitwise-ior cm (shift-left 1 (.bit u))))))
+            (go (+ i 1)))
+          (begin
+            (def f (fragment-of (.path u) depth))
+            (def j (let scan ((j (+ i 1)))
+                     (if (and (< j to)
+                              (> (.depth (array-ref units j)) depth)
+                              (= (fragment-of (.path (array-ref units j)) depth) f))
+                         (scan (+ j 1))
+                         j)))
+            (def (Tuple piece inline?) (build-part units i j (+ depth 1)))
+            (if inline?
+                (begin (array-set! by-bit-x f (element piece 0))
+                       (set! em (bitwise-ior em (shift-left 1 f))))
+                (begin (array-set! by-bit-n f piece)
+                       (set! cm (bitwise-ior cm (shift-left 1 f)))))
+            (go j)))))
+  (def/mutable ne 0)
+  (def/mutable nk 0)
+  (loop (:for f (range 0 32))
+        (:do (def bit (shift-left 1 f))
+             (when (has? em bit) (array-set! own ne (array-ref by-bit-x f)) (set! ne (+ ne 1)))
+             (when (has? cm bit) (array-set! kids nk (array-ref by-bit-n f)) (set! nk (+ nk 1)))))
+  (def n (assemble em own cm kids 0 no-owner))
+  (Tuple n (and (> depth 0) (= cm 0) (= ne 1))))
+
+(: (-> (ListBuilder %a) (Array %a)))
+(defun (array-of b) (loop (:for x (listbuilder->list b)) (:acc (arraying x))))
+
+(: (-> long int int))
+(defun (fragment-of path depth)
+  (cast System.Int32 (bitwise-and (shift-right-logical path (* 5 depth)) 31)))
+
+;; About `k` sets that together hold each element of `s` once, for work on
+;; them at the same time. They share the nodes of `s`; only the nodes on the
+;; way down to a cut are new.
+;;
+;; - The units are the slots of the root. While a child holds more than
+;;   count / k elements on average, every leaf and branch child is replaced
+;;   by its own slots. A collision node stays one unit, of its known size.
+;; - The parts are runs of units, cut where the running weight passes
+;;   i * count / k. Hashes that are not spread make parts of different
+;;   sizes, not wrong ones.
+;; - A part's count is not known until it is first asked for.
+(: (-> (HashSet %a) int (Array (HashSet %a))))
+(defun (hashset-split s k)
+  (def size (hashset-length s))
+  (def root (.root s))
+  (def cmp (.comparer s))
+  (if (or (<= k 1) (<= size 1) (collision? root))
+      (vec->array [s])
+      (begin
+        (def target (/ (cast double size) (cast double k)))
+        (def (: units-of-root (ListBuilder (SplitUnit %a))) (listbuilder-empty))
+        (add-units root 0 0 units-of-root)
+        (: child-weight (-> (Array (SplitUnit %a)) (Tuple double int)))
+        (defun (child-weight us)
+          (def/mutable rest size)
+          (def/mutable children 0)
+          (loop (:for u us)
+                (:do (cond ((unit-element? u) (set! rest (- rest 1)))
+                           ((collision? (.node u)) (set! rest (- rest (node-size (.node u)))))
+                           (else (set! children (+ children 1))))))
+          (Tuple (if (= children 0) 0.0 (max 1.0 (/ (cast double rest) (cast double children)))) children))
+        (def (Tuple units weight)
+          (let expand ((us (array-of units-of-root)))
+            (def (Tuple w children) (child-weight us))
+            (if (or (<= w target) (= children 0))
+                (Tuple us w)
+                (begin
+                  (def out (listbuilder-empty))
+                  (loop (:for u us)
+                        (:do (if (expands? u)
+                                 (add-units (.node u) (+ (.depth u) 1)
+                                            (bitwise-ior (.path u) (shift-left (cast System.Int64 (.bit u)) (* 5 (.depth u))))
+                                            out)
+                                 (listbuilder-add! out u))))
+                  (expand (array-of out))))))
+        (def weights (loop (:for u units)
+                           (:acc (arraying (cond ((unit-element? u) 1.0)
+                                                 ((collision? (.node u)) (cast double (node-size (.node u))))
+                                                 (else weight))))))
+        (def total (loop (:for w weights) (:acc (summing w))))
+        (def n (array-length units))
+        (def parts (min k n))
+        (def out (listbuilder-empty))
+        (def/mutable made 0)
+        (def/mutable start 0)
+        (def/mutable done 0.0)
+        (loop (:for j (range 0 n))
+              (:do (set! done (+ done (array-ref weights j)))
+                   (when (or (= j (- n 1))
+                             (and (< made (- parts 1))
+                                  (>= done (/ (* total (cast double (+ made 1))) (cast double parts)))))
+                     (def (Tuple part _) (build-part units start (+ j 1) 0))
+                     (listbuilder-add! out (HashSet (root part) (count -1) (comparer cmp)))
+                     (set! made (+ made 1))
+                     (set! start (+ j 1)))))
+        (array-of out))))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions
 ;; ---------------------------------------------------------------------------
 
+(: (-> (Seq %a) (HashSet %a)) (where (Eq %a)))
+(defun (seq->hashset xs)
+  (def b (hashsetbuilder-empty))
+  (hashsetbuilder-add-all! b xs)
+  (hashsetbuilder->hashset b))
+
+(: (-> (HashSet %a) (Seq %a)))
+(defun (hashset->seq s) (->seq s))
 
 (: (-> (List %a) (HashSet %a)) (where (Eq %a)))
-(defun (list->hashset xs) (seq->hashset (list->seq xs)))
+(defun (list->hashset xs) (loop (:for x xs) (:acc (hash-setting x))))
 
 (: (-> (HashSet %a) (List %a)))
-(defun (hashset->list s) (->list (hashset->seq s)))
+(defun (hashset->list s) (->list s))
 
 (: (-> (Vec %a) (HashSet %a)) (where (Eq %a)))
-(defun (vec->hashset v) (seq->hashset (vec->seq v)))
+(defun (vec->hashset v) (loop (:for x v) (:acc (hash-setting x))))
 
 (: (-> (HashSet %a) (Vec %a)))
-(defun (hashset->vec s) (->vec (hashset->seq s)))
+(defun (hashset->vec s) (->vec s))
 
 ;; ---------------------------------------------------------------------------
 ;; The traits
 ;; ---------------------------------------------------------------------------
+
 (impl (Refable (HashSet %a))
   (type %index %a)
   (type %out bool)
   (defun (ref set key)
     (hashset-contains? set key)))
+
 (impl (Refable (TransientHashSet %a))
   (type %index %a)
   (type %out bool)
   (defun (ref set key)
     (transienthashset-contains? set key)))
-(impl (Iterable (HashSet %a))
-  (type %elem %a)
-  (type %cursor (HashSetCursor %a))
-  (defun (iterable-start s) (hashset-cursor s))
-  (defun (iterable-done? s c) (hashset-cursor-done? c))
-  (defun (iterable-current s c) (hashset-cursor-current c))
-  (defun (iterable-next s c) (hashset-cursor-next c)))
-
-(: (-> (-?-> %a void) (HashSet %a) void))
-(defun (hashset-for-each f s)
-  (let go ((c (hashset-cursor s)))
-    (cond
-      ((hashset-cursor-done? c) unit)
-      (else
-        (f (hashset-cursor-current c))
-        (go (hashset-cursor-next c))))))
 
 (impl (Collection (HashSet %a))
   (type %content %a)
   (defun (length s) (hashset-length s))
   (defun (empty? s) (hashset-empty? s)))
-
 
 (type (: (HashSetting %a) (Union hash-setting)))
 

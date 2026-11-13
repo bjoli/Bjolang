@@ -17,9 +17,10 @@
   (reference """
     @code{(HashSet a)} is an immutable, persistent hash set. Updates return a
     new set sharing untouched subtrees with the original. Implemented as a CHAMP
-    trie (Compressed Hash-Array Mapped Prefix-tree, runtime class
-    @code{Set.Set}), serving as the set counterpart to the prelude's persistent
-    @code{Map}.
+    trie (Compressed Hash-Array Mapped Prefix-tree), serving as the set
+    counterpart to the prelude's persistent @code{Map}. The trie is written in
+    Bjolang; its fixed-size nodes are C# classes in
+    @code{Bjolang.Runtime.HashTries.SetNodes}.
 
     @strong{Element equality.} Constructors (@code{hashset-empty},
     @code{seq->hashset}, @code{list->hashset}, @code{vec->hashset},
@@ -198,6 +199,21 @@
     are equal, the element from @code{s} is retained. When both sets share
     identical comparers and ancestral subtrees, untouched branches are shared
     directly without per-element traversal.
+    """))
+
+(:doc hashset-split
+  (summary "Splits a set into about @code{k} sets that together hold each element once.")
+  (arg s "The set to split.")
+  (arg k "How many parts to aim for.")
+  (returns "An array of at most @code{k} sets, or of @code{s} alone.")
+  (see hashset-union)
+  (reference """
+    The parts share the nodes of @code{s}; only the nodes above a cut are
+    new. Cuts follow the trie, so parts have about equal sizes when hashes
+    are spread, and different sizes when they are not. A part counts its
+    elements the first time its length is asked for. Returns @code{s} alone
+    when @code{k} is at most 1, @code{s} holds at most one element, or all
+    elements share one hash. @code{(std parallel)} uses it to divide work.
     """))
 
 (:doc hashset-map

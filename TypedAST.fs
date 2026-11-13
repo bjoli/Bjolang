@@ -777,8 +777,8 @@ type ClrClassInfo =
       /// The alias's type parameters, for a .NET *generic* type.
       ///
       /// Empty for an ordinary class. Non-empty, the alias is registered as a
-      /// type constructor of this arity rather than as a type: `(Set %a)` means
-      /// `Set.Set<T_a>`, and `Set` written bare is an arity error like any
+      /// type constructor of this arity rather than as a type: `(Stack %a)` means
+      /// `Stack<T_a>`, and `Stack` written bare is an arity error like any
       /// other.
       TypeParams: string list
       /// The declared constructor signature, if one was written. It is checked

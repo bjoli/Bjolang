@@ -1,0 +1,200 @@
+;; The hash trie of (std hashset), against a reference: an array of whether
+;; each number below a bound is in the set.
+;;
+;; - Four element types: ints, and records whose hashes all collide in
+;;   groups, share their low 20 bits, or collide for some elements only. They
+;;   make collision nodes, long chains of one-child branches, and both.
+;; - Random adds and removes, with phases that mostly remove, so that slots
+;;   become children and children collapse into their parents' slots. A set
+;;   from an earlier phase must not change.
+;; - Transients, builders, union, map, filter and splitting.
+
+(import (std prelude))
+(import (std hashset))
+(import (std random))
+(import (std simpletest))
+
+;; Elements whose hashes collide in groups of eight.
+(type (: Clash (Record (: n int))))
+(impl (Eq Clash)
+  (defun (= a b) (= (.n a) (.n b)))
+  (defun (eq-hash a) (/ (.n a) 8)))
+
+;; Elements whose hashes are equal in their low 20 bits.
+(type (: Deep (Record (: n int))))
+(impl (Eq Deep)
+  (defun (= a b) (= (.n a) (.n b)))
+  (defun (eq-hash a) (shift-left (.n a) 20)))
+
+;; Elements whose hashes collide for the odd numbers only.
+(type (: SomeClash (Record (: n int))))
+(impl (Eq SomeClash)
+  (defun (= a b) (= (.n a) (.n b)))
+  (defun (eq-hash a) (if (= (% (.n a) 2) 0) (.n a) (% (.n a) 16))))
+
+;; How to make an element of a number, and get the number back.
+(type (: (Codec %k) (Record (: of (-> int %k)) (: back (-> %k int)))))
+
+;; Whether `s` holds what `ref` holds, by every reader.
+(: (-> (Codec %k) (HashSet %k) (Array bool) bool) (where (Eq %k)))
+(defun (same? c s ref)
+  (def n (array-length ref))
+  (def expected (loop (:for b ref) (:acc (summing (if b 1 0)))))
+  (def (: seen (Array bool)) (make-array n #:fill #f))
+  (def/mutable ok #t)
+  (loop (:for x s)
+        (:do (def i ((.back c) x))
+             (when (or (< i 0) (>= i n) (not (array-ref ref i)) (array-ref seen i)) (set! ok #f))
+             (when (and (>= i 0) (< i n)) (array-set! seen i #t))))
+  (and ok
+       (= (hashset-length s) expected)
+       (= (list-length (hashset->list s)) expected)
+       (= (hashset-fold (fun (x acc) (+ acc 1)) 0 s) expected)
+       (= (hashset-empty? s) (= expected 0))
+       (loop (:for i (range 0 n))
+             (:acc all (folding #t (and all (= (hashset-contains? s ((.of c) i)) (array-ref ref i)))))
+             => all)))
+
+(: (-> (Array bool) (Array bool)))
+(defun (copy-ref ref) (loop (:for x ref) (:acc (arraying x))))
+
+;; `steps` random adds and removes of numbers below `keys`. In odd phases of
+;; `phase` steps, two steps in three remove. Checks every 997 steps, at the
+;; end, and that the set of the first phase did not change.
+(: (-> (Codec %k) int int int int bool) (where (Eq %k)))
+(defun (random-mix? c seed steps keys phase)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def (: ref (Array bool)) (make-array keys #:fill #f))
+  (def/mutable (: kept (HashSet %k)) (hashset-empty))
+  (def/mutable kept-ref (copy-ref ref))
+  (let go ((i 0) (s (hashset-empty)))
+    (cond
+      ((= i steps) (and (same? c s ref) (same? c kept kept-ref)))
+      ((and (= (% i 997) 0) (not (same? c s ref))) #f)
+      (else
+       (when (= i phase) (set! kept s) (set! kept-ref (copy-ref ref)))
+       (def k (random-int 0 (- keys 1) #:rng rng))
+       (def shrink? (= (% (/ i phase) 2) 1))
+       (if (< (random-int 0 3 #:rng rng) (if shrink? 2 1))
+           (begin (array-set! ref k #f) (go (+ i 1) (hashset-remove s ((.of c) k))))
+           (begin (array-set! ref k #t) (go (+ i 1) (hashset-add s ((.of c) k)))))))))
+
+;; Random add! and remove! on a transient, and a set taken from it halfway
+;; that the edits after must not change. Then removes everything.
+(: (-> (Codec %k) int int int bool) (where (Eq %k)))
+(defun (transient-mix? c seed steps keys)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def (: ref (Array bool)) (make-array keys #:fill #f))
+  (def (: t (TransientHashSet %k)) (transienthashset-empty))
+  (def/mutable (: half (HashSet %k)) (hashset-empty))
+  (def/mutable half-ref (copy-ref ref))
+  (loop (:for i (range 0 steps))
+        (:do (when (= i (/ steps 2))
+               (set! half (transienthashset->hashset t))
+               (set! half-ref (copy-ref ref)))
+             (def k (random-int 0 (- keys 1) #:rng rng))
+             (if (< (random-int 0 3 #:rng rng) 1)
+                 (begin (array-set! ref k #f) (transienthashset-remove! t ((.of c) k)))
+                 (begin (array-set! ref k #t) (transienthashset-add! t ((.of c) k))))))
+  (def full (transienthashset->hashset t))
+  (def ok (and (same? c full ref)
+               (same? c half half-ref)
+               (= (transienthashset-length t) (hashset-length full))))
+  (loop (:for i (range 0 keys)) (:do (transienthashset-remove! t ((.of c) i))))
+  (and ok
+       (transienthashset-empty? t)
+       (hashset-empty? (transienthashset->hashset t))
+       (same? c full ref)))
+
+;; The numbers below `keys` that `rng` picks in `n` tries, and the set of
+;; them through a builder.
+(: (-> (Codec %k) RandomSource int int (Tuple (HashSet %k) (Array bool))) (where (Eq %k)))
+(defun (random-set c rng n keys)
+  (def (: ref (Array bool)) (make-array keys #:fill #f))
+  (def b (hashsetbuilder-empty))
+  (loop (:for _i (range 0 n))
+        (:do (def k (random-int 0 (- keys 1) #:rng rng))
+             (array-set! ref k #t)
+             (hashsetbuilder-add! b ((.of c) k))))
+  (Tuple (hashsetbuilder->hashset b) ref))
+
+(: (-> (Codec %k) int int int bool) (where (Eq %k)))
+(defun (builds? c seed n keys)
+  (def (Tuple s ref) (random-set c (make-random/seed64 (cast ulong seed)) n keys))
+  (same? c s ref))
+
+;; Unions of random sets of sizes `n` and `m`, of a set with itself, with a
+;; set made from it, and with an empty set.
+(: (-> (Codec %k) int int int int bool) (where (Eq %k)))
+(defun (unions? c seed n m keys)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def (Tuple a ra) (random-set c rng n keys))
+  (def (Tuple b rb) (random-set c rng m keys))
+  (def both (loop (:for i (range 0 keys)) (:acc (arraying (or (array-ref ra i) (array-ref rb i))))))
+  (def extra (loop (:for i (range 0 (/ keys 7))) (:acc s (folding a (hashset-add s ((.of c) (* 7 i))))) => s))
+  (def extra-ref (copy-ref ra))
+  (loop (:for i (range 0 (/ keys 7))) (:do (array-set! extra-ref (* 7 i) #t)))
+  (and (same? c (hashset-union a b) both)
+       (same? c (hashset-union b a) both)
+       (same? c (hashset-union a a) ra)
+       (same? c (hashset-union a extra) extra-ref)
+       (same? c (hashset-union extra a) extra-ref)
+       (same? c (hashset-union a (hashset-clear a)) ra)
+       (same? c (hashset-union (hashset-clear a) a) ra)
+       (same? c (hashset-add-all a (hashset->seq b)) both)
+       (same? c a ra)
+       (same? c b rb)))
+
+;; Splits into about `k` parts, which together hold each element once.
+(: (-> (Codec %k) int int int bool) (where (Eq %k)))
+(defun (splits? c seed n k)
+  (def (Tuple s ref) (random-set c (make-random/seed64 (cast ulong seed)) n (* 2 n)))
+  (def parts (hashset-split s k))
+  (def joined (loop (:for p parts) (:acc u (folding (hashset-clear s) (hashset-union u p))) => u))
+  (and (<= (array-length parts) (max 1 k))
+       (= (loop (:for p parts) (:acc (summing (hashset-length p)))) (hashset-length s))
+       (loop (:for p parts) (:acc ok (folding #t (and ok (= (hashset-length (hashset-filter (fun (x) #t) p)) (hashset-length p))))) => ok)
+       (same? c joined ref)))
+
+;; Map and filter against the reference.
+(: (-> (Codec %k) int int bool) (where (Eq %k)))
+(defun (rebuilds? c seed n)
+  (def (Tuple s ref) (random-set c (make-random/seed64 (cast ulong seed)) n (* 2 n)))
+  (def odd (loop (:for i (range 0 (* 2 n))) (:acc (arraying (and (array-ref ref i) (= (% i 2) 1))))))
+  (def halved (loop (:for i (range 0 n)) (:acc (arraying (or (array-ref ref (* 2 i)) (array-ref ref (+ (* 2 i) 1)))))))
+  (and (same? c (hashset-filter (fun (x) (= (% ((.back c) x) 2) 1)) s) odd)
+       (same? c (hashset-map (fun (x) ((.of c) (/ ((.back c) x) 2))) s) halved)
+       (same? c (hashset-filter (fun (x) #t) s) ref)
+       (= (hashset-any? (fun (x) (= ((.back c) x) -1)) s) #f)
+       (= (hashset-find (fun (x) #f) s) None)))
+
+(: (-> string (Codec %k) void) (where (Eq %k)))
+(defun (check-all name c)
+  (loop (:for seed (range 1 4))
+        (:do (expect-true #"${name}: random mix, seed ${seed}" (random-mix? c seed 20000 2000 3000))))
+  (expect-true #"${name}: random mix over 30000" (random-mix? c 99 60000 30000 15000))
+  (loop (:for seed (range 1 3))
+        (:do (expect-true #"${name}: transient mix, seed ${seed}" (transient-mix? c seed 30000 4000))))
+  (loop (:for n (list 0 1 2 31 33 1000 40000))
+        (:do (expect-true #"${name}: builder, ${n}" (builds? c n n (max 1 (/ n 2))))))
+  (loop (:for (Tuple n m) (list (Tuple 0 0) (Tuple 1 1) (Tuple 1000 10) (Tuple 10 1000) (Tuple 3000 3000) (Tuple 20000 500)))
+        (:do (expect-true #"${name}: union, ${n} and ${m}" (unions? c (+ n m) n m (max 1 (* 2 (max n m)))))))
+  (loop (:for n (list 0 1 2 64 3000 50000))
+        (:do (loop (:for k (list 1 2 3 7 16 100 5000))
+                   (:do (expect-true #"${name}: split into ${k}, ${n}" (splits? c n n k))))))
+  (loop (:for n (list 0 1 100 5000))
+        (:do (expect-true #"${name}: map and filter, ${n}" (rebuilds? c n n)))))
+
+(: (-> Clash int))
+(defun (clash-n x) (.n x))
+(: (-> Deep int))
+(defun (deep-n x) (.n x))
+(: (-> SomeClash int))
+(defun (some-clash-n x) (.n x))
+
+(defun (main args)
+  (check-all "int" (Codec (of (fun (i) i)) (back (fun (x) x))))
+  (check-all "clash" (Codec (of (fun (i) (Clash (n i)))) (back clash-n)))
+  (check-all "deep" (Codec (of (fun (i) (Deep (n i)))) (back deep-n)))
+  (check-all "some clash" (Codec (of (fun (i) (SomeClash (n i)))) (back some-clash-n)))
+  0)

@@ -563,7 +563,8 @@ let rec private pruneLocal (t: HMType) : HMType =
 /// The .NET generic type definitions that Bjolang already has a name for.
 ///
 /// Every *other* constructed generic maps to a type constructor spelled after
-/// the .NET type itself — `Set.Set<int>` is `(Set.Set int)` — which is what
+/// the .NET type itself — `System.Collections.Generic.Stack<int>` is
+/// `(System.Collections.Generic.Stack int)` — which is what
 /// makes `import/class` able to name one. These are the ones where the two
 /// names differ, because the type is the runtime's own and the language has
 /// been spelling it since before interop could see inside a generic at all.
@@ -611,7 +612,7 @@ let compilerTypeNames : Set<string> =
 /// The name a .NET type is known by in a Bjolang type constructor.
 ///
 /// The arity mark goes: a Bjolang constructor carries its arity in the number
-/// of arguments it is applied to, so `Set.Set`1` is `Set.Set`.
+/// of arguments it is applied to, so `Stack`1` is `Stack`.
 ///
 /// A nested type keeps the name .NET gives its definition, `+` and arity
 /// marks included: ``Dictionary`2+KeyCollection``. Its arguments are the outer
@@ -1121,9 +1122,9 @@ let private byrefNote (methods: MethodBase seq) : string =
 // ---------------------------------------------------------------------------
 //
 // A generic method's type arguments have to come from somewhere, and the answer
-// is the signature the import declares. `(import/extern (set-add (: Set.SetModule.Add
-// (-> (Set %a) %a (Set %a)))))` says what the alias means in Bjolang; matching
-// that against the method's own `(Set<T>, T) -> Set<T>` solves `T` to `%a`, once,
+// is the signature the import declares. `(import/extern (seq-append (: System.Linq.Enumerable.Append
+// (-> (Seq %a) %a (Seq %a)))))` says what the alias means in Bjolang; matching
+// that against the method's own `(IEnumerable<T>, T) -> IEnumerable<T>` solves `T` to `%a`, once,
 // at the import. Every call site is then an ordinary polymorphic call: the
 // signature is instantiated with fresh metavariables, the arguments unify with
 // it, and the *same* substitution says what to write between the angle brackets.

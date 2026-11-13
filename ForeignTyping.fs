@@ -72,7 +72,7 @@ let internal checkExceptionTypes (where: string) (exceptions: string list) : uni
 /// signature elsewhere can name.
 let internal classInfoOfSpec (spec: ClassImportSpec) : ClrClassInfo =
     let where = Lexer.formatPos spec.Range
-    // A generic type is spelled with its arity — `Set.Set`1` — but written in
+    // A generic type is spelled with its arity — `Stack`1` — but written in
     // source without one, because the alias says how many arguments it takes.
     // Both spellings are tried so that a clause reads the way C# does.
     /// The generic definition of this name at *some* arity.
@@ -146,8 +146,8 @@ let internal classInfoOfSpec (spec: ClassImportSpec) : ClrClassInfo =
 /// .NET type it expands to.
 ///
 /// A generic import becomes a type *alias with parameters*, which the
-/// annotation resolver already knows how to expand: `(Set int)` substitutes
-/// into `Set.Set<int>` the same way a hand-written `(type (: (Pair %a) ...))`
+/// annotation resolver already knows how to expand: `(Stack int)` substitutes
+/// into `Stack<int>` the same way a hand-written `(type (: (Pair %a) ...))`
 /// does. The bare alias of an ordinary class is the arity-zero case of it.
 let internal classAliasTarget (info: ClrClassInfo) : HMType =
     TCon(info.ClrName, info.TypeParams |> List.map (fun p -> TVar("'" + p)))
