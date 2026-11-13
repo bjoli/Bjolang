@@ -398,8 +398,6 @@ let private runtimeAssemblyNames =
       "SchemeList"
       "Map"
       "BjoSet"
-      "BjoOrderedSet"
-      "BjoOrderedMap"
       "BjoString"
       "BjoRx" ]
 

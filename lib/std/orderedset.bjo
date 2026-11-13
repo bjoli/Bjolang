@@ -13,10 +13,10 @@
 ;; std/orderedset.bjo — the sorted set: a persistent B+ tree of elements, in
 ;; their order. Lookups are O(log n).
 ;;
-;; - The tree of `(std orderedmap)` without values, over the C# nodes of the
-;;   `BjoOrderedSet` assembly, through `OrderedSet.NodeOps`. The nodes stay in
-;;   C# because an internal node holds its keys and children in inline
-;;   arrays.
+;; - The tree of `(std orderedmap)` without values, over C# nodes in the
+;;   runtime, through `Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps`. The
+;;   nodes stay in C# because an internal node holds its keys and children
+;;   in inline arrays.
 ;; - Everything that spans several nodes is here: descent, splits, merges,
 ;;   rotations, iteration, building and joining trees, and set algebra.
 ;; - A leaf holds up to 64 elements, an internal node up to 31 keys and 32
@@ -71,37 +71,37 @@
   (Exception (: System.Exception))
   (ArgumentException (: System.ArgumentException))
   (InvalidOperationException (: System.InvalidOperationException))
-  ((Node %k) (: OrderedSet.Node))
-  ((Leaf %k) (: OrderedSet.LeafNode))
-  (Owner (: OrderedSet.OwnerId))
+  ((Node %k) (: Bjolang.Runtime.OrderedTrees.SetNodes.Node))
+  ((Leaf %k) (: Bjolang.Runtime.OrderedTrees.SetNodes.LeafNode))
+  (Owner (: Bjolang.Runtime.OrderedTrees.SetNodes.OwnerId))
   ;; What a set orders its elements by. See `ord-comparer`.
   ((Comparer %a) (: System.Collections.Generic.IComparer)))
 
 (import/extern
-  (owner-none   (: OrderedSet.NodeOps.OwnerNone   (-> Owner)))
-  (owner-next   (: OrderedSet.NodeOps.OwnerNext   (-> Owner)))
-  (editable     (: OrderedSet.NodeOps.Editable    (-> (Node %k) Owner (Node %k))))
-  (new-leaf     (: OrderedSet.NodeOps.NewLeaf     (-> Owner (Leaf %k))))
-  (new-internal (: OrderedSet.NodeOps.NewInternal (-> Owner (Node %k))))
-  (as-leaf      (: OrderedSet.NodeOps.AsLeaf      (-> (Node %k) (Leaf %k))))
-  (leaf-node    (: OrderedSet.NodeOps.LeafAsNode  (-> (Leaf %k) (Node %k))))
-  (leaf?        (: OrderedSet.NodeOps.IsLeaf      (-> (Node %k) bool)))
-  (node-count   (: OrderedSet.NodeOps.Count       (-> (Node %k) int)))
-  (leaf-key     (: OrderedSet.NodeOps.LeafKey     (-> (Leaf %k) int %k)))
-  (leaf-keys    (: OrderedSet.NodeOps.LeafKeys    (-> (Leaf %k) (Array %k))))
-  (node-key     (: OrderedSet.NodeOps.Key         (-> (Node %k) int %k)))
-  (key-of       (: OrderedSet.NodeOps.KeyOf       (-> (Node %k) int %k)))
-  (child        (: OrderedSet.NodeOps.Child       (-> (Node %k) int (Node %k))))
-  (leaf-find    (: OrderedSet.NodeOps.LeafFind    (-> (Leaf %k) %k (Comparer %k) int)))
-  (route        (: OrderedSet.NodeOps.Route       (-> (Node %k) %k (Comparer %k) int)))
-  (compare-keys (: OrderedSet.NodeOps.Compare     (-> (Comparer %k) %k %k int)))
-  (set-count!   (: OrderedSet.NodeOps.SetCount    (-> (Node %k) int void)))
-  (leaf-set!    (: OrderedSet.NodeOps.LeafSet     (-> (Leaf %k) int %k void)))
-  (set-key!     (: OrderedSet.NodeOps.SetKey      (-> (Node %k) int %k void)))
-  (set-child!   (: OrderedSet.NodeOps.SetChild    (-> (Node %k) int (Node %k) void)))
-  (leaf-move!   (: OrderedSet.NodeOps.LeafMove    (-> (Leaf %k) int (Leaf %k) int int void)))
-  (key-move!    (: OrderedSet.NodeOps.KeyMove     (-> (Node %k) int (Node %k) int int void)))
-  (child-move!  (: OrderedSet.NodeOps.ChildMove   (-> (Node %k) int (Node %k) int int void)))
+  (owner-none   (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.OwnerNone   (-> Owner)))
+  (owner-next   (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.OwnerNext   (-> Owner)))
+  (editable     (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.Editable    (-> (Node %k) Owner (Node %k))))
+  (new-leaf     (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.NewLeaf     (-> Owner (Leaf %k))))
+  (new-internal (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.NewInternal (-> Owner (Node %k))))
+  (as-leaf      (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.AsLeaf      (-> (Node %k) (Leaf %k))))
+  (leaf-node    (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.LeafAsNode  (-> (Leaf %k) (Node %k))))
+  (leaf?        (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.IsLeaf      (-> (Node %k) bool)))
+  (node-count   (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.Count       (-> (Node %k) int)))
+  (leaf-key     (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.LeafKey     (-> (Leaf %k) int %k)))
+  (leaf-keys    (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.LeafKeys    (-> (Leaf %k) (Array %k))))
+  (node-key     (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.Key         (-> (Node %k) int %k)))
+  (key-of       (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.KeyOf       (-> (Node %k) int %k)))
+  (child        (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.Child       (-> (Node %k) int (Node %k))))
+  (leaf-find    (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.LeafFind    (-> (Leaf %k) %k (Comparer %k) int)))
+  (route        (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.Route       (-> (Node %k) %k (Comparer %k) int)))
+  (compare-keys (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.Compare     (-> (Comparer %k) %k %k int)))
+  (set-count!   (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.SetCount    (-> (Node %k) int void)))
+  (leaf-set!    (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.LeafSet     (-> (Leaf %k) int %k void)))
+  (set-key!     (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.SetKey      (-> (Node %k) int %k void)))
+  (set-child!   (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.SetChild    (-> (Node %k) int (Node %k) void)))
+  (leaf-move!   (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.LeafMove    (-> (Leaf %k) int (Leaf %k) int int void)))
+  (key-move!    (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.KeyMove     (-> (Node %k) int (Node %k) int int void)))
+  (child-move!  (: Bjolang.Runtime.OrderedTrees.SetNodes.NodeOps.ChildMove   (-> (Node %k) int (Node %k) int int void)))
   (log2         (: System.Math.Log2               (-> double double))))
 
 ;; Raises the .NET exception the C# set raised, so that a caller's handler

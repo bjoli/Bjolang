@@ -13,9 +13,9 @@
 ;; std/orderedmap.bjo — the sorted map: a persistent B+ tree, keyed in the keys'
 ;; order. Lookups are O(log n).
 ;;
-;; - The tree is a B+ tree over the C# nodes of the `BjoOrderedMap` assembly,
-;;   through `OrderedMap.NodeOps`. The nodes stay in C# because an internal node
-;;   holds its keys and children in inline arrays.
+;; - The tree is a B+ tree over C# nodes in the runtime, through
+;;   `Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps`. The nodes stay in C#
+;;   because an internal node holds its keys and children in inline arrays.
 ;; - Everything that spans several nodes is here: descent, splits, merges,
 ;;   rotations, iteration, building and joining trees.
 ;; - A leaf holds up to 64 entries, an internal node up to 31 keys and 32
@@ -69,39 +69,39 @@
   (KeyNotFoundException (: System.Collections.Generic.KeyNotFoundException))
   (ArgumentException (: System.ArgumentException))
   (InvalidOperationException (: System.InvalidOperationException))
-  ((Node %k) (: OrderedMap.Node))
-  ((Leaf %k %v) (: OrderedMap.LeafNode))
-  (Owner (: OrderedMap.OwnerId))
+  ((Node %k) (: Bjolang.Runtime.OrderedTrees.MapNodes.Node))
+  ((Leaf %k %v) (: Bjolang.Runtime.OrderedTrees.MapNodes.LeafNode))
+  (Owner (: Bjolang.Runtime.OrderedTrees.MapNodes.OwnerId))
   ((Comparer %a) (: System.Collections.Generic.IComparer)))
 
 (import/extern
-  (owner-none      (: OrderedMap.NodeOps.OwnerNone    (-> Owner)))
-  (owner-next      (: OrderedMap.NodeOps.OwnerNext    (-> Owner)))
-  (editable        (: OrderedMap.NodeOps.Editable     (-> (Node %k) Owner (Node %k))))
-  (new-leaf        (: OrderedMap.NodeOps.NewLeaf      (-> Owner (Leaf %k %v))))
-  (new-internal    (: OrderedMap.NodeOps.NewInternal  (-> Owner (Node %k))))
-  (as-leaf         (: OrderedMap.NodeOps.AsLeaf       (-> (Node %k) (Leaf %k %v))))
-  (leaf-node       (: OrderedMap.NodeOps.LeafAsNode   (-> (Leaf %k %v) (Node %k))))
-  (leaf?           (: OrderedMap.NodeOps.IsLeaf       (-> (Node %k) bool)))
-  (node-count      (: OrderedMap.NodeOps.Count        (-> (Node %k) int)))
-  (leaf-key        (: OrderedMap.NodeOps.LeafKey      (-> (Leaf %k %v) int %k)))
-  (leaf-value      (: OrderedMap.NodeOps.LeafValue    (-> (Leaf %k %v) int %v)))
-  (leaf-keys       (: OrderedMap.NodeOps.LeafKeys     (-> (Leaf %k %v) (Array %k))))
-  (leaf-values     (: OrderedMap.NodeOps.LeafValues   (-> (Leaf %k %v) (Array %v))))
-  (node-key        (: OrderedMap.NodeOps.Key          (-> (Node %k) int %k)))
-  (key-of          (: OrderedMap.NodeOps.KeyOf        (-> (Node %k) int %k)))
-  (child           (: OrderedMap.NodeOps.Child        (-> (Node %k) int (Node %k))))
-  (leaf-find       (: OrderedMap.NodeOps.LeafFind     (-> (Leaf %k %v) %k (Comparer %k) int)))
-  (route           (: OrderedMap.NodeOps.Route        (-> (Node %k) %k (Comparer %k) int)))
-  (compare-keys    (: OrderedMap.NodeOps.Compare      (-> (Comparer %k) %k %k int)))
-  (set-count!      (: OrderedMap.NodeOps.SetCount     (-> (Node %k) int void)))
-  (leaf-set!       (: OrderedMap.NodeOps.LeafSet      (-> (Leaf %k %v) int %k %v void)))
-  (leaf-set-value! (: OrderedMap.NodeOps.LeafSetValue (-> (Leaf %k %v) int %v void)))
-  (set-key!        (: OrderedMap.NodeOps.SetKey       (-> (Node %k) int %k void)))
-  (set-child!      (: OrderedMap.NodeOps.SetChild     (-> (Node %k) int (Node %k) void)))
-  (leaf-move!      (: OrderedMap.NodeOps.LeafMove     (-> (Leaf %k %v) int (Leaf %k %v) int int void)))
-  (key-move!       (: OrderedMap.NodeOps.KeyMove      (-> (Node %k) int (Node %k) int int void)))
-  (child-move!     (: OrderedMap.NodeOps.ChildMove    (-> (Node %k) int (Node %k) int int void))))
+  (owner-none      (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.OwnerNone    (-> Owner)))
+  (owner-next      (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.OwnerNext    (-> Owner)))
+  (editable        (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.Editable     (-> (Node %k) Owner (Node %k))))
+  (new-leaf        (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.NewLeaf      (-> Owner (Leaf %k %v))))
+  (new-internal    (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.NewInternal  (-> Owner (Node %k))))
+  (as-leaf         (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.AsLeaf       (-> (Node %k) (Leaf %k %v))))
+  (leaf-node       (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.LeafAsNode   (-> (Leaf %k %v) (Node %k))))
+  (leaf?           (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.IsLeaf       (-> (Node %k) bool)))
+  (node-count      (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.Count        (-> (Node %k) int)))
+  (leaf-key        (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.LeafKey      (-> (Leaf %k %v) int %k)))
+  (leaf-value      (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.LeafValue    (-> (Leaf %k %v) int %v)))
+  (leaf-keys       (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.LeafKeys     (-> (Leaf %k %v) (Array %k))))
+  (leaf-values     (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.LeafValues   (-> (Leaf %k %v) (Array %v))))
+  (node-key        (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.Key          (-> (Node %k) int %k)))
+  (key-of          (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.KeyOf        (-> (Node %k) int %k)))
+  (child           (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.Child        (-> (Node %k) int (Node %k))))
+  (leaf-find       (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.LeafFind     (-> (Leaf %k %v) %k (Comparer %k) int)))
+  (route           (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.Route        (-> (Node %k) %k (Comparer %k) int)))
+  (compare-keys    (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.Compare      (-> (Comparer %k) %k %k int)))
+  (set-count!      (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.SetCount     (-> (Node %k) int void)))
+  (leaf-set!       (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.LeafSet      (-> (Leaf %k %v) int %k %v void)))
+  (leaf-set-value! (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.LeafSetValue (-> (Leaf %k %v) int %v void)))
+  (set-key!        (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.SetKey       (-> (Node %k) int %k void)))
+  (set-child!      (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.SetChild     (-> (Node %k) int (Node %k) void)))
+  (leaf-move!      (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.LeafMove     (-> (Leaf %k %v) int (Leaf %k %v) int int void)))
+  (key-move!       (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.KeyMove      (-> (Node %k) int (Node %k) int int void)))
+  (child-move!     (: Bjolang.Runtime.OrderedTrees.MapNodes.NodeOps.ChildMove    (-> (Node %k) int (Node %k) int int void))))
 
 ;; Raise the .NET exceptions the C# map raised, so that a caller's handler
 ;; still catches them.
