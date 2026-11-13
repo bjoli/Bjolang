@@ -1,0 +1,212 @@
+;; The B+ tree of (std orderedset), against a reference: an array of whether
+;; each element below a bound is in the set.
+;;
+;; - Random adds and removes, with phases that mostly remove, so that nodes
+;;   split, lend, merge and the root collapses. A set from an earlier phase
+;;   must not change.
+;; - Filling and draining in ascending, descending and scattered order,
+;;   around the leaf size of 64.
+;; - Transients, builders, ranges, successors and predecessors.
+;; - Splitting into parts and joining them again.
+;; - Union, intersection, difference and symmetric difference, by each of
+;;   their ways: a transient or an iteration of all the sets, and probes or
+;;   an iteration of the other set.
+
+(import (std prelude))
+(import (std orderedset))
+(import (std random))
+(import (std simpletest))
+
+;; The elements `ref` holds, in order.
+(: (-> (Array bool) (List int)))
+(defun (elements-of ref)
+  (loop (:for i (range 0 (array-length ref))) (:when (array-ref ref i)) (:acc (listing i))))
+
+;; Whether `s` holds what `ref` holds, by every reader.
+(: (-> (OrderedSet int) (Array bool) bool))
+(defun (same? s ref)
+  (def xs (elements-of ref))
+  (and (= (orderedset-length s) (list-length xs))
+       (= (orderedset->list s) xs)
+       (= (orderedset-fold (fun (x acc) (+ x acc)) 0 s) (loop (:for x xs) (:acc (summing x))))
+       (= (orderedset-min s) (if (list-empty? xs) None (Some (list-head xs))))
+       (= (orderedset-max s) (if (list-empty? xs) None (Some (list-head (list-reverse xs)))))
+       (loop (:for i (range 0 (array-length ref)))
+             (:acc ok (folding #t (and ok (= (orderedset-contains? s i) (array-ref ref i)))))
+             => ok)))
+
+(: (-> (Array bool) (Array bool)))
+(defun (copy-ref ref) (loop (:for x ref) (:acc (arraying x))))
+
+;; `steps` random adds and removes of elements below `keys`. In odd phases
+;; of `phase` steps, two steps in three remove. Checks every 997 steps, at
+;; the end, and that the set of the first phase did not change.
+(: (-> int int int int bool))
+(defun (random-mix? seed steps keys phase)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def (: ref (Array bool)) (make-array keys #:fill #f))
+  (def/mutable (: kept (OrderedSet int)) (orderedset-empty))
+  (def/mutable kept-ref (copy-ref ref))
+  (let go ((i 0) (s (orderedset-empty)))
+    (cond
+      ((= i steps) (and (same? s ref) (same? kept kept-ref)))
+      ((and (= (% i 997) 0) (not (same? s ref))) #f)
+      (else
+       (when (= i phase) (set! kept s) (set! kept-ref (copy-ref ref)))
+       (def k (random-int 0 (- keys 1) #:rng rng))
+       (def shrink? (= (% (/ i phase) 2) 1))
+       (if (< (random-int 0 3 #:rng rng) (if shrink? 2 1))
+           (begin (array-set! ref k #f) (go (+ i 1) (orderedset-remove s k)))
+           (begin (array-set! ref k #t) (go (+ i 1) (orderedset-add s k))))))))
+
+;; `n` elements added in the order `order` gives, then removed in the order
+;; `removal` gives, checked every 499 steps.
+(: (-> int (-> int int) (-> int int) bool))
+(defun (fill-and-drain? n order removal)
+  (def (: ref (Array bool)) (make-array (max n 1) #:fill #f))
+  (let go ((i 0) (s (orderedset-empty)))
+    (cond
+      ((and (= (% i 499) 0) (not (same? s ref))) #f)
+      ((< i n)
+       (array-set! ref (order i) #t)
+       (go (+ i 1) (orderedset-add s (order i))))
+      ((< i (* 2 n))
+       (def k (removal (- i n)))
+       (array-set! ref k #f)
+       (go (+ i 1) (orderedset-remove s k)))
+      (else (and (same? s ref) (orderedset-empty? s))))))
+
+;; Random add! and remove! on a transient, and a set taken from it halfway
+;; that the edits after must not change.
+(: (-> int int int bool))
+(defun (transient-mix? seed steps keys)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def (: ref (Array bool)) (make-array keys #:fill #f))
+  (def (: t (TransientOrderedSet int)) (transientorderedset-empty))
+  (def/mutable (: half (OrderedSet int)) (orderedset-empty))
+  (def/mutable half-ref (copy-ref ref))
+  (loop (:for i (range 0 steps))
+        (:do (when (= i (/ steps 2))
+               (set! half (transientorderedset->orderedset t))
+               (set! half-ref (copy-ref ref)))
+             (def k (random-int 0 (- keys 1) #:rng rng))
+             (if (< (random-int 0 3 #:rng rng) 1)
+                 (begin (array-set! ref k #f) (transientorderedset-remove! t k))
+                 (begin (array-set! ref k #t) (transientorderedset-add! t k)))))
+  (def xs (elements-of ref))
+  (and (same? (transientorderedset->orderedset t) ref)
+       (same? half half-ref)
+       (= (transientorderedset-min t) (if (list-empty? xs) None (Some (list-head xs))))
+       (= (transientorderedset-max t) (if (list-empty? xs) None (Some (list-head (list-reverse xs)))))))
+
+;; Random elements with repeats, through a builder.
+(: (-> int int int bool))
+(defun (builds? seed n keys)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def (: ref (Array bool)) (make-array keys #:fill #f))
+  (def b (orderedsetbuilder-empty))
+  (loop (:for _i (range 0 n))
+        (:do (def k (random-int 0 (- keys 1) #:rng rng))
+             (array-set! ref k #t)
+             (orderedsetbuilder-add! b k)))
+  (same? (orderedsetbuilder->orderedset b) ref))
+
+;; The multiples of `step` below `step * n`, and its reference, `extra` wide.
+(: (-> int int int (Tuple (OrderedSet int) (Array bool))))
+(defun (multiples step n extra)
+  (def (: ref (Array bool)) (make-array (+ (* step n) extra) #:fill #f))
+  (loop (:for i (range 0 n)) (:do (array-set! ref (* step i) #t)))
+  (Tuple (list->orderedset (elements-of ref)) ref))
+
+;; Ranges, successors and predecessors around the elements of `multiples 3 n`.
+(: (-> int bool))
+(defun (order-same? n)
+  (def (Tuple s ref) (multiples 3 n 3))
+  (def xs (elements-of ref))
+  (: between (-> int int (List int)))
+  (defun (between lo hi) (list-filter (fun (x) (and (>= x lo) (<= x hi))) xs))
+  (: head-or (-> (List int) (Option int)))
+  (defun (head-or ys) (if (list-empty? ys) None (Some (list-head ys))))
+  (loop (:for a (range-by -2 (+ (* 3 n) 2) 7))
+        (:acc ok (folding #t
+                  (and ok
+                       (= (->list (orderedset-range s a (+ a 100))) (between a (+ a 100)))
+                       (= (->list (orderedset-range s a (- a 1))) '())
+                       (= (->list (orderedset-from s a)) (between a (* 3 n)))
+                       (= (->list (orderedset-until s a)) (between -1 a))
+                       (= (orderedset-successor s a) (head-or (between (+ a 1) (* 3 n))))
+                       (= (orderedset-predecessor s a) (head-or (list-reverse (between -1 (- a 1))))))))
+        => ok))
+
+;; Splits into about `k` parts, and joins them again.
+(: (-> int int bool))
+(defun (split-joins? n k)
+  (def (Tuple s ref) (multiples 3 n 3))
+  (def parts (orderedset-split s k))
+  (def joined (orderedset-concat parts))
+  (def lb (listbuilder-empty))
+  (loop (:for p parts) (:do (loop (:for x p) (:do (listbuilder-add! lb x)))))
+  (and (<= (array-length parts) (max 1 k))
+       (= (listbuilder->list lb) (orderedset->list s))
+       (same? joined ref)
+       (= (orderedset-length (orderedset-add joined -1)) (+ n 1))))
+
+;; The four operations on the multiples of 2, 3 and 5 below `2 * a`,
+;; `3 * b` and `5 * c`, against the references combined element by element.
+(: (-> int int int bool))
+(defun (algebra? a b c)
+  (def size (+ (max (* 2 a) (max (* 3 b) (* 5 c))) 1))
+  (: of (-> int int (Tuple (OrderedSet int) (Array bool))))
+  (defun (of step n)
+    (def (Tuple s ref) (multiples step n 0))
+    (def (: wide (Array bool)) (make-array size #:fill #f))
+    (loop (:for i (range 0 (array-length ref))) (:do (array-set! wide i (array-ref ref i))))
+    (Tuple s wide))
+  (def (Tuple x rx) (of 2 a))
+  (def (Tuple y ry) (of 3 b))
+  (def (Tuple z rz) (of 5 c))
+  (: combined (-> (-> bool bool bool bool) (Array bool)))
+  (defun (combined f)
+    (loop (:for i (range 0 size)) (:acc (arraying (f (array-ref rx i) (array-ref ry i) (array-ref rz i))))))
+  (and (same? (orderedset-union x y) (combined (fun (p q r) (or p q))))
+       (same? (orderedset-union x y z) (combined (fun (p q r) (or p q r))))
+       (same? (orderedset-intersection x y) (combined (fun (p q r) (and p q))))
+       (same? (orderedset-intersection z x y) (combined (fun (p q r) (and p q r))))
+       (same? (orderedset-difference x y) (combined (fun (p q r) (and p (not q)))))
+       (same? (orderedset-difference x y z) (combined (fun (p q r) (and p (not q) (not r)))))
+       (same? (orderedset-symmetric-difference x y) (combined (fun (p q r) (not (= p q)))))
+       (same? x rx)))
+
+(defun (main args)
+  (loop (:for seed (range 1 5))
+        (:do (expect-true #"random mix, seed ${seed}" (random-mix? seed 30000 3000 4000))))
+  (expect-true "random mix over 50000 elements" (random-mix? 99 150000 50000 25000))
+
+  (def n-values (list 0 1 63 64 65 2049 20000))
+  (loop (:for n n-values)
+        (:do (def id (fun (i) i))
+             (def back (fun (i) (- n i 1)))
+             (def scattered (fun (i) (% (* i 7919) n)))
+             (expect-true #"ascending, then ascending, ${n}" (fill-and-drain? n id id))
+             (expect-true #"descending, then descending, ${n}" (fill-and-drain? n back back))
+             (expect-true #"ascending, then descending, ${n}" (fill-and-drain? n id back))
+             (expect-true #"scattered, then scattered, ${n}" (fill-and-drain? n scattered scattered))))
+
+  (loop (:for seed (range 1 3))
+        (:do (expect-true #"transient mix, seed ${seed}" (transient-mix? seed 40000 5000))))
+  (loop (:for n (list 0 1 64 65 4097 30000))
+        (:do (expect-true #"builder, ${n}" (builds? n n (max 1 (/ n 2))))))
+
+  (loop (:for n (list 0 1 10 64 200 5000))
+        (:do (expect-true #"ranges, successors and predecessors, ${n}" (order-same? n))))
+
+  (loop (:for n (list 0 1 64 65 3000 50000))
+        (:do (loop (:for k (list 1 2 3 7 16 100 5000))
+                   (:do (expect-true #"split into ${k} and concat, ${n}" (split-joins? n k))))))
+
+  ;; Sizes that take each way: sets of similar size, a big set and small
+  ;; ones, and empty ones.
+  (loop (:for (Tuple a b c) (list (Tuple 3000 2000 1200) (Tuple 30000 10 4) (Tuple 10 30000 20)
+                                  (Tuple 5 7 30000) (Tuple 0 100 50) (Tuple 100 0 0) (Tuple 64 65 1)))
+        (:do (expect-true #"set algebra, ${a} ${b} ${c}" (algebra? a b c))))
+  0)

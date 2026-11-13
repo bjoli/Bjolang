@@ -3,6 +3,38 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std orderedset)~ is written in Bjolang
+
+- The tree of ~(std orderedmap)~ without values, as Bjolang code over the C#
+  nodes of the ~BjoOrderedSet~ assembly, through the new
+  ~OrderedSet.NodeOps~. Set algebra is in ~lib/std/orderedset.bjo~ too.
+- ~OrderedSet~, ~OrderedSetBuilder~ and ~TransientOrderedSet~ are Bjolang
+  records now, and ~OrderedSetCursor~ a struct.
+- ~orderedset-range~, ~-from~ and ~-until~ return ~OrderedSetRange~, an
+  ~Iterable~, instead of a ~Seq~. Use ~->seq~ where a ~Seq~ is needed.
+- New exports: ~orderedset-split~ and ~orderedset-concat~, which
+  ~(std parallel)~ now uses.
+- ~orderedset-concat~ raises ~ArgumentException~ when the sets are out of
+  order or there are none.
+- Union, intersection and difference keep the C# set's ways: a transient
+  of the biggest set or an iteration of all the sets in order; the
+  smallest set filtered by probes or by an iteration of each other set.
+- Measured against the C# set, int keys unless said, 1000 and 100,000
+  elements: add, remove, contains, union into a big set and iteration about
+  the same; fold 1.4x, filter 1.2x, intersection 1.2-1.7x, difference of
+  two big sets 1.9x, symmetric difference 2.7x, a builder of scattered
+  elements 1.6x, range 3.9x faster. Adding strings to a transient is 1.1x
+  slower (72 us against 64 us for 1000).
+- A set over the map with a one-byte value per element was tried first:
+  adds were 1.3x slower.
+- Test: ~549_orderedset_tree.bjo~ checks the tree against an array of which
+  elements are in: random adds and removes with shrinking phases, filling
+  and draining, transients, builders, ranges, split and concat, and the
+  four set operations by each of their ways.
+- The C# set, transient, builder, cursor, split and concat code is removed,
+  with its C# tests and benchmarks. The submodule keeps the nodes,
+  ~NodeOps~ and the key search.
+
 * ~(std orderedmap)~ is written in Bjolang
 
 - The B+ tree is Bjolang code over the C# nodes of the ~BjoOrderedMap~

@@ -17,7 +17,8 @@
   (reference """
     An @code{(OrderedSet a)} is an immutable, persistent sorted set.
     Updates return a new set sharing untouched nodes with the original.
-    Implemented as a B-tree (@code{OrderedSet.OrderedSet} in the runtime).
+    Implemented as a B+ tree written in Bjolang over C# nodes, the tree of
+    @code{(std orderedmap)} without values.
     Lookup, insertion, and deletion operations run in O(log n) time.
 
     @strong{Element ordering.} Constructors (@code{orderedset-empty},
@@ -110,6 +111,21 @@
     Used by the @code{Iterable} implementation of @code{OrderedSet} to iterate
     in ascending element order. Immutable cursor value: advancing produces a
     new cursor without mutating the previous one.
+    """))
+
+(:doc OrderedSetRange
+  (summary "The elements of an ordered set between two bounds, as an Iterable.")
+  (tparam %a "The element type.")
+  (see orderedset-range orderedset-from orderedset-until)
+  (example """
+    (loop (:for x (orderedset-range s 10 20)) (:acc (summing x)))
+    (->seq (orderedset-from s 10))   ; a Seq of the same elements
+    """)
+  (reference """
+    Returned by @code{orderedset-range}, @code{orderedset-from} and
+    @code{orderedset-until}. A loop over it steps a cursor inline. The end is
+    found once, when the range is made, so a step compares no elements.
+    @code{->seq} returns a @code{Seq} of it.
     """))
 
 (:doc OrderedSetting
@@ -307,21 +323,21 @@
   (arg s "The set.")
   (arg lo "Lower bound value (inclusive). Need not exist in set.")
   (arg hi "Upper bound value (inclusive). Need not exist in set.")
-  (returns "A lazy sequence of elements in ascending order.")
-  (see orderedset-from orderedset-until)
+  (returns "An OrderedSetRange of the elements in ascending order. Empty when lo is greater than hi.")
+  (see orderedset-from orderedset-until OrderedSetRange)
   (example """
     (->list (orderedset-range (list->orderedset (list 1 3 5 7)) 2 5))   ; (3 5)
     """)
   (reference """
-    Lazy: descends the B-tree to @code{lo} once and advances sequentially,
-    so slicing a subset runs in time proportional to the range slice size.
+    Lazy: descends the tree to @code{lo} and to @code{hi} once each, and then
+    steps through the leaves, so a range costs O(log n) plus its length.
     """))
 
 (:doc orderedset-from
   (summary "Returns a sequence of elements >= lo in ascending order.")
   (arg s "The set.")
   (arg lo "Lower bound value (inclusive). Need not exist in set.")
-  (returns "A lazy sequence of elements >= lo in ascending order.")
+  (returns "An OrderedSetRange of the elements >= lo in ascending order.")
   (see orderedset-range orderedset-until orderedset-successor)
   (reference "Lazy, matching @code{orderedset-range}."))
 
@@ -329,7 +345,7 @@
   (summary "Returns a sequence of elements <= hi in ascending order.")
   (arg s "The set.")
   (arg hi "Upper bound value (inclusive). Need not exist in set.")
-  (returns "A lazy sequence of elements <= hi in ascending order.")
+  (returns "An OrderedSetRange of the elements <= hi in ascending order.")
   (see orderedset-range orderedset-from orderedset-predecessor)
   (reference "Lazy, matching @code{orderedset-range}."))
 
@@ -398,6 +414,37 @@
   (arg s "The set to search.")
   (returns "(Some x) for the first match, or None.")
   (see orderedset-any? orderedset-filter))
+
+;; ---------------------------------------------------------------------------
+;; Parts
+;; ---------------------------------------------------------------------------
+
+(:doc orderedset-split
+  (summary "Splits a set into about k sets in order, for work on them at the same time.")
+  (arg s "The set.")
+  (arg k "How many parts to aim for.")
+  (returns "An array of at most k sets that together hold the elements of s once. Every element of a part is less than every element of the next.")
+  (see orderedset-concat)
+  (reference """
+    The parts share the nodes of @code{s}: each is a run of the nodes of the
+    highest level that has at least @code{k} nodes, under new internal
+    nodes. The runs are cut so that the parts hold about as many elements
+    each. A set that is one leaf, or a @code{k} of 1 or less, returns
+    @code{s} alone.
+    """))
+
+(:doc orderedset-concat
+  (summary "Joins sets whose elements are in order into one set.")
+  (arg sets "The sets. Every element of a set must be less than every element of the next.")
+  (returns "A set of all the elements of sets.")
+  (raises System.ArgumentException "When sets is empty, or the sets' elements are not in order.")
+  (see orderedset-split)
+  (reference """
+    Keeps the leaves of @code{sets} and builds new internal nodes over them.
+    An empty leaf is dropped, and a small leaf is copied together with its
+    neighbour when the two fit in one. The order of the comparer of the first
+    set is used.
+    """))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions
