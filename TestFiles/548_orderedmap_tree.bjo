@@ -1,0 +1,185 @@
+;; The B+ tree of (std orderedmap), against a reference: an array with the
+;; value of each key below a bound, or None.
+;;
+;; - Random sets and removes, with phases that mostly remove, so that nodes
+;;   split, lend, merge and the root collapses. A map from an earlier phase
+;;   must not change.
+;; - Filling and draining in ascending, descending and scattered order,
+;;   around the leaf size of 64.
+;; - Transients, builders, ranges, successors and predecessors.
+;; - Splitting into parts and joining them again.
+
+(import (std prelude))
+(import (std orderedmap))
+(import (std random))
+(import (std simpletest))
+
+;; The entries `ref` holds, in key order.
+(: (-> (Array (Option int)) (List (Tuple int int))))
+(defun (entries-of ref)
+  (def lb (listbuilder-empty))
+  (loop (:for i (range 0 (array-length ref)))
+        (:do (when (some? (array-ref ref i))
+               (listbuilder-add! lb (Tuple i (option-ref (array-ref ref i)))))))
+  (listbuilder->list lb))
+
+;; Whether `m` holds what `ref` holds, by every reader.
+(: (-> (OrderedMap int int) (Array (Option int)) bool))
+(defun (same? m ref)
+  (def entries (entries-of ref))
+  (and (= (orderedmap-length m) (list-length entries))
+       (= (orderedmap->list m) entries)
+       (= (orderedmap-fold (fun (k v s) (+ s k v)) 0 m)
+          (loop (:for (Tuple k v) entries) (:acc (summing (+ k v)))))
+       (loop (:for i (range 0 (array-length ref)))
+             (:acc ok (folding #t (and ok
+                                       (= (orderedmap-try-ref m i) (array-ref ref i))
+                                       (= (orderedmap-contains? m i) (some? (array-ref ref i))))))
+             => ok)))
+
+(: (-> (Array (Option int)) (Array (Option int))))
+(defun (copy-ref ref) (loop (:for x ref) (:acc (arraying x))))
+
+;; `steps` random sets and removes of keys below `keys`. In odd phases of
+;; `phase` steps, two steps in three remove. Checks every 997 steps, at the
+;; end, and that the map of the first phase did not change.
+(: (-> int int int int bool))
+(defun (random-mix? seed steps keys phase)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def (: ref (Array (Option int))) (make-array keys #:fill None))
+  (def/mutable (: kept (OrderedMap int int)) (orderedmap-empty))
+  (def/mutable kept-ref (copy-ref ref))
+  (let go ((i 0) (m (orderedmap-empty)))
+    (cond
+      ((= i steps) (and (same? m ref) (same? kept kept-ref)))
+      ((and (= (% i 997) 0) (not (same? m ref))) #f)
+      (else
+       (when (= i phase) (set! kept m) (set! kept-ref (copy-ref ref)))
+       (def k (random-int 0 (- keys 1) #:rng rng))
+       (def shrink? (= (% (/ i phase) 2) 1))
+       (if (< (random-int 0 3 #:rng rng) (if shrink? 2 1))
+           (begin (array-set! ref k None) (go (+ i 1) (orderedmap-remove m k)))
+           (begin (array-set! ref k (Some i)) (go (+ i 1) (orderedmap-set m k i))))))))
+
+;; `n` keys set in the order `order` gives, then removed in the order
+;; `removal` gives, checked every 499 steps.
+(: (-> int (-> int int) (-> int int) bool))
+(defun (fill-and-drain? n order removal)
+  (def (: ref (Array (Option int))) (make-array (max n 1) #:fill None))
+  (let go ((i 0) (m (orderedmap-empty)))
+    (cond
+      ((and (= (% i 499) 0) (not (same? m ref))) #f)
+      ((< i n)
+       (array-set! ref (order i) (Some i))
+       (go (+ i 1) (orderedmap-set m (order i) i)))
+      ((< i (* 2 n))
+       (def k (removal (- i n)))
+       (array-set! ref k None)
+       (go (+ i 1) (orderedmap-remove m k)))
+      (else (and (same? m ref) (orderedmap-empty? m))))))
+
+;; Random set! and remove! on a transient, and a map taken from it halfway
+;; that the edits after must not change.
+(: (-> int int int bool))
+(defun (transient-mix? seed steps keys)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def (: ref (Array (Option int))) (make-array keys #:fill None))
+  (def (: t (TransientOrderedMap int int)) (transientorderedmap-empty))
+  (def/mutable (: half (OrderedMap int int)) (orderedmap-empty))
+  (def/mutable half-ref (copy-ref ref))
+  (loop (:for i (range 0 steps))
+        (:do (when (= i (/ steps 2))
+               (set! half (transientorderedmap->orderedmap t))
+               (set! half-ref (copy-ref ref)))
+             (def k (random-int 0 (- keys 1) #:rng rng))
+             (if (< (random-int 0 3 #:rng rng) 1)
+                 (begin (array-set! ref k None) (transientorderedmap-remove! t k))
+                 (begin (array-set! ref k (Some i)) (transientorderedmap-set! t k i)))))
+  (and (same? (transientorderedmap->orderedmap t) ref) (same? half half-ref)))
+
+;; Random entries with repeated keys, through a builder. The last value of a
+;; key wins.
+(: (-> int int int bool))
+(defun (builds? seed n keys)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def (: ref (Array (Option int))) (make-array keys #:fill None))
+  (def b (orderedmapbuilder-empty))
+  (loop (:for i (range 0 n))
+        (:do (def k (random-int 0 (- keys 1) #:rng rng))
+             (array-set! ref k (Some i))
+             (orderedmapbuilder-add! b k i)))
+  (same? (orderedmapbuilder->orderedmap b) ref))
+
+;; The keys 0, 3, 6 ... below 3n, each to twice itself, and its reference.
+(: (-> int (Tuple (OrderedMap int int) (Array (Option int)))))
+(defun (threes n)
+  (def (: ref (Array (Option int))) (make-array (+ (* 3 n) 3) #:fill None))
+  (loop (:for i (range 0 n)) (:do (array-set! ref (* 3 i) (Some (* 6 i)))))
+  (Tuple (list->orderedmap (entries-of ref)) ref))
+
+;; Ranges, successors and predecessors around the keys of `threes n`.
+(: (-> int bool))
+(defun (order-same? n)
+  (def (Tuple m ref) (threes n))
+  (def entries (entries-of ref))
+  (: between (-> int int (List (Tuple int int))))
+  (defun (between lo hi) (list-filter (fun (e) (def (Tuple k _) e) (and (>= k lo) (<= k hi))) entries))
+  (loop (:for a (range-by -2 (+ (* 3 n) 2) 7))
+        (:acc ok (folding #t
+                  (and ok
+                       (= (->list (orderedmap-range m a (+ a 100))) (between a (+ a 100)))
+                       (= (->list (orderedmap-range m a (- a 1))) '())
+                       (= (->list (orderedmap-from m a)) (between a (* 3 n)))
+                       (= (->list (orderedmap-until m a)) (between -1 a))
+                       (= (orderedmap-successor m a)
+                          (list-head-or (between (+ a 1) (* 3 n))))
+                       (= (orderedmap-predecessor m a)
+                          (list-last-or (between -1 (- a 1)))))))
+        => ok))
+
+(: (-> (List (Tuple int int)) (Option (Tuple int int))))
+(defun (list-head-or xs) (if (list-empty? xs) None (Some (list-head xs))))
+
+(: (-> (List (Tuple int int)) (Option (Tuple int int))))
+(defun (list-last-or xs) (list-head-or (list-reverse xs)))
+
+;; Splits into about `k` parts, and joins them again.
+(: (-> int int bool))
+(defun (split-joins? n k)
+  (def (Tuple m ref) (threes n))
+  (def parts (orderedmap-split m k))
+  (def joined (orderedmap-concat parts))
+  (def lb (listbuilder-empty))
+  (loop (:for p parts) (:do (loop (:for e p) (:do (listbuilder-add! lb e)))))
+  (and (<= (array-length parts) (max 1 k))
+       (= (listbuilder->list lb) (orderedmap->list m))
+       (same? joined ref)
+       (= (orderedmap-length (orderedmap-set joined -1 0)) (+ n 1))))
+
+(defun (main args)
+  (loop (:for seed (range 1 5))
+        (:do (expect-true #"random mix, seed ${seed}" (random-mix? seed 30000 3000 4000))))
+  (expect-true "random mix over 50000 keys" (random-mix? 99 150000 50000 25000))
+
+  (def n-values (list 0 1 63 64 65 2049 20000))
+  (loop (:for n n-values)
+        (:do (def id (fun (i) i))
+             (def back (fun (i) (- n i 1)))
+             (def scattered (fun (i) (% (* i 7919) n)))
+             (expect-true #"ascending, then ascending, ${n}" (fill-and-drain? n id id))
+             (expect-true #"descending, then descending, ${n}" (fill-and-drain? n back back))
+             (expect-true #"ascending, then descending, ${n}" (fill-and-drain? n id back))
+             (expect-true #"scattered, then scattered, ${n}" (fill-and-drain? n scattered scattered))))
+
+  (loop (:for seed (range 1 3))
+        (:do (expect-true #"transient mix, seed ${seed}" (transient-mix? seed 40000 5000))))
+  (loop (:for n (list 0 1 64 65 4097 30000))
+        (:do (expect-true #"builder, ${n}" (builds? n n (max 1 (/ n 2))))))
+
+  (loop (:for n (list 0 1 10 64 200 5000))
+        (:do (expect-true #"ranges, successors and predecessors, ${n}" (order-same? n))))
+
+  (loop (:for n (list 0 1 64 65 3000 50000))
+        (:do (loop (:for k (list 1 2 3 7 16 100 5000))
+                   (:do (expect-true #"split into ${k} and concat, ${n}" (split-joins? n k))))))
+  0)

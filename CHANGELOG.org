@@ -3,6 +3,34 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std orderedmap)~ is written in Bjolang
+
+- The B+ tree is Bjolang code over the C# nodes of the ~BjoOrderedMap~
+  assembly, through the new ~OrderedMap.NodeOps~ (one-node operations).
+  Descent, splits, merges, rotations, cursors, builders, transients,
+  merges of maps, split and concat are all in ~lib/std/orderedmap.bjo~.
+- ~OrderedMap~, ~OrderedMapBuilder~ and ~TransientOrderedMap~ are Bjolang
+  records now, not the .NET classes ~OrderedMap.OrderedMap~ and so on.
+- ~orderedmap-range~, ~-from~ and ~-until~ return ~OrderedMapRange~, an
+  ~Iterable~, instead of a ~Seq~. Use ~->seq~ where a ~Seq~ is needed.
+- New exports: ~orderedmap-split~ and ~orderedmap-concat~ (which
+  ~(std parallel)~ now uses), and the cursor functions
+  ~orderedmap-cursor~, ~-cursor-done?~, ~-cursor-current~ and
+  ~-cursor-next~.
+- ~orderedmap-ref~ still raises ~KeyNotFoundException~, and
+  ~orderedmap-concat~ ~ArgumentException~, as the C# map did. The messages
+  differ, and ~eq-hash~ returns other values.
+- Measured against the C# map, ints and strings, 1000 and 100,000 entries:
+  set, ref, remove and transient set about the same; iteration 1.4-1.6x,
+  map-values 3-9x, range about 6x, successor 1.6-3x, merge of 4 and filter
+  1.3x faster. A small map merged into a big one is 1.4x slower (1.6 us
+  against 1.1 us); a builder of scattered keys 1.2x slower at 1000.
+- Test: ~548_orderedmap_tree.bjo~ checks the tree against an array of the
+  values of each key: random sets and removes with shrinking phases,
+  filling and draining, transients, builders, ranges, split and concat.
+- The C# map, transient, builder, cursor, split and concat code is unused
+  now. It is still in the submodule.
+
 * Calls whose type arguments C# cannot infer write them out
 
 - A direct recursive call to a function with a type parameter that only its

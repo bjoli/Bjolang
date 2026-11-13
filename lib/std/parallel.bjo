@@ -49,10 +49,8 @@
   (clr-vec-split-at (: Collections.RrbFun.SplitAt (-> (Vec %a) (Array int) (Array (Vec %a)))))
   (clr-map-split (: Map.MapModule.Split (-> (Map %k %v) int (Array (Map %k %v)))))
   (clr-hashset-split (: Set.SetModule.Split (-> (HashSet %a) int (Array (HashSet %a)))))
-  (clr-orderedmap-split (: OrderedMap.OrderedMapModule.Split (-> (OrderedMap %k %v) int (Array (OrderedMap %k %v)))))
   (clr-orderedset-split (: OrderedSet.OrderedSetModule.Split (-> (OrderedSet %a) int (Array (OrderedSet %a)))))
   (iarray-adopt (: Bjolang.Runtime.IArrayModule.Adopt (-> (Array %a) (IArray %a))))
-  (clr-orderedmap-concat (: OrderedMap.OrderedMapModule.Concat (-> (Array (OrderedMap %k %v)) (OrderedMap %k %v))))
   (clr-orderedset-concat (: OrderedSet.OrderedSetModule.Concat (-> (Array (OrderedSet %a)) (OrderedSet %a)))))
 
 (import/class
@@ -429,7 +427,7 @@
 (impl (Chunkable (OrderedMap %k %v))
   (type %chunk (OrderedMap %k %v))
   (defun (chunk-size m) (orderedmap-length m))
-  (defun (chunks m k) (array->vec (clr-orderedmap-split m k))))
+  (defun (chunks m k) (array->vec (orderedmap-split m k))))
 
 (impl (Chunkable (OrderedSet %a))
   (type %chunk (OrderedSet %a))
@@ -580,17 +578,18 @@
   (defun (par-filter keep? s)
     (in-parallel s (fun (p) (hashset-filter keep? p)))))
 
-;; --- Ordered maps and sets: the parts are in key order, so the runtime
-;; joins them by their leaves, under new internal nodes. No entry is
-;; compared or copied.
+;; --- Ordered maps and sets: the parts are in key order, so a concat joins
+;; them by their leaves, under new internal nodes. It compares one pair of
+;; keys at each join, and copies only small leaves, together with a
+;; neighbour.
 
 (impl (ParallelMap (OrderedMap %k %a))
   (defun (par-map f m)
-    (clr-orderedmap-concat (vec->array (in-parts m (fun (p) (orderedmap-map-values f p)))))))
+    (orderedmap-concat (vec->array (in-parts m (fun (p) (orderedmap-map-values f p)))))))
 
 (impl (ParallelFilter (OrderedMap %k %a))
   (defun (par-filter keep? m)
-    (clr-orderedmap-concat (vec->array (in-parts m (fun (p) (orderedmap-filter (fun (k v) (keep? v)) p)))))))
+    (orderedmap-concat (vec->array (in-parts m (fun (p) (orderedmap-filter (fun (k v) (keep? v)) p)))))))
 
 (impl (ParallelFilter (OrderedSet %a))
   (defun (par-filter keep? s)

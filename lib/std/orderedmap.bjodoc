@@ -18,7 +18,9 @@
   (reference """
     An @code{(OrderedMap k v)} is an immutable, persistent sorted map.
     Updates return a new map sharing untouched nodes with the original.
-    Implemented as a B-tree (@code{OrderedMap.OrderedMap} in the runtime).
+    Implemented in Bjolang as a B+ tree. Only the nodes are C#
+    (@code{OrderedMap.NodeOps} in the runtime), because an internal node holds
+    its keys and children in inline arrays.
     Lookup, insertion, and deletion operations run in O(log n) time.
 
     @strong{Key ordering.} Constructors (@code{orderedmap-empty},
@@ -122,11 +124,27 @@
   (summary "Cursor for iterating over an ordered map.")
   (tparam %k "The key type of the map.")
   (tparam %v "The value type of the map.")
-  (see OrderedMap)
+  (see OrderedMap orderedmap-cursor orderedmap-cursor-next OrderedMapRange)
   (reference """
     Used by the @code{Iterable} implementation of @code{OrderedMap} to iterate
     in ascending key order. Immutable cursor value: advancing produces a new
     cursor without mutating the previous one.
+    """))
+
+(:doc OrderedMapRange
+  (summary "The entries of an ordered map between two keys, as an Iterable.")
+  (tparam %k "The key type of the map.")
+  (tparam %v "The value type of the map.")
+  (see orderedmap-range orderedmap-from orderedmap-until)
+  (example """
+    (loop (:for (Tuple k v) (orderedmap-range m 10 20)) (:acc (summing v)))
+    (->seq (orderedmap-from m 10))   ; a Seq of the same entries
+    """)
+  (reference """
+    Returned by @code{orderedmap-range}, @code{orderedmap-from} and
+    @code{orderedmap-until}. A loop over it steps an @code{OrderedMapCursor}
+    inline. The end is found once, when the range is made, so a step compares
+    no keys. @code{->seq} returns a @code{Seq} of it.
     """))
 
 (:doc OrderedMapping
@@ -340,30 +358,31 @@
   (arg m "The map.")
   (arg lo "Lower bound key (inclusive). Need not exist in map.")
   (arg hi "Upper bound key (inclusive). Need not exist in map.")
-  (returns "A lazy sequence of (Tuple key value) pairs in ascending key order.")
-  (see orderedmap-from orderedmap-until)
+  (returns "An OrderedMapRange of (Tuple key value) pairs in ascending key order. Empty when lo is greater than hi.")
+  (see orderedmap-from orderedmap-until OrderedMapRange)
   (example """
     (orderedmap-range log start-time end-time)   ; entries in a time window
     """)
   (reference """
-    Lazy: descends the B-tree to @code{lo} once and advances sequentially,
-    so slicing a subset runs in time proportional to the range slice size.
+    Lazy: descends the tree to @code{lo} and to @code{hi} once each, and then
+    steps through the leaves, so a range costs O(log n) plus its length.
+    @code{->seq} returns a @code{Seq} of it.
     """))
 
 (:doc orderedmap-from
   (summary "Returns a sequence of entries with keys >= lo in ascending order.")
   (arg m "The map.")
   (arg lo "Lower bound key (inclusive). Need not exist in map.")
-  (returns "A lazy sequence of (Tuple key value) pairs for keys >= lo.")
-  (see orderedmap-range orderedmap-until orderedmap-successor)
+  (returns "An OrderedMapRange of (Tuple key value) pairs for keys >= lo.")
+  (see orderedmap-range orderedmap-until orderedmap-successor OrderedMapRange)
   (reference "Lazy, matching @code{orderedmap-range}."))
 
 (:doc orderedmap-until
   (summary "Returns a sequence of entries with keys <= hi in ascending order.")
   (arg m "The map.")
   (arg hi "Upper bound key (inclusive). Need not exist in map.")
-  (returns "A lazy sequence of (Tuple key value) pairs for keys <= hi.")
-  (see orderedmap-range orderedmap-from orderedmap-predecessor)
+  (returns "An OrderedMapRange of (Tuple key value) pairs for keys <= hi.")
+  (see orderedmap-range orderedmap-from orderedmap-predecessor OrderedMapRange)
   (reference "Lazy, matching @code{orderedmap-range}."))
 
 ;; ---------------------------------------------------------------------------
@@ -665,3 +684,62 @@
   (arg t "The transient map.")
   (returns "#t if empty, otherwise #f.")
   (see transientorderedmap-length orderedmap-empty?))
+
+;; ---------------------------------------------------------------------------
+;; Cursors
+;; ---------------------------------------------------------------------------
+
+(:doc orderedmap-cursor
+  (summary "Returns a cursor on the first entry of a map.")
+  (arg m "The map.")
+  (returns "An OrderedMapCursor, done at once when m is empty.")
+  (see orderedmap-cursor-done? orderedmap-cursor-current orderedmap-cursor-next))
+
+(:doc orderedmap-cursor-done?
+  (summary "Whether a cursor is past the last entry.")
+  (arg c "The cursor.")
+  (returns "#t when c has no current entry.")
+  (see orderedmap-cursor orderedmap-cursor-next))
+
+(:doc orderedmap-cursor-current
+  (summary "Returns the entry a cursor is on.")
+  (arg c "The cursor. Must not be done.")
+  (returns "The entry, as (Tuple key value).")
+  (see orderedmap-cursor orderedmap-cursor-done?))
+
+(:doc orderedmap-cursor-next
+  (summary "Returns the cursor on the next entry.")
+  (arg c "The cursor. Must not be done.")
+  (returns "A new cursor. c is unchanged.")
+  (see orderedmap-cursor orderedmap-cursor-done?))
+
+;; ---------------------------------------------------------------------------
+;; Parts
+;; ---------------------------------------------------------------------------
+
+(:doc orderedmap-split
+  (summary "Splits a map into about k maps in key order, for work on them at the same time.")
+  (arg m "The map.")
+  (arg k "How many parts to aim for.")
+  (returns "An array of at most k maps that together hold the entries of m once. Every key of a part is less than every key of the next.")
+  (see orderedmap-concat)
+  (reference """
+    The parts share the nodes of @code{m}: each is a run of the nodes of the
+    highest level that has at least @code{k} nodes, under new internal
+    nodes. The runs are cut so that the parts hold about as many entries each.
+    A map that is one leaf, or a @code{k} of 1 or less, returns @code{m}
+    alone. Counting each part's entries costs one step per leaf.
+    """))
+
+(:doc orderedmap-concat
+  (summary "Joins maps whose keys are in order into one map.")
+  (arg maps "The maps. Every key of a map must be less than every key of the next.")
+  (returns "A map of all the entries of maps.")
+  (raises System.ArgumentException "When maps is empty, or the maps' keys are not in order.")
+  (see orderedmap-split)
+  (reference """
+    Keeps the leaves of @code{maps} and builds new internal nodes over them.
+    An empty leaf is dropped, and a small leaf is copied together with its
+    neighbour when the two fit in one. The order of the comparer of the first
+    map is used.
+    """))

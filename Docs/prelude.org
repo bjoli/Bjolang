@@ -693,9 +693,12 @@ Each collection provides three identical interfaces for different usage patterns
 
 ~(HashSet %a)~ is ~(Map %k %v)~ with the values left out. Constant time access. Unordered.
 
-~(OrderedSet %a)~ and ~(OrderedMap %k %v)~ are persistent B-trees keyed in the elements' natural order, by ~Comparer<T>.Default~. So the elements, or the keys, need an ~Ord~: what makes one out of nothing — ~orderedset-empty~, ~seq->~, ~list->~ and ~vec->orderedset~, a builder's or a transient's ~-empty~, ~orderedset-map~, ~ordered-setting~, and the same for ~OrderedMap~ — has ~(where (Ord %a))~ (~%k~ for a map). What works on one that exists asks nothing, since it could only have been made with one.
+~(OrderedSet %a)~ and ~(OrderedMap %k %v)~ are persistent B-trees keyed in the order ~compare~ gives. So the elements, or the keys, need an ~Ord~: what makes one out of nothing — ~orderedset-empty~, ~seq->~, ~list->~ and ~vec->orderedset~, a builder's or a transient's ~-empty~, ~orderedset-map~, ~ordered-setting~, and the same for ~OrderedMap~ — has ~(where (Ord %a))~ (~%k~ for a map). What works on one that exists asks nothing, since it could only have been made with one.
 
-~(OrderedMap %k %v)~'s api is the prelude's ~map-*~ under an ~orderedmap-~ prefix.
+~(OrderedMap %k %v)~'s api is the prelude's ~map-*~ under an ~orderedmap-~ prefix. Beyond that:
+- ~orderedmap-range~, ~-from~ and ~-until~ return an ~OrderedMapRange~, an ~Iterable~ that a loop steps inline. ~->seq~ gives a ~Seq~ of it.
+- ~orderedmap-split~ and ~orderedmap-concat~ cut a map into parts in key order that share its nodes, and join such parts again. ~(std parallel)~ uses them.
+- The tree is written in Bjolang. Only its nodes are C#, because an internal node holds its keys and children in inline arrays.
 
 All three implement ~Iterable~, ~Collection~, ~Written~ and ~Displayed~, and each publishes a collector — ~hash-setting~, ~ordered-setting~, ~ordered-mapping~ — so a loop can accumulate into one:
 
