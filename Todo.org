@@ -455,6 +455,18 @@ what was meant. Confirmed by running it where it says so.
   The reference parts of it could now be cut down to what the docs do not
   say.
 
+* Found while writing the hash set's tests
+
+- *A type whose name has a hyphen does not compile.*
+  ~(type (: Some-clash (Record (: n int))))~ is enough, with no impl
+  written. The record class itself is mangled (~hy2__Somesubclash~), but
+  the class of its derived ~Written~ impl is
+  ~Written_hy2__Some-clash~, which is not a C# identifier (CS1514).
+  ~implClassName~ in ~TypedAST.fs~ sanitizes a key's arguments but not
+  its head, the target type's name. Fix: mangle the head the way type
+  names are mangled. Other impl classes probably have the same problem.
+  ~TestFiles/550_hashset_trie.bjo~ names its type ~SomeClash~ to avoid it.
+
 * Found while writing bjostat's parallel loops
 
 Found in ~bench/parallel.bjo~ of bjostat, where the parts of a loop run on
