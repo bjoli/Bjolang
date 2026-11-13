@@ -8,6 +8,7 @@
 ;;   around the leaf size of 64.
 ;; - Transients, builders, ranges, successors and predecessors.
 ;; - Splitting into parts and joining them again.
+;; - Small maps merged into a big one, which sets them into a transient.
 
 (import (std prelude))
 (import (std orderedmap))
@@ -156,6 +157,30 @@
        (same? joined ref)
        (= (orderedmap-length (orderedmap-set joined -1 0)) (+ n 1))))
 
+;; `(threes n)` merged with two small maps whose keys are each in it or not,
+;; by `merge` and by `merge-with` with `-`, which shows the order of the
+;; values. A small map's key `k` holds `k + 1` or `k + 2`.
+(: (-> int int bool))
+(defun (merges? n m)
+  (def (Tuple big ref) (threes n))
+  (def size (array-length ref))
+  (: small (-> int (OrderedMap int int)))
+  (defun (small d)
+    (loop (:for i (range 0 m)) (:acc (ordered-mapping (Tuple (% (* i 7) size) (+ (% (* i 7) size) d))))))
+  (def a (small 1))
+  (def b (small 2))
+  (def (: last (Array (Option int))) (copy-ref ref))
+  (def (: diff (Array (Option int))) (copy-ref ref))
+  (loop (:for x (list a b))
+        (:do (loop (:for (Tuple k v) x)
+                   (:do (array-set! last k (Some v))
+                        (array-set! diff k (Some (match (array-ref diff k)
+                                                   ((Some old) (- old v))
+                                                   (None v))))))))
+  (and (same? (orderedmap-merge big a b) last)
+       (same? (orderedmap-merge-with (fun (k x y) (- x y)) big a b) diff)
+       (same? big ref)))
+
 (defun (main args)
   (loop (:for seed (range 1 5))
         (:do (expect-true #"random mix, seed ${seed}" (random-mix? seed 30000 3000 4000))))
@@ -182,4 +207,8 @@
   (loop (:for n (list 0 1 64 65 3000 50000))
         (:do (loop (:for k (list 1 2 3 7 16 100 5000))
                    (:do (expect-true #"split into ${k} and concat, ${n}" (split-joins? n k))))))
+
+  (loop (:for n (list 64 3000 50000))
+        (:do (loop (:for m (list 1 10 200))
+                   (:do (expect-true #"merge ${m} twice into ${n}" (merges? n m))))))
   0)

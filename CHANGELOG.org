@@ -23,11 +23,17 @@ What each change guarantees, and what it leaves open.
 - Measured against the C# map, ints and strings, 1000 and 100,000 entries:
   set, ref, remove and transient set about the same; iteration 1.4-1.6x,
   map-values 3-9x, range about 6x, successor 1.6-3x, merge of 4 and filter
-  1.3x faster. A small map merged into a big one is 1.4x slower (1.6 us
+  1.3x faster. A small map merged into a big one was 1.4x slower (1.6 us
   against 1.1 us); a builder of scattered keys 1.2x slower at 1000.
+- That merge looked up each key and then set it, two descents. It now
+  descends once (~insert!~ leaves the value of a key that is there to its
+  caller), which makes it 10-15% faster: 10 keys into 100,000 take 2.05 us
+  against 2.26 us, 1000 keys 177 us against 207 us. The C# map is removed,
+  so the gap to it is not measured again. Plain sets are unchanged.
 - Test: ~548_orderedmap_tree.bjo~ checks the tree against an array of the
   values of each key: random sets and removes with shrinking phases,
-  filling and draining, transients, builders, ranges, split and concat.
+  filling and draining, transients, builders, ranges, split and concat,
+  and small maps merged into a big one.
 - The C# map, transient, builder, cursor, split and concat code is removed,
   with its C# tests and benchmarks. The submodule keeps the nodes, ~NodeOps~
   and the key search.

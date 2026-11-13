@@ -296,7 +296,8 @@
 ;; ---------------------------------------------------------------------------
 
 ;; What `insert!` did:
-;; - `(Tuple 0 _ _)`: the key was there, and its value is replaced.
+;; - `(Tuple c leaf _)` with `c` negative: the key is at slot `-1 - c` of
+;;   `leaf`, and its value is not written. The path to `leaf` is editable.
 ;; - `(Tuple 1 _ _)`: the key is added.
 ;; - `(Tuple 2 right sep)`: the key is added and the node split. `right` is
 ;;   the new right half, and `sep` its first key.
@@ -321,9 +322,7 @@
 (defun (insert-leaf! cmp l key value owner)
   (def i (leaf-find l key cmp))
   (cond
-    ((>= i 0)
-     (leaf-set-value! l i value)
-     (Tuple 0 (leaf-node l) key))
+    ((>= i 0) (Tuple (- -1 i) (leaf-node l) key))
     ((< (leaf-count l) leaf-capacity)
      (leaf-insert! l (- -1 i) key value)
      (Tuple 1 (leaf-node l) key))
@@ -378,7 +377,13 @@
 (defun (set-in cmp root key value owner)
   (def r (editable root owner))
   (def (Tuple code right sep) (insert! cmp r key value owner))
-  (Tuple (if (= code 2) (new-root r sep right owner) r) (> code 0)))
+  (cond
+    ((< code 0)
+     (def (: l (Leaf %k %v)) (as-leaf right))
+     (leaf-set-value! l (- -1 code) value)
+     (Tuple r #f))
+    ((= code 2) (Tuple (new-root r sep right owner) #t))
+    (else (Tuple r #t))))
 
 (: (-> (OrderedMap %k %v) %k %v (OrderedMap %k %v)))
 (defun (orderedmap-set m k v)
@@ -1091,10 +1096,25 @@
   (def t (orderedmap->transientorderedmap (array-ref inputs 0)))
   (loop (:for i (range 1 (array-length inputs)))
         (:do (loop (:for (Tuple k v) (array-ref inputs i))
-                   (:do (match (transientorderedmap-try-ref t k)
-                          ((Some old) (transientorderedmap-set! t k (f k old v)))
-                          (None (transientorderedmap-set! t k v)))))))
+                   (:do (combine! f t k v)))))
   (transientorderedmap->orderedmap t))
+
+;; Sets `k` in `t` to `v`, or to `(f k old v)` if it is there, by one
+;; descent.
+(: (-> (-?-> %k %v %v %v) (TransientOrderedMap %k %v) %k %v void))
+(defun (combine! f t k v)
+  (def owner (.owner t))
+  (def r (editable (.root t) owner))
+  (def (Tuple code right sep) (insert! (.comparer t) r k v owner))
+  (cond
+    ((< code 0)
+     (record-set! t (root r))
+     (def (: l (Leaf %k %v)) (as-leaf right))
+     (def i (- -1 code))
+     (leaf-set-value! l i (f k (leaf-value l i) v)))
+    (else
+     (record-set! t (root (if (= code 2) (new-root r sep right owner) r))
+                    (count (+ (.count t) 1))))))
 
 ;; The inputs iterated in key order at once into a builder, which needs no
 ;; sort. The least key is found by a scan of the cursors.
