@@ -76,6 +76,31 @@
                     (raised? (try (vec-for-each/range slow-touch three 0 -1)
                                   #:catch (System.ArgumentOutOfRangeException)))))
 
+  ;; A vec with a head, relaxed nodes and a tail. Each function is checked
+  ;; against an array, through its inlined body and through its C# copy, which
+  ;; a function read from a vec takes.
+  (def big (vec-add-first
+            (vec-merge (vec-slice (loop (:for i (range 0 5000)) (:acc (vecing i))) 7 4000)
+                       (loop (:for i (range 0 3333)) (:acc (vecing (* i 3)))))
+            -1))
+  (def big-array (vec->array big))
+  (def adders [(fun (x acc) (+ x acc))])
+  (def total (loop (:for x big-array) (:acc s (folding 0 (+ x s)))))
+  (expect "vec-reduce of a large vec" (vec-reduce (fun (x acc) (+ x acc)) big) total)
+  (expect "and its C# copy" (vec-reduce (vec-ref adders 0) big) total)
+  (def/mutable seen 0)
+  (def touchers [(fun (x) (set! seen (+ seen x)))])
+  (loop (:for (Tuple from count) (list (Tuple 0 0) (Tuple 0 1) (Tuple 1 30) (Tuple 30 3000)
+                                       (Tuple 2000 5333) (Tuple 7332 1) (Tuple 0 7334)))
+        (:do
+         (def want (loop (:for i (range from (+ from count))) (:acc s (folding 0 (+ (array-ref big-array i) s)))))
+         (set! seen 0)
+         (vec-for-each/range (fun (x) (set! seen (+ seen x))) big from count)
+         (expect "vec-for-each/range of a large vec" seen want)
+         (set! seen 0)
+         (vec-for-each/range (vec-ref touchers 0) big from count)
+         (expect "and its C# copy" seen want)))
+
   ;; --- with-shield ---------------------------------------------------------
   (expect "a shield with a deadline runs its body" (with-shield #:within (seconds 1) (+ 1 2)) 3)
   (expect-true "a shield of 0 ms raises"

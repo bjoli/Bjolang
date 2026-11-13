@@ -3,6 +3,16 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~vec-reduce~ and ~vec-for-each/range~ iterate leaves
+
+- Their inlined Bjolang bodies use a cursor instead of a ~vec-ref~ per item.
+  On 100k ints, reduce takes 71 µs instead of 238 µs. A range of 50k takes
+  35 µs instead of 134 µs.
+- The C# copies, used when the callback is a value, visit each leaf as a span
+  through a struct visitor (~RrbList.Visit~). Reduce on 100k ints takes
+  32 µs instead of 154 µs.
+- ~vec-for-each~'s C# copy uses the same visitor.
+
 * The RRB tree is in the runtime
 
 - ~Vec~'s C# (~RrbList~, ~RrbBuilder~, ~RrbTransient~, the nodes and the

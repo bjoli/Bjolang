@@ -10,6 +10,8 @@
  */
 
 
+using System.Runtime.CompilerServices;
+
 namespace Bjolang.Runtime.Rrb;
 
 public sealed partial class RrbList<T>
@@ -54,13 +56,40 @@ public sealed partial class RrbList<T>
             throw new InvalidOperationException("Cannot reduce an empty list.");
         }
 
-        var state = this[0];
-        
-        // Start iterating from index 1. 
-        // ForEach will skip the first element in O(log N) time.
-        this.ForEach([NonUserCode] (item) => state = func(item, state), index: 1);
-        
-        return state;
+        // From index 1: the walk skips to it in O(log N).
+        var visitor = new ReduceVisitor { Func = func, State = this[0] };
+        Visit(ref visitor, 1, Count - 1);
+        return visitor.State;
+    }
+
+    // Calls `func` with each item and the state so far, as `Reduce` folds.
+    [NonUserCode]
+    private struct ReduceVisitor : IItemVisitor<T>
+    {
+        public Func<T, T, T> Func;
+        public T State;
+
+        // The state in a local: a field behind `ref` is stored and loaded per item.
+        public void Visit(ReadOnlySpan<T> items)
+        {
+            var func = Func;
+            var state = State;
+            foreach (var item in items) state = func(item, state);
+            State = state;
+        }
+    }
+
+    // Calls an `Action`, for `ForEach`.
+    [NonUserCode]
+    private struct ActionVisitor : IItemVisitor<T>
+    {
+        public Action<T> Action;
+
+        public void Visit(ReadOnlySpan<T> items)
+        {
+            var action = Action;
+            foreach (var item in items) action(item);
+        }
     }
 
     private TState FoldNode<TState>(Node<T> node, int shift, TState state, Func<T, TState, TState> func)
@@ -192,6 +221,21 @@ public sealed partial class RrbList<T>
         if (count == -1) count = Count - index;
 
         if (count < 0 || index + count > Count) throw new ArgumentOutOfRangeException(nameof(count));
+        var visitor = new ActionVisitor { Action = action };
+        Visit(ref visitor, index, count);
+    }
+
+    /**
+     * <summary>
+     *     Calls <paramref name="visitor" /> with the <paramref name="count" /> items from
+     *     <paramref name="index" />, in order, one span per head, leaf and tail.
+     *     - A struct visitor, so that each kind of visit is its own specialised loop, with no
+     *       delegate for the visit itself.
+     *     - Unchecked: the caller has checked the range.
+     * </summary>
+     */
+    internal void Visit<TV>(ref TV visitor, int index, int count) where TV : struct, IItemVisitor<T>
+    {
         if (count == 0) return;
 
         // Traverse the Head
@@ -199,8 +243,7 @@ public sealed partial class RrbList<T>
         {
             var items = Head!;
             var fromHead = Math.Min(count, HeadLen - index);
-            var end = index + fromHead;
-            for (var i = index; i < end; i++) action(items[i]);
+            visitor.Visit(new ReadOnlySpan<T>(items, index, fromHead));
 
             count -= fromHead;
             if (count == 0) return;
@@ -217,7 +260,7 @@ public sealed partial class RrbList<T>
         if (index < treeSize && Root != null)
         {
             var takeFromTree = Math.Min(count, treeSize - index);
-            ForEachNode(Root, Shift, index + Gap, takeFromTree, action);
+            VisitNode(Root, Shift, index + Gap, takeFromTree, ref visitor);
 
             // Adjust remaining count and index for the tail
             count -= takeFromTree;
@@ -234,20 +277,19 @@ public sealed partial class RrbList<T>
         {
             var items = Tail;
 
-            var end = index + count;
-            for (var i = index; i < end; i++) action(items[i]);
+            visitor.Visit(new ReadOnlySpan<T>(items, index, count));
         }
     }
 
-    private void ForEachNode(Node<T> node, int shift, int offset, int count, Action<T> action)
+    private static void VisitNode<TV>(Node<T> node, int shift, int offset, int count, ref TV visitor)
+        where TV : struct, IItemVisitor<T>
     {
         // Base case: Leaf Node
         if (shift == 0)
         {
             var leaf = RrbAlgorithm.AsLeaf(node);
             var items = leaf.Items;
-            var end = offset + count;
-            for (var i = offset; i < end; i++) action(items[i]);
+            visitor.Visit(new ReadOnlySpan<T>(items, offset, count));
             return;
         }
 
@@ -280,7 +322,7 @@ public sealed partial class RrbList<T>
                     // We take either all that is requested, or all that holds in this child
                     var amount = Math.Min(count, currentSize - offset);
 
-                    ForEachNode(internalNode.Children[i]!, childShift, offset, amount, action);
+                    VisitNode(internalNode.Children[i]!, childShift, offset, amount, ref visitor);
 
                     count -= amount;
                     offset = 0; // After the first partial child, subsequent children start at 0
@@ -306,7 +348,7 @@ public sealed partial class RrbList<T>
                 {
                     var amount = Math.Min(count, currentSize - offset);
 
-                    ForEachNode(internalNode.Children[i]!, childShift, offset, amount, action);
+                    VisitNode(internalNode.Children[i]!, childShift, offset, amount, ref visitor);
 
                     count -= amount;
                     offset = 0;
@@ -486,4 +528,10 @@ public sealed partial class RrbList<T>
 
         return res;
     }
+}
+
+/// One step of <see cref="RrbList{T}.Visit{TV}" />: called with each run of items, in order.
+internal interface IItemVisitor<T>
+{
+    void Visit(ReadOnlySpan<T> items);
 }

@@ -746,15 +746,27 @@ public static partial class BjolangRuntime {
     // of a generic `(-> %a %b)`. The adapter lambda is the price of `for-each`
     // and `map` taking the same function, and the JIT inlines through it.
     public static Unit RrbForEach<T>(Func<T, Unit> action, Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull {
-        Bjolang.Runtime.Rrb.RrbFun.ForEach(list, [NonUserCode] (x) => action(x));
+        var visitor = new UnitVisitor<T> { Action = action };
+        list.Visit(ref visitor, 0, list.Count);
         return unit;
     }
 
+    // Calls a Bjolang function that returns Unit, for `vec-for-each`.
+    [NonUserCode]
+    private struct UnitVisitor<T> : Bjolang.Runtime.Rrb.IItemVisitor<T> {
+        public Func<T, Unit> Action;
+
+        public void Visit(ReadOnlySpan<T> items) {
+            var action = Action;
+            foreach (var item in items) action(item);
+        }
+    }
+
     public static Unit RrbForEachRange<T>(Func<T, Unit> action, Bjolang.Runtime.Rrb.RrbList<T> list, int index, int count) where T : notnull {
-        // Checked here as well as in the library, which reads a count of -1 as
-        // "to the end"; a Bjolang count means what it says.
+        // `Visit` does not check its range.
         RrbCheckRange(list, index, count);
-        Bjolang.Runtime.Rrb.RrbFun.ForEach(list, [NonUserCode] (x) => action(x), index, count);
+        var visitor = new UnitVisitor<T> { Action = action };
+        list.Visit(ref visitor, index, count);
         return unit;
     }
 

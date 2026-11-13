@@ -1682,10 +1682,10 @@
   (#:sync (clr-vec-reduce f v))
   (#:bjo
     (ignore (clr-vec-check-reduce v))
-    (let go ((i 1) (acc (vec-ref v 0)))
-      (if (= i (vec-length v))
+    (let go ((c (vec-cursor-slice v 1 (- (vec-length v) 1))) (acc (vec-ref v 0)))
+      (if (vec-cursor-done? c)
           acc
-          (go (+ i 1) (f (vec-ref v i) acc))))))
+          (go (vec-cursor-next c) (f (vec-cursor-current c) acc))))))
 
 (: (-> (-?-> %a Unit) (Vec %a) Unit))
 (defbjouble (vec-for-each f v)
@@ -1699,12 +1699,12 @@
   (#:sync (clr-vec-for-each/range f v index count))
   (#:bjo
     (ignore (clr-vec-check-range v index count))
-    (let go ((i index) (left count))
-      (if (= left 0)
+    (let go ((c (vec-cursor-slice v index count)))
+      (if (vec-cursor-done? c)
           unit
           (let ()
-            (ignore (f (vec-ref v i)))
-            (go (+ i 1) (- left 1)))))))
+            (ignore (f (vec-cursor-current c)))
+            (go (vec-cursor-next c)))))))
 
 ;; Vec iter.
 (: (-> (-?-> %a bool) (Vec %a) bool))
