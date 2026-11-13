@@ -500,6 +500,7 @@ A .NET array: mutable, of a fixed length, and written ~#[1 2 3]~. What a builder
 - ~(array-ref a i)~ / ~(array-set! a i x)~ / ~(array-length a)~
 - ~(array-resize a n)~ : A new array of length ~n~ holding as much of ~a~ as fits; the rest are the default.
 - ~(array->vec a)~ / ~(subarray->vec a start count)~ : A ~Vec~ copied out of it.
+- ~(array-copy! src src-start dst dst-start count)~ : ~count~ elements from ~src~ into ~dst~, one ~Array.Copy~, at any element type. ~dst~ can be ~src~, and overlapping ranges copy correctly.
 
 *** Whole-array operations =(std array)=
 One loop each, in the runtime. When the element is a primitive number (~int~, ~long~, ~double~, ~byte~ and the other fixed-size numbers), the loop uses ~System.Numerics.Vector~: one instruction works on 4 doubles or 8 ints with AVX2. Other numbers, such as ~bigint~ and ~decimal~, go through an ordinary loop. All but ~array-fill!~ ask for ~(Num %a)~.
@@ -508,7 +509,6 @@ One loop each, in the runtime. When the element is a primitive number (~int~, ~l
 - ~(array-add! dst src)~ / ~(array-scale! a k)~ : ~dst[i] += src[i]~, and ~a[i] *= k~, in place.
 - ~(array-count a x)~ / ~(array-index-of a x)~ : By ~=~, so NaN matches nothing. ~array-index-of~ answers -1 when nothing matches.
 - ~(array-fill! a x)~ : ~x~ in every element, at any element type.
-- ~(array-copy! src src-start dst dst-start count)~ : ~count~ elements from ~src~ into ~dst~, one ~Array.Copy~, at any element type. ~dst~ can be ~src~, and overlapping ranges copy correctly.
 A Native AOT build uses 128-bit vectors unless the manifest says ~(aot-cpu "native")~ — see =Projects.org=.
 
 ** Immutable arrays (~(IArray %a)~)
