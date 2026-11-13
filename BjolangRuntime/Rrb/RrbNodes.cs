@@ -66,6 +66,49 @@ public static class RrbNodes
         int count) =>
         new(OrNull(root), tail, count, shift, tailLen, head, headLen, gap);
 
+    /// <summary>A list of a tree and a tail, with no head. A tree of <see cref="NoTree{T}" /> is none.</summary>
+    public static RrbList<T> Tree<T>(Node<T> root, int shift, int gap, T[] tail, int tailLen, int count) =>
+        new(OrNull(root), tail, count, shift, tailLen, null, 0, gap);
+
+    /// <summary>`count` items from `start` in a new list of at most two leaves. Requires count &lt;= 64.</summary>
+    public static RrbList<T> Copied<T>(RrbList<T> l, int start, int count) => l.Copied(start, count);
+
+    /// <summary>The first `count` items, 0 &lt; count &lt;= length. See <see cref="RrbList{T}.TakeFront" />.</summary>
+    public static RrbList<T> TakeFront<T>(RrbList<T> l, int count) => l.TakeFront(count);
+
+    /// <summary>
+    ///     The first `limit` items of the node at `shift`. Returns the node, or <see cref="NoTree{T}" />, and
+    ///     its last leaf's items when that leaf is not full, with their count; then that leaf is not in the node.
+    /// </summary>
+    public static (Node<T> Node, T[] Tail, int TailLen) SliceRight<T>(Node<T> n, int limit, int shift)
+    {
+        var r = RrbAlgorithm.SliceRightAndPromote(n, limit, shift, out var tail, out var tailLen);
+        return (OrNone(r), tail, tailLen);
+    }
+
+    /// <summary>The list without its head, indexed from 0.</summary>
+    public static RrbList<T> Headless<T>(RrbList<T> l) => l.Headless();
+
+    /// <summary>
+    ///     A list with no head and a dense tree without its first `k` items, 0 &lt;= k &lt; tree count.
+    ///     See <see cref="RrbList{T}.DropTreeFront" />.
+    /// </summary>
+    public static RrbList<T> DropTreeFront<T>(RrbList<T> l, int k) => l.DropTreeFront(k);
+
+    /// <summary>
+    ///     A list with no head and a relaxed tree without its first `drop` items, all in the first leaf.
+    /// </summary>
+    public static RrbList<T> PromoteFirstLeaf<T>(RrbList<T> l, int drop) => l.PromoteFirstLeaf(drop);
+
+    /// <summary>
+    ///     A slice of a list with no head and a dense tree, all in the tree and longer than two leaves.
+    ///     The result stays dense.
+    /// </summary>
+    public static RrbList<T> SliceDense<T>(RrbList<T> l, int start, int count) => l.SliceDenseTree(start, count);
+
+    /// <summary>A list with no head and a dense tree, split at `index` in the tree. Both halves stay dense.</summary>
+    public static (RrbList<T> Left, RrbList<T> Right) SplitDense<T>(RrbList<T> l, int index) => l.SplitDenseTree(index);
+
     /// <summary>The same list with a gap of 0. See <see cref="RrbList{T}.Materialized" />.</summary>
     public static RrbList<T> Materialized<T>(RrbList<T> l) => l.Materialized();
 
@@ -99,6 +142,22 @@ public static class RrbNodes
         if (gap > 0) r = RrbList<T>.NormalizeGap(r, ref shift, ref gap, treeItems)!;
         return (r, shift, gap);
     }
+
+    /// <summary>
+    ///     A tree with a gap, as the gap rules have it. Returns the root, the shift and the gap.
+    ///     See <see cref="RrbList{T}.NormalizeGap" />.
+    /// </summary>
+    public static (Node<T> Root, int Shift, int Gap) NormalizeGap<T>(Node<T> root, int shift, int gap, int treeItems)
+    {
+        var r = RrbList<T>.NormalizeGap(OrNull(root), ref shift, ref gap, treeItems);
+        return (OrNone(r), shift, gap);
+    }
+
+    /// <summary>The node at `shift` without its first `toDrop` items. The left spine gets size tables.</summary>
+    public static Node<T> SliceLeft<T>(Node<T> n, int toDrop, int shift) => RrbAlgorithm.SliceLeftRec(n, toDrop, shift);
+
+    /// <summary>The length of the first leaf under the node at `shift`.</summary>
+    public static int FirstLeafLen<T>(Node<T> n, int shift) => RrbAlgorithm.FirstLeafLen(n, shift);
 
     /// <summary>A root at most a level taller than `treeItems` need. Returns the root and the shift.</summary>
     public static (Node<T> Root, int Shift) LowerRoot<T>(Node<T> root, int shift, int treeItems)

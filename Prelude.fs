@@ -1067,11 +1067,9 @@ let prelude : Env =
         "vec-add", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); TVar "a"] (makeVecType (TVar "a"))); IsMutable = false }
         "vec-pop", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a")] (makeVecType (TVar "a"))); IsMutable = false }
         "vec-pop-first", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a")] (makeVecType (TVar "a"))); IsMutable = false }
-        "vec-slice", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); intType; intType] (makeVecType (TVar "a"))); IsMutable = false }
         // Variadic past the first two, through its `FunMeta` below, so its flat
         // type takes the rest array.
         "vec-merge", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); makeVecType (TVar "a"); makeArrayType (makeVecType (TVar "a"))] (makeVecType (TVar "a"))); IsMutable = false }
-        "vec-split", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); intType] (TTuple [makeVecType (TVar "a"); makeVecType (TVar "a")])); IsMutable = false }
         // The seven `vec-` operations that take a procedure are not here, for
         // the reason the `list-` ones are not: their callbacks are declared
         // `-?->` and a suspending copy is only generated from a Bjolang body.

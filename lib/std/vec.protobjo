@@ -464,3 +464,273 @@
         (:do (array-set! children i (array-ref children (+ i gap)))
              (array-set! sizes i (array-ref sizes (+ i gap)))))
   (- count gap))
+
+;; ---------------------------------------------------------------------------
+;; Slice and split
+;; ---------------------------------------------------------------------------
+
+(import/class
+  (ArgumentOutOfRangeException (: System.ArgumentOutOfRangeException)))
+
+(import/extern
+  (rrb-tree          (: Bjolang.Runtime.Rrb.RrbNodes.Tree
+                        (-> (RrbNode %a) int int (Array %a) int int (Vec %a))))
+  (rrb-headless      (: Bjolang.Runtime.Rrb.RrbNodes.Headless     (-> (Vec %a) (Vec %a))))
+  (rrb-drop-tree-front (: Bjolang.Runtime.Rrb.RrbNodes.DropTreeFront (-> (Vec %a) int (Vec %a))))
+  (rrb-promote-first-leaf (: Bjolang.Runtime.Rrb.RrbNodes.PromoteFirstLeaf (-> (Vec %a) int (Vec %a))))
+  (rrb-slice-dense   (: Bjolang.Runtime.Rrb.RrbNodes.SliceDense   (-> (Vec %a) int int (Vec %a))))
+  (rrb-split-dense   (: Bjolang.Runtime.Rrb.RrbNodes.SplitDense   (-> (Vec %a) int (Tuple (Vec %a) (Vec %a)))))
+  (rrb-normalize-gap (: Bjolang.Runtime.Rrb.RrbNodes.NormalizeGap
+                        (-> (RrbNode %a) int int int (Tuple (RrbNode %a) int int))))
+  (rrb-slice-left    (: Bjolang.Runtime.Rrb.RrbNodes.SliceLeft    (-> (RrbNode %a) int int (RrbNode %a))))
+  (rrb-first-leaf-len (: Bjolang.Runtime.Rrb.RrbNodes.FirstLeafLen (-> (RrbNode %a) int int)))
+  (rrb-copied        (: Bjolang.Runtime.Rrb.RrbNodes.Copied       (-> (Vec %a) int int (Vec %a))))
+  (rrb-take-front    (: Bjolang.Runtime.Rrb.RrbNodes.TakeFront    (-> (Vec %a) int (Vec %a))))
+  (rrb-slice-right   (: Bjolang.Runtime.Rrb.RrbNodes.SliceRight
+                        (-> (RrbNode %a) int int (Tuple (RrbNode %a) (Array %a) int)))))
+
+(: (-> (Array %a)))
+(defun (rrb-no-items) (make-array 0))
+
+;; A list of `len` items, all in `tail`.
+(: (-> (Array %a) int (Vec %a)))
+(defun (rrb-tail-only tail len)
+  (rrb-tree (rrb-no-tree) 0 0 tail len len))
+
+;; `count` items of `v` from `start`.
+;; Raises ArgumentOutOfRangeException unless 0 <= start, 0 <= count and
+;; start + count <= length.
+;; - Two leaves' worth or less is copied into a new vec. A take from the front
+;;   is `rrb-take-front`.
+;; - A dense tree stays dense: a cut from the left leaves a gap, and what is
+;;   left of the leaf it ends in becomes the head (`rrb-drop-tree-front`,
+;;   `rrb-slice-dense`).
+;; - A relaxed tree is cut on both edges in one pass (`rrb-slice-tree`). The
+;;   leaf a cut on the right ends in becomes the tail when it is not full.
+(: (-> (Vec %a) int int (Vec %a)))
+(defun (vec-slice v start count)
+  (def total (vec-length v))
+  (def head-len (rrb-head-len v))
+  (def tail-len (rrb-tail-len v))
+  (def tree-size (- total tail-len))
+  (def root (rrb-root v))
+  (def shift (rrb-shift v))
+  (cond
+    ((or (< start 0) (< count 0) (> start total) (> count (- total start)))
+     (raise (cast Exception (ArgumentOutOfRangeException. "vec-slice: the slice is outside the vec."))))
+    ((= count 0) (vec-empty))
+    ((and (= start 0) (= count total)) v)
+    ((<= count (* 2 rrb-branching)) (rrb-copied v start count))
+    ((= start 0) (rrb-take-front v count))
+    ;; With a head: the rest is sliced, and what is kept of the head put back.
+    ((> head-len 0)
+     (def rest (rrb-headless v))
+     (if (>= start head-len)
+         (vec-slice rest (- start head-len) count)
+         (let ()
+           (def kept (- head-len start))
+           (def head (if (= start 0) (rrb-head v) (rrb-array-part (rrb-head v) start kept)))
+           (rrb-with-head head kept (vec-slice rest 0 (- count kept))))))
+    ((>= start tree-size)
+     (rrb-tail-only (rrb-array-part (rrb-tail v) (- start tree-size) count) count))
+    ;; A drop.
+    ((= (+ start count) total)
+     (cond
+       ((not (rrb-relaxed? root)) (rrb-drop-tree-front v start))
+       ((<= start (rrb-first-leaf-len root shift)) (rrb-promote-first-leaf v start))
+       (else
+        (def (Tuple r s) (rrb-lower-root (rrb-slice-left root start shift) shift (- count tail-len)))
+        (rrb-tree r s 0 (rrb-tail v) tail-len count))))
+    ;; In the middle of a dense tree: a drop, and then a take.
+    ((not (rrb-relaxed? root))
+     (if (<= (+ start count) tree-size)
+         (rrb-slice-dense v start count)
+         (vec-slice (rrb-drop-tree-front v start) 0 count)))
+    (else
+     (def tree-count (- (min (+ start count) tree-size) start))
+     (def (Tuple cut cut-shift promoted promoted-len) (rrb-slice-tree root start tree-count shift))
+     (def tail-count (- (+ start count) tree-size))
+     (cond
+       ;; All in the tree: the promoted leaf is the tail.
+       ((<= tail-count 0)
+        (def tail (if (= promoted-len (array-length promoted)) promoted (rrb-array-part promoted 0 promoted-len)))
+        (def (Tuple r s) (rrb-lower-root cut cut-shift (- count promoted-len)))
+        (rrb-tree r s 0 tail promoted-len count))
+       ;; The promoted leaf and the start of the tail fit in one.
+       ((<= (+ promoted-len tail-count) rrb-branching)
+        (def (: tail (Array %a)) (make-array (+ promoted-len tail-count)))
+        (array-copy! promoted 0 tail 0 promoted-len)
+        (array-copy! (rrb-tail v) 0 tail promoted-len tail-count)
+        (def (Tuple r s) (rrb-lower-root cut cut-shift (- count (array-length tail))))
+        (rrb-tree r s 0 tail (array-length tail) count))
+       ;; They do not: the promoted leaf goes back to the tree.
+       (else
+        (def (Tuple grown grown-shift _)
+          (rrb-append-leaf cut (rrb-array-part promoted 0 promoted-len) 0 0 cut-shift))
+        (def (Tuple r s) (rrb-lower-root grown grown-shift (- count tail-count)))
+        (rrb-tree r s 0 (rrb-array-part (rrb-tail v) 0 tail-count) tail-count count))))))
+
+;; The items [start, start + count) of a relaxed tree at `shift`, 0 < count.
+;; Returns the tree, its shift, and the leaf a cut on the right ends in, with
+;; its length, when it is not full; then that leaf is not in the tree.
+;; - Descends while the slice is in one child, and returns a root with one
+;;   child as the child.
+(: (-> (RrbNode %a) int int int (Tuple (RrbNode %a) int (Array %a) int)))
+(defun (rrb-slice-tree root start count shift)
+  (let go ((node root) (start start) (end (+ start count)) (shift shift))
+    (def (Tuple first sub) (if (> shift 0) (rrb-child-index node start shift) (Tuple 0 0)))
+    (def (Tuple last _) (if (> shift 0) (rrb-child-index node (- end 1) shift) (Tuple 0 0)))
+    (if (and (> shift 0) (= first last))
+        (go (rrb-child node first) sub (- end (- start sub)) (- shift rrb-bits))
+        (let ()
+          (def (Tuple cut tail len) (rrb-slice-node node start end shift))
+          (let squash ((n cut) (s shift))
+            (if (and (not (rrb-no-tree? n)) (> s 0) (= (rrb-len n) 1))
+                (squash (rrb-child n 0) (- s rrb-bits))
+                (Tuple n s tail len)))))))
+
+;; The items [start, end) of the node at `shift`, where at `shift` > 0 they
+;; span more than one child. Returns the node, or `rrb-no-tree`, and the leaf
+;; the cut on the right ends in when it is not full, with its length.
+;; - The node is relaxed when it was, or when the cut on the left goes into a
+;;   child. A dense node cut only on the right stays dense.
+(: (-> (RrbNode %a) int int int (Tuple (RrbNode %a) (Array %a) int)))
+(defun (rrb-slice-node node start end shift)
+  (if (= shift 0)
+      (rrb-cut-leaf (rrb-items node) (rrb-len node) start (- end start) node)
+      (let ()
+        (def (Tuple first first-sub) (rrb-child-index node start shift))
+        (def (Tuple last last-sub) (rrb-child-index node (- end 1) shift))
+        (def limit (+ last-sub 1))
+        (def child-shift (- shift rrb-bits))
+        (def left (if (> first-sub 0) (rrb-slice-left (rrb-child node first) first-sub child-shift) (rrb-no-tree)))
+        (def (Tuple right tail tail-len) (rrb-slice-right (rrb-child node last) limit child-shift))
+        (def has-left? (not (rrb-no-tree? left)))
+        (def has-right? (not (rrb-no-tree? right)))
+        (def middle-from (if (= first-sub 0) first (+ first 1)))
+        (def middle (max 0 (- last middle-from)))
+        (def len (+ (+ (if has-left? 1 0) middle) (if has-right? 1 0)))
+        (if (= len 0)
+            (Tuple (rrb-no-tree) tail tail-len)
+            (let ()
+              (def (: kids (Array (RrbNode %a))) (make-array len))
+              (def at (if has-left? 1 0))
+              (when has-left? (array-set! kids 0 left))
+              (array-copy! (rrb-children node) middle-from kids at middle)
+              (when has-right? (array-set! kids (+ at middle) right))
+              (if (or (rrb-relaxed? node) (> first-sub 0))
+                  (let ()
+                    (def table (make-array len #:fill 0))
+                    (def/mutable sum 0)
+                    (when has-left?
+                      (set! sum (- (rrb-child-size node first shift) first-sub))
+                      (array-set! table 0 sum))
+                    (loop (:for k (range 0 middle))
+                          (:do (set! sum (+ sum (rrb-child-size node (+ middle-from k) shift)))
+                               (array-set! table (+ at k) sum)))
+                    (when has-right? (array-set! table (+ at middle) (+ sum (- limit tail-len))))
+                    (Tuple (rrb-relaxed kids table len) tail tail-len))
+                  (Tuple (rrb-dense kids len) tail tail-len)))))))
+
+;; `count` items of a leaf's `items` from `start`: a leaf when it is full,
+;; and otherwise no leaf and the items. `leaf` is returned for all of it.
+(: (-> (Array %a) int int int (RrbNode %a) (Tuple (RrbNode %a) (Array %a) int)))
+(defun (rrb-cut-leaf items len start count leaf)
+  (def kept (if (= count len) items (rrb-array-part items start count)))
+  (cond
+    ((< count rrb-branching) (Tuple (rrb-no-tree) kept count))
+    ((= count len) (Tuple leaf (rrb-no-items) 0))
+    (else (Tuple (rrb-leaf kept count) (rrb-no-items) 0))))
+
+;; `v` split at `i`: the items before it, and those from it on.
+;; Raises IndexOutOfRangeException unless 0 <= i <= length.
+;; - Both halves share `v`'s nodes, apart from the path to the cut.
+;; - A dense tree is cut by `rrb-split-dense`, and both halves stay dense.
+(: (-> (Vec %a) int (Tuple (Vec %a) (Vec %a))))
+(defun (vec-split v i)
+  (def total (vec-length v))
+  (def head-len (rrb-head-len v))
+  (def tail-len (rrb-tail-len v))
+  (def tree-size (- total tail-len))
+  (def root (rrb-root v))
+  (def shift (rrb-shift v))
+  (def gap (rrb-gap v))
+  (cond
+    ((or (< i 0) (> i total)) (rrb-index-out-of-range))
+    ((= i 0) (Tuple (vec-empty) v))
+    ((= i total) (Tuple v (vec-empty)))
+    ;; In the head, or right after it: the left half is all head.
+    ((and (> head-len 0) (<= i head-len))
+     (def right-head-len (- head-len i))
+     (Tuple (rrb-tail-only (rrb-array-part (rrb-head v) 0 i) i)
+            (rrb-list root shift gap (rrb-array-part (rrb-head v) i right-head-len) right-head-len
+                      (rrb-tail v) tail-len (- total i))))
+    ((> head-len 0)
+     (def (Tuple left right) (vec-split (rrb-headless v) (- i head-len)))
+     (Tuple (rrb-with-head (rrb-head v) head-len left) right))
+    ((>= i tree-size)
+     (def at (- i tree-size))
+     (def rest (- tail-len at))
+     (Tuple (rrb-tree root shift gap (rrb-array-part (rrb-tail v) 0 at) at i)
+            (rrb-tail-only (if (= at 0) (rrb-tail v) (rrb-array-part (rrb-tail v) at rest)) rest)))
+    ((not (rrb-relaxed? root)) (rrb-split-dense v i))
+    (else
+     (def (Tuple left left-tail left-tail-len right) (rrb-split-tree root i shift))
+     (def (Tuple l ls) (rrb-lower-root left shift (- i left-tail-len)))
+     (def (Tuple r rs) (rrb-lower-root right shift (- (- total i) tail-len)))
+     (Tuple (rrb-tree l ls 0 left-tail left-tail-len i)
+            (rrb-tree r rs 0 (rrb-tail v) tail-len (- total i))))))
+
+;; The node at `shift` split at `i`, 0 < i < its count. Returns the left
+;; node, or `rrb-no-tree`, the last leaf of the left half, which is not in
+;; it, with its length, and the right node.
+(: (-> (RrbNode %a) int int (Tuple (RrbNode %a) (Array %a) int (RrbNode %a))))
+(defun (rrb-split-tree node i shift)
+  (def len (rrb-len node))
+  (if (= shift 0)
+      (Tuple (rrb-no-tree) (rrb-array-part (rrb-items node) 0 i) i
+             (rrb-leaf (rrb-array-part (rrb-items node) i (- len i)) (- len i)))
+      (let ()
+        (def (Tuple at sub) (rrb-child-index node i shift))
+        (def cumulative (rrb-cumulative node shift))
+        (def relaxed? (rrb-relaxed? node))
+        (if (= sub 0)
+            ;; At a boundary between children: both halves keep their sizes.
+            (let ()
+              (def right-len (- len at))
+              (def before (array-ref cumulative (- at 1)))
+              (def right-table (rrb-array-part cumulative at right-len))
+              (loop (:for k (range 0 right-len))
+                    (:do (array-set! right-table k (- (array-ref right-table k) before))))
+              (Tuple (if relaxed?
+                         (rrb-relaxed (rrb-array-part (rrb-children node) 0 at) (rrb-array-part cumulative 0 at) at)
+                         (rrb-dense (rrb-array-part (rrb-children node) 0 at) at))
+                     (rrb-no-items) 0
+                     (if relaxed?
+                         (rrb-relaxed (rrb-array-part (rrb-children node) at right-len) right-table right-len)
+                         (rrb-dense (rrb-array-part (rrb-children node) at right-len) right-len))))
+            (let ()
+              (def (Tuple left-child tail tail-len right-child) (rrb-split-tree (rrb-child node at) sub (- shift rrb-bits)))
+              (def left-len (if (rrb-no-tree? left-child) at (+ at 1)))
+              (def left
+                (cond
+                  ((= left-len 0) (rrb-no-tree))
+                  (else
+                   (def (: kids (Array (RrbNode %a))) (make-array left-len))
+                   (array-copy! (rrb-children node) 0 kids 0 at)
+                   (unless (rrb-no-tree? left-child) (array-set! kids at left-child))
+                   (if relaxed?
+                       (let ()
+                         (def table (rrb-array-part cumulative 0 left-len))
+                         (unless (rrb-no-tree? left-child) (array-set! table at (- i tail-len)))
+                         (rrb-relaxed kids table left-len))
+                       (rrb-dense kids left-len)))))
+              ;; The right node starts with a part of a child, so it is relaxed.
+              (def right-len (- len at))
+              (def (: kids (Array (RrbNode %a))) (make-array right-len))
+              (array-set! kids 0 right-child)
+              (array-copy! (rrb-children node) (+ at 1) kids 1 (- right-len 1))
+              (def table (rrb-array-part cumulative at right-len))
+              (loop (:for k (range 0 right-len))
+                    (:do (array-set! table k (- (array-ref table k) i))))
+              (Tuple left tail tail-len (rrb-relaxed kids table right-len)))))))

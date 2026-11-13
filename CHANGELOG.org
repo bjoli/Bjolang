@@ -3,13 +3,19 @@
 
 What each change guarantees, and what it leaves open.
 
-* ~vec-insert~ and ~vec-remove-at~ are written in Bjolang
+* ~vec-insert~, ~vec-remove-at~, ~vec-slice~ and ~vec-split~ are written in Bjolang
 
 - They are in ~lib/std/vec.protobjo~, which the prelude includes. They read
   and build the runtime's RRB nodes through ~Bjolang.Runtime.Rrb.RrbNodes~;
-  the helpers that the runtime's own vec code shares stay in C#.
+  the helpers that the runtime's own vec code shares stay in C#: the cut on
+  the right that ~vec-pop~ also takes, and the gap and phantom code for
+  dense trees that ~vec-pop-first~ also uses.
 - They make the same trees as the C# they replace, and take as long: 1000
-  inserts into a vec of 100k take 580 µs, 1000 removes 276 µs.
+  inserts into a vec of 100k take 580 µs, 1000 removes 276 µs, 1000 splits
+  of a relaxed vec 360 µs.
+- ~RrbList.Slice~ stays for C# list patterns, which vec patterns with a rest
+  compile to. It is a take and then a drop, and may give a tree of another
+  shape than ~vec-slice~ does. ~RrbList.Split~ and ~SplitAt~ are gone.
 - ~RrbList~ no longer implements ~IImmutableList<T>~, whose members called
   the removed C#. It implements ~IReadOnlyList<T>~ and ~ICollection<T>~.
 - ~tests/collections/vec_rrb.bjo~ checks every vec operation against an

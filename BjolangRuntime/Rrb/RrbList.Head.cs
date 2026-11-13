@@ -151,7 +151,18 @@ public sealed partial class RrbList<T>
                 return rest.PromoteFirstLeaf(fromTree);
         }
 
-        return rest.Slice(fromTree, rest.Count - fromTree);
+        var kept = rest.Count - fromTree;
+
+        // Two leaves' worth or less, or all in the tail: copied.
+        if (kept <= Constants.RRB_BRANCHING * 2 || fromTree >= rest.TreeCount)
+            return rest.Copied(fromTree, kept);
+
+        // The drop ends right after the first leaf, or further in: SliceLeftRec.
+        if (fromTree == RrbAlgorithm.FirstLeafLen(rest.Root!, rest.Shift)) return rest.PromoteFirstLeaf(fromTree);
+        var shift = rest.Shift;
+        var root = RrbAlgorithm.LowerRoot(RrbAlgorithm.SliceLeftRec(rest.Root!, fromTree, shift), ref shift,
+            kept - rest.TailLen);
+        return new RrbList<T>(root, rest.Tail, kept, shift, rest.TailLen);
     }
 
     /// <summary>
@@ -165,30 +176,59 @@ public sealed partial class RrbList<T>
     // Helpers
     // ---------------------------------------------------------------------
 
-    // Slice of a list with a head, longer than a head can be: the rest is
-    // sliced, and what is kept of the head is put back. Out of line, so that
-    // Slice on a list without a head pays nothing for it.
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private RrbList<T> SliceWithHead(int start, int count)
+    // `count` items from `start`, copied into a new list of no more than two
+    // leaves: a tail, or a full leaf and a tail. Requires count <= 64.
+    internal RrbList<T> Copied(int start, int count)
     {
-        var rest = Headless();
-        if (start >= HeadLen) return rest.Slice(start - HeadLen, count);
+        var items = new T[count];
+        CopyTo(start, items, 0, count);
+        if (count <= Constants.RRB_BRANCHING) return new RrbList<T>(null, items, count, 0, count);
+        var leaf = new LeafNode<T>(items[..Constants.RRB_BRANCHING], Constants.RRB_BRANCHING, OwnerId.None);
+        return new RrbList<T>(leaf, items[Constants.RRB_BRANCHING..], count, 0, count - Constants.RRB_BRANCHING);
+    }
 
-        var keptHead = HeadLen - start;
-        var restSlice = rest.Slice(0, count - keptHead);
+    /// <summary>
+    ///     `count` items from `start`, for the C# list patterns vec patterns compile to (`[a, .. rest]`):
+    ///     a take, then a drop. Bjolang's `vec-slice` is in lib/std/vec.protobjo.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">When the slice is outside the list.</exception>
+    public RrbList<T> Slice(int start, int count)
+    {
+        if (start < 0 || count < 0 || count > Count - start) throw new ArgumentOutOfRangeException();
+        if (count == 0) return Empty;
+        var front = TakeFront(start + count);
+        return start == 0 ? front : front.DropFront(start);
+    }
 
-        T[] newHead;
-        if (start == 0)
+    // The first `count` items, 0 < count <= Count.
+    // - Two leaves' worth or less is copied.
+    // - The head is kept, and the rest taken.
+    // - The tree is cut on the right by SliceRightAndPromote. Its last leaf
+    //   becomes the tail when it is not full. A dense tree keeps its Gap.
+    internal RrbList<T> TakeFront(int count)
+    {
+        if (count == Count) return this;
+        if (count <= Constants.RRB_BRANCHING * 2) return Copied(0, count);
+        if (HeadLen > 0) return WithHead(Head, HeadLen, Headless().TakeFront(count - HeadLen));
+
+        var treeSize = Count - TailLen;
+        if (count > treeSize)
         {
-            newHead = Head!;
-        }
-        else
-        {
-            newHead = new T[keptHead];
-            Array.Copy(Head!, start, newHead, 0, keptHead);
+            var kept = count - treeSize;
+            return new RrbList<T>(Root, Tail[..kept], count, Shift, kept, null, 0, Gap);
         }
 
-        return WithHead(newHead, keptHead, restSlice);
+        var root = RrbAlgorithm.SliceRightAndPromote(Root!, Gap + count, Shift, out var tail, out var tailLen);
+        var shift = Shift;
+        if (Gap > 0)
+        {
+            var gap = Gap;
+            root = NormalizeGap(root, ref shift, ref gap, count - tailLen);
+            return new RrbList<T>(root, tail, count, shift, tailLen, null, 0, gap);
+        }
+
+        root = RrbAlgorithm.LowerRoot(root, ref shift, count - tailLen);
+        return new RrbList<T>(root, tail, count, shift, tailLen);
     }
 
     // This list without its head: the tree and the tail, indexed from 0.
@@ -285,7 +325,7 @@ public sealed partial class RrbList<T>
     // left half its tail and the right half its head. The left half keeps the
     // Gap, and the right half starts after a Gap that ends with that leaf.
     // Both stay dense.
-    private (RrbList<T> Left, RrbList<T> Right) SplitDenseTree(int index)
+    internal (RrbList<T> Left, RrbList<T> Right) SplitDenseTree(int index)
     {
         var pos = Gap + index;
         var shift = Shift;
@@ -348,7 +388,7 @@ public sealed partial class RrbList<T>
     // (CutDense) makes phantoms of every leaf up to the one `start` is in and
     // cuts off every leaf from the one the slice ends in. Those two leaves give
     // the head and the tail, and the tree between them stays dense, after a Gap.
-    private RrbList<T> SliceDenseTree(int start, int count)
+    internal RrbList<T> SliceDenseTree(int start, int count)
     {
         var first = Gap + start;
         var last = first + count - 1;

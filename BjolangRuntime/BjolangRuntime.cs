@@ -684,9 +684,6 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Bjolang.Runtime.Rrb.RrbList<T> vecsubpopsubfirst<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.PopFirst(list);
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubslice<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int start, int count) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Slice(list, start, count);
-
     // Two vecs are one Merge. More go to Concat, which copies small vecs into
     // full leaves and merges big ones: cheaper than a Merge for each.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -698,9 +695,6 @@ public static partial class BjolangRuntime {
         more.CopyTo(all, 2);
         return Bjolang.Runtime.Rrb.RrbList<T>.Concat(all);
     }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ValueTuple<Bjolang.Runtime.Rrb.RrbList<T>, Bjolang.Runtime.Rrb.RrbList<T>> vecsubsplit<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int index) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Split(list, index);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Bjolang.Runtime.Rrb.RrbList<TResult> RrbMap<T, TResult>(Func<T, TResult> mapper, Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull where TResult : notnull => Bjolang.Runtime.Rrb.RrbFun.Map(list, mapper);
