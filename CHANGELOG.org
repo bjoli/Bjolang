@@ -3,6 +3,29 @@
 
 What each change guarantees, and what it leaves open.
 
+* Calls whose type arguments C# cannot infer write them out
+
+- A direct recursive call to a function with a type parameter that only its
+  result mentions failed in C# with CS0411. Inside its own body a function
+  is bound monomorphically, so the call recorded no type arguments. Codegen
+  now writes the method's own type parameters there (~SelfCall~).
+- A call with a lambda to a function whose type parameter only the
+  parameters of a function-typed parameter mention failed the same way when
+  the parameter's type equalled another argument's: ~int~ for both ~T_v~ and
+  ~T_s~ of ~fold<T_k, T_v, T_s>(Func<T_k, T_v, T_s, T_s>, T_s, Node<T_k>)~.
+  The old check compares instantiated types. ~LambdaOnlyGenerics~ now names
+  these callees from their schemes, and such a call writes its type
+  arguments.
+  - A callee that takes a dictionary is left out: its C# method also has
+    type parameters for the trait's associated types, which the call's type
+    arguments do not list.
+- Not covered, and not tested: a call between mutually recursive functions
+  written without signatures. Those are bound monomorphically in the group
+  too. With signatures they are bound generalized, and such a call records
+  its type arguments.
+- Test: ~547_explicit_type_arguments.bjo~ with ~inc/hidden_generics.bjo~.
+  Both cases fail with CS0411 on the compiler before this change.
+
 * ~array-copy!~ is in the prelude
 
 - ~(array-copy! src src-start dst dst-start count)~ moved from ~(std array)~

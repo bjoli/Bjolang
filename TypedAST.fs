@@ -2081,6 +2081,19 @@ type TraitRegistry =
       /// which C# type inference does not look through, and an omitted one is
       /// no argument at all. `Codegen` emits their type arguments explicitly.
       KeywordOnlyGenerics: Set<string>
+
+      /// Bindings with a type parameter that only the parameters of their
+      /// function-typed parameters mention, and that take no dictionary.
+      ///
+      /// - A lambda gives C# no parameter types to infer from, so a call that
+      ///   passes one cannot infer such a parameter: `T_v` of
+      ///   `fold<T_k, T_v, T_s>(Func<T_k, T_v, T_s, T_s> f, T_s init, Node<T_k> n)`.
+      /// - `Codegen` emits the type arguments of a call to one of these that
+      ///   has a lambda argument.
+      /// - A binding that takes a dictionary is left out: its C# method has
+      ///   type parameters for the trait's associated types too, which the
+      ///   call's type arguments do not list.
+      LambdaOnlyGenerics: Set<string>
       /// The dimensions, units and prefixes declared so far, by every module
       /// checked: `def/dimension`, `def/unit`, `def/prefix`. See Docs/Units.org.
       UnitTable: UnitTable.Table }

@@ -349,6 +349,7 @@ let emptyRegistry : TraitRegistry =
       InferredCopies = Set.empty
       ColourDeclared = Set.empty
       ReturnOnlyGenerics = Set.empty
+      LambdaOnlyGenerics = Set.empty
       KeywordOnlyGenerics = Set.empty
       UnitTable = UnitTable.empty }
 

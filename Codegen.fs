@@ -282,6 +282,15 @@ type CodegenContext = {
     Returns: Map<string, ReturnScope>
     /// Type parameters the enclosing method or class already introduced.
     TypeParams: Set<string>
+    /// The module function whose body is being emitted, and its C# type
+    /// parameters in declaration order. `None` outside one, and in a method
+    /// hoisted out of one.
+    ///
+    /// - Read by a direct recursive call. Inside its own body a function is
+    ///   bound monomorphically, so the call records no type arguments.
+    /// - Monomorphic recursion makes them the method's own parameters, which
+    ///   the call writes out where C# cannot infer them.
+    SelfCall: (string * string list) option
     /// True inside the iterator method a `seq` was emitted as. `yield` is a
     /// property of the *method* it appears in, not of the lexical form, so any
     /// construct that opens a new C# method — a lambda, a local function, a
@@ -4413,6 +4422,7 @@ and private hoistForm (ctx: CodegenContext) (expr: TypedExpr) (body: TypedExpr) 
             ReturnsVoid = false
             Returns = Map.empty
             TypeParams = Set.empty
+            SelfCall = None
             IndentLevel = 3 }
 
     // As in `hoistToTemp`: this is generated out of order, so the directive
@@ -4914,6 +4924,13 @@ and private generateApply
                 // lambda among other arguments, when its parameters' types are
                 // found in none of theirs — `(make-table "t" cols (fun (c) ...))`
                 // — while `(list-map (fun (n) ...) xs)` is inferred from `xs`.
+                //
+                // That comparison is of instantiated types, so it misses a type
+                // parameter that only the lambda's parameters mention when its
+                // type equals another argument's: `int` for both `T_v` and
+                // `T_s` of `fold<T_k, T_v, T_s>(Func<T_k, T_v, T_s, T_s> f,
+                // T_s init, Node<T_k> n)`. `LambdaOnlyGenerics` names the
+                // callees where that is so, from their schemes.
                 let isLambda (a: TypedExpr) = match a.Node with TLambda _ -> true | _ -> false
 
                 let rec bare (t: HMType) =
@@ -4942,6 +4959,7 @@ and private generateApply
                         && (match a.Type with
                             | TFun(ps, _, _) -> ps |> List.exists (fun p -> not (others |> List.exists (occursIn p)))
                             | _ -> false))
+                    || (args |> List.exists isLambda && Naming.namedIn ctx.Registry.LambdaOnlyGenerics name)
 
                 let uninferable =
                     Naming.namedIn ctx.Registry.ReturnOnlyGenerics name
@@ -4954,8 +4972,18 @@ and private generateApply
                 // generic keyword parameter is an `Option`, reached through an
                 // implicit conversion inference does not look through, so the
                 // two guesses above reason about the positional arguments alone.
-                if not tArgs.IsEmpty && (uninferable || args.IsEmpty || onlyLambdas) then
-                    let tyArgsStr = tArgs |> List.map typeArgToString |> String.concat ", "
+                // A direct recursive call records no type arguments (see
+                // `SelfCall`), so it writes the method's own.
+                let written =
+                    if not tArgs.IsEmpty then
+                        tArgs |> List.map typeArgToString
+                    else
+                        match ctx.SelfCall with
+                        | Some(selfName, selfParams) when selfName = name -> selfParams
+                        | _ -> []
+
+                if not written.IsEmpty && (uninferable || args.IsEmpty || onlyLambdas) then
+                    let tyArgsStr = String.concat ", " written
                     append ctx $"<%s{tyArgsStr}>"
         | TLambda _ ->
             // A lambda literal has no type of its own. C# infers one from an
@@ -8198,7 +8226,10 @@ let private generateDynTrio
 let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
     match decl with
     | TDefun (name, tyArgs, args, kwArgs, restArg, retType, effect, body, r) ->
-        let ctx = { ctx with TypeParams = tyArgs |> List.map typeParamKey |> Set.ofList }
+        let ctx =
+            { ctx with
+                TypeParams = tyArgs |> List.map typeParamKey |> Set.ofList
+                SelfCall = Some(name, tyArgs |> List.map typeParamName) }
 
         let genericParams =
             if tyArgs.IsEmpty then ""
@@ -9653,6 +9684,7 @@ let generateProgram
           Loop = None
           Returns = Map.empty
           TypeParams = Set.empty
+          SelfCall = None
           InSeq = false
           Registry = registry
           ClrConstraints = clrConstraintClauses env decls

@@ -246,6 +246,38 @@ let private keywordOnlyGenerics (env: Env) (returnOnly: Set<string>) : Set<strin
             Some(mandatory @ rest)
         | _ -> None)
 
+/// Every binding with a type variable that only the parameters of its
+/// function-typed parameters mention, among its parameters, and no constraint
+/// that costs a dictionary. See `TraitRegistry.LambdaOnlyGenerics` for what
+/// reads it.
+///
+/// A function-typed parameter counts by its result: C# infers from a lambda's
+/// return type, not from its parameters.
+let private lambdaOnlyGenerics (env: Env) (returnOnly: Set<string>) : Set<string> =
+    genericsNotInferableFrom env (fun name args ->
+        let takesDictionary =
+            match Map.tryFind name env.Bindings with
+            | Some binding ->
+                let (Scheme(_, constraints, _)) = binding.Scheme
+
+                constraints
+                |> List.exists (fun c ->
+                    match Map.tryFind c.TraitName env.Registry.Traits with
+                    | Some info -> info.ClrConstraint.IsNone
+                    | None -> true)
+            | None -> true
+
+        if takesDictionary || Set.contains name returnOnly then
+            None
+        else
+            let rec lambdaView (t: HMType) =
+                match t with
+                | TMeta { Value = Some inner } -> lambdaView inner
+                | TFun(_, ret, _) -> lambdaView ret
+                | other -> other
+
+            Some(args |> List.map lambdaView))
+
 /// Checks declarations that were generated *after* `checkProgram` returned.
 ///
 /// `Monomorphise` builds a specialised copy of a constrained function as source
@@ -403,6 +435,7 @@ let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
             Registry =
                 { finalEnv.Registry with
                     ReturnOnlyGenerics = returnOnly
-                    KeywordOnlyGenerics = keywordOnlyGenerics finalEnv returnOnly } }
+                    KeywordOnlyGenerics = keywordOnlyGenerics finalEnv returnOnly
+                    LambdaOnlyGenerics = lambdaOnlyGenerics finalEnv returnOnly } }
 
     finalEnv, typedDecls

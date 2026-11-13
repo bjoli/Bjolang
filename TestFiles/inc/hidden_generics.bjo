@@ -1,0 +1,38 @@
+;; For 547_explicit_type_arguments.bjo. Generic functions whose type
+;; arguments C# cannot infer at some of their calls.
+
+(export find-depth fold-pairs Pairs pairs)
+(import (std prelude))
+
+;; - `%v` is only in the result. The recursive call records no type arguments,
+;;   since a function is bound monomorphically in its own body.
+(: (-> (List %k) int (Option %v)))
+(defun (find-depth xs n)
+  (if (= n 0)
+      None
+      (begin
+        (def found (find-depth xs (- n 1)))
+        (if (none? found) None found))))
+
+;; Keys, and values the keys' type does not mention.
+(type (: (Pairs %k %v) #:opaque (Record (: keys (Array %k)) (: values (Array %v)))))
+
+(: (-> (Array %k) (Array %v) (Pairs %k %v)))
+(defun (pairs ks vs) (Pairs (keys ks) (values vs)))
+
+;; Takes a function, so its body is inlined where it is called with a lambda.
+;; The copy calls `fold-keys`, which this module does not export, with that
+;; lambda.
+(: (-> (-?-> %k %v %s %s) %s (Pairs %k %v) %s))
+(defun (fold-pairs f init p) (fold-keys f init (.keys p)))
+
+;; Folds `f` over the keys that have a value, which none do.
+;;
+;; - `%v` is in no parameter type but `f`'s parameters, so a call that passes
+;;   a lambda for `f` gives C# nothing to infer it from.
+(: (-> (-?-> %k %v %s %s) %s (Array %k) %s))
+(defun (fold-keys f init ks)
+  (def (: no-value (Option %v)) None)
+  (loop (:for k ks)
+        (:acc s (folding init (match no-value ((Some v) (f k v s)) (None s))))
+        => s))

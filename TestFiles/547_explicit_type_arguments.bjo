@@ -1,0 +1,20 @@
+;; Calls whose type arguments C# cannot infer, so the generated code writes
+;; them. See inc/hidden_generics.bjo.
+;;
+;; - A recursive call to a function whose type parameter is only in its
+;;   result.
+;; - A call with a lambda, inlined from another module, to a function whose
+;;   type parameter only the lambda's parameters mention. The lambda's `v` is
+;;   an `int`, as the fold's state is, so the argument types alone do not show
+;;   that C# cannot infer it.
+
+(import (std prelude))
+(import "inc/hidden_generics.bjo")
+
+(defun (main args)
+  (def (: found (Option string)) (find-depth (list 1 2) 3))
+  (def sum (fold-pairs (fun (k v s) (+ s k v)) 0 (pairs #[1 2] #[3 4])))
+  (cond
+    ((some? found) (println "FAILURE: find-depth found a value") 1)
+    ((not (= sum 0)) (println (str "FAILURE: fold-pairs returned " (displayed sum) ", want 0")) 1)
+    (else 0)))
