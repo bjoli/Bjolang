@@ -723,7 +723,7 @@ public static partial class BjolangRuntime {
         return Bjolang.Runtime.Rrb.RrbFun.Reduce(list, func);
     }
 
-    // What `vec-reduce` and `vec-for-each/range` check before they start. Both
+    // What `vec-reduce` and `vec-for-each` check before they start. Both
     // copies of each, the ordinary one and the one for a suspending callback,
     // call these, so a mistake raises the same exception from either.
     public static Unit RrbCheckReduce<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull {
@@ -732,11 +732,12 @@ public static partial class BjolangRuntime {
         return unit;
     }
 
-    public static Unit RrbCheckRange<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int index, int count) where T : notnull {
-        if (index < 0 || index > list.Count)
-            throw new ArgumentOutOfRangeException(nameof(index), index, $"vec-for-each/range: index {index} is outside a vec of length {list.Count}.");
-        if (count < 0 || count > list.Count - index)
-            throw new ArgumentOutOfRangeException(nameof(count), count, $"vec-for-each/range: {count} elements from index {index} do not fit in a vec of length {list.Count}.");
+    // `from` and `to` as `vec-for-each`'s `#:from` and `#:to`: 0 <= from <= to <= length.
+    public static Unit RrbCheckRange<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int from, int to) where T : notnull {
+        if (from < 0 || from > list.Count)
+            throw new ArgumentOutOfRangeException(nameof(from), from, $"vec-for-each: #:from {from} is outside a vec of length {list.Count}.");
+        if (to < from || to > list.Count)
+            throw new ArgumentOutOfRangeException(nameof(to), to, $"vec-for-each: #:to {to} is not between #:from {from} and the length {list.Count}.");
         return unit;
     }
 
@@ -745,9 +746,11 @@ public static partial class BjolangRuntime {
     // `(-> %a Unit)`, and only one delegate shape can also be an instantiation
     // of a generic `(-> %a %b)`. The adapter lambda is the price of `for-each`
     // and `map` taking the same function, and the JIT inlines through it.
-    public static Unit RrbForEach<T>(Func<T, Unit> action, Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull {
+    public static Unit RrbForEach<T>(Func<T, Unit> action, Bjolang.Runtime.Rrb.RrbList<T> list, int from, int to) where T : notnull {
+        // `Visit` does not check its range.
+        RrbCheckRange(list, from, to);
         var visitor = new UnitVisitor<T> { Action = action };
-        list.Visit(ref visitor, 0, list.Count);
+        list.Visit(ref visitor, from, to - from);
         return unit;
     }
 
@@ -760,14 +763,6 @@ public static partial class BjolangRuntime {
             var action = Action;
             foreach (var item in items) action(item);
         }
-    }
-
-    public static Unit RrbForEachRange<T>(Func<T, Unit> action, Bjolang.Runtime.Rrb.RrbList<T> list, int index, int count) where T : notnull {
-        // `Visit` does not check its range.
-        RrbCheckRange(list, index, count);
-        var visitor = new UnitVisitor<T> { Action = action };
-        list.Visit(ref visitor, index, count);
-        return unit;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

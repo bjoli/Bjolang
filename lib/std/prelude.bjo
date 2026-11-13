@@ -72,7 +72,7 @@
   vec-take vec-drop vec-reverse vec->array
   vec-add vec-add-first
   vec-map vec-filter vec-fold vec-reduce
-  vec-for-each vec-for-each/range vec-iter
+  vec-for-each vec-iter
 
   ;; Seq operations.
   seq-fold seq-for-each
@@ -1631,8 +1631,7 @@
   (clr-vec-filter         (: BjolangRuntime.RrbFilter       (-> (-> %a bool) (Vec %a) (Vec %a))))
   (clr-vec-fold           (: BjolangRuntime.RrbFold         (-> (-> %a %b %b) %b (Vec %a) %b)))
   (clr-vec-reduce         (: BjolangRuntime.RrbReduce       (-> (-> %a %a %a) (Vec %a) %a)))
-  (clr-vec-for-each       (: BjolangRuntime.RrbForEach      (-> (-> %a Unit) (Vec %a) Unit)))
-  (clr-vec-for-each/range (: BjolangRuntime.RrbForEachRange (-> (-> %a Unit) (Vec %a) int int Unit)))
+  (clr-vec-for-each       (: BjolangRuntime.RrbForEach      (-> (-> %a Unit) (Vec %a) int int Unit)))
   (clr-vec-iter           (: BjolangRuntime.RrbIter         (-> (-> %a bool) (Vec %a) bool)))
   ;; The checks the ordinary copies make, for the suspending copies to make
   ;; too, so that both raise the same thing.
@@ -1693,19 +1692,16 @@
           acc
           (go (vec-cursor-next c) (f (vec-cursor-current c) acc))))))
 
-(: (-> (-?-> %a Unit) (Vec %a) Unit))
-(defbjouble (vec-for-each f v)
-  (#:sync (clr-vec-for-each f v))
+;; The elements from `#:from` up to `#:to`, front to back. Raises
+;; ArgumentOutOfRangeException, before `f` is first called, unless
+;; 0 <= from <= to <= length.
+(: (-> (-?-> %a Unit) (Vec %a) (#:from int) (#:to int) Unit))
+(defbjouble (vec-for-each f v #:from 0 #:to (vec-length v))
+  #:inline
+  (#:sync (clr-vec-for-each f v from to))
   (#:bjo
-    (loop (:for elem v)
-          (:do (f elem)))))
-
-(: (-> (-?-> %a Unit) (Vec %a) int int Unit))
-(defbjouble (vec-for-each/range f v index count)
-  (#:sync (clr-vec-for-each/range f v index count))
-  (#:bjo
-    (ignore (clr-vec-check-range v index count))
-    (let go ((c (vec-cursor-slice v index count)))
+    (ignore (clr-vec-check-range v from to))
+    (let go ((c (vec-cursor-slice v from (- to from))))
       (if (vec-cursor-done? c)
           unit
           (let ()
