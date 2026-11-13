@@ -2702,11 +2702,30 @@ What each would take, largest first. Together the first four are about
 - **The channel's gate in the channel, about 30 B.** `SpinGate` is an
   object around one `int`. As a field of `Channel<T>`, with the hold as a
   method on it, every channel is one object less. The runtime alone.
+  - Speed: each hold reads one pointer less.
+  - Risk: the gate word is now on a cache line of its own. In the
+    channel it shares a line with the queue fields. A fiber that spins in
+    `Contended` reads that line while the holder writes the queues, which
+    can slow the holder. `bench/service` has this case: many clients send
+    to one shard's channel. Only a measurement shows if it costs.
 - **One timeout event for one duration, about 31 B.** `(timeout d)` makes
   a `TimeoutEvent` at each call, and the service calls it with the same
   constant each time. The event is relative to its sync, so one can be
   offered again. `timeout` could keep the last one it made, by
   milliseconds.
+  - Safe to share: a `TimeoutEvent` holds only `_ms`.
+  - Speed: one read and one compare, less than the allocation.
+  - Risk: the cache is one static slot. Several threads that use
+    different durations write it at most calls, and contend for its cache
+    line.
+  - Alternative without that risk: for a constant duration, the compiler
+    makes the event once, in a static field. Nothing at run time, but only
+    for constants.
+
+Expected gain of these two together, about 60 B a request: at most one
+collection a rep fewer. The 120 B of "The event of a lowered sync comes
+from the thread" took 8-10% off p99 on four cores and nothing past noise
+on all cores, so these two would show less. Not tried.
 - **The send side in the channel, about 24 B.** Not as simple as the gate:
   `Channel<T>` is the `IParkable<T>` of a receive, and the send side is an
   `IParkable<Unit>`. C# does not let one class implement both, as they
