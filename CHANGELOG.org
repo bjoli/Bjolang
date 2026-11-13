@@ -3,6 +3,18 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~vec-insert~ and ~vec-remove-at~ are written in Bjolang
+
+- They are in ~lib/std/vec.protobjo~, which the prelude includes. They read
+  and build the runtime's RRB nodes through ~Bjolang.Runtime.Rrb.RrbNodes~;
+  the helpers that the runtime's own vec code shares stay in C#.
+- They make the same trees as the C# they replace, and take as long: 1000
+  inserts into a vec of 100k take 580 µs, 1000 removes 276 µs.
+- ~RrbList~ no longer implements ~IImmutableList<T>~, whose members called
+  the removed C#. It implements ~IReadOnlyList<T>~ and ~ICollection<T>~.
+- ~tests/collections/vec_rrb.bjo~ checks every vec operation against an
+  array, and the tree's sizes as it goes.
+
 * ~vec-for-each~ takes ~#:from~ and ~#:to~; ~vec-for-each/range~ is gone
 
 - ~(vec-for-each f v #:from i #:to j)~ visits the indices from ~i~ up to

@@ -679,12 +679,6 @@ public static partial class BjolangRuntime {
     public static Bjolang.Runtime.Rrb.RrbList<T> vecsubadd<T>(Bjolang.Runtime.Rrb.RrbList<T> list, T item) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Add(list, item);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubinsert<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int index, T item) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Insert(list, index, item);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubremovesubat<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int index) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.RemoveAt(list, index);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Bjolang.Runtime.Rrb.RrbList<T> vecsubpop<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Pop(list);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

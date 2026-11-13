@@ -17,38 +17,40 @@ namespace Bjolang.Runtime.Rrb;
 
 // Layout: 
 // [Header: 16B] + [Ref: 8B] + [Owner: 6B] + [Len: 1B] + [Flags: 1B] = 32 Bytes
+// Public so that Bjolang can name it (`RrbNodes`). Its members are the
+// runtime's.
 [StructLayout(LayoutKind.Auto, Pack = 1)]
 [NonUserCode]
-internal abstract class Node<T>
+public abstract class Node<T>
 {
     // Note: The specific "Children" or "Items" reference is defined in subclasses,
     // but the CLR generally packs references first. 
     // The fields below consume exactly 8 bytes.
 
-    public OwnerId Owner; // 6 bytes
-    public byte Len; // 1 byte
-    public NodeFlags Flags; // 1 byte
+    internal OwnerId Owner; // 6 bytes
+    internal byte Len; // 1 byte
+    internal NodeFlags Flags; // 1 byte
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool IsLeaf()
+    internal bool IsLeaf()
     {
         return (Flags & NodeFlags.IsLeaf) != 0;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool IsRelaxed()
+    internal bool IsRelaxed()
     {
         return (Flags & NodeFlags.IsRelaxed) != 0;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool IsDense()
+    internal bool IsDense()
     {
         return (Flags & NodeFlags.IsRelaxed) == 0;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool IsPhantom()
+    internal bool IsPhantom()
     {
         return (Flags & NodeFlags.IsPhantom) != 0;
     }

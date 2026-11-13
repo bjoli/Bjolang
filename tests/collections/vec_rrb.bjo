@@ -1,0 +1,126 @@
+;; Vec's RRB tree, against a reference array.
+;;
+;; - Random adds at either end, pops at either end, sets, inserts, removes,
+;;   slices, splits and merges. Pops at the front widen the gap of a dense
+;;   tree, adds at the front fill it, and the operations in the middle relax
+;;   the tree, so all three shapes meet every operation.
+;; - Bursts of adds grow the tree past two levels.
+;; - A vec from the middle of a run must not change by the run's end.
+
+(import (std prelude))
+(import (std random))
+(import (std simpletest))
+
+;; Whether `v` holds what `r` holds, read by index, by cursor and from the back.
+(: (-> (Vec int) (Array int) bool))
+(defun (same? v r)
+  (def n (array-length r))
+  (and (= (vec-length v) n)
+       (loop (:for i (range 0 n)) (:acc ok (folding #t (and ok (= (vec-ref v i) (array-ref r i))))))
+       (loop (:for x v) (:for i (up-from 0)) (:acc ok (folding #t (and ok (= x (array-ref r i))))))
+       (loop (:for x (in-reverse-vec v)) (:for i (down-from (- n 1)))
+             (:acc ok (folding #t (and ok (= x (array-ref r i))))))))
+
+;; `same?`, and raises when the tree's sizes are wrong.
+;; - The search step invariant is not checked: adds, slices and splits can
+;;   leave a node one child over it.
+(: (-> (Vec int) (Array int) bool))
+(defun (checked? v r)
+  (.VerifyIntegrity v)
+  (same? v r))
+
+;; Array helpers, the reference's operations.
+(: (-> (Array int) int int (Array int)))
+(defun (arr-slice r from count)
+  (loop (:for i (range from (+ from count))) (:acc (arraying (array-ref r i)))))
+
+(: (-> (Array int) (Array int) (Array int)))
+(defun (arr-append a b)
+  (def out (make-array (+ (array-length a) (array-length b)) #:fill 0))
+  (loop (:for i (range 0 (array-length a))) (:do (array-set! out i (array-ref a i))))
+  (loop (:for i (range 0 (array-length b))) (:do (array-set! out (+ (array-length a) i) (array-ref b i))))
+  out)
+
+(: (-> (Array int) int int (Array int)))
+(defun (arr-insert r at x)
+  (arr-append (arr-append (arr-slice r 0 at) (array-of x))
+              (arr-slice r at (- (array-length r) at))))
+
+(: (-> int (Array int)))
+(defun (array-of x) (make-array 1 #:fill x))
+
+(: (-> (Array int) int (Array int)))
+(defun (arr-remove r at)
+  (arr-append (arr-slice r 0 at) (arr-slice r (+ at 1) (- (array-length r) at 1))))
+
+(: (-> (Array int) int int (Array int)))
+(defun (arr-set r at x)
+  (def out (arr-slice r 0 (array-length r)))
+  (array-set! out at x)
+  out)
+
+;; A vec of `n` fresh numbers from `next`, built by adds, and its array.
+(: (-> int int (Tuple (Vec int) (Array int))))
+(defun (fresh n next)
+  (def v (loop (:for i (range 0 n)) (:acc (vecing (+ next i)))))
+  (Tuple v (vec->array v)))
+
+;; `steps` random operations from an empty vec. `burst` bounds the adds of
+;; a burst. Checks every 61 steps and at the end, and the vec of step
+;; `steps / 2` at the end.
+(: (-> int int int bool))
+(defun (random-mix? seed steps burst)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def/mutable next 0)
+  (def/mutable kept (vec-empty))
+  (def/mutable kept-ref (make-array 0 #:fill 0))
+  (let go ((i 0) (v (vec-empty)) (r (make-array 0 #:fill 0)))
+    (def n (array-length r))
+    (cond
+      ((= i steps) (and (checked? v r) (checked? kept kept-ref)))
+      ((and (= (% i 61) 0) (not (checked? v r))) #f)
+      (:do (when (= i (/ steps 2)) (set! kept v) (set! kept-ref r))
+           (set! next (+ next 1)))
+      (:def op (random-int 0 11 #:rng rng))
+      (:def at (if (= n 0) 0 (random-int 0 (- n 1) #:rng rng)))
+      ((= op 0) (go (+ i 1) (vec-add v next) (arr-insert r n next)))
+      ((= op 1) (go (+ i 1) (vec-add-first v next) (arr-insert r 0 next)))
+      ((= n 0) (go (+ i 1) v r))
+      ((= op 2) (go (+ i 1) (vec-pop v) (arr-slice r 0 (- n 1))))
+      ((= op 3) (go (+ i 1) (vec-pop-first v) (arr-slice r 1 (- n 1))))
+      ((= op 4) (go (+ i 1) (vec-set v at next) (arr-set r at next)))
+      ((= op 5) (go (+ i 1) (vec-insert v at next) (arr-insert r at next)))
+      ((= op 6) (go (+ i 1) (vec-remove-at v at) (arr-remove r at)))
+      ((= op 7)
+       (def count (random-int 0 (- n at) #:rng rng))
+       (go (+ i 1) (vec-slice v at count) (arr-slice r at count)))
+      ((= op 8)
+       (def (Tuple left right) (vec-split v at))
+       (cond
+         ((not (and (same? left (arr-slice r 0 at)) (same? right (arr-slice r at (- n at))))) #f)
+         ;; Back together, in the other order half the time.
+         ((= (random-int 0 1 #:rng rng) 0) (go (+ i 1) (vec-merge left right) r))
+         (else (go (+ i 1) (vec-merge right left) (arr-append (arr-slice r at (- n at)) (arr-slice r 0 at))))))
+      ((= op 9)
+       (def (Tuple w wr) (fresh (random-int 0 burst #:rng rng) (* 1000000 (+ i 1))))
+       (if (= (random-int 0 1 #:rng rng) 0)
+           (go (+ i 1) (vec-merge v w) (arr-append r wr))
+           (go (+ i 1) (vec-merge w v) (arr-append wr r))))
+      (else
+       ;; A burst of adds at one end.
+       (def k (random-int 0 burst #:rng rng))
+       (def front? (= (random-int 0 1 #:rng rng) 0))
+       (def/mutable w v)
+       (def/mutable wr r)
+       (loop (:for j (range 0 k))
+             (:do (def x (+ (* 1000000 (+ i 1)) j))
+                  (if front?
+                      (begin (set! w (vec-add-first w x)) (set! wr (arr-insert wr 0 x)))
+                      (begin (set! w (vec-add w x)) (set! wr (arr-insert wr (array-length wr) x))))))
+       (go (+ i 1) w wr)))))
+
+(defun (main args)
+  (loop (:for seed (range 1 9))
+        (:do (expect-true (string-append "small vecs, seed " (int->string seed)) (random-mix? seed 4000 40))
+             (expect-true (string-append "deep vecs, seed " (int->string seed)) (random-mix? (+ seed 100) 1500 3000))))
+  0)

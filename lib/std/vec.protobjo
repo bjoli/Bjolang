@@ -1,0 +1,466 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; std/vec.protobjo, included by the prelude.
+;;
+;; Vec's operations in the middle of its RRB tree: insert and remove. They
+;; read and build the runtime's nodes through `Bjolang.Runtime.Rrb.RrbNodes`.
+;;
+;; - A list is a head of up to 32 items, a tree, and a tail of up to 32. See
+;;   `RrbList` in the runtime for the gap a dense tree may have in front.
+;; - Every node made here is frozen. A node's arrays may be longer than its
+;;   length; only [0, len) is read.
+;; - The tree keeps the search step invariant: a node has at most
+;;   `rrb-allowed-children` children for the slots below it. An insert or a
+;;   remove moves a node past it by at most one child, and puts it back:
+;;   - A child that splits gives its extra slot to a neighbour with room, so
+;;     the node keeps its number of children (`rrb-absorb-split`).
+;;   - A child that shrinks past the bound merges with a neighbour it fits in
+;;     (`rrb-repair-after-remove`).
+;;   - Failing both, `rrb-build-checked` spreads the children evenly over one
+;;     node more than the fewest that would hold them, so the next repair under
+;;     that node is a long way off.
+
+(import/class
+  ((RrbNode %a) (: Bjolang.Runtime.Rrb.Node))
+  (IndexOutOfRangeException (: System.IndexOutOfRangeException)))
+
+(import/extern
+  (rrb-no-tree       (: Bjolang.Runtime.Rrb.RrbNodes.NoTree       (-> (RrbNode %a))))
+  (rrb-no-tree?      (: Bjolang.Runtime.Rrb.RrbNodes.IsNoTree     (-> (RrbNode %a) bool)))
+  (rrb-root          (: Bjolang.Runtime.Rrb.RrbNodes.Root         (-> (Vec %a) (RrbNode %a))))
+  (rrb-shift         (: Bjolang.Runtime.Rrb.RrbNodes.Shift        (-> (Vec %a) int)))
+  (rrb-gap           (: Bjolang.Runtime.Rrb.RrbNodes.Gap          (-> (Vec %a) int)))
+  (rrb-head-len      (: Bjolang.Runtime.Rrb.RrbNodes.HeadLen      (-> (Vec %a) int)))
+  (rrb-tail-len      (: Bjolang.Runtime.Rrb.RrbNodes.TailLen      (-> (Vec %a) int)))
+  (rrb-head          (: Bjolang.Runtime.Rrb.RrbNodes.Head         (-> (Vec %a) (Array %a))))
+  (rrb-tail          (: Bjolang.Runtime.Rrb.RrbNodes.Tail         (-> (Vec %a) (Array %a))))
+  (rrb-list          (: Bjolang.Runtime.Rrb.RrbNodes.List
+                        (-> (RrbNode %a) int int (Array %a) int (Array %a) int int (Vec %a))))
+  (rrb-materialized  (: Bjolang.Runtime.Rrb.RrbNodes.Materialized (-> (Vec %a) (Vec %a))))
+  (rrb-with-head     (: Bjolang.Runtime.Rrb.RrbNodes.WithHead     (-> (Array %a) int (Vec %a) (Vec %a))))
+  (rrb-push-in-front (: Bjolang.Runtime.Rrb.RrbNodes.PushInFront
+                        (-> (RrbNode %a) int int (Array %a) int int (Tuple (RrbNode %a) int int))))
+  (rrb-append-leaf   (: Bjolang.Runtime.Rrb.RrbNodes.AppendLeaf
+                        (-> (RrbNode %a) (Array %a) int int int (Tuple (RrbNode %a) int int))))
+  (rrb-lower-root    (: Bjolang.Runtime.Rrb.RrbNodes.LowerRoot    (-> (RrbNode %a) int int (Tuple (RrbNode %a) int))))
+  (rrb-len           (: Bjolang.Runtime.Rrb.RrbNodes.Len          (-> (RrbNode %a) int)))
+  (rrb-relaxed?      (: Bjolang.Runtime.Rrb.RrbNodes.IsRelaxed    (-> (RrbNode %a) bool)))
+  (rrb-items         (: Bjolang.Runtime.Rrb.RrbNodes.Items        (-> (RrbNode %a) (Array %a))))
+  (rrb-children      (: Bjolang.Runtime.Rrb.RrbNodes.Children     (-> (RrbNode %a) (Array (RrbNode %a)))))
+  (rrb-child         (: Bjolang.Runtime.Rrb.RrbNodes.Child        (-> (RrbNode %a) int (RrbNode %a))))
+  (rrb-cumulative    (: Bjolang.Runtime.Rrb.RrbNodes.Cumulative   (-> (RrbNode %a) int (Array int))))
+  (rrb-child-size    (: Bjolang.Runtime.Rrb.RrbNodes.ChildSize    (-> (RrbNode %a) int int int)))
+  (rrb-count-tree    (: Bjolang.Runtime.Rrb.RrbNodes.CountTree    (-> (RrbNode %a) int int)))
+  (rrb-child-index   (: Bjolang.Runtime.Rrb.RrbNodes.ChildIndex   (-> (RrbNode %a) int int (Tuple int int))))
+  (rrb-leaf          (: Bjolang.Runtime.Rrb.RrbNodes.Leaf         (-> (Array %a) int (RrbNode %a))))
+  (rrb-relaxed       (: Bjolang.Runtime.Rrb.RrbNodes.Relaxed      (-> (Array (RrbNode %a)) (Array int) int (RrbNode %a))))
+  (rrb-dense         (: Bjolang.Runtime.Rrb.RrbNodes.Dense        (-> (Array (RrbNode %a)) int (RrbNode %a))))
+  (rrb-allowed-children (: Bjolang.Runtime.Rrb.RrbNodes.AllowedChildren (-> int int)))
+  (rrb-slots-of-children (: Bjolang.Runtime.Rrb.RrbNodes.SlotsOfChildren (-> (Array (RrbNode %a)) int int)))
+  (rrb-build-checked (: Bjolang.Runtime.Rrb.RrbNodes.BuildChecked
+                        (-> (Array (RrbNode %a)) (Array int) int int (Tuple (RrbNode %a) (RrbNode %a)))))
+  (rrb-repack        (: Bjolang.Runtime.Rrb.RrbNodes.Repack
+                        (-> (Array (RrbNode %a)) (Array int) int int (Array int) int (RrbNode %a))))
+  ;; `int-max` is defined later in the prelude.
+  (rrb-int-max       (: System.Int32.MaxValue #:get)))
+
+;; Items in a full node, and the bits of an index each level takes.
+(def rrb-branching 32)
+(def rrb-bits 5)
+
+(: (-> %a))
+(defun (rrb-index-out-of-range)
+  (raise (cast Exception (IndexOutOfRangeException. "The index is outside the vec."))))
+
+;; ---------------------------------------------------------------------------
+;; Arrays
+;; ---------------------------------------------------------------------------
+
+;; The first `len` of `xs`, with `x` at `at`: `len + 1` items.
+(: (-> (Array %a) int int %a (Array %a)))
+(defun (rrb-array-with xs len at x)
+  (def (: out (Array %a)) (make-array (+ len 1)))
+  (array-copy! xs 0 out 0 at)
+  (array-set! out at x)
+  (array-copy! xs at out (+ at 1) (- len at))
+  out)
+
+;; The first `len` of `xs`, without the one at `at`: `len - 1` items.
+(: (-> (Array %a) int int (Array %a)))
+(defun (rrb-array-without xs len at)
+  (def (: out (Array %a)) (make-array (- len 1)))
+  (array-copy! xs 0 out 0 at)
+  (array-copy! xs (+ at 1) out at (- (- len at) 1))
+  out)
+
+;; `count` items of `xs` from `from`.
+(: (-> (Array %a) int int (Array %a)))
+(defun (rrb-array-part xs from count)
+  (def (: out (Array %a)) (make-array count))
+  (array-copy! xs from out 0 count)
+  out)
+
+(: (-> %a (Array %a)))
+(defun (rrb-array-of x) (make-array 1 #:fill x))
+
+;; The sizes of children from a cumulative table.
+(: (-> (Array int) int (Array int)))
+(defun (rrb-sizes-of table count)
+  (def sizes (make-array count #:fill 0))
+  (loop (:for i (range 0 count))
+        (:do (array-set! sizes i (- (array-ref table i) (if (> i 0) (array-ref table (- i 1)) 0)))))
+  sizes)
+
+;; ---------------------------------------------------------------------------
+;; Insert
+;; ---------------------------------------------------------------------------
+
+;; `v` with `x` at `i`, the items from `i` on one place later.
+;; Raises IndexOutOfRangeException unless 0 <= i <= length.
+;; - At either end, `vec-add-first` or `vec-add`.
+;; - In the head or the tail, a copy of it. A full one gives a leaf to the
+;;   tree.
+;; - In the tree, the path to the leaf is copied. A full leaf splits, and a
+;;   neighbour with room takes the extra slot (`rrb-absorb-split`).
+(: (-> (Vec %a) int %a (Vec %a)))
+(defun (vec-insert v i x)
+  (def count (vec-length v))
+  (def head-len (rrb-head-len v))
+  (def tail-len (rrb-tail-len v))
+  (def tail-from (- count tail-len))
+  (def root (rrb-root v))
+  (def shift (rrb-shift v))
+  (def gap (rrb-gap v))
+  (cond
+    ((or (< i 0) (> i count)) (rrb-index-out-of-range))
+    ((= i count) (vec-add v x))
+    ((= i 0) (vec-add-first v x))
+    ((<= i head-len)
+     (def head (rrb-array-with (rrb-head v) head-len i x))
+     (if (< head-len rrb-branching)
+         (rrb-list root shift gap head (+ head-len 1) (rrb-tail v) tail-len (+ count 1))
+         ;; The last leaf's worth goes in front of the tree, and the first
+         ;; item stays as the head.
+         (let ()
+           (def (Tuple r g s)
+             (rrb-push-in-front root (- tail-from head-len) gap (rrb-array-part head 1 rrb-branching) rrb-branching shift))
+           (rrb-list r s g (rrb-array-of (array-ref head 0)) 1 (rrb-tail v) tail-len (+ count 1)))))
+    ((>= i tail-from)
+     (def tail (rrb-array-with (rrb-tail v) tail-len (- i tail-from) x))
+     (if (< tail-len rrb-branching)
+         (rrb-list root shift gap (rrb-head v) head-len tail (+ tail-len 1) (+ count 1))
+         ;; The first leaf's worth goes after the tree, and the last item
+         ;; stays as the tail.
+         (let ()
+           (def tree-count (- tail-from head-len))
+           (def (Tuple r s g)
+             (rrb-append-leaf root (rrb-array-part tail 0 rrb-branching) gap (+ tree-count rrb-branching) shift))
+           (rrb-list r s g (rrb-head v) head-len (rrb-array-of (array-ref tail rrb-branching)) 1 (+ count 1)))))
+    ;; The tree in the middle has no gap.
+    ((> gap 0) (vec-insert (rrb-materialized v) i x))
+    (else
+     (def (Tuple node over) (rrb-insert-node root (- i head-len) x shift))
+     (if (rrb-no-tree? over)
+         (rrb-list node shift 0 (rrb-head v) head-len (rrb-tail v) tail-len (+ count 1))
+         ;; The root split: a root over the two, a level up.
+         (let ()
+           (def (: kids (Array (RrbNode %a))) (make-array 2))
+           (array-set! kids 0 node)
+           (array-set! kids 1 over)
+           (def table (make-array 2 #:fill 0))
+           (array-set! table 0 (rrb-count-tree node shift))
+           (array-set! table 1 (+ (array-ref table 0) (rrb-count-tree over shift)))
+           (rrb-list (rrb-relaxed kids table 2) (+ shift rrb-bits) 0
+                     (rrb-head v) head-len (rrb-tail v) tail-len (+ count 1)))))))
+
+;; The node at `shift` with `x` at `index`, and a second node when it split,
+;; or `rrb-no-tree`.
+(: (-> (RrbNode %a) int %a int (Tuple (RrbNode %a) (RrbNode %a))))
+(defun (rrb-insert-node node index x shift)
+  (def len (rrb-len node))
+  (if (= shift 0)
+      (let ()
+        (def items (rrb-array-with (rrb-items node) len index x))
+        (if (< len rrb-branching)
+            (Tuple (rrb-leaf items (+ len 1)) (rrb-no-tree))
+            ;; Split in two, 16 and 17, so both have room.
+            (let ()
+              (def left-len (/ (+ rrb-branching 1) 2))
+              (def right-len (- (+ len 1) left-len))
+              (Tuple (rrb-leaf (rrb-array-part items 0 left-len) left-len)
+                     (rrb-leaf (rrb-array-part items left-len right-len) right-len)))))
+      (let ()
+        (def (Tuple at sub) (rrb-child-index node index shift))
+        (def child (rrb-child node at))
+        (def (Tuple new-child over) (rrb-insert-node child sub x (- shift rrb-bits)))
+        (cond
+          ((not (rrb-no-tree? over)) (rrb-absorb-split node at new-child over shift))
+          ;; A child that repacked itself may hold fewer slots, and this node
+          ;; checks that it still keeps the invariant.
+          ((< (rrb-len new-child) (rrb-len child))
+           (def (: kids (Array (RrbNode %a))) (make-array len))
+           (def sizes (make-array len #:fill 0))
+           (loop (:for i (range 0 len))
+                 (:do (array-set! kids i (rrb-child node i))
+                      (array-set! sizes i (rrb-child-size node i shift))))
+           (array-set! kids at new-child)
+           (array-set! sizes at (+ (array-ref sizes at) 1))
+           (rrb-build-checked kids sizes len shift))
+          (else
+           (def (: kids (Array (RrbNode %a))) (make-array len))
+           (array-copy! (rrb-children node) 0 kids 0 len)
+           (array-set! kids at new-child)
+           (cond
+             ((rrb-relaxed? node)
+              (def table (rrb-array-part (rrb-cumulative node shift) 0 len))
+              (loop (:for i (range at len)) (:do (array-set! table i (+ (array-ref table i) 1))))
+              (Tuple (rrb-relaxed kids table len) (rrb-no-tree)))
+             ;; A dense node stays dense only when its last child grew and
+             ;; stayed dense.
+             ((or (< at (- len 1)) (rrb-relaxed? new-child))
+              (def block (shift-left 1 shift))
+              (def child-shift (- shift rrb-bits))
+              (def table (make-array len #:fill 0))
+              (ignore
+               (loop (:for i (range 0 len))
+                     (:acc sum (folding 0
+                                       (let ()
+                                         (def size
+                                           (cond
+                                             ((= i at) (if (< at (- len 1)) (+ block 1) (rrb-count-tree new-child child-shift)))
+                                             ((= i (- len 1)) (rrb-count-tree (rrb-child node i) child-shift))
+                                             (else block)))
+                                         (array-set! table i (+ sum size))
+                                         (+ sum size))))))
+              (Tuple (rrb-relaxed kids table len) (rrb-no-tree)))
+             (else (Tuple (rrb-dense kids len) (rrb-no-tree)))))))))
+
+;; The child at `at` of a node at `shift` split into `left` and `right`.
+;; - The two make one full node, and a neighbour with room takes what is
+;;   over: the node keeps its number of children.
+;; - Failing that, the node takes a child more. Past a node's worth it
+;;   returns two halves, and past the invariant `rrb-build-checked` repacks.
+(: (-> (RrbNode %a) int (RrbNode %a) (RrbNode %a) int (Tuple (RrbNode %a) (RrbNode %a))))
+(defun (rrb-absorb-split node at left right shift)
+  (def len (rrb-len node))
+  (def child-shift (- shift rrb-bits))
+  (def cumulative (rrb-cumulative node shift))
+  (def before (if (> at 0) (array-ref cumulative (- at 1)) 0))
+  (def left-size (rrb-count-tree left child-shift))
+  (def right-size (rrb-count-tree right child-shift))
+  (def extra (- (+ (rrb-len left) (rrb-len right)) rrb-branching))
+  (def left-room (if (> at 0) (- rrb-branching (rrb-len (rrb-child node (- at 1)))) 0))
+  (def right-room (if (< (+ at 1) len) (- rrb-branching (rrb-len (rrb-child node (+ at 1)))) 0))
+  (def to-left? (and (> extra 0) (>= left-room extra) (>= left-room right-room)))
+  (def to-right? (and (not to-left?) (> extra 0) (>= right-room extra)))
+  (cond
+    ((or to-left? to-right?)
+     ;; A window of three nodes made into two.
+     (def start (if to-left? (- at 1) at))
+     (def (: window (Array (RrbNode %a))) (make-array 3))
+     (def window-sizes (make-array 3 #:fill 0))
+     (def plan (make-array 2 #:fill 0))
+     (if to-left?
+         (let ()
+           (def nb (rrb-child node (- at 1)))
+           (array-set! window 0 nb)
+           (array-set! window 1 left)
+           (array-set! window 2 right)
+           (array-set! window-sizes 0 (- before (if (> at 1) (array-ref cumulative (- at 2)) 0)))
+           (array-set! window-sizes 1 left-size)
+           (array-set! window-sizes 2 right-size)
+           (array-set! plan 0 (+ (rrb-len nb) extra))
+           (array-set! plan 1 rrb-branching))
+         (let ()
+           (def nb (rrb-child node (+ at 1)))
+           (array-set! window 0 left)
+           (array-set! window 1 right)
+           (array-set! window 2 nb)
+           (array-set! window-sizes 0 left-size)
+           (array-set! window-sizes 1 right-size)
+           (array-set! window-sizes 2 (- (array-ref cumulative (+ at 1)) (array-ref cumulative at)))
+           (array-set! plan 0 rrb-branching)
+           (array-set! plan 1 (+ (rrb-len nb) extra))))
+     (def (Tuple first second first-size)
+       (if (= shift rrb-bits)
+           ;; Leaves: the items copied straight into the two new ones.
+           (let ()
+             (def a-len (array-ref plan 0))
+             (def b-len (array-ref plan 1))
+             (def (: a (Array %a)) (make-array a-len))
+             (def (: b (Array %a)) (make-array b-len))
+             (ignore
+              (loop (:for w (range 0 3))
+                    (:acc filled (folding 0
+                                         (let ()
+                                           (def leaf (array-ref window w))
+                                           (def items (rrb-items leaf))
+                                           (def n (rrb-len leaf))
+                                           (def taken (if (< filled a-len) (min n (- a-len filled)) 0))
+                                           (when (> taken 0) (array-copy! items 0 a filled taken))
+                                           (when (< taken n)
+                                             (array-copy! items taken b (- (+ filled taken) a-len) (- n taken)))
+                                           (+ filled n))))))
+             (Tuple (rrb-leaf a a-len) (rrb-leaf b b-len) a-len))
+           (let ()
+             (def made (rrb-repack window window-sizes 0 3 plan shift))
+             (Tuple (rrb-child made 0) (rrb-child made 1) (array-ref (rrb-cumulative made shift) 0)))))
+     (def (: kids (Array (RrbNode %a))) (make-array len))
+     (array-copy! (rrb-children node) 0 kids 0 len)
+     (def table (rrb-array-part cumulative 0 len))
+     (array-set! kids start first)
+     (array-set! kids (+ start 1) second)
+     (array-set! table start (+ (if (> start 0) (array-ref cumulative (- start 1)) 0) first-size))
+     (loop (:for i (range (+ start 1) len)) (:do (array-set! table i (+ (array-ref table i) 1))))
+     (Tuple (rrb-relaxed kids table len) (rrb-no-tree)))
+    (else
+     ;; The node takes a child more.
+     (def count (+ len 1))
+     (def (: children (Array (RrbNode %a))) (make-array count))
+     (def table (make-array count #:fill 0))
+     (array-copy! (rrb-children node) 0 children 0 at)
+     (array-set! children at left)
+     (array-set! children (+ at 1) right)
+     (array-copy! (rrb-children node) (+ at 1) children (+ at 2) (- (- len at) 1))
+     (array-copy! cumulative 0 table 0 at)
+     (array-set! table at (+ before left-size))
+     (array-set! table (+ at 1) (+ (+ before left-size) right-size))
+     (loop (:for i (range (+ at 1) len)) (:do (array-set! table (+ i 1) (+ (array-ref cumulative i) 1))))
+     (def slots (if (= shift rrb-bits) (array-ref table (- count 1)) (rrb-slots-of-children children count)))
+     (cond
+       ((and (<= count (rrb-allowed-children slots)) (<= count rrb-branching))
+        (Tuple (rrb-relaxed children table count) (rrb-no-tree)))
+       ;; A node's worth and one more: halves, so both have room.
+       ((<= count (rrb-allowed-children slots))
+        (def mid (/ count 2))
+        (def cut (array-ref table (- mid 1)))
+        (def right-table (rrb-array-part table mid (- count mid)))
+        (loop (:for i (range 0 (- count mid))) (:do (array-set! right-table i (- (array-ref right-table i) cut))))
+        (Tuple (rrb-relaxed (rrb-array-part children 0 mid) (rrb-array-part table 0 mid) mid)
+               (rrb-relaxed (rrb-array-part children mid (- count mid)) right-table (- count mid))))
+       (else (rrb-build-checked children (rrb-sizes-of table count) count shift))))))
+
+;; ---------------------------------------------------------------------------
+;; Remove
+;; ---------------------------------------------------------------------------
+
+;; `v` without the item at `i`, the items after it one place earlier.
+;; Raises IndexOutOfRangeException unless 0 <= i < length.
+;; - In the head or the tail, a copy of it.
+;; - In the tree, the path to the leaf is copied, and a node whose child
+;;   shrank past the invariant merges it with a neighbour or repacks.
+;; - The root is lowered when the tree no longer needs its height.
+(: (-> (Vec %a) int (Vec %a)))
+(defun (vec-remove-at v i)
+  (def count (vec-length v))
+  (def head-len (rrb-head-len v))
+  (def tail-len (rrb-tail-len v))
+  (def tail-from (- count tail-len))
+  (cond
+    ((or (< i 0) (>= i count)) (rrb-index-out-of-range))
+    ((< i head-len)
+     (rrb-list (rrb-root v) (rrb-shift v) (rrb-gap v)
+               (rrb-array-without (rrb-head v) head-len i) (- head-len 1)
+               (rrb-tail v) tail-len (- count 1)))
+    ((>= i tail-from)
+     (rrb-list (rrb-root v) (rrb-shift v) (rrb-gap v) (rrb-head v) head-len
+               (rrb-array-without (rrb-tail v) tail-len (- i tail-from)) (- tail-len 1) (- count 1)))
+    ;; The tree in the middle has no gap.
+    ((> (rrb-gap v) 0) (vec-remove-at (rrb-materialized v) i))
+    (else
+     (def tree-count (- tail-from head-len))
+     (def node (rrb-remove-node (rrb-root v) (- i head-len) (rrb-shift v)))
+     (def (Tuple root shift) (rrb-lower-root node (rrb-shift v) (- tree-count 1)))
+     (if (rrb-no-tree? root)
+         ;; Only the head and the tail are left.
+         (rrb-with-head (rrb-head v) head-len
+                        (rrb-list root 0 0 (rrb-head v) 0 (rrb-tail v) tail-len tail-len))
+         (rrb-list root shift 0 (rrb-head v) head-len (rrb-tail v) tail-len (- count 1))))))
+
+;; The node at `shift` without the item at `index`, or `rrb-no-tree` when
+;; that was its last.
+(: (-> (RrbNode %a) int int (RrbNode %a)))
+(defun (rrb-remove-node node index shift)
+  (def len (rrb-len node))
+  (if (= shift 0)
+      (if (= len 1)
+          (rrb-no-tree)
+          (rrb-leaf (rrb-array-without (rrb-items node) len index) (- len 1)))
+      (let ()
+        (def (Tuple at sub) (rrb-child-index node index shift))
+        (def child (rrb-child node at))
+        (def new-child (rrb-remove-node child sub (- shift rrb-bits)))
+        (def gone? (rrb-no-tree? new-child))
+        (if (and gone? (= len 1))
+            (rrb-no-tree)
+            (let ()
+              ;; The children and the table as they are now, the emptied
+              ;; child left out. A table is always kept: a dense node with a
+              ;; child one item short is no longer dense.
+              (def cumulative (rrb-cumulative node shift))
+              (def count (if gone? (- len 1) len))
+              (def (: children (Array (RrbNode %a))) (make-array count))
+              (def table (make-array count #:fill 0))
+              (array-copy! cumulative 0 table 0 at)
+              (if gone?
+                  (let ()
+                    (array-copy! (rrb-children node) 0 children 0 at)
+                    (array-copy! (rrb-children node) (+ at 1) children at (- count at))
+                    (loop (:for i (range at count))
+                          (:do (array-set! table i (- (array-ref cumulative (+ i 1)) 1)))))
+                  (let ()
+                    (array-copy! (rrb-children node) 0 children 0 count)
+                    (array-set! children at new-child)
+                    (loop (:for i (range at count))
+                          (:do (array-set! table i (- (array-ref cumulative i) 1))))))
+              ;; Above the leaves, a child that kept its number of children
+              ;; leaves this node's slots, and the invariant, as they were.
+              ;; At the level above the leaves a slot is an item.
+              (def slots
+                (cond
+                  ((= shift rrb-bits) (array-ref table (- count 1)))
+                  ((and (not gone?) (= (rrb-len new-child) (rrb-len child))) rrb-int-max)
+                  (else (rrb-slots-of-children children count))))
+              (if (or (= slots rrb-int-max) (<= count (rrb-allowed-children slots)))
+                  (rrb-relaxed children table count)
+                  (rrb-repair-after-remove children (rrb-sizes-of table count) count (if gone? -1 at) shift)))))))
+
+;; The children of a node at `shift` after a remove below it, when they break
+;; the invariant: the child at `at` merges with the neighbour it fits in, and
+;; failing that they are repacked. `at` is -1 when the child went.
+(: (-> (Array (RrbNode %a)) (Array int) int int int (RrbNode %a)))
+(defun (rrb-repair-after-remove children sizes count at shift)
+  (def kept
+    (if (< at 0)
+        count
+        (let ()
+          (def own (rrb-len (array-ref children at)))
+          (def left-len (if (> at 0) (rrb-len (array-ref children (- at 1))) rrb-int-max))
+          (def right-len (if (< (+ at 1) count) (rrb-len (array-ref children (+ at 1))) rrb-int-max))
+          (def other (min left-len right-len))
+          (def with (if (<= left-len right-len) (- at 1) (+ at 1)))
+          (if (and (not (= other rrb-int-max)) (<= (+ own other) rrb-branching))
+              (rrb-reshape children sizes count (min at with) 2 (rrb-array-of (+ own other)) shift)
+              count))))
+  (def (Tuple node _) (rrb-build-checked children sizes kept shift))
+  node)
+
+;; `children` and `sizes` with the `window` from `start` replaced by the
+;; nodes `plan` makes of them, and the rest moved up. Returns how many
+;; children are left.
+(: (-> (Array (RrbNode %a)) (Array int) int int int (Array int) int int))
+(defun (rrb-reshape children sizes count start window plan shift)
+  (def made (rrb-repack children sizes start window plan shift))
+  (def made-table (rrb-cumulative made shift))
+  (def k (array-length plan))
+  (loop (:for i (range 0 k))
+        (:do (array-set! children (+ start i) (rrb-child made i))
+             (array-set! sizes (+ start i)
+                         (- (array-ref made-table i) (if (> i 0) (array-ref made-table (- i 1)) 0)))))
+  (def gap (- window k))
+  (loop (:for i (range (+ start k) (- count gap)))
+        (:do (array-set! children i (array-ref children (+ i gap)))
+             (array-set! sizes i (array-ref sizes (+ i gap)))))
+  (- count gap))
