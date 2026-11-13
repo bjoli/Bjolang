@@ -14,7 +14,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using BjoString;
-using Collections;
+using Bjolang.Runtime.Rrb;
 
 namespace Bjolang.Runtime;
 

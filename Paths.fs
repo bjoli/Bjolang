@@ -387,7 +387,6 @@ let shadowedBy (identity: FileIdentity) (file: string) : PackageRoot option =
 /// `import/extern`.
 let private runtimeAssemblyNames =
     [ "BjolangRuntime"
-      "Collections"
       "SchemeList"
       "BjoString"
       "BjoRx" ]

@@ -105,8 +105,8 @@ public static partial class BjolangRuntime {
         return builder.ToSchemeList();
     }
 
-    public static Collections.RrbList<Utf8String> readersubgtvec(Bjolang.Runtime.BjoInputPort port) {
-        var builder = new Collections.RrbBuilder<Utf8String>();
+    public static Bjolang.Runtime.Rrb.RrbList<Utf8String> readersubgtvec(Bjolang.Runtime.BjoInputPort port) {
+        var builder = new Bjolang.Runtime.Rrb.RrbBuilder<Utf8String>();
         while (port.ReadLineUtf8() is { IsSome: true } line) builder.Add(line.Value);
         return builder.ToImmutable();
     }
@@ -667,72 +667,72 @@ public static partial class BjolangRuntime {
 
     // Vec operations mapped from RrbFun
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecsubempty<T>() where T : notnull => Collections.RrbFun.Empty<T>();
+    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubempty<T>() where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Empty<T>();
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static T vecsubref<T>(Collections.RrbList<T> list, int index) where T : notnull => Collections.RrbFun.Get(list, index);
+    public static T vecsubref<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int index) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Get(list, index);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecsubset<T>(Collections.RrbList<T> list, int index, T value) where T : notnull => Collections.RrbFun.SetItem(list, index, value);
+    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubset<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int index, T value) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.SetItem(list, index, value);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecsubadd<T>(Collections.RrbList<T> list, T item) where T : notnull => Collections.RrbFun.Add(list, item);
+    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubadd<T>(Bjolang.Runtime.Rrb.RrbList<T> list, T item) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Add(list, item);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecsubinsert<T>(Collections.RrbList<T> list, int index, T item) where T : notnull => Collections.RrbFun.Insert(list, index, item);
+    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubinsert<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int index, T item) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Insert(list, index, item);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecsubremovesubat<T>(Collections.RrbList<T> list, int index) where T : notnull => Collections.RrbFun.RemoveAt(list, index);
+    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubremovesubat<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int index) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.RemoveAt(list, index);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecsubpop<T>(Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Pop(list);
+    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubpop<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Pop(list);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecsubpopsubfirst<T>(Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.PopFirst(list);
+    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubpopsubfirst<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.PopFirst(list);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecsubslice<T>(Collections.RrbList<T> list, int start, int count) where T : notnull => Collections.RrbFun.Slice(list, start, count);
+    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubslice<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int start, int count) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Slice(list, start, count);
 
     // Two vecs are one Merge. More go to Concat, which copies small vecs into
     // full leaves and merges big ones: cheaper than a Merge for each.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecsubmerge<T>(Collections.RrbList<T> list, Collections.RrbList<T> other, Collections.RrbList<T>[] more) where T : notnull {
-        if (more.Length == 0) return Collections.RrbFun.Merge(list, other, false);
-        var all = new Collections.RrbList<T>[more.Length + 2];
+    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubmerge<T>(Bjolang.Runtime.Rrb.RrbList<T> list, Bjolang.Runtime.Rrb.RrbList<T> other, Bjolang.Runtime.Rrb.RrbList<T>[] more) where T : notnull {
+        if (more.Length == 0) return Bjolang.Runtime.Rrb.RrbFun.Merge(list, other, false);
+        var all = new Bjolang.Runtime.Rrb.RrbList<T>[more.Length + 2];
         all[0] = list;
         all[1] = other;
         more.CopyTo(all, 2);
-        return Collections.RrbList<T>.Concat(all);
+        return Bjolang.Runtime.Rrb.RrbList<T>.Concat(all);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ValueTuple<Collections.RrbList<T>, Collections.RrbList<T>> vecsubsplit<T>(Collections.RrbList<T> list, int index) where T : notnull => Collections.RrbFun.Split(list, index);
+    public static ValueTuple<Bjolang.Runtime.Rrb.RrbList<T>, Bjolang.Runtime.Rrb.RrbList<T>> vecsubsplit<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int index) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Split(list, index);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<TResult> RrbMap<T, TResult>(Func<T, TResult> mapper, Collections.RrbList<T> list) where T : notnull where TResult : notnull => Collections.RrbFun.Map(list, mapper);
+    public static Bjolang.Runtime.Rrb.RrbList<TResult> RrbMap<T, TResult>(Func<T, TResult> mapper, Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull where TResult : notnull => Bjolang.Runtime.Rrb.RrbFun.Map(list, mapper);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> RrbFilter<T>(Func<T, bool> predicate, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Filter(list, predicate);
+    public static Bjolang.Runtime.Rrb.RrbList<T> RrbFilter<T>(Func<T, bool> predicate, Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Filter(list, predicate);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static TState RrbFold<T, TState>(Func<T, TState, TState> func, TState seed, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Fold(list, seed, func);
+    public static TState RrbFold<T, TState>(Func<T, TState, TState> func, TState seed, Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Fold(list, seed, func);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static T RrbReduce<T>(Func<T, T, T> func, Collections.RrbList<T> list) where T : notnull {
+    public static T RrbReduce<T>(Func<T, T, T> func, Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull {
         RrbCheckReduce(list);
-        return Collections.RrbFun.Reduce(list, func);
+        return Bjolang.Runtime.Rrb.RrbFun.Reduce(list, func);
     }
 
     // What `vec-reduce` and `vec-for-each/range` check before they start. Both
     // copies of each, the ordinary one and the one for a suspending callback,
     // call these, so a mistake raises the same exception from either.
-    public static Unit RrbCheckReduce<T>(Collections.RrbList<T> list) where T : notnull {
+    public static Unit RrbCheckReduce<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull {
         if (list.Count == 0)
             throw new InvalidOperationException("vec-reduce: the vec is empty, so there is no first element to start from.");
         return unit;
     }
 
-    public static Unit RrbCheckRange<T>(Collections.RrbList<T> list, int index, int count) where T : notnull {
+    public static Unit RrbCheckRange<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int index, int count) where T : notnull {
         if (index < 0 || index > list.Count)
             throw new ArgumentOutOfRangeException(nameof(index), index, $"vec-for-each/range: index {index} is outside a vec of length {list.Count}.");
         if (count < 0 || count > list.Count - index)
@@ -745,77 +745,77 @@ public static partial class BjolangRuntime {
     // `(-> %a Unit)`, and only one delegate shape can also be an instantiation
     // of a generic `(-> %a %b)`. The adapter lambda is the price of `for-each`
     // and `map` taking the same function, and the JIT inlines through it.
-    public static Unit RrbForEach<T>(Func<T, Unit> action, Collections.RrbList<T> list) where T : notnull {
-        Collections.RrbFun.ForEach(list, [NonUserCode] (x) => action(x));
+    public static Unit RrbForEach<T>(Func<T, Unit> action, Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull {
+        Bjolang.Runtime.Rrb.RrbFun.ForEach(list, [NonUserCode] (x) => action(x));
         return unit;
     }
 
-    public static Unit RrbForEachRange<T>(Func<T, Unit> action, Collections.RrbList<T> list, int index, int count) where T : notnull {
+    public static Unit RrbForEachRange<T>(Func<T, Unit> action, Bjolang.Runtime.Rrb.RrbList<T> list, int index, int count) where T : notnull {
         // Checked here as well as in the library, which reads a count of -1 as
         // "to the end"; a Bjolang count means what it says.
         RrbCheckRange(list, index, count);
-        Collections.RrbFun.ForEach(list, [NonUserCode] (x) => action(x), index, count);
+        Bjolang.Runtime.Rrb.RrbFun.ForEach(list, [NonUserCode] (x) => action(x), index, count);
         return unit;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool RrbIter<T>(Func<T, bool> action, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Iter(list, action);
+    public static bool RrbIter<T>(Func<T, bool> action, Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Iter(list, action);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     // `vec-length`, not `vec-count`: the underlying member is `Count`, but the
     // Bjolang name follows the language's own vocabulary rather than .NET's.
-    public static int vecsublength<T>(Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Count(list);
+    public static int vecsublength<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Count(list);
 
     // `Count` is a stored field on an RrbList, so this is the same O(1) test a
     // caller would write — but it is the name the other collections already
     // use, and `vec-empty` is taken by the *constructor*, so the predicate
     // could not be spelled by convention from the outside.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool vecsubempty_QMARK<T>(Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Count(list) == 0;
+    public static bool vecsubempty_QMARK<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Count(list) == 0;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool vecsubcontains<T>(Collections.RrbList<T> list, T item) where T : notnull => Collections.RrbFun.Contains(list, item);
+    public static bool vecsubcontains<T>(Bjolang.Runtime.Rrb.RrbList<T> list, T item) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Contains(list, item);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecsubcompact<T>(Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Compact(list);
+    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubcompact<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Compact(list);
 
     // --- VecBuilder Wrappers ---
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbBuilder<T> vecbuildersubempty<T>() where T : notnull => Collections.RrbBuilderFun.Empty<T>();
+    public static Bjolang.Runtime.Rrb.RrbBuilder<T> vecbuildersubempty<T>() where T : notnull => Bjolang.Runtime.Rrb.RrbBuilderFun.Empty<T>();
 
     // A builder whose tail starts at 4 items and doubles up to a leaf, for a vec
     // that is likely small. See `RrbBuilder.Small`.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbBuilder<T> vecbuildersubemptydivsmall<T>() where T : notnull => Collections.RrbBuilderFun.EmptySmall<T>();
+    public static Bjolang.Runtime.Rrb.RrbBuilder<T> vecbuildersubemptydivsmall<T>() where T : notnull => Bjolang.Runtime.Rrb.RrbBuilderFun.EmptySmall<T>();
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbBuilder<T> vecsubgtvecbuilder<T>(Collections.RrbList<T> list) where T : notnull => Collections.RrbBuilderFun.FromList(list);
+    public static Bjolang.Runtime.Rrb.RrbBuilder<T> vecsubgtvecbuilder<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbBuilderFun.FromList(list);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit vecbuildersubadd_BANG<T>(Collections.RrbBuilder<T> builder, T item) where T : notnull {
-        Collections.RrbBuilderFun.Add(builder, item);
+    public static Unit vecbuildersubadd_BANG<T>(Bjolang.Runtime.Rrb.RrbBuilder<T> builder, T item) where T : notnull {
+        Bjolang.Runtime.Rrb.RrbBuilderFun.Add(builder, item);
         return unit;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit vecbuildersubset_BANG<T>(Collections.RrbBuilder<T> builder, int index, T item) where T : notnull {
-        Collections.RrbBuilderFun.SetItem(builder, index, item);
+    public static Unit vecbuildersubset_BANG<T>(Bjolang.Runtime.Rrb.RrbBuilder<T> builder, int index, T item) where T : notnull {
+        Bjolang.Runtime.Rrb.RrbBuilderFun.SetItem(builder, index, item);
         return unit;
     }
 
     // Checked here because the builder's indexer is not: past the length but
     // inside the tail array it answers whatever the slot holds.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static T vecbuildersubref<T>(Collections.RrbBuilder<T> builder, int index) where T : notnull {
+    public static T vecbuildersubref<T>(Bjolang.Runtime.Rrb.RrbBuilder<T> builder, int index) where T : notnull {
         if ((uint)index >= (uint)builder.Count) throw new IndexOutOfRangeException();
-        return Collections.RrbBuilderFun.Get(builder, index);
+        return Bjolang.Runtime.Rrb.RrbBuilderFun.Get(builder, index);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int vecbuildersublength<T>(Collections.RrbBuilder<T> builder) where T : notnull => Collections.RrbBuilderFun.Count(builder);
+    public static int vecbuildersublength<T>(Bjolang.Runtime.Rrb.RrbBuilder<T> builder) where T : notnull => Bjolang.Runtime.Rrb.RrbBuilderFun.Count(builder);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> vecbuildersubgtvec<T>(Collections.RrbBuilder<T> builder) where T : notnull => Collections.RrbBuilderFun.ToImmutable(builder);
+    public static Bjolang.Runtime.Rrb.RrbList<T> vecbuildersubgtvec<T>(Bjolang.Runtime.Rrb.RrbBuilder<T> builder) where T : notnull => Bjolang.Runtime.Rrb.RrbBuilderFun.ToImmutable(builder);
 
     // --- ListBuilder ---
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -969,7 +969,7 @@ public static partial class BjolangRuntime {
         /// A walk of a relaxed tree that leaves its first leaf gets its
         /// `TreePath` here, before the loop: made at the first new leaf, it
         /// was an allocation in the loop, and so a call.
-        public static VecCursor<T> Start(Collections.RrbList<T> list, int from, int count) {
+        public static VecCursor<T> Start(Bjolang.Runtime.Rrb.RrbList<T> list, int from, int count) {
             if (from < 0 || count < 0 || from > list.Count - count)
                 throw new ArgumentOutOfRangeException(nameof(count), $"{from} and {count} are not a run of a vec of {list.Count}.");
             if (count == 0) return new VecCursor<T>(Array.Empty<T>(), 0, 0, list, from, from);
@@ -980,7 +980,7 @@ public static partial class BjolangRuntime {
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        private static Collections.TreePath<T> PathOf(Collections.RrbList<T> list) => new(list);
+        private static Bjolang.Runtime.Rrb.TreePath<T> PathOf(Bjolang.Runtime.Rrb.RrbList<T> list) => new(list);
 
         public bool Done {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1017,8 +1017,8 @@ public static partial class BjolangRuntime {
         private static VecCursor<T> NextLeaf(object owner, int index, int stop) {
             T[] items;
             int position, length;
-            var path = owner as Collections.TreePath<T>;
-            var list = path != null ? path.List : Unsafe.As<Collections.RrbList<T>>(owner);
+            var path = owner as Bjolang.Runtime.Rrb.TreePath<T>;
+            var list = path != null ? path.List : Unsafe.As<Bjolang.Runtime.Rrb.RrbList<T>>(owner);
             if (path != null && list.InTree(index))
                 items = path.LeafFrom(index, out position, out length);
             else
@@ -1029,11 +1029,11 @@ public static partial class BjolangRuntime {
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static VecCursor<T> vecsubcursor<T>(Collections.RrbList<T> list) where T : notnull =>
+    public static VecCursor<T> vecsubcursor<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull =>
         VecCursor<T>.Start(list, 0, list.Count);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static VecCursor<T> vecsubcursorsubslice<T>(Collections.RrbList<T> list, int from, int count) where T : notnull =>
+    public static VecCursor<T> vecsubcursorsubslice<T>(Bjolang.Runtime.Rrb.RrbList<T> list, int from, int count) where T : notnull =>
         VecCursor<T>.Start(list, from, count);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1157,23 +1157,23 @@ public static partial class BjolangRuntime {
     // Straight into leaves, one walk, no `Add` per element. Copied, so the
     // caller keeps its array.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> arraysubgtvec<T>(T[] arr) where T : notnull =>
-        Collections.RrbBuilder<T>.FromSpan(arr);
+    public static Bjolang.Runtime.Rrb.RrbList<T> arraysubgtvec<T>(T[] arr) where T : notnull =>
+        Bjolang.Runtime.Rrb.RrbBuilder<T>.FromSpan(arr);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Collections.RrbList<T> subarraysubgtvec<T>(T[] arr, int start, int count) where T : notnull =>
-        Collections.RrbBuilder<T>.FromSpan(new ReadOnlySpan<T>(arr, start, count));
+    public static Bjolang.Runtime.Rrb.RrbList<T> subarraysubgtvec<T>(T[] arr, int start, int count) where T : notnull =>
+        Bjolang.Runtime.Rrb.RrbBuilder<T>.FromSpan(new ReadOnlySpan<T>(arr, start, count));
 
     // `string-split`, empty fields kept. The array Split makes is new and only
     // this method holds it, so up to a leaf's worth of fields it becomes the
     // vec's tail as it is, without a copy. An array Bjolang code could still
     // reach must be copied instead, since writing to it would change the vec:
     // that is why this is not a prelude function over any array.
-    public static Collections.RrbList<Utf8String> SplitToVec(Utf8String s, Utf8String separator) =>
-        Collections.RrbBuilder<Utf8String>.FromArray(s.Split(separator), reuseArrayIfShorterThan32: true);
+    public static Bjolang.Runtime.Rrb.RrbList<Utf8String> SplitToVec(Utf8String s, Utf8String separator) =>
+        Bjolang.Runtime.Rrb.RrbBuilder<Utf8String>.FromArray(s.Split(separator), reuseArrayIfShorterThan32: true);
 
-    public static Collections.RrbList<Utf8String> SplitSlicesToVec(Utf8String s, Utf8String separator) =>
-        Collections.RrbBuilder<Utf8String>.FromArray(s.SplitSlices(separator), reuseArrayIfShorterThan32: true);
+    public static Bjolang.Runtime.Rrb.RrbList<Utf8String> SplitSlicesToVec(Utf8String s, Utf8String separator) =>
+        Bjolang.Runtime.Rrb.RrbBuilder<Utf8String>.FromArray(s.SplitSlices(separator), reuseArrayIfShorterThan32: true);
 
     // The collection-to-rest-array conversions behind `apply`. Neither is
     // reachable from Bjolang source: `apply` is an intrinsic and builds the
@@ -1183,9 +1183,9 @@ public static partial class BjolangRuntime {
     // through as the rest argument, which is the whole reason `apply` is worth
     // having over rebuilding the call by hand.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static T[] vecsubgtarray<T>(Collections.RrbList<T> list) where T : notnull {
-        var arr = new T[Collections.RrbFun.Count(list)];
-        Collections.RrbFun.CopyTo(list, arr, 0);
+    public static T[] vecsubgtarray<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull {
+        var arr = new T[Bjolang.Runtime.Rrb.RrbFun.Count(list)];
+        Bjolang.Runtime.Rrb.RrbFun.CopyTo(list, arr, 0);
         return arr;
     }
 
@@ -1511,13 +1511,13 @@ public static partial class BjolangRuntime {
     public static SchemeList.SchemeList<T> seqsubgtlist<T>(IEnumerable<T> source) =>
         new SchemeList.SchemeListBuilder<T>(source).ToSchemeList();
 
-    public static IEnumerable<T> vecsubgtseq<T>(Collections.RrbList<T> vec) where T : notnull {
+    public static IEnumerable<T> vecsubgtseq<T>(Bjolang.Runtime.Rrb.RrbList<T> vec) where T : notnull {
         var count = vec.Count;
         for (var i = 0; i < count; i++) yield return vec[i];
     }
 
-    public static Collections.RrbList<T> seqsubgtvec<T>(IEnumerable<T> source) where T : notnull {
-        var builder = Collections.RrbBuilderFun.Empty<T>();
+    public static Bjolang.Runtime.Rrb.RrbList<T> seqsubgtvec<T>(IEnumerable<T> source) where T : notnull {
+        var builder = Bjolang.Runtime.Rrb.RrbBuilderFun.Empty<T>();
         foreach (var item in source)  builder.Add(item);
         return builder.ToImmutable();
     }

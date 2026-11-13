@@ -454,7 +454,7 @@ let mapPrimitiveType (name: string) =
     // type C# can hold — see `TypeConstants.unitType`.
     | "Unit" -> "Bjoml.Unit"
     | "System.Object" -> "object"
-    | "Vec" -> "Collections.RrbList"
+    | "Vec" -> "Bjolang.Runtime.Rrb.RrbList"
     // Builders and cursors. Both live inside the runtime's static class, which
     // `using static` also imports the nested types of — but a declaration
     // spells the type out, so they are qualified here.
@@ -465,7 +465,7 @@ let mapPrimitiveType (name: string) =
     // Made only by the compiler: see `hoistStringBounds`.
     | "StringBounds" -> "BjoString.StringBounds"
     | "StringBuilder" -> "BjoString.Utf8StringBuilder"
-    | "VecBuilder" -> "Collections.RrbBuilder"
+    | "VecBuilder" -> "Bjolang.Runtime.Rrb.RrbBuilder"
     | "List" -> "SchemeList.SchemeList"
     // A `seq` is a C# iterator, so its type is the one C# iterators produce.
     | "Seq" -> "System.Collections.Generic.IEnumerable"
@@ -3889,7 +3889,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         let elementTypeStr = elementTypeString expr.Type
 
         let emitInto (c: CodegenContext) (emitters: (CodegenContext -> unit) list) =
-            append c $"Collections.RrbBuilder<%s{elementTypeStr}>.FromArray(new %s{elementTypeStr}[] {{ "
+            append c $"Bjolang.Runtime.Rrb.RrbBuilder<%s{elementTypeStr}>.FromArray(new %s{elementTypeStr}[] {{ "
             for i, emit in List.indexed emitters do
                 if i > 0 then append c ", "
                 emit c
