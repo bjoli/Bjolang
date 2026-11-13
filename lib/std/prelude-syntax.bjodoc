@@ -7,62 +7,6 @@
 ;; Control
 ;; ---------------------------------------------------------------------------
 
-(:doc cond
-  (summary "Picks the first clause whose test holds, at any number of arms; the last clause is else.")
-  (form (cond clause ... (else body ...)))
-  (rest clause """
-    A clause, one of:
-
-    @code{(test body ...)}: evaluates the body when @code{test} is true.
-
-    @code{(:match pattern expr body ...)}, or
-    @code{(:match pattern expr #:when guard body ...)}: evaluates the body when
-    @code{expr} matches @code{pattern} and the guard, if any, holds.
-
-    @code{(:def pattern expr)}, or @code{(:def pattern expr failure ...)}:
-    binds locally; does not produce a value.
-
-    @code{(:do body ...)}: runs the body for side effects; does not produce a value.
-    """)
-  (rest body "The forms evaluated in the else clause; the final form is returned.")
-  (literal else)
-  (see if-let when-let)
-  (example """
-    (cond ((< n 0) "negative")
-          ((= n 0) "zero")
-          (else "positive"))
-
-    ;; A value a later test needs, without a nested cond to hold it
-    (cond ((string-empty? text) "empty")
-          (:def first (string-cursor-ref text (string-cursor-start text)))
-          ((char-numeric? first) "number")
-          (else "word"))
-    """)
-  (reference """
-    @code{if} at any number of arms. The final @code{else} is required, since
-    every arm must evaluate to a value and the branches must be exhaustive;
-    every arm needs the same type. Only the clause that is taken runs. A clause
-    with a test and no body is an error, and so is a clause after the else, which
-    could never be reached.
-
-    A @code{:match} clause is a test that binds: what its pattern binds is in
-    scope in its guard and body only, and when it does not match the cond
-    goes on to the next clause.
-
-    @code{:def} and @code{:do} do not produce values. Both are reached only when
-    every test above them has failed. A @code{:def} binds, and what it binds
-    is in scope in every clause below it and nowhere else. It @strong{is} a
-    @code{def} whose body is the rest of the cond, so it takes the same
-    patterns and the same failure parts: @code{(:def (Ok v) (parse s) :propagate)}
-    makes the whole cond the @code{Err}, and
-    @code{(:def (Some n) (lookup k) :default 0)} binds @code{n} either way and
-    never terminates the cond early. A @code{:do} runs its forms and goes on.
-    A cond may not end in either.
-
-    The @code{else} clause unconditionally evaluates its body without looking
-    at anything after it, so clauses written after it are not used.
-    """))
-
 (:doc if-let
   (summary "Evaluates then with name bound to the value of an Option, or evaluates else when None.")
   (form (if-let (name expr) then else))

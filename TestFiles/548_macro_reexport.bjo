@@ -1,0 +1,19 @@
+;; A macro exported again by a module that imported it.
+;;
+;; `doubled` is `twice` from inc/reexport_macro_def.bjo, renamed by
+;; inc/reexport_macro_mid.bjo and passed on by inc/reexport_macro_facade.bjo.
+;; Neither the defining module nor its `dbl` is imported here.
+
+(import "inc/reexport_macro_facade.bjo")
+(import (std simpletest))
+
+;; Not the template's `dbl`: that one resolves to the defining module's.
+(: (-> int int))
+(defun (dbl x) x)
+
+(defun (main args)
+  (expect "a re-exported macro expands" (doubled 21) 42)
+  (expect "its template names its own module's binding" (doubled (dbl 5)) 10)
+  ;; The prelude's `cond` is (std core-macros)'s, exported again.
+  (expect "cond through the prelude" (cond ((= (dbl 1) 2) "no") (else "yes")) "yes")
+  0)

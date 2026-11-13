@@ -36,6 +36,20 @@ alongside it. Note what that means: the compiler is running compiled Bjolang
 code, so a transformer that does not terminate hangs the build, and anything its
 module imports has to be loadable in the compiler's process.
 
+*A module may export a macro it imported*, with ~(export name)~ or
+~(re-export name)~. This is how the prelude has ~cond~: ~cond~ is defined in
+~(std core-macros)~, which is built without the prelude, so the prelude and the
+files it includes can use it.
+
+- The macro is published under the name it has in the exporting module, which
+  an import's ~rename~ may have changed.
+- The transformer stays the defining module's, and its templates resolve
+  against that module's exports.
+- The exporting module also publishes, as implicit exports, the bindings of the
+  defining module that it can see. An importer that reaches the macro only
+  through the exporting module can then check the expansion.
+- A chain of re-exports names the defining module, not the modules between.
+
 ** ~Syntax~
 
 The type a transformer takes and returns. It is an ordinary Bjolang value: it
@@ -669,7 +683,8 @@ Colour.
   local ~get~, is refused. A template's own call is not affected.
 - *See types.* Expansion happens at parse time, before inference.
 - *Be a value.* A macro name is not a binding at the call site: it cannot be
-  passed, stored, re-exported, or used as a trait method.
+  passed, stored, or used as a trait method. It can be exported again (see
+  above).
 - *Vary its signature.* A transformer takes exactly the form, ~inject~ and
   ~compare~. Type parameters, trait constraints, keyword or rest arguments and
   ~defbjo~ are rejected at the ~def/macro~, because each changes the emitted C#

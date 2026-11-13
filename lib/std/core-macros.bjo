@@ -1,0 +1,97 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/core-macros.bjo
+;;
+;; Macros below the prelude. Built without it, so the prelude and the files it
+;; includes can use them. The prelude re-exports each one.
+
+(import (std syntax-match))
+
+(:doc #:file "core-macros.bjodoc")
+
+(export)
+
+;; `(cond (test body ...) ... (:def pattern expr) ... (else body ...))`
+;;
+;; Cond requires else.
+;;
+;; `(:match pattern expr body ...)`, with an optional `#:when guard` after
+;; `expr`, is a test that binds: it answers when `expr` matches and the guard
+;; holds, and falls through to the next clause otherwise. What it binds is in
+;; scope in its guard and body only.
+;;
+;; Two clauses do not answer anything. `(:def pattern expr)` binds, and
+;; `(:do body ...)` runs something; both are reached only when every test
+;; above them has failed, and what a `:def` binds is in scope in every clause
+;; below it. They exist because the alternative is a new `(else ...)` and a
+;; new `cond` inside it for every value a later test needs — the same
+;; decisions, indented once per binding.
+;;
+;; A `:def` clause *is* a `def`: the sequel it swallows is the rest of the
+;; cond, so a refutable pattern takes the same failure part it takes anywhere
+;; else: `(:def (Ok v) (parse s) :propagate)` makes the whole cond the `Err`,
+;; and `(:def (Some n) (lookup k) :default 0)` binds `n` and never answers.
+(def/macro (cond form inject compare)
+  (syntax-match form
+    ((_ clause ...) (cond-arms clause form))
+    (bad (syntax-error bad "cond takes clauses: (cond (test body ...) ... (else body ...))"))))
+
+(: (-> (List Syntax) Syntax Syntax))
+(defun (cond-arms clauses whole)
+  (match clauses
+    (Nil
+     (syntax-error whole "cond needs a final (else ...) clause: every arm answers something, so there has to be a last answer."))
+    ((Cons clause rest)
+     (syntax-match clause
+       ;; Binds. The rest of the cond is the body the `def` swallows, which is
+       ;; what puts the name in scope below and nowhere else.
+       ((:def pattern expr fail ...)
+        #'(let () (def ,pattern ,expr ,@fail) ,(cond-arms rest whole)))
+       ((:def junk ...)
+        (syntax-error clause "(:def ...) binds: (:def name expr), or (:def pattern expr failure-part), such as :default value or :propagate."))
+       ;; Answers when `expr` matches, and falls through to the next clause
+       ;; when it does not. Unlike `:def` it swallows nothing: what it binds
+       ;; is in scope in its guard and body only. The rest of the cond is the
+       ;; fallback arm, so it is written once.
+       ((:match pattern expr #:when guard body ...)
+        #'(match ,expr
+            (,pattern #:when ,guard ,(one-form body clause))
+            (,(SSym (string->symbol "_")) ,(cond-arms rest whole))))
+       ((:match pattern expr body ...)
+        #'(match ,expr
+            (,pattern ,(one-form body clause))
+            (,(SSym (string->symbol "_")) ,(cond-arms rest whole))))
+       ((:match junk ...)
+        (syntax-error clause "(:match ...) is (:match pattern expr body ...), or (:match pattern expr #:when guard body ...)."))
+       ;; Runs.
+       ((:do first body ...)
+        #'(let () ,first ,@body ,(cond-arms rest whole)))
+       ((:do)
+        (syntax-error clause "(:do ...) needs something to run."))
+       ;; Else clause. It always answers, so a clause after it could never be
+       ;; reached.
+       (('else body ...)
+        (match rest
+          (Nil (one-form body clause))
+          ((Cons after _)
+           (syntax-error after "This clause comes after (else ...), so it is never reached. Move it above the else, or remove it."))))
+       ((test body ...) #'(if ,test ,(one-form body clause) ,(cond-arms rest whole)))
+       (bad (syntax-error bad "A cond clause is (test body ...), (:match pattern expr body ...) to answer on a match, (:def pattern expr) to bind, (:do body ...) to run something, or (else body ...) for the last one."))))))
+
+;; Several forms as one.
+(: (-> (List Syntax) Syntax Syntax))
+(defun (one-form body whole)
+  (match body
+    (Nil (syntax-error whole "This clause has nothing to do."))
+    ((Cons only Nil) only)
+    (_ #'(let () ,@body))))

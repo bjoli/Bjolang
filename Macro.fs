@@ -82,6 +82,9 @@ type MacroBinding =
       /// The Bjolang module the transformer was defined in. Used to spell
       /// `Module_Module::helper` for rule 2.
       ModuleName: string
+      /// The macro's name in `ModuleName`. What a module that exports this
+      /// macro again publishes, so its importers find the same transformer.
+      Transformer: string
       /// What that module publishes, and where each one is *defined*. A
       /// template may only name an exported binding of its own module;
       /// anything else has nowhere to resolve to.
@@ -167,6 +170,13 @@ let private aliasIn (tbl: Dictionary<string, MacroBinding>) (newName: string) (o
     | _ -> false
 
 let alias (newName: string) (oldName: string) : bool = aliasIn table newName oldName
+
+/// The imported macro a name is bound to, if any. Not the current module's own
+/// macros: those have no transformer yet.
+let tryImported (name: string) : MacroBinding option =
+    match table.TryGetValue name with
+    | true, binding -> Some binding
+    | _ -> None
 
 let aliasPattern (newName: string) (oldName: string) : bool = aliasIn patternTable newName oldName
 

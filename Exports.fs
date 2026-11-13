@@ -526,12 +526,32 @@ let metadata
     // helper it names may be bound here under its qualified reference alone,
     // because it reached this module implicitly too, and it is passed on the
     // same way.
+    // What the templates of a re-exported macro may name, where this module
+    // binds it: under its qualified reference, or under its own name when it
+    // was imported from that module.
+    let reExportScope =
+        if not isLibrary then
+            []
+        else
+            ModuleMetadata.reExportedMacroScope
+            |> List.choose (fun (home, original) ->
+                let qualified = Naming.qualifiedBinding home original
+
+                if Map.containsKey qualified env.Bindings then
+                    Some(original, qualified)
+                else
+                    match Map.tryFind original env.Registry.ImportAliases with
+                    | Some alias when alias.OriginModule = home && alias.OriginalName = original ->
+                        Some(original, original)
+                    | _ -> None)
+
     let autoExportKeys =
         (inlineTemplatesToExport
          |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) -> Map.toList tpl.Qualification))
         @ (constrainedBodiesToExport
            |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) -> Map.toList tpl.Qualification))
         @ (macroScope |> List.map (fun (visible, home, original) -> visible, Naming.qualifiedBinding home original))
+        @ reExportScope
         |> List.filter (fun (n, _) ->
             not (List.contains n exports) && not (Set.contains n exportedTraitMethods))
         |> List.choose (fun (n, qualified) ->
@@ -793,7 +813,7 @@ let metadata
                 (externsNamedByBodies |> List.map fst |> String.concat ", "))
 
     let declMetadata =
-        if isLibrary && (not exports.IsEmpty || not typesToExport.IsEmpty) then
+        if isLibrary && (not exports.IsEmpty || not typesToExport.IsEmpty || not autoExports.IsEmpty) then
             let quoted (name: string) = if name.StartsWith("'") then name else "'" + name
 
             let serializeTrait (traitName: string) (info: TypedAST.TraitInfo) =
@@ -1672,7 +1692,8 @@ let metadata
     // Every macro is published. There is no `(export ...)` for them,
     // because a macro that cannot be used from anywhere is the one thing
     // a macro cannot be: it is unusable in its own module by
-    // construction.
+    // construction. An imported macro is published only when the module
+    // exports it (`ModuleMetadata.reExportedMacros`).
     let publish (names: string list) =
         if isLibrary then
             // The Bjolang module name, not the C# class. The reader
@@ -1684,10 +1705,14 @@ let metadata
 
             names
             |> List.map (fun name ->
-                ({ Name = name; ModuleName = moduleName }: ModuleMetadata.MacroEntry))
+                ({ Name = name
+                   ModuleName = moduleName
+                   Transformer = name }
+                : ModuleMetadata.MacroEntry))
         else []
 
-    let macros = publish declaredMacros
+    let macros =
+        publish declaredMacros @ (if isLibrary then ModuleMetadata.reExportedMacros else [])
     let patternMacros = publish declaredPatternMacros
     let hashMacros = publish declaredHashMacros
     let clauseMacros = publish declaredClauseMacros

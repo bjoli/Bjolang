@@ -120,7 +120,10 @@ open System.Text
 /// as source, after `Frameworks`.
 /// 30: a constrained body carries its keyword parameters and their defaults,
 /// after `Params`. A reader of 29 would read them as the body.
-let currentVersion = 30
+/// 31: a macro entry carries its transformer's name after the module, so that
+/// a module can publish a macro it imported. A reader of 30 would read that
+/// name as the next entry's.
+let currentVersion = 31
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -214,12 +217,36 @@ type ReExportedType = {
     Decl: string
 }
 
-/// One macro an assembly publishes: the Bjolang name, and the module that
-/// defines it.
+/// One macro an assembly publishes.
+///
+/// - `Name`: the name it is published under.
+/// - `ModuleName`: the module that defines it, whose assembly holds the
+///   transformer and whose exports its templates resolve against.
+/// - `Transformer`: its name in that module. `Name` differs from it only for a
+///   macro this module imported under another name and exports again.
 ///
 /// The same shape for a pattern macro, which differs only in the table it is
 /// registered into.
-type MacroEntry = { Name: string; ModuleName: string }
+type MacroEntry =
+    { Name: string
+      ModuleName: string
+      Transformer: string }
+
+/// The imported macros the module being compiled names in its `(export ...)`
+/// or `(re-export ...)`.
+///
+/// - Set by `Pipeline` when it parses that module, which takes the names out
+///   of the declaration: a macro has no binding to check.
+/// - Published by `Exports.metadata` beside the module's own macros, with the
+///   module that defines each one, so an importer loads the transformer from
+///   there.
+let mutable reExportedMacros: MacroEntry list = []
+
+/// What the templates of `reExportedMacros` may name: each binding of their
+/// modules' exports, as (module, name). `Exports.metadata` publishes the ones
+/// this module can see as implicit exports, so an importer that reaches the
+/// macro only through this module can check its expansions.
+let mutable reExportedMacroScope: (string * string) list = []
 
 /// Declaration groups are separate fields because an importer has to read them
 /// in this order: a trait's signature may name a type an `import/class` alias
@@ -528,11 +555,16 @@ let private getReExportedType (c: Cursor) : ReExportedType =
 let private putMacro (sb: StringBuilder) (m: MacroEntry) =
     putStr sb m.Name
     putStr sb m.ModuleName
+    putStr sb m.Transformer
 
 let private getMacro (c: Cursor) : MacroEntry =
     let name = getStr c
     let moduleName = getStr c
-    { Name = name; ModuleName = moduleName }
+    let transformer = getStr c
+
+    { Name = name
+      ModuleName = moduleName
+      Transformer = transformer }
 
 let serialize (m: Metadata) : string =
     let sb = StringBuilder()

@@ -1063,6 +1063,54 @@ let private ownNames (decls: Decl list) : Set<string> =
         | _ -> [])
     |> Set.ofList
 
+/// The imported macros a module's `(export ...)` or `(re-export ...)` names,
+/// and the declarations without them.
+///
+/// - A name counts when it is bound to an imported `def/macro` and `own` does
+///   not define it.
+/// - Each is published under its name here, with the module and transformer
+///   it had where it was defined, so a chain of re-exports names the
+///   original.
+/// - Also returns the bindings their templates may name, as (module, name):
+///   the defining module's exports (`MacroBinding.Exports`).
+let private takeMacroExports (own: Set<string>) (decls: Decl list) =
+    let isReExport (name: string) =
+        not (Set.contains name own) && (Macro.tryImported name).IsSome
+
+    let bindings =
+        decls
+        |> List.collect (function
+            | DExport(names, _)
+            | DReExport(names, _) -> names |> List.filter isReExport
+            | _ -> [])
+        |> List.distinct
+        |> List.map (fun name -> name, (Macro.tryImported name).Value)
+
+    let entries =
+        bindings
+        |> List.map (fun (name, binding) ->
+            ({ Name = name
+               ModuleName = binding.ModuleName
+               Transformer = binding.Transformer }
+            : ModuleMetadata.MacroEntry))
+
+    let scope =
+        bindings
+        |> List.collect (fun (_, binding) ->
+            binding.Exports
+            |> Map.toList
+            |> List.map (fun (name, home) -> (if home = "" then binding.ModuleName else home), name))
+        |> List.distinct
+
+    let decls =
+        decls
+        |> List.map (function
+            | DExport(names, r) -> DExport(names |> List.filter (isReExport >> not), r)
+            | DReExport(names, r) -> DReExport(names |> List.filter (isReExport >> not), r)
+            | d -> d)
+
+    entries, scope, decls
+
 /// A dependency's declarations as every edge that reaches it sees them.
 ///
 /// The spellings are a list rather than one name, which is rule 10: a module
@@ -1308,10 +1356,51 @@ let private installAssemblyResolver () =
 /// *this* import makes it visible as, and one the edge filtered out is not
 /// registered at all. Everything else stays the original's — the transformer to
 /// invoke, and the module its templates resolve against.
+///
+/// A macro the assembly exports again names another module (`MacroEntry`).
+/// Its transformer, exports and trait methods are read from that module's
+/// assembly (`reExportSource`).
 /// What each loaded assembly's metadata says its module's macros see as trait
 /// methods. Read from the metadata alone, so it holds across compilations.
 let private macroTraitMethods =
     System.Collections.Generic.Dictionary<System.Reflection.Assembly, Set<string>>()
+
+/// The exports and trait methods of a module whose macro another module
+/// exports again, by its assembly.
+let private reExportSources =
+    System.Collections.Generic.Dictionary<System.Reflection.Assembly, Map<string, string> * Set<string>>()
+
+/// The assembly that defines a re-exported macro, with what its templates
+/// resolve against: the module's exports, as `registerMacros` reads them off
+/// declarations, and the trait methods its metadata lists.
+///
+/// - The assembly is found by module key, which is its assembly name. The
+///   module that exported the macro links it, so its path is known.
+/// - Raises when no path is known for it.
+let private reExportSource (moduleKey: string) (publisher: string) =
+    match assemblyPathOf moduleKey with
+    | None ->
+        failwithf
+            $"%s{publisher} exports a macro of the module %s{moduleKey}, but this build has no assembly for it. Rebuild %s{publisher}."
+    | Some path ->
+        let asm = loadForMetadata path
+
+        match reExportSources.TryGetValue asm with
+        | true, (exports, traitMethods) -> asm, exports, traitMethods
+        | _ ->
+            let _, meta = metadataOf path
+
+            let exports =
+                meta.Defs
+                |> List.map (fun d ->
+                    match d.Origin with
+                    | Some(originModule, originalName) -> originalName, originModule
+                    | None -> d.Name, "")
+                |> Map.ofList
+
+            let traitMethods = Set.ofList meta.MacroTraitMethods
+            reExportSources[asm] <- (exports, traitMethods)
+            asm, exports, traitMethods
 
 let private registerMacros
     (asm: System.Reflection.Assembly)
@@ -1367,6 +1456,13 @@ let private registerMacros
             (transformer: string)
             (visibleName: string)
             : Macro.MacroBinding =
+            // The assembly name is the module key.
+            let asm, exports, traitMethods =
+                if entry.ModuleName = asm.GetName().Name then
+                    asm, exports, traitMethods
+                else
+                    reExportSource entry.ModuleName (asm.GetName().Name)
+
             // Modulnyckeln bär sin namnrymd, så klassen går att stava ur
             // den ensam.
             let className =
@@ -1386,6 +1482,7 @@ let private registerMacros
 
             { Name = visibleName
               ModuleName = entry.ModuleName
+              Transformer = entry.Transformer
               Exports = exports
               TraitMethods = traitMethods
               Method = method }
@@ -1393,22 +1490,22 @@ let private registerMacros
         for entry in entries do
             match Map.tryFind entry.Name renaming with
             | None -> ()
-            | Some visibleName -> Macro.register (bindingOf "macro" entry entry.Name visibleName)
+            | Some visibleName -> Macro.register (bindingOf "macro" entry entry.Transformer visibleName)
 
         for entry in patternEntries do
             match Map.tryFind entry.Name renaming with
             | None -> ()
-            | Some visibleName -> Macro.registerPattern (bindingOf "pattern macro" entry entry.Name visibleName)
+            | Some visibleName -> Macro.registerPattern (bindingOf "pattern macro" entry entry.Transformer visibleName)
 
         for entry in clauseEntries do
             match Map.tryFind entry.Name renaming with
             | None -> ()
-            | Some visibleName -> Macro.registerClause (bindingOf "clause macro" entry entry.Name visibleName)
+            | Some visibleName -> Macro.registerClause (bindingOf "clause macro" entry entry.Transformer visibleName)
 
         for entry in hashEntries do
             match Map.tryFind entry.Name hashRenaming with
             | None -> ()
-            | Some visibleName -> Macro.registerHash (bindingOf "hash macro" entry ("#" + entry.Name) visibleName)
+            | Some visibleName -> Macro.registerHash (bindingOf "hash macro" entry ("#" + entry.Transformer) visibleName)
 
         Macro.install ()
 
@@ -2915,6 +3012,21 @@ let loadModuleGraph
                     // And a name this module defines wins over an import (rule
                     // 1), so it is no ambiguity.
                     setAmbiguous (Set.unionMany [ localMacros; localPatternMacros; localHashMacros; localClauseMacros; ownNames parsed ])
+
+                    // `(export name)` or `(re-export name)` of an imported
+                    // macro publishes the macro again
+                    // (`ModuleMetadata.reExportedMacros`). Taken out of the
+                    // declaration, which asks each name for a binding. Read
+                    // while the macro table is this module's.
+                    let parsed =
+                        if absPath = Path.GetFullPath mainFilePath then
+                            let own = Set.union localMacros (ownNames parsed)
+                            let reExported, scope, parsed = takeMacroExports own parsed
+                            ModuleMetadata.reExportedMacros <- reExported
+                            ModuleMetadata.reExportedMacroScope <- scope
+                            parsed
+                        else
+                            parsed
 
                     Macro.setLocalMacros Set.empty
                     Macro.setLocalPatternMacros Set.empty
