@@ -2775,6 +2775,49 @@ CPU cost, about 0.5%, is likely the two accesses to the thread's slot at
 each sync (see "Every thread-static access is a `__tls_get_addr` call").
 `bench/service` is now at about 500 B a request on four cores, as Go is.
 
+The CML suite (`bench/run.sh`), the commit before `select` against this
+one, run in turn, 32 runs each: no row moved past noise. The generated C#
+of `cmlbench.bjo` is the same in both, as it has no choose of wraps. Ring
+and Ring (put/get) are +1 ns, which is the resolution of the suite, and
+put/get publishes no event. Spawn burst is bimodal, at about 200 and about
+250 ns, in both builds.
+
+### The open loop after `select` — Bjolang against Go
+
+`drive.py --only Go,Bjolang --no-build --rates ...`, median of 2 x 3 reps of
+3 s, 10000 clients. Latency counts from the due time. Each cell is the rate
+the program kept, then p50 / p99 in ms. "Go, matched" has GOGC off and
+GOMEMLIMIT at the Bjolang peak, as `drive.py` runs it.
+
+    4 cores    Go                   Go, matched          Bjolang
+      0.5M     0.50M  1.1 / 31      0.50M  1.2 / 39      0.50M  0.8 / 3.0
+      1M       0.99M  9.8 / 48      0.99M  2.1 / 39      1.00M  0.9 / 6.9
+      1.5M     1.48M   34 / 101     1.49M   21 / 106     1.50M  1.2 / 14
+      2M       1.60M  410 / 792     1.77M  247 / 429     1.99M  1.7 / 16
+      2.5M     1.65M  841 / 1560    1.80M  652 / 1163    2.47M   17 / 99
+
+    all cores  Go                   Go, matched          Bjolang
+      1M       0.99M  1.0 / 32      1.00M  0.9 / 86      1.00M  1.2 / 5.9
+      2M       1.99M   14 / 41      1.99M  4.2 / 77      1.99M  1.5 / 14
+      3M       2.68M  111 / 499     2.97M   18 / 99      2.98M  4.4 / 21
+      4M       2.74M  700 / 1432    3.19M  360 / 857     3.96M   13 / 45
+      5M       2.81M 1217 / 2351    3.24M  828 / 1648    4.50M  162 / 387
+
+- Bjolang keeps up to 2.5M/s on four cores and to about 4.5M/s on all
+  cores. Go keeps up to about 1.6-1.8M/s and 2.7-3.2M/s.
+- Below Go's limit, the Bjolang p99 is 3 to 10 times lower than Go's.
+- CPU at the same rate: on four cores Bjolang takes the least of the three
+  (2M/s: 10.5 s, Go 14.8, Go, matched 13.3). On all cores it takes less
+  than Go and about a quarter more than Go, matched (2M/s: 43, 45 and
+  34 s).
+- The Bjolang peak grows with the rate, to about 1 GB at 4-5M/s on all
+  cores. In the open loop on all cores it allocates 660-800 B a request,
+  against 599 in the closed loop.
+- The Go p99 of about 31 ms on four cores at 0.5M/s, far from its limit, is
+  not new: the open-loop table of "At a fixed rate" has 25 ms.
+
+This compares Bjolang with Go, not this build with the one before it.
+
 ---
 
 ## 6. Known issues
