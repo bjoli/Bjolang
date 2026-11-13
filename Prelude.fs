@@ -320,6 +320,7 @@ let emptyRegistry : TraitRegistry =
       BlanketImpls = Map.empty
       TraitOrigins = Map.empty
       LinkedTraits = Set.empty
+      PendingImpls = Map.empty
       InlineMethods = Map.empty
       ConstrainedBodies = Map.empty
       InlineCopies = Set.empty

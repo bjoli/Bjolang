@@ -509,6 +509,16 @@ type private TraitNaming =
     | Spelled
     | Keyed
 
+/// Keeps an imported implementation of the trait `traitKey`, which is not
+/// registered yet, until it is (`TraitRegistry.PendingImpls`).
+let private deferImpl (traitKey: string) (decl: Decl) (env: Env) : Env =
+    let waiting = Map.tryFind traitKey env.Registry.PendingImpls |> Option.defaultValue []
+
+    { env with
+        Registry =
+            { env.Registry with
+                PendingImpls = Map.add traitKey (waiting @ [ decl ]) env.Registry.PendingImpls } }
+
 /// The key of the trait `name` names at `r`.
 let private traitKeyAt (naming: TraitNaming) (registry: TraitRegistry) (r: Range) (name: string) : string =
     match naming with
@@ -1002,7 +1012,10 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
 
 
     | DTrait(traitName, implementorVar, holeArity, assocTypes, signatures, defaults, clrSpec, supers, r) ->
-        checkTrait env sigs traitName implementorVar holeArity assocTypes signatures defaults clrSpec supers r
+        let env, sigs, decls =
+            checkTrait env sigs traitName implementorVar holeArity assocTypes signatures defaults clrSpec supers r
+
+        attachPending env sigs decls
 
     | DTypeRec(typeDefs, r) ->
         let newEnv, keyed = registerTypeDefs true typeDefs env
@@ -1043,6 +1056,12 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
                 env
 
         env, sigs, []
+
+    // An imported implementation whose trait is not registered yet waits for
+    // it: the trait may come later as a linked trait, or not at all.
+    | DImplExtern(traitName, _, _, _, _)
+    | DImplVia(traitName, _, _, true, _) when not (Map.containsKey traitName env.Registry.Traits) ->
+        deferImpl traitName decl env, sigs, []
 
     | DImplExtern(traitName, targetTypeExpr, assocBindings, whereClause, r) ->
         checkImplExtern env sigs traitName targetTypeExpr assocBindings whereClause r
@@ -2686,6 +2705,31 @@ and private checkExtern (env: Env) (sigs: Sigs) (name: string) (declaredOrigin: 
         | _ -> newEnv
 
     newEnv, sigs, [ TExtern(name, origin, ftype, r) ]
+
+/// Checks the pending implementations (`TraitRegistry.PendingImpls`) whose
+/// trait is registered now, after the declarations `decls`.
+and private attachPending (env: Env) (sigs: Sigs) (decls: TDecl list) : Env * Sigs * TDecl list =
+    let ready =
+        env.Registry.PendingImpls
+        |> Map.filter (fun key _ -> Map.containsKey key env.Registry.Traits)
+
+    if ready.IsEmpty then
+        env, sigs, decls
+    else
+        let env =
+            { env with
+                Registry =
+                    { env.Registry with
+                        PendingImpls = Map.fold (fun pending key _ -> Map.remove key pending) env.Registry.PendingImpls ready } }
+
+        ready
+        |> Map.toList
+        |> List.collect snd
+        |> List.fold
+            (fun (env, sigs, decls) impl ->
+                let env, sigs, more = checkDeclNode env sigs impl
+                env, sigs, decls @ more)
+            (env, sigs, decls)
 
 and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorVar: string) (holeArity: int) (assocTypes: string list) (signatures: (string * FType * MemberConstraint list) list) (defaults: Decl list) (clrSpec: (string * FType list * (string * string) list) option) (supers: MemberConstraint list) (r: Range) : Env * Sigs * TDecl list =
     // The member constraints ride the signature list; split them off here

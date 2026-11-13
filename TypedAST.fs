@@ -1850,6 +1850,11 @@ type TraitRegistry =
       /// known. Source does not see them: their methods are not bound, and a
       /// rule about a method in scope does not apply to them.
       LinkedTraits: Set<string>
+      /// Implementations read back from a compiled module whose trait is not
+      /// registered yet, by trait key. `CheckDecl` checks them when the trait
+      /// is registered, by an import or as a linked trait. One whose trait is
+      /// never registered is not usable in this module, and is left out.
+      PendingImpls: Map<string, Decl list>
       /// The pin equations in force while a constrained member's body is
       /// checked — the *given* equalities its `(where ...)` grants.
       ///

@@ -1,0 +1,22 @@
+;; For 545_impl_without_trait.bjo and 546_impl_trait_imported_after.bjo. A
+;; type with an implementation of `pending_trait.bjo`'s trait, which an
+;; importer of this module need not import.
+
+(export Crate crate crate-load crates-weight)
+(import (std prelude))
+(import "pending_trait.bjo")
+
+(type (: Crate (Record (: load int))))
+
+(: (-> int Crate))
+(defun (crate n) (Crate (load n)))
+
+(: (-> Crate int))
+(defun (crate-load c) (.load c))
+
+(impl (Weigh Crate)
+  (defun (weigh c) (* 10 (.load c))))
+
+;; Calls the implementation through the constrained `weigh-both`.
+(: (-> Crate Crate int))
+(defun (crates-weight a b) (weigh-both a b))
