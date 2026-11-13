@@ -1,0 +1,1252 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/hashmap.protobjo — the prelude's unordered map.
+;;
+;; Included by `prelude.bjo`, so that `Map` is there without an import. What
+;; follows is part of the prelude, and exported from its export list. Names
+;; that are not exported start with `hm-`.
+;;
+;; A CHAMP trie, the same as `(std hashset)`'s, over the same C# nodes:
+;;
+;; - An element is an entry, `(Tuple k v)`. Entries are hashed and compared
+;;   by key, with the map's comparer.
+;; - A node holds up to 32 slots, picked by 5 bits of the key's hash at its
+;;   depth. A slot holds an entry or a child. A leaf holds only entries, a
+;;   branch entries and children, a collision node entries whose keys' full
+;;   hashes are equal.
+;; - A child is never a leaf of one entry: removal puts such an entry in the
+;;   parent's slot. The empty map is the empty leaf.
+;; - A transient owns the nodes it copied, and edits those in place.
+;; - Setting a key to a value equal to its old one (by .NET's default
+;;   equality) returns the map itself.
+
+(import/class
+  ((TrieNode %a) (: Bjolang.Runtime.HashTries.Node))
+  ;; What a map compares its keys with. See `eq-comparer`.
+  ((EqualityComparer %a) (: System.Collections.Generic.IEqualityComparer))
+  (KeyNotFoundException (: System.Collections.Generic.KeyNotFoundException))
+  (ArgumentException (: System.ArgumentException)))
+
+(import/extern
+  (hm-owner-next     (: Bjolang.Runtime.HashTries.NodeOps.OwnerNext     (-> long)))
+  (hm-empty-node     (: Bjolang.Runtime.HashTries.NodeOps.Empty         (-> (TrieNode %a))))
+  (hm-node-kind      (: Bjolang.Runtime.HashTries.NodeOps.Kind          (-> (TrieNode %a) int)))
+  (hm-node-size      (: Bjolang.Runtime.HashTries.NodeOps.Size          (-> (TrieNode %a) int)))
+  (hm-child-count    (: Bjolang.Runtime.HashTries.NodeOps.ChildCount    (-> (TrieNode %a) int)))
+  (hm-element        (: Bjolang.Runtime.HashTries.NodeOps.Element       (-> (TrieNode %a) int %a)))
+  (hm-value-at       (: Bjolang.Runtime.HashTries.NodeOps.ValueAt       (-> (TrieNode (Tuple %k %v)) int %v)))
+  (hm-child          (: Bjolang.Runtime.HashTries.NodeOps.Child         (-> (TrieNode %a) int (TrieNode %a))))
+  (hm-element-map    (: Bjolang.Runtime.HashTries.NodeOps.ElementMap    (-> (TrieNode %a) int)))
+  (hm-child-map      (: Bjolang.Runtime.HashTries.NodeOps.ChildMap      (-> (TrieNode %a) int)))
+  (hm-collision-hash (: Bjolang.Runtime.HashTries.NodeOps.CollisionHash (-> (TrieNode %a) int)))
+  (hm-same-node?     (: Bjolang.Runtime.HashTries.NodeOps.Same          (-> (TrieNode %a) (TrieNode %a) bool)))
+  (hm-fragment       (: Bjolang.Runtime.HashTries.NodeOps.Fragment      (-> int int int)))
+  (hm-hash-of        (: Bjolang.Runtime.HashTries.NodeOps.Hash          (-> (EqualityComparer %a) %a int)))
+  (hm-same-key?      (: Bjolang.Runtime.HashTries.NodeOps.Equal         (-> (EqualityComparer %a) %a %a bool)))
+  (hm-same-comparer? (: Bjolang.Runtime.HashTries.NodeOps.SameComparer  (-> (EqualityComparer %a) (EqualityComparer %a) bool)))
+  (hm-same-value?    (: Bjolang.Runtime.HashTries.NodeOps.SameValue     (-> %a %a bool)))
+  (hm-probe          (: Bjolang.Runtime.HashTries.NodeOps.ProbeKey
+                        (-> (TrieNode (Tuple %k %v)) %k int int (EqualityComparer %k) int)))
+  (hm-element-at     (: Bjolang.Runtime.HashTries.NodeOps.ElementAt     (-> (TrieNode %a) int int %a)))
+  (hm-with-element   (: Bjolang.Runtime.HashTries.NodeOps.WithElement   (-> (TrieNode %a) %a int int long (TrieNode %a))))
+  (hm-with-element-at (: Bjolang.Runtime.HashTries.NodeOps.WithElementAt (-> (TrieNode %a) int %a long (TrieNode %a))))
+  (hm-with-subtree   (: Bjolang.Runtime.HashTries.NodeOps.WithSubtree   (-> (TrieNode %a) int int (TrieNode %a) long (TrieNode %a))))
+  (hm-with-child     (: Bjolang.Runtime.HashTries.NodeOps.WithChild     (-> (TrieNode %a) int (TrieNode %a) long (TrieNode %a))))
+  (hm-leaf-of-one    (: Bjolang.Runtime.HashTries.NodeOps.Single        (-> %a int int long (TrieNode %a))))
+  (hm-leaf-of-two    (: Bjolang.Runtime.HashTries.NodeOps.Pair          (-> %a int %a int int long (TrieNode %a))))
+  (hm-branch-around  (: Bjolang.Runtime.HashTries.NodeOps.Wrap          (-> (TrieNode %a) int int long (TrieNode %a))))
+  (hm-branch-of-two  (: Bjolang.Runtime.HashTries.NodeOps.Fork          (-> %a int (TrieNode %a) int int long (TrieNode %a))))
+  (hm-collision-of-two (: Bjolang.Runtime.HashTries.NodeOps.Collision   (-> %a %a int long (TrieNode %a))))
+  (hm-without-element-at (: Bjolang.Runtime.HashTries.NodeOps.WithoutElementAt
+                            (-> (TrieNode %a) int int int long (TrieNode %a))))
+  (hm-without-child  (: Bjolang.Runtime.HashTries.NodeOps.WithoutChild  (-> (TrieNode %a) int int int long (TrieNode %a))))
+  (hm-with-child-inlined (: Bjolang.Runtime.HashTries.NodeOps.WithChildInlined
+                            (-> (TrieNode %a) int %a int int long (TrieNode %a))))
+  (hm-assemble       (: Bjolang.Runtime.HashTries.NodeOps.Assemble
+                        (-> int (Array %a) int (Array (TrieNode %a)) int long (TrieNode %a))))
+  (hm-collision-of   (: Bjolang.Runtime.HashTries.NodeOps.CollisionOf   (-> (Array %a) int int long (TrieNode %a)))))
+
+;; The kinds `hm-node-kind` returns.
+(def hm-leaf-kind 0)
+(def hm-collision-kind 2)
+
+;; The owner of the nodes no transient owns. They are never edited in place.
+(: hm-no-owner long)
+(def hm-no-owner 0)
+
+;; The levels of leaves and branches: shifts 0 to 30. Below them are only
+;; collision nodes.
+(def hm-levels 7)
+
+;; Groups this small are sorted in place by insertion rather than counted
+;; into 32 buckets.
+(def hm-small-group 12)
+
+(def hm-depth-bits 4)
+(def hm-index-bits 5)
+(: hm-last-run long)
+(def hm-last-run -1)
+
+(: (-> (TrieNode %a) bool))
+(defun (hm-leaf? n) (= (hm-node-kind n) hm-leaf-kind))
+
+(: (-> (TrieNode %a) bool))
+(defun (hm-collision? n) (= (hm-node-kind n) hm-collision-kind))
+
+;; The entries under `n`. Nodes hold no counts, so this visits every node.
+(: (-> (TrieNode %a) int))
+(defun (hm-count-under n)
+  (loop (:for i (range 0 (hm-child-count n)))
+        (:acc c (folding (hm-node-size n) (+ c (hm-count-under (hm-child n i)))))
+        => c))
+
+(: (-> (Tuple %k %v) %k))
+(defun (hm-key e) (def (Tuple k _v) e) k)
+
+(: (-> (Tuple %k %v) %v))
+(defun (hm-value e) (def (Tuple _k v) e) v)
+
+(: (-> int int bool))
+(defun (hm-has? map bit) (not (= (bitwise-and map bit) 0)))
+
+;; Raise the .NET exceptions the C# map raised, so that a caller's handler
+;; still catches them.
+(: (-> %a))
+(defun (hm-key-not-found)
+  (raise (cast Exception (KeyNotFoundException. "The key is not in the map."))))
+
+(: (-> %a))
+(defun (hm-key-present)
+  (raise (cast Exception (ArgumentException. "The key is already in the map."))))
+
+;; ---------------------------------------------------------------------------
+;; The map
+;; ---------------------------------------------------------------------------
+
+;; - `count` is -1 for a part made by `map-split` until it is first asked
+;;   for, so that the part counts itself in its own fiber. It is written at
+;;   most once, with the same value by every thread that writes it.
+(type (: (Map %k %v) #:opaque
+         (Record (: root (TrieNode (Tuple %k %v)))
+                 (: count int #:mutable)
+                 (: comparer (EqualityComparer %k)))))
+
+(: (-> (EqualityComparer %k) (Map %k %v)))
+(defun (hm-empty-with cmp) (Map (root (hm-empty-node)) (count 0) (comparer cmp)))
+
+;; What makes a map out of nothing asks for the key's Eq, and the map compares
+;; keys with it — the same answer `=` gives, also for two cases of a union that
+;; `=` equates. One made from a map keeps that map's.
+(: (-> (Map %k %v)) (where (Eq %k)))
+(defun (map-empty) (hm-empty-with (eq-comparer)))
+
+;; An empty map that compares keys as `m` does.
+(: (-> (Map %k %v) (Map %k %v)))
+(defun (map-clear m) (hm-empty-with (.comparer m)))
+
+(: (-> (Map %k %v) int))
+(defun (map-length m)
+  (def n (.count m))
+  (if (>= n 0)
+      n
+      (begin
+        (def counted (hm-count-under (.root m)))
+        (record-set! m (count counted))
+        counted)))
+
+(: (-> (Map %k %v) bool))
+(defun (map-empty? m) (= (map-length m) 0))
+
+;; ---------------------------------------------------------------------------
+;; Lookup
+;; ---------------------------------------------------------------------------
+
+;; Where the search for `k` ends: the node, and what `hm-probe` returned
+;; there. -4 - i means entry `i` of the node.
+(: (-> (TrieNode (Tuple %k %v)) %k int int (EqualityComparer %k) (Tuple (TrieNode (Tuple %k %v)) int)))
+(defun (hm-find n k h shift cmp)
+  (def c (hm-probe n k h shift cmp))
+  (if (>= c 0)
+      (hm-find (hm-child n c) k h (+ shift 5) cmp)
+      (Tuple n c)))
+
+(: (-> (TrieNode (Tuple %k %v)) %k (EqualityComparer %k) bool))
+(defun (hm-contains? root k cmp)
+  (def (Tuple _n c) (hm-find root k (hm-hash-of cmp k) 0 cmp))
+  (<= c -4))
+
+(: (-> (TrieNode (Tuple %k %v)) %k (EqualityComparer %k) %v %v))
+(defun (hm-ref-or root k cmp default)
+  (def (Tuple n c) (hm-find root k (hm-hash-of cmp k) 0 cmp))
+  (if (<= c -4) (hm-value-at n c) default))
+
+(: (-> (TrieNode (Tuple %k %v)) %k (EqualityComparer %k) %v))
+(defun (hm-ref root k cmp)
+  (def (Tuple n c) (hm-find root k (hm-hash-of cmp k) 0 cmp))
+  (if (<= c -4) (hm-value-at n c) (hm-key-not-found)))
+
+(: (-> (TrieNode (Tuple %k %v)) %k (EqualityComparer %k) (Option %v)))
+(defun (hm-try-ref root k cmp)
+  (def (Tuple n c) (hm-find root k (hm-hash-of cmp k) 0 cmp))
+  (if (<= c -4) (Some (hm-value-at n c)) None))
+
+;; The value of `k`. Raises `KeyNotFoundException` when `m` has none.
+(: (-> (Map %k %v) %k %v))
+(defun (map-ref m k) (hm-ref (.root m) k (.comparer m)))
+
+(: (-> (Map %k %v) %k %v %v))
+(defun (map-ref-or m k default) (hm-ref-or (.root m) k (.comparer m) default))
+
+(: (-> (Map %k %v) %k (Option %v)))
+(defun (map-try-ref m k) (hm-try-ref (.root m) k (.comparer m)))
+
+(: (-> (Map %k %v) %k bool))
+(defun (map-contains? m k) (hm-contains? (.root m) k (.comparer m)))
+
+;; ---------------------------------------------------------------------------
+;; Set and remove
+;; ---------------------------------------------------------------------------
+
+;; A node at `shift` of the two entries `a` and `b`, whose keys differ: a
+;; leaf if their fragments differ there, a collision node if their hashes
+;; are equal, else a branch around the node one level down.
+(: (-> %a int %a int int long (TrieNode %a)))
+(defun (hm-join a ha b hb shift owner)
+  (if (= ha hb)
+      (hm-collision-of-two a b ha owner)
+      (if (= (hm-fragment ha shift) (hm-fragment hb shift))
+          (hm-branch-around (hm-join a ha b hb (+ shift 5) owner) ha shift owner)
+          (hm-leaf-of-two a ha b hb shift owner))))
+
+;; The collision node `col`, at `shift`, and `x`, whose hash differs from its
+;; entries' hash, under one node at `shift`.
+(: (-> (TrieNode %a) %a int int long (TrieNode %a)))
+(defun (hm-split-collision col x hx shift owner)
+  (def hc (hm-collision-hash col))
+  (if (= (hm-fragment hc shift) (hm-fragment hx shift))
+      (hm-branch-around (hm-split-collision col x hx (+ shift 5) owner) hc shift owner)
+      (hm-branch-of-two x hx col hc shift owner)))
+
+;; Sets `k` to `v` in the subtree `n` at `shift`. Returns the new subtree,
+;; and whether `k` is new. `n` itself when `k` has a value equal to `v`.
+(: (-> (TrieNode (Tuple %k %v)) %k %v int int (EqualityComparer %k) long (Tuple (TrieNode (Tuple %k %v)) bool)))
+(defun (hm-insert n k v h shift cmp owner)
+  (def c (hm-probe n k h shift cmp))
+  (if (>= c 0)
+      (begin (def ch (hm-child n c))
+             (def (Tuple r added?) (hm-insert ch k v h (+ shift 5) cmp owner))
+             (Tuple (if (hm-same-node? r ch) n (hm-with-child n c r owner)) added?))
+      (if (<= c -4)
+          (begin (def i (- -4 c))
+                 (if (hm-same-value? (hm-value (hm-element n i)) v)
+                     (Tuple n #f)
+                     (Tuple (hm-with-element-at n i (Tuple k v) owner) #f)))
+          (if (= c -2)
+              (Tuple (hm-with-element n (Tuple k v) h shift owner) #t)
+              (if (hm-collision? n)
+                  (Tuple (hm-split-collision n (Tuple k v) h shift owner) #t)
+                  (begin (def y (hm-element-at n h shift))
+                         (Tuple (hm-with-subtree n h shift (hm-join y (hm-hash-of cmp (hm-key y)) (Tuple k v) h (+ shift 5) owner) owner)
+                                #t)))))))
+
+;; Removes the entry of `k` from the subtree `n` at `shift`. Returns the new
+;; subtree, and whether there was one. A child left empty is dropped, and a
+;; child left with one entry is put in its parent's slot.
+(: (-> (TrieNode (Tuple %k %v)) %k int int (EqualityComparer %k) long (Tuple (TrieNode (Tuple %k %v)) bool)))
+(defun (hm-delete n k h shift cmp owner)
+  (def c (hm-probe n k h shift cmp))
+  (if (<= c -4)
+      (Tuple (hm-without-element-at n (- -4 c) h shift owner) #t)
+      (if (< c 0)
+          (Tuple n #f)
+          (begin (def ch (hm-child n c))
+                 (def (Tuple r removed?) (hm-delete ch k h (+ shift 5) cmp owner))
+                 (if (not removed?)
+                     (Tuple n #f)
+                     (if (and (hm-leaf? r) (= (hm-node-size r) 0))
+                         (Tuple (hm-without-child n c h shift owner) #t)
+                         (if (and (hm-leaf? r) (= (hm-node-size r) 1))
+                             (Tuple (hm-with-child-inlined n c (hm-element r 0) h shift owner) #t)
+                             (if (hm-same-node? r ch) (Tuple n #t) (Tuple (hm-with-child n c r owner) #t)))))))))
+
+;; `m` with `k` set to `v`. Returns `m` itself when `k` already has a value
+;; equal to `v`.
+(: (-> (Map %k %v) %k %v (Map %k %v)))
+(defun (map-set m k v)
+  (def cmp (.comparer m))
+  (def root (.root m))
+  (def (Tuple r added?) (hm-insert root k v (hm-hash-of cmp k) 0 cmp hm-no-owner))
+  (if (hm-same-node? r root)
+      m
+      (if added?
+          (Map (root r) (count (+ (map-length m) 1)) (comparer cmp))
+          (Map (root r) (count (.count m)) (comparer cmp)))))
+
+;; Adds a key that must be new, and raises `ArgumentException` when it is not.
+(: (-> (Map %k %v) %k %v (Map %k %v)))
+(defun (map-add-new m k v)
+  (if (map-contains? m k) (hm-key-present) (map-set m k v)))
+
+(: (-> (Map %k %v) %k (Map %k %v)))
+(defun (map-remove m k)
+  (def cmp (.comparer m))
+  (def (Tuple r removed?) (hm-delete (.root m) k (hm-hash-of cmp k) 0 cmp hm-no-owner))
+  (if removed?
+      (Map (root r) (count (- (map-length m) 1)) (comparer cmp))
+      m))
+
+(: (-> (Map %k %v) (Seq (Tuple %k %v)) (Map %k %v)))
+(defun (map-set-all m kvs)
+  (def t (map->transientmap m))
+  (transientmap-set-all! t kvs)
+  (transientmap->map t))
+
+(: (-> (Map %k %v) (Seq %k) (Map %k %v)))
+(defun (map-remove-all m ks)
+  (def t (map->transientmap m))
+  (transientmap-remove-all! t ks)
+  (transientmap->map t))
+
+;; ---------------------------------------------------------------------------
+;; Transients
+;; ---------------------------------------------------------------------------
+
+;; A map that edits in place the nodes it copied. `transientmap->map`
+;; returns a map of its contents and gives it a new owner, so that the map
+;; does not change after.
+(type (: (TransientMap %k %v) #:opaque
+         (Record (: root (TrieNode (Tuple %k %v)) #:mutable)
+                 (: count int #:mutable)
+                 (: owner long #:mutable)
+                 (: comparer (EqualityComparer %k)))))
+
+(: (-> (TransientMap %k %v)) (where (Eq %k)))
+(defun (transientmap-empty) (map->transientmap (map-empty)))
+
+(: (-> (Map %k %v) (TransientMap %k %v)))
+(defun (map->transientmap m)
+  (TransientMap (root (.root m)) (count (map-length m)) (owner (hm-owner-next)) (comparer (.comparer m))))
+
+(: (-> (TransientMap %k %v) (Map %k %v)))
+(defun (transientmap->map t)
+  (record-set! t (owner (hm-owner-next)))
+  (Map (root (.root t)) (count (.count t)) (comparer (.comparer t))))
+
+(: (-> (TransientMap %k %v) %k %v void))
+(defun (transientmap-set! t k v)
+  (def cmp (.comparer t))
+  (def (Tuple r added?) (hm-insert (.root t) k v (hm-hash-of cmp k) 0 cmp (.owner t)))
+  (record-set! t (root r))
+  (when added? (record-set! t (count (+ (.count t) 1)))))
+
+(: (-> (TransientMap %k %v) %k void))
+(defun (transientmap-remove! t k)
+  (def cmp (.comparer t))
+  (def (Tuple r removed?) (hm-delete (.root t) k (hm-hash-of cmp k) 0 cmp (.owner t)))
+  (when removed? (record-set! t (root r) (count (- (.count t) 1)))))
+
+(: (-> (TransientMap %k %v) (Seq (Tuple %k %v)) void))
+(defun (transientmap-set-all! t kvs)
+  (loop (:for (Tuple k v) kvs) (:do (transientmap-set! t k v))))
+
+(: (-> (TransientMap %k %v) (Seq %k) void))
+(defun (transientmap-remove-all! t ks)
+  (loop (:for k ks) (:do (transientmap-remove! t k))))
+
+(: (-> (TransientMap %k %v) %k bool))
+(defun (transientmap-contains? t k) (hm-contains? (.root t) k (.comparer t)))
+
+;; The value of `k`. Raises `KeyNotFoundException` when `t` has none.
+(: (-> (TransientMap %k %v) %k %v))
+(defun (transientmap-ref t k) (hm-ref (.root t) k (.comparer t)))
+
+(: (-> (TransientMap %k %v) %k %v %v))
+(defun (transientmap-ref-or t k default) (hm-ref-or (.root t) k (.comparer t) default))
+
+(: (-> (TransientMap %k %v) %k (Option %v)))
+(defun (transientmap-try-ref t k) (hm-try-ref (.root t) k (.comparer t)))
+
+(: (-> (TransientMap %k %v) int))
+(defun (transientmap-length t) (.count t))
+
+(: (-> (TransientMap %k %v) bool))
+(defun (transientmap-empty? t) (= (.count t) 0))
+
+;; Removes the entries `keep?` rejects.
+(: (-> (-?-> %k %v bool) (TransientMap %k %v) void))
+(defun (transientmap-filter! keep? t)
+  (def doomed
+    (let go ((c (hm-cursor-of (.root t))) (acc Nil))
+      (if (map-cursor-done? c)
+          acc
+          (begin (def (Tuple k v) (map-cursor-current c))
+                 (if (keep? k v) (go (map-cursor-next c) acc) (go (map-cursor-next c) (Cons k acc)))))))
+  (loop (:for k doomed) (:do (transientmap-remove! t k))))
+
+;; ---------------------------------------------------------------------------
+;; Cursors
+;; ---------------------------------------------------------------------------
+
+;; A position in an iteration of a map, a struct, so that an iteration
+;; allocates nothing. The entries come in the trie's order: a node's own
+;; entries, then those under its children, in order.
+;;
+;; - The cursor is on entry `i` of `node`, of `end` entries.
+;; - `path` is the child index at each level above `node`, 5 bits a level
+;;   above the low 4 bits, which hold the depth of `node`. `hm-last-run`
+;;   marks a node with no entries after it: a root that is a leaf.
+;; - At the end of a node, `hm-advance` follows `path` from the root again.
+(type (: (MapCursor %k %v) #:opaque
+         (Struct (: node (TrieNode (Tuple %k %v)))
+                 (: i int)
+                 (: end int)
+                 (: root (TrieNode (Tuple %k %v)))
+                 (: path long))))
+
+(: (-> long int int))
+(defun (hm-index-at path level)
+  (cast System.Int32 (bitwise-and (shift-right-logical path (+ hm-depth-bits (* hm-index-bits level))) 31)))
+
+;; `path` with the index `index` at `level`, and the depth `depth`.
+(: (-> long int int int long))
+(defun (hm-path-to path level index depth)
+  (def shift (+ hm-depth-bits (* hm-index-bits level)))
+  (def (: mask long) (bitwise-ior (shift-left 31 shift) 15))
+  (bitwise-ior (bitwise-ior (bitwise-and path (bitwise-not mask))
+                            (shift-left (cast System.Int64 index) shift))
+               (cast System.Int64 depth)))
+
+(: (-> (TrieNode (Tuple %k %v)) (MapCursor %k %v)))
+(defun (hm-cursor-of root)
+  (if (hm-leaf? root)
+      (MapCursor (node root) (i 0) (end (hm-node-size root)) (root root) (path hm-last-run))
+      (hm-enter root root 0)))
+
+;; The cursor on the first entry of `n`, at `path`, or after it if it has
+;; none.
+(: (-> (TrieNode (Tuple %k %v)) (TrieNode (Tuple %k %v)) long (MapCursor %k %v)))
+(defun (hm-enter n root path)
+  (def size (hm-node-size n))
+  (if (> size 0)
+      (MapCursor (node n) (i 0) (end size) (root root) (path path))
+      (hm-advance root path)))
+
+;; The cursor on the first entry after the node at `path`: under its first
+;; child, else under the next sibling of it or of its nearest ancestor that
+;; has one. A done cursor if there is none.
+(: (-> (TrieNode (Tuple %k %v)) long (MapCursor %k %v)))
+(defun (hm-advance root path)
+  (def depth (cast System.Int32 (bitwise-and path 15)))
+  ;; The deepest level whose child index can move right, and its node.
+  (def/mutable level -1)
+  (def/mutable parent root)
+  (def/mutable n root)
+  (loop (:for d (range 0 depth))
+        (:do (def i (hm-index-at path d))
+             (when (< (+ i 1) (hm-child-count n))
+               (set! level d)
+               (set! parent n))
+             (set! n (hm-child n i))))
+  (if (> (hm-child-count n) 0)
+      (hm-enter (hm-child n 0) root (hm-path-to path depth 0 (+ depth 1)))
+      (if (>= level 0)
+          (begin (def next (+ (hm-index-at path level) 1))
+                 (hm-enter (hm-child parent next) root (hm-path-to path level next (+ level 1))))
+          (MapCursor (node root) (i 0) (end 0) (root root) (path hm-last-run)))))
+
+(: (-> (Map %k %v) (MapCursor %k %v)))
+(defun (map-cursor m) (hm-cursor-of (.root m)))
+
+(: (-> (MapCursor %k %v) bool))
+(defun (map-cursor-done? c) (>= (.i c) (.end c)))
+
+(: (-> (MapCursor %k %v) (Tuple %k %v)))
+(defun (map-cursor-current c) (hm-element (.node c) (.i c)))
+
+(: (-> (MapCursor %k %v) (MapCursor %k %v)))
+(defun (map-cursor-next c)
+  (def i (+ (.i c) 1))
+  (if (or (< i (.end c)) (= (.path c) hm-last-run))
+      (record-set c (i i))
+      (hm-advance (.root c) (.path c))))
+
+;; ---------------------------------------------------------------------------
+;; Iteration
+;; ---------------------------------------------------------------------------
+
+;; Folds `f` over the entries in the trie's order. Recursive over the trie,
+;; which reads each node once.
+(: (-> (-?-> %k %v %s %s) %s (TrieNode (Tuple %k %v)) %s))
+(defun (hm-fold-node f acc n)
+  (def own (loop (:for i (range 0 (hm-node-size n)))
+                 (:acc s (folding acc (begin (def (Tuple k v) (hm-element n i)) (f k v s))))
+                 => s))
+  (loop (:for i (range 0 (hm-child-count n)))
+        (:acc s (folding own (hm-fold-node f s (hm-child n i))))
+        => s))
+
+(: (-> (-?-> %k %v %s %s) %s (Map %k %v) %s))
+(defun (map-fold f init m) (hm-fold-node f init (.root m)))
+
+(: (-> (-?-> %k %v void) (Map %k %v) void))
+(defun (map-for-each f m)
+  (loop (:for (Tuple k v) m) (:do (f k v))))
+
+;; Calls `f` until it returns #f. Returns whether it never did.
+(: (-> (-?-> %k %v bool) (Map %k %v) bool))
+(defun (map-iter f m)
+  (let go ((c (map-cursor m)))
+    (if (map-cursor-done? c)
+        #t
+        (begin (def (Tuple k v) (map-cursor-current c))
+               (if (f k v) (go (map-cursor-next c)) #f)))))
+
+(: (-> (-?-> %k %v bool) (Map %k %v) bool))
+(defun (map-any? pred m)
+  (let go ((c (map-cursor m)))
+    (if (map-cursor-done? c)
+        #f
+        (begin (def (Tuple k v) (map-cursor-current c))
+               (if (pred k v) #t (go (map-cursor-next c)))))))
+
+;; The first entry in the trie's order that `pred` accepts.
+(: (-> (-?-> %k %v bool) (Map %k %v) (Option (Tuple %k %v))))
+(defun (map-try-find pred m)
+  (let go ((c (map-cursor m)))
+    (if (map-cursor-done? c)
+        None
+        (begin (def e (map-cursor-current c))
+               (def (Tuple k v) e)
+               (if (pred k v) (Some e) (go (map-cursor-next c)))))))
+
+(: (-> (Map %k %v) (Seq %k)))
+(defun (map-keys m) (seql (:for (Tuple k _v) m) (:yield k)))
+
+(: (-> (Map %k %v) (Seq %v)))
+(defun (map-values m) (seql (:for (Tuple _k v) m) (:yield v)))
+
+(: (-> (Map %k %v) (Seq (Tuple %k %v))))
+(defun (map->seq m) (->seq m))
+
+;; ---------------------------------------------------------------------------
+;; Rebuilding
+;; ---------------------------------------------------------------------------
+
+;; The subtree `n` at `shift` with each value `v` of key `k` replaced by
+;; `f k v`. Keys stay, so the shape stays: no key is hashed again.
+;; - `own` and `kids` hold 32 slots for each level, where a node at that
+;;   level gathers its entries and children.
+(: (-> (-?-> %k %v %w) (TrieNode (Tuple %k %v)) int (Array (Tuple %k %w)) (Array (TrieNode (Tuple %k %w)))
+       (TrieNode (Tuple %k %w))))
+(defun (hm-map-node f n shift own kids)
+  (def size (hm-node-size n))
+  (if (hm-collision? n)
+      (begin
+        (def (: xs (Array (Tuple %k %w))) (make-array size))
+        (loop (:for i (range 0 size))
+              (:do (def (Tuple k v) (hm-element n i))
+                   (array-set! xs i (Tuple k (f k v)))))
+        (hm-collision-of xs size (hm-collision-hash n) hm-no-owner))
+      (begin
+        (def base (* 32 (/ shift 5)))
+        (loop (:for i (range 0 size))
+              (:do (def (Tuple k v) (hm-element n i))
+                   (array-set! own (+ base i) (Tuple k (f k v)))))
+        (loop (:for i (range 0 (hm-child-count n)))
+              (:do (array-set! kids (+ base i) (hm-map-node f (hm-child n i) (+ shift 5) own kids))))
+        (hm-assemble (hm-element-map n) own (hm-child-map n) kids base hm-no-owner))))
+
+(: (-> (-?-> %k %v %w) (Map %k %v) (Map %k %w)))
+(defun (map-map f m)
+  (Map (root (hm-map-node f (.root m) 0 (make-array (* 32 hm-levels)) (make-array (* 32 hm-levels))))
+       (count (.count m))
+       (comparer (.comparer m))))
+
+(: (-> (-?-> %v %w) (TrieNode (Tuple %k %v)) int (Array (Tuple %k %w)) (Array (TrieNode (Tuple %k %w)))
+       (TrieNode (Tuple %k %w))))
+(defun (hm-map-values-node f n shift own kids)
+  (def size (hm-node-size n))
+  (if (hm-collision? n)
+      (begin
+        (def (: xs (Array (Tuple %k %w))) (make-array size))
+        (loop (:for i (range 0 size))
+              (:do (def (Tuple k v) (hm-element n i))
+                   (array-set! xs i (Tuple k (f v)))))
+        (hm-collision-of xs size (hm-collision-hash n) hm-no-owner))
+      (begin
+        (def base (* 32 (/ shift 5)))
+        (loop (:for i (range 0 size))
+              (:do (def (Tuple k v) (hm-element n i))
+                   (array-set! own (+ base i) (Tuple k (f v)))))
+        (loop (:for i (range 0 (hm-child-count n)))
+              (:do (array-set! kids (+ base i) (hm-map-values-node f (hm-child n i) (+ shift 5) own kids))))
+        (hm-assemble (hm-element-map n) own (hm-child-map n) kids base hm-no-owner))))
+
+(: (-> (-?-> %v %w) (Map %k %v) (Map %k %w)))
+(defun (map-map-values f m)
+  (Map (root (hm-map-values-node f (.root m) 0 (make-array (* 32 hm-levels)) (make-array (* 32 hm-levels))))
+       (count (.count m))
+       (comparer (.comparer m))))
+
+;; The entries of the subtree `n` at `shift` that `keep?` accepts, and how
+;; many. Keeps the shape, so no key is hashed again.
+;; - Returns `n` itself when `keep?` accepts every entry under it.
+;; - One entry left: a leaf of it, which the parent takes into its own
+;;   entries. None left: the empty node.
+;; - `own` and `kids` are as for `hm-map-node`.
+(: (-> (-?-> %k %v bool) (TrieNode (Tuple %k %v)) int (Array (Tuple %k %v)) (Array (TrieNode (Tuple %k %v)))
+       (Tuple (TrieNode (Tuple %k %v)) int)))
+(defun (hm-filter-node keep? n shift own kids)
+  (def size (hm-node-size n))
+  (if (hm-collision? n)
+      (begin
+        (def (: xs (Array (Tuple %k %v))) (make-array size))
+        (def/mutable k 0)
+        (loop (:for i (range 0 size))
+              (:do (def x (hm-element n i))
+                   (def (Tuple key v) x)
+                   (when (keep? key v)
+                     (array-set! xs k x)
+                     (set! k (+ k 1)))))
+        (if (= k size)
+            (Tuple n k)
+            (if (= k 0)
+                (Tuple (hm-empty-node) 0)
+                (if (= k 1)
+                    (Tuple (hm-leaf-of-one (array-ref xs 0) (hm-collision-hash n) shift hm-no-owner) 1)
+                    (Tuple (hm-collision-of xs k (hm-collision-hash n) hm-no-owner) k)))))
+      (begin
+        (def base (* 32 (/ shift 5)))
+        (def em (hm-element-map n))
+        (def cm (hm-child-map n))
+        (def/mutable new-em 0)
+        (def/mutable new-cm 0)
+        (def/mutable ne base)
+        (def/mutable nk base)
+        (def/mutable ie 0)
+        (def/mutable ic 0)
+        (def/mutable total 0)
+        (def/mutable changed? #f)
+        (def/mutable left (bitwise-ior em cm))
+        (loop (:while (not (= left 0)))
+              (:do (def bit (bitwise-and left (- 0 left)))
+                   (set! left (bitwise-xor left bit))
+                   (if (not (= (bitwise-and em bit) 0))
+                       (begin (def x (hm-element n ie))
+                              (set! ie (+ ie 1))
+                              (def (Tuple key v) x)
+                              (if (keep? key v)
+                                  (begin (array-set! own ne x)
+                                         (set! ne (+ ne 1))
+                                         (set! new-em (bitwise-ior new-em bit))
+                                         (set! total (+ total 1)))
+                                  (set! changed? #t)))
+                       (begin (def c (hm-child n ic))
+                              (set! ic (+ ic 1))
+                              (def (Tuple r k) (hm-filter-node keep? c (+ shift 5) own kids))
+                              (set! total (+ total k))
+                              (if (not (hm-same-node? r c)) (set! changed? #t) unit)
+                              (if (= k 1)
+                                  (begin (array-set! own ne (hm-element r 0))
+                                         (set! ne (+ ne 1))
+                                         (set! new-em (bitwise-ior new-em bit)))
+                                  (if (> k 1)
+                                      (begin (array-set! kids nk r)
+                                             (set! nk (+ nk 1))
+                                             (set! new-cm (bitwise-ior new-cm bit)))
+                                      unit))))))
+        (if (not changed?)
+            (Tuple n total)
+            (if (= total 0)
+                (Tuple (hm-empty-node) 0)
+                (Tuple (hm-assemble new-em own new-cm kids base hm-no-owner) total))))))
+
+;; The entries `keep?` accepts. Returns `m` when it accepts every entry.
+(: (-> (-?-> %k %v bool) (Map %k %v) (Map %k %v)))
+(defun (map-filter keep? m)
+  (def (Tuple r k) (hm-filter-node keep? (.root m) 0 (make-array (* 32 hm-levels)) (make-array (* 32 hm-levels))))
+  (if (hm-same-node? r (.root m)) m (Map (root r) (count k) (comparer (.comparer m)))))
+
+;; ---------------------------------------------------------------------------
+;; Merge
+;; ---------------------------------------------------------------------------
+
+;; The entry for a key in both maps, `x` from the left and `y` from the
+;; right: the left key, with the right value or `f`'s. Returns `x` itself
+;; when the value is equal to its own, and whether it is not.
+(: (-> (Option (-> %k %v %v %v)) (Tuple %k %v) (Tuple %k %v) (Tuple (Tuple %k %v) bool)))
+(defun (hm-resolved f x y)
+  (def (Tuple k a) x)
+  (def b (hm-value y))
+  (def v (match f ((Some g) (g k a b)) (None b)))
+  (if (hm-same-value? a v) (Tuple x #f) (Tuple (Tuple k v) #t)))
+
+;; The merge of the subtrees `a` and `b`, both at `shift`, as `hm-resolved`
+;; merges an entry. Returns the merge, and how many keys of `b` are in `a`.
+;; Returns `a` itself when `b` changes nothing in it.
+;; - `xs` and `kids` hold 32 slots for each level, where a node at that level
+;;   gathers its entries and children.
+;; - Without `f`, a subtree both share merges to itself. With it, `f` sees
+;;   every key both have.
+(: (-> (EqualityComparer %k) (Option (-> %k %v %v %v)) (TrieNode (Tuple %k %v)) (TrieNode (Tuple %k %v)) int
+       (Array (Tuple %k %v)) (Array (TrieNode (Tuple %k %v))) (Tuple (TrieNode (Tuple %k %v)) int)))
+(defun (hm-merge-of cmp f a b shift xs kids)
+  (if (and (hm-same-node? a b) (match f ((Some _g) #f) (None #t)))
+      (Tuple a (hm-count-under a))
+      (if (or (hm-collision? a) (hm-collision? b))
+          (hm-merge-entries cmp f a b shift)
+          (hm-merge-nodes cmp f a b shift xs kids))))
+
+;; The merge of `a` and `b` at `shift`, one entry of `b` at a time. For
+;; collision nodes, which are rare.
+(: (-> (EqualityComparer %k) (Option (-> %k %v %v %v)) (TrieNode (Tuple %k %v)) (TrieNode (Tuple %k %v)) int
+       (Tuple (TrieNode (Tuple %k %v)) int)))
+(defun (hm-merge-entries cmp f a b shift)
+  (hm-fold-node
+    (fun (k v acc)
+      (def (Tuple n o) acc)
+      (def h (hm-hash-of cmp k))
+      (def (Tuple at c) (hm-find n k h shift cmp))
+      (if (<= c -4)
+          (begin
+            (def (Tuple e changed?) (hm-resolved f (hm-element at (- -4 c)) (Tuple k v)))
+            (def (Tuple ek ev) e)
+            (Tuple (if changed? (hm-first (hm-insert n ek ev h shift cmp hm-no-owner)) n) (+ o 1)))
+          (Tuple (hm-first (hm-insert n k v h shift cmp hm-no-owner)) o)))
+    (Tuple a 0)
+    b))
+
+(: (-> (Tuple %a %b) %a))
+(defun (hm-first t) (def (Tuple a _b) t) a)
+
+;; The merge of two leaves or branches, slot by slot.
+(: (-> (EqualityComparer %k) (Option (-> %k %v %v %v)) (TrieNode (Tuple %k %v)) (TrieNode (Tuple %k %v)) int
+       (Array (Tuple %k %v)) (Array (TrieNode (Tuple %k %v))) (Tuple (TrieNode (Tuple %k %v)) int)))
+(defun (hm-merge-nodes cmp f a b shift xs kids)
+  (def ea (hm-element-map a))
+  (def ca (hm-child-map a))
+  (def eb (hm-element-map b))
+  (def cb (hm-child-map b))
+  (def down (+ shift 5))
+  (def base (* 32 (/ shift 5)))
+  (def/mutable ia 0)
+  (def/mutable ja 0)
+  (def/mutable ib 0)
+  (def/mutable jb 0)
+  ;; The next free slots of this level in `xs` and `kids`.
+  (def/mutable ne base)
+  (def/mutable nk base)
+  (def/mutable em 0)
+  (def/mutable cm 0)
+  (def/mutable changed? #f)
+  (def/mutable overlap 0)
+  ;; The occupied slots, lowest first.
+  (def/mutable m (bitwise-ior (bitwise-ior ea ca) (bitwise-ior eb cb)))
+  (loop (:while (not (= m 0)))
+        (:do (def bit (bitwise-and m (- 0 m)))
+             (set! m (bitwise-xor m bit))
+             (def ea? (hm-has? ea bit))
+             (def ca? (hm-has? ca bit))
+             (def eb? (hm-has? eb bit))
+             (def cb? (hm-has? cb bit))
+             (if (and ea? eb?)
+                 (begin (def x (hm-element a ia))
+                        (def y (hm-element b ib))
+                        (def kx (hm-key x))
+                        (def ky (hm-key y))
+                        (if (hm-same-key? cmp kx ky)
+                            (begin
+                              (def (Tuple e e-changed?) (hm-resolved f x y))
+                              (set! overlap (+ overlap 1))
+                              (when e-changed? (set! changed? #t))
+                              (array-set! xs ne e) (set! ne (+ ne 1)) (set! em (bitwise-ior em bit)))
+                            (begin
+                              (set! changed? #t)
+                              (array-set! kids nk (hm-join x (hm-hash-of cmp kx) y (hm-hash-of cmp ky) down hm-no-owner))
+                              (set! nk (+ nk 1))
+                              (set! cm (bitwise-ior cm bit)))))
+                 (if (or ca? cb?)
+                     (begin (def left (if ca?
+                                          (hm-child a ja)
+                                          (if ea?
+                                              (begin (def x (hm-element a ia))
+                                                     (hm-leaf-of-one x (hm-hash-of cmp (hm-key x)) down hm-no-owner))
+                                              (hm-child b jb))))
+                            (def right (if cb?
+                                           (hm-child b jb)
+                                           (if eb?
+                                               (begin (def y (hm-element b ib))
+                                                      (hm-leaf-of-one y (hm-hash-of cmp (hm-key y)) down hm-no-owner))
+                                               left)))
+                            (def (Tuple n o)
+                              (if (and (or ca? ea?) (or cb? eb?))
+                                  (hm-merge-of cmp f left right down xs kids)
+                                  (Tuple left 0)))
+                            (set! overlap (+ overlap o))
+                            (unless (and ca? (hm-same-node? n (hm-child a ja))) (set! changed? #t))
+                            (array-set! kids nk n)
+                            (set! nk (+ nk 1))
+                            (set! cm (bitwise-ior cm bit)))
+                     (if ea?
+                         (begin (array-set! xs ne (hm-element a ia))
+                                (set! ne (+ ne 1))
+                                (set! em (bitwise-ior em bit)))
+                         (if eb?
+                             (begin (set! changed? #t)
+                                    (array-set! xs ne (hm-element b ib))
+                                    (set! ne (+ ne 1))
+                                    (set! em (bitwise-ior em bit)))
+                             unit))))
+             (when ea? (set! ia (+ ia 1)))
+             (when ca? (set! ja (+ ja 1)))
+             (when eb? (set! ib (+ ib 1)))
+             (when cb? (set! jb (+ jb 1)))))
+  (if changed?
+      (Tuple (hm-assemble em xs cm kids base hm-no-owner) overlap)
+      (Tuple a overlap)))
+
+;; The entries of `m` and of `other`. For a key in both: the key from `m`,
+;; the value from `f`, or from `other` without it. The merge compares keys
+;; as `m` does. Two maps that compare alike share the nodes that only one of
+;; them has.
+(: (-> (Map %k %v) (Map %k %v) (Option (-> %k %v %v %v)) (Map %k %v)))
+(defun (hm-merge m other f)
+  (def cmp (.comparer m))
+  (if (map-empty? other)
+      m
+      (if (not (hm-same-comparer? cmp (.comparer other)))
+          (begin (def t (map->transientmap m))
+                 (loop (:for (Tuple k v) other)
+                       (:do (match f
+                              ((Some g) (match (transientmap-try-ref t k)
+                                          ((Some old) (transientmap-set! t k (g k old v)))
+                                          (None (transientmap-set! t k v))))
+                              (None (transientmap-set! t k v)))))
+                 (transientmap->map t))
+          (if (map-empty? m)
+              (Map (root (.root other)) (count (map-length other)) (comparer cmp))
+              (begin (def (Tuple r overlap)
+                       (hm-merge-of cmp f (.root m) (.root other) 0 (make-array (* 32 hm-levels)) (make-array (* 32 hm-levels))))
+                     (if (hm-same-node? r (.root m))
+                         m
+                         (Map (root r) (count (- (+ (map-length m) (map-length other)) overlap)) (comparer cmp))))))))
+
+;; `m` with the entries of `other`. A key in both gets `other`'s value.
+(: (-> (Map %k %v) (Map %k %v) (Map %k %v)))
+(defun (map-merge m other) (hm-merge m other None))
+
+;; `m` with the entries of `other`. A key in both gets `(f k left right)`.
+(: (-> (-> %k %v %v %v) (Map %k %v) (Map %k %v) (Map %k %v)))
+(defun (map-merge-with f m other) (hm-merge m other (Some f)))
+
+;; ---------------------------------------------------------------------------
+;; Builders
+;; ---------------------------------------------------------------------------
+
+;; Entries added with their keys' hashes, made into a trie at the end by
+;; sorting them on 5 bits of hash a level. Of two entries of one key, the
+;; one added last is kept.
+(type (: (MapBuilder %k %v) #:opaque
+         (Record (: hashes (Array int) #:mutable)
+                 (: entries (Array (Tuple %k %v)) #:mutable)
+                 (: count int #:mutable)
+                 (: comparer (EqualityComparer %k)))))
+
+(: (-> (EqualityComparer %k) int (MapBuilder %k %v)))
+(defun (hm-builder-with cmp capacity)
+  (MapBuilder (hashes (make-array capacity)) (entries (make-array capacity)) (count 0) (comparer cmp)))
+
+(: (-> (MapBuilder %k %v)) (where (Eq %k)))
+(defun (mapbuilder-empty) (hm-builder-with (eq-comparer) 16))
+
+;; A builder that holds the entries of `m`.
+(: (-> (Map %k %v) (MapBuilder %k %v)))
+(defun (map->mapbuilder m)
+  (def b (hm-builder-with (.comparer m) (max 16 (map-length m))))
+  (loop (:for (Tuple k v) m) (:do (mapbuilder-add! b k v)))
+  b)
+
+(: (-> (MapBuilder %k %v) %k %v void))
+(defun (mapbuilder-add! b k v)
+  (def n (.count b))
+  (when (= n (array-length (.entries b)))
+    (record-set! b (hashes (array-resize (.hashes b) (* 2 n))) (entries (array-resize (.entries b) (* 2 n)))))
+  (array-set! (.hashes b) n (hm-hash-of (.comparer b) k))
+  (array-set! (.entries b) n (Tuple k v))
+  (record-set! b (count (+ n 1))))
+
+(: (-> (MapBuilder %k %v) (Seq (Tuple %k %v)) void))
+(defun (mapbuilder-add-all! b kvs)
+  (loop (:for (Tuple k v) kvs) (:do (mapbuilder-add! b k v))))
+
+;; The number of entries added, a key added twice counted twice.
+(: (-> (MapBuilder %k %v) int))
+(defun (mapbuilder-length b) (.count b))
+
+(: (-> (Array int) int int bool))
+(defun (hm-one-hash? hs from n)
+  (def h (array-ref hs from))
+  (loop (:for i (range (+ from 1) (+ from n)))
+        (:acc ok (folding #t (and ok (= (array-ref hs i) h))))
+        => ok))
+
+;; The entries of `xs` from `from`, `n` of them, into the start of `out`,
+;; one for each key. Of entries of one key the last one is kept. Returns how
+;; many.
+(: (-> (EqualityComparer %k) (Array (Tuple %k %v)) int int (Array (Tuple %k %v)) int))
+(defun (hm-distinct-into cmp xs from n out)
+  (def/mutable k 0)
+  (loop (:for i (range from (+ from n)))
+        (:do (def x (array-ref xs i))
+             (def kx (hm-key x))
+             (def at (let find ((j 0))
+                       (if (= j k) -1 (if (hm-same-key? cmp (hm-key (array-ref out j)) kx) j (find (+ j 1))))))
+             (if (< at 0)
+                 (begin (array-set! out k x) (set! k (+ k 1)))
+                 (array-set! out at x))))
+  k)
+
+;; Where `hm-build-node` sorts and gathers: 32 slots for each level.
+(type (: (MapBuildScratch %k %v) #:opaque
+         (Record (: counts (Array int))
+                 (: starts (Array int))
+                 (: ends (Array int))
+                 (: own (Array (Tuple %k %v)))
+                 (: kids (Array (TrieNode (Tuple %k %v)))))))
+
+;; The node at `shift` of the `n` entries of `hs` and `xs` from `from`, which
+;; have at least two hashes. Sorts them into `to-hs` and `to-xs` on the
+;; fragment at `shift`, and builds each group's child from there, with the
+;; arrays swapped. Returns the node and how many entries it holds.
+(: (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) (Array int) (Array (Tuple %k %v)) int int int
+       (MapBuildScratch %k %v) (Tuple (TrieNode (Tuple %k %v)) int)))
+(defun (hm-build-node cmp hs xs to-hs to-xs from n shift sc)
+  (if (<= n hm-small-group)
+      (hm-build-small cmp hs xs to-hs to-xs from n shift sc)
+      (hm-build-sorted cmp hs xs to-hs to-xs from n shift sc)))
+
+;; A group of one hash at `shift` of the builder, into `own` or `kids`.
+;; Returns how many entries it holds, and whether it went into `kids`.
+(: (-> (EqualityComparer %k) (Array (Tuple %k %v)) int int int (MapBuildScratch %k %v) int int (Tuple int bool)))
+(defun (hm-build-one-hash cmp xs from c h sc ne nk)
+  (def (: group (Array (Tuple %k %v))) (make-array c))
+  (def k (hm-distinct-into cmp xs from c group))
+  (if (= k 1)
+      (begin (array-set! (.own sc) ne (array-ref group 0)) (Tuple 1 #f))
+      (begin (array-set! (.kids sc) nk (hm-collision-of group k h hm-no-owner)) (Tuple k #t))))
+
+;; `hm-build-node` for a small group: sorts it in place on the fragment at
+;; `shift`, then takes its runs of one fragment in order.
+(: (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) (Array int) (Array (Tuple %k %v)) int int int
+       (MapBuildScratch %k %v) (Tuple (TrieNode (Tuple %k %v)) int)))
+(defun (hm-build-small cmp hs xs to-hs to-xs from n shift sc)
+  (def end (+ from n))
+  (loop (:for i (range (+ from 1) end))
+        (:do (def h (array-ref hs i))
+             (def x (array-ref xs i))
+             (def f (hm-fragment h shift))
+             (def/mutable j i)
+             (loop (:while (and (> j from) (> (hm-fragment (array-ref hs (- j 1)) shift) f)))
+                   (:do (array-set! hs j (array-ref hs (- j 1)))
+                        (array-set! xs j (array-ref xs (- j 1)))
+                        (set! j (- j 1))))
+             (array-set! hs j h)
+             (array-set! xs j x)))
+  (def base (* 32 (/ shift 5)))
+  (def own (.own sc))
+  (def kids (.kids sc))
+  (def/mutable ne base)
+  (def/mutable nk base)
+  (def/mutable em 0)
+  (def/mutable cm 0)
+  (def/mutable total 0)
+  (def/mutable i from)
+  (loop (:while (< i end))
+        (:do (def f (hm-fragment (array-ref hs i) shift))
+             (def/mutable j (+ i 1))
+             (loop (:while (and (< j end) (= (hm-fragment (array-ref hs j) shift) f))) (:do (set! j (+ j 1))))
+             (def c (- j i))
+             (def bit (shift-left 1 f))
+             (if (= c 1)
+                 (begin (set! total (+ total 1))
+                        (array-set! own ne (array-ref xs i))
+                        (set! ne (+ ne 1))
+                        (set! em (bitwise-ior em bit)))
+                 (if (hm-one-hash? hs i c)
+                     (begin (def (Tuple k kid?) (hm-build-one-hash cmp xs i c (array-ref hs i) sc ne nk))
+                            (set! total (+ total k))
+                            (if kid?
+                                (begin (set! nk (+ nk 1)) (set! cm (bitwise-ior cm bit)))
+                                (begin (set! ne (+ ne 1)) (set! em (bitwise-ior em bit)))))
+                     (begin (def (Tuple kid k) (hm-build-node cmp hs xs to-hs to-xs i c (+ shift 5) sc))
+                            (set! total (+ total k))
+                            (array-set! kids nk kid)
+                            (set! nk (+ nk 1))
+                            (set! cm (bitwise-ior cm bit)))))
+             (set! i j)))
+  (Tuple (hm-assemble em own cm kids base hm-no-owner) total))
+
+;; `hm-build-node` for a big group: counts it into 32 buckets on the
+;; fragment at `shift` and moves it into `to-hs` and `to-xs` by bucket.
+(: (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) (Array int) (Array (Tuple %k %v)) int int int
+       (MapBuildScratch %k %v) (Tuple (TrieNode (Tuple %k %v)) int)))
+(defun (hm-build-sorted cmp hs xs to-hs to-xs from n shift sc)
+  (def base (* 32 (/ shift 5)))
+  (def counts (.counts sc))
+  (def starts (.starts sc))
+  (def ends (.ends sc))
+  (def own (.own sc))
+  (def kids (.kids sc))
+  (loop (:for f (range base (+ base 32))) (:do (array-set! counts f 0)))
+  (loop (:for i (range from (+ from n)))
+        (:do (def f (+ base (hm-fragment (array-ref hs i) shift)))
+             (array-set! counts f (+ (array-ref counts f) 1))))
+  (def/mutable o from)
+  (loop (:for f (range base (+ base 32)))
+        (:do (array-set! starts f o)
+             (array-set! ends f o)
+             (set! o (+ o (array-ref counts f)))))
+  (loop (:for i (range from (+ from n)))
+        (:do (def f (+ base (hm-fragment (array-ref hs i) shift)))
+             (def p (array-ref ends f))
+             (array-set! to-hs p (array-ref hs i))
+             (array-set! to-xs p (array-ref xs i))
+             (array-set! ends f (+ p 1))))
+  (def/mutable ne base)
+  (def/mutable nk base)
+  (def/mutable em 0)
+  (def/mutable cm 0)
+  (def/mutable total 0)
+  (loop (:for f (range 0 32))
+        (:do (def c (array-ref counts (+ base f)))
+             (def s (array-ref starts (+ base f)))
+             (def bit (shift-left 1 f))
+             (if (= c 0)
+                 unit
+                 (if (= c 1)
+                     (begin (set! total (+ total 1))
+                            (array-set! own ne (array-ref to-xs s))
+                            (set! ne (+ ne 1))
+                            (set! em (bitwise-ior em bit)))
+                     (if (hm-one-hash? to-hs s c)
+                         (begin (def (Tuple k kid?) (hm-build-one-hash cmp to-xs s c (array-ref to-hs s) sc ne nk))
+                                (set! total (+ total k))
+                                (if kid?
+                                    (begin (set! nk (+ nk 1)) (set! cm (bitwise-ior cm bit)))
+                                    (begin (set! ne (+ ne 1)) (set! em (bitwise-ior em bit)))))
+                         (begin (def (Tuple kid k) (hm-build-node cmp to-hs to-xs hs xs s c (+ shift 5) sc))
+                                (set! total (+ total k))
+                                (array-set! kids nk kid)
+                                (set! nk (+ nk 1))
+                                (set! cm (bitwise-ior cm bit))))))))
+  (Tuple (hm-assemble em own cm kids base hm-no-owner) total))
+
+(: (-> (MapBuilder %k %v) (Map %k %v)))
+(defun (mapbuilder->map b)
+  (def cmp (.comparer b))
+  (def n (.count b))
+  (def hs (.hashes b))
+  (def xs (.entries b))
+  (if (= n 0)
+      (hm-empty-with cmp)
+      (if (hm-one-hash? hs 0 n)
+          (begin (def (: group (Array (Tuple %k %v))) (make-array n))
+                 (def k (hm-distinct-into cmp xs 0 n group))
+                 (def h (array-ref hs 0))
+                 (Map (root (if (= k 1) (hm-leaf-of-one (array-ref group 0) h 0 hm-no-owner) (hm-collision-of group k h hm-no-owner)))
+                      (count k)
+                      (comparer cmp)))
+          (begin (def sc (MapBuildScratch (counts (make-array (* 32 hm-levels))) (starts (make-array (* 32 hm-levels)))
+                                          (ends (make-array (* 32 hm-levels))) (own (make-array (* 32 hm-levels)))
+                                          (kids (make-array (* 32 hm-levels)))))
+                 (def (Tuple root k) (hm-build-node cmp hs xs (make-array n) (make-array n) 0 n 0 sc))
+                 (Map (root root) (count k) (comparer cmp))))))
+
+(: (-> (Seq (Tuple %k %v)) (Map %k %v)) (where (Eq %k)))
+(defun (seq->map xs)
+  (def b (mapbuilder-empty))
+  (mapbuilder-add-all! b xs)
+  (mapbuilder->map b))
+(:deprecated seq->map "use `->map`, which takes any iterable of pairs")
+
+;; ---------------------------------------------------------------------------
+;; Splitting
+;; ---------------------------------------------------------------------------
+
+;; A slot of some node, for `map-split`: an entry, or a child.
+;; - `path` holds the fragments of the nodes above, 5 bits a level, the
+;;   root's lowest. `depth` is the level of the node; 0 is the root.
+;; - `node` is the child, or the node that holds the entry.
+;; - `index` is the entry's index in `node`, or -1 for a child.
+(type (: (MapSplitUnit %a) #:opaque
+         (Struct (: path long)
+                 (: node (TrieNode %a))
+                 (: depth int)
+                 (: bit int)
+                 (: index int))))
+
+(: (-> (MapSplitUnit %a) bool))
+(defun (hm-unit-entry? u) (>= (.index u) 0))
+
+;; Whether the unit is a leaf or a branch, which can be replaced by its slots.
+(: (-> (MapSplitUnit %a) bool))
+(defun (hm-expands? u) (and (not (hm-unit-entry? u)) (not (hm-collision? (.node u)))))
+
+;; The slots of `n`, at `depth` under `path`, onto `out`: its entries, then
+;; its children, as iteration has them.
+(: (-> (TrieNode %a) int long (ListBuilder (MapSplitUnit %a)) void))
+(defun (hm-add-units n depth path out)
+  (def/mutable m (hm-element-map n))
+  (def/mutable i 0)
+  (loop (:while (not (= m 0)))
+        (:do (listbuilder-add! out (MapSplitUnit (path path) (node n) (depth depth) (bit (hm-trailing-zero-count m)) (index i)))
+             (set! i (+ i 1))
+             (set! m (bitwise-and m (- m 1)))))
+  (set! m (hm-child-map n))
+  (set! i 0)
+  (loop (:while (not (= m 0)))
+        (:do (listbuilder-add! out (MapSplitUnit (path path) (node (hm-child n i)) (depth depth) (bit (hm-trailing-zero-count m)) (index -1)))
+             (set! i (+ i 1))
+             (set! m (bitwise-and m (- m 1))))))
+
+(: (-> int int))
+(defun (hm-trailing-zero-count m)
+  (let go ((m m) (k 0)) (if (= (bitwise-and m 1) 1) k (go (shift-right-logical m 1) (+ k 1)))))
+
+(: (-> long int int))
+(defun (hm-fragment-of path depth)
+  (cast System.Int32 (bitwise-and (shift-right-logical path (* 5 depth)) 31)))
+
+;; The node at `depth` for the units from `from` below `to`, which all lie
+;; at or below it on one path. A node of one entry and no child, below the
+;; root, is returned as a leaf of it with #t, for the parent's slot, as
+;; removal would put it.
+(: (-> (Array (MapSplitUnit %a)) int int int (Tuple (TrieNode %a) bool)))
+(defun (hm-build-part units from to depth)
+  (def (: own (Array %a)) (make-array 32))
+  (def (: kids (Array (TrieNode %a))) (make-array 32))
+  ;; The slots by fragment first, then packed in fragment order.
+  (def (: by-bit-x (Array %a)) (make-array 32))
+  (def (: by-bit-n (Array (TrieNode %a))) (make-array 32))
+  (def/mutable em 0)
+  (def/mutable cm 0)
+  (let go ((i from))
+    (when (< i to)
+      (def u (array-ref units i))
+      (if (= (.depth u) depth)
+          (begin
+            (if (hm-unit-entry? u)
+                (begin (array-set! by-bit-x (.bit u) (hm-element (.node u) (.index u)))
+                       (set! em (bitwise-ior em (shift-left 1 (.bit u)))))
+                (begin (array-set! by-bit-n (.bit u) (.node u))
+                       (set! cm (bitwise-ior cm (shift-left 1 (.bit u))))))
+            (go (+ i 1)))
+          (begin
+            (def f (hm-fragment-of (.path u) depth))
+            (def j (let scan ((j (+ i 1)))
+                     (if (and (< j to)
+                              (> (.depth (array-ref units j)) depth)
+                              (= (hm-fragment-of (.path (array-ref units j)) depth) f))
+                         (scan (+ j 1))
+                         j)))
+            (def (Tuple piece inline?) (hm-build-part units i j (+ depth 1)))
+            (if inline?
+                (begin (array-set! by-bit-x f (hm-element piece 0))
+                       (set! em (bitwise-ior em (shift-left 1 f))))
+                (begin (array-set! by-bit-n f piece)
+                       (set! cm (bitwise-ior cm (shift-left 1 f)))))
+            (go j)))))
+  (def/mutable ne 0)
+  (def/mutable nk 0)
+  (loop (:for f (range 0 32))
+        (:do (def bit (shift-left 1 f))
+             (when (hm-has? em bit) (array-set! own ne (array-ref by-bit-x f)) (set! ne (+ ne 1)))
+             (when (hm-has? cm bit) (array-set! kids nk (array-ref by-bit-n f)) (set! nk (+ nk 1)))))
+  (def n (hm-assemble em own cm kids 0 hm-no-owner))
+  (Tuple n (and (> depth 0) (= cm 0) (= ne 1))))
+
+(: (-> (ListBuilder %a) (Array %a)))
+(defun (hm-array-of b) (loop (:for x (listbuilder->list b)) (:acc (arraying x))))
+
+;; About `k` maps that together hold each entry of `m` once, for work on
+;; them at the same time. They share the nodes of `m`; only the nodes on the
+;; way down to a cut are new.
+;;
+;; - The units are the slots of the root. While a child holds more than
+;;   count / k entries on average, every leaf and branch child is replaced
+;;   by its own slots. A collision node stays one unit, of its known size.
+;; - The parts are runs of units, cut where the running weight passes
+;;   i * count / k. Hashes that are not spread make parts of different
+;;   sizes, not wrong ones.
+;; - A part's count is not known until it is first asked for.
+(: (-> (Map %k %v) int (Array (Map %k %v))))
+(defun (map-split m k)
+  (def size (map-length m))
+  (def root (.root m))
+  (def cmp (.comparer m))
+  (if (or (<= k 1) (<= size 1) (hm-collision? root))
+      (begin (def (: whole (Array (Map %k %v))) (make-array 1))
+             (array-set! whole 0 m)
+             whole)
+      (begin
+        (def target (/ (cast double size) (cast double k)))
+        (def (: units-of-root (ListBuilder (MapSplitUnit (Tuple %k %v)))) (listbuilder-empty))
+        (hm-add-units root 0 0 units-of-root)
+        (: child-weight (-> (Array (MapSplitUnit (Tuple %k %v))) (Tuple double int)))
+        (defun (child-weight us)
+          (def/mutable rest size)
+          (def/mutable children 0)
+          (loop (:for u us)
+                (:do (if (hm-unit-entry? u)
+                         (set! rest (- rest 1))
+                         (if (hm-collision? (.node u))
+                             (set! rest (- rest (hm-node-size (.node u))))
+                             (set! children (+ children 1))))))
+          (Tuple (if (= children 0) 0.0 (max 1.0 (/ (cast double rest) (cast double children)))) children))
+        (def (Tuple units weight)
+          (let expand ((us (hm-array-of units-of-root)))
+            (def (Tuple w children) (child-weight us))
+            (if (or (<= w target) (= children 0))
+                (Tuple us w)
+                (begin
+                  (def out (listbuilder-empty))
+                  (loop (:for u us)
+                        (:do (if (hm-expands? u)
+                                 (hm-add-units (.node u) (+ (.depth u) 1)
+                                               (bitwise-ior (.path u) (shift-left (cast System.Int64 (.bit u)) (* 5 (.depth u))))
+                                               out)
+                                 (listbuilder-add! out u))))
+                  (expand (hm-array-of out))))))
+        (def weights (loop (:for u units)
+                           (:acc (arraying (if (hm-unit-entry? u)
+                                               1.0
+                                               (if (hm-collision? (.node u))
+                                                   (cast double (hm-node-size (.node u)))
+                                                   weight))))))
+        (def total (loop (:for w weights) (:acc (summing w))))
+        (def n (array-length units))
+        (def parts (min k n))
+        (def out (listbuilder-empty))
+        (def/mutable made 0)
+        (def/mutable start 0)
+        (def/mutable done 0.0)
+        (loop (:for j (range 0 n))
+              (:do (set! done (+ done (array-ref weights j)))
+                   (when (or (= j (- n 1))
+                             (and (< made (- parts 1))
+                                  (>= done (/ (* total (cast double (+ made 1))) (cast double parts)))))
+                     (def (Tuple part _inline?) (hm-build-part units start (+ j 1) 0))
+                     (listbuilder-add! out (Map (root part) (count -1) (comparer cmp)))
+                     (set! made (+ made 1))
+                     (set! start (+ j 1)))))
+        (hm-array-of out))))

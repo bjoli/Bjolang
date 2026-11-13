@@ -18,8 +18,9 @@
     (map-ref m "one")              ; 1, m is unchanged
     """)
   (reference """
-    A CHAMP trie (Compressed Hash-Array Mapped Prefix-tree) implementation
-    (@code{Map.Map} in the runtime). Updates return a new persistent map
+    A CHAMP trie (Compressed Hash-Array Mapped Prefix-tree), written in
+    Bjolang in @code{lib/std/hashmap.protobjo} over the C# nodes of
+    @code{Bjolang.Runtime.HashTries}. Updates return a new persistent map
     sharing untouched subtrees with the original.
 
     @strong{Key equality.} Map constructors (@code{map-empty}, @code{->map},
@@ -378,6 +379,21 @@
   (returns "(Some (Tuple key value)) for the entry, or None.")
   (see map-find)
   (reference "The same as @code{map-find}."))
+
+(:doc map-split
+  (summary "Splits a map into about @code{k} maps that together hold each entry once.")
+  (arg m "The map to split.")
+  (arg k "How many parts to aim for.")
+  (returns "An array of at most @code{k} maps, or of @code{m} alone.")
+  (see map-merge)
+  (reference """
+    The parts share the nodes of @code{m}; only the nodes above a cut are
+    new. Cuts follow the trie, so parts have about equal sizes when hashes
+    are spread, and different sizes when they are not. A part counts its
+    entries the first time its length is asked for. Returns @code{m} alone
+    when @code{k} is at most 1, @code{m} holds at most one entry, or all
+    keys share one hash. @code{(std parallel)} uses it to divide work.
+    """))
 
 ;; ---------------------------------------------------------------------------
 ;; Cursors

@@ -83,7 +83,7 @@
   map-keys map-values map-merge map-merge-with
   ;; Walking and rebuilding
   map-map map-map-values map-filter map-fold
-  map-for-each map-iter map-any? map-find map-try-find
+  map-for-each map-iter map-any? map-find map-try-find map-split
   ;; The cursor `Iterable` walks with
   map-cursor map-cursor-done? map-cursor-current map-cursor-next
   ;; Conversions.
@@ -667,97 +667,18 @@
 ;; ---------------------------------------------------------------------------
 ;; Map — the unordered map
 ;; ---------------------------------------------------------------------------
-;; Hash map.
-(import/class
-  ((Map %k %v)          (: Map.Map))
-  ((MapBuilder %k %v)   (: Map.MapBuilder))
-  ((TransientMap %k %v) (: Map.TransientMap))
-  ((MapCursor %k %v)    (: Map.MapCursor))
-  ;; What a map compares its keys with. See `eq-comparer`.
-  ((EqualityComparer %a) (: System.Collections.Generic.IEqualityComparer)))
-
-(import/extern
-  (clr-map-empty  (: Map.MapModule.Empty       (-> (EqualityComparer %k) (Map %k %v))))
-  (clr-map-comparer (: Map.MapModule.Comparer  (-> (Map %k %v) (EqualityComparer %k))))
-  ;; Lookup.
-  (map-ref        (: Map.MapModule.Ref         (-> (Map %k %v) %k %v)))
-  (map-ref-or     (: Map.MapModule.RefOr       (-> (Map %k %v) %k %v %v)))
-  (map-set        (: Map.MapModule.Set         (-> (Map %k %v) %k %v (Map %k %v))))
-  ;; Adds a key that must be new, and raises when it is not.
-  (map-add-new    (: Map.MapModule.Add         (-> (Map %k %v) %k %v (Map %k %v))))
-  ;; Set multiple.
-  (map-set-all    (: Map.MapModule.SetRange    (-> (Map %k %v) (Seq (Tuple %k %v)) (Map %k %v))))
-  (map-remove     (: Map.MapModule.Remove      (-> (Map %k %v) %k (Map %k %v))))
-  (map-remove-all (: Map.MapModule.RemoveRange (-> (Map %k %v) (Seq %k) (Map %k %v))))
-  (map-contains?  (: Map.MapModule.ContainsKey (-> (Map %k %v) %k bool)))
-  (map-length     (: Map.MapModule.Count       (-> (Map %k %v) int)))
-  (map-empty?     (: Map.MapModule.IsEmpty     (-> (Map %k %v) bool)))
-  (map-clear      (: Map.MapModule.Clear       (-> (Map %k %v) (Map %k %v))))
-  (map-keys       (: Map.MapModule.Keys        (-> (Map %k %v) (Seq %k))))
-  (map-values     (: Map.MapModule.Values      (-> (Map %k %v) (Seq %v))))
-  ;; Merge.
-  (map-merge      (: Map.MapModule.Merge       (-> (Map %k %v) (Map %k %v) (Map %k %v))))
-  ;; Merge with function.
-  (map-merge-with (: Map.MapModule.MergeWith   (-> (-> %k %v %v %v) (Map %k %v) (Map %k %v) (Map %k %v))))
-
-  ;; Lookup value.
-  (map-try-ref    (: Map.MapModule.TryGetValue (-> (Map %k %v) %k (out %v) (Option %v))))
-
-  ;; --- Walking ---
-  ;; Walk map.
-  (clr-map-map        (: Map.MapModule.Map       (-> (-> %k %v %w) (Map %k %v) (Map %k %w))))
-  ;; Map values.
-  (clr-map-map-values (: Map.MapModule.MapValues (-> (-> %v %w) (Map %k %v) (Map %k %w))))
-  (clr-map-filter     (: Map.MapModule.Filter    (-> (-> %k %v bool) (Map %k %v) (Map %k %v))))
-  (clr-map-fold       (: Map.MapModule.Fold      (-> (-> %k %v %s %s) %s (Map %k %v) %s)))
-  ;; Walk until false.
-  (clr-map-iter       (: Map.MapModule.Iter      (-> (-> %k %v bool) (Map %k %v) bool)))
-  (map-any?       (: Map.MapModule.Exists    (-> (-> %k %v bool) (Map %k %v) bool)))
-  (map-try-find   (: Map.MapModule.TryFind   (-> (-> %k %v bool) (Map %k %v) (out %k) (out %v) (Option (Tuple %k %v)))))
-
-  (clr-seq->map (: Map.MapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (EqualityComparer %k) (Map %k %v))))
-  (map->seq (: Map.MapModule.AsEnumerable   (-> (Map %k %v) (Seq (Tuple %k %v)))))
-
-  ;; Cursor.
-  (map-cursor         (: Map.MapModule.Cursor        (-> (Map %k %v) (MapCursor %k %v))))
-  (map-cursor-done?   (: Map.MapModule.CursorDone    (-> (MapCursor %k %v) bool)))
-  (map-cursor-current (: Map.MapModule.CursorCurrent (-> (MapCursor %k %v) (Tuple %k %v))))
-  (map-cursor-next    (: Map.MapModule.CursorNext    (-> (MapCursor %k %v) (MapCursor %k %v))))
-
-  ;; --- Builders ---
-  ;; Build map.
-  (clr-mapbuilder-empty (: Map.MapBuilderModule.Empty   (-> (EqualityComparer %k) (MapBuilder %k %v))))
-  (map->mapbuilder     (: Map.MapBuilderModule.FromMap  (-> (Map %k %v) (MapBuilder %k %v))))
-  (mapbuilder-add!     (: Map.MapBuilderModule.Add      (-> (MapBuilder %k %v) %k %v void)))
-  (mapbuilder-add-all! (: Map.MapBuilderModule.AddRange (-> (MapBuilder %k %v) (Seq (Tuple %k %v)) void)))
-  ;; Length.
-  (mapbuilder-length   (: Map.MapBuilderModule.Count    (-> (MapBuilder %k %v) int)))
-  (mapbuilder->map     (: Map.MapBuilderModule.Build    (-> (MapBuilder %k %v) (Map %k %v))))
-
-  ;; --- Transients ---
-  (clr-transientmap-empty   (: Map.TransientMapModule.Empty          (-> (EqualityComparer %k) (TransientMap %k %v))))
-  (map->transientmap        (: Map.TransientMapModule.FromPersistent (-> (Map %k %v) (TransientMap %k %v))))
-  ;; Convert.
-  (transientmap->map        (: Map.TransientMapModule.ToPersistent   (-> (TransientMap %k %v) (Map %k %v))))
-  (transientmap-set!        (: Map.TransientMapModule.Set            (-> (TransientMap %k %v) %k %v void)))
-  (transientmap-set-all!    (: Map.TransientMapModule.SetRange       (-> (TransientMap %k %v) (Seq (Tuple %k %v)) void)))
-  (transientmap-remove!     (: Map.TransientMapModule.Remove         (-> (TransientMap %k %v) %k void)))
-  (transientmap-remove-all! (: Map.TransientMapModule.RemoveRange    (-> (TransientMap %k %v) (Seq %k) void)))
-  (transientmap-contains?   (: Map.TransientMapModule.ContainsKey    (-> (TransientMap %k %v) %k bool)))
-  (transientmap-ref         (: Map.TransientMapModule.Ref            (-> (TransientMap %k %v) %k %v)))
-  (transientmap-ref-or      (: Map.TransientMapModule.RefOr          (-> (TransientMap %k %v) %k %v %v)))
-  (transientmap-length      (: Map.TransientMapModule.Count          (-> (TransientMap %k %v) int)))
-  (transientmap-empty?      (: Map.TransientMapModule.IsEmpty        (-> (TransientMap %k %v) bool)))
-  (transientmap-filter!     (: Map.TransientMapModule.FilterInPlace  (-> (-> %k %v bool) (TransientMap %k %v) void)))
-  (transientmap-try-ref     (: Map.TransientMapModule.TryGetValue    (-> (TransientMap %k %v) %k (out %v) (Option %v)))))
-
+;;
+;; A hash trie written in Bjolang, over the C# nodes of
+;; `Bjolang.Runtime.HashTries`. Included rather than imported: the prelude
+;; defines `Map`, and a module of its own would have to import the prelude
+;; that is still being compiled.
+(include "hashmap.protobjo")
 
 (: (-> (Map %k %v) %k bool))
 (defun (map-has-key? m key) (map-contains? m key))
 
 ;; `map-add-new` with the failure as a value: `(Err v)` carries the value the
-;; key already has. Two lookups where `map-add-new` does one, because the trie
-;; module has no call that adds and reports in one.
+;; key already has.
 (: (-> (Map %k %v) %k %v (Result %v (Map %k %v))))
 (defun (map-try-add-new m k v)
   (match (map-try-ref m k)
@@ -765,118 +686,8 @@
     (None (Ok (map-set m k v)))))
 
 ;; Find first. The same as `map-try-find`.
-(: (-> (-> %k %v bool) (Map %k %v) (Option (Tuple %k %v))))
+(: (-> (-?-> %k %v bool) (Map %k %v) (Option (Tuple %k %v))))
 (defun (map-find pred m) (map-try-find pred m))
-
-;; What makes a map out of nothing asks for the key's Eq, and the map compares
-;; keys with it — the same answer `=` gives, also for two cases of a union that
-;; `=` equates. One made from a map keeps that map's.
-(: (-> (Map %k %v)) (where (Eq %k)))
-(defun (map-empty) (clr-map-empty (eq-comparer)))
-
-(: (-> (Seq (Tuple %k %v)) (Map %k %v)) (where (Eq %k)))
-(defun (seq->map xs) (clr-seq->map xs (eq-comparer)))
-(:deprecated seq->map "use `->map`, which takes any iterable of pairs")
-
-(: (-> (MapBuilder %k %v)) (where (Eq %k)))
-(defun (mapbuilder-empty) (clr-mapbuilder-empty (eq-comparer)))
-
-(: (-> (TransientMap %k %v)) (where (Eq %k)))
-(defun (transientmap-empty) (clr-transientmap-empty (eq-comparer)))
-
-
-;; ---------------------------------------------------------------------------
-;; Maps, where the callback may suspend
-;; ---------------------------------------------------------------------------
-
-(: (-> (-?-> %k %v %w) (Map %k %v) (Map %k %w)))
-(defbjouble (map-map f m)
-  (#:sync (clr-map-map f m))
-  (#:bjo
-    ;; (loop (:for (k v) m)
-    ;;       (:acc acc (mapping (Tuple k (f k v)))))
-    (let ((b (clr-mapbuilder-empty (clr-map-comparer m))))
-      (let go ((c (map-cursor m)))
-        (if (map-cursor-done? c)
-            (mapbuilder->map b)
-            (let ()
-              (def (k v) (map-cursor-current c))
-              (mapbuilder-add! b k (f k v))
-              (go (map-cursor-next c))))))))
-
-(: (-> (-?-> %v %w) (Map %k %v) (Map %k %w)))
-(defbjouble (map-map-values f m)
-  (#:sync (clr-map-map-values f m))
-  (#:bjo
-    (let ((b (clr-mapbuilder-empty (clr-map-comparer m))))
-      (let go ((c (map-cursor m)))
-        (if (map-cursor-done? c)
-            (mapbuilder->map b)
-            (let ()
-              (def (k v) (map-cursor-current c))
-              (mapbuilder-add! b k (f v))
-              (go (map-cursor-next c))))))))
-
-(: (-> (-?-> %k %v bool) (Map %k %v) (Map %k %v)))
-(defbjouble (map-filter keep? m)
-  (#:sync (clr-map-filter keep? m))
-  (#:bjo
-    ;; (loop (:for (k v) m)
-    ;;       (:when (keep? k v))
-    ;;       (:acc new-map (mapping (Tuple k v))))
-    (let ((b (clr-mapbuilder-empty (clr-map-comparer m))))
-      (let go ((c (map-cursor m)))
-        (if (map-cursor-done? c)
-            (mapbuilder->map b)
-            (let ()
-              (def (k v) (map-cursor-current c))
-              (when (keep? k v)
-                (mapbuilder-add! b k v))
-              (go (map-cursor-next c))))))))
-
-(: (-> (-?-> %k %v %s %s) %s (Map %k %v) %s))
-(defbjouble (map-fold f init m)
-  (#:sync (clr-map-fold f init m))
-  (#:bjo
-    ;; (loop (:for (k v) m)
-    ;;       (:acc acc (folding init (f k v acc))))
-    ;; `f` before the step: arguments are evaluated in order, and a value made
-    ;; before a call that may leave the inlined path must live across it. The
-    ;; JIT then keeps it on the stack. The step reads only the cursor.
-    (let go ((acc init) (c (map-cursor m)))
-      (if (map-cursor-done? c)
-          acc
-          (let ()
-            (def (k v) (map-cursor-current c))
-            (go (f k v acc) (map-cursor-next c)))))))
-
-(: (-> (-?-> %k %v bool) (Map %k %v) bool))
-(defbjouble (map-iter f m)
-  (#:sync (clr-map-iter f m))
-  (#:bjo
-    ;; (loop (:for (k v) m)
-    ;;       (:acc acc (folding #t (f k v)))
-    ;;       (:finish (not acc)))
-    (let go ((c (map-cursor m)))
-      (if (map-cursor-done? c)
-          #t
-          (let ()
-            (def (k v) (map-cursor-current c))
-            (if (f k v)
-                (go (map-cursor-next c))
-                #f))))))
-
-(: (-> (-?-> %k %v void) (Map %k %v) void))
-(defun (map-for-each f m)
-  ;; (loop (:for (k v) m)
-  ;;       (:do (f k v)))
-  (let go ((c (map-cursor m)))
-    (if (map-cursor-done? c)
-        unit
-        (let ()
-          (def (k v) (map-cursor-current c))
-          (f k v)
-          (go (map-cursor-next c))))))
 
 ;; Two maps are equal when they hold the same entries.
 

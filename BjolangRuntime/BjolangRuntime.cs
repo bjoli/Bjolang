@@ -861,9 +861,9 @@ public static partial class BjolangRuntime {
     // A `Vec` is walked one leaf array at a time, by a struct cursor that
     // `next` returns advanced. See `VecCursor<T>`.
     //
-    // The collections with a project of their own carry their own cursor —
-    // `Map.MapCursor` — and bind to it through `import/class`.
-    // This one is here because `Vec`'s type is a builtin.
+    // The other collections define their cursors in their own modules, such
+    // as `MapCursor` in `lib/std/hashmap.protobjo`. This one is here because
+    // `Vec`'s type is a builtin.
 
     /// <summary>
     /// A forward walk of part of a vec, one leaf array at a time.

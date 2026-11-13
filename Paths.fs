@@ -389,7 +389,6 @@ let private runtimeAssemblyNames =
     [ "BjolangRuntime"
       "Collections"
       "SchemeList"
-      "Map"
       "BjoString"
       "BjoRx" ]
 

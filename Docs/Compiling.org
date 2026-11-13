@@ -5,7 +5,7 @@
 From a fresh checkout, in this order:
 
 #+BEGIN_SRC sh
-git submodule update --init --recursive          # Collections, Map, SchemeList, Bjoml
+git submodule update --init --recursive          # Collections, SchemeList, Bjoml
 dotnet build BjolangRuntime/BjolangRuntime.csproj -c Release
 ./build_compiler.sh                              # the compiler, in bin/compiler
 ./build_std.sh                                   # everything under lib/, in parallel
@@ -435,16 +435,16 @@ once in ~Paths.runtimeAssemblyNames~:
 | ~BjolangRuntime~ | the builtins — dynamic environment, ~Vec~'s cursor, conversions |
 | ~Collections~    | ~Vec~ (RRB tree)                                         |
 | ~SchemeList~     | ~List~                                                   |
-| ~Map~            | ~Map~ (CHAMP), its builder, transient and cursor         |
 | ~Bjoml~          | the concurrency runtime: fibers, promises, channels, CML events |
 
 Programs link them from ~Paths.runtimeDir~: the compiler's directory,
 ~bin/compiler~, whose copies are precompiled, or ~BjolangRuntime/bin/Release~
 under ~BJOLANG_NO_R2R=1~. See "ReadyToRun" below.
 
-The last four carry no builtin type: their types reach Bjolang through
-~import/class~ and their operations through ~import/extern~, ~Map~'s in
-=(std prelude)= and the rest in a library of their own.
+Those that carry no builtin type reach Bjolang through ~import/class~ and
+~import/extern~, in a library of their own. ~Map~ is not among them: it is
+written in Bjolang, in =(std prelude)=, over the trie nodes in
+~BjolangRuntime/HashTries~.
 
 Each is a submodule with a project of its own, referenced by
 ~BjolangRuntime.csproj~ and *removed from its compile glob* — without the

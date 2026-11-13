@@ -3,10 +3,9 @@
 
 ;; `Map` after it stopped being a compiler builtin.
 ;;
-;; Its type is now an `import/class` alias for `Map.Map`, its operations are
-;; `import/extern` bindings on `Map.MapModule`, and both live in `(std prelude)`
-;; — which every program imports implicitly, so nothing about the way a Map is
-;; written changed. What is checked here is the seams: the `#map(...)` literal,
+;; It is now a record of `(std prelude)`, written in Bjolang over the trie
+;; nodes of `Bjolang.Runtime.HashTries`. Every program imports the prelude
+;; implicitly, so nothing about the way a Map is written changed. What is checked here is the seams: the `#map(...)` literal,
 ;; which reads as a call to `list->map`; the four trait implementations; and the
 ;; generic dictionary path, where the alias expansion meets a dictionary's
 ;; associated-type projection.
@@ -74,7 +73,7 @@
   (expect-true "bracketed entries" (= (map-ref bracketed "y") 20)))
 
 ;; ---------------------------------------------------------------------------
-;; 2. The loop — Iterable, through Map.MapCursor
+;; 2. The loop — Iterable, through MapCursor
 ;; ---------------------------------------------------------------------------
 
 (: (-> void))
@@ -134,7 +133,7 @@
 ;; ---------------------------------------------------------------------------
 ;;
 ;; This is the case worth testing hardest. The functions below never mention a
-;; ground type: `(Map %k %v)` is an alias expanding to `Map.Map`, and the
+;; ground type: `(Map %k %v)` is the prelude's record, and the
 ;; constraints become dictionary parameters filled in where the key and value
 ;; types are known.
 
@@ -150,7 +149,7 @@
 
 ;; A generic function taking a Map and nothing else. Under `-nullable:enable`
 ;; this used to raise CS8714 for want of a `notnull` on the emitted type
-;; parameter; `Map.Map` carries no such constraint now.
+;; parameter; the prelude's `Map` carries no such constraint.
 (: (-> (Map %k %v) int))
 (defun (key-count m)
   (map-length m))

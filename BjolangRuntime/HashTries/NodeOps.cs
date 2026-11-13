@@ -2,9 +2,10 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
-namespace Bjolang.Runtime.HashTries.SetNodes;
+namespace Bjolang.Runtime.HashTries;
 
-// One-node operations on the hash trie, for lib/std/hashset.bjo.
+// One-node operations on the hash tries, for lib/std/hashset.bjo and
+// lib/std/hashmap.protobjo.
 //
 // - `shift` is 5 times the depth of the node. The fragment of a hash at a
 //   node is (hash >> shift) & 31, and picks the node's slot for it.
@@ -188,6 +189,62 @@ public static class NodeOps
     public static T ElementAt<T>(Node<T> n, int hash, int shift) =>
         ElementSpan(n)[IndexOf((uint)n.Map, Bit(hash, shift))];
 
+    /// <summary>
+    ///     Where the entry of `key` stands in a map's node. As Probe, except that a found
+    ///     entry returns -4 - its index in the node's own order, for Element,
+    ///     WithElementAt and WithoutElementAt.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int ProbeKey<TK, TV>(Node<(TK, TV)> n, TK key, int hash, int shift, IEqualityComparer<TK> comparer)
+    {
+        var kind = KindOf(n);
+        if (kind == Kinds.Collision)
+        {
+            var c = Unsafe.As<CollisionNode<(TK, TV)>>(n);
+            if (c.Hash != hash) return Clash;
+            var data = c.Data;
+            for (var at = 0; at < data.Length; at++)
+                if (comparer.Equals(data[at].Item1, key))
+                    return -4 - at;
+            return Vacant;
+        }
+
+        var bit = Bit(hash, shift);
+        var map = n.Map;
+        var elements = (uint)map;
+        if ((elements & bit) != 0)
+        {
+            // Unchecked: the bit is set, so the node has element `i`.
+            var i = IndexOf(elements, bit);
+            var y = kind == Kinds.Leaf
+                ? Unsafe.Add(ref Unsafe.As<Elements1<(TK, TV)>, (TK, TV)>(ref Unsafe.As<Leaf1<(TK, TV)>>(n).Data), i)
+                : Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(BranchElements(n)), i);
+            return comparer.Equals(y.Item1, key) ? -4 - i : Clash;
+        }
+
+        var children = (uint)(map >> 32);
+        return (children & bit) != 0 ? IndexOf(children, bit) : Vacant;
+    }
+
+    /// <summary>
+    ///     The value of the entry ProbeKey found. `code` is ProbeKey's result, -4 - index.
+    ///     Unchecked: only for a code ProbeKey returned for this node.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static TV ValueAt<TK, TV>(Node<(TK, TV)> n, int code)
+    {
+        var i = -4 - code;
+        var kind = KindOf(n);
+        if (kind == Kinds.Leaf)
+            return Unsafe.Add(ref Unsafe.As<Elements1<(TK, TV)>, (TK, TV)>(ref Unsafe.As<Leaf1<(TK, TV)>>(n).Data), i)
+                .Item2;
+        var data = kind == Kinds.Branch ? BranchElements(n) : Unsafe.As<CollisionNode<(TK, TV)>>(n).Data;
+        return Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(data), i).Item2;
+    }
+
+    /// <summary>Whether `a` and `b` are equal by .NET's default equality, as a map compares a value it replaces.</summary>
+    public static bool SameValue<TV>(TV a, TV b) => EqualityComparer<TV>.Default.Equals(a, b);
+
     // ---------------------------------------------------------------------------
     // Adding
     // ---------------------------------------------------------------------------
@@ -325,9 +382,107 @@ public static class NodeOps
     public static Node<T> Collision<T>(T a, T b, int hash, long owner) =>
         new CollisionNode<T> { Meta = MetaOf(0, Kinds.Collision, owner), Data = [a, b], Hash = hash };
 
+    /// <summary>
+    ///     The node with element `i` replaced by `x`. Edits a leaf in place when the owner may;
+    ///     an element array is always copied, since another node may share it.
+    /// </summary>
+    public static Node<T> WithElementAt<T>(Node<T> n, int i, T x, long owner)
+    {
+        var kind = KindOf(n);
+        if (kind == Kinds.Leaf)
+        {
+            if (Editable(n, owner))
+            {
+                LeafElements(n)[i] = x;
+                return n;
+            }
+
+            var old = LeafElements(n);
+            var leaf = Alloc<T>.Leaf(old.Length, MetaOf(old.Length, Kinds.Leaf, owner), n.Map);
+            var dst = LeafElements(leaf);
+            old.CopyTo(dst);
+            dst[i] = x;
+            return leaf;
+        }
+
+        var src = ArrayOf(n);
+        var data = new T[src.Length];
+        src.AsSpan().CopyTo(data);
+        data[i] = x;
+        if (kind == Kinds.Collision)
+        {
+            var c = Unsafe.As<CollisionNode<T>>(n);
+            if (Editable(n, owner))
+            {
+                c.Data = data;
+                return n;
+            }
+
+            return new CollisionNode<T> { Meta = MetaOf(0, Kinds.Collision, owner), Data = data, Hash = c.Hash };
+        }
+
+        if (Editable(n, owner))
+        {
+            BranchElements(n) = data;
+            return n;
+        }
+
+        var b = BranchOf(SizeOf(n), n.Map, data, owner);
+        ChildSpan(n).CopyTo(ChildSpan(b));
+        return b;
+    }
+
     // ---------------------------------------------------------------------------
     // Removing
     // ---------------------------------------------------------------------------
+
+    /// <summary>
+    ///     The node without element `i`, which is in the slot of `hash`. As WithoutElement: a
+    ///     collision node left with one element becomes a leaf of it, and a leaf left with none
+    ///     the empty leaf.
+    /// </summary>
+    public static Node<T> WithoutElementAt<T>(Node<T> n, int i, int hash, int shift, long owner)
+    {
+        var kind = KindOf(n);
+        if (kind == Kinds.Collision)
+        {
+            var c = Unsafe.As<CollisionNode<T>>(n);
+            if (c.Data.Length == 2) return Single(c.Data[1 - i], c.Hash, shift, owner);
+            var data = Removed<T>(c.Data, i);
+            if (Editable(n, owner))
+            {
+                c.Data = data;
+                return n;
+            }
+
+            return new CollisionNode<T>
+                { Meta = MetaOf(0, Kinds.Collision, owner), Data = data, Hash = c.Hash };
+        }
+
+        var map = n.Map & ~(ulong)Bit(hash, shift);
+        if (kind == Kinds.Leaf)
+        {
+            var old = LeafElements(n);
+            if (old.Length == 1) return Alloc<T>.Empty;
+            var leaf = Alloc<T>.Leaf(old.Length - 1, MetaOf(old.Length - 1, Kinds.Leaf, owner), map);
+            var dst = LeafElements(leaf);
+            old[..i].CopyTo(dst);
+            old[(i + 1)..].CopyTo(dst[i..]);
+            return leaf;
+        }
+
+        var elements = Removed<T>(BranchElements(n), i);
+        if (Editable(n, owner))
+        {
+            BranchElements(n) = elements;
+            n.Map = map;
+            return n;
+        }
+
+        var b = BranchOf(SizeOf(n), map, elements, owner);
+        ChildSpan(n).CopyTo(ChildSpan(b));
+        return b;
+    }
 
     /// <summary>
     ///     The node without its element equal to `x`, where Probe returned -1. A collision

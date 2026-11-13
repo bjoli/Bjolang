@@ -1,0 +1,265 @@
+;; The prelude's Map trie, against a reference: an array of the value of each
+;; number below a bound, -1 for none.
+;;
+;; - Four key types: ints, and records whose hashes all collide in groups,
+;;   share their low 20 bits, or collide for some keys only. They make
+;;   collision nodes, long chains of one-child branches, and both.
+;; - Random sets and removes, with phases that mostly remove, so that slots
+;;   become children and children collapse into their parents' slots. A map
+;;   from an earlier phase must not change. Some sets give a key the value it
+;;   has.
+;; - Transients, builders, merge, map, filter and splitting, and the
+;;   exceptions of `map-ref` and `map-add-new`.
+
+(import (std prelude))
+(import (std random))
+(import (std simpletest))
+
+;; Keys whose hashes collide in groups of eight.
+(type (: Clash (Record (: n int))))
+(impl (Eq Clash)
+  (defun (= a b) (= (.n a) (.n b)))
+  (defun (eq-hash a) (/ (.n a) 8)))
+
+;; Keys whose hashes are equal in their low 20 bits.
+(type (: Deep (Record (: n int))))
+(impl (Eq Deep)
+  (defun (= a b) (= (.n a) (.n b)))
+  (defun (eq-hash a) (shift-left (.n a) 20)))
+
+;; Keys whose hashes collide for the odd numbers only, from 256 on: an odd
+;; number hashes to its remainder by 256. Groups stay near a hundred keys at
+;; the sizes below, so that a test's time is not spent copying collision
+;; nodes.
+(type (: SomeClash (Record (: n int))))
+(impl (Eq SomeClash)
+  (defun (= a b) (= (.n a) (.n b)))
+  (defun (eq-hash a) (if (= (% (.n a) 2) 0) (.n a) (% (.n a) 256))))
+
+;; How to make a key of a number, and get the number back.
+(type (: (Codec %k) (Record (: of (-> int %k)) (: back (-> %k int)))))
+
+(: (-> int (Array int)))
+(defun (empty-ref n) (make-array n #:fill -1))
+
+;; Whether `m` holds what `ref` holds, by every reader.
+(: (-> (Codec %k) (Map %k int) (Array int) bool) (where (Eq %k)))
+(defun (same? c m ref)
+  (def n (array-length ref))
+  (def expected (loop (:for v ref) (:acc (summing (if (>= v 0) 1 0)))))
+  (def value-sum (loop (:for v ref) (:acc (summing (if (>= v 0) v 0)))))
+  (def (: seen (Array bool)) (make-array n #:fill #f))
+  (def/mutable ok #t)
+  (loop (:for (Tuple k v) m)
+        (:do (def i ((.back c) k))
+             (when (or (< i 0) (>= i n) (not (= (array-ref ref i) v)) (array-ref seen i)) (set! ok #f))
+             (when (and (>= i 0) (< i n)) (array-set! seen i #t))))
+  (and ok
+       (= (map-length m) expected)
+       (= (list-length (map->list m)) expected)
+       (= (map-fold (fun (k v acc) (+ acc v)) 0 m) value-sum)
+       (= (loop (:for v (map-values m)) (:acc (summing v))) value-sum)
+       (= (loop (:for _k (map-keys m)) (:acc (summing 1))) expected)
+       (= (map-empty? m) (= expected 0))
+       (loop (:for i (range 0 n))
+             (:acc all (folding #t
+                                (and all
+                                     (= (map-ref-or m ((.of c) i) -1) (array-ref ref i))
+                                     (= (map-contains? m ((.of c) i)) (>= (array-ref ref i) 0))
+                                     (= (map-try-ref m ((.of c) i))
+                                        (if (>= (array-ref ref i) 0) (Some (array-ref ref i)) None)))))
+             => all)))
+
+(: (-> (Array int) (Array int)))
+(defun (copy-ref ref) (loop (:for x ref) (:acc (arraying x))))
+
+;; `steps` random sets and removes of numbers below `keys`, to values below
+;; 4, so that a set often gives a key the value it has. In odd phases of
+;; `phase` steps, two steps in three remove. Checks every 997 steps, at the
+;; end, and that the map of the first phase did not change.
+(: (-> (Codec %k) int int int int bool) (where (Eq %k)))
+(defun (random-mix? c seed steps keys phase)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def ref (empty-ref keys))
+  (def/mutable (: kept (Map %k int)) (map-empty))
+  (def/mutable kept-ref (copy-ref ref))
+  (let go ((i 0) (m (map-empty)))
+    (if (= i steps)
+        (and (same? c m ref) (same? c kept kept-ref))
+        (if (and (= (% i 997) 0) (not (same? c m ref)))
+            #f
+            (begin
+              (when (= i phase) (set! kept m) (set! kept-ref (copy-ref ref)))
+              (def k (random-int 0 (- keys 1) #:rng rng))
+              (def v (random-int 0 3 #:rng rng))
+              (def shrink? (= (% (/ i phase) 2) 1))
+              (if (< (random-int 0 3 #:rng rng) (if shrink? 2 1))
+                  (begin (array-set! ref k -1) (go (+ i 1) (map-remove m ((.of c) k))))
+                  (begin
+                    (def same-value? (= (array-ref ref k) v))
+                    (def next (map-set m ((.of c) k) v))
+                    (array-set! ref k v)
+                    ;; Setting the value a key has returns the map itself.
+                    (if (and same-value? (not (same-node? next m)))
+                        #f
+                        (go (+ i 1) next)))))))))
+
+(import/extern
+  (same-object? (: System.Object.ReferenceEquals (-> System.Object System.Object bool))))
+
+(: (-> (Map %k %v) (Map %k %v) bool))
+(defun (same-node? a b) (same-object? (cast System.Object a) (cast System.Object b)))
+
+;; Random set! and remove! on a transient, and a map taken from it halfway
+;; that the edits after must not change. Then filters out the odd values,
+;; and removes everything.
+(: (-> (Codec %k) int int int bool) (where (Eq %k)))
+(defun (transient-mix? c seed steps keys)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def ref (empty-ref keys))
+  (def (: t (TransientMap %k int)) (transientmap-empty))
+  (def/mutable (: half (Map %k int)) (map-empty))
+  (def/mutable half-ref (copy-ref ref))
+  (loop (:for i (range 0 steps))
+        (:do (when (= i (/ steps 2))
+               (set! half (transientmap->map t))
+               (set! half-ref (copy-ref ref)))
+             (def k (random-int 0 (- keys 1) #:rng rng))
+             (def v (random-int 0 9 #:rng rng))
+             (if (< (random-int 0 3 #:rng rng) 1)
+                 (begin (array-set! ref k -1) (transientmap-remove! t ((.of c) k)))
+                 (begin (array-set! ref k v) (transientmap-set! t ((.of c) k) v)))))
+  (def full (transientmap->map t))
+  (def ok (and (same? c full ref)
+               (same? c half half-ref)
+               (= (transientmap-length t) (map-length full))))
+  (transientmap-filter! (fun (k v) (= (% v 2) 0)) t)
+  (def evens (copy-ref ref))
+  (loop (:for i (range 0 keys)) (:do (when (= (% (array-ref evens i) 2) 1) (array-set! evens i -1))))
+  (def filtered (transientmap->map t))
+  (loop (:for i (range 0 keys)) (:do (transientmap-remove! t ((.of c) i))))
+  (and ok
+       (same? c filtered evens)
+       (transientmap-empty? t)
+       (map-empty? (transientmap->map t))
+       (same? c full ref)))
+
+;; The numbers below `keys` that `rng` picks in `n` tries, each to the try
+;; it was last picked in, and the map of them through a builder.
+(: (-> (Codec %k) RandomSource int int (Tuple (Map %k int) (Array int))) (where (Eq %k)))
+(defun (random-map c rng n keys)
+  (def ref (empty-ref keys))
+  (def b (mapbuilder-empty))
+  (loop (:for i (range 0 n))
+        (:do (def k (random-int 0 (- keys 1) #:rng rng))
+             (array-set! ref k i)
+             (mapbuilder-add! b ((.of c) k) i)))
+  (Tuple (mapbuilder->map b) ref))
+
+(: (-> (Codec %k) int int int bool) (where (Eq %k)))
+(defun (builds? c seed n keys)
+  (def (Tuple m ref) (random-map c (make-random/seed64 (cast ulong seed)) n keys))
+  (same? c m ref))
+
+;; Merges of random maps of sizes `n` and `m`: plain, where the right value
+;; wins, and with a function that adds the values. With itself, with a map
+;; made from it, and with an empty map.
+(: (-> (Codec %k) int int int int bool) (where (Eq %k)))
+(defun (merges? c seed n m keys)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def (Tuple a ra) (random-map c rng n keys))
+  (def (Tuple b rb) (random-map c rng m keys))
+  (: both (-> (-> int int int) (Array int) (Array int) (Array int)))
+  (defun (both f x y)
+    (loop (:for i (range 0 keys))
+          (:acc (arraying (if (< (array-ref y i) 0)
+                              (array-ref x i)
+                              (if (< (array-ref x i) 0) (array-ref y i) (f (array-ref x i) (array-ref y i))))))))
+  (def right (fun (l r) r))
+  (def add (fun (l r) (+ l r)))
+  (def extra (loop (:for i (range 0 (/ keys 7))) (:acc s (folding a (map-set s ((.of c) (* 7 i)) 1000))) => s))
+  (def extra-ref (copy-ref ra))
+  (loop (:for i (range 0 (/ keys 7))) (:do (array-set! extra-ref (* 7 i) 1000)))
+  (and (same? c (map-merge a b) (both right ra rb))
+       (same? c (map-merge b a) (both right rb ra))
+       (same? c (map-merge-with (fun (k l r) (+ l r)) a b) (both add ra rb))
+       (same? c (map-merge-with (fun (k l r) (+ l r)) b a) (both add rb ra))
+       (same? c (map-merge a a) ra)
+       (same? c (map-merge-with (fun (k l r) (+ l r)) a a) (both add ra ra))
+       (same? c (map-merge a extra) extra-ref)
+       (same? c (map-merge extra a) (both right extra-ref ra))
+       (same? c (map-merge a (map-clear a)) ra)
+       (same? c (map-merge (map-clear a) a) ra)
+       (same? c (map-set-all a (map->seq b)) (both right ra rb))
+       (same? c a ra)
+       (same? c b rb)))
+
+;; Splits into about `k` parts, which together hold each entry once.
+(: (-> (Codec %k) int int int bool) (where (Eq %k)))
+(defun (splits? c seed n k)
+  (def (Tuple m ref) (random-map c (make-random/seed64 (cast ulong seed)) n (* 2 n)))
+  (def parts (map-split m k))
+  (def joined (loop (:for p parts) (:acc u (folding (map-clear m) (map-merge u p))) => u))
+  (and (<= (array-length parts) (max 1 k))
+       (= (loop (:for p parts) (:acc (summing (map-length p)))) (map-length m))
+       (loop (:for p parts) (:acc ok (folding #t (and ok (= (map-length (map-filter (fun (k v) #t) p)) (map-length p))))) => ok)
+       (same? c joined ref)))
+
+;; Map, map-values and filter against the reference.
+(: (-> (Codec %k) int int bool) (where (Eq %k)))
+(defun (rebuilds? c seed n)
+  (def (Tuple m ref) (random-map c (make-random/seed64 (cast ulong seed)) n (* 2 n)))
+  (def odd (loop (:for i (range 0 (* 2 n))) (:acc (arraying (if (= (% i 2) 1) (array-ref ref i) -1)))))
+  (def plus (loop (:for i (range 0 (* 2 n))) (:acc (arraying (if (>= (array-ref ref i) 0) (+ (array-ref ref i) i) -1)))))
+  (def doubled (loop (:for v ref) (:acc (arraying (if (>= v 0) (* 2 v) -1)))))
+  (and (same? c (map-filter (fun (k v) (= (% ((.back c) k) 2) 1)) m) odd)
+       (same? c (map-map (fun (k v) (+ v ((.back c) k))) m) plus)
+       (same? c (map-map-values (fun (v) (* 2 v)) m) doubled)
+       (same? c (map-filter (fun (k v) #t) m) ref)
+       (same-node? (map-filter (fun (k v) #t) m) m)
+       (map-empty? (map-filter (fun (k v) #f) m))
+       (same? c (map-filter (fun (k v) (= ((.back c) k) 1)) m)
+              (loop (:for i (range 0 (* 2 n))) (:acc (arraying (if (= i 1) (array-ref ref i) -1)))))
+       (= (map-any? (fun (k v) (< v 0)) m) #f)
+       (= (map-find (fun (k v) #f) m) None)))
+
+(: (-> string (Codec %k) void) (where (Eq %k)))
+(defun (check-all name c)
+  (loop (:for seed (range 1 4))
+        (:do (expect-true #"${name}: random mix, seed ${seed}" (random-mix? c seed 20000 2000 3000))))
+  (expect-true #"${name}: random mix over 30000" (random-mix? c 99 60000 30000 15000))
+  (loop (:for seed (range 1 3))
+        (:do (expect-true #"${name}: transient mix, seed ${seed}" (transient-mix? c seed 30000 4000))))
+  (loop (:for n (list 0 1 2 31 33 1000 40000))
+        (:do (expect-true #"${name}: builder, ${n}" (builds? c n n (max 1 (/ n 2))))))
+  (loop (:for (Tuple n m) (list (Tuple 0 0) (Tuple 1 1) (Tuple 1000 10) (Tuple 10 1000) (Tuple 3000 3000) (Tuple 20000 500)))
+        (:do (expect-true #"${name}: merge, ${n} and ${m}" (merges? c (+ n m) n m (max 1 (* 2 (max n m)))))))
+  (loop (:for n (list 0 1 2 64 3000 50000))
+        (:do (loop (:for k (list 1 2 3 7 16 100 5000))
+                   (:do (expect-true #"${name}: split into ${k}, ${n}" (splits? c n n k))))))
+  (loop (:for n (list 0 1 100 5000))
+        (:do (expect-true #"${name}: map and filter, ${n}" (rebuilds? c n n)))))
+
+(: (-> Clash int))
+(defun (clash-n x) (.n x))
+(: (-> Deep int))
+(defun (deep-n x) (.n x))
+(: (-> SomeClash int))
+(defun (some-clash-n x) (.n x))
+
+(defun (main args)
+  (check-all "int" (Codec (of (fun (i) i)) (back (fun (x) x))))
+  (check-all "clash" (Codec (of (fun (i) (Clash (n i)))) (back clash-n)))
+  (check-all "deep" (Codec (of (fun (i) (Deep (n i)))) (back deep-n)))
+  (check-all "some clash" (Codec (of (fun (i) (SomeClash (n i)))) (back some-clash-n)))
+  (def m (map-set (map-set (map-empty) 1 10) 2 20))
+  (expect-true "map-ref raises KeyNotFoundException"
+               (match (try (map-ref m 3) #:catch (System.Collections.Generic.KeyNotFoundException))
+                 ((Ok _v) #f)
+                 ((Err _e) #t)))
+  (expect-true "map-add-new raises ArgumentException"
+               (match (try (map-add-new m 1 5) #:catch (System.ArgumentException))
+                 ((Ok _v) #f)
+                 ((Err _e) #t)))
+  (expect-true "map-add-new adds a new key" (= (map-ref (map-add-new m 3 30) 3) 30))
+  0)

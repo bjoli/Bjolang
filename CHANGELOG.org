@@ -3,6 +3,35 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~Map~ is written in Bjolang
+
+- The prelude's CHAMP map is Bjolang code in ~lib/std/hashmap.protobjo~,
+  which the prelude includes: lookup, set, remove, transients, cursors,
+  fold, map, filter, merge, the builder and splitting.
+- It runs on the hash set's C# nodes. They moved from
+  ~BjolangRuntime/HashTries/Set~ to ~BjolangRuntime/HashTries~, namespace
+  ~Bjolang.Runtime.HashTries~. A map's element is a ~(K, V)~ value tuple.
+  ~NodeOps~ gains ~ProbeKey~, ~ValueAt~, ~WithElementAt~ and
+  ~WithoutElementAt~, which find and edit an entry by its key alone.
+- ~Map~, ~MapBuilder~ and ~TransientMap~ are Bjolang records now, and
+  ~MapCursor~ a struct. Their functions keep their names, arguments and
+  exceptions: ~map-ref~ raises ~KeyNotFoundException~ and ~map-add-new~
+  raises ~ArgumentException~.
+- Setting a key to the value it has returns the same map. A merge keeps the
+  left key and the right value. A builder keeps the last value added for a
+  key.
+- ~map-filter~ keeps the trie's shape instead of rebuilding it, and shares
+  every subtree it drops nothing from.
+- ~map-find~ takes a predicate that may suspend.
+- New export: ~map-split~, which ~(std parallel)~ now uses.
+- The ~Map~ submodule and assembly are gone. Its repository still holds the
+  C# library.
+- Measured against the C# map, int keys in a map of 100,000 unless said:
+  set, remove and transients the same; ~map-ref-or~ and ~map-try-ref~ 13%
+  slower, ~map-contains?~ 10%, a string ~map-ref-or~ 7%; iteration 1.3x
+  faster, ~map-fold~ 1.9x; ~map-map~ and ~map-map-values~ 6x; merges
+  1.2x-1.5x; a filter of a third of the entries 2.3x; builders the same.
+
 * Parameters are kept in a trie of their own
 
 - ~DynEnv~ keeps bound parameters in ~ParamTrie~, a persistent bitmap trie

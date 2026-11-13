@@ -1,11 +1,13 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
-namespace Bjolang.Runtime.HashTries.SetNodes;
+namespace Bjolang.Runtime.HashTries;
 
-// The nodes of the hash trie behind (std hashset). lib/std/hashset.bjo holds
-// the trie code; NodeOps does the operations on one node.
+// The nodes of the hash tries behind (std hashset) and the prelude's Map.
+// lib/std/hashset.bjo and lib/std/hashmap.protobjo hold the trie code;
+// NodeOps does the operations on one node.
 //
+// - A map's element is a `(K, V)` value tuple, compared and hashed by key.
 // - Meta holds the node's size (bits 0-7), its kind (bits 8-15) and the
 //   owner that may edit it in place (bits 16-63, 0 for none).
 // - Map holds the hash fragments that hold an element (bits 0-31) and those

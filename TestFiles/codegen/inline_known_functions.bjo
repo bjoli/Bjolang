@@ -2,7 +2,7 @@
 ;; call, is inlined: the function's loop is in the caller with the lambda's
 ;; body in it, and no delegate is made or called.
 
-(export doubled filtered-vec tripled-vec sum-map twice-used shadow not-inlined)
+(export doubled filtered-vec tripled-vec big-entry? twice-used shadow not-inlined)
 
 (import (std prelude))
 
@@ -32,10 +32,10 @@
 (: (-> int int))
 (defun (not-inlined n) (apply-once (fun (x) (+ x 1)) n))
 
-;; EXPECT-CS: Map\.MapModule\.CursorNext<int, int>\(
-;; EXPECT-NO-CS: clrsubmapsubfold\(
-(: (-> (Map int int) int))
-(defun (sum-map m) (map-fold (fun (k x acc) (+ acc (+ k x))) 0 m))
+;; EXPECT-CS: mapsubcursorsubnext\(
+;; EXPECT-NO-CS: mapsubany_QMARK\(
+(: (-> (Map int int) bool))
+(defun (big-entry? m) (map-any? (fun (k x) (> (+ k x) 100)) m))
 
 ;; A body that calls its function twice keeps the call: the lambda would only
 ;; be bound to a local, and the call through it would remain.
