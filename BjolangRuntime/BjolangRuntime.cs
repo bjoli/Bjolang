@@ -1583,7 +1583,7 @@ public static partial class BjolangRuntime {
     /// <summary>
     /// One immutable snapshot of the dynamic environment.
     ///
-    /// Three parameters get fields rather than living in the champ with
+    /// Three parameters get fields rather than living in the trie with
     /// everything else, and they are the three that are *read* hottest — not
     /// the three that go together in a manual. A field beats a node access, and
     /// the runtime reaches for the output port and the cancel token from C#,
@@ -1606,7 +1606,7 @@ public static partial class BjolangRuntime {
         /// The ambient cancellation token, and null when nothing has bound one.
         ///
         /// Null rather than the root token, so that this field means what a
-        /// champ miss means and `Dyn.Root` needs to know nothing about
+        /// trie miss means and `Dyn.Root` needs to know nothing about
         /// `Concurrency.cs`: were the root token seeded here instead, the two
         /// classes' static initializers would have to run in an order neither
         /// of them states.
@@ -1615,7 +1615,7 @@ public static partial class BjolangRuntime {
         /// The cancellation scope a `spawn` enlists in, and null when there is
         /// none.
         ///
-        /// A field beside the token rather than a champ entry, because the two
+        /// A field beside the token rather than a trie entry, because the two
         /// are written together and read on the same paths: every spawn reads
         /// this one, and every `sync` reads the token. They are bound by one
         /// call — `scope-push!` — so they cannot fall out of step, which is what
@@ -1633,18 +1633,15 @@ public static partial class BjolangRuntime {
         /// parameter's <see cref="Param{T}.Id"/> rather than by the `Param`
         /// object itself.
         ///
-        /// An `int` key is its own hash, so a read costs a field load where an
-        /// identity key cost a call to `RuntimeHelpers.GetHashCode` — a
-        /// sync-block probe that also *assigns* the hash the first time it is
-        /// asked. `ParamIds` then hands out ids that place themselves: see the
-        /// id encoding there for which parameters land in a root slot of their
-        /// own.
-        ///
-        /// The champ is kept in preference to a flat vector because its nodes
-        /// are sized by occupancy: rebinding one parameter copies a node as
-        /// wide as the number of parameters *currently bound*, not as wide as
-        /// the number that exist. A program pays for what it overloads.
-        public readonly Map.Map<int, object> Vals;
+        /// - A <see cref="Bjolang.Runtime.ParamTrie"/>: a bitmap trie keyed by
+        ///   the id itself, with no hashing and no comparer.
+        /// - `ParamIds` hands out ids that place themselves: see the id
+        ///   encoding there for which parameters land in a root slot of their
+        ///   own.
+        /// - Nodes are sized by occupancy: rebinding one parameter copies nodes
+        ///   as wide as the number of parameters currently bound, not as wide
+        ///   as the number that exist.
+        internal readonly Bjolang.Runtime.ParamTrie Vals;
 
         /// This fiber's reusable registration on <see cref="Cancel"/>, or null
         /// until its first `sync` builds one. The one field that is written
@@ -1674,7 +1671,7 @@ public static partial class BjolangRuntime {
             Bjolang.Runtime.BjoInputPort input,
             Bjoml.Promise<CancelReason>? cancel,
             Scope? scope,
-            Map.Map<int, object> vals,
+            Bjolang.Runtime.ParamTrie vals,
             FiberWatch? park = null) {
             Out = output;
             In = input;
@@ -1721,7 +1718,7 @@ public static partial class BjolangRuntime {
         /// wherever its parent was printing.
         internal DynEnv Detached() => new(Out, In, null, null, Vals);
 
-        internal DynEnv WithVal(int id, object value) => new(Out, In, Cancel, Scope, Vals.Set(id, value), Park);
+        internal DynEnv WithVal(int id, object value) => new(Out, In, Cancel, Scope, Vals.With(id, value), Park);
     }
 
     /// <summary>
@@ -1751,7 +1748,7 @@ public static partial class BjolangRuntime {
             StdIn,
             null,
             null,
-            Map.Map<int, object>.Empty);
+            Bjolang.Runtime.ParamTrie.Empty);
 
         public static DynEnv Current {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1762,10 +1759,10 @@ public static partial class BjolangRuntime {
     }
 
     /// <summary>
-    /// Where a parameter's champ key comes from, and why the key is shaped the
+    /// Where a parameter's trie key comes from, and why the key is shaped the
     /// way it is.
     ///
-    /// The champ files a key under its hash, and an `int` hashes to itself, so
+    /// The trie files a key under its own bits, so
     /// an id is not just a name for a parameter — it is a *position* in the
     /// trie, and handing out ids is deciding how deep each parameter sits. The
     /// root branches 32 ways on the low five bits, so those five bits are the
@@ -1779,7 +1776,7 @@ public static partial class BjolangRuntime {
     /// - **Cold ids are `31 + (k &lt;&lt; 5)`.** Every one of them ends in the
     ///   same five bits, so the whole cold population hangs off root slot 31
     ///   and cannot push a hot parameter down a level. A cold parameter is not
-    ///   *slow*: while only one of them is bound the champ keeps it inline at
+    ///   *slow*: while only one of them is bound the trie keeps it inline at
     ///   root slot 31, and it is a second simultaneously-bound cold parameter
     ///   that first costs anyone a second node access.
     ///
@@ -1832,7 +1829,7 @@ public static partial class BjolangRuntime {
     /// A parameter: an opaque, typed key into the dynamic environment.
     ///
     /// Two parameters cannot collide, because <see cref="ParamIds"/> hands each
-    /// one an id no other will get. `T` is what makes the champ — which stores
+    /// one an id no other will get. `T` is what makes the trie — which stores
     /// plain `object` — safe to read back: only `parameterize` at this same
     /// `Param&lt;T&gt;` can write the id, so the cast in
     /// <see cref="parametersubref"/> cannot fail. That cast is the whole of the
@@ -1841,11 +1838,11 @@ public static partial class BjolangRuntime {
     [NonUserCode]
     public sealed class Param<T> {
         /// 0 = output port, 1 = input port, 2 = ambient cancel token,
-        /// -1 = in the champ. This is why `parameterize` is one form for both
+        /// -1 = in the trie. This is why `parameterize` is one form for both
         /// storage kinds.
         internal readonly int Slot;
 
-        /// The champ key, and meaningless for a port. `readonly`, so the JIT
+        /// The trie key, and meaningless for a port. `readonly`, so the JIT
         /// can hoist it out of a loop that reads the same parameter repeatedly.
         internal readonly int Id;
 
@@ -1995,7 +1992,7 @@ public static partial class BjolangRuntime {
             // reach these, and each is declared at the matching type.
             case 0: return (T)(object)env.Out;
             case 1: return (T)(object)env.In;
-            // Null is "nothing has bound one", the same thing a champ miss
+            // Null is "nothing has bound one", the same thing a trie miss
             // means, and it falls back the same way.
             case 2: return env.Cancel is { } tok ? (T)(object)tok : p.Initial;
             default: return env.Vals.TryGetValue(p.Id, out var v) ? (T)v : p.Initial;

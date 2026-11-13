@@ -8,7 +8,7 @@
 ;;
 ;; The three standard ports are parameters like any other. They differ only in
 ;; where the runtime keeps them — a field on the environment rather than a slot
-;; in the champ, because `display` reads the output port on every call — and
+;; in the trie, because `display` reads the output port on every call — and
 ;; nothing about that shows here.
 ;; `OutputPort` and the port operations come with the prelude, so there is
 ;; no `(import (std ports))` here — that module is only the drains that take a
@@ -60,6 +60,33 @@
 (defun (describe)
   (string-append (int->string (parameter-ref indent))
                  (if (parameter-ref verbose?) "/loud" "/quiet")))
+
+;; Many cold parameters at once, so that ids sharing low bits push each other
+;; into deeper nodes of the environment's trie.
+(: (Array (Param int)))
+(def crowd (loop (:for i (range 0 300)) (:acc (arraying (make-cold-parameter (- 0 i))))))
+
+;; Binds `crowd[i]` to `i` for each `i` in `order`, then rebinds every
+;; seventh to `i + 1000`, and calls `body` inside all of it.
+(: (-> (List int) (-> bool) bool))
+(defun (with-crowd order body)
+  (match order
+    ((Cons i rest) (parameterize (((array-ref crowd i) i)) (with-crowd rest body)))
+    (Nil (let go ((i 0))
+           (cond ((>= i 300) (body))
+                 (else (parameterize (((array-ref crowd i) (+ i 1000))) (go (+ i 7)))))))))
+
+;; Whether every parameter of `crowd` reads what `with-crowd` bound, with the
+;; ones below `bound` bound and the rest at their initial value.
+(: (-> int bool))
+(defun (crowd-reads? bound)
+  (loop (:for i (range 0 300))
+        (:acc ok (folding #t
+                          (and ok (= (parameter-ref (array-ref crowd i))
+                                     (cond ((>= i bound) (- 0 i))
+                                           ((= (% i 7) 0) (+ i 1000))
+                                           (else i))))))
+        => ok))
 
 ;; A named let in tail position *inside* the body, which lowers to a jump inside
 ;; a try/finally. Worth pinning: `parameterize` desugars to the same try/finally
@@ -225,6 +252,16 @@
 
   ;; --- Tail calls under the restore ---------------------------------------
   (expect "named let inside parameterize" (sum-to 4) 5)
+
+  ;; --- Many parameters at once -------------------------------------------
+  (expect "crowd unbound" (crowd-reads? 0) #t)
+  (expect "crowd bound in order"
+          (with-crowd (loop (:for i (range 0 300)) (:acc (listing i))) (fun () (crowd-reads? 300))) #t)
+  (expect "crowd bound in reverse"
+          (with-crowd (loop (:for i (down-from 299 #:to 0)) (:acc (listing i))) (fun () (crowd-reads? 300))) #t)
+  (expect "crowd bound scattered"
+          (with-crowd (loop (:for i (range 0 300)) (:acc (listing (% (* i 37) 300)))) (fun () (crowd-reads? 300))) #t)
+  (expect "crowd restored" (crowd-reads? 0) #t)
 
   0)
 
