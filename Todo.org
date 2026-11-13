@@ -467,6 +467,26 @@ what was meant. Confirmed by running it where it says so.
   names are mangled. Other impl classes probably have the same problem.
   ~tests/collections/hashset_trie.bjo~ names its type ~SomeClash~ to avoid it.
 
+* Found while porting the vec operations to Bjolang
+
+- *Adds, slices and splits can break the search step invariant.* After a
+  burst of ~vec-add~ or ~vec-add-first~ on a relaxed tree, a ~vec-slice~ in
+  the middle of one, or a ~vec-split~ of one, a node can have one child more
+  than ~AllowedChildren~ allows (~RrbList.VerifySearchStep~ raises, e.g. "10
+  children holding 202, at most 9 allowed"). Lookups are still right, but a
+  relaxed search may have to step one child further than the bound promises.
+  The insert and remove paths keep it (~rrb-absorb-split~,
+  ~rrb-repair-after-remove~); the others never check. Appending a leaf to a
+  relaxed node at its limit, ~rrb-slice-node~ and ~rrb-split-tree~ want the
+  same check, repacking with ~rrb-build-checked~ when it fails.
+  ~tests/collections/vec_rrb.bjo~ only calls ~VerifyIntegrity~ until then;
+  add ~VerifySearchStep~ back to ~checked?~ with the fix.
+- *~(cast (Vec long) [])~ emits C# that does not compile.* The empty vec
+  literal is generated as ~RrbList<object>~ and cast to ~RrbList<long>~
+  (CS0030). The type checker accepts the cast. ~(: (Vec long)) (def none [])~
+  works. Fix: generate the literal at the cast's type, as an annotated
+  ~def~ does.
+
 * Found while writing bjostat's parallel loops
 
 Found in ~bench/parallel.bjo~ of bjostat, where the parts of a loop run on
