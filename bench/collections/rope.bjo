@@ -1,0 +1,160 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; (std rope): an editing trace, and the operations one at a time on a rope of
+;; 1 MB.
+;;
+;; - The trace is automerge-paper, the keystrokes of writing a paper: 259,778
+;;   edits ending in 104,852 bytes, from github.com/automerge/automerge-perf,
+;;   as JSON with byte offsets: {"edits": [[at, deleted, inserted], ...],
+;;   "final": text}. The environment variable BJO_EDITING_TRACE names the
+;;   file. Without it the trace benchmarks are left out.
+;; - The baseline for the trace is a string, edited by copying it.
+
+(import (std prelude))
+(import (std bench))
+(import (std rope))
+(import (std random))
+(import (text json))
+
+;; ---------------------------------------------------------------------------
+;; The trace
+;; ---------------------------------------------------------------------------
+
+(type (: Trace (Record (: at (Array int)) (: deleted (Array int)) (: inserted (Array string)) (: final string))))
+
+(: (-> Json int))
+(defun (json-int j) (match j ((JsonInt n) (cast int n)) (_ (panic! "not an integer"))))
+
+(: (-> string Trace))
+(defun (load-trace path)
+  (match (parse-json (file-read-text path))
+    ((Ok (JsonObj m))
+     (def edits (match (map-ref m "edits") ((JsonArr xs) xs) (_ (panic! "no edits"))))
+     (def n (iarray-length edits))
+     (def at (make-array n #:fill 0))
+     (def deleted (make-array n #:fill 0))
+     (def inserted (make-array n #:fill ""))
+     (loop (:for i (range 0 n))
+           (:do (match (iarray-ref edits i)
+                  ((JsonArr e)
+                   (array-set! at i (json-int (iarray-ref e 0)))
+                   (array-set! deleted i (json-int (iarray-ref e 1)))
+                   (array-set! inserted i (match (iarray-ref e 2) ((JsonStr s) s) (_ ""))))
+                  (_ (panic! "not an edit")))))
+     (Trace (at at) (deleted deleted) (inserted inserted)
+            (final (match (map-ref m "final") ((JsonStr s) s) (_ (panic! "no final text"))))))
+    (_ (panic! "not a trace"))))
+
+(def no-trace (Trace (at (make-array 0 #:fill 0)) (deleted (make-array 0 #:fill 0)) (inserted (make-array 0 #:fill "")) (final "")))
+
+;; The trace BJO_EDITING_TRACE names, checked against its final text by both
+;; replays, or none.
+(: (-> Trace))
+(defun (the-trace)
+  (match (get-environment-variable "BJO_EDITING_TRACE")
+    ((Some p)
+     (def t (load-trace p))
+     (unless (= (rope->string (replay-rope t)) (.final t)) (panic! "the persistent replay is wrong"))
+     (unless (= (rope->string (replay-transient t)) (.final t)) (panic! "the transient replay is wrong"))
+     t)
+    (None no-trace)))
+
+(: (-> Trace Rope))
+(defun (replay-rope t)
+  (loop (:for i (range 0 (array-length (.at t))))
+        (:acc r (folding (rope-empty)
+                  (begin
+                    (def at (array-ref (.at t) i))
+                    (def d (array-ref (.deleted t) i))
+                    (def s (array-ref (.inserted t) i))
+                    (def r2 (if (> d 0) (rope-delete r at (+ at d)) r))
+                    (if (> (string-length s) 0) (rope-insert r2 at s) r2))))))
+
+(: (-> Trace Rope))
+(defun (replay-transient t)
+  (def tr (rope->transientrope (rope-empty)))
+  (loop (:for i (range 0 (array-length (.at t))))
+        (:do (def at (array-ref (.at t) i))
+             (def d (array-ref (.deleted t) i))
+             (def s (array-ref (.inserted t) i))
+             (when (> d 0) (transientrope-delete! tr at (+ at d)))
+             (when (> (string-length s) 0) (transientrope-insert! tr at s))))
+  (transientrope->rope tr))
+
+(: (-> Trace string))
+(defun (replay-string t)
+  (loop (:for i (range 0 (array-length (.at t))))
+        (:acc text (folding ""
+                     (begin
+                       (def at (array-ref (.at t) i))
+                       (def d (array-ref (.deleted t) i))
+                       (def s (array-ref (.inserted t) i))
+                       (str (.SliceBytes text 0 at) s (.SliceBytes text (+ at d) (- (string-length text) (+ at d)))))))))
+
+(def/bench "trace: rope" #:setup ((t (the-trace))) (replay-rope t))
+(def/bench "trace: transient rope" #:setup ((t (the-trace))) (replay-transient t))
+(def/bench "trace: string" #:once 3 #:setup ((t (the-trace))) (replay-string t))
+
+;; ---------------------------------------------------------------------------
+;; One operation on 1 MB
+;; ---------------------------------------------------------------------------
+
+;; About 1 MB of lines of text, a few of them not ASCII.
+(def megabyte
+  (begin
+    (def b (stringbuilder-empty))
+    (let go ((i 0))
+      (when (< (stringbuilder-length b) 1000000)
+        (stringbuilder-add-string! b #"line ${i} of the text, with a word or two: blåbär €\n")
+        (go (+ i 1))))
+    (stringbuilder->string b)))
+
+(def mb-rope (string->rope megabyte))
+(def mb-other (rope-concat (rope-take mb-rope 333333) (rope-drop mb-rope 333333)))
+
+(def rng (make-random/seed64 (cast ulong 7)))
+
+;; 1024 offsets on character boundaries, which is where every line has ASCII.
+(def offsets (loop (:for _ (range 0 1024)) (:acc (arraying (rope-line-start mb-rope (random-int 0 (- (rope-line-count mb-rope) 1) #:rng rng))))))
+;; The same, highest first, for a rope that the inserts change: one at an
+;; offset does not move those before it.
+(def offsets-down (vec->array (vec-reverse (vec-sort (array->vec offsets)))))
+(def lines (loop (:for _ (range 0 1024)) (:acc (arraying (random-int 0 (- (rope-line-count mb-rope) 1) #:rng rng)))))
+
+(def/bench "1 MB: string->rope" (string->rope megabyte))
+(def/bench "1 MB: rope->string" (rope->string mb-rope))
+(def/bench "1 MB: insert a character, 1024 times"
+  (loop (:for at offsets) (:do (ignore (rope-insert mb-rope at "x")))))
+(def/bench "1 MB: insert into a transient, 1024 times"
+  (def t (rope->transientrope mb-rope))
+  (loop (:for at offsets-down) (:do (transientrope-insert! t at "x")))
+  (transientrope->rope t))
+(def/bench "1 MB: delete a character, 1024 times"
+  (loop (:for at offsets) (:do (ignore (rope-delete mb-rope at (+ at 1))))))
+(def/bench "1 MB: split and join, 1024 times"
+  (loop (:for at offsets) (:do (def (Tuple a b) (rope-split mb-rope at)) (ignore (rope-concat b a)))))
+(def/bench "1 MB: rope-ref, 1024 times"
+  (loop (:for at offsets) (:acc (summing (char->integer (rope-ref mb-rope at))))))
+(def/bench "1 MB: rope-line-start, 1024 times"
+  (loop (:for n lines) (:acc (summing (rope-line-start mb-rope n)))))
+(def/bench "1 MB: rope-line-of, 1024 times"
+  (loop (:for at offsets) (:acc (summing (rope-line-of mb-rope at)))))
+(def/bench "1 MB: every character" (loop (:for c mb-rope) (:acc (summing (char->integer c)))))
+(def/bench "1 MB: every character of the string" (loop (:for c megabyte) (:acc (summing (char->integer c)))))
+(def/bench "1 MB: equal, other chunks" (= mb-rope mb-other))
+(def/bench "1 MB: hash" (eq-hash mb-rope))
+(def/bench "1 MB: index-of, not there" (rope-index-of mb-rope "line 99999999"))
+(def/bench "1 MB: string insert a character, 1024 times"
+  (loop (:for at offsets) (:do (ignore (str (.SliceBytes megabyte 0 at) "x" (.SliceBytes megabyte at (- (string-length megabyte) at)))))))
+
+(run-benches)

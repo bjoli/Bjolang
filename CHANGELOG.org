@@ -3,6 +3,23 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std rope): persistent text that is cheap to edit anywhere
+
+- A ~Rope~ is immutable UTF-8 text in a B+ tree: chunks of at most 1024
+  bytes, nodes of up to 16 children that keep each child's bytes and
+  newlines. Insert, delete, split, concat, slice and the line lookups
+  (~rope-line-start~, ~rope-line-of~) are O(log n) and share what they do
+  not change. Offsets are bytes; one inside a character raises
+  ~ArgumentException~.
+- Equality, order and hashing depend on the text, not on the chunks. A
+  ~RopeBuilder~ builds in one pass; ~rope->string~ is one allocation.
+- A ~TransientRope~ edits the nodes it owns in place, and keeps the chunk
+  of the last edit in a mutable buffer: edits inside it allocate nothing.
+  The automerge-paper editing trace (259,778 edits) replays in 5.7 ms
+  through a transient, 40 ms persistently, and 2 s on a string.
+- Only the node classes are C# (~Bjolang.Runtime.Rope~); every operation
+  is Bjolang.
+
 * Benchmarks can count every thread's allocation; a loop with no exit and C# type-name clashes are reported
 
 - ~alloc/op~ counted the measuring thread only, so a body that hands work
