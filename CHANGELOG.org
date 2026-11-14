@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* Adds, slices and splits keep the search step invariant
+
+- An add that gives a relaxed node a new child, and a slice, split, drop,
+  take or pop that cuts a child at a node's edge, could leave the node one
+  or two children over ~AllowedChildren~. Lookups were right, but the bound
+  on a relaxed search did not hold, and nothing kept the overrun from
+  adding up.
+- Each node they change is now checked, and repacked by ~BuildChecked~ when
+  it is over (~RrbAlgorithm.Checked~, ~rrb-checked~). The check reads only
+  the size table unless that cannot prove the bound, and costs nothing
+  measurable: the operations take as long as before.
+- ~tests/collections/vec_rrb.bjo~ checks the invariant at every check and on
+  both halves of every split.
+
 * ~vec-insert~, ~vec-remove-at~, ~vec-slice~ and ~vec-split~ are written in Bjolang
 
 - They are in ~lib/std/vec.protobjo~, which the prelude includes. They read

@@ -21,12 +21,12 @@
        (loop (:for x (in-reverse-vec v)) (:for i (down-from (- n 1)))
              (:acc ok (folding #t (and ok (= x (array-ref r i))))))))
 
-;; `same?`, and raises when the tree's sizes are wrong.
-;; - The search step invariant is not checked: adds, slices and splits can
-;;   leave a node one child over it.
+;; `same?`, and raises when the tree's sizes or its search step invariant
+;; are wrong.
 (: (-> (Vec int) (Array int) bool))
 (defun (checked? v r)
   (.VerifyIntegrity v)
+  (.VerifySearchStep v)
   (same? v r))
 
 ;; Array helpers, the reference's operations.
@@ -97,7 +97,7 @@
       ((= op 8)
        (def (Tuple left right) (vec-split v at))
        (cond
-         ((not (and (same? left (arr-slice r 0 at)) (same? right (arr-slice r at (- n at))))) #f)
+         ((not (and (checked? left (arr-slice r 0 at)) (checked? right (arr-slice r at (- n at))))) #f)
          ;; Back together, in the other order half the time.
          ((= (random-int 0 1 #:rng rng) 0) (go (+ i 1) (vec-merge left right) r))
          (else (go (+ i 1) (vec-merge right left) (arr-append (arr-slice r at (- n at)) (arr-slice r 0 at))))))

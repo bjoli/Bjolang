@@ -222,6 +222,12 @@ public static class RrbNodes
     /// <summary>The most children a node may have for `slots` slots below it.</summary>
     public static int AllowedChildren(int slots) => RrbAlgorithm.AllowedChildren(slots);
 
+    /// <summary>
+    ///     `n`, an internal node at `shift`, when it keeps the search step invariant; otherwise its children
+    ///     repacked into one node.
+    /// </summary>
+    public static Node<T> Checked<T>(Node<T> n, int shift) => RrbAlgorithm.Checked(Unsafe.As<InternalNode<T>>(n), shift);
+
     /// <summary>The slots the first `count` children hold.</summary>
     public static int SlotsOfChildren<T>(Node<T>[] children, int count) =>
         RrbAlgorithm.SlotsOfChildren(children!, count);

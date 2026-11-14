@@ -486,6 +486,7 @@
   (rrb-first-leaf-len (: Bjolang.Runtime.Rrb.RrbNodes.FirstLeafLen (-> (RrbNode %a) int int)))
   (rrb-copied        (: Bjolang.Runtime.Rrb.RrbNodes.Copied       (-> (Vec %a) int int (Vec %a))))
   (rrb-take-front    (: Bjolang.Runtime.Rrb.RrbNodes.TakeFront    (-> (Vec %a) int (Vec %a))))
+  (rrb-checked       (: Bjolang.Runtime.Rrb.RrbNodes.Checked      (-> (RrbNode %a) int (RrbNode %a))))
   (rrb-slice-right   (: Bjolang.Runtime.Rrb.RrbNodes.SliceRight
                         (-> (RrbNode %a) int int (Tuple (RrbNode %a) (Array %a) int)))))
 
@@ -629,7 +630,8 @@
                           (:do (set! sum (+ sum (rrb-child-size node (+ middle-from k) shift)))
                                (array-set! table (+ at k) sum)))
                     (when has-right? (array-set! table (+ at middle) (+ sum (- limit tail-len))))
-                    (Tuple (rrb-relaxed kids table len) tail tail-len))
+                    ;; The edges shrank, and may take it over the search step bound.
+                    (Tuple (rrb-checked (rrb-relaxed kids table len) shift) tail tail-len))
                   (Tuple (rrb-dense kids len) tail tail-len)))))))
 
 ;; `count` items of a leaf's `items` from `start`: a leaf when it is full,
@@ -684,6 +686,9 @@
 ;; The node at `shift` split at `i`, 0 < i < its count. Returns the left
 ;; node, or `rrb-no-tree`, the last leaf of the left half, which is not in
 ;; it, with its length, and the right node.
+;; - The nodes on the path to the cut lose part of a child, and are checked
+;;   against the search step bound (`rrb-checked`). A split at a boundary
+;;   between children keeps it: any run of a valid node's children is valid.
 (: (-> (RrbNode %a) int int (Tuple (RrbNode %a) (Array %a) int (RrbNode %a))))
 (defun (rrb-split-tree node i shift)
   (def len (rrb-len node))
@@ -723,7 +728,7 @@
                        (let ()
                          (def table (rrb-array-part cumulative 0 left-len))
                          (unless (rrb-no-tree? left-child) (array-set! table at (- i tail-len)))
-                         (rrb-relaxed kids table left-len))
+                         (rrb-checked (rrb-relaxed kids table left-len) shift))
                        (rrb-dense kids left-len)))))
               ;; The right node starts with a part of a child, so it is relaxed.
               (def right-len (- len at))
@@ -733,4 +738,4 @@
               (def table (rrb-array-part cumulative at right-len))
               (loop (:for k (range 0 right-len))
                     (:do (array-set! table k (- (array-ref table k) i))))
-              (Tuple left tail tail-len (rrb-relaxed kids table right-len)))))))
+              (Tuple left tail tail-len (rrb-checked (rrb-relaxed kids table right-len) shift)))))))

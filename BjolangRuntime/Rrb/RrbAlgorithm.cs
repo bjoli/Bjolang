@@ -621,7 +621,7 @@ internal static InternalNode<T> ExecuteConcatPlan<T>(ReadOnlySpan<Node<T>> all, 
             }
         }
 
-        return new InternalNode<T>(newChildren, newSizeTable, remainingChildren, OwnerId.None);
+        return Checked(new InternalNode<T>(newChildren, newSizeTable, remainingChildren, OwnerId.None), shift);
     }
 
     /// <summary>
@@ -724,7 +724,7 @@ internal static InternalNode<T> ExecuteConcatPlan<T>(ReadOnlySpan<Node<T>> all, 
         newSizeTable[newLen - 1] = limit - tailLen;
     }
 
-    return new InternalNode<T>(newChildren, newSizeTable, newLen, OwnerId.None);
+    return Checked(new InternalNode<T>(newChildren, newSizeTable, newLen, OwnerId.None), shift);
 }
 
 // Returns the updated node if the tail could be inserted/merged.
@@ -737,7 +737,7 @@ internal static InternalNode<T> ExecuteConcatPlan<T>(ReadOnlySpan<Node<T>> all, 
         if (shift == Constants.RRB_BITS)
         {
             if (internalNode.Len < Constants.RRB_BRANCHING)
-                return AppendChild(internalNode, tail, shift, token);
+                return Checked(AppendChild(internalNode, tail, shift, token), shift);
             return null;
         }
 
@@ -763,7 +763,8 @@ internal static InternalNode<T> ExecuteConcatPlan<T>(ReadOnlySpan<Node<T>> all, 
                     // built from the updated child.
                     editable = CreateRelaxedNodeFromDense(editable, token, shift);
 
-                return editable;
+                // A child that was repacked holds fewer slots.
+                return Checked(editable, shift);
             }
         }
 
@@ -771,7 +772,7 @@ internal static InternalNode<T> ExecuteConcatPlan<T>(ReadOnlySpan<Node<T>> all, 
         if (internalNode.Len < Constants.RRB_BRANCHING)
         {
             var newPath = CreatePath(shift - Constants.RRB_BITS, tail, token);
-            return AppendChild(internalNode, newPath, shift, token);
+            return Checked(AppendChild(internalNode, newPath, shift, token), shift);
         }
 
         return null;
@@ -1540,6 +1541,31 @@ internal static InternalNode<T> ExecuteConcatPlan<T>(ReadOnlySpan<Node<T>> all, 
 
         var all = new ReadOnlySpan<Node<T>>(children!, 0, count);
         return new InsertResult<T>(ExecuteConcatPlan(all, new ReadOnlySpan<int>(sizes, 0, count), plan, topLen, shift));
+    }
+
+    // `node` when it keeps the search step invariant, and otherwise its
+    // children repacked by BuildChecked into one node.
+    // - A dense node always keeps it, and is returned as it is.
+    // - What an operation that changed a node's children checks: an append
+    //   adds a child and a cut shrinks the children at its edges, and either
+    //   can take a node over the bound.
+    internal static InternalNode<T> Checked<T>(InternalNode<T> node, int shift)
+    {
+        if (node.IsDense()) return node;
+        var len = node.Len;
+        var table = node.SizeTable!;
+
+        // A slot holds at most 1 << (shift - RRB_BITS) items, so the table's
+        // total gives the fewest slots there can be without reading a child.
+        // Above the leaf parents only a node that fails that is counted.
+        var items = table[len - 1];
+        var fewest = ((items - 1) >> (shift - Constants.RRB_BITS)) + 1;
+        if (len <= AllowedChildren(fewest)) return node;
+        if (shift > Constants.RRB_BITS && len <= AllowedChildren(SlotsOfChildren(node.Children, len))) return node;
+
+        var sizes = new int[len];
+        for (var i = 0; i < len; i++) sizes[i] = table[i] - (i > 0 ? table[i - 1] : 0);
+        return AsInternal(BuildChecked(node.Children, sizes, len, shift).NewNode);
     }
 
     // A relaxed node over `count` of the children starting at `start`.
