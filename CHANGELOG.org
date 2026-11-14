@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~write-json~ writes as it goes; unreachable nested ~or~ and ~:is~ clauses are reported
+
+- ~write-json~ sends its builder to the port each time it holds 32 KB, and
+  makes no string of the whole text. From a bjoroutine each part's write
+  suspends (~BjoOutputPort.WriteBuilderAsync~, over the new
+  ~Utf8StringBuilder.AsMemory~). ~json->string~ takes the same path with a
+  flush that does nothing, and runs as fast as before: an object's fields
+  are now walked by two loops at known types, since a writer generic in
+  its collection would have a suspending copy, which is not specialised.
+- An alternative of an ~or~ below a clause's top level that the clauses
+  above or the alternatives before it cover is an error, as one at the top
+  level was: ~(Tuple (or 1 1) _)~, ~(Some (or (:at-least 0) 3))~. An ~or~
+  under an ~and~ is not checked, since there the other parts narrow it.
+- A clause with an ~(:is ...)~ that an earlier unguarded clause covers, such
+  as ~(:is System.ArgumentException)~ after ~(:is System.Exception)~, is a
+  warning. Only what is sure is reported: type tests by ~IsAssignableFrom~,
+  inside tuples, constructors, records, literals, ~or~ and ~and~.
+
 * Types with hyphenated names compile, and a cast types an empty collection
 
 - An impl's class was named after its type's name as written, so

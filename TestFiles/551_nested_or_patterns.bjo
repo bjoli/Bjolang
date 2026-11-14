@@ -1,0 +1,28 @@
+;; Nested `or` patterns whose alternatives can all run are accepted, and
+;; match as written.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: (-> (Tuple int int) int))
+(defun (g t)
+  (match t
+    ((Tuple 1 3) 5)
+    ((Tuple (or 1 2) _) 1)
+    (_ 0)))
+
+(: (-> (Option (Tuple int int)) int))
+(defun (h o)
+  (match o
+    ((Some (or (Tuple 1 (or 2 3)) (Tuple 2 (or 2 3)))) 1)
+    ((Some (Tuple (or 4 5) (or 4 5))) 2)
+    (_ 0)))
+
+(defun (main args)
+  (expect "a clause above takes its own case" (g (Tuple 1 3)) 5)
+  (expect "the first alternative, past the clause above" (g (Tuple 1 4)) 1)
+  (expect "the second alternative" (g (Tuple 2 9)) 1)
+  (expect "nested in an alternative" (h (Some (Tuple 2 3))) 1)
+  (expect "two in one tuple" (h (Some (Tuple 5 4))) 2)
+  (expect "none" (h (Some (Tuple 3 3))) 0)
+  0)

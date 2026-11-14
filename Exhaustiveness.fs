@@ -973,9 +973,155 @@ let private checkAlternatives (registry: TraitRegistry) (scrutinee: HMType) (cov
         |> ignore
     | _ -> ()
 
+/// The direct sub-patterns of `pat`, in the order `mapPatternChildrenWith`
+/// visits them.
+let private childrenOf (pat: TypedPattern) : TypedPattern list =
+    let found = ResizeArray()
+
+    pat
+    |> TypeVisitor.mapPatternChildrenWith
+        id
+        (fun child ->
+            found.Add child
+            child)
+    |> ignore
+
+    List.ofSeq found
+
+/// `pat` with its `i`th direct sub-pattern replaced.
+let private withChild (pat: TypedPattern) (i: int) (child: TypedPattern) : TypedPattern =
+    let mutable k = -1
+
+    pat
+    |> TypeVisitor.mapPatternChildrenWith
+        id
+        (fun c ->
+            k <- k + 1
+            if k = i then child else c)
+
+/// Each `or` inside `pat`: the `or` itself, and a function that puts a pattern
+/// in its place.
+///
+/// The pattern that function returns is restricted to the path to the `or`:
+/// an `or` it is nested in is replaced by the alternative that holds it. The
+/// other alternatives of that one are left out, so they cannot make one
+/// beside them look covered.
+///
+/// An `or` under an `and` is not looked into: there an alternative is
+/// meant to be narrowed by the other parts, as in `(and (or 1 2) (or 2 3))`.
+let rec private orsIn (pat: TypedPattern) : (TypedPattern * (TypedPattern -> TypedPattern)) list =
+    match pat.Node with
+    | TPOr alts -> (pat, id) :: (alts |> List.collect orsIn)
+    | TPAnd _ -> []
+    | _ ->
+        childrenOf pat
+        |> List.indexed
+        |> List.collect (fun (i, child) ->
+            orsIn child |> List.map (fun (orPat, plug) -> orPat, (fun p -> withChild pat i (plug p))))
+
+/// Every alternative of an `or` below a clause's top level has to be
+/// reachable past the clauses above and the alternatives before it, with the
+/// rest of the clause as it is: `(Tuple (or 1 1) _)` has a second `1` that
+/// never runs. The top-level `or` is `checkAlternatives`'s.
+let private checkNestedAlternatives
+    (registry: TraitRegistry)
+    (scrutinee: HMType)
+    (covered: Row list)
+    (pat: TypedPattern)
+    =
+    let nested =
+        match pat.Node with
+        | TPOr alts -> alts |> List.collect orsIn
+        | _ -> orsIn pat
+
+    for orPat, plug in nested do
+        match orPat.Node with
+        | TPOr alts ->
+            alts
+            |> List.iteri (fun i alt ->
+                let row = [ normalize (plug alt) ]
+
+                if not (useful registry [ scrutinee ] [] row) then
+                    failwithf $"Pattern Error at %s{formatPos alt.Range}: %s{matchesNoValue}"
+
+                let before =
+                    if i = 0 then []
+                    else [ [ normalize (plug { orPat with Node = TPOr(List.take i alts) }) ] ]
+
+                if not (useful registry [ scrutinee ] (covered @ before) row) then
+                    failwithf
+                        $"Pattern Error at %s{formatPos alt.Range}: this alternative can never run — the clauses above and the alternatives before it already match everything it does.")
+        | _ -> ()
+
+/// Whether a pattern holds an `(:is ...)` anywhere.
+let rec private hasTypeTest (pat: TypedPattern) : bool =
+    match pat.Node with
+    | TPTypeTest _ -> true
+    | _ -> childrenOf pat |> List.exists hasTypeTest
+
+/// Whether every value `q` matches is one `p` matches, as far as type tests
+/// and the shapes around them say. Only what is sure is `true`: a view, a
+/// comparison or a sequence pattern gives `false`.
+///
+/// `(:is A)` covers `(:is B)` when every `B` is an `A`. A type test matches
+/// no null on either side, so null changes nothing.
+let rec private subsumes (p: TypedPattern) (q: TypedPattern) : bool =
+    let all2 (ps: TypedPattern list) (qs: TypedPattern list) =
+        ps.Length = qs.Length && List.forall2 subsumes ps qs
+
+    match p.Node, q.Node with
+    | (TPWildcard | TPIdent _), _ -> true
+    | _, TPOr qs -> qs |> List.forall (subsumes p)
+    | TPOr ps, _ -> ps |> List.exists (fun alt -> subsumes alt q)
+    | TPAnd ps, _ -> ps |> List.forall (fun part -> subsumes part q)
+    | _, TPAnd qs -> qs |> List.exists (subsumes p)
+    | TPTypeTest(a, _), TPTypeTest(b, _) ->
+        match DotNetInterop.tryResolveType a, DotNetInterop.tryResolveType b with
+        | Some ta, Some tb -> ta.IsAssignableFrom tb
+        | _ -> false
+    | TPTuple ps, TPTuple qs -> all2 ps qs
+    | TPConstruct(n, ps), TPConstruct(m, qs) -> n = m && all2 ps qs
+    | TPRecord(n, pf), TPRecord(m, qf) ->
+        n = m && List.map fst pf = List.map fst qf && all2 (List.map snd pf) (List.map snd qf)
+    | TPInt a, TPInt b
+    | TPString a, TPString b
+    | TPKeyword a, TPKeyword b
+    | TPSymbol a, TPSymbol b -> a = b
+    | TPChar a, TPChar b -> a = b
+    | TPBool a, TPBool b -> a = b
+    | _ -> false
+
+/// Warns of a clause with an `(:is ...)` that an earlier unguarded clause
+/// with one covers: `(:is System.ArgumentException)` after
+/// `(:is System.Exception)`.
+///
+/// The usefulness check cannot see it, since a type test covers nothing
+/// there, and C# does not either, since the test is emitted in the guard. A
+/// warning, not an error: it is a part of what C# proved of the same clauses
+/// when they were labels, which also modelled interfaces and `object`.
+let private checkTypeTests (clauses: TMatchClause list) =
+    let rec go (above: TypedPattern list) (rest: TMatchClause list) =
+        match rest with
+        | [] -> ()
+        | clause :: more ->
+            let pat = normalize clause.Pattern
+
+            if hasTypeTest pat then
+                match above |> List.tryFind (fun p -> hasTypeTest p && subsumes p pat) with
+                | Some earlier ->
+                    Diagnostics.warn
+                        $"the clause at %s{formatPos clause.Pattern.Range} can never run — the clause at %s{formatPos earlier.Range} already matches every value it does."
+                | None -> ()
+
+            go (if clause.Guard.IsNone then above @ [ pat ] else above) more
+
+    go [] clauses
+
 /// A `#:when` guard may fail, so a guarded clause covers nothing — but it is
 /// still checked for being reachable.
 let private checkMatch (registry: TraitRegistry) (range: Range) (scrutinee: HMType) (clauses: TMatchClause list) =
+    checkTypeTests clauses
+
     try
         let mutable covered: Row list = []
 
@@ -990,6 +1136,7 @@ let private checkMatch (registry: TraitRegistry) (range: Range) (scrutinee: HMTy
                     $"Pattern Error at %s{formatPos clause.Pattern.Range}: this clause can never run — the clauses above it already match everything it does."
 
             checkAlternatives registry scrutinee covered clause.Pattern
+            checkNestedAlternatives registry scrutinee covered clause.Pattern
 
             if clause.Guard.IsNone then
                 covered <- covered @ [ row ]

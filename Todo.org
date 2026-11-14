@@ -78,30 +78,6 @@ noted.
   returns a value", at the expression, or close it to ~unit~ when nothing
   constrains it.
 
-* Pattern matching
-
-- A ~(:is ...)~ clause that no value can reach is not reported. A type test
-  covers nothing (~Exhaustiveness.fs~), and it is emitted in the guard, so C#
-  does not see it either:
-  #+begin_src bjolang
-  (match o
-    ((:is System.Exception) "exception")
-    ((:is System.ArgumentException) "never reached")
-    (_ "other"))
-  #+end_src
-  Before the type test moved to the guard, C# refused the second clause with
-  CS8120. The fix: resolve both CLR types and warn when an earlier unguarded
-  ~:is~ in the same position tests a type the later one is assignable to
-  (~IsAssignableFrom~). A warning, not an error, because it is only a part of
-  what C# proved: nulls, interfaces and ~object~ are not modelled.
-- The alternatives of a nested ~or~ are not checked for being reachable:
-  ~(Tuple (or 1 1) _)~ and ~(Some (or (:at-least 0) 3))~ compile. Only a
-  clause's top-level ~or~ is checked (~checkAlternatives~), because only its
-  alternatives become ~case~ labels of their own, and C# accepts the nested
-  ones as one ~or~ pattern. The fix: expand each nested ~or~ into one row per
-  alternative, and check each against the rows above and the alternatives
-  before it, as Maranget's algorithm does for or-patterns.
-
 * JSON (~(text json)~, ~(text json-codec)~)
 
 - An error's path names no index: a bad element of a ~(Vec Item)~ field
@@ -118,10 +94,6 @@ noted.
   array's elements, and build the map once.
 - Reading a float copies its bytes into the builder before parsing them.
   Most of a float's time is .NET's parse, so the copy is a small part.
-- ~write-json~ makes the whole text as a string, then writes it, so a large
-  response is in memory twice and nothing goes out until all of it is made.
-  Writing the builder's chunks to the port needs a port operation that takes a
-  builder, with a twin for a bjoroutine, as ~write-string~ has.
 - With ~#:ascii~, a string is still written a character at a time: every
   character outside ASCII needs an escape, and ~string-search-any~ takes a
   set of characters, not a range.

@@ -1,0 +1,32 @@
+;; A type test that an earlier one covers: every ArgumentException is an
+;; Exception, so the second clause never runs. A type test is emitted in the
+;; guard, so C# does not report it.
+;;
+;; The tests that can run are not reported: a more specific type before a
+;; less specific one, an interface beside a class, and a guarded clause above.
+
+(import (std prelude))
+
+;; EXPECT-WARNING: the clause at type_test_covered.bjo:16:6 can never run — the clause at type_test_covered.bjo:15:6 already matches every value it does
+;; EXPECT-NO-WARNING: the clause at type_test_covered.bjo:2
+(: (-> System.Object string))
+(defun (kind o)
+  (match o
+    ((:is System.Exception) "exception")
+    ((:is System.ArgumentException) "never reached")
+    (_ "other")))
+
+(: (-> System.Object string))
+(defun (kind2 o)
+  (match o
+    ((:is System.ArgumentException) "argument")
+    ((:is System.Collections.IEnumerable) "enumerable")
+    ((:is System.Exception) #:when #f "guarded")
+    ((:is System.InvalidOperationException) "invalid operation")
+    ((:is System.Exception e) "exception")
+    (_ "other")))
+
+(defun (main args)
+  (println (kind (cast System.Object "x")))
+  (println (kind2 (cast System.Object "x")))
+  0)

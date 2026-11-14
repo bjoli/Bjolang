@@ -1270,7 +1270,8 @@
 ;; ---------------------------------------------------------------------------
 ;; The writer
 ;; ---------------------------------------------------------------------------
-;; One `StringBuilder` for the whole document. The keys of a JsonObj are
+;; One `StringBuilder` for the whole document, which `write-json` sends to
+;; its port and empties each time it is full. The keys of a JsonObj are
 ;; written in sorted order: a `Map` does not keep the order they were read in,
 ;; and sorted keys make the same value give the same text in every run. A
 ;; JsonFields has an order of its own, and is written in it.
@@ -1385,8 +1386,22 @@
     (loop (:for _ (range 0 (* indent level)))
           (:do (stringbuilder-add! sb #\space)))))
 
-(: (-> StringBuilder Json int bool int void))
-(defun (add-value! sb j indent ascii level)
+;; How full the builder may get before `write-json` sends it to its port.
+;; Below the builder's chunk size, so the builder stays one buffer.
+(: int)
+(def json-write-part 32768)
+
+;; Hands the builder to `flush` once it holds `json-write-part` bytes. Called
+;; between two elements or two fields.
+(: (-> StringBuilder (-?-> StringBuilder void) void))
+(defun (maybe-flush! sb flush) #:inline
+  (when (>= (stringbuilder-length sb) json-write-part)
+    (flush sb)))
+
+;; `j` added to `sb`. `flush` is given the builder when it is full, and
+;; empties it; `json->string` gives one that does nothing.
+(: (-> StringBuilder Json int bool int (-?-> StringBuilder void) void))
+(defun (add-value! sb j indent ascii level flush)
   (match j
     (JsonNull (stringbuilder-add-string! sb "null"))
     ((JsonBool b) (stringbuilder-add-string! sb (if b "true" "false")))
@@ -1402,7 +1417,8 @@
               (:with first? #t #f)
               (:do (unless first? (stringbuilder-add! sb #\,))
                    (add-newline! sb indent (+ level 1))
-                   (add-value! sb item indent ascii (+ level 1))))
+                   (add-value! sb item indent ascii (+ level 1) flush)
+                   (maybe-flush! sb flush)))
         (add-newline! sb indent level)
         (stringbuilder-add! sb #\]))))
     ((JsonObj fields)
@@ -1411,26 +1427,37 @@
        (else
         ;; The entries, sorted by key once: each is written with the value it
         ;; already holds, and no key is looked up again.
-        (add-fields! sb (sorted-entries fields) indent ascii level))))
-    ;; In their own order, which for a document read is the document's.
+        (stringbuilder-add! sb #\{)
+        (loop (:for (Tuple k v) (sorted-entries fields))
+              (:with first? #t #f)
+              (:do (add-field! sb k v first? indent ascii level flush)))
+        (add-newline! sb indent level)
+        (stringbuilder-add! sb #\}))))
+    ;; In their own order, which for a document read is the document's. The
+    ;; same loop as a JsonObj's, written again so that each walks a type it
+    ;; knows: a function generic in the collection would have a suspending
+    ;; copy, which is not specialised.
     ((JsonFields fields)
-     (if (iarray-empty? fields)
-         (stringbuilder-add-string! sb "{}")
-         (add-fields! sb fields indent ascii level)))))
+     (cond
+       ((iarray-empty? fields) (stringbuilder-add-string! sb "{}"))
+       (else
+        (stringbuilder-add! sb #\{)
+        (loop (:for (Tuple k v) fields)
+              (:with first? #t #f)
+              (:do (add-field! sb k v first? indent ascii level flush)))
+        (add-newline! sb indent level)
+        (stringbuilder-add! sb #\}))))))
 
-;; An object's fields, in the order `entries` has them.
-(: (-> StringBuilder %s int bool int void) (where (Iterable %s #:elem (Tuple string Json))))
-(defun (add-fields! sb entries indent ascii level)
-  (stringbuilder-add! sb #\{)
-  (loop (:for (Tuple k v) entries)
-        (:with first? #t #f)
-        (:do (unless first? (stringbuilder-add! sb #\,))
-             (add-newline! sb indent (+ level 1))
-             (add-string! sb k ascii)
-             (stringbuilder-add-string! sb (if (> indent 0) ": " ":"))
-             (add-value! sb v indent ascii (+ level 1))))
-  (add-newline! sb indent level)
-  (stringbuilder-add! sb #\}))
+;; One field of an object at `level`, and the comma before it unless it is
+;; the first.
+(: (-> StringBuilder string Json bool int bool int (-?-> StringBuilder void) void))
+(defun (add-field! sb k v first? indent ascii level flush) #:inline
+  (unless first? (stringbuilder-add! sb #\,))
+  (add-newline! sb indent (+ level 1))
+  (add-string! sb k ascii)
+  (stringbuilder-add-string! sb (if (> indent 0) ": " ":"))
+  (add-value! sb v indent ascii (+ level 1) flush)
+  (maybe-flush! sb flush))
 
 ;; JSON text for a value. Compact unless `#:indent` is more than 0, which puts
 ;; each element and field on a line of its own, indented that many spaces a
@@ -1438,14 +1465,32 @@
 (: (-> Json (#:indent int) (#:ascii bool) string))
 (defun (json->string j #:indent 0 #:ascii #f)
   (def sb (stringbuilder-empty))
-  (add-value! sb j indent ascii 0)
+  (add-value! sb j indent ascii 0 (fun (_) unit))
   (stringbuilder->string sb))
 
-;; The text `json->string` gives, written to `port`. The text is made first,
-;; and written in one piece.
+(import/extern
+  (clr-write-builder       (: Bjolang.Runtime.BjoOutputPort.WriteBuilder
+                              (-> OutputPort StringBuilder void) #:blocking))
+  (clr-write-builder-await (: Bjolang.Runtime.BjoOutputPort.WriteBuilderAsync
+                              (-> OutputPort StringBuilder void) #:async)))
+
+;; A builder's bytes to `p`, and the builder emptied.
+(: (-> OutputPort StringBuilder void))
+(defbjouble (write-builder! p sb)
+  (#:sync (clr-write-builder p sb) (stringbuilder-clear! sb))
+  (#:bjo  (clr-write-builder-await p sb) (stringbuilder-clear! sb)))
+
+;; The text `json->string` gives, written to `port`. It goes out in parts of
+;; about `json-write-part` bytes as it is made, so no string of the whole
+;; text is made. From a bjoroutine, each part's write suspends.
 (: (-> OutputPort Json (#:indent int) (#:ascii bool) void))
 (defun (write-json port j #:indent 0 #:ascii #f)
-  (write-string port (json->string j #:indent indent #:ascii ascii)))
+  (def sb (stringbuilder-empty))
+  ;; A local function, not a `fun`, so that it takes the colour of the copy
+  ;; it is in: in the suspending copy of `write-json`, its write suspends.
+  (defun (flush b) (write-builder! port b))
+  (add-value! sb j indent ascii 0 flush)
+  (write-builder! port sb))
 
 (impl (Written Json)
   (defun (written j) (json->string j))

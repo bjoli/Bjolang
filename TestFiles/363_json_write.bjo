@@ -108,4 +108,34 @@
   (def out (open-output-string))
   (write-json out (JsonArr (vec->iarray [(JsonInt 1L) (JsonInt 2L)])) #:indent 1)
   (expect "written to a port" (get-output-string out) "[\n 1,\n 2\n]")
+
+  ;; Large enough to go out in several parts.
+  (def big (big-document 20000))
+  (def big-out (open-output-string))
+  (write-json big-out big #:indent 2)
+  (expect "a large value written in parts is the text json->string gives"
+          (= (get-output-string big-out) (json->string big #:indent 2))
+          #t)
+  (expect "it is larger than one part" (> (string-length (json->string big)) 100000) #t)
+  (expect "and from a bjoroutine"
+          (match (sync/blocking (promise-join (bjo (written-from-bjo big))))
+            ((Ok text) (= text (json->string big)))
+            ((Err _) #f))
+          #t)
   0)
+
+;; An array of `n` objects, each with a nested array and a string.
+(: (-> int Json))
+(defun (big-document n)
+  (JsonArr (vec->iarray
+            (loop (:for i (range 0 n))
+                  (:acc (vecing (obj (list (Tuple "id" (JsonInt (cast long i)))
+                                           (Tuple "name" (JsonStr (str "item " (int->string i))))
+                                           (Tuple "tags" (JsonArr (vec->iarray [(JsonBool #t) JsonNull])))))))))))
+
+;; `write-json` to a string port, from a bjoroutine.
+(: (-bjo-> Json string))
+(defbjo (written-from-bjo j)
+  (def out (open-output-string))
+  (write-json out j)
+  (get-output-string out))

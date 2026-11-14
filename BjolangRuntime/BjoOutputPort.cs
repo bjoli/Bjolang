@@ -343,6 +343,19 @@ public sealed class BjoOutputPort : TextWriter {
     public ValueTask WriteTextAsync(Utf8String s, CancellationToken cancel = default) =>
         WriteBytesAsync(s.AsMemory(), cancel);
 
+    /// <summary>
+    /// A builder's bytes, with no string made of them. The builder is not
+    /// cleared. For a writer that sends its text out in parts.
+    /// </summary>
+    public void WriteBuilder(Utf8StringBuilder b) => WriteBytes(b.AsSpan());
+
+    /// <summary>
+    /// The suspending twin. The builder must not change until the write
+    /// completes.
+    /// </summary>
+    public ValueTask WriteBuilderAsync(Utf8StringBuilder b, CancellationToken cancel = default) =>
+        WriteBytesAsync(b.AsMemory(), cancel);
+
     /// <summary>`writeln`: the string and a newline, as one write.</summary>
     public void WriteTextLine(Utf8String s) {
         var bytes = s.AsSpan();
