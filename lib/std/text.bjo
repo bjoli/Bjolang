@@ -100,6 +100,7 @@
   (string-walk-current (: Bjolang.Runtime.StringWalks.Current (-> StringWalk char)))
   (string-walk-next    (: Bjolang.Runtime.StringWalks.Next    (-> StringWalk StringWalk)))
   ;; One allocation of the exact size, for a chunk with text put in it.
+  (concat2         (: BjoString.Utf8String.Concat (-> string string string)))
   (concat3         (: BjoString.Utf8String.Concat (-> string string string string)))
   (concat-all      (: BjoString.Utf8String.Concat (-> (RoSpan string) string)))
   ;; Checks the bytes and copies them.
@@ -111,7 +112,9 @@
   (span-equal?     (: System.MemoryExtensions.SequenceEqual     (-> (RoSpan byte) (RoSpan byte) bool)))
   (span-compare    (: System.MemoryExtensions.SequenceCompareTo (-> (RoSpan byte) (RoSpan byte) int)))
   (span-find-last  (: System.MemoryExtensions.LastIndexOf       (-> (RoSpan byte) (RoSpan byte) int)))
-  (span-last-index-of (: System.MemoryExtensions.LastIndexOf    (-> (RoSpan byte) byte int))))
+  (span-last-index-of (: System.MemoryExtensions.LastIndexOf    (-> (RoSpan byte) byte int)))
+  ;; The full 128-bit product, one mulx.
+  (big-mul         (: System.Math.BigMul (-> ulong ulong uint128))))
 
 (def cap 16)
 (def min-kids 8)
@@ -454,6 +457,93 @@
         (if (= h 1)
             (Tuple (chunk-at (as-leaves n) i) (- at k2))
             (go (kid (as-branch n) i) (- h 1) k2)))))
+
+;; As `chunk-of`, with the chunk after it when the same leaves node holds
+;; it, and "" otherwise.
+(: (-> Text int (Tuple string int string)))
+(defun (chunk-and-next r at)
+  (if (= (.height r) 0)
+      (Tuple (.small r) 0 "")
+      (let go ((n (.root r)) (h (.height r)) (k at))
+        (def (Tuple i k2) (slot-starting n k))
+        (if (= h 1)
+            (Tuple (chunk-at (as-leaves n) i) (- at k2)
+                   (if (< (+ i 1) (node-count n)) (chunk-at (as-leaves n) (+ i 1)) ""))
+            (go (kid (as-branch n) i) (- h 1) k2)))))
+
+;; An iteration over the chunks of a text in order, either way, from the
+;; chunk with a given byte. It keeps the path: `nodes` and `slots` hold the
+;; node and slot at each level, the leaves node first. A step moves to the
+;; next slot of the lowest node that has one, and down its first or last
+;; children, so a step costs O(1) amortized and not a search from the root.
+(type (: ChunkIter
+         (Record (: nodes (Array TextNode))
+                 (: slots (Array int))
+                 (: height int)
+                 (: chunk string #:mutable)
+                 (: start int #:mutable))))
+
+;; The iteration on the chunk that holds byte `at`, below the length of `r`.
+(: (-> Text int ChunkIter))
+(defun (chunk-iter r at)
+  (def h (.height r))
+  (if (= h 0)
+      (ChunkIter (nodes (make-array 0 #:fill no-node)) (slots (make-array 0 #:fill 0)) (height 0)
+                 (chunk (.small r)) (start 0))
+      (begin
+        (def nodes (make-array h #:fill no-node))
+        (def slots (make-array h #:fill 0))
+        (let go ((n (.root r)) (lvl (- h 1)) (k at) (start 0))
+          (def (Tuple i k2) (slot-starting n k))
+          (array-set! nodes lvl n)
+          (array-set! slots lvl i)
+          (if (= lvl 0)
+              (ChunkIter (nodes nodes) (slots slots) (height h)
+                         (chunk (chunk-at (as-leaves n) i)) (start (+ start (- k k2))))
+              (go (kid (as-branch n) i) (- lvl 1) k2 (+ start (- k k2))))))))
+
+;; Moves `it` to the next chunk, and returns #f when there is none.
+(: (-> ChunkIter bool))
+(defun (chunk-iter-next! it)
+  (def nodes (.nodes it))
+  (def slots (.slots it))
+  (def h (.height it))
+  (def next-start (+ (.start it) (string-length (.chunk it))))
+  (let up ((lvl 0))
+    (cond
+      ((>= lvl h) #f)
+      ((< (+ (array-ref slots lvl) 1) (node-count (array-ref nodes lvl)))
+       (array-set! slots lvl (+ (array-ref slots lvl) 1))
+       (let down ((l lvl))
+         (when (> l 0)
+           (array-set! nodes (- l 1) (kid (as-branch (array-ref nodes l)) (array-ref slots l)))
+           (array-set! slots (- l 1) 0)
+           (down (- l 1))))
+       (record-set! it (chunk (chunk-at (as-leaves (array-ref nodes 0)) (array-ref slots 0))) (start next-start))
+       #t)
+      (else (up (+ lvl 1))))))
+
+;; Moves `it` to the chunk before, and returns #f when there is none.
+(: (-> ChunkIter bool))
+(defun (chunk-iter-prev! it)
+  (def nodes (.nodes it))
+  (def slots (.slots it))
+  (def h (.height it))
+  (let up ((lvl 0))
+    (cond
+      ((>= lvl h) #f)
+      ((> (array-ref slots lvl) 0)
+       (array-set! slots lvl (- (array-ref slots lvl) 1))
+       (let down ((l lvl))
+         (when (> l 0)
+           (def k (kid (as-branch (array-ref nodes l)) (array-ref slots l)))
+           (array-set! nodes (- l 1) k)
+           (array-set! slots (- l 1) (- (node-count k) 1))
+           (down (- l 1))))
+       (def c (chunk-at (as-leaves (array-ref nodes 0)) (array-ref slots 0)))
+       (record-set! it (chunk c) (start (- (.start it) (string-length c))))
+       #t)
+      (else (up (+ lvl 1))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Building
@@ -1139,22 +1229,6 @@
   (def (Tuple c start) (chunk-of r (- at 1)))
   (+ start (boundary-before c (- (- at 1) start))))
 
-;; Calls `f` with each chunk of `n` that holds bytes from `from` to `to`, and
-;; the part of it they are.
-(: (-> TextNode int int int (-> string int int void) void))
-(defun (each-piece n h from to f)
-  (let go ((i 0) (base 0))
-    (when (and (< i (node-count n)) (< base to))
-      (def b (slot-bytes n i))
-      (def end (+ base b))
-      (when (> end from)
-        (def a (max 0 (- from base)))
-        (def z (min b (- to base)))
-        (if (= h 1)
-            (f (chunk-at (as-leaves n) i) a z)
-            (each-piece (kid (as-branch n) i) (- h 1) (- from base) (- to base) f)))
-      (go (+ i 1) end))))
-
 ;; Bytes `from` to `to` as a string of their own.
 (: (-> Text int int string))
 (defun (text-substring r from to)
@@ -1166,13 +1240,47 @@
      (check-boundary (.small r) to "text-substring")
      (string-copy (piece (.small r) from to)))
     (else
-     (def b (Utf8Builder. (- to from)))
-     (each-piece (.root r) (.height r) from to
-                 (fun (c a z)
-                   (when (or (not (boundary? c a)) (not (boundary? c z)))
-                     (bad-argument "text-substring: an offset is in the middle of a character."))
-                   (stringbuilder-add-string! b (if (and (= a 0) (= z (string-length c))) c (piece c a z)))))
-     (stringbuilder->string b))))
+     ;; The pieces of the chunks from `from` to `to`, joined in one
+     ;; allocation of their size.
+     (def (Tuple c0 s0 after) (chunk-and-next r from))
+     (check-boundary c0 (- from s0) "text-substring")
+     (def e0 (+ s0 (string-length c0)))
+     (if (<= to e0)
+         (begin
+           (check-boundary c0 (- to s0) "text-substring")
+           (string-copy (piece c0 (- from s0) (- to s0))))
+         (begin
+           (def first (piece c0 (- from s0) (string-length c0)))
+           (def c1 (if (= (string-length after) 0)
+                       (begin (def (Tuple c _) (chunk-of r e0)) c)
+                       after))
+           (def s1 e0)
+           (if (<= to (+ s1 (string-length c1)))
+               (begin
+                 (check-boundary c1 (- to s1) "text-substring")
+                 (concat2 first (piece c1 0 (- to s1))))
+               (begin
+                 ;; The chunks the range touches, counted on a second iteration.
+                 (def it (chunk-iter r e0))
+                 (def ci (chunk-iter r e0))
+                 (def count (let go ((n 2))
+                              (if (>= (+ (.start ci) (string-length (.chunk ci))) to)
+                                  n
+                                  (begin (ignore (chunk-iter-next! ci)) (go (+ n 1))))))
+                 (def (: parts (Array string)) (make-array count #:fill ""))
+                 (array-set! parts 0 first)
+                 (let fill ((k 1))
+                   (def c (.chunk it))
+                   (def st (.start it))
+                   (if (= k (- count 1))
+                       (begin
+                         (check-boundary c (- to st) "text-substring")
+                         (array-set! parts k (piece c 0 (- to st))))
+                       (begin
+                         (array-set! parts k c)
+                         (ignore (chunk-iter-next! it))
+                         (fill (+ k 1)))))
+                 (concat-all (array->ro-span parts)))))))))
 
 (: (-> Text int))
 (defun (text-char-count r) (text-fold-chunks (fun (c n) (+ n (.Count c))) 0 r))
@@ -1273,24 +1381,39 @@
      (if (>= j 0) (Some (+ from j)) None))
     (else
      (def first (cast byte (ro-span-ref (.AsSpan s) 0)))
+     (def it (if (> (+ from m) bytes) (chunk-iter r 0) (chunk-iter r from)))
      (let go ((at from))
        (if (> (+ at m) bytes)
            None
            (begin
-             (def (Tuple c start) (chunk-of r at))
+             (def c (.chunk it))
+             (def start (.start it))
              (def cl (string-length c))
              (def sp (.AsSpan c))
              (def k (- at start))
-             (def j (span-find (ro-span-slice sp #:from k) (.AsSpan s)))
-             (if (>= j 0)
-                 (Some (+ at j))
-                 ;; A match that starts in this chunk and ends in a later one.
-                 (let straddle ((p (max k (- cl (- m 1)))))
-                   (def q (if (< p cl) (span-index-of (ro-span-slice sp #:from p) first) -1))
-                   (cond
-                     ((< q 0) (go (+ start cl)))
-                     ((matches-at? r (+ start (+ p q)) s) (Some (+ start (+ p q))))
-                     (else (straddle (+ (+ p q) 1))))))))))))
+             (def ss (.AsSpan s))
+             (def j (span-find (ro-span-slice sp #:from k) ss))
+             (cond
+               ((>= j 0) (Some (+ at j)))
+               ((not (chunk-iter-next! it)) None)
+               (else
+                ;; A match that starts in this chunk and ends in the next one,
+                ;; or past it.
+                (def nc (.chunk it))
+                (let straddle ((p (max k (- cl (- m 1)))))
+                  (def q (if (< p cl) (span-index-of (ro-span-slice sp #:from p) first) -1))
+                  (if (< q 0)
+                      (go (+ start cl))
+                      (begin
+                        (def pp (+ p q))
+                        (def head (- cl pp))
+                        (if (and (span-equal? (ro-span-slice sp #:from pp) (ro-span-slice ss #:from 0 #:to head))
+                                 (if (<= (- m head) (string-length nc))
+                                     (span-equal? (ro-span-slice (.AsSpan nc) #:from 0 #:to (- m head))
+                                                  (ro-span-slice ss #:from head))
+                                     (matches-at? r (+ start pp) s)))
+                            (Some (+ start pp))
+                            (straddle (+ pp 1))))))))))))))
 
 (: (-> Text string bool))
 (defun (text-contains? r s) (some? (text-index-of r s)))
@@ -1319,8 +1442,12 @@
      (if (>= j 0) (Some j) None))
     (else
      (def first (cast byte (ro-span-ref (.AsSpan s) 0)))
-     (let go ((at to))
-       (def (Tuple c start) (chunk-of r (- at 1)))
+     (def it (chunk-iter r (- to 1)))
+     (def ss (.AsSpan s))
+     ;; `after` is the chunk after this one, which the last step left.
+     (let go ((after ""))
+       (def c (.chunk it))
+       (def start (.start it))
        (def cl (string-length c))
        (def sp (.AsSpan c))
        ;; A match from byte p of the chunk crosses its end when p > cl - m,
@@ -1332,10 +1459,17 @@
                None
                (begin
                  (def q (span-last-index-of (ro-span-slice sp #:from lo #:to (+ hi 1)) first))
+                 (def pp (+ lo q))
+                 (def head (- cl pp))
                  (cond
                    ((< q 0) None)
-                   ((matches-at? r (+ start (+ lo q)) s) (Some (+ start (+ lo q))))
-                   (else (back (- (+ lo q) 1))))))))
+                   ((and (span-equal? (ro-span-slice sp #:from pp) (ro-span-slice ss #:from 0 #:to head))
+                         (if (<= (- m head) (string-length after))
+                             (span-equal? (ro-span-slice (.AsSpan after) #:from 0 #:to (- m head))
+                                          (ro-span-slice ss #:from head))
+                             (matches-at? r (+ start pp) s)))
+                    (Some (+ start pp)))
+                   (else (back (- pp 1))))))))
        (match straddler
          ((Some k) (Some k))
          (None
@@ -1344,7 +1478,7 @@
           (cond
             ((>= j 0) (Some (+ start j)))
             ((= start 0) None)
-            (else (go start)))))))))
+            (else (ignore (chunk-iter-prev! it)) (go c)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Equality, order and hashing
@@ -1360,17 +1494,32 @@
 ;; and 1 when not.
 (: (-> Text Text int bool int))
 (defun (compare-parts a b len order?)
-  (let go ((p 0))
-    (if (>= p len)
-        0
-        (begin
-          (def (Tuple ca sa) (chunk-of a p))
-          (def (Tuple cb sb) (chunk-of b p))
-          (def e (min len (min (+ sa (string-length ca)) (+ sb (string-length cb)))))
-          (def d (compare-spans (ro-span-slice (.AsSpan ca) #:from (- p sa) #:to (- e sa))
-                                (ro-span-slice (.AsSpan cb) #:from (- p sb) #:to (- e sb))
-                                order?))
-          (if (= d 0) (go e) d)))))
+  (if (= len 0)
+      0
+      (begin
+        (def ia (chunk-iter a 0))
+        (def ib (chunk-iter b 0))
+        (let go ((p 0))
+          (if (>= p len)
+              0
+              (begin
+                (def ca (.chunk ia))
+                (def cb (.chunk ib))
+                (def sa (.start ia))
+                (def sb (.start ib))
+                (def ea (+ sa (string-length ca)))
+                (def eb (+ sb (string-length cb)))
+                (def e (min len (min ea eb)))
+                (def d (compare-spans (ro-span-slice (.AsSpan ca) #:from (- p sa) #:to (- e sa))
+                                      (ro-span-slice (.AsSpan cb) #:from (- p sb) #:to (- e sb))
+                                      order?))
+                (cond
+                  ((not (= d 0)) d)
+                  ((>= e len) 0)
+                  (else
+                   (when (= e ea) (ignore (chunk-iter-next! ia)))
+                   (when (= e eb) (ignore (chunk-iter-next! ib)))
+                   (go e)))))))))
 
 (: (-> Text Text bool))
 (defun (text=? a b)
@@ -1388,47 +1537,109 @@
     ((> d 0) 1)
     (else (compare (.bytes a) (.bytes b)))))
 
-;; A hash of the bytes in order, whatever chunks hold them: 8 bytes at a time,
-;; with the bytes of a word that spans two chunks carried over.
-(type (: HashState (Struct (: h ulong) (: w ulong) (: n int))))
+;; A hash of the bytes in order, whatever chunks hold them: the folded
+;; multiply of wyhash, as the string hash does.
+;;
+;; - The bytes are read as 16-byte blocks of two words. Block k of the text
+;;   goes to lane k mod 4, and the four lanes do not wait for each other.
+;; - A block that spans two chunks is carried over in `w0` and `w1`, with `n`
+;;   of its bytes, and `lane` is the lane of the next block.
+(type (: HashState (Struct (: s0 ulong) (: s1 ulong) (: s2 ulong) (: s3 ulong)
+                           (: w0 ulong) (: w1 ulong) (: n int) (: lane int))))
 
-(def hash-k1 (cast ulong 11400714819323198485UL))
-(def hash-k2 (cast ulong 14029467366897019727UL))
+(def hash-p0 (cast ulong 11562461410679940143UL))
+(def hash-p1 (cast ulong 16646288086500911323UL))
+(def hash-p2 (cast ulong 10285213230658275043UL))
+(def hash-p3 (cast ulong 6384245875588680899UL))
 
+;; The high and low words of a * b, xored.
 (: (-> ulong ulong ulong))
-(defun (mix h w)
-  (def x (bitwise-xor h (* w hash-k1)))
-  (* (bitwise-ior (shift-left x 31) (shift-right-logical x 33)) hash-k2))
+(defun (fold-mul a b) #:inline
+  (def p (big-mul a b))
+  (bitwise-xor (cast ulong (shift-right p 64)) (cast ulong p)))
+
+(: (-> HashState ulong ulong HashState))
+(defun (hash-feed st a b)
+  (def l (.lane st))
+  (def st2
+    (cond
+      ((= l 0) (record-set st (s0 (fold-mul (bitwise-xor a hash-p0) (bitwise-xor b (.s0 st))))))
+      ((= l 1) (record-set st (s1 (fold-mul (bitwise-xor a hash-p1) (bitwise-xor b (.s1 st))))))
+      ((= l 2) (record-set st (s2 (fold-mul (bitwise-xor a hash-p2) (bitwise-xor b (.s2 st))))))
+      (else (record-set st (s3 (fold-mul (bitwise-xor a hash-p3) (bitwise-xor b (.s3 st))))))))
+  (record-set st2 (lane (bitwise-and (+ l 1) 3))))
+
+;; Bytes `from` to `to` of `sp`, at most 8, as the low bytes of a word, the
+;; first lowest.
+(: (-> (RoSpan byte) int int ulong))
+(defun (word-of sp from to)
+  (let go ((k (- to 1)) (w (cast ulong 0)))
+    (if (< k from) w (go (- k 1) (bitwise-ior (shift-left w 8) (cast ulong (ro-span-ref sp k)))))))
+
+;; Bytes `from` to `to` of `sp`, which fit in the carried block, put in it.
+(: (-> HashState (RoSpan byte) int int HashState))
+(defun (carry-bytes st sp from to)
+  (def n (.n st))
+  (def k (- to from))
+  ;; The bytes that go to w0, from its byte n, and those after, to w1.
+  (def into0 (max 0 (min k (- 8 n))))
+  (def w0 (bitwise-ior (.w0 st) (shift-left (word-of sp from (+ from into0)) (* 8 (min n 8)))))
+  (def w1 (if (= into0 k)
+              (.w1 st)
+              (bitwise-ior (.w1 st) (shift-left (word-of sp (+ from into0) to) (* 8 (max 0 (- n 8)))))))
+  (record-set st (w0 w0) (w1 w1) (n (+ n k))))
 
 (: (-> string HashState HashState))
-(defun (hash-chunk c st)
+(defun (hash-chunk c st0)
   (def sp (.AsSpan c))
   (def len (string-length c))
-  ;; Bytes into the carried word until it is whole.
-  (def/mutable h (.h st))
-  (def/mutable w (.w st))
-  (def/mutable n (.n st))
+  (def/mutable st st0)
   (def/mutable i 0)
-  (loop (:while (and (> n 0) (< i len)))
-        (:do (set! w (bitwise-ior w (shift-left (cast ulong (ro-span-ref sp i)) (* 8 n))))
-             (set! n (+ n 1))
-             (set! i (+ i 1))
-             (when (= n 8) (set! h (mix h w)) (set! w (cast ulong 0)) (set! n 0))))
-  (def words (/ (- len i) 8))
-  (when (> words 0)
-    (def (: ws (RoSpan ulong)) (ro-span-> (ro-span-slice sp #:from i #:to (+ i (* 8 words)))))
-    (loop (:for j (range 0 words)) (:do (set! h (mix h (ro-span-ref ws j)))))
-    (set! i (+ i (* 8 words))))
-  (loop (:while (< i len))
-        (:do (set! w (bitwise-ior w (shift-left (cast ulong (ro-span-ref sp i)) (* 8 n))))
-             (set! n (+ n 1))
-             (set! i (+ i 1))))
-  (HashState (h h) (w w) (n n)))
+  ;; The carried block, made whole and fed.
+  (when (> (.n st) 0)
+    (def take (min len (- 16 (.n st))))
+    (set! st (carry-bytes st sp 0 take))
+    (set! i take)
+    (when (= (.n st) 16)
+      (set! st (hash-feed (record-set st (w0 (cast ulong 0)) (w1 (cast ulong 0)) (n 0)) (.w0 st) (.w1 st)))))
+  (def blocks (/ (- len i) 16))
+  (when (> blocks 0)
+    (def (: ws (RoSpan ulong)) (ro-span-> (ro-span-slice sp #:from i #:to (+ i (* 16 blocks)))))
+    (def/mutable k 0)
+    ;; Single blocks up to lane 0, then four at a time, then the rest.
+    (loop (:while (and (> (.lane st) 0) (< k blocks)))
+          (:do (set! st (hash-feed st (ro-span-ref ws (* 2 k)) (ro-span-ref ws (+ (* 2 k) 1))))
+               (set! k (+ k 1))))
+    (def/mutable s0 (.s0 st))
+    (def/mutable s1 (.s1 st))
+    (def/mutable s2 (.s2 st))
+    (def/mutable s3 (.s3 st))
+    (loop (:while (<= (+ k 4) blocks))
+          (:do (def b (ro-span-slice ws #:from (* 2 k) #:to (+ (* 2 k) 8)))
+               (set! s0 (fold-mul (bitwise-xor (ro-span-ref b 0) hash-p0) (bitwise-xor (ro-span-ref b 1) s0)))
+               (set! s1 (fold-mul (bitwise-xor (ro-span-ref b 2) hash-p1) (bitwise-xor (ro-span-ref b 3) s1)))
+               (set! s2 (fold-mul (bitwise-xor (ro-span-ref b 4) hash-p2) (bitwise-xor (ro-span-ref b 5) s2)))
+               (set! s3 (fold-mul (bitwise-xor (ro-span-ref b 6) hash-p3) (bitwise-xor (ro-span-ref b 7) s3)))
+               (set! k (+ k 4))))
+    (set! st (record-set st (s0 s0) (s1 s1) (s2 s2) (s3 s3)))
+    (loop (:while (< k blocks))
+          (:do (set! st (hash-feed st (ro-span-ref ws (* 2 k)) (ro-span-ref ws (+ (* 2 k) 1))))
+               (set! k (+ k 1))))
+    (set! i (+ i (* 16 blocks))))
+  (if (< i len) (carry-bytes st sp i len) st))
 
 (: (-> Text int))
 (defun (text-hash r)
-  (def st (text-fold-chunks hash-chunk (HashState (h (cast ulong 0)) (w (cast ulong 0)) (n 0)) r))
-  (def fin (mix (if (> (.n st) 0) (mix (.h st) (.w st)) (.h st)) (cast ulong (.bytes r))))
+  (def zero (cast ulong 0))
+  (def seed (cast ulong 0x9E3779B97F4A7C15UL))
+  (def st (text-fold-chunks hash-chunk
+                            (HashState (s0 seed) (s1 (bitwise-xor seed hash-p1)) (s2 (bitwise-xor seed hash-p2))
+                                       (s3 (bitwise-xor seed hash-p3)) (w0 zero) (w1 zero) (n 0) (lane 0))
+                            r))
+  (def lanes (bitwise-xor (bitwise-xor (.s0 st) (.s1 st)) (bitwise-xor (.s2 st) (.s3 st))))
+  (def h (fold-mul (bitwise-xor (.w0 st) hash-p0)
+                   (bitwise-xor (.w1 st) (bitwise-xor lanes (cast ulong (+ (* 16 (.n st)) (.bytes r)))))))
+  (def fin (fold-mul (bitwise-xor h hash-p1) (bitwise-xor (cast ulong (.lane st)) hash-p2)))
   (cast int (bitwise-xor fin (shift-right-logical fin 32))))
 
 (impl (Eq Text)
