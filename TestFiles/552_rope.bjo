@@ -64,6 +64,27 @@
   (expect "is sound too" (rope-check done) None)
   (expect "the first rope is unchanged" (rope->string big) text)
 
+  ;; Cursors.
+  (def tr (string->rope "one two\nthree"))
+  (def c (option-ref (rope-cursor-search (rope-cursor-start tr) "two")))
+  (expect "a cursor found" (rope-cursor-offset c) 4)
+  (expect "its character" (rope-cursor-ref c) #\t)
+  (expect "four on" (rope-cursor-line (rope-cursor-forward c 4)) 1)
+  (expect "a loop from it" (loop (:for ch c) (:acc (stringing ch))) "two\nthree")
+  (expect "a loop back from it" (loop (:for ch (rope-backward c)) (:acc (stringing ch))) " eno")
+  (expect "the column" (rope-cursor-column (rope-cursor-forward c 6)) 2)
+  (expect "a line down, same column"
+          (rope-cursor-offset (rope-cursor-at-line tr 1 #:column (rope-cursor-column c))) 12)
+  (expect "the end of its line" (rope-cursor-offset (rope-cursor-line-end c)) 7)
+  (expect "back to a space" (rope-cursor-offset (option-ref (rope-cursor-find-backward char-whitespace? c))) 3)
+  (expect "between two cursors" (rope-cursor-substring c (rope-cursor-line-end c)) "two")
+  (def bc (rope-cursor-at big (rope-line-start big 1500)))
+  (expect "a search back across chunks"
+          (rope-cursor-offset (option-ref (rope-cursor-search-backward bc "line 1234: "))) (rope-line-start big 1234))
+  (expect "steps across chunks"
+          (rope-cursor-offset (rope-cursor-back (rope-cursor-forward bc 5000) 5000)) (rope-cursor-offset bc))
+  (expect "cursors compare" (rope-cursor<? (rope-cursor-start big) bc) #t)
+
   ;; Errors.
   (expect "an offset in a character" (outcome (fun () (ignore (rope-insert big 14 "x")))) "mid-character")
   (expect "an offset outside" (outcome (fun () (ignore (rope-delete big 0 (+ (rope-length big) 1))))) "out of range")

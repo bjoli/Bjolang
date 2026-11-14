@@ -3,7 +3,7 @@
 
 (:doc #:module
   (summary "Persistent text for editing: a B+ tree of UTF-8 chunks, with builder and transient.")
-  (see Rope rope-insert rope-delete rope-split rope-concat rope-line-start TransientRope RopeBuilder)
+  (see Rope rope-insert rope-delete rope-split rope-concat rope-line-start RopeCursor TransientRope RopeBuilder)
   (example """
     (import (std rope))
 
@@ -39,6 +39,13 @@
     tree. Only the nodes are C# (@code{Bjolang.Runtime.Rope}), because they
     hold their slots in inline arrays; every operation is Bjolang.
 
+    @strong{Cursors.} A @code{RopeCursor} is a position that holds the chunk
+    it is in, so stepping it reads that chunk's bytes and does not search the
+    tree again. It steps by characters both ways, finds text and characters
+    forward and backward, and starts a loop: @code{(:for c cursor)} goes to the
+    end, and @code{(:for c (rope-backward cursor))} goes back to the start.
+    The names follow the string cursors'.
+
     @strong{Batch edits.} A @code{TransientRope} edits nodes it owns in place
     and keeps the chunk being edited in a mutable buffer: a run of edits close
     together, such as typing, allocates nothing. A @code{RopeBuilder} appends
@@ -71,6 +78,42 @@
     A struct holding the cursor of the current chunk; a loop with
     @code{(:for c r)} uses it and allocates nothing.
     """))
+
+(:doc RopeCursor
+  (summary "A position in a rope, on a character boundary, that steps by characters.")
+  (see rope-cursor-at rope-cursor-start rope-cursor-next rope-cursor-prev rope-cursor-search rope-backward)
+  (example """
+    (def r (string->rope "one two\nthree"))
+    (def c (option-ref (rope-cursor-search (rope-cursor-start r) "two")))
+    (rope-cursor-offset c)                        ; 4
+    (rope-cursor-ref c)                           ; #\t
+    (rope-cursor-line (rope-cursor-forward c 4))  ; 1
+    (loop (:for ch c) (:acc (stringing ch)))      ; "two\nthree"
+    """)
+  (reference """
+    A struct of the rope, the chunk the position is in, and the byte offset.
+    It holds its rope, so its operations take no other argument, and it stays
+    valid for as long as the rope does: ropes do not change.
+
+    A step inside the chunk reads its bytes and allocates nothing; a step out
+    of it looks up the next chunk from the root, once per chunk. Making a
+    cursor at an offset costs one look-up.
+
+    @code{=} and @code{compare} compare the offsets. So do
+    @code{rope-cursor<?} and the rest, since @code{<} is for numbers. Cursors
+    of two ropes compare without complaint and mean nothing.
+
+    As an @code{Iterable}, a cursor is the characters from it to the end.
+    """))
+
+(:doc RopeBackward
+  (summary "The characters before a cursor, last first, as a loop goes over them.")
+  (see rope-backward RopeCursor))
+
+(:doc RopeBackwardStep
+  (summary "The step of a loop over a RopeBackward.")
+  (see RopeBackward)
+  (reference "A struct of the cursor on the current character. Exported because the loop that uses it is compiled where it is written."))
 
 (:doc RopeBuilder
   (summary "Mutable builder that appends text and returns a rope.")
@@ -347,6 +390,15 @@
   (raises System.ArgumentOutOfRangeException "When from is outside r.")
   (see rope-contains? rope-starts-with?))
 
+(:doc rope-last-index-of
+  (summary "The last offset of a string in a rope.")
+  (arg r "The rope.")
+  (arg s "The text to find.")
+  (key to "The offset the match must end at or before. Default: the length of r.")
+  (returns "(Some k) for the last k where r's bytes from k are those of s and k plus the length of s is at most to, or None. Finds matches that span chunks.")
+  (raises System.ArgumentOutOfRangeException "When to is outside r.")
+  (see rope-index-of rope-cursor-search-backward))
+
 (:doc rope-contains?
   (summary "Whether a rope contains a string.")
   (arg r "The rope.")
@@ -367,6 +419,241 @@
   (arg s "The text.")
   (returns "#t when r's last bytes are those of s.")
   (see rope-starts-with?))
+
+;; ---------------------------------------------------------------------------
+;; Cursors
+;; ---------------------------------------------------------------------------
+
+(:doc rope-cursor-at
+  (summary "A cursor at a byte offset.")
+  (arg r "The rope.")
+  (arg at "The offset, at most the length of r.")
+  (returns "The cursor on the character that starts at at, or the end cursor when at is the length of r.")
+  (raises System.ArgumentOutOfRangeException "When at is outside r.")
+  (raises System.ArgumentException "When at is in the middle of a character.")
+  (see rope-cursor-offset rope-cursor-at-line rope-cursor-start))
+
+(:doc rope-cursor-start
+  (summary "A cursor on the first character of a rope.")
+  (arg r "The rope.")
+  (returns "The cursor at offset 0. For the empty rope it is also the end.")
+  (see rope-cursor-end rope-cursor-next)
+  (example """
+    (let go ((c (rope-cursor-start r)))
+      (unless (rope-cursor-end? c)
+        (println (char->string (rope-cursor-ref c)))
+        (go (rope-cursor-next c))))
+    """))
+
+(:doc rope-cursor-end
+  (summary "The past-the-end cursor of a rope.")
+  (arg r "The rope.")
+  (returns "The cursor after the last character, at the length of r.")
+  (see rope-cursor-end? rope-cursor-prev rope-backward))
+
+(:doc rope-cursor-at-line
+  (summary "A cursor on a line, a number of characters in.")
+  (arg r "The rope.")
+  (arg n "The line, counting from 0.")
+  (key column "How many characters into the line. Default 0.")
+  (returns "The cursor column characters after the start of line n, or at the end of the line when it is shorter.")
+  (raises System.ArgumentOutOfRangeException "When r has no line n.")
+  (see rope-cursor-line rope-cursor-column rope-line-start)
+  (example """
+    ;; One line down, in the same column, as an editor moves.
+    (rope-cursor-at-line r (+ (rope-cursor-line c) 1) #:column (rope-cursor-column c))
+    """)
+  (reference "The column counts characters, not bytes, and takes time in its size."))
+
+(:doc rope-cursor-offset
+  (summary "The byte offset of a cursor.")
+  (arg c "The cursor.")
+  (returns "Its offset in its rope, which the other rope functions take.")
+  (see rope-cursor-at))
+
+(:doc rope-cursor-rope
+  (summary "The rope of a cursor.")
+  (arg c "The cursor.")
+  (returns "The rope it was made from.")
+  (see rope-cursor-at))
+
+(:doc rope-cursor-start?
+  (summary "Whether a cursor is at the start of its rope.")
+  (arg c "The cursor.")
+  (returns "#t when its offset is 0, and there is no character before it.")
+  (see rope-cursor-end? rope-cursor-prev))
+
+(:doc rope-cursor-end?
+  (summary "Whether a cursor has reached the end of its rope.")
+  (arg c "The cursor.")
+  (returns "#t when it is the past-the-end cursor, and there is no character at it.")
+  (see rope-cursor-start? rope-cursor-ref))
+
+(:doc rope-cursor-ref
+  (summary "The character at a cursor.")
+  (arg c "A cursor, not at the end.")
+  (returns "The character c is on.")
+  (raises System.ArgumentOutOfRangeException "When c is at the end of its rope.")
+  (see rope-cursor-ref+next rope-cursor-end?))
+
+(:doc rope-cursor-next
+  (summary "The cursor on the next character.")
+  (arg c "A cursor, not at the end.")
+  (returns "The cursor after the character at c, which is the end after the last one.")
+  (raises System.ArgumentOutOfRangeException "When c is at the end of its rope.")
+  (see rope-cursor-prev rope-cursor-ref+next rope-cursor-forward))
+
+(:doc rope-cursor-prev
+  (summary "The cursor on the previous character.")
+  (arg c "A cursor, not at the start.")
+  (returns "The cursor on the character before c.")
+  (raises System.ArgumentOutOfRangeException "When c is at the start of its rope.")
+  (see rope-cursor-next rope-cursor-back rope-backward))
+
+(:doc rope-cursor-ref+next
+  (summary "The character at a cursor and the cursor after it, in one call.")
+  (arg c "A cursor, not at the end.")
+  (returns "A tuple of the character at c and the cursor on the next one.")
+  (raises System.ArgumentOutOfRangeException "When c is at the end of its rope.")
+  (see rope-cursor-ref rope-cursor-next)
+  (example """
+    (def (Tuple ch next) (rope-cursor-ref+next c))
+    """)
+  (reference "One read of the chunk gives both, so it is the fastest step of a loop that wants the characters."))
+
+(:doc rope-cursor-forward
+  (summary "The cursor n characters after another.")
+  (arg c "The cursor.")
+  (arg n "How many characters, 0 or more.")
+  (returns "The cursor after the n characters from c.")
+  (raises System.ArgumentOutOfRangeException "When there are fewer than n characters after c.")
+  (raises System.ArgumentException "When n is negative.")
+  (see rope-cursor-back rope-cursor-next))
+
+(:doc rope-cursor-back
+  (summary "The cursor n characters before another.")
+  (arg c "The cursor.")
+  (arg n "How many characters, 0 or more.")
+  (returns "The cursor n characters before c.")
+  (raises System.ArgumentOutOfRangeException "When there are fewer than n characters before c.")
+  (raises System.ArgumentException "When n is negative.")
+  (see rope-cursor-forward rope-cursor-prev))
+
+(:doc rope-cursor-line
+  (summary "The line a cursor is on.")
+  (arg c "The cursor.")
+  (returns "Its line, counting from 0: the newlines before it. O(log n) time.")
+  (see rope-cursor-column rope-cursor-line-start rope-line-of))
+
+(:doc rope-cursor-column
+  (summary "How many characters a cursor is into its line.")
+  (arg c "The cursor.")
+  (returns "The characters between the start of its line and c.")
+  (see rope-cursor-line rope-cursor-at-line)
+  (reference "Characters, not bytes. Takes time in the column."))
+
+(:doc rope-cursor-line-start
+  (summary "The cursor at the start of a cursor's line.")
+  (arg c "The cursor.")
+  (returns "The cursor on the first character of its line.")
+  (see rope-cursor-line-end rope-line-start))
+
+(:doc rope-cursor-line-end
+  (summary "The cursor at the end of a cursor's line.")
+  (arg c "The cursor.")
+  (returns "The cursor on the newline that ends its line, or the end cursor on the last line.")
+  (see rope-cursor-line-start rope-line-end))
+
+(:doc rope-cursor-search
+  (summary "Where the first occurrence of a text at or after a cursor starts.")
+  (arg c "The cursor to search from.")
+  (arg s "The text to find.")
+  (returns "(Some cursor) on the start of the first occurrence that starts at or after c, or None. An empty s is found at c.")
+  (see rope-cursor-search-backward rope-index-of rope-cursor-find))
+
+(:doc rope-cursor-search-backward
+  (summary "Where the last occurrence of a text before a cursor starts.")
+  (arg c "The cursor to search back from.")
+  (arg s "The text to find.")
+  (returns "(Some cursor) on the start of the last occurrence that ends at or before c, or None. An empty s is found at c.")
+  (see rope-cursor-search rope-last-index-of))
+
+(:doc rope-cursor-find
+  (summary "The first character at or after a cursor that satisfies a predicate.")
+  (arg pred "The test, given each character in turn.")
+  (arg c "The cursor to start at.")
+  (returns "(Some cursor) on the first character from c that pred returns #t for, or None.")
+  (see rope-cursor-find-backward rope-cursor-search)
+  (example """
+    (rope-cursor-find char-whitespace? c)   ; the next space, tab or newline
+    """))
+
+(:doc rope-cursor-find-backward
+  (summary "The last character before a cursor that satisfies a predicate.")
+  (arg pred "The test, given each character in turn, going back.")
+  (arg c "The cursor to search back from.")
+  (returns "(Some cursor) on the last character before c that pred returns #t for, or None.")
+  (see rope-cursor-find))
+
+(:doc rope-cursor=?
+  (summary "Whether two cursors are at the same position.")
+  (arg a "A cursor.")
+  (arg b "A cursor of the same rope.")
+  (returns "#t when their offsets are equal. The same as =.")
+  (see rope-cursor<?))
+
+(:doc rope-cursor<?
+  (summary "Whether one cursor is before another.")
+  (arg a "A cursor.")
+  (arg b "A cursor of the same rope.")
+  (returns "#t when a's offset is less than b's.")
+  (see rope-cursor<=? rope-cursor>? rope-cursor=?))
+
+(:doc rope-cursor>?
+  (summary "Whether one cursor is after another.")
+  (arg a "A cursor.")
+  (arg b "A cursor of the same rope.")
+  (returns "#t when a's offset is greater than b's.")
+  (see rope-cursor>=? rope-cursor<?))
+
+(:doc rope-cursor<=?
+  (summary "Whether one cursor is before another or at it.")
+  (arg a "A cursor.")
+  (arg b "A cursor of the same rope.")
+  (returns "#t when a is not after b.")
+  (see rope-cursor<? rope-cursor>=?))
+
+(:doc rope-cursor>=?
+  (summary "Whether one cursor is after another or at it.")
+  (arg a "A cursor.")
+  (arg b "A cursor of the same rope.")
+  (returns "#t when a is not before b.")
+  (see rope-cursor>? rope-cursor<=?))
+
+(:doc rope-cursor-substring
+  (summary "The text between two cursors, as a string.")
+  (arg a "Where it begins.")
+  (arg b "Where it ends, not included. A cursor of the same rope, not before a.")
+  (returns "A new string of the bytes from a to b.")
+  (raises System.ArgumentOutOfRangeException "When b is before a.")
+  (see rope-cursor-slice rope-substring))
+
+(:doc rope-cursor-slice
+  (summary "The text between two cursors, as a rope.")
+  (arg a "Where it begins.")
+  (arg b "Where it ends, not included. A cursor of the same rope, not before a.")
+  (returns "A rope of the bytes from a to b, sharing the rope's chunks and nodes.")
+  (raises System.ArgumentOutOfRangeException "When b is before a.")
+  (see rope-cursor-substring rope-slice))
+
+(:doc rope-backward
+  (summary "The characters before a cursor, last first, for a loop.")
+  (arg c "The cursor.")
+  (returns "A RopeBackward: (:for ch (rope-backward c)) goes from the character before c back to the first.")
+  (see RopeCursor rope-cursor-prev rope-cursor-find-backward)
+  (example """
+    (loop (:for ch (rope-backward (rope-cursor-end r))) (:acc (stringing ch)))   ; r reversed
+    """))
 
 ;; ---------------------------------------------------------------------------
 ;; Chunks

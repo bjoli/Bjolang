@@ -16,7 +16,8 @@
 (import/extern
   (span-find     (: System.MemoryExtensions.IndexOf (-> (RoSpan byte) (RoSpan byte) int)))
   (span-index-of (: System.MemoryExtensions.IndexOf (-> (RoSpan byte) byte int)))
-  (span-count    (: System.MemoryExtensions.Count (-> (RoSpan byte) byte int))))
+  (span-count    (: System.MemoryExtensions.Count (-> (RoSpan byte) byte int)))
+  (span-find-last (: System.MemoryExtensions.LastIndexOf (-> (RoSpan byte) (RoSpan byte) int))))
 
 (def pieces ["a" "b" "c" "d" " " "\n" "é" "ö" "€" "😀" "xy" "line\n" "\n\n"])
 
@@ -327,6 +328,117 @@
                               (begin (println #"needle ${(string-length needle)} bytes from ${from}: ${got} not ${want}") #f))))))
         => ok))
 
+;; A rope of `s` whose chunks end at random places: the ropes of pieces of
+;; it, joined.
+(: (-> RandomSource string Rope))
+(defun (cut-up rng s)
+  (def len (string-length s))
+  (def cuts (vec-sort (loop (:for _ (range 0 12)) (:acc (vecing (random-offset rng s))))))
+  (def/mutable r (rope-empty))
+  (def/mutable from 0)
+  (loop (:for k (vec-add cuts len))
+        (:do (when (> k from)
+               (set! r (rope-concat r (string->rope (part s from k))))
+               (set! from k))))
+  r)
+
+;; The offset of a cursor found, if one was.
+(: (-> (Option RopeCursor) (Option int)))
+(defun (offset-of o) (match o ((Some c) (Some (rope-cursor-offset c))) (None None)))
+
+;; The offsets of the characters of `s`, and its length.
+(: (-> string (Vec int)))
+(defun (char-offsets s)
+  (loop (:for k (range 0 (+ (string-length s) 1)))
+        (:when (= (boundary-before s k) k))
+        (:acc (vecing k))))
+
+;; Cursors against the string: steps both ways, loops, counts, lines and
+;; columns, searches and finds.
+(: (-> int bool))
+(defun (cursors? seed)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def s (let go ((acc "")) (if (< (string-length acc) 20000) (go (string-append acc (random-text rng 3000))) acc)))
+  (def len (string-length s))
+  (def r (cut-up rng s))
+  (def offs (char-offsets s))
+  (def chars (loop (:for c s) (:acc (vecing c))))
+  (def n (vec-length chars))
+  (def check (fun (what ok) (unless ok (println #"cursors, seed ${seed}: ${what}")) ok))
+  ;; Forward with ref+next, and back with prev.
+  (def fwd
+    (let go ((c (rope-cursor-start r)) (i 0) (ok #t))
+      (if (rope-cursor-end? c)
+          (and ok (= i n) (= (rope-cursor-offset c) len))
+          (begin
+            (def (Tuple ch nxt) (rope-cursor-ref+next c))
+            (go nxt (+ i 1) (and ok (= (rope-cursor-offset c) (vec-ref offs i)) (= ch (vec-ref chars i))))))))
+  (def back
+    (let go ((c (rope-cursor-end r)) (i n) (ok #t))
+      (if (rope-cursor-start? c)
+          (and ok (= i 0))
+          (begin
+            (def p (rope-cursor-prev c))
+            (go p (- i 1) (and ok (= (rope-cursor-offset p) (vec-ref offs (- i 1))) (= (rope-cursor-ref p) (vec-ref chars (- i 1)))))))))
+  (def loops
+    (loop (:for _ (range 0 40))
+          (:acc ok (folding #t
+                     (begin
+                       (def i (random-int 0 n #:rng rng))
+                       (def c (rope-cursor-at r (vec-ref offs i)))
+                       (def after (loop (:for ch c) (:acc (vecing ch))))
+                       (def before (loop (:for ch (rope-backward c)) (:acc (vecing ch))))
+                       (and ok
+                            (= after (vec-drop chars i))
+                            (= before (vec-reverse (vec-take chars i)))
+                            (= (rope-cursor-forward (rope-cursor-start r) i) c)
+                            (= (rope-cursor-back (rope-cursor-end r) (- n i)) c)
+                            (= (rope-cursor<? (rope-cursor-start r) c) (> i 0))))))))
+  (def lines
+    (loop (:for _ (range 0 200))
+          (:acc ok (folding #t
+                     (begin
+                       (def i (random-int 0 n #:rng rng))
+                       (def at (vec-ref offs i))
+                       (def c (rope-cursor-at r at))
+                       (def line (newlines-before s at))
+                       (def start (rope-cursor-offset (rope-cursor-line-start c)))
+                       (def col (loop (:for k offs) (:when (and (>= k start) (< k at))) (:acc (summing 1))))
+                       (and ok
+                            (= (rope-cursor-line c) line)
+                            (or (= start 0) (= (ro-span-ref (.AsSpan s) (- start 1)) (cast byte 10)))
+                            (= (newlines-before s start) line)
+                            (= (rope-cursor-column c) col)
+                            (= (rope-cursor-at-line r line #:column col) c)
+                            (= (rope-cursor-offset (rope-cursor-at-line r line #:column 100000))
+                               (rope-cursor-offset (rope-cursor-line-end c)))))))))
+  (def searches
+    (loop (:for _ (range 0 200))
+          (:acc ok (folding #t
+                     (begin
+                       (def a (random-offset rng s))
+                       (def b (boundary-before s (min len (+ a (random-int 0 40 #:rng rng)))))
+                       (def needle (if (= (random-int 0 5 #:rng rng) 0) "zq" (part s a b)))
+                       (def at (random-offset rng s))
+                       (def c (rope-cursor-at r at))
+                       (def j (find-in (part s at len) needle))
+                       (def want (if (>= j 0) (Some (+ at j)) None))
+                       (def jb (span-find-last (ro-span-slice (.AsSpan s) #:from 0 #:to at) (.AsSpan needle)))
+                       (def want-back (if (>= jb 0) (Some jb) None))
+                       (def got (offset-of (rope-cursor-search c needle)))
+                       (def got-back (offset-of (rope-cursor-search-backward c needle)))
+                       (def nl (fun (ch) (= ch #\newline)))
+                       (def jn (span-index-of (ro-span-slice (.AsSpan s) #:from at) (cast byte 10)))
+                       (def jnb (span-find-last (ro-span-slice (.AsSpan s) #:from 0 #:to at) (.AsSpan "\n")))
+                       (and ok
+                            (check #"search for ${(string-length needle)} bytes from ${at}: ${got}, not ${want}" (= got want))
+                            (check #"backward search for ${(string-length needle)} bytes to ${at}: ${got-back}, not ${want-back}" (= got-back want-back))
+                            (= (offset-of (rope-cursor-find nl c)) (if (>= jn 0) (Some (+ at jn)) None))
+                            (= (offset-of (rope-cursor-find-backward nl c)) (if (>= jnb 0) (Some jnb) None))
+                            (= (rope-cursor-substring c (rope-cursor-end r)) (part s at len))))))))
+  (and (check "a tree of several chunks" (> (rope-chunk-count r) 10))
+       (check "forward" fwd) (check "backward" back) (check "loops" loops) (check "lines" lines) searches))
+
 (defun (main args)
   (loop (:for seed (range 1 7))
         (:do (expect-true #"random edits, seed ${seed}" (random-edits? seed 3000 2000))))
@@ -342,6 +454,15 @@
         (:do (expect-true #"the same text, built five ways, seed ${seed}" (same-text-alike? seed))))
   (loop (:for seed (range 1 4))
         (:do (expect-true #"searching, seed ${seed}" (search? seed))))
+  (loop (:for seed (range 1 6))
+        (:do (expect-true #"cursors, seed ${seed}" (cursors? seed))))
+  (expect-true "cursors on the empty rope"
+               (and (rope-cursor-end? (rope-cursor-start (rope-empty)))
+                    (= (loop (:for _ (rope-cursor-start (rope-empty))) (:acc (summing 1))) 0)
+                    (= (rope-cursor-search (rope-cursor-start (rope-empty)) "") (Some (rope-cursor-start (rope-empty))))))
+  (expect "a cursor in the middle of a character"
+          (match (try (rope-cursor-at (string->rope "é") 1) #:catch (System.ArgumentException)) ((Ok _) "made") ((Err _) "refused"))
+          "refused")
   (expect "a rope of small strings" (rope->string (rope "ab" "" "cd")) "abcd")
   (expect "lines" (list (rope-line (string->rope "a\nbc\n") 1) (rope-line (string->rope "a\nbc\n") 2)) (list "bc" ""))
   (expect "the middle of a character"

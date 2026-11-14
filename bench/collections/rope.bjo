@@ -26,6 +26,10 @@
 (import (std random))
 (import (text json))
 
+(import/extern
+  (span-count (: System.MemoryExtensions.Count   (-> (RoSpan byte) byte int)))
+  (span-index (: System.MemoryExtensions.IndexOf (-> (RoSpan byte) byte int))))
+
 ;; ---------------------------------------------------------------------------
 ;; The trace
 ;; ---------------------------------------------------------------------------
@@ -156,5 +160,74 @@
 (def/bench "1 MB: index-of, not there" (rope-index-of mb-rope "line 99999999"))
 (def/bench "1 MB: string insert a character, 1024 times"
   (loop (:for at offsets) (:do (ignore (str (.SliceBytes megabyte 0 at) "x" (.SliceBytes megabyte at (- (string-length megabyte) at)))))))
+
+;; ---------------------------------------------------------------------------
+;; The same on a string of 1 MB
+;; ---------------------------------------------------------------------------
+
+;; The text again, in an array of its own, so that equality compares bytes.
+(def megabyte-copy (bytes->string (string->bytes megabyte)))
+(def nl (cast byte 10))
+(def half (rope-line-start mb-rope (/ (rope-line-count mb-rope) 2)))
+(def mb-left (string-copy (.SliceBytes megabyte 0 half)))
+(def mb-right (string-copy (.SliceBytes megabyte half (- (string-length megabyte) half))))
+(def rope-left (string->rope mb-left))
+(def rope-right (string->rope mb-right))
+
+;; The start of line `n` of a string, by scanning for newlines.
+(: (-> string int int))
+(defun (string-line-start s n)
+  (def sp (.AsSpan s))
+  (let go ((at 0) (left n))
+    (if (= left 0) at (go (+ (+ at (span-index (ro-span-slice sp #:from at) nl)) 1) (- left 1)))))
+
+(def/bench "vs string: byte at an offset, 1024 times"
+  (loop (:for at offsets) (:acc (summing (cast int (ro-span-ref (.AsSpan megabyte) at))))))
+(def/bench "vs string: line start by scanning, 1024 times"
+  (loop (:for n lines) (:acc (summing (string-line-start megabyte n)))))
+(def/bench "vs string: line of an offset by counting, 1024 times"
+  (loop (:for at offsets) (:acc (summing (span-count (ro-span-slice (.AsSpan megabyte) #:from 0 #:to at) nl)))))
+(def/bench "vs string: equal" (= megabyte megabyte-copy))
+(def/bench "vs string: hash" (eq-hash megabyte-copy))
+(def/bench "vs string: search, not there" (string-search megabyte "line 99999999"))
+(def/bench "vs string: character count" (string-count megabyte))
+(def/bench "rope: character count" (rope-char-count mb-rope))
+;; 1024 ranges of 20 lines, about 1.1 KB.
+(def ranges
+  (loop (:for n lines)
+        (:acc (arraying (begin
+                          (def k (min n (- (rope-line-count mb-rope) 21)))
+                          (Tuple (rope-line-start mb-rope k) (rope-line-start mb-rope (+ k 20))))))))
+(def/bench "vs string: 1 KB substring, 1024 times"
+  (loop (:for (Tuple a z) ranges) (:do (ignore (string-copy (.SliceBytes megabyte a (- z a)))))))
+(def/bench "rope: 1 KB substring, 1024 times"
+  (loop (:for (Tuple a z) ranges) (:do (ignore (rope-substring mb-rope a z)))))
+(def/bench "vs string: append two halves" (string-append mb-left mb-right))
+(def/bench "rope: concat two halves" (rope-concat rope-left rope-right))
+
+;; ---------------------------------------------------------------------------
+;; Cursors on 1 MB
+;; ---------------------------------------------------------------------------
+
+(def/bench "cursor: every character, ref+next"
+  (let go ((c (rope-cursor-start mb-rope)) (acc 0))
+    (if (rope-cursor-end? c) acc (begin (def (Tuple ch n) (rope-cursor-ref+next c)) (go n (+ acc (char->integer ch)))))))
+(def/bench "vs string cursor: every character, ref+next"
+  (let go ((c (string-cursor-start megabyte)) (acc 0))
+    (if (string-cursor-end? megabyte c) acc (begin (def (Tuple ch n) (string-cursor-ref+next megabyte c)) (go n (+ acc (char->integer ch)))))))
+(def/bench "cursor: every character backwards"
+  (loop (:for ch (rope-backward (rope-cursor-end mb-rope))) (:acc (summing (char->integer ch)))))
+(def/bench "vs string cursor: every character backwards"
+  (let go ((c (string-cursor-end megabyte)) (acc 0))
+    (if (string-cursor=? c (string-cursor-start megabyte)) acc
+        (begin (def p (string-cursor-prev megabyte c)) (go p (+ acc (char->integer (string-cursor-ref megabyte p))))))))
+(def/bench "cursor: at an offset, 1024 times"
+  (loop (:for at offsets) (:acc (summing (rope-cursor-offset (rope-cursor-at mb-rope at))))))
+(def/bench "cursor: every newline by find"
+  (let go ((c (rope-cursor-start mb-rope)) (n 0))
+    (match (rope-cursor-find (fun (ch) (= ch #\newline)) c)
+      ((Some p) (go (rope-cursor-next p) (+ n 1)))
+      (None n))))
+(def/bench "rope-last-index-of, not there" (rope-last-index-of mb-rope "line 99999999"))
 
 (run-benches)

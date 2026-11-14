@@ -37,7 +37,7 @@
 (:doc #:file "rope.bjodoc")
 
 (export
-  Rope RopeWalk RopeBuilder TransientRope
+  Rope RopeWalk RopeBuilder TransientRope RopeCursor RopeBackward RopeBackwardStep
   ;; Ropes
   rope-empty rope string->rope rope->string rope-length rope-empty? rope-line-count rope-char-count
   rope-ref rope-substring rope-slice rope-take rope-drop rope-split
@@ -47,7 +47,14 @@
   ;; Characters
   rope-next rope-prev
   ;; Searching
-  rope-index-of rope-contains? rope-starts-with? rope-ends-with?
+  rope-index-of rope-last-index-of rope-contains? rope-starts-with? rope-ends-with?
+  ;; Cursors
+  rope-cursor-at rope-cursor-start rope-cursor-end rope-cursor-at-line rope-cursor-offset rope-cursor-rope
+  rope-cursor-start? rope-cursor-end? rope-cursor-ref rope-cursor-next rope-cursor-prev rope-cursor-ref+next
+  rope-cursor-forward rope-cursor-back rope-cursor-line rope-cursor-column rope-cursor-line-start rope-cursor-line-end
+  rope-cursor-search rope-cursor-search-backward rope-cursor-find rope-cursor-find-backward
+  rope-cursor=? rope-cursor<? rope-cursor>? rope-cursor<=? rope-cursor>=?
+  rope-cursor-substring rope-cursor-slice rope-backward
   ;; Chunks
   rope-fold-chunks rope-for-each-chunk rope-chunk-count
   ;; Builders
@@ -102,7 +109,9 @@
   (span-index-of   (: System.MemoryExtensions.IndexOf           (-> (RoSpan byte) byte int)))
   (span-find       (: System.MemoryExtensions.IndexOf           (-> (RoSpan byte) (RoSpan byte) int)))
   (span-equal?     (: System.MemoryExtensions.SequenceEqual     (-> (RoSpan byte) (RoSpan byte) bool)))
-  (span-compare    (: System.MemoryExtensions.SequenceCompareTo (-> (RoSpan byte) (RoSpan byte) int))))
+  (span-compare    (: System.MemoryExtensions.SequenceCompareTo (-> (RoSpan byte) (RoSpan byte) int)))
+  (span-find-last  (: System.MemoryExtensions.LastIndexOf       (-> (RoSpan byte) (RoSpan byte) int)))
+  (span-last-index-of (: System.MemoryExtensions.LastIndexOf    (-> (RoSpan byte) byte int))))
 
 (def cap 16)
 (def min-kids 8)
@@ -1294,6 +1303,49 @@
   (def at (- (.bytes r) (string-length s)))
   (and (>= at 0) (matches-at? r at s)))
 
+;; The offset of the last `s` that ends at or before `#:to`.
+;;
+;; - Each chunk, last first, is searched for the matches that start in it and
+;;   end in a later one, and then for those inside it.
+(: (-> Rope string (#:to int) (Option int)))
+(defun (rope-last-index-of r s #:to (rope-length r))
+  (check-offset r to "rope-last-index-of")
+  (def m (string-length s))
+  (cond
+    ((= m 0) (Some to))
+    ((> m to) None)
+    ((= (.height r) 0)
+     (def j (span-find-last (ro-span-slice (.AsSpan (.small r)) #:from 0 #:to to) (.AsSpan s)))
+     (if (>= j 0) (Some j) None))
+    (else
+     (def first (cast byte (ro-span-ref (.AsSpan s) 0)))
+     (let go ((at to))
+       (def (Tuple c start) (chunk-of r (- at 1)))
+       (def cl (string-length c))
+       (def sp (.AsSpan c))
+       ;; A match from byte p of the chunk crosses its end when p > cl - m,
+       ;; and ends in time when start + p + m <= to.
+       (def lo (max 0 (+ (- cl m) 1)))
+       (def straddler
+         (let back ((hi (min (- cl 1) (- (- to start) m))))
+           (if (< hi lo)
+               None
+               (begin
+                 (def q (span-last-index-of (ro-span-slice sp #:from lo #:to (+ hi 1)) first))
+                 (cond
+                   ((< q 0) None)
+                   ((matches-at? r (+ start (+ lo q)) s) (Some (+ start (+ lo q))))
+                   (else (back (- (+ lo q) 1))))))))
+       (match straddler
+         ((Some k) (Some k))
+         (None
+          (def e (min cl (- to start)))
+          (def j (if (>= e m) (span-find-last (ro-span-slice sp #:from 0 #:to e) (.AsSpan s)) -1))
+          (cond
+            ((>= j 0) (Some (+ start j)))
+            ((= start 0) None)
+            (else (go start)))))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Equality, order and hashing
 ;; ---------------------------------------------------------------------------
@@ -1437,6 +1489,269 @@
   (type %content char)
   (defun (length r) (rope-char-count r))
   (defun (empty? r) (rope-empty? r)))
+
+;; ---------------------------------------------------------------------------
+;; Cursors
+;; ---------------------------------------------------------------------------
+
+;; A position in a rope, a struct that holds the chunk it is in.
+;;
+;; - `at` is a byte offset on a character boundary. `chunk` starts at byte
+;;   `start` of the rope, ends at byte `end`, and holds the character at `at`.
+;; - At the end of the rope, `chunk` is "" and `start` and `end` are `at`.
+;; - A step inside the chunk reads its bytes only; a step out of it finds the
+;;   next chunk from the root.
+(type (: RopeCursor #:opaque
+         (Struct (: rope Rope)
+                 (: chunk string)
+                 (: start int)
+                 (: end int)
+                 (: at int))))
+
+(: (-> Rope RopeCursor))
+(defun (end-cursor r)
+  (RopeCursor (rope r) (chunk "") (start (.bytes r)) (end (.bytes r)) (at (.bytes r))))
+
+;; The cursor at `at`, a boundary below the length of `r`.
+(: (-> Rope int RopeCursor))
+(defun (cursor-in r at)
+  (def (Tuple c start) (chunk-of r at))
+  (RopeCursor (rope r) (chunk c) (start start) (end (+ start (string-length c))) (at at)))
+
+(: (-> Rope int RopeCursor))
+(defun (rope-cursor-at r at)
+  (check-offset r at "rope-cursor-at")
+  (if (= at (.bytes r))
+      (end-cursor r)
+      (begin
+        (def c (cursor-in r at))
+        (check-boundary (.chunk c) (- at (.start c)) "rope-cursor-at")
+        c)))
+
+(: (-> Rope RopeCursor))
+(defun (rope-cursor-start r)
+  (if (= (.bytes r) 0) (end-cursor r) (cursor-in r 0)))
+
+(: (-> Rope RopeCursor))
+(defun (rope-cursor-end r) (end-cursor r))
+
+(: (-> RopeCursor int))
+(defun (rope-cursor-offset c) (.at c))
+
+(: (-> RopeCursor Rope))
+(defun (rope-cursor-rope c) (.rope c))
+
+(: (-> RopeCursor bool))
+(defun (rope-cursor-end? c) (= (.at c) (.bytes (.rope c))))
+
+(: (-> RopeCursor bool))
+(defun (rope-cursor-start? c) (= (.at c) 0))
+
+(: (-> RopeCursor string void))
+(defun (check-not-end c who)
+  (when (rope-cursor-end? c)
+    (out-of-range #"${who}: the cursor is at the end of the rope.")))
+
+(: (-> RopeCursor string void))
+(defun (check-not-start c who)
+  (when (rope-cursor-start? c)
+    (out-of-range #"${who}: the cursor is at the start of the rope.")))
+
+;; The character at `c`, which is not at the end.
+(: (-> RopeCursor char))
+(defun (char-at c) #:inline (decode-at (.chunk c) (- (.at c) (.start c))))
+
+;; The cursor `to`, after the character at `c`.
+(: (-> RopeCursor int RopeCursor))
+(defun (moved-to c to)
+  (cond
+    ((< to (.end c)) (record-set c (at to)))
+    ((< to (.bytes (.rope c))) (cursor-in (.rope c) to))
+    (else (end-cursor (.rope c)))))
+
+;; The cursor after the character at `c`, which is not at the end.
+(: (-> RopeCursor RopeCursor))
+(defun (step-next c)
+  (moved-to c (+ (.at c) (char-width (byte-at (.AsSpan (.chunk c)) (- (.at c) (.start c)))))))
+
+;; The character at `c`, which is not at the end, and the cursor after it,
+;; from one read of the chunk.
+(: (-> RopeCursor (Tuple char RopeCursor)))
+(defun (ref+next c)
+  (def sp (.AsSpan (.chunk c)))
+  (def k (- (.at c) (.start c)))
+  (def b0 (byte-at sp k))
+  (def ch (if (< b0 128) (integer->char b0) (decode-at (.chunk c) k)))
+  (Tuple ch (moved-to c (+ (.at c) (char-width b0)))))
+
+;; The cursor on the character before `c`, which is not at the start.
+(: (-> RopeCursor RopeCursor))
+(defun (step-prev c)
+  (def p (if (> (.at c) (.start c)) c (cursor-in (.rope c) (- (.at c) 1))))
+  (def sp (.AsSpan (.chunk p)))
+  (let go ((k (- (- (.at c) 1) (.start p))))
+    (if (and (> k 0) (= (bitwise-and (byte-at sp k) 192) 128))
+        (go (- k 1))
+        (record-set p (at (+ (.start p) k))))))
+
+(: (-> RopeCursor char))
+(defun (rope-cursor-ref c)
+  (check-not-end c "rope-cursor-ref")
+  (char-at c))
+
+(: (-> RopeCursor RopeCursor))
+(defun (rope-cursor-next c)
+  (check-not-end c "rope-cursor-next")
+  (step-next c))
+
+(: (-> RopeCursor RopeCursor))
+(defun (rope-cursor-prev c)
+  (check-not-start c "rope-cursor-prev")
+  (step-prev c))
+
+(: (-> RopeCursor (Tuple char RopeCursor)))
+(defun (rope-cursor-ref+next c)
+  (check-not-end c "rope-cursor-ref+next")
+  (ref+next c))
+
+(: (-> RopeCursor int RopeCursor))
+(defun (rope-cursor-forward c n)
+  (when (< n 0) (bad-argument #"rope-cursor-forward: the count ${n} is negative."))
+  (let go ((p c) (k n))
+    (cond
+      ((= k 0) p)
+      ((rope-cursor-end? p)
+       (out-of-range #"rope-cursor-forward: there are fewer than ${n} characters after the cursor."))
+      (else (go (step-next p) (- k 1))))))
+
+(: (-> RopeCursor int RopeCursor))
+(defun (rope-cursor-back c n)
+  (when (< n 0) (bad-argument #"rope-cursor-back: the count ${n} is negative."))
+  (let go ((p c) (k n))
+    (cond
+      ((= k 0) p)
+      ((rope-cursor-start? p)
+       (out-of-range #"rope-cursor-back: there are fewer than ${n} characters before the cursor."))
+      (else (go (step-prev p) (- k 1))))))
+
+;; The cursor `column` characters into line `n`, or at the line's end when
+;; it is shorter.
+(: (-> Rope int (#:column int) RopeCursor))
+(defun (rope-cursor-at-line r n #:column 0)
+  (def from (rope-line-start r n))
+  (def e (rope-line-end r n))
+  (let go ((p (rope-cursor-at r from)) (k column))
+    (if (or (<= k 0) (>= (.at p) e)) p (go (step-next p) (- k 1)))))
+
+(: (-> RopeCursor int))
+(defun (rope-cursor-line c) (rope-line-of (.rope c) (.at c)))
+
+(: (-> RopeCursor RopeCursor))
+(defun (rope-cursor-line-start c)
+  (def r (.rope c))
+  (rope-cursor-at r (rope-line-start r (rope-cursor-line c))))
+
+(: (-> RopeCursor RopeCursor))
+(defun (rope-cursor-line-end c)
+  (def r (.rope c))
+  (rope-cursor-at r (rope-line-end r (rope-cursor-line c))))
+
+;; The characters between the start of the cursor's line and the cursor.
+(: (-> RopeCursor int))
+(defun (rope-cursor-column c)
+  (let go ((p (rope-cursor-line-start c)) (k 0))
+    (if (>= (.at p) (.at c)) k (go (step-next p) (+ k 1)))))
+
+;; The first `s` that starts at or after `c`.
+(: (-> RopeCursor string (Option RopeCursor)))
+(defun (rope-cursor-search c s)
+  (match (rope-index-of (.rope c) s #:from (.at c))
+    ((Some k) (Some (rope-cursor-at (.rope c) k)))
+    (None None)))
+
+;; The last `s` that ends at or before `c`.
+(: (-> RopeCursor string (Option RopeCursor)))
+(defun (rope-cursor-search-backward c s)
+  (match (rope-last-index-of (.rope c) s #:to (.at c))
+    ((Some k) (Some (rope-cursor-at (.rope c) k)))
+    (None None)))
+
+;; The first character at or after `c` that `pred` holds for.
+(: (-> (-?-> char bool) RopeCursor (Option RopeCursor)))
+(defun (rope-cursor-find pred c)
+  (let go ((p c))
+    (cond
+      ((rope-cursor-end? p) None)
+      (else
+       (def (Tuple ch n) (ref+next p))
+       (if (pred ch) (Some p) (go n))))))
+
+;; The last character before `c` that `pred` holds for.
+(: (-> (-?-> char bool) RopeCursor (Option RopeCursor)))
+(defun (rope-cursor-find-backward pred c)
+  (let go ((p c))
+    (if (rope-cursor-start? p)
+        None
+        (begin
+          (def q (step-prev p))
+          (if (pred (char-at q)) (Some q) (go q))))))
+
+(: (-> RopeCursor RopeCursor string))
+(defun (rope-cursor-substring a b) (rope-substring (.rope a) (.at a) (.at b)))
+
+(: (-> RopeCursor RopeCursor Rope))
+(defun (rope-cursor-slice a b) (rope-slice (.rope a) (.at a) (.at b)))
+
+;; Comparisons of the offsets of two cursors of one rope.
+(: (-> RopeCursor RopeCursor bool))
+(defun (rope-cursor=? a b) (= (.at a) (.at b)))
+(: (-> RopeCursor RopeCursor bool))
+(defun (rope-cursor<? a b) (< (.at a) (.at b)))
+(: (-> RopeCursor RopeCursor bool))
+(defun (rope-cursor>? a b) (> (.at a) (.at b)))
+(: (-> RopeCursor RopeCursor bool))
+(defun (rope-cursor<=? a b) (<= (.at a) (.at b)))
+(: (-> RopeCursor RopeCursor bool))
+(defun (rope-cursor>=? a b) (>= (.at a) (.at b)))
+
+(impl (Eq RopeCursor)
+  (defun (= a b) (= (.at a) (.at b)))
+  (defun (eq-hash c) (eq-hash (.at c))))
+
+(impl (Ord RopeCursor)
+  (defun (compare a b) (compare (.at a) (.at b))))
+
+;; The characters from the cursor to the end.
+(impl (Iterable RopeCursor)
+  (type %elem char)
+  (type %cursor RopeCursor)
+  (defun (iterable-start c) c)
+  (defun (iterable-done? c p) (rope-cursor-end? p))
+  (defun (iterable-current c p) (char-at p))
+  (defun (iterable-next c p) (step-next p)))
+
+;; The characters before a cursor, last first.
+(type (: RopeBackward #:opaque (Struct (: from RopeCursor))))
+
+;; A step of a backward loop: the cursor on its character, or done.
+(type (: RopeBackwardStep #:opaque (Struct (: on RopeCursor) (: done? bool))))
+
+(: (-> RopeCursor RopeBackward))
+(defun (rope-backward c) (RopeBackward (from c)))
+
+(: (-> RopeCursor RopeBackwardStep))
+(defun (backward-from c)
+  (if (rope-cursor-start? c)
+      (RopeBackwardStep (on c) (done? #t))
+      (RopeBackwardStep (on (step-prev c)) (done? #f))))
+
+(impl (Iterable RopeBackward)
+  (type %elem char)
+  (type %cursor RopeBackwardStep)
+  (defun (iterable-start b) (backward-from (.from b)))
+  (defun (iterable-done? b s) (.done? s))
+  (defun (iterable-current b s) (char-at (.on s)))
+  (defun (iterable-next b s) (backward-from (.on s))))
 
 ;; ---------------------------------------------------------------------------
 ;; Transients
