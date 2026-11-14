@@ -59,9 +59,6 @@ noted.
 - Errors from generalization, trait registration and parts of declaration
   checking carry a location only if their call site supplied one. Threading a
   ~Range~ into ~unify~ would close it.
-- The numeric-literal message blames the literal when its ~Num~ constraint
-  is solved late: ~(map-set m "j" "v")~ on an ~int~-keyed map names a ~1~
-  elsewhere (~Traits.fs~).
 - A ~loop~'s ~:finish~ value against the loop's result reads as "two
   branches": the message is the expansion's ~if~, not the clause. The common
   case is a loop with no ~=>~ that can also run out: "void" is that exit's
@@ -107,12 +104,8 @@ noted.
 
 * JSON (~(text json)~, ~(text json-codec)~)
 
-- ~json-codec.bjodoc~ is out of date in two places. "Not here yet" says
-  ~(text json)~ has no writer, but ~json->string~ and ~write-json~ are there
-  (~363_json_write.bjo~). And it says an error gives no path through several
-  levels of records, but a ~(Vec Item)~ field of an ~Order~ reports
-  ~Order.items: Item.id: expected an integer~. Found while adding
-  ~request-json-as~ to bjoweb.
+- An error's path names no index: a bad element of a ~(Vec Item)~ field
+  reports ~Order.items: Item.id: expected an integer~, not which element.
 - There are no instances for ~List~, ~Array~, tuples, ~decimal~, ~float~, the
   date and time types or ~Uuid~, and ~def/json-type~ takes records only. A
   union, such as a status written as ~"open"~, needs its two ~impl~s by hand,
@@ -168,7 +161,8 @@ noted.
 - A ~match~ arm's body aligns under the pattern, as Emacs does for ~cond~.
 - Library forms that read as bodies (~with-nack~) are not in
   ~bjo-indent-forms~.
-- No completion, imenu or eldoc.
+- No completion, imenu or eldoc in a source buffer. The REPL buffer has
+  completion, through the REPL.
 
 * Monomorphisation of constrained generics
 
@@ -447,50 +441,21 @@ what was meant. Confirmed by running it where it says so.
   costs every walk a compare, and ~down-from~ would need a cursor that is not
   an int. (~range-by~ no longer does: its stop is worked out once, which a
   double's walk could not land on exactly.)
-- *Docs/prelude.org is wrong in places* the bjodoc files now get right:
-  ~if-let~ and ~when-let~ written with double parentheses, ~display~ said to
-  take any value (it takes a string), a ~Foldable~ trait that does not exist,
-  ~(seq-range start count)~ (it is start and stop), ~(Nil)~ for ~Nil~, and
-  ~(handler-of open-input-file)~ where the operation is ~open-read-stream~.
-  The reference parts of it could now be cut down to what the docs do not
-  say.
-
-* Found while writing the hash set's tests
-
-- *A type whose name has a hyphen does not compile.*
-  ~(type (: Some-clash (Record (: n int))))~ is enough, with no impl
-  written. The record class itself is mangled (~hy2__Somesubclash~), but
-  the class of its derived ~Written~ impl is
-  ~Written_hy2__Some-clash~, which is not a C# identifier (CS1514).
-  ~implClassName~ in ~TypedAST.fs~ sanitizes a key's arguments but not
-  its head, the target type's name. Fix: mangle the head the way type
-  names are mangled. Other impl classes probably have the same problem.
-  ~tests/collections/hashset_trie.bjo~ names its type ~SomeClash~ to avoid it.
-
-* Found while porting the vec operations to Bjolang
-
-- *~(cast (Vec long) [])~ emits C# that does not compile.* The empty vec
-  literal is generated as ~RrbList<object>~ and cast to ~RrbList<long>~
-  (CS0030). The type checker accepts the cast. ~(: (Vec long)) (def none [])~
-  works. Fix: generate the literal at the cast's type, as an annotated
-  ~def~ does.
 
 * Found while writing bjostat's parallel loops
 
 Found in ~bench/parallel.bjo~ of bjostat, where the parts of a loop run on
 several cores and their ends are events.
 
-- *The docs of ~spawn/thread~ may be out of date.* They say that for work
-  that uses a core ~Task.Run~ "buys nothing at all: it is the same pool".
-  Fibers now run on ~Bjoml.Workers~, a pump for each core, so a fiber that
-  computes holds its pump, and ~(sync (blocking thunk))~ does not: the
-  thunk runs on a pool thread while the fiber is suspended. Measured, the
-  sum of 1M rows in 8 parts: 0.52 ms by ~blocking~, 0.49 ms by fibers that
-  compute, 1.25 ms by ~spawn/thread~, which makes a thread for each part.
-  What ~blocking~ does not show is whether the parts delay the pumps,
-  which run on the same pool's threads. If they do not, ~blocking~ (or a
-  function of the same body with a name for computing) is the way to run
-  short parts, and ~spawn/thread~ is for long ones.
+- *Whether ~blocking~ parts delay the pumps.* Fibers run on ~Bjoml.Workers~,
+  a pump for each core, so a fiber that computes holds its pump, and
+  ~(sync (blocking thunk))~ does not: the thunk runs on a pool thread while
+  the fiber is suspended. Measured, the sum of 1M rows in 8 parts: 0.52 ms
+  by ~blocking~, 0.49 ms by fibers that compute, 1.25 ms by ~spawn/thread~,
+  which makes a thread for each part. The docs now say ~blocking~ suits
+  short parts and ~spawn/thread~ long ones. Not measured: whether the parts
+  delay the pumps, which run on the same pool's threads. If they do,
+  short parts need a way of their own.
 
 * ~(std parallel)~
 
@@ -578,8 +543,7 @@ several cores and their ends are events.
   needs a path source.
 - *One version of a package per build*: two copies would be two modules with one
   identity.
-- *No ~bjo install~, ~test~ or ~clean~*, and one entry point per package. Tests
-  are ~bjo run tests/x.bjo~, which exits 1 after a ~FAILURE:~.
+- *No ~bjo install~ or ~clean~*, and one entry point per package.
 - *Nothing locks ~.bjo~* against two ~bjo~ processes; the second fails loudly.
 - *A version requirement on a path dependency is ignored*: a path source is an
   override.

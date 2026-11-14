@@ -1,0 +1,31 @@
+;; Types whose names are not C# identifiers, with derived and written impls.
+;;
+;; An impl's class is named after its trait and its type. The type's part is
+;; sanitized as the type's own class is, so `Some-clash` gives
+;; `Written_..._Somesubclash`, and `class` gives no `@`.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Some-clash (Record (: n int))))
+(type (: My-shape (Union (: Big-circle int) Small-sq)))
+(type (: class (Record (: k int))))
+(type (: (Pair-of %a) (Record (: fst %a) (: snd %a))))
+
+(def/trait (Sized-thing %c) (: size-of (-> %c int)))
+(impl (Sized-thing Some-clash) (defun (size-of x) (.n x)))
+(impl (Sized-thing My-shape) (defun (size-of x) (match x ((Big-circle r) r) (Small-sq 1))))
+(impl (Sized-thing class) (defun (size-of x) (.k x)))
+(impl (Sized-thing (Pair-of int)) (defun (size-of x) (+ (.fst x) (.snd x))))
+
+(defun (main args)
+  (expect "a derived impl of a hyphenated record" (written (Some-clash (n 3))) "(Some-clash (n 3))")
+  (expect "a derived impl of a hyphenated union" (written (Big-circle 4)) "(Big-circle 4)")
+  (expect "a derived impl of a generic hyphenated record" (written (Pair-of (fst 1) (snd 2))) "(Pair-of (fst 1) (snd 2))")
+  (expect "a derived impl of a type named after a C# keyword" (written (class (k 7))) "(class (k 7))")
+  (expect "written impls of hyphenated types"
+          (+ (size-of (Some-clash (n 3))) (+ (size-of (Big-circle 4)) (size-of Small-sq)))
+          8)
+  (expect "a written impl for a keyword-named type" (size-of (class (k 7))) 7)
+  (expect "a written impl for a generic hyphenated type" (size-of (Pair-of (fst 1) (snd 2))) 3)
+  0)

@@ -1,0 +1,25 @@
+;; A cast gives an operand's unresolved type arguments the target's.
+;;
+;; `[]` alone is a `(Vec ?a)`. Under `(cast (Vec long) ...)` it is a
+;; `(Vec long)`, as under an annotated `def`, so the C# has no cast from
+;; `RrbList<object>` to `RrbList<long>`, which does not compile.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; At a type variable of the signature.
+(: (-> (Vec %a) (Vec %a)))
+(defun (with-nothing v) (vec-merge v (cast (Vec %a) [])))
+
+(defun (main args)
+  (def longs (cast (Vec long) []))
+  (def ints (cast (Vec int) (vec-empty)))
+  (def nested (cast (Vec (Vec int)) [[]]))
+  (def pair (cast (Tuple (Vec string) (List double)) (Tuple [] '())))
+  (expect "an empty vec literal at (Vec long)" (vec-add longs 5L) [5L])
+  (expect "vec-empty at (Vec int)" (vec-length ints) 0)
+  (expect "an empty vec inside a vec" (vec-length (vec-ref nested 0)) 0)
+  (expect "empty collections in a tuple" (written pair) "(Tuple [] ())")
+  (expect "at a type variable" (with-nothing [1 2]) [1 2])
+  (expect "a cast at the top still converts" (cast long 3) 3L)
+  0)

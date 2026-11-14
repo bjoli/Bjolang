@@ -3,6 +3,28 @@
 
 What each change guarantees, and what it leaves open.
 
+* Types with hyphenated names compile, and a cast types an empty collection
+
+- An impl's class was named after its type's name as written, so
+  ~(type (: Some-clash (Record ...)))~ gave ~Written_hy2__Some-clash~, which
+  is not a C# identifier. ~implClassName~ now sanitizes the type's part as
+  the type's own class is (~Somesubclash~), and drops the ~@~ of a keyword.
+  This covers derived and written impls of records, unions and generic
+  types (~549_hyphenated_type_names.bjo~).
+- ~(cast (Vec long) [])~ emitted a cast from ~RrbList<object>~ to
+  ~RrbList<long>~ (CS0030). Under a constructor the operand's type shares
+  with the target, an unresolved type argument of the operand now takes
+  the target's, so the literal is a ~(Vec long)~. Tuples are followed too.
+  A cast whose operand's whole type is unresolved still converts, and CLR
+  types are left alone, since a covariant interface or array may be cast
+  to another instance of itself (~550_cast_empty_collections.bjo~).
+- Docs: ~Docs/prelude.org~ no longer has the double-paren ~if-let~, a
+  ~Foldable~ trait, ~(seq-range start count)~, ~(Nil)~,
+  ~(handler-of open-input-file)~, ~display~ of any value, or a ~->seq~ in
+  ~Collection~. ~json-codec.bjodoc~ describes the writer and the error
+  paths as they are. The ~spawn/thread~ advice no longer says ~Task.Run~
+  buys nothing for computing work: ~blocking~ suits short parts.
+
 * Adds, slices and splits keep the search step invariant
 
 - An add that gives a relaxed node a new child, and a slice, split, drop,

@@ -2602,8 +2602,14 @@ let implClassName (traitName: string) (implKey: string) =
         // A module type key is qualified. The class is already in the module's
         // namespace, so it is named after the last part — a `.NET` type like
         // `System.IO.TextReader` has no namespace to be in and is flattened.
-        elif Naming.isModuleKey targetTypeName then Naming.emittedTypeName targetTypeName
-        else targetTypeName.Replace(".", "_")
+        //
+        // Either way the name is sanitized, as the type's own class is:
+        // `Some-clash` is `Somesubclash`. The `@` of a C# keyword is dropped,
+        // since the name follows a prefix.
+        elif Naming.isModuleKey targetTypeName then
+            (Naming.sanitizeIdent (Naming.emittedTypeName targetTypeName)).Replace("@", "")
+        else
+            (Naming.sanitizeIdent targetTypeName).Replace("@", "").Replace(".", "_")
 
     $"%s{traitName}_%s{flattened}%s{suffix}"
 

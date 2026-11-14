@@ -45,6 +45,33 @@ let private literalPayloadHeads (expr: Expr) : string list option =
     | _ -> None
 
 /// `a`, `a or b`, `a, b or c`.
+/// Gives the unresolved type arguments of a cast's operand the target's.
+///
+/// - Under a constructor both types share, with the same arity, an unbound
+///   metavariable of the operand is unified with the target's type there:
+///   `(cast (Vec long) [])` makes the literal a `(Vec long)`. C# has no cast
+///   between two instances of one generic class, so the metavariable could
+///   only have been the target's.
+/// - A metavariable at the top is left alone: `(cast long x)` is a
+///   conversion from whatever `x` turns out to be.
+/// - CLR types are left alone, since a covariant interface or array can be
+///   cast to another instance of itself.
+let rec private fillCastArguments (registry: TraitRegistry) (target: HMType) (operand: HMType) =
+    let isClr (name: string) = name.Contains '.' && not (Naming.isModuleKey name)
+
+    match prune registry target, prune registry operand with
+    | TCon(t, targs), TCon(o, oargs) when t = o && targs.Length = oargs.Length && not (isClr t) ->
+        for ta, oa in List.zip targs oargs do
+            match prune registry oa with
+            | TMeta m when m.Value.IsNone -> unify registry oa ta
+            | _ -> fillCastArguments registry ta oa
+    | TTuple targs, TTuple oargs when targs.Length = oargs.Length ->
+        for ta, oa in List.zip targs oargs do
+            match prune registry oa with
+            | TMeta m when m.Value.IsNone -> unify registry oa ta
+            | _ -> fillCastArguments registry ta oa
+    | _ -> ()
+
 let private orList (names: string list) : string =
     match List.rev names with
     | [] -> ""
@@ -1256,6 +1283,8 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                 failwithf
                     $"Type Error at %s{Lexer.formatPos r}: a cast cannot make or take apart the newtype %s{Naming.showTypeName name}. Write (%s{Naming.bareTypeName env.CurrentModule name} x) to make one, and take one apart with a pattern."
             | _ -> ()
+
+        fillCastArguments env.Registry targetType exprType
 
         targetType,
         { Type = targetType

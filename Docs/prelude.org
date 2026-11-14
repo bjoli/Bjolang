@@ -14,8 +14,8 @@ Sections below are marked =(std prelude)= where they live in the second.
   documented below as returning nothing return this.
 
 ** I/O
-- ~(display x)~ : Prints ~x~ to standard output without a newline.
-- ~(displayln x)~ : Prints ~x~ to standard output with a newline.
+- ~(display s)~ : Writes the string ~s~ to the current output port, with no newline. For any other value, use ~print~.
+- ~(displayln s)~ : Writes the string ~s~ and a newline to the current output port.
 - ~(print x)~ : Prints ~(displayed x)~, for any value. =(std prelude)=
 - ~(println x)~ : Prints ~(displayed x)~ and a newline, for any value. =(std prelude)=
 - ~(written x)~, ~(displayed x)~ : The value as text; see *Traits* below. =(std prelude)=
@@ -292,7 +292,7 @@ them; a walk is always on a character of its own string, and
 - ~(string->vec s)~ : ~(Vec char)~.
 - ~(string-reverse s)~ : Reverses by *character*, so an astral character comes back intact.
 
-A string is also ~Iterable~, ~Foldable~ and a ~Collection~, so ~(loop (:for c s) ...)~, ~(fold f init s)~ and ~(length s)~ all work and all deal in characters.
+A string is also ~Iterable~ and a ~Collection~, so ~(loop (:for c s) ...)~, ~(fold f init s)~ and ~(length s)~ all work and all deal in characters.
 
 ** String Builders
 The accumulator behind the ~Stringing~ collector, and the same shape as the vector and list builders.
@@ -438,7 +438,7 @@ Keywords (~:foo~ or ~#:foo~) and quoted symbols (~'foo~) are interned first-clas
 ** Lists (~SchemeList~)
 Built-in functional linked lists.
 - ~(Cons head tail)~, ~(cons head tail)~ : Constructs a list.
-- ~(Nil)~, ~(list-empty)~ : Returns an empty list.
+- ~Nil~, ~(list-empty)~ : The empty list. ~Nil~ is a case with no payload, so it is written bare, as a value and as a pattern.
 - ~(list-head lst)~ : Returns the first element.
 - ~(list-tail lst)~ : Returns the rest of the list.
 - ~(list-empty? lst)~ : Returns true if the list is empty.
@@ -632,7 +632,7 @@ Every callback below takes the key and the value as **two** arguments:
 (map-fold (fun (k v acc) (+ acc v)) 0 m)
 #+END_SRC
 
-An entry survives as a ~(Tuple %k %v)~ only where a trait signature fixes the shape: ~Iterable~'s ~%elem~ and ~Foldable~'s ~%item~ are a single element, so a callback reached through ~fold~ or a ~loop~ sees a pair.
+An entry survives as a ~(Tuple %k %v)~ only where a trait signature fixes the shape: ~Iterable~'s ~%elem~ is a single element, so a callback reached through ~fold~ or a ~loop~ sees a pair.
 
 #+BEGIN_SRC scheme
 (fold (fun (kv acc) (def (_ . v) kv) (+ acc v)) 0 m)
@@ -744,8 +744,8 @@ Macros, not procedures — which is what lets them take a branch that is not eva
 - ~(cond (test body ...) ... (else body ...))~ : ~if~ at any number of arms. The final ~else~ is required. Every arm needs the same return type.
 - ~(:def pattern expr)~ and ~(:do body ...)~ : clauses of a ~cond~ that answer nothing. A ~:def~ binds and a ~:do~ runs something; both happen only when every test above them has failed, and what a ~:def~ binds is in scope in every clause below it and nowhere else. A ~:def~ *is* a ~def~ — the body it swallows is the rest of the cond — so it takes the same patterns and the same failure parts: ~(:def (Ok v) (parse s) :propagate)~ makes the whole cond the ~Err~, ~(:def (Some n) e :default 0)~ binds ~n~ either way and never answers, and ~(:def (Some n) e :panic)~ binds ~n~ or stops the program. A cond may not end in one.
 - ~(:match pattern expr body ...)~ : a clause of a ~cond~ that answers when ~expr~ matches ~pattern~ and an optional ~#:when guard~ after ~expr~ holds, and falls through to the next clause otherwise. What it binds is in scope in its guard and body only.
-- ~(if-let ((name expr)) then else)~ : ~then~ with ~name~ bound to what ~expr~ answered, if it answered ~(Some ...)~, and ~else~ if it was ~None~.
-- ~(when-let ((name expr)) body ...)~ : the body with ~name~ bound, when there was something to bind.
+- ~(if-let (name expr) then else)~ : ~then~ with ~name~ bound to what ~expr~ returned, if it returned ~(Some ...)~, and ~else~ if it was ~None~.
+- ~(when-let (name expr) body ...)~ : the body with ~name~ bound, when there was something to bind.
 - ~(some-> value step ...)~ : ~->~ that stops at the first ~None~. Each step answers an ~(Option ...)~ and it unwraps every step before going on.
 - ~(try-> value step ...)~ : the same over ~Result~, stopping at the first ~Err~. Each step answers a ~(Result ...)~ and receives what the step before unwrapped to, so a chain reads in the order it runs rather than inside out.
 - ~(let* ((name expr) ...) body ...)~ : sequential binding.
@@ -772,9 +772,9 @@ Macros, not procedures — which is what lets them take a branch that is not eva
       ((< port 1024) 0)
       (else port))
 
-(if-let ((half (halve n))) half 0)
+(if-let (half (halve n)) half 0)
 
-(when-let ((line (read-line/opt port)))
+(when-let (line (read-line/opt port))
   (println line))
 
 (some-> 16 (halve) (halve) (at-least & 3))   ;; (Some 4)
@@ -847,7 +847,7 @@ The handler installed before it is ~(handler-of log)~. The bindings of a ~with-h
   ...)
 #+END_SRC
 
-The same applies to a fake that wants to fall through: ~open-input-file/raw~ is the real filesystem by name, and ~(handler-of open-input-file)~ is whatever was installed before.
+The same applies to a fake that wants to fall through: ~open-read-stream/raw~ is the real filesystem by name, and ~(handler-of open-read-stream)~ is whatever was installed before. ~open-input-file~ is not an operation: it opens its stream through ~open-read-stream~.
 
 *** The cell is found by spelling
 
@@ -980,7 +980,9 @@ No fiber is spawned. It is the mirror of ~blocking~, which carries a thread-park
 ** Getting work off the fiber pool =(std prelude)=
 
 - ~(blocking thunk)~ : for work that *parks a thread*. ~File.ReadAllText~, ~Console.ReadLine~, ~Monitor.Enter~. It goes to ~Task.Run~, so the thread that parks is one the pool can grow to replace.
-- ~(spawn/thread thunk)~ : for work that *uses a core*. An image resize, a compression pass, a search over a big structure. It gets a thread of its own, because for compute ~Task.Run~ buys nothing at all.
+- ~(spawn/thread thunk)~ : for *long* work that *uses a core*. An image resize, a compression pass, a search over a big structure. It gets a thread of its own, outside the pool.
+
+A fiber that computes holds its core's pump (~Bjoml.Workers~), and the fibers queued there wait. Both events free the pump: the fiber suspends while the thunk runs elsewhere. For short parts, ~blocking~ is the cheaper of the two, since it reuses a pool thread. Summing 1M rows in 8 parts took 0.52 ms by ~blocking~, 0.49 ms by fibers that compute, and 1.25 ms by ~spawn/thread~.
 
 #+BEGIN_SRC scheme
 (sync (blocking     #(file-read-text path)))     ;; (Result Exception string)
@@ -1202,7 +1204,7 @@ Lazy, demand-driven sequences.
 - ~(seq-unfold generator state)~ : Produces a sequence from ~state~ and a ~generator~ function returning ~(Some (Tuple next-item next-state))~ or ~None~.
 - ~(seq-append s1 s2)~ : Lazily concatenates two sequences.
 - ~(seq-for-each f s)~ : Applies ~f~ to each element for side effects.
-- ~(seq-range start count)~ : Returns a lazy integer range sequence.
+- ~(seq-range start stop)~ : The ints from ~start~ up to but not including ~stop~, as a lazy ~Seq~. Empty when ~stop~ is at or below ~start~.
 - ~(list->seq lst)~ : Converts a list to a lazy sequence.
 - ~(vec->seq vec)~ : Converts a vector to a lazy sequence.
 
@@ -1247,7 +1249,6 @@ These methods use long names to prevent collisions with common user variables (l
 - ~->str~ : Deprecated. Requires ~Displayed~, and its blanket calls ~displayed~; each use warns. Implement ~Displayed~ or ~Written~ instead.
 - ~Iterable~ : ~(iterable-start s)~, ~(iterable-done? s c)~, ~(iterable-current s c)~ and ~(iterable-next s c)~ — how to walk a collection, and what a ~(:for ...)~ clause uses. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~(Seq %a)~, ~Range~ and ~string~. A string's ~%cursor~ is a ~StringCursor~ and its ~%elem~ is ~char~, so ~(loop (:for c "a😀b") ...)~ runs three times and hands over whole characters.
   The trait's other methods have defaults over those four. ~map~, ~filter~, ~take~, ~drop~ and the rest that give a sequence are ~seql~ loops; ~fold~, ~any?~, ~all?~, ~find~, ~for-each~, ~(->list s)~, ~(->vec s)~, ~(count s)~ and ~(first s)~ are plain loops, which answer a value. A default inlines at its call, so ~(->list (map f (filter p xs)))~ walks ~xs~ in one loop and makes no sequence. ~count~ walks, except over a ~Vec~, an ~Array~ or a ~Map~, which answer their length; ~first~ answers an ~Option~ and pulls one element. ~(->map s)~ is not a method, since its where clause says the element is a pair (see *Pins in a function's where clause* in ~Syntax.org~); it is copied into its call at known types and fuses the same way.
-- ~Foldable~ : ~(fold f init col)~, where ~f~ receives ~(item acc)~. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~ and ~string~. A map's ~%item~ is its ~(Tuple %k %v)~ pair; a string's is ~char~, so ~fold~ over one is ~string-fold~.
-- ~Collection~ : ~(length c)~, ~(empty? c)~ and ~(->seq c)~ — what a collection can be *asked*, as opposed to walked (~Iterable~) or consumed (~Foldable~). The associated ~%content~ is the element type, and for a ~(Map %k %v)~ that is the pair. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~Range~, ~(Seq %a)~ and ~string~; not for ~(Array %a)~, which has no ~->seq~ to give. ~length~ is O(1) only where the collection stores a count (~Vec~, ~Map~, and ~Range~): a ~List~ walks, a ~Seq~ walks *and* consumes an effectful source, and a ~string~ walks because its ~%content~ is ~char~ and so ~length~ must be ~string-count~ rather than ~string-length~.
+- ~Collection~ : ~(length c)~ and ~(empty? c)~ — what a collection can be *asked*, as opposed to walked (~Iterable~, which also has ~fold~ and ~->seq~). The associated ~%content~ is the element type, and for a ~(Map %k %v)~ that is the pair. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Array %a)~, ~(IArray %a)~, ~(Map %k %v)~, ~Range~, ~RangeBy~, ~(Seq %a)~, ~string~, the builders and transients, and the collections of ~(std hashset)~, ~(std orderedmap)~, ~(std orderedset)~ and ~(std priority-queue)~. ~length~ is O(1) only where the collection stores a count (~Vec~, ~Map~, and ~Range~): a ~List~ walks, a ~Seq~ walks *and* consumes an effectful source, and a ~string~ walks because its ~%content~ is ~char~ and so ~length~ must be ~string-count~ rather than ~string-length~.
 - ~Monad~ : ~(pure x)~ and ~(bind m k)~ — in ~(std monad)~ rather than here.
 - ~Collector~ : ~(collector-init c)~, ~(collector-step c acc x)~ and ~(collector-finish c acc)~ — the accumulators an ~:acc~ clause names. The stock ones are ~listing~, ~vecing~, ~mapping~, ~stringing~, ~summing~, ~counting~ and ~folding~; ~stringing~ collects ~char~ into a ~string~ through a ~StringBuilder~.
