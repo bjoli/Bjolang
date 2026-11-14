@@ -3,6 +3,15 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~#:no-inline~ keeps a function out of its callers in .NET too
+
+- A function written ~#:no-inline~ is emitted with
+  ~MethodImplOptions.NoInlining~, so the JIT keeps its calls calls, as
+  Bjolang does. For a rare path of a hot function: inlined, it can take the
+  registers or the inlining room of the loop that calls it.
+- ~vec-map~, the only such function in the standard library, is now a
+  call in .NET as well.
+
 * (std text): persistent text that is cheap to edit anywhere
 
 - A ~Text~ is immutable UTF-8 text in a B+ tree: chunks of at most 1024
@@ -34,6 +43,14 @@ What each change guarantees, and what it leaves open.
   from 32 to 13 µs (a string takes 15), a hash from 142 to 79 µs (37),
   a search that misses from 70 to 43 µs (25), and 1024 substrings of 1 KB
   from 213 to 152 µs (60).
+- A node keeps the running total of its children's bytes, not each child's
+  count, so finding the child that holds an offset is one vectorized search
+  with no branch to mispredict. Over 1 MB, 1024 ~text-ref~ go from 21 to
+  15 µs, 1024 ~text-cursor-at~ from 21 to 13 µs, and 1024 substrings of
+  1 KB to 138 µs. An edit adds to the totals after its slot, 4 at a time:
+  the persistent editing trace takes 40 ms, from 38, and the transient one
+  5.7 ms, from 5.9, as the transient now fixes the totals on its path once,
+  when its chunk is put back.
 - Only the node classes are C# (~Bjolang.Runtime.TextTree~); every operation
   is Bjolang.
 

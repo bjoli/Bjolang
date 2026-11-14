@@ -324,6 +324,7 @@ let emptyRegistry : TraitRegistry =
       InlineMethods = Map.empty
       ConstrainedBodies = Map.empty
       InlineCopies = Set.empty
+      NotInlined = Set.empty
       Aliases = Map.empty
       Newtypes = Map.empty
       ImportAliases = Map.empty

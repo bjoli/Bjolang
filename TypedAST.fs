@@ -1893,6 +1893,10 @@ type TraitRegistry =
       /// `TraitInline` copies it into each call to the copy. The function
       /// itself is not copied into its calls, which pass dictionaries.
       InlineCopies: Set<string>
+      /// This module's functions written `#:no-inline`. Their C# methods are
+      /// marked `MethodImplOptions.NoInlining`, so that .NET keeps their calls
+      /// calls too.
+      NotInlined: Set<string>
       Aliases: Map<string, string list * HMType>
       /// The `(Newtype T)` types, by key: their parameters and what each is at
       /// run time. Unlike an alias, a newtype is a type of its own to the

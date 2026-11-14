@@ -8246,7 +8246,14 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         // Determine the C# method name for this binding. If the user defined a variable that shadows a built-in function, this assigns it a unique name so it doesn't cause a C# naming collision.
         let emittedName = Prelude.moduleMemberName name
 
-        generateMethod ctx r "public static " genericParams constraintClause emittedName args kwArgs restArg retType effect body KeywordParameters
+        // `#:no-inline` keeps the calls calls in .NET too: the JIT does not
+        // copy the method into its callers.
+        let modifiers =
+            if Set.contains name ctx.Registry.NotInlined then
+                "[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] public static "
+            else "public static "
+
+        generateMethod ctx r modifiers genericParams constraintClause emittedName args kwArgs restArg retType effect body KeywordParameters
 
         // The keyword-free entry, as a C# overload of the same name. Emitted
         // only where it can win anything: keywords that are constants and value types are
@@ -8255,7 +8262,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         // We emit the body inline rather than calling a helper method to avoid 
         // duplicating `generateMethod`'s logic for async, iterators, and generics.
         if needsKeywordFreeEntry kwArgs then
-            generateMethod ctx r "public static " genericParams constraintClause emittedName args kwArgs restArg retType effect body KeywordDefaultsOnly
+            generateMethod ctx r modifiers genericParams constraintClause emittedName args kwArgs restArg retType effect body KeywordDefaultsOnly
 
     | TType (defs, _) 
     | TTypeRec (defs, _) ->

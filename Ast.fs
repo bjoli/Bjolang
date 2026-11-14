@@ -783,7 +783,9 @@ type Decl =
     /// Records that a function's body is not published for inlining:
     /// `(defun (name args...) #:no-inline body...)`. For a function whose call
     /// is cheaper than its inlined body, such as `vec-map`, whose .NET version
-    /// copies the vec's arrays at their exact size.
+    /// copies the vec's arrays at their exact size, or a rare path that would
+    /// make the frame of a hot caller larger. Its C# method is marked
+    /// `NoInlining` too (see `TraitRegistry.NotInlined`).
     ///
     /// Carried as its own declaration, as `DSyncOnly` is. It does not survive
     /// type checking.

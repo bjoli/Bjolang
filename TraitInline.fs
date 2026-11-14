@@ -527,7 +527,8 @@ let publishBodies
         Registry =
             { env.Registry with
                 ConstrainedBodies =
-                    bodies |> List.fold (fun acc (k, v) -> Map.add k v acc) env.Registry.ConstrainedBodies } }
+                    bodies |> List.fold (fun acc (k, v) -> Map.add k v acc) env.Registry.ConstrainedBodies
+                NotInlined = noInline } }
 
 // ---------------------------------------------------------------------------
 // The pass

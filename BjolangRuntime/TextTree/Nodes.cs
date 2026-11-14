@@ -12,6 +12,7 @@
  */
 
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
 using BjoString;
 
 namespace Bjolang.Runtime.TextTree;
@@ -20,8 +21,9 @@ namespace Bjolang.Runtime.TextTree;
 // including those on one node; this file only declares the nodes and gives
 // Bjolang access to their inline arrays, which it cannot declare.
 //
-// - A node has up to `Capacity` children and keeps, for each, its length in
-//   bytes and its number of newlines.
+// - A node has up to `Capacity` children. It keeps, for each, the bytes up to
+//   the end of that child (`Ends`, a running total) and the child's number of
+//   newlines. `Ends` past `Count` holds anything.
 // - A `TextLeaves` node's children are chunks: strings of valid UTF-8 that
 //   start and end on character boundaries. A `TextBranch` node's children are
 //   nodes, all of the same kind and height.
@@ -57,7 +59,7 @@ public abstract class TextNode
 
     public long Owner;
     public int Count;
-    public TextInts Bytes;
+    public TextInts Ends;
     public TextInts Lines;
 
     protected TextNode(long owner) => Owner = owner;
@@ -66,7 +68,7 @@ public abstract class TextNode
     {
         Owner = owner;
         Count = original.Count;
-        Bytes = original.Bytes;
+        Ends = original.Ends;
         Lines = original.Lines;
     }
 }
@@ -133,10 +135,25 @@ public static class TextNodes
     public static void SetCount(TextNode node, int count) => node.Count = count;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int Bytes(TextNode node, int i) => node.Bytes[i];
+    public static int End(TextNode node, int i) => node.Ends[i];
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void SetBytes(TextNode node, int i, int bytes) => node.Bytes[i] = bytes;
+    public static void SetEnd(TextNode node, int i, int end) => node.Ends[i] = end;
+
+    /// The ends of the first <paramref name="count"/> children.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ReadOnlySpan<int> Ends(TextNode node, int count) =>
+        ((ReadOnlySpan<int>)node.Ends).Slice(0, count);
+
+    /// The ends of slots <paramref name="from"/> to <paramref name="from"/> + 3,
+    /// including those past `Count`.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<int> Ends4(TextNode node, int from) =>
+        Vector128.Create(((ReadOnlySpan<int>)node.Ends).Slice(from, 4));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void SetEnds4(TextNode node, int from, Vector128<int> ends) =>
+        ends.CopyTo(((Span<int>)node.Ends).Slice(from, 4));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int Lines(TextNode node, int i) => node.Lines[i];

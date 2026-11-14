@@ -75,6 +75,8 @@
   (TextLeaves (: Bjolang.Runtime.TextTree.TextLeaves))
   (StringWalk (: Bjolang.Runtime.StringWalk)))
 
+(import/class ((Lanes %a) (: System.Runtime.Intrinsics.Vector128)))
+
 (import/extern
   (new-branch      (: Bjolang.Runtime.TextTree.TextNodes.NewBranch   (-> long TextBranch)))
   (new-leaves      (: Bjolang.Runtime.TextTree.TextNodes.NewLeaves   (-> long TextLeaves)))
@@ -87,8 +89,11 @@
   (node-owner      (: Bjolang.Runtime.TextTree.TextNodes.Owner       (-> TextNode long)))
   (node-count      (: Bjolang.Runtime.TextTree.TextNodes.Count       (-> TextNode int)))
   (set-count!      (: Bjolang.Runtime.TextTree.TextNodes.SetCount    (-> TextNode int void)))
-  (slot-bytes      (: Bjolang.Runtime.TextTree.TextNodes.Bytes       (-> TextNode int int)))
-  (set-slot-bytes! (: Bjolang.Runtime.TextTree.TextNodes.SetBytes    (-> TextNode int int void)))
+  (slot-end        (: Bjolang.Runtime.TextTree.TextNodes.End         (-> TextNode int int)))
+  (set-slot-end!   (: Bjolang.Runtime.TextTree.TextNodes.SetEnd      (-> TextNode int int void)))
+  (slot-ends       (: Bjolang.Runtime.TextTree.TextNodes.Ends        (-> TextNode int (RoSpan int))))
+  (slot-ends4      (: Bjolang.Runtime.TextTree.TextNodes.Ends4       (-> TextNode int (Lanes int))))
+  (set-slot-ends4! (: Bjolang.Runtime.TextTree.TextNodes.SetEnds4    (-> TextNode int (Lanes int) void)))
   (slot-lines      (: Bjolang.Runtime.TextTree.TextNodes.Lines       (-> TextNode int int)))
   (set-slot-lines! (: Bjolang.Runtime.TextTree.TextNodes.SetLines    (-> TextNode int int void)))
   (kid             (: Bjolang.Runtime.TextTree.TextNodes.Kid         (-> TextBranch int TextNode)))
@@ -113,6 +118,13 @@
   (span-compare    (: System.MemoryExtensions.SequenceCompareTo (-> (RoSpan byte) (RoSpan byte) int)))
   (span-find-last  (: System.MemoryExtensions.LastIndexOf       (-> (RoSpan byte) (RoSpan byte) int)))
   (span-last-index-of (: System.MemoryExtensions.LastIndexOf    (-> (RoSpan byte) byte int)))
+  (span-first-outside (: System.MemoryExtensions.IndexOfAnyExceptInRange (-> (RoSpan int) int int int)))
+  ;; Four ints at once.
+  (lanes-splat     (: System.Runtime.Intrinsics.Vector128.Create (-> int (Lanes int))))
+  (lanes-of        (: System.Runtime.Intrinsics.Vector128.Create (-> int int int int (Lanes int))))
+  (lanes-add       (: System.Runtime.Intrinsics.Vector128.Add (-> (Lanes int) (Lanes int) (Lanes int))))
+  (lanes-and       (: System.Runtime.Intrinsics.Vector128.BitwiseAnd (-> (Lanes int) (Lanes int) (Lanes int))))
+  (lanes-ge        (: System.Runtime.Intrinsics.Vector128.GreaterThanOrEqual (-> (Lanes int) (Lanes int) (Lanes int))))
   ;; The full 128-bit product, one mulx.
   (big-mul         (: System.Math.BigMul (-> ulong ulong uint128))))
 
@@ -183,10 +195,45 @@
     ((= h 1) (leaves-node (copy-leaves (as-leaves n) o)))
     (else (branch-node (copy-branch (as-branch n) o)))))
 
+;; The bytes before slot `i` of `n`.
+(: (-> TextNode int int))
+(defun (slot-base n i) #:inline (if (= i 0) 0 (slot-end n (- i 1))))
+
+(: (-> TextNode int int))
+(defun (slot-bytes n i) #:inline (- (slot-end n i) (slot-base n i)))
+
+;; The slot numbers of 4 lanes from `from`.
+(def lanes-0 (lanes-of 0 1 2 3))
+(def lanes-4 (lanes-of 4 5 6 7))
+(def lanes-8 (lanes-of 8 9 10 11))
+(def lanes-12 (lanes-of 12 13 14 15))
+
+;; Adds `d` to the 4 ends from slot `from` that are of slot `i` or after.
+(: (-> TextNode int (Lanes int) (Lanes int) (Lanes int) void))
+(defun (add-ends4! n from slots i d) #:inline
+  (set-slot-ends4! n from (lanes-add (slot-ends4 n from) (lanes-and (lanes-ge slots i) d))))
+
+;; Adds `d` to the ends of slot `i` and every slot after it, including those
+;; past the count, 4 at a time with no branch.
+(: (-> TextNode int int void))
+(defun (add-slot-bytes! n i d)
+  (def li (lanes-splat i))
+  (def ld (lanes-splat d))
+  (add-ends4! n 0 lanes-0 li ld)
+  (add-ends4! n 4 lanes-4 li ld)
+  (add-ends4! n 8 lanes-8 li ld)
+  (add-ends4! n 12 lanes-12 li ld))
+
+;; Slot `i` of `n` holds `b` bytes; the slots after it, up to the count, keep
+;; theirs.
+(: (-> TextNode int int void))
+(defun (set-slot-bytes! n i b) #:inline
+  (add-slot-bytes! n i (- b (slot-bytes n i))))
+
 (: (-> TextNode int))
 (defun (sum-bytes n)
   (def count (node-count n))
-  (let go ((i 0) (acc 0)) (if (< i count) (go (+ i 1) (+ acc (slot-bytes n i))) acc)))
+  (if (= count 0) 0 (slot-end n (- count 1))))
 
 (: (-> TextNode int))
 (defun (sum-lines n)
@@ -207,22 +254,34 @@
   (set-slot-bytes! n i (sum-bytes k))
   (set-slot-lines! n i (sum-lines k)))
 
-;; Copies slot `from` of `src` to slot `to` of `dst`, both of height `h`.
-(: (-> int TextNode int TextNode int void))
-(defun (copy-slot! h src from dst to)
-  (set-slot-bytes! dst to (slot-bytes src from))
+;; Copies slot `from` of `src` to slot `to` of `dst`, both of height `h`. The
+;; end of the slot is that of `src` plus `d`.
+(: (-> int TextNode int TextNode int int void))
+(defun (copy-slot! h src from dst to d)
+  (set-slot-end! dst to (+ (slot-end src from) d))
   (set-slot-lines! dst to (slot-lines src from))
   (if (= h 1)
       (set-chunk! (as-leaves dst) to (chunk-at (as-leaves src) from))
       (set-kid! (as-branch dst) to (kid (as-branch src) from))))
 
+;; Copies `n` slots of `src` from `from` to `dst` from `to`, adding `d` to
+;; their ends. The ranges may overlap in one node.
+(: (-> int TextNode int TextNode int int int void))
+(defun (shift-slots! h src from dst to n d)
+  (if (<= to from)
+      (loop (:for i (range 0 n)) (:do (copy-slot! h src (+ from i) dst (+ to i) d)))
+      (loop (:for i (down-from (- n 1) #:to 0)) (:do (copy-slot! h src (+ from i) dst (+ to i) d)))))
+
 ;; Copies `n` slots of `src` from `from` to `dst` from `to`. The ranges may
 ;; overlap in one node.
+;;
+;; - The moved slots keep their bytes, after the bytes before slot `to` of
+;;   `dst`.
+;; - The ends of the slots of `dst` after the moved ones are stale, until they
+;;   are overwritten or past the count.
 (: (-> int TextNode int TextNode int int void))
 (defun (move-slots! h src from dst to n)
-  (if (<= to from)
-      (loop (:for i (range 0 n)) (:do (copy-slot! h src (+ from i) dst (+ to i))))
-      (loop (:for i (down-from (- n 1) #:to 0)) (:do (copy-slot! h src (+ from i) dst (+ to i))))))
+  (shift-slots! h src from dst to n (- (slot-base dst to) (slot-base src from))))
 
 ;; Empties slots `from` to `to`, so that they keep nothing alive.
 (: (-> int TextNode int int void))
@@ -276,7 +335,8 @@
   (set-count! l (+ cl cr)))
 
 ;; Moves slots between the editable neighbours `l` and `r` until each has
-;; half of them.
+;; half of them. Moving slots to the front of `r` first shifts its slots right
+;; by the bytes that come.
 (: (-> int TextNode TextNode void))
 (defun (even-out! h l r)
   (def cl (node-count l))
@@ -285,7 +345,7 @@
   (cond
     ((> cl target)
      (def k (- cl target))
-     (move-slots! h r 0 r k cr)
+     (shift-slots! h r 0 r k cr (- (slot-end l (- cl 1)) (slot-base l target)))
      (move-slots! h l target r 0 k)
      (clear-slots! h l target cl)
      (set-count! l target)
@@ -299,23 +359,36 @@
      (set-count! r (- cr k)))
     (else unit)))
 
+;; As `slot-starting`, by comparing the ends in turn. For a step to the next
+;; or previous chunk, whose slot is predictable: the loop is small enough for
+;; .NET to inline into a per-character loop without taking its registers.
+(: (-> TextNode int (Tuple int int)))
+(defun (slot-scanning n at)
+  (def last (- (node-count n) 1))
+  (let go ((i 0) (base 0))
+    (def e (slot-end n i))
+    (if (and (< i last) (<= e at)) (go (+ i 1) e) (Tuple i (- at base)))))
+
 ;; The slot of `n` whose bytes hold offset `at`, and the offset in it. An
 ;; offset between two slots is the end of the first.
+;;
+;; - One vectorized search of the ends, with no branch on the slot it finds:
+;;   a lookup at an arbitrary offset costs no misprediction at each level.
 (: (-> TextNode int (Tuple int int)))
 (defun (slot-ending n at)
   (def last (- (node-count n) 1))
-  (let go ((i 0) (at at))
-    (def b (slot-bytes n i))
-    (if (and (< i last) (> at b)) (go (+ i 1) (- at b)) (Tuple i at))))
+  (def i (if (<= at 0) 0 (span-first-outside (slot-ends n last) 0 (- at 1))))
+  (def j (if (< i 0) last i))
+  (Tuple j (- at (slot-base n j))))
 
 ;; As `slot-ending`, but an offset between two slots is the start of the
 ;; second.
 (: (-> TextNode int (Tuple int int)))
 (defun (slot-starting n at)
   (def last (- (node-count n) 1))
-  (let go ((i 0) (at at))
-    (def b (slot-bytes n i))
-    (if (and (< i last) (>= at b)) (go (+ i 1) (- at b)) (Tuple i at))))
+  (def i (span-first-outside (slot-ends n last) 0 at))
+  (def j (if (< i 0) last i))
+  (Tuple j (- at (slot-base n j))))
 
 ;; ---------------------------------------------------------------------------
 ;; The text
@@ -454,6 +527,17 @@
       (Tuple (.small r) 0)
       (let go ((n (.root r)) (h (.height r)) (k at))
         (def (Tuple i k2) (slot-starting n k))
+        (if (= h 1)
+            (Tuple (chunk-at (as-leaves n) i) (- at k2))
+            (go (kid (as-branch n) i) (- h 1) k2)))))
+
+;; As `chunk-of`, with `slot-scanning`: for the step to a neighbouring chunk.
+(: (-> Text int (Tuple string int)))
+(defun (chunk-scanning r at)
+  (if (= (.height r) 0)
+      (Tuple (.small r) 0)
+      (let go ((n (.root r)) (h (.height r)) (k at))
+        (def (Tuple i k2) (slot-scanning n k))
         (if (= h 1)
             (Tuple (chunk-at (as-leaves n) i) (- at k2))
             (go (kid (as-branch n) i) (- h 1) k2)))))
@@ -877,8 +961,13 @@
 
 (: (-> string int string void))
 (defun (check-boundary s k who)
-  (unless (boundary? s k)
-    (bad-argument (str who ": the offset is in the middle of a character."))))
+  (unless (boundary? s k) (inside-character who)))
+
+;; Raises that an offset is inside a character. Not inlined, as
+;; `cursor-at-edge`.
+(: (-> string void))
+(defun (inside-character who) #:no-inline
+  (bad-argument (str who ": the offset is in the middle of a character.")))
 
 ;; Merges the chunk at slot `i` of the editable leaves node `n` with a
 ;; neighbour when it is shorter than `chunk-min`: into one chunk if they fit,
@@ -951,8 +1040,13 @@
 
 (: (-> Text int string void))
 (defun (check-offset r at who)
-  (when (or (< at 0) (> at (.bytes r)))
-    (out-of-range #"${who}: the offset ${at} is outside the text, of ${(.bytes r)} bytes.")))
+  (when (or (< at 0) (> at (.bytes r))) (offset-outside who at (.bytes r))))
+
+;; Raises that `at` is outside a text of `bytes` bytes. Not inlined, as
+;; `cursor-at-edge`.
+(: (-> string int int void))
+(defun (offset-outside who at bytes) #:no-inline
+  (out-of-range #"${who}: the offset ${at} is outside the text, of ${bytes} bytes."))
 
 (: (-> Text int (Tuple Text Text)))
 (defun (text-split r at) (split-with r at "text-split" (owner-next)))
@@ -1029,7 +1123,7 @@
 (: (-> TextNode int int TextNode int string int long void))
 (defun (into-kid! n h i child k s sl o)
   (insert-into! child (- h 1) k s sl o)
-  (set-slot-bytes! n i (+ (slot-bytes n i) (string-length s)))
+  (add-slot-bytes! n i (string-length s))
   (set-slot-lines! n i (+ (slot-lines n i) sl)))
 
 (: (-> Text int string long Text))
@@ -1128,7 +1222,7 @@
         (def child (editable (- h 1) (kid b i) o))
         (set-kid! b i child)
         (def dl (delete-into! child (- h 1) k len o))
-        (set-slot-bytes! n i (- (slot-bytes n i) len))
+        (add-slot-bytes! n i (- len))
         (set-slot-lines! n i (- (slot-lines n i) dl))
         (when (< (node-count child) min-kids) (fix-underflow! n h i o))
         dl)))
@@ -1300,12 +1394,12 @@
 ;; The offset after the `line`-th newline of `n`, counting from 1.
 (: (-> TextNode int int int))
 (defun (line-start-in n h line)
-  (let go ((i 0) (line line) (off 0))
+  (let go ((i 0) (line line))
     (def l (slot-lines n i))
     (cond
-      ((> line l) (go (+ i 1) (- line l) (+ off (slot-bytes n i))))
-      ((= h 1) (+ off (nth-newline-end (chunk-at (as-leaves n) i) line)))
-      (else (+ off (line-start-in (kid (as-branch n) i) (- h 1) line))))))
+      ((> line l) (go (+ i 1) (- line l)))
+      ((= h 1) (+ (slot-base n i) (nth-newline-end (chunk-at (as-leaves n) i) line)))
+      (else (+ (slot-base n i) (line-start-in (kid (as-branch n) i) (- h 1) line))))))
 
 (: (-> Text int string void))
 (defun (check-line r n who)
@@ -1335,13 +1429,11 @@
   (if (= (.height r) 0)
       (newlines-between (.small r) 0 at)
       (let go ((n (.root r)) (h (.height r)) (at at) (acc 0))
-        (def last (- (node-count n) 1))
-        (let find ((i 0) (at at) (acc acc))
-          (def b (slot-bytes n i))
-          (cond
-            ((and (< i last) (>= at b)) (find (+ i 1) (- at b) (+ acc (slot-lines n i))))
-            ((= h 1) (+ acc (newlines-between (chunk-at (as-leaves n) i) 0 at)))
-            (else (go (kid (as-branch n) i) (- h 1) at acc)))))))
+        (def (Tuple i k) (slot-starting n at))
+        (def before (let sum ((j 0) (acc acc)) (if (< j i) (sum (+ j 1) (+ acc (slot-lines n j))) acc)))
+        (if (= h 1)
+            (+ before (newlines-between (chunk-at (as-leaves n) i) 0 k))
+            (go (kid (as-branch n) i) (- h 1) k before)))))
 
 ;; Line `n`, without its newline.
 (: (-> Text int string))
@@ -1677,7 +1769,7 @@
 ;; The walk over the chunk that starts at `at`.
 (: (-> Text int TextWalk))
 (defun (text-walk-at r at)
-  (def (Tuple c _) (chunk-of r at))
+  (def (Tuple c _) (chunk-scanning r at))
   (TextWalk (text r) (walk (string-walk c)) (next (+ at (string-length c)))))
 
 (: (-> TextWalk TextWalk))
@@ -1769,10 +1861,20 @@
 (defun (end-cursor r)
   (TextCursor (text r) (chunk "") (start (.bytes r)) (end (.bytes r)) (at (.bytes r))))
 
-;; The cursor at `at`, a boundary below the length of `r`.
+;; The cursor at `at`, a boundary below the length of `r`, found by
+;; `chunk-of`.
+;;
+;; - Not inlined: inlined into a loop that starts with it, the descent takes
+;;   the room .NET would inline the loop's steps with.
 (: (-> Text int TextCursor))
-(defun (cursor-in r at)
+(defun (cursor-in r at) #:no-inline
   (def (Tuple c start) (chunk-of r at))
+  (TextCursor (text r) (chunk c) (start start) (end (+ start (string-length c))) (at at)))
+
+;; As `cursor-in`, for a step into the next or previous chunk.
+(: (-> Text int TextCursor))
+(defun (cursor-stepped r at)
+  (def (Tuple c start) (chunk-scanning r at))
   (TextCursor (text r) (chunk c) (start start) (end (+ start (string-length c))) (at at)))
 
 (: (-> Text int TextCursor))
@@ -1806,13 +1908,17 @@
 
 (: (-> TextCursor string void))
 (defun (check-not-end c who)
-  (when (text-cursor-end? c)
-    (out-of-range #"${who}: the cursor is at the end of the text.")))
+  (when (text-cursor-end? c) (cursor-at-edge who "end")))
 
 (: (-> TextCursor string void))
 (defun (check-not-start c who)
-  (when (text-cursor-start? c)
-    (out-of-range #"${who}: the cursor is at the start of the text.")))
+  (when (text-cursor-start? c) (cursor-at-edge who "start")))
+
+;; Raises that the cursor is at the `edge` of the text. Not inlined, so that
+;; the message is not built in the steps that check.
+(: (-> string string void))
+(defun (cursor-at-edge who edge) #:no-inline
+  (out-of-range #"${who}: the cursor is at the ${edge} of the text."))
 
 ;; The character at `c`, which is not at the end.
 (: (-> TextCursor char))
@@ -1823,7 +1929,7 @@
 (defun (moved-to c to)
   (cond
     ((< to (.end c)) (record-set c (at to)))
-    ((< to (.bytes (.text c))) (cursor-in (.text c) to))
+    ((< to (.bytes (.text c))) (cursor-stepped (.text c) to))
     (else (end-cursor (.text c)))))
 
 ;; The cursor after the character at `c`, which is not at the end.
@@ -1844,7 +1950,7 @@
 ;; The cursor on the character before `c`, which is not at the start.
 (: (-> TextCursor TextCursor))
 (defun (step-prev c)
-  (def p (if (> (.at c) (.start c)) c (cursor-in (.text c) (- (.at c) 1))))
+  (def p (if (> (.at c) (.start c)) c (cursor-stepped (.text c) (- (.at c) 1))))
   (def sp (.AsSpan (.chunk p)))
   (let go ((k (- (- (.at c) 1) (.start p))))
     (if (and (> k 0) (= (bitwise-and (byte-at sp k) 192) 128))
@@ -2022,8 +2128,9 @@
 ;;   `hot-len`, which starts at byte `hot-start` of the text. `path` holds the
 ;;   nodes down to it, the leaves node first, and `slots` the slot taken in
 ;;   each. `hot-len` is -1 when no chunk is hot.
-;; - An edit inside the hot chunk moves bytes in `buf` and adds to the counts
-;;   on the path, and allocates nothing. It must leave the chunk at most
+;; - An edit inside the hot chunk moves bytes in `buf` and adds to the newline
+;;   counts on the path, and allocates nothing. The byte counts on the path
+;;   stay those of the old string until `cool!`. It must leave the chunk at most
 ;;   `chunk-max` bytes, and not empty unless the text is one string.
 ;; - While a chunk is hot, `bytes` and `lines` are the text's, not those in
 ;;   `text`, and when `dirty?` its slot holds an old string. `cool!` puts the
@@ -2113,16 +2220,23 @@
                 (set-kid! b i child)
                 (go child (- lvl 1) k (+ start (- at k)))))))))
 
-;; Adds `db` bytes and `dl` newlines to the slots on the path to the hot chunk.
-(: (-> TransientText int int void))
-(defun (adjust-path! t db dl)
+;; Adds `dl` newlines to the slots on the path to the hot chunk.
+(: (-> TransientText int void))
+(defun (adjust-path-lines! t dl)
   (def path (.path t))
   (def slots (.slots t))
   (loop (:for lvl (range 0 (.height (.text t))))
         (:do (def n (array-ref path lvl))
              (def i (array-ref slots lvl))
-             (set-slot-bytes! n i (+ (slot-bytes n i) db))
              (set-slot-lines! n i (+ (slot-lines n i) dl)))))
+
+;; Adds `db` bytes to the slots on the path to the hot chunk.
+(: (-> TransientText int void))
+(defun (adjust-path-bytes! t db)
+  (def path (.path t))
+  (def slots (.slots t))
+  (loop (:for lvl (range 0 (.height (.text t))))
+        (:do (add-slot-bytes! (array-ref path lvl) (array-ref slots lvl) db))))
 
 ;; Whether an edit at `at` is near enough the last one to make its chunk hot.
 (: (-> TransientText int bool))
@@ -2144,7 +2258,7 @@
         (array-copy! buf k buf (+ k slen) (- len k))
         (copy-into! s buf k)
         (def sl (newlines-in s))
-        (adjust-path! t slen sl)
+        (adjust-path-lines! t sl)
         (record-set! t (hot-len (+ len slen)) (dirty? #t) (bytes (+ (.bytes t) slen)) (lines (+ (.lines t) sl)))
         #t)
       #f))
@@ -2163,7 +2277,7 @@
           (bad-argument "text-delete: the offset is in the middle of a character."))
         (def dl (span-count (ro-span-slice (array->ro-span buf) #:from k #:to e) newline))
         (array-copy! buf e buf k (- len e))
-        (adjust-path! t (- k e) (- dl))
+        (adjust-path-lines! t (- dl))
         (record-set! t (hot-len (- len (- e k))) (dirty? #t) (bytes (- (.bytes t) (- e k))) (lines (- (.lines t) dl)))
         #t)
       #f))
@@ -2187,6 +2301,7 @@
           (def slots (.slots t))
           (def o (.owner t))
           (def leaves (array-ref path 0))
+          (adjust-path-bytes! t (- len (slot-bytes leaves (array-ref slots 0))))
           (set-chunk! (as-leaves leaves) (array-ref slots 0) c)
           (when (< len chunk-min)
             (merge-small-chunk! leaves (array-ref slots 0))
