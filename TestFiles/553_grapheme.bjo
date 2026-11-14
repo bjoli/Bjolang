@@ -1,0 +1,125 @@
+(import (std prelude))
+(import (std simpletest))
+(import (std unicode grapheme))
+(import (std text))
+
+(include "assets/unicode/grapheme-cases.protobjo")
+
+;; The value of a hex number.
+(: (-> string int))
+(defun (hex->int s)
+  (loop (:for ch s)
+        (:acc n (folding 0 (+ (* 16 n) (let ((d (char->integer ch))) (if (<= d 57) (- d 48) (- d 55))))))))
+
+;; A case as its clusters: the text between the "/" of its line.
+(: (-> string (Vec string)))
+(defun (clusters-of line)
+  (def tokens (vec-filter (fun (t) (not (string-empty? t))) (string-split line " ")))
+  (def sb (stringbuilder-empty))
+  (def out (loop (:for t tokens)
+                 (:acc (vecing (cond
+                                 ((= t "/") (let ((c (stringbuilder->string sb))) (stringbuilder-clear! sb) c))
+                                 ((= t "x") "")
+                                 (else (stringbuilder-add! sb (integer->char (hex->int t))) ""))))))
+  (vec-filter (fun (c) (not (string-empty? c))) out))
+
+;; The clusters from the end back to the start, in order.
+(: (-> string (Vec string)))
+(defun (backward-clusters s)
+  (let go ((c (string-cursor-end s)) (acc '()))
+    (if (string-cursor=? c (string-cursor-start s))
+        (list->vec acc)
+        (begin
+          (def p (string-cursor-prev-grapheme s c))
+          (go p (cons (substring s p c) acc))))))
+
+;; The clusters of `r` from the end back to the start, in order.
+(: (-> Text (Vec string)))
+(defun (text-backward-clusters r)
+  (let go ((c (text-cursor-end r)) (acc '()))
+    (if (text-cursor-start? r c)
+        (list->vec acc)
+        (begin
+          (def p (text-cursor-prev-grapheme r c))
+          (go p (cons (text->string (text-substring r p c)) acc))))))
+
+;; Whether `string-cursor-grapheme-boundary?` holds exactly at the joins of
+;; `clusters`.
+(: (-> string (Vec string) bool))
+(defun (boundaries-agree? s clusters)
+  (def n (string-count s))
+  (def (: at (Array bool)) (make-array (+ n 1)))
+  (array-set! at 0 #t)
+  (ignore (loop (:for c clusters)
+                (:acc k (folding 0 (let ((k2 (+ k (string-count c)))) (array-set! at k2 #t) k2)))))
+  (loop (:for i (range 0 (+ n 1)))
+        (:acc ok (folding #t
+                   (and ok (= (string-cursor-grapheme-boundary? s (string-cursor-forward s (string-cursor-start s) i))
+                              (array-ref at i)))))))
+
+;; The cases that fail, with what went wrong.
+(: (-> (Vec string)))
+(defun (failures)
+  (def lines (vec-filter (fun (l) (not (string-empty? l))) (vec-map string-trim (string-split grapheme-cases "\n"))))
+  (loop (:for line lines)
+        (:acc (vecing
+                (begin
+                  (def want (clusters-of line))
+                  (def s (string-join want ""))
+                  (cond
+                    ((not (= (string->graphemes s) want)) #"forward: ${line}")
+                    ((not (= (backward-clusters s) want)) #"backward: ${line}")
+                    ((not (= (string-grapheme-count s) (vec-length want))) #"count: ${line}")
+                    ((not (boundaries-agree? s want)) #"boundary?: ${line}")
+                    ((not (= (vec-map text->string (text->graphemes (string->text s))) want)) #"text forward: ${line}")
+                    ((not (= (text-backward-clusters (string->text s)) want)) #"text backward: ${line}")
+                    (else "")))))))
+
+;; `n` copies of the characters `codes`.
+(: (-> int (Vec int) string))
+(defun (repeated n codes)
+  (def sb (stringbuilder-empty))
+  (loop (:for _ (range 0 n)) (:do (loop (:for k codes) (:do (stringbuilder-add! sb (integer->char k))))))
+  (stringbuilder->string sb))
+
+;; How many clusters a loop back from the end of `s` finds.
+(: (-> string int))
+(defun (count-back s)
+  (let go ((c (string-cursor-end s)) (n 0))
+    (if (string-cursor=? c (string-cursor-start s)) n (go (string-cursor-prev-grapheme s c) (+ n 1)))))
+
+;; How many clusters a loop back from the end of `r` finds.
+(: (-> Text int))
+(defun (text-count-back r)
+  (let go ((c (text-cursor-end r)) (n 0))
+    (if (text-cursor-start? r c) n (go (text-cursor-prev-grapheme r c) (+ n 1)))))
+
+(defun (main)
+  (expect "the table is of the cases' version" grapheme-unicode-version grapheme-cases-version)
+  (def bad (vec-filter (fun (f) (not (string-empty? f))) (failures)))
+  (loop (:for f (vec-take bad (min 20 (vec-length bad)))) (:do (println f)))
+  (expect "every case of GraphemeBreakTest.txt" (vec-length bad) 0)
+
+  ;; Long clusters and runs, which a loop must not take quadratic time over.
+  (def flags (repeated 20000 [0x1F1E6 0x1F1E7]))
+  (expect "flags: forward" (string-grapheme-count flags) 20000)
+  (expect "flags: backward" (count-back flags) 20000)
+  (def odd-flags (string-append (repeated 1 [0x1F1E6]) flags))
+  (expect "an odd run of flags: forward" (string-grapheme-count odd-flags) 20001)
+  (expect "an odd run of flags: backward" (count-back odd-flags) 20001)
+  (expect "an odd run of flags: they pair from the start, so the last is alone"
+          (string-count (substring odd-flags (string-cursor-prev-grapheme odd-flags (string-cursor-end odd-flags))
+                                   (string-cursor-end odd-flags)))
+          1)
+  (def marks (string-append "a" (repeated 50000 [0x308])))
+  (expect "50000 marks: one cluster forward" (string-cursor-next-grapheme marks (string-cursor-start marks)) (string-cursor-end marks))
+  (expect "50000 marks: one cluster backward" (string-cursor-prev-grapheme marks (string-cursor-end marks)) (string-cursor-start marks))
+  (def family (string-append (repeated 20000 [0x1F468 0x200D]) (repeated 1 [0x1F468])))
+  (expect "a zwj chain of 20001: one cluster" (string-grapheme-count family) 1)
+  (expect "a zwj chain of 20001: back" (count-back family) 1)
+  (def tflags (string->text odd-flags))
+  (expect "text: an odd run of flags, forward" (text-grapheme-count tflags) 20001)
+  (expect "text: an odd run of flags, backward" (text-count-back tflags) 20001)
+  (expect "text: 50000 marks" (text-count-back (string->text marks)) 1)
+  (expect "text: clusters as texts" (vec-map text->string (text->graphemes (string->text "é\r\n🇸🇪"))) ["é" "\r\n" "🇸🇪"])
+  0)

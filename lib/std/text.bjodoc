@@ -49,6 +49,11 @@
     time. Lines are separated by @code{"\n"} and counted from 0; a text has
     one line more than it has newlines.
 
+    @strong{Graphemes.} @code{text-cursor-next-grapheme} and
+    @code{text-cursor-prev-grapheme} step by grapheme clusters, the
+    characters a reader sees, by the rules of @code{(std unicode grapheme)},
+    as an editor's arrow keys and backspace do.
+
     @strong{Structure.} Text is held in chunks of at most 1024 bytes, in
     nodes of up to 16 children, each with the bytes, newlines and characters
     of every child. A text of at most 1024 bytes is a single string and no
@@ -797,6 +802,60 @@
   (example """
     (loop (:for ch (text-backward r (text-cursor-end r))) (:acc (stringing ch)))   ; r reversed
     """))
+
+;; ---------------------------------------------------------------------------
+;; Grapheme clusters
+;; ---------------------------------------------------------------------------
+
+(:doc text-cursor-next-grapheme
+  (summary "The cursor after the grapheme cluster that starts at a cursor.")
+  (arg r "The text.")
+  (arg c "A cursor of r on a cluster boundary, not at the end.")
+  (returns "The cursor at the end of the cluster that starts at c, which is the next boundary.")
+  (raises System.ArgumentOutOfRangeException "When c is at the end of r.")
+  (see text-cursor-prev-grapheme text-cursor-next string-cursor-next-grapheme)
+  (example """
+    ;; The right arrow of an editor.
+    (def caret2 (text-cursor-next-grapheme r caret))
+    """)
+  (reference """
+    The rules are those of @code{(std unicode grapheme)}, which also says
+    what a cluster boundary is and what the steps cost. A cluster may cross
+    chunks. Between two bytes of printable ASCII, the step reads only those.
+    """))
+
+(:doc text-cursor-prev-grapheme
+  (summary "The cursor at the start of the grapheme cluster that ends at a cursor.")
+  (arg r "The text.")
+  (arg c "A cursor of r on a cluster boundary, not at the start.")
+  (returns "The cursor at the start of the cluster before c, which is the boundary before.")
+  (raises System.ArgumentOutOfRangeException "When c is at the start of r.")
+  (see text-cursor-next-grapheme text-cursor-prev string-cursor-prev-grapheme)
+  (example """
+    ;; Backspace: delete the cluster before the caret.
+    (text-delete r (text-cursor-prev-grapheme r caret) caret)
+    """)
+  (reference "A loop back over a text takes O(n) time: see (std unicode grapheme)."))
+
+(:doc text-cursor-grapheme-boundary?
+  (summary "Whether a cursor is on a grapheme cluster boundary.")
+  (arg r "The text.")
+  (arg c "A cursor of r.")
+  (returns "#t at the start, at the end, and between two clusters.")
+  (see text-cursor-next-grapheme string-cursor-grapheme-boundary?)
+  (reference "Use it on a cursor that came from elsewhere, such as text-cursor-forward, before stepping by clusters from it."))
+
+(:doc text-grapheme-count
+  (summary "The number of grapheme clusters in a text.")
+  (arg r "The text.")
+  (returns "How many clusters r holds: 0 for the empty text. O(n) time.")
+  (see text->graphemes text-count string-grapheme-count))
+
+(:doc text->graphemes
+  (summary "The grapheme clusters of a text.")
+  (arg r "The text.")
+  (returns "A vec of the clusters of r, in order, each a text.")
+  (see text-grapheme-count text-cursor-next-grapheme string->graphemes))
 
 ;; ---------------------------------------------------------------------------
 ;; Chunks

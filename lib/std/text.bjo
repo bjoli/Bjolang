@@ -34,6 +34,7 @@
 
 (import (std prelude))
 (import (std atomic))
+(import (std unicode grapheme))
 
 (:doc #:file "text.bjodoc")
 
@@ -60,6 +61,9 @@
   text-cursor-search text-cursor-search-backward text-cursor-find text-cursor-find-backward
   text-cursor=? text-cursor<? text-cursor>? text-cursor<=? text-cursor>=?
   text-backward
+  ;; Grapheme clusters
+  text-cursor-next-grapheme text-cursor-prev-grapheme text-cursor-grapheme-boundary?
+  text-grapheme-count text->graphemes
   ;; Chunks
   text-fold-chunks text-for-each-chunk text-chunk-count
   ;; Builders
@@ -2616,6 +2620,113 @@
   (defun (iterable-done? b s) (.done? s))
   (defun (iterable-current b s) (char-at (.on s)))
   (defun (iterable-next b s) (backward-from (.on s))))
+
+;; ---------------------------------------------------------------------------
+;; Grapheme clusters
+;; ---------------------------------------------------------------------------
+
+;; The front end of (std unicode grapheme) for texts. Its cursors must be on
+;; a cluster boundary, as the string front end's are.
+
+;; The cursor after the cluster that starts at `c`, a cluster boundary of `r`.
+;; - Between two bytes of printable ASCII in the chunk, the next byte.
+(: (-> Text TextCursor TextCursor))
+(defun (text-cursor-next-grapheme r c)
+  (check-not-end c "text-cursor-next-grapheme")
+  (def sp (.AsSpan (.chunk c)))
+  (def k (- (.at c) (.start c)))
+  (if (and (< (+ k 1) (ro-span-length sp)) (grapheme-plain-break? (byte-at sp k) (byte-at sp (+ k 1))))
+      (record-set c (at (+ (.at c) 1)))
+      (next-grapheme-by-rules r c)))
+
+(: (-> Text TextCursor TextCursor))
+(defun (next-grapheme-by-rules r c)
+  (def (Tuple ch0 c1) (text-cursor-ref+next r c))
+  (let go ((st (grapheme-start ch0)) (c c1))
+    (if (at-end? c)
+        c
+        (begin
+          (def (Tuple ch nxt) (text-cursor-ref+next r c))
+          (def st2 (grapheme-step st ch))
+          (if (grapheme-break? st2) c (go st2 nxt))))))
+
+;; The backward state `w` once known, reading back from `k`, the cursor of
+;; the last character given.
+(: (-> Text int TextCursor int))
+(defun (text-back-resolve r w k)
+  (let more ((w w) (k k))
+    (cond
+      ((not (grapheme-back-wants? w)) w)
+      ((at-start? k) (grapheme-back-sot w))
+      (else
+       (begin
+         (def k2 (step-prev k))
+         (more (grapheme-back-more w (text-cursor-ref r k2)) k2))))))
+
+;; The start of the cluster that ends at `c`, a cluster boundary of `r`.
+;; - After two bytes of printable ASCII in the chunk, the byte before.
+(: (-> Text TextCursor TextCursor))
+(defun (text-cursor-prev-grapheme r c)
+  (check-not-start c "text-cursor-prev-grapheme")
+  (def sp (.AsSpan (.chunk c)))
+  (def k (- (.at c) (.start c)))
+  (if (and (>= k 2) (grapheme-plain-break? (byte-at sp (- k 2)) (byte-at sp (- k 1))))
+      (record-set c (at (- (.at c) 1)))
+      (prev-grapheme-by-rules r c)))
+
+(: (-> Text TextCursor TextCursor))
+(defun (prev-grapheme-by-rules r c)
+  (def c1 (step-prev c))
+  (def b1 (text-cursor-ref r c1))
+  (def w0 (if (and (grapheme-back-needs-after? b1) (not (at-end? c)))
+              (grapheme-back-start-before (text-cursor-ref r c))
+              (grapheme-back-start)))
+  ;; `bc` is the cursor of the earliest character of the cluster so far, `b`.
+  (let go ((w w0) (bc c1) (b b1))
+    (if (at-start? bc)
+        bc
+        (begin
+          (def ac (step-prev bc))
+          (def a (text-cursor-ref r ac))
+          (def w1 (grapheme-back-pair w a b))
+          (def w2 (if (grapheme-back-wants? w1) (text-back-resolve r w1 ac) w1))
+          (if (grapheme-back-break? w2) bc (go w2 ac a))))))
+
+;; Whether `c` is on a cluster boundary of `r`.
+(: (-> Text TextCursor bool))
+(defun (text-cursor-grapheme-boundary? r c)
+  (if (or (at-start? c) (at-end? c))
+      #t
+      (begin
+        (def ac (step-prev c))
+        (grapheme-back-break?
+          (text-back-resolve r (grapheme-back-pair (grapheme-back-start) (text-cursor-ref r ac) (text-cursor-ref r c)) ac)))))
+
+;; The clusters of `r`.
+(: (-> Text int))
+(defun (text-grapheme-count r)
+  (def c0 (text-cursor-start r))
+  (if (at-end? c0)
+      0
+      (begin
+        (def (Tuple ch0 c1) (text-cursor-ref+next r c0))
+        (let go ((st (grapheme-start ch0)) (c c1) (n 1))
+          (if (at-end? c)
+              n
+              (begin
+                (def (Tuple ch nxt) (text-cursor-ref+next r c))
+                (def st2 (grapheme-step st ch))
+                (go st2 nxt (if (grapheme-break? st2) (+ n 1) n))))))))
+
+;; The clusters of `r`, in order, as texts.
+(: (-> Text (Vec Text)))
+(defun (text->graphemes r)
+  (let go ((c (text-cursor-start r)) (acc '()))
+    (if (at-end? c)
+        (list->vec (list-reverse acc))
+        (begin
+          (def d (text-cursor-next-grapheme r c))
+          (go d (cons (text-substring r c d) acc))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Transients

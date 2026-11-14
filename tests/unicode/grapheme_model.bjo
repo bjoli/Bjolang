@@ -1,0 +1,121 @@
+;; Grapheme clusters on random text of the characters the rules treat
+;; differently, in long runs, as strings and as texts of many chunks.
+;;
+;; - The forward and backward state machines, and string-cursor-grapheme-
+;;   boundary? (which counts back in full and never uses the parity a boundary
+;;   gives), must agree on every boundary.
+;; - The text front end must give the clusters the string one does.
+;;
+;; The rules for two characters alone are checked by TestFiles/553_grapheme.bjo
+;; against GraphemeBreakTest.txt.
+
+(import (std prelude))
+(import (std text))
+(import (std random))
+(import (std simpletest))
+(import (std unicode grapheme))
+
+;; One of each kind of character the rules treat differently.
+(def pool
+  (vec-map integer->char
+           [0x61 0xE9 0x0D 0x0A 0x01             ; Other, CR, LF, Control
+            0x300 0x308 0x200C 0x1F3FB           ; Extend
+            0x200D                               ; ZWJ, InCB=Extend
+            0x903 0x600                          ; SpacingMark, Prepend
+            0x1F1E6 0x1F1E7                      ; Regional_Indicator
+            0x1F600 0x2764                       ; Extended_Pictographic
+            0x1100 0x1161 0x11A8 0xAC00 0xAC01   ; L V T LV LVT
+            0x915 0x94D 0x93C 0x1CF5]))          ; Consonant, Linker, InCB=Extend, Linker of GCB=Other
+
+;; A random string of up to `max` characters, partly in runs of one character.
+(: (-> RandomSource int string))
+(defun (random-string rng max)
+  (def target (random-int 0 max #:rng rng))
+  (def sb (stringbuilder-empty))
+  (let go ((n 0))
+    (when (< n target)
+      (def ch (vec-ref pool (random-int 0 (- (vec-length pool) 1) #:rng rng)))
+      (def k (if (= (random-int 0 4 #:rng rng) 0) (random-int 1 60 #:rng rng) 1))
+      (loop (:for _ (range 0 k)) (:do (stringbuilder-add! sb ch)))
+      (go (+ n k))))
+  (stringbuilder->string sb))
+
+;; `s` as a text appended from pieces cut at random characters, so that its
+;; chunks end at many places.
+(: (-> RandomSource string Text))
+(defun (cut-up rng s)
+  (def n (string-count s))
+  (def cuts (vec-sort (loop (:for _ (range 0 12)) (:acc (vecing (random-int 0 n #:rng rng))))))
+  (def at (fun (i) (string-cursor-forward s (string-cursor-start s) i)))
+  (def/mutable r (text-empty))
+  (def/mutable from 0)
+  (loop (:for k (vec-add cuts n))
+        (:do (when (> k from)
+               (set! r (text-append r (string->text (substring s (at from) (at k)))))
+               (set! from k))))
+  r)
+
+;; The clusters of `s` from the end back to the start, in order.
+(: (-> string (Vec string)))
+(defun (backward s)
+  (let go ((c (string-cursor-end s)) (acc '()))
+    (if (string-cursor=? c (string-cursor-start s))
+        (list->vec acc)
+        (begin
+          (def p (string-cursor-prev-grapheme s c))
+          (go p (cons (substring s p c) acc))))))
+
+;; The clusters of `r` from the end back to the start, in order.
+(: (-> Text (Vec string)))
+(defun (text-backward-clusters r)
+  (let go ((c (text-cursor-end r)) (acc '()))
+    (if (text-cursor-start? r c)
+        (list->vec acc)
+        (begin
+          (def p (text-cursor-prev-grapheme r c))
+          (go p (cons (text->string (text-substring r p c)) acc))))))
+
+;; Whether there is a boundary before each character of `s`, and at its end,
+;; by the forward clusters.
+(: (-> string (Vec string) (Array bool)))
+(defun (boundaries s clusters)
+  (def (: at (Array bool)) (make-array (+ (string-count s) 1)))
+  (array-set! at 0 #t)
+  (ignore (loop (:for c clusters)
+                (:acc k (folding 0 (let ((k2 (+ k (string-count c)))) (array-set! at k2 #t) k2)))))
+  at)
+
+(: (-> int bool))
+(defun (agrees? seed)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (def s (random-string rng 3000))
+  (def n (string-count s))
+  (def r (cut-up rng s))
+  (def check (fun (what ok) (unless ok (println #"seed ${seed}: ${what}")) ok))
+  (def fwd (string->graphemes s))
+  (def at (boundaries s fwd))
+  (and
+    (check "the clusters make up the string" (= (string-join fwd "") s))
+    (check "no cluster is empty" (loop (:for c fwd) (:acc ok (folding #t (and ok (not (string-empty? c)))))))
+    (check "backward" (= (backward s) fwd))
+    (check "count" (= (string-grapheme-count s) (vec-length fwd)))
+    (check "boundary?"
+           (loop (:for i (range 0 (+ n 1)))
+                 (:acc ok (folding #t (and ok (= (string-cursor-grapheme-boundary? s (string-cursor-forward s (string-cursor-start s) i))
+                                                 (array-ref at i)))))))
+    (check "text: chunks" (> (text-chunk-count r) (if (> (string-length s) 2048) 1 0)))
+    (check "text: forward" (= (vec-map text->string (text->graphemes r)) fwd))
+    (check "text: backward" (= (text-backward-clusters r) fwd))
+    (check "text: count" (= (text-grapheme-count r) (vec-length fwd)))
+    (check "text: boundary?"
+           (loop (:for _ (range 0 200))
+                 (:acc ok (folding #t
+                            (begin
+                              (def i (random-int 0 n #:rng rng))
+                              (and ok (= (text-cursor-grapheme-boundary? r (text-cursor-forward r (text-cursor-start r) i))
+                                         (array-ref at i))))))))))
+
+(defun (main)
+  (loop (:for seed (range 1 301))
+        (:do (expect-true #"random text, seed ${seed}" (agrees? seed))))
+  0)
