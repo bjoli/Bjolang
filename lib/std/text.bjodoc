@@ -3,70 +3,71 @@
 
 (:doc #:module
   (summary "Persistent text for editing: a B+ tree of UTF-8 chunks, with builder and transient.")
-  (see Text text-insert text-delete text-split-at text-concat text-line-start TextCursor TransientText TextBuilder Texting text-replace text-split)
+  (see Text TextCursor text-insert text-delete text-substring text-split-at text-append text-cursor-forward text-cursor-at-line TransientText TextBuilder Texting text-replace text-split)
   (example """
     (import (std text))
 
     (def r (string->text "hello world\nsecond line"))
-    (def r2 (text-insert r 5 ","))           ; "hello, world\nsecond line"
-    (text->string (text-delete r2 5 6))     ; "hello world\nsecond line"
-    (text-line r2 1)                        ; "second line"
-    (text-line-of r2 15)                    ; 1
-    (text-index-of r2 "world")              ; (Some 7)
-    (text->string r)                        ; r is unchanged
+    (def c (text-cursor-forward r (text-cursor-start r) 5))
+    (def r2 (text-insert r c ","))                   ; "hello, world\nsecond line"
+    (text->string (text-line r2 1))                  ; "second line"
+    (def w (option-ref (text-search r2 "world")))
+    (text-cursor-line r2 w)                          ; 0
+    (text->string (text-substring r2 w (text-cursor-end r2)))   ; "world\nsecond line"
+    (text->string r)                                 ; r is unchanged
     """)
   (reference """
     A @code{Text} is immutable text that is cheap to edit at any position.
-    Inserting, deleting, splitting, joining and slicing take O(log n) time
-    and share every chunk and node they do not change, so old versions stay
-    valid and cost only what differs.
+    Inserting, deleting, splitting, appending and taking substrings take
+    O(log n) time and share every chunk and node they do not change, so old
+    versions stay valid and cost only what differs.
 
-    @strong{Offsets.} Every position is a byte offset into the UTF-8 text, as
-    a string's cursors are. @code{text-length} is in bytes;
-    @code{text-char-count} counts characters. An offset in the middle of a
-    character raises @code{ArgumentException}, and one outside the text raises
-    @code{ArgumentOutOfRangeException}. @code{text-next} and @code{text-prev}
-    step between characters.
-
-    @strong{Lines.} Every node keeps the newlines of its children, so
-    @code{text-line-start}, @code{text-line-end} and @code{text-line-of} take
-    O(log n) time. Lines are separated by @code{"\n"} and counted from 0; a
-    text has one line more than it has newlines.
-
-    @strong{Structure.} Text is held in chunks of at most 1024 bytes, in
-    nodes of up to 16 children, each with the byte length and newline count
-    of every child. A text of at most 1024 bytes is a single string and no
-    tree. Only the nodes are C# (@code{Bjolang.Runtime.TextTree}), because they
-    hold their slots in inline arrays; every operation is Bjolang.
+    @strong{As a string.} The API is a string's: the functions a string has
+    are here under the same names, with a text where the string was, and
+    return what the string's return. @code{text-length} is in bytes, as
+    @code{string-length} is, and @code{text-count} counts characters, in O(1)
+    time. Positions are cursors, as in a string, and no function takes or
+    returns a byte offset.
 
     @strong{Cursors.} A @code{TextCursor} is a position that holds the chunk
     it is in, so stepping it reads that chunk's bytes and does not search the
-    tree again. It steps by characters both ways, finds text and characters
-    forward and backward, and starts a loop: @code{(:for c cursor)} goes to the
-    end, and @code{(:for c (text-backward cursor))} goes back to the start.
-    The names follow the string cursors'.
+    tree again. The cursor functions take the text and the cursor, as the
+    string cursor functions take the string. Every node keeps the characters
+    of its children, so @code{text-cursor-forward} and
+    @code{text-cursor-back} move any number of characters in O(log n) time:
+    character n of a text is @code{(text-cursor-forward r (text-cursor-start r) n)}.
+    A cursor starts a loop: @code{(:for c cursor)} goes to the end, and
+    @code{(:for c (text-backward r cursor))} goes back to the start.
 
-    @strong{As a string.} The functions a string has are here under the
-    same names and return what the string's return: @code{text-take} and
-    @code{text-drop} count characters, @code{text-replace} and
-    @code{text-split} take a string to match, and @code{text-search},
-    @code{text-search-any} and @code{text-index} return cursors. There are
-    also the trims, pads, @code{text-join}, @code{text-upcase},
-    @code{text-downcase} and @code{text-reverse}. @code{text-split-at} and
-    @code{text-replace-range} take byte offsets instead.
+    @strong{Edits.} @code{text-insert}, @code{text-delete},
+    @code{text-replace-range} and @code{text-split-at} take cursors of the
+    text they edit. A cursor belongs to one text: the text an edit returns
+    needs cursors of its own.
+
+    @strong{Lines.} Every node keeps the newlines of its children, so
+    @code{text-cursor-at-line} and @code{text-cursor-line} take O(log n)
+    time. Lines are separated by @code{"\n"} and counted from 0; a text has
+    one line more than it has newlines.
+
+    @strong{Structure.} Text is held in chunks of at most 1024 bytes, in
+    nodes of up to 16 children, each with the bytes, newlines and characters
+    of every child. A text of at most 1024 bytes is a single string and no
+    tree. Only the nodes are C# (@code{Bjolang.Runtime.TextTree}), because
+    they hold their slots in inline arrays; every operation is Bjolang.
 
     @strong{Batch edits.} A @code{TransientText} edits nodes it owns in place
     and keeps the chunk being edited in a mutable buffer: a run of edits close
-    together, such as typing, allocates nothing. A @code{TextBuilder} appends
-    strings and builds the tree in one pass, and the @code{texting} collector
-    does that in a loop.
+    together, such as typing, allocates nothing. Its positions are character
+    indices. A @code{TextBuilder} appends strings and builds the tree in one
+    pass, and the @code{texting} collector does that in a loop.
 
     @strong{Traits.} Implements @code{Eq}, @code{Ord}, @code{Iterable} (the
     characters), @code{Collection} (whose length is the character count),
     @code{Refable} and @code{Cursor} (by @code{TextCursor}), @code{Written},
-    @code{Displayed} and @code{Addable} (of strings, at the end). Equality, order and hashing depend on the characters only, not on
-    how they are split into chunks. @code{TextBuilder} and
-    @code{TransientText} implement @code{Addable!}.
+    @code{Displayed} and @code{Addable} (of strings, at the end). Equality,
+    order and hashing depend on the characters only, not on how they are
+    split into chunks. @code{TextBuilder} and @code{TransientText} implement
+    @code{Addable!}.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -77,9 +78,10 @@
   (summary "Immutable text as a balanced tree of UTF-8 chunks.")
   (see string->text text->string text-insert text-delete TransientText)
   (example """
-    (def r (text "abc" "def"))
-    (text-length r)                 ; 6
-    (= r (string->text "abcdef"))   ; #t
+    (def r (text "abc" "déf"))
+    (text-count r)                   ; 6
+    (text-length r)                  ; 7, in bytes
+    (= r (string->text "abcdéf"))    ; #t
     (loop (:for c r) (:do (display c)))
     """))
 
@@ -93,25 +95,26 @@
 
 (:doc TextCursor
   (summary "A position in a text, on a character boundary, that steps by characters.")
-  (see text-cursor-at text-cursor-start text-cursor-next text-cursor-prev text-cursor-search text-backward)
+  (see text-cursor-start text-cursor-forward text-cursor-next text-cursor-prev text-cursor-search text-backward)
   (example """
     (def r (string->text "one two\nthree"))
-    (def c (option-ref (text-cursor-search (text-cursor-start r) "two")))
-    (text-cursor-offset c)                        ; 4
-    (text-cursor-ref c)                           ; #\t
-    (text-cursor-line (text-cursor-forward c 4))  ; 1
-    (loop (:for ch c) (:acc (stringing ch)))      ; "two\nthree"
+    (def c (option-ref (text-search r "two")))
+    (text-cursor-ref r c)                            ; #\t
+    (text-cursor-line r (text-cursor-forward r c 4)) ; 1
+    (loop (:for ch c) (:acc (stringing ch)))         ; "two\nthree"
     """)
   (reference """
-    A struct of the text, the chunk the position is in, and the byte offset.
-    It holds its text, so its operations take no other argument, and it stays
-    valid for as long as the text does: texts do not change.
+    A struct of the text, the chunk the position is in, and the position in
+    it. The functions on it take the text first, as the string cursor
+    functions take the string; the cursor must be one of that text. It
+    stays valid for as long as the text does: texts do not change.
 
     A step inside the chunk reads its bytes and allocates nothing; a step out
-    of it looks up the next chunk from the root, once per chunk. Making a
-    cursor at an offset costs one look-up.
+    of it looks up the next chunk from the root, once per chunk. A move of
+    more than a few characters looks its character up from the root by the
+    character counts.
 
-    @code{=} and @code{compare} compare the offsets. So do
+    @code{=} and @code{compare} compare the positions. So do
     @code{text-cursor<?} and the rest, since @code{<} is for numbers. Cursors
     of two texts compare without complaint and mean nothing.
 
@@ -172,19 +175,24 @@
   (see Texting))
 
 (:doc TransientText
-  (summary "Mutable text for batch edits in place.")
+  (summary "Mutable text for batch edits in place, at character indices.")
   (see text->transienttext transienttext->text transienttext-insert! transienttext-delete!)
   (example """
     (def t (text->transienttext r))
     (transienttext-insert! t 0 "# ")
-    (transienttext-delete! t 10 12)
+    (transienttext-delete! t 10 12)    ; characters 10 and 11
     (transienttext->text t)
     """)
   (reference """
+    Positions are character indices, from 0 to @code{transienttext-count}:
+    a cursor would not survive the edits.
+
     Edits copy each node they do not own once, and then edit it in place.
     The chunk of the last edit is kept in a mutable buffer: an edit inside it,
-    or within 64 bytes of the edit before, moves bytes in the buffer and
-    allocates nothing. Not safe to use from two threads at once.
+    or within 64 characters of the edit before, moves bytes in the buffer and
+    allocates nothing. An edit finds its byte in the buffer by stepping from
+    where the last one ended, or at once in a chunk of ASCII. Not safe to use
+    from two threads at once.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -218,131 +226,96 @@
   (see string->text text-substring))
 
 (:doc text-length
-  (summary "The length of a text in bytes.")
+  (summary "The length of a text in bytes of UTF-8, as string-length is.")
   (arg r "The text.")
   (returns "The number of bytes of r's UTF-8 text, in O(1) time.")
-  (see text-char-count text-line-count))
+  (see text-count text-line-count))
+
+(:doc text-count
+  (summary "The number of characters in a text.")
+  (arg r "The text.")
+  (returns "How many characters r holds, in O(1) time: every node keeps the characters of its children.")
+  (see text-length))
 
 (:doc text-empty?
-  (summary "Whether a text has no text.")
+  (summary "Whether a text has no characters.")
   (arg r "The text.")
-  (returns "#t when r has no bytes.")
-  (see text-length))
+  (returns "#t for the empty text.")
+  (see text-length text-count))
 
 (:doc text-line-count
   (summary "The number of lines in a text.")
   (arg r "The text.")
   (returns "One more than the number of newlines in r, in O(1) time. The empty text has one line.")
-  (see text-line-start text-line))
-
-(:doc text-char-count
-  (summary "The number of characters in a text.")
-  (arg r "The text.")
-  (returns "The number of characters of r. Counts every chunk: O(n) time.")
-  (see text-length))
-
-(:doc text-ref
-  (summary "The character at a byte offset.")
-  (arg r "The text.")
-  (arg at "The offset of the character's first byte.")
-  (returns "The character that starts at byte at.")
-  (raises System.ArgumentOutOfRangeException "When at is not below the length of r.")
-  (raises System.ArgumentException "When at is in the middle of a character.")
-  (see text-next text-prev))
+  (see text-line text-cursor-at-line))
 
 (:doc text-substring
-  (summary "Part of a text as a string.")
-  (arg r "The text.")
-  (arg from "The first byte.")
-  (arg to "The byte after the last.")
-  (returns "A new string of bytes from to to.")
-  (raises System.ArgumentOutOfRangeException "When the range is not in r, or ends before it starts.")
-  (raises System.ArgumentException "When from or to is in the middle of a character.")
-  (see text-slice text-line))
-
-(:doc text-slice
-  (summary "Part of a text as a text.")
+  (summary "The characters between two cursors, as a text.")
   (arg r "The text (unmodified).")
-  (arg from "The first byte.")
-  (arg to "The byte after the last.")
-  (returns "A text of bytes from to to, sharing r's chunks and nodes, in O(log n) time.")
-  (raises System.ArgumentOutOfRangeException "When the range is not in r, or ends before it starts.")
-  (raises System.ArgumentException "When from or to is in the middle of a character.")
-  (see text-substring text-split-at text-take text-drop))
+  (arg a "Where it begins, a cursor of r.")
+  (arg b "Where it ends, not included: a cursor of r, not before a.")
+  (returns "A text of the characters from a to b, in O(log n) time.")
+  (raises System.ArgumentOutOfRangeException "When b is before a.")
+  (see text-split-at text-take text-drop text->string)
+  (reference """
+    A substring of up to 1024 bytes is a string of its own. A longer one
+    shares r's chunks: those in at most 16 chunks are pieces of them in one
+    node, and the rest are cut from r's tree. @code{text->string} gives it as
+    a string.
+    """))
 
 (:doc text-split-at
-  (summary "A text split in two at an offset.")
+  (summary "A text split in two at a cursor.")
   (arg r "The text (unmodified).")
-  (arg at "The offset to split at.")
-  (returns "(Tuple before after): the texts of the bytes before at and from at, in O(log n) time.")
-  (raises System.ArgumentOutOfRangeException "When at is outside r.")
-  (raises System.ArgumentException "When at is in the middle of a character.")
-  (see text-concat text-slice text-split)
+  (arg c "The cursor to split at, a cursor of r.")
+  (returns "(Tuple before after): the texts of the characters before c and from c, in O(log n) time.")
+  (see text-append text-substring text-split)
   (example """
-    (def (Tuple a b) (text-split-at (string->text "hello world") 5))
+    (def r (string->text "hello world"))
+    (def (Tuple a b) (text-split-at r (text-cursor-forward r (text-cursor-start r) 5)))
     (text->string b)   ; " world"
     """))
 
-(:doc text-concat
-  (summary "Two texts joined.")
+(:doc text-append
+  (summary "Two texts joined, as string-append joins two strings.")
   (arg a "The first text (unmodified).")
   (arg b "The second text (unmodified).")
   (returns "A text of the text of a and then b, sharing their nodes, in O(log n) time.")
-  (see text-split-at text-insert-text text-append text-join))
-
-(:doc text-append
-  (summary "A text with text added at the end.")
-  (arg r "The text (unmodified).")
-  (arg s "The text to add.")
-  (returns "A text of r's text and then s.")
-  (see text-prepend text-insert text-concat))
-
-(:doc text-prepend
-  (summary "A text with text added at the start.")
-  (arg r "The text (unmodified).")
-  (arg s "The text to add.")
-  (returns "A text of s and then r's text.")
-  (see text-append text-insert))
+  (see text-split-at text-insert-text text-join))
 
 (:doc text-insert
-  (summary "A text with text inserted at an offset.")
+  (summary "A text with a string inserted at a cursor.")
   (arg r "The text (unmodified).")
-  (arg at "The offset to insert at.")
-  (arg s "The text to insert.")
-  (returns "A text of r's text with s from byte at, in O(log n) time. Copies the nodes on the path and one chunk.")
-  (raises System.ArgumentOutOfRangeException "When at is outside r.")
-  (raises System.ArgumentException "When at is in the middle of a character.")
+  (arg c "Where to insert, a cursor of r.")
+  (arg s "The string to insert.")
+  (returns "A text of r's text with s before the character at c, in O(log n) time. Copies the nodes on the path and one chunk.")
   (see text-insert-text text-delete text-replace-range transienttext-insert!))
 
 (:doc text-insert-text
-  (summary "A text with another text inserted at an offset.")
+  (summary "A text with another text inserted at a cursor.")
   (arg r "The text (unmodified).")
-  (arg at "The offset to insert at.")
+  (arg c "Where to insert, a cursor of r.")
   (arg x "The text to insert (unmodified).")
-  (returns "A text of r's text with x's from byte at, sharing x's nodes.")
-  (raises System.ArgumentOutOfRangeException "When at is outside r.")
-  (raises System.ArgumentException "When at is in the middle of a character.")
-  (see text-insert text-concat))
+  (returns "A text of r's text with x's before the character at c, sharing x's nodes.")
+  (see text-insert text-append))
 
 (:doc text-delete
-  (summary "A text with a range of bytes removed.")
+  (summary "A text with the characters between two cursors removed.")
   (arg r "The text (unmodified).")
-  (arg from "The first byte to remove.")
-  (arg to "The byte after the last to remove.")
-  (returns "A text of r's text without bytes from to to, in O(log n) time.")
-  (raises System.ArgumentOutOfRangeException "When the range is not in r, or ends before it starts.")
-  (raises System.ArgumentException "When from or to is in the middle of a character.")
+  (arg a "The first character to remove, a cursor of r.")
+  (arg b "The cursor after the last to remove, not before a.")
+  (returns "A text of r's text without the characters from a to b, in O(log n) time.")
+  (raises System.ArgumentOutOfRangeException "When b is before a.")
   (see text-insert text-replace-range transienttext-delete!))
 
 (:doc text-replace-range
-  (summary "A text with a range of bytes replaced by text.")
+  (summary "A text with the characters between two cursors replaced by a string.")
   (arg r "The text (unmodified).")
-  (arg from "The first byte to replace.")
-  (arg to "The byte after the last to replace.")
-  (arg s "The text to put in their place.")
-  (returns "A text of r's text with bytes from to to replaced by s.")
-  (raises System.ArgumentOutOfRangeException "When the range is not in r, or ends before it starts.")
-  (raises System.ArgumentException "When from or to is in the middle of a character.")
+  (arg a "The first character to replace, a cursor of r.")
+  (arg b "The cursor after the last to replace, not before a.")
+  (arg s "The string to put in their place.")
+  (returns "A text of r's text with the characters from a to b replaced by s.")
+  (raises System.ArgumentOutOfRangeException "When b is before a.")
   (see text-insert text-delete text-replace transienttext-replace-range!))
 
 ;; ---------------------------------------------------------------------------
@@ -353,7 +326,7 @@
   (summary "The first characters of a text.")
   (arg r "The text (unmodified).")
   (arg n "How many characters.")
-  (returns "A text of the first n characters of r, or r when it has fewer. Shares r's chunks.")
+  (returns "A text of the first n characters of r, or r when it has fewer. Shares r's chunks, in O(log n) time.")
   (raises System.ArgumentException "When n is negative.")
   (see text-drop text-take-right text-split-at))
 
@@ -381,6 +354,27 @@
   (raises System.ArgumentException "When n is negative.")
   (see text-take-right text-drop))
 
+(:doc text-contains?
+  (summary "Whether a text contains a string.")
+  (arg r "The text.")
+  (arg s "The string to find.")
+  (returns "#t when s occurs in r. Finds matches that span chunks.")
+  (see text-search text-starts-with?))
+
+(:doc text-starts-with?
+  (summary "Whether a text starts with a string.")
+  (arg r "The text.")
+  (arg s "The string.")
+  (returns "#t when r's first characters are those of s.")
+  (see text-ends-with? text-search))
+
+(:doc text-ends-with?
+  (summary "Whether a text ends with a string.")
+  (arg r "The text.")
+  (arg s "The string.")
+  (returns "#t when r's last characters are those of s.")
+  (see text-starts-with?))
+
 (:doc text-replace
   (summary "A text with every occurrence of one string replaced by another.")
   (arg r "The text (unmodified).")
@@ -393,8 +387,9 @@
     (text->string (text-replace (string->text "a-b-c") "-" ", "))   ; "a, b, c"
     """)
   (reference """
-    The text between the matches is added from r's chunks, so the result is
-    built in one pass and shares the arrays of the chunks it keeps whole.
+    Searches through one iteration of r's chunks, and adds the text between
+    the matches from another, so the result is built in one pass and shares
+    the arrays of the chunks it keeps whole.
     """))
 
 (:doc text-split
@@ -408,8 +403,8 @@
     (text-split r "\n")                                    ; the lines of r
     """)
   (reference """
-    A field of up to a chunk is a text of its own string; a longer one shares
-    r's chunks.
+    A field inside one chunk shares the chunk's bytes; a field across chunks
+    is a string of its own up to 1024 bytes, and shares r's chunks after.
     """))
 
 (:doc text-split-once
@@ -424,7 +419,7 @@
   (arg parts "The texts, in order (unmodified).")
   (arg sep "The separator.")
   (returns "A text of the parts with sep between each two, built in one pass.")
-  (see text-split text-concat Texting))
+  (see text-split text-append Texting))
 
 (:doc text-search
   (summary "Where the first occurrence of a string in a text starts.")
@@ -511,138 +506,76 @@
   (returns "A text of r's characters, last first.")
   (see text-backward))
 
+(:doc text-fold
+  (summary "Folds over the characters of a text, first to last.")
+  (arg f "Called with each character and the accumulator, and returns the next accumulator.")
+  (arg init "The first accumulator.")
+  (arg r "The text.")
+  (returns "The last accumulator.")
+  (see text-fold-right text-for-each text-fold-chunks))
+
+(:doc text-fold-right
+  (summary "Folds over the characters of a text, last to first.")
+  (arg f "Called with each character and the accumulator, and returns the next accumulator.")
+  (arg init "The first accumulator.")
+  (arg r "The text.")
+  (returns "The last accumulator.")
+  (see text-fold text-backward))
+
+(:doc text-for-each
+  (summary "Calls a function with each character of a text in order.")
+  (arg f "Called with each character.")
+  (arg r "The text.")
+  (see text-fold))
+
+(:doc text->list
+  (summary "The characters of a text as a list.")
+  (arg r "The text.")
+  (returns "A list of r's characters in order.")
+  (see text->vec))
+
+(:doc text->vec
+  (summary "The characters of a text as a vec.")
+  (arg r "The text.")
+  (returns "A vec of r's characters in order.")
+  (see text->list))
+
 ;; ---------------------------------------------------------------------------
 ;; Lines
 ;; ---------------------------------------------------------------------------
 
-(:doc text-line-start
-  (summary "The offset where a line starts.")
-  (arg r "The text.")
-  (arg n "The line, counting from 0.")
-  (returns "The offset of the first byte of line n: 0 for line 0, otherwise the byte after the n-th newline. O(log n) time.")
-  (raises System.ArgumentOutOfRangeException "When r has no line n.")
-  (see text-line-end text-line-of text-line))
-
-(:doc text-line-end
-  (summary "The offset where a line ends.")
-  (arg r "The text.")
-  (arg n "The line, counting from 0.")
-  (returns "The offset of the newline that ends line n, or the length of r for the last line.")
-  (raises System.ArgumentOutOfRangeException "When r has no line n.")
-  (see text-line-start text-line))
-
-(:doc text-line-of
-  (summary "The line a byte offset is on.")
-  (arg r "The text.")
-  (arg at "The offset, at most the length of r.")
-  (returns "The number of newlines before byte at, which is its line counting from 0. O(log n) time.")
-  (raises System.ArgumentOutOfRangeException "When at is outside r.")
-  (see text-line-start))
-
 (:doc text-line
   (summary "The text of a line.")
-  (arg r "The text.")
+  (arg r "The text (unmodified).")
   (arg n "The line, counting from 0.")
-  (returns "A string of line n, without its newline.")
+  (returns "A text of line n, without its newline.")
   (raises System.ArgumentOutOfRangeException "When r has no line n.")
-  (see text-line-start text-line-end text-substring)
+  (see text-cursor-at-line text-line-count text-substring)
   (example """
-    (text-line (string->text "one\ntwo\n") 1)   ; "two"
-    (text-line (string->text "one\ntwo\n") 2)   ; ""
+    (text->string (text-line (string->text "one\ntwo\n") 1))   ; "two"
+    (text->string (text-line (string->text "one\ntwo\n") 2))   ; ""
     """))
-
-;; ---------------------------------------------------------------------------
-;; Characters
-;; ---------------------------------------------------------------------------
-
-(:doc text-next
-  (summary "The offset of the next character.")
-  (arg r "The text.")
-  (arg at "The offset of a character.")
-  (returns "The offset just after the character that starts at at.")
-  (raises System.ArgumentOutOfRangeException "When at is not below the length of r.")
-  (see text-prev text-ref))
-
-(:doc text-prev
-  (summary "The offset of the previous character.")
-  (arg r "The text.")
-  (arg at "An offset after the first character.")
-  (returns "The offset of the character that ends just before at.")
-  (raises System.ArgumentOutOfRangeException "When at is 0 or past the end of r.")
-  (see text-next text-ref))
-
-;; ---------------------------------------------------------------------------
-;; Searching
-;; ---------------------------------------------------------------------------
-
-(:doc text-index-of
-  (summary "The first offset of a string in a text.")
-  (arg r "The text.")
-  (arg s "The text to find.")
-  (key from "The offset to search from. Default 0.")
-  (returns "(Some k) for the first k at or after from where r's bytes are those of s, or None. Finds matches that span chunks.")
-  (raises System.ArgumentOutOfRangeException "When from is outside r.")
-  (see text-contains? text-starts-with?))
-
-(:doc text-last-index-of
-  (summary "The last offset of a string in a text.")
-  (arg r "The text.")
-  (arg s "The text to find.")
-  (key to "The offset the match must end at or before. Default: the length of r.")
-  (returns "(Some k) for the last k where r's bytes from k are those of s and k plus the length of s is at most to, or None. Finds matches that span chunks.")
-  (raises System.ArgumentOutOfRangeException "When to is outside r.")
-  (see text-index-of text-cursor-search-backward))
-
-(:doc text-contains?
-  (summary "Whether a text contains a string.")
-  (arg r "The text.")
-  (arg s "The text to find.")
-  (returns "#t when s occurs in r.")
-  (see text-index-of))
-
-(:doc text-starts-with?
-  (summary "Whether a text starts with a string.")
-  (arg r "The text.")
-  (arg s "The text.")
-  (returns "#t when r's first bytes are those of s.")
-  (see text-ends-with? text-index-of))
-
-(:doc text-ends-with?
-  (summary "Whether a text ends with a string.")
-  (arg r "The text.")
-  (arg s "The text.")
-  (returns "#t when r's last bytes are those of s.")
-  (see text-starts-with?))
 
 ;; ---------------------------------------------------------------------------
 ;; Cursors
 ;; ---------------------------------------------------------------------------
 
-(:doc text-cursor-at
-  (summary "A cursor at a byte offset.")
-  (arg r "The text.")
-  (arg at "The offset, at most the length of r.")
-  (returns "The cursor on the character that starts at at, or the end cursor when at is the length of r.")
-  (raises System.ArgumentOutOfRangeException "When at is outside r.")
-  (raises System.ArgumentException "When at is in the middle of a character.")
-  (see text-cursor-offset text-cursor-at-line text-cursor-start))
-
 (:doc text-cursor-start
   (summary "A cursor on the first character of a text.")
   (arg r "The text.")
-  (returns "The cursor at offset 0. For the empty text it is also the end.")
-  (see text-cursor-end text-cursor-next)
+  (returns "The cursor on its first character. For the empty text it is also the end.")
+  (see text-cursor-end text-cursor-next text-cursor-forward)
   (example """
     (let go ((c (text-cursor-start r)))
-      (unless (text-cursor-end? c)
-        (println (char->string (text-cursor-ref c)))
-        (go (text-cursor-next c))))
+      (unless (text-cursor-end? r c)
+        (println (char->string (text-cursor-ref r c)))
+        (go (text-cursor-next r c))))
     """))
 
 (:doc text-cursor-end
   (summary "The past-the-end cursor of a text.")
   (arg r "The text.")
-  (returns "The cursor after the last character, at the length of r.")
+  (returns "The cursor after the last character.")
   (see text-cursor-end? text-cursor-prev text-backward))
 
 (:doc text-cursor-at-line
@@ -652,140 +585,152 @@
   (key column "How many characters into the line. Default 0.")
   (returns "The cursor column characters after the start of line n, or at the end of the line when it is shorter.")
   (raises System.ArgumentOutOfRangeException "When r has no line n.")
-  (see text-cursor-line text-cursor-column text-line-start)
+  (see text-cursor-line text-cursor-column text-line)
   (example """
     ;; One line down, in the same column, as an editor moves.
-    (text-cursor-at-line r (+ (text-cursor-line c) 1) #:column (text-cursor-column c))
+    (text-cursor-at-line r (+ (text-cursor-line r c) 1) #:column (text-cursor-column r c))
     """)
-  (reference "The column counts characters, not bytes, and takes time in its size."))
-
-(:doc text-cursor-offset
-  (summary "The byte offset of a cursor.")
-  (arg c "The cursor.")
-  (returns "Its offset in its text, which the other text functions take.")
-  (see text-cursor-at))
-
-(:doc text-cursor-text
-  (summary "The text of a cursor.")
-  (arg c "The cursor.")
-  (returns "The text it was made from.")
-  (see text-cursor-at))
+  (reference "Finds the line in O(log n) time, then steps through the column."))
 
 (:doc text-cursor-start?
   (summary "Whether a cursor is at the start of its text.")
-  (arg c "The cursor.")
-  (returns "#t when its offset is 0, and there is no character before it.")
+  (arg r "The text.")
+  (arg c "A cursor of r.")
+  (returns "#t when there is no character before c.")
   (see text-cursor-end? text-cursor-prev))
 
 (:doc text-cursor-end?
   (summary "Whether a cursor has reached the end of its text.")
-  (arg c "The cursor.")
-  (returns "#t when it is the past-the-end cursor, and there is no character at it.")
+  (arg r "The text.")
+  (arg c "A cursor of r.")
+  (returns "#t when c is the past-the-end cursor, and there is no character at it.")
   (see text-cursor-start? text-cursor-ref))
 
 (:doc text-cursor-ref
   (summary "The character at a cursor.")
-  (arg c "A cursor, not at the end.")
+  (arg r "The text.")
+  (arg c "A cursor of r, not at the end.")
   (returns "The character c is on.")
-  (raises System.ArgumentOutOfRangeException "When c is at the end of its text.")
+  (raises System.ArgumentOutOfRangeException "When c is at the end of r.")
   (see text-cursor-ref+next text-cursor-end?))
 
 (:doc text-cursor-next
   (summary "The cursor on the next character.")
-  (arg c "A cursor, not at the end.")
+  (arg r "The text.")
+  (arg c "A cursor of r, not at the end.")
   (returns "The cursor after the character at c, which is the end after the last one.")
-  (raises System.ArgumentOutOfRangeException "When c is at the end of its text.")
+  (raises System.ArgumentOutOfRangeException "When c is at the end of r.")
   (see text-cursor-prev text-cursor-ref+next text-cursor-forward))
 
 (:doc text-cursor-prev
   (summary "The cursor on the previous character.")
-  (arg c "A cursor, not at the start.")
+  (arg r "The text.")
+  (arg c "A cursor of r, not at the start.")
   (returns "The cursor on the character before c.")
-  (raises System.ArgumentOutOfRangeException "When c is at the start of its text.")
+  (raises System.ArgumentOutOfRangeException "When c is at the start of r.")
   (see text-cursor-next text-cursor-back text-backward))
 
 (:doc text-cursor-ref+next
   (summary "The character at a cursor and the cursor after it, in one call.")
-  (arg c "A cursor, not at the end.")
+  (arg r "The text.")
+  (arg c "A cursor of r, not at the end.")
   (returns "A tuple of the character at c and the cursor on the next one.")
-  (raises System.ArgumentOutOfRangeException "When c is at the end of its text.")
+  (raises System.ArgumentOutOfRangeException "When c is at the end of r.")
   (see text-cursor-ref text-cursor-next)
   (example """
-    (def (Tuple ch next) (text-cursor-ref+next c))
+    (def (Tuple ch next) (text-cursor-ref+next r c))
     """)
   (reference "One read of the chunk gives both, so it is the fastest step of a loop that wants the characters."))
 
 (:doc text-cursor-forward
   (summary "The cursor n characters after another.")
-  (arg c "The cursor.")
+  (arg r "The text.")
+  (arg c "A cursor of r.")
   (arg n "How many characters, 0 or more.")
   (returns "The cursor after the n characters from c.")
   (raises System.ArgumentOutOfRangeException "When there are fewer than n characters after c.")
   (raises System.ArgumentException "When n is negative.")
-  (see text-cursor-back text-cursor-next))
+  (see text-cursor-back text-cursor-next)
+  (example """
+    (text-cursor-forward r (text-cursor-start r) 1000)   ; character 1000
+    """)
+  (reference """
+    Up to 16 characters are stepped over. A longer move finds its character
+    from the root by the character counts of the nodes, in O(log n) time, and
+    then in its chunk by counting 8 bytes at a time.
+    """))
 
 (:doc text-cursor-back
   (summary "The cursor n characters before another.")
-  (arg c "The cursor.")
+  (arg r "The text.")
+  (arg c "A cursor of r.")
   (arg n "How many characters, 0 or more.")
   (returns "The cursor n characters before c.")
   (raises System.ArgumentOutOfRangeException "When there are fewer than n characters before c.")
   (raises System.ArgumentException "When n is negative.")
-  (see text-cursor-forward text-cursor-prev))
+  (see text-cursor-forward text-cursor-prev)
+  (reference "Steps or looks up as text-cursor-forward does."))
 
 (:doc text-cursor-line
   (summary "The line a cursor is on.")
-  (arg c "The cursor.")
+  (arg r "The text.")
+  (arg c "A cursor of r.")
   (returns "Its line, counting from 0: the newlines before it. O(log n) time.")
-  (see text-cursor-column text-cursor-line-start text-line-of))
+  (see text-cursor-column text-cursor-line-start text-cursor-at-line))
 
 (:doc text-cursor-column
   (summary "How many characters a cursor is into its line.")
-  (arg c "The cursor.")
-  (returns "The characters between the start of its line and c.")
-  (see text-cursor-line text-cursor-at-line)
-  (reference "Characters, not bytes. Takes time in the column."))
+  (arg r "The text.")
+  (arg c "A cursor of r.")
+  (returns "The characters between the start of its line and c, in O(log n) time.")
+  (see text-cursor-line text-cursor-at-line))
 
 (:doc text-cursor-line-start
   (summary "The cursor at the start of a cursor's line.")
-  (arg c "The cursor.")
+  (arg r "The text.")
+  (arg c "A cursor of r.")
   (returns "The cursor on the first character of its line.")
-  (see text-cursor-line-end text-line-start))
+  (see text-cursor-line-end text-cursor-at-line))
 
 (:doc text-cursor-line-end
   (summary "The cursor at the end of a cursor's line.")
-  (arg c "The cursor.")
+  (arg r "The text.")
+  (arg c "A cursor of r.")
   (returns "The cursor on the newline that ends its line, or the end cursor on the last line.")
-  (see text-cursor-line-start text-line-end))
+  (see text-cursor-line-start))
 
 (:doc text-cursor-search
-  (summary "Where the first occurrence of a text at or after a cursor starts.")
-  (arg c "The cursor to search from.")
-  (arg s "The text to find.")
+  (summary "Where the first occurrence of a string at or after a cursor starts.")
+  (arg r "The text.")
+  (arg c "The cursor of r to search from.")
+  (arg s "The string to find.")
   (returns "(Some cursor) on the start of the first occurrence that starts at or after c, or None. An empty s is found at c.")
-  (see text-cursor-search-backward text-index-of text-cursor-find))
+  (see text-cursor-search-backward text-search text-cursor-find))
 
 (:doc text-cursor-search-backward
-  (summary "Where the last occurrence of a text before a cursor starts.")
-  (arg c "The cursor to search back from.")
-  (arg s "The text to find.")
+  (summary "Where the last occurrence of a string before a cursor starts.")
+  (arg r "The text.")
+  (arg c "The cursor of r to search back from.")
+  (arg s "The string to find.")
   (returns "(Some cursor) on the start of the last occurrence that ends at or before c, or None. An empty s is found at c.")
-  (see text-cursor-search text-last-index-of))
+  (see text-cursor-search text-search-backward))
 
 (:doc text-cursor-find
   (summary "The first character at or after a cursor that satisfies a predicate.")
   (arg pred "The test, given each character in turn.")
-  (arg c "The cursor to start at.")
+  (arg r "The text.")
+  (arg c "The cursor of r to start at.")
   (returns "(Some cursor) on the first character from c that pred returns #t for, or None.")
-  (see text-cursor-find-backward text-cursor-search)
+  (see text-cursor-find-backward text-cursor-search text-index)
   (example """
-    (text-cursor-find char-whitespace? c)   ; the next space, tab or newline
+    (text-cursor-find char-whitespace? r c)   ; the next space, tab or newline
     """))
 
 (:doc text-cursor-find-backward
   (summary "The last character before a cursor that satisfies a predicate.")
   (arg pred "The test, given each character in turn, going back.")
-  (arg c "The cursor to search back from.")
+  (arg r "The text.")
+  (arg c "The cursor of r to search back from.")
   (returns "(Some cursor) on the last character before c that pred returns #t for, or None.")
   (see text-cursor-find))
 
@@ -793,21 +738,21 @@
   (summary "Whether two cursors are at the same position.")
   (arg a "A cursor.")
   (arg b "A cursor of the same text.")
-  (returns "#t when their offsets are equal. The same as =.")
+  (returns "#t when they are at the same position. The same as =.")
   (see text-cursor<?))
 
 (:doc text-cursor<?
   (summary "Whether one cursor is before another.")
   (arg a "A cursor.")
   (arg b "A cursor of the same text.")
-  (returns "#t when a's offset is less than b's.")
+  (returns "#t when a is before b.")
   (see text-cursor<=? text-cursor>? text-cursor=?))
 
 (:doc text-cursor>?
   (summary "Whether one cursor is after another.")
   (arg a "A cursor.")
   (arg b "A cursor of the same text.")
-  (returns "#t when a's offset is greater than b's.")
+  (returns "#t when a is after b.")
   (see text-cursor>=? text-cursor<?))
 
 (:doc text-cursor<=?
@@ -824,29 +769,14 @@
   (returns "#t when a is not before b.")
   (see text-cursor>? text-cursor<=?))
 
-(:doc text-cursor-substring
-  (summary "The text between two cursors, as a string.")
-  (arg a "Where it begins.")
-  (arg b "Where it ends, not included. A cursor of the same text, not before a.")
-  (returns "A new string of the bytes from a to b.")
-  (raises System.ArgumentOutOfRangeException "When b is before a.")
-  (see text-cursor-slice text-substring))
-
-(:doc text-cursor-slice
-  (summary "The text between two cursors, as a text.")
-  (arg a "Where it begins.")
-  (arg b "Where it ends, not included. A cursor of the same text, not before a.")
-  (returns "A text of the bytes from a to b, sharing the text's chunks and nodes.")
-  (raises System.ArgumentOutOfRangeException "When b is before a.")
-  (see text-cursor-substring text-slice))
-
 (:doc text-backward
   (summary "The characters before a cursor, last first, for a loop.")
-  (arg c "The cursor.")
-  (returns "A TextBackward: (:for ch (text-backward c)) goes from the character before c back to the first.")
+  (arg r "The text.")
+  (arg c "A cursor of r.")
+  (returns "A TextBackward: (:for ch (text-backward r c)) goes from the character before c back to the first.")
   (see TextCursor text-cursor-prev text-cursor-find-backward)
   (example """
-    (loop (:for ch (text-backward (text-cursor-end r))) (:acc (stringing ch)))   ; r reversed
+    (loop (:for ch (text-backward r (text-cursor-end r))) (:acc (stringing ch)))   ; r reversed
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -859,7 +789,7 @@
   (arg init "The first accumulator.")
   (arg r "The text.")
   (returns "The last accumulator.")
-  (see text-for-each-chunk text-chunk-count)
+  (see text-for-each-chunk text-chunk-count text-fold)
   (reference """
     The chunks are strings that start and end on character boundaries. How
     a text is split into chunks depends on its history; the empty text has
@@ -888,9 +818,9 @@
   (see textbuilder-add! textbuilder->text))
 
 (:doc textbuilder-add!
-  (summary "Adds text to the end of a builder.")
+  (summary "Adds a string to the end of a builder.")
   (arg b "The builder.")
-  (arg s "The text. The chunks of a long string share its bytes.")
+  (arg s "The string. The chunks of a long string share its bytes.")
   (see textbuilder-add-text! textbuilder->text))
 
 (:doc textbuilder-add-char!
@@ -934,44 +864,47 @@
   (see text->transienttext))
 
 (:doc transienttext-insert!
-  (summary "Inserts text into a transient at an offset.")
+  (summary "Inserts a string into a transient before a character.")
   (arg t "The transient.")
-  (arg at "The offset to insert at.")
-  (arg s "The text to insert.")
-  (raises System.ArgumentOutOfRangeException "When at is outside t's text.")
-  (raises System.ArgumentException "When at is in the middle of a character.")
+  (arg n "The index of the character to insert before, from 0 to the characters t holds.")
+  (arg s "The string to insert.")
+  (raises System.ArgumentOutOfRangeException "When n is outside t's text.")
   (see transienttext-delete! text-insert))
 
 (:doc transienttext-delete!
-  (summary "Removes a range of bytes from a transient.")
+  (summary "Removes a range of characters from a transient.")
   (arg t "The transient.")
-  (arg from "The first byte to remove.")
-  (arg to "The byte after the last to remove.")
+  (arg from "The index of the first character to remove.")
+  (arg to "The index after the last to remove.")
   (raises System.ArgumentOutOfRangeException "When the range is not in t's text, or ends before it starts.")
-  (raises System.ArgumentException "When from or to is in the middle of a character.")
   (see transienttext-insert! text-delete))
 
 (:doc transienttext-replace-range!
-  (summary "Replaces a range of bytes of a transient with text.")
+  (summary "Replaces a range of characters of a transient with a string.")
   (arg t "The transient.")
-  (arg from "The first byte to replace.")
-  (arg to "The byte after the last to replace.")
-  (arg s "The text to put in their place.")
+  (arg from "The index of the first character to replace.")
+  (arg to "The index after the last to replace.")
+  (arg s "The string to put in their place.")
   (raises System.ArgumentOutOfRangeException "When the range is not in t's text, or ends before it starts.")
-  (raises System.ArgumentException "When from or to is in the middle of a character.")
   (see transienttext-insert! transienttext-delete! text-replace-range))
 
 (:doc transienttext-append!
-  (summary "Adds text to the end of a transient.")
+  (summary "Adds a string to the end of a transient.")
   (arg t "The transient.")
-  (arg s "The text to add.")
+  (arg s "The string to add.")
   (see transienttext-insert!))
 
 (:doc transienttext-length
   (summary "The length of a transient's text in bytes.")
   (arg t "The transient.")
   (returns "The number of bytes of t's text, in O(1) time.")
-  (see text-length))
+  (see transienttext-count text-length))
+
+(:doc transienttext-count
+  (summary "The number of characters in a transient's text.")
+  (arg t "The transient.")
+  (returns "How many characters t holds, in O(1) time: the end of the range its indices take.")
+  (see transienttext-length text-count))
 
 ;; ---------------------------------------------------------------------------
 ;; Checks
@@ -983,7 +916,7 @@
   (returns "None when r's tree is sound, otherwise (Some why) for the first problem found.")
   (reference """
     Checks the heights, the number of children of every node, the size of
-    every chunk, and the byte and newline counts. O(n) time.
+    every chunk, and the byte, newline and character counts. O(n) time.
     """)
   (see text-height))
 

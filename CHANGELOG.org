@@ -69,6 +69,28 @@ What each change guarantees, and what it leaves open.
 - ~texting~ takes characters as well as strings (anything that is
   ~TextPiece~), and ~textbuilder-add-char!~ adds one. A text is ~Refable~
   and a ~Cursor~ by ~TextCursor~, so ~ref~ and ~try-ref~ take a cursor.
+- No function takes or returns a byte offset: positions are cursors, as in
+  a string, and the cursor functions take the text and the cursor, as the
+  string ones take the string. ~text-substring~, ~text-split-at~,
+  ~text-insert~, ~text-delete~ and ~text-replace-range~ take cursors;
+  ~text-substring~ and ~text-line~ return texts; ~text-append~ joins two
+  texts. ~text-ref~, ~text-slice~, ~text-concat~, ~text-prepend~,
+  ~text-next~, ~text-prev~, ~text-line-start~, ~text-line-end~,
+  ~text-line-of~, ~text-index-of~, ~text-last-index-of~ and the cursor
+  accessors of offsets are gone. ~text-length~ stays in bytes, as
+  ~string-length~ is.
+- Nodes keep each child's characters too, so ~text-count~ is O(1) and
+  ~text-cursor-forward~ and ~-back~ move n characters in O(log n): 1024
+  lookups of character n over 1 MB take 100 µs, with no allocation (a chunk
+  is counted 8 bytes at a time). There are ~text-fold~, ~text-fold-right~,
+  ~text-for-each~, ~text->list~ and ~text->vec~.
+- A ~TransientText~ takes character indices, and has
+  ~transienttext-count~. It steps from where its last edit ended, and finds
+  a byte at once in a chunk of ASCII.
+- Keeping the counts costs edits: the editing trace takes 50.6 ms
+  persistently, from 40, and 6.7 ms through a transient, from 5.7. 1024
+  substrings of 1 KB take 200 µs as texts and 298 µs as strings (a string's
+  substrings take 63 µs).
 - Only the node classes are C# (~Bjolang.Runtime.TextTree~); every operation
   is Bjolang.
 

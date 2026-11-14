@@ -15,8 +15,9 @@
 ;;
 ;; - The trace is automerge-paper, the keystrokes of writing a paper: 259,778
 ;;   edits ending in 104,852 bytes, from github.com/automerge/automerge-perf,
-;;   as JSON with byte offsets: {"edits": [[at, deleted, inserted], ...],
-;;   "final": text}. The environment variable BJO_EDITING_TRACE names the
+;;   as JSON with character positions: {"edits": [[at, deleted, inserted],
+;;   ...], "final": text}. The trace is ASCII, so the string replay can take
+;;   them as byte offsets. The environment variable BJO_EDITING_TRACE names the
 ;;   file. Without it the trace benchmarks are left out.
 ;; - The baseline for the trace is a string, edited by copying it.
 
@@ -81,8 +82,8 @@
                     (def at (array-ref (.at t) i))
                     (def d (array-ref (.deleted t) i))
                     (def s (array-ref (.inserted t) i))
-                    (def r2 (if (> d 0) (text-delete r at (+ at d)) r))
-                    (if (> (string-length s) 0) (text-insert r2 at s) r2))))))
+                    (def c (text-cursor-forward r (text-cursor-start r) at))
+                    (text-replace-range r c (text-cursor-forward r c d) s))))))
 
 (: (-> Trace Text))
 (defun (replay-transient t)
@@ -124,40 +125,51 @@
     (stringbuilder->string b)))
 
 (def mb-text (string->text megabyte))
-(def mb-other (text-concat (text-slice mb-text 0 333333) (text-slice mb-text 333333 (text-length mb-text))))
+(def mb-start (text-cursor-start mb-text))
+(def mb-other (text-append (text-take mb-text 333333) (text-drop mb-text 333333)))
 
 (def rng (make-random/seed64 (cast ulong 7)))
 
-;; 1024 offsets on character boundaries, which is where every line has ASCII.
-(def offsets (loop (:for _ (range 0 1024)) (:acc (arraying (text-line-start mb-text (random-int 0 (- (text-line-count mb-text) 1) #:rng rng))))))
-;; The same, highest first, for a text that the inserts change: one at an
-;; offset does not move those before it.
-(def offsets-down (vec->array (vec-reverse (vec-sort (array->vec offsets)))))
+;; The bytes of `mb-text` before its cursor `c`, for the string baselines.
+(: (-> TextCursor int))
+(defun (offset-of c) (text-length (text-substring mb-text mb-start c)))
+
+;; The characters of `mb-text` before its cursor `c`.
+(: (-> TextCursor int))
+(defun (index-of c) (text-count (text-substring mb-text mb-start c)))
+
 (def lines (loop (:for _ (range 0 1024)) (:acc (arraying (random-int 0 (- (text-line-count mb-text) 1) #:rng rng)))))
+;; 1024 cursors at line starts, and their byte offsets and character indices.
+(def cursors (loop (:for n lines) (:acc (arraying (text-cursor-at-line mb-text n)))))
+(def offsets (loop (:for c cursors) (:acc (arraying (offset-of c)))))
+(def indices (loop (:for c cursors) (:acc (arraying (index-of c)))))
+;; The indices, highest first, for a text that the inserts change: one at an
+;; index does not move those before it.
+(def indices-down (vec->array (vec-reverse (vec-sort (array->vec indices)))))
 
 (def/bench "1 MB: string->text" (string->text megabyte))
 (def/bench "1 MB: text->string" (text->string mb-text))
-(def/bench "1 MB: insert a character, 1024 times"
-  (loop (:for at offsets) (:do (ignore (text-insert mb-text at "x")))))
+(def/bench "1 MB: insert a character at a cursor, 1024 times"
+  (loop (:for c cursors) (:do (ignore (text-insert mb-text c "x")))))
 (def/bench "1 MB: insert into a transient, 1024 times"
   (def t (text->transienttext mb-text))
-  (loop (:for at offsets-down) (:do (transienttext-insert! t at "x")))
+  (loop (:for n indices-down) (:do (transienttext-insert! t n "x")))
   (transienttext->text t))
-(def/bench "1 MB: delete a character, 1024 times"
-  (loop (:for at offsets) (:do (ignore (text-delete mb-text at (+ at 1))))))
-(def/bench "1 MB: split and join, 1024 times"
-  (loop (:for at offsets) (:do (def (Tuple a b) (text-split-at mb-text at)) (ignore (text-concat b a)))))
-(def/bench "1 MB: text-ref, 1024 times"
-  (loop (:for at offsets) (:acc (summing (char->integer (text-ref mb-text at))))))
-(def/bench "1 MB: text-line-start, 1024 times"
-  (loop (:for n lines) (:acc (summing (text-line-start mb-text n)))))
-(def/bench "1 MB: text-line-of, 1024 times"
-  (loop (:for at offsets) (:acc (summing (text-line-of mb-text at)))))
+(def/bench "1 MB: delete a character at a cursor, 1024 times"
+  (loop (:for c cursors) (:do (ignore (text-delete mb-text c (text-cursor-next mb-text c))))))
+(def/bench "1 MB: split and append, 1024 times"
+  (loop (:for c cursors) (:do (def (Tuple a b) (text-split-at mb-text c)) (ignore (text-append b a)))))
+(def/bench "1 MB: character n, 1024 times"
+  (loop (:for n indices) (:acc (summing (char->integer (text-cursor-ref mb-text (text-cursor-forward mb-text mb-start n)))))))
+(def/bench "1 MB: the start of line n, 1024 times"
+  (loop (:for n lines) (:acc (summing (if (text-cursor-end? mb-text (text-cursor-at-line mb-text n)) 0 1)))))
+(def/bench "1 MB: the line of a cursor, 1024 times"
+  (loop (:for c cursors) (:acc (summing (text-cursor-line mb-text c)))))
 (def/bench "1 MB: every character" (loop (:for c mb-text) (:acc (summing (char->integer c)))))
 (def/bench "1 MB: every character of the string" (loop (:for c megabyte) (:acc (summing (char->integer c)))))
 (def/bench "1 MB: equal, other chunks" (= mb-text mb-other))
 (def/bench "1 MB: hash" (eq-hash mb-text))
-(def/bench "1 MB: index-of, not there" (text-index-of mb-text "line 99999999"))
+(def/bench "1 MB: search, not there" (text-search mb-text "line 99999999"))
 (def/bench "1 MB: string insert a character, 1024 times"
   (loop (:for at offsets) (:do (ignore (str (.SliceBytes megabyte 0 at) "x" (.SliceBytes megabyte at (- (string-length megabyte) at)))))))
 
@@ -168,7 +180,7 @@
 ;; The text again, in an array of its own, so that equality compares bytes.
 (def megabyte-copy (bytes->string (string->bytes megabyte)))
 (def nl (cast byte 10))
-(def half (text-line-start mb-text (/ (text-line-count mb-text) 2)))
+(def half (offset-of (text-cursor-at-line mb-text (/ (text-line-count mb-text) 2))))
 (def mb-left (string-copy (.SliceBytes megabyte 0 half)))
 (def mb-right (string-copy (.SliceBytes megabyte half (- (string-length megabyte) half))))
 (def text-left (string->text mb-left))
@@ -181,8 +193,9 @@
   (let go ((at 0) (left n))
     (if (= left 0) at (go (+ (+ at (span-index (ro-span-slice sp #:from at) nl)) 1) (- left 1)))))
 
-(def/bench "vs string: byte at an offset, 1024 times"
-  (loop (:for at offsets) (:acc (summing (cast int (ro-span-ref (.AsSpan megabyte) at))))))
+(def/bench "vs string: character n by stepping, 64 times"
+  (loop (:for n (vec-take (array->vec indices) 64))
+        (:acc (summing (char->integer (string-cursor-ref megabyte (string-cursor-forward megabyte (string-cursor-start megabyte) n)))))))
 (def/bench "vs string: line start by scanning, 1024 times"
   (loop (:for n lines) (:acc (summing (string-line-start megabyte n)))))
 (def/bench "vs string: line of an offset by counting, 1024 times"
@@ -191,44 +204,45 @@
 (def/bench "vs string: hash" (eq-hash megabyte-copy))
 (def/bench "vs string: search, not there" (string-search megabyte "line 99999999"))
 (def/bench "vs string: character count" (string-count megabyte))
-(def/bench "text: character count" (text-char-count mb-text))
+(def/bench "text: character count" (text-count mb-text))
 ;; 1024 ranges of 20 lines, about 1.1 KB.
 (def ranges
   (loop (:for n lines)
         (:acc (arraying (begin
                           (def k (min n (- (text-line-count mb-text) 21)))
-                          (Tuple (text-line-start mb-text k) (text-line-start mb-text (+ k 20))))))))
+                          (Tuple (text-cursor-at-line mb-text k) (text-cursor-at-line mb-text (+ k 20))))))))
+(def byte-ranges (loop (:for (Tuple a z) ranges) (:acc (arraying (Tuple (offset-of a) (offset-of z))))))
 (def/bench "vs string: 1 KB substring, 1024 times"
-  (loop (:for (Tuple a z) ranges) (:do (ignore (string-copy (.SliceBytes megabyte a (- z a)))))))
+  (loop (:for (Tuple a z) byte-ranges) (:do (ignore (string-copy (.SliceBytes megabyte a (- z a)))))))
 (def/bench "text: 1 KB substring, 1024 times"
   (loop (:for (Tuple a z) ranges) (:do (ignore (text-substring mb-text a z)))))
+(def/bench "text: 1 KB substring as a string, 1024 times"
+  (loop (:for (Tuple a z) ranges) (:do (ignore (text->string (text-substring mb-text a z))))))
 (def/bench "vs string: append two halves" (string-append mb-left mb-right))
-(def/bench "text: concat two halves" (text-concat text-left text-right))
+(def/bench "text: append two halves" (text-append text-left text-right))
 
 ;; ---------------------------------------------------------------------------
 ;; Cursors on 1 MB
 ;; ---------------------------------------------------------------------------
 
 (def/bench "cursor: every character, ref+next"
-  (let go ((c (text-cursor-start mb-text)) (acc 0))
-    (if (text-cursor-end? c) acc (begin (def (Tuple ch n) (text-cursor-ref+next c)) (go n (+ acc (char->integer ch)))))))
+  (let go ((c mb-start) (acc 0))
+    (if (text-cursor-end? mb-text c) acc (begin (def (Tuple ch n) (text-cursor-ref+next mb-text c)) (go n (+ acc (char->integer ch)))))))
 (def/bench "vs string cursor: every character, ref+next"
   (let go ((c (string-cursor-start megabyte)) (acc 0))
     (if (string-cursor-end? megabyte c) acc (begin (def (Tuple ch n) (string-cursor-ref+next megabyte c)) (go n (+ acc (char->integer ch)))))))
 (def/bench "cursor: every character backwards"
-  (loop (:for ch (text-backward (text-cursor-end mb-text))) (:acc (summing (char->integer ch)))))
+  (loop (:for ch (text-backward mb-text (text-cursor-end mb-text))) (:acc (summing (char->integer ch)))))
 (def/bench "vs string cursor: every character backwards"
   (let go ((c (string-cursor-end megabyte)) (acc 0))
     (if (string-cursor=? c (string-cursor-start megabyte)) acc
         (begin (def p (string-cursor-prev megabyte c)) (go p (+ acc (char->integer (string-cursor-ref megabyte p))))))))
-(def/bench "cursor: at an offset, 1024 times"
-  (loop (:for at offsets) (:acc (summing (text-cursor-offset (text-cursor-at mb-text at))))))
 (def/bench "cursor: every newline by find"
-  (let go ((c (text-cursor-start mb-text)) (n 0))
-    (match (text-cursor-find (fun (ch) (= ch #\newline)) c)
-      ((Some p) (go (text-cursor-next p) (+ n 1)))
+  (let go ((c mb-start) (n 0))
+    (match (text-cursor-find (fun (ch) (= ch #\newline)) mb-text c)
+      ((Some p) (go (text-cursor-next mb-text p) (+ n 1)))
       (None n))))
-(def/bench "text-last-index-of, not there" (text-last-index-of mb-text "line 99999999"))
+(def/bench "search backward, not there" (text-search-backward mb-text "line 99999999"))
 
 ;; The functions a string has, against the string's.
 (def/bench "1 MB: text-replace" (text-replace mb-text "blåbär" "lingon"))

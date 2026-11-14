@@ -22,8 +22,9 @@ namespace Bjolang.Runtime.TextTree;
 // Bjolang access to their inline arrays, which it cannot declare.
 //
 // - A node has up to `Capacity` children. It keeps, for each, the bytes up to
-//   the end of that child (`Ends`, a running total) and the child's number of
-//   newlines. `Ends` past `Count` holds anything.
+//   the end of that child (`Ends`, a running total), the child's number of
+//   newlines (`Lines`) and its number of characters (`Chars`). `Ends` past
+//   `Count` holds anything.
 // - A `TextLeaves` node's children are chunks: strings of valid UTF-8 that
 //   start and end on character boundaries. A `TextBranch` node's children are
 //   nodes, all of the same kind and height.
@@ -61,6 +62,7 @@ public abstract class TextNode
     public int Count;
     public TextInts Ends;
     public TextInts Lines;
+    public TextInts Chars;
 
     protected TextNode(long owner) => Owner = owner;
 
@@ -70,6 +72,7 @@ public abstract class TextNode
         Count = original.Count;
         Ends = original.Ends;
         Lines = original.Lines;
+        Chars = original.Chars;
     }
 }
 
@@ -160,6 +163,12 @@ public static class TextNodes
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void SetLines(TextNode node, int i, int lines) => node.Lines[i] = lines;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int Chars(TextNode node, int i) => node.Chars[i];
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void SetChars(TextNode node, int i, int chars) => node.Chars[i] = chars;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static TextNode Kid(TextBranch node, int i) => node.Kids[i]!;

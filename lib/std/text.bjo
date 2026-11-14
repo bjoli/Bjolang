@@ -14,8 +14,9 @@
 ;; deleting, splitting and joining are O(log n) and share what they do not
 ;; change.
 ;;
-;; - Positions are byte offsets, as a string's cursors are. An offset in the
-;;   middle of a character is an error.
+;; - Positions are cursors, as in a string; no function takes or returns a
+;;   byte offset. A cursor holds the byte offset internally, and a character
+;;   index becomes a cursor in O(log n) through the character counts.
 ;; - A text of at most `chunk-max` bytes is one string and no tree.
 ;; - The tree's nodes are C# (`Bjolang.Runtime.TextTree`), because they hold their
 ;;   slots in inline arrays. Every operation is here, including those on one
@@ -40,35 +41,32 @@
   Text TextWalk TextBuilder TransientText TextCursor TextBackward TextBackwardStep Texting TextingInto
   TextPiece textbuilder-add-piece!
   ;; Texts
-  text-empty text string->text text->string text-length text-empty? text-line-count text-char-count
-  text-ref text-substring text-slice text-split-at
-  text-concat text-append text-prepend text-insert text-insert-text text-delete text-replace-range
+  text-empty text string->text text->string text-length text-count text-empty? text-line-count
+  text-substring text-split-at text-append text-insert text-insert-text text-delete text-replace-range
   ;; As a string has them
   text-take text-drop text-take-right text-drop-right
+  text-contains? text-starts-with? text-ends-with?
   text-replace text-split text-split-once text-join
   text-search text-search-backward text-search-any text-index
   text-trim text-trim-left text-trim-right text-pad-left text-pad-right
   text-upcase text-downcase text-reverse
+  text-fold text-fold-right text-for-each text->list text->vec
   ;; Lines
-  text-line-start text-line-end text-line-of text-line
-  ;; Characters
-  text-next text-prev
-  ;; Searching
-  text-index-of text-last-index-of text-contains? text-starts-with? text-ends-with?
+  text-line
   ;; Cursors
-  text-cursor-at text-cursor-start text-cursor-end text-cursor-at-line text-cursor-offset text-cursor-text
-  text-cursor-start? text-cursor-end? text-cursor-ref text-cursor-next text-cursor-prev text-cursor-ref+next
-  text-cursor-forward text-cursor-back text-cursor-line text-cursor-column text-cursor-line-start text-cursor-line-end
+  text-cursor-start text-cursor-end text-cursor-start? text-cursor-end?
+  text-cursor-ref text-cursor-next text-cursor-prev text-cursor-ref+next text-cursor-forward text-cursor-back
+  text-cursor-at-line text-cursor-line text-cursor-column text-cursor-line-start text-cursor-line-end
   text-cursor-search text-cursor-search-backward text-cursor-find text-cursor-find-backward
   text-cursor=? text-cursor<? text-cursor>? text-cursor<=? text-cursor>=?
-  text-cursor-substring text-cursor-slice text-backward
+  text-backward
   ;; Chunks
   text-fold-chunks text-for-each-chunk text-chunk-count
   ;; Builders
   textbuilder-empty textbuilder-add! textbuilder-add-char! textbuilder-add-text! textbuilder-length textbuilder->text
   ;; Transients
   text->transienttext transienttext->text transienttext-insert! transienttext-delete!
-  transienttext-replace-range! transienttext-append! transienttext-length
+  transienttext-replace-range! transienttext-append! transienttext-length transienttext-count
   ;; Checks, for tests
   text-check text-height)
 
@@ -103,6 +101,8 @@
   (set-slot-ends4! (: Bjolang.Runtime.TextTree.TextNodes.SetEnds4    (-> TextNode int (Lanes int) void)))
   (slot-lines      (: Bjolang.Runtime.TextTree.TextNodes.Lines       (-> TextNode int int)))
   (set-slot-lines! (: Bjolang.Runtime.TextTree.TextNodes.SetLines    (-> TextNode int int void)))
+  (slot-chars      (: Bjolang.Runtime.TextTree.TextNodes.Chars       (-> TextNode int int)))
+  (set-slot-chars! (: Bjolang.Runtime.TextTree.TextNodes.SetChars    (-> TextNode int int void)))
   (kid             (: Bjolang.Runtime.TextTree.TextNodes.Kid         (-> TextBranch int TextNode)))
   (set-kid!        (: Bjolang.Runtime.TextTree.TextNodes.SetKid      (-> TextBranch int TextNode void)))
   (chunk-at        (: Bjolang.Runtime.TextTree.TextNodes.Chunk       (-> TextLeaves int string)))
@@ -127,6 +127,7 @@
   (span-last-index-of (: System.MemoryExtensions.LastIndexOf    (-> (RoSpan byte) byte int)))
   (span-index-of-any (: System.MemoryExtensions.IndexOfAny      (-> (RoSpan byte) (RoSpan byte) int)))
   (span-first-outside (: System.MemoryExtensions.IndexOfAnyExceptInRange (-> (RoSpan int) int int int)))
+  (pop-count       (: System.Numerics.BitOperations.PopCount (-> ulong int)))
   ;; Four ints at once.
   (lanes-splat     (: System.Runtime.Intrinsics.Vector128.Create (-> int (Lanes int))))
   (lanes-of        (: System.Runtime.Intrinsics.Vector128.Create (-> int int int int (Lanes int))))
@@ -163,6 +164,15 @@
 (: (-> string int int int))
 (defun (newlines-between s from to)
   (if (= from to) 0 (span-count (ro-span-slice (.AsSpan s) #:from from #:to to) newline)))
+
+;; The characters of `s`, counted with vectors.
+(: (-> string int))
+(defun (chars-in s) #:inline (if (<= (string-length s) 1) (string-length s) (.Count s)))
+
+;; The characters in bytes `from` to `to` of `s`.
+(: (-> string int int int))
+(defun (chars-between s from to)
+  (if (= from to) 0 (.Count (piece s from to))))
 
 ;; Whether byte `k` of `s` starts a character, or is its end.
 (: (-> string int bool))
@@ -248,19 +258,26 @@
   (def count (node-count n))
   (let go ((i 0) (acc 0)) (if (< i count) (go (+ i 1) (+ acc (slot-lines n i))) acc)))
 
+(: (-> TextNode int))
+(defun (sum-chars n)
+  (def count (node-count n))
+  (let go ((i 0) (acc 0)) (if (< i count) (go (+ i 1) (+ acc (slot-chars n i))) acc)))
+
 ;; Slot `i` of the leaves node `n` holds `c`.
 (: (-> TextNode int string void))
 (defun (put-chunk! n i c)
   (set-chunk! (as-leaves n) i c)
   (set-slot-bytes! n i (string-length c))
-  (set-slot-lines! n i (newlines-in c)))
+  (set-slot-lines! n i (newlines-in c))
+  (set-slot-chars! n i (chars-in c)))
 
 ;; Slot `i` of the branch `n` holds the node `k`.
 (: (-> TextNode int TextNode void))
 (defun (put-kid! n i k)
   (set-kid! (as-branch n) i k)
   (set-slot-bytes! n i (sum-bytes k))
-  (set-slot-lines! n i (sum-lines k)))
+  (set-slot-lines! n i (sum-lines k))
+  (set-slot-chars! n i (sum-chars k)))
 
 ;; Copies slot `from` of `src` to slot `to` of `dst`, both of height `h`. The
 ;; end of the slot is that of `src` plus `d`.
@@ -268,6 +285,7 @@
 (defun (copy-slot! h src from dst to d)
   (set-slot-end! dst to (+ (slot-end src from) d))
   (set-slot-lines! dst to (slot-lines src from))
+  (set-slot-chars! dst to (slot-chars src from))
   (if (= h 1)
       (set-chunk! (as-leaves dst) to (chunk-at (as-leaves src) from))
       (set-kid! (as-branch dst) to (kid (as-branch src) from))))
@@ -409,11 +427,12 @@
                  (: height int)
                  (: bytes int)
                  (: lines int)
+                 (: chars int)
                  (: small string))))
 
 (: (-> string Text))
 (defun (small-text s)
-  (Text (root no-node) (height 0) (bytes (string-length s)) (lines (newlines-in s)) (small s)))
+  (Text (root no-node) (height 0) (bytes (string-length s)) (lines (newlines-in s)) (chars (chars-in s)) (small s)))
 
 (def empty-text (small-text ""))
 
@@ -513,7 +532,7 @@
      (def bytes (sum-bytes n))
      (if (<= bytes chunk-max)
          (small-text (node->string n h bytes))
-         (Text (root n) (height h) (bytes bytes) (lines (sum-lines n)) (small ""))))))
+         (Text (root n) (height h) (bytes bytes) (lines (sum-lines n)) (chars (sum-chars n)) (small ""))))))
 
 ;; The tree of a text: its root and height, and height 0 for an empty one.
 (: (-> Text long (Tuple TextNode int)))
@@ -972,7 +991,7 @@
      (tree->text n h))))
 
 (: (-> Text Text Text))
-(defun (text-concat a b) (concat-with a b (owner-next)))
+(defun (text-append a b) (concat-with a b (owner-next)))
 
 ;; ---------------------------------------------------------------------------
 ;; Splitting
@@ -1067,32 +1086,68 @@
 (defun (offset-outside who at bytes) #:no-inline
   (out-of-range #"${who}: the offset ${at} is outside the text, of ${bytes} bytes."))
 
-(: (-> Text int (Tuple Text Text)))
-(defun (text-split-at r at) (split-with r at "text-split-at" (owner-next)))
+(: (-> Text TextCursor (Tuple Text Text)))
+(defun (text-split-at r c) (split-with r (.at c) "text-split-at" (owner-next)))
 
+;; Bytes `from` to `to` of `r` as a text that shares its chunks.
 (: (-> Text int int Text))
-(defun (text-slice r from to)
-  (check-range r from to "text-slice")
+(defun (slice r from to)
+  (check-range r from to "text-substring")
   (def o (owner-next))
-  (def (Tuple _ tail) (split-with r from "text-slice" o))
-  (def (Tuple mid _) (split-with tail (- to from) "text-slice" o))
+  (def (Tuple _ tail) (split-with r from "text-substring" o))
+  (def (Tuple mid _) (split-with tail (- to from) "text-substring" o))
   mid)
+
+;; Bytes `from` to `to` of `r` as a text: one string when they fit in a chunk,
+;; one leaves node of the pieces of the chunks when they are in at most `cap`
+;; chunks, and a slice that shares the chunks otherwise.
+(: (-> Text int int Text))
+(defun (range->text r from to)
+  (cond
+    ((<= (- to from) chunk-max) (small-text (substring-string r from to)))
+    ((or (> (- to from) (* cap chunk-min)) (= (.height r) 0)) (slice r from to))
+    (else
+     (check-range r from to "text-substring")
+     (def it (chunk-iter r from))
+     (def n (new-node 1 0L))
+     (let go ((i 0))
+       (def c (.chunk it))
+       (def start (.start it))
+       (def e (min to (+ start (string-length c))))
+       (set-count! n (+ i 1))
+       (put-chunk! n i (piece c (- (max from start) start) (- e start)))
+       (cond
+         ((>= e to) (tree->text n 1))
+         ((or (= (+ i 1) cap) (not (chunk-iter-next! it))) (slice r from to))
+         (else (go (+ i 1))))))))
 
 (: (-> Text int int string void))
 (defun (check-range r from to who)
   (check-offset r from who)
   (check-offset r to who)
-  (when (> from to)
-    (out-of-range #"${who}: the range ${from} to ${to} ends before it starts.")))
+  (when (> from to) (backward-range who)))
+
+;; Raises that a range ends before it starts. Not inlined, as
+;; `cursor-at-edge`.
+(: (-> string void))
+(defun (backward-range who) #:no-inline
+  (out-of-range (str who ": the end is before the start.")))
+
+;; The characters of `r` from cursor `a` to cursor `b`, as a text.
+(: (-> Text TextCursor TextCursor Text))
+(defun (text-substring r a b)
+  (when (> (.at a) (.at b)) (backward-range "text-substring"))
+  (range->text r (.at a) (.at b)))
 
 ;; ---------------------------------------------------------------------------
 ;; Inserting
 ;; ---------------------------------------------------------------------------
 
-;; Puts `s`, of `sl` newlines and at most `small-insert` bytes, at byte `at`
-;; of the editable node `n`, which has room for one more slot.
-(: (-> TextNode int int string int long void))
-(defun (insert-into! n h at s sl o)
+;; Puts `s`, of `sl` newlines, `sc` characters and at most `small-insert`
+;; bytes, at byte `at` of the editable node `n`, which has room for one more
+;; slot.
+(: (-> TextNode int int string int int long void))
+(defun (insert-into! n h at s sl sc o)
   (def slen (string-length s))
   (def (Tuple i k) (slot-ending n at))
   (if (= h 1)
@@ -1106,7 +1161,8 @@
             (begin
               (set-chunk! l i t)
               (set-slot-bytes! n i (+ cl slen))
-              (set-slot-lines! n i (+ (slot-lines n i) sl)))
+              (set-slot-lines! n i (+ (slot-lines n i) sl))
+              (set-slot-chars! n i (+ (slot-chars n i) sc)))
             (begin
               (def tl (string-length t))
               (def cut (boundary-before t (/ tl 2)))
@@ -1125,15 +1181,16 @@
               (put-kid! n (+ i 1) right)
               (def lb (slot-bytes n i))
               (if (<= k lb)
-                  (into-kid! n h i child k s sl o)
-                  (into-kid! n h (+ i 1) right (- k lb) s sl o)))
-            (into-kid! n h i child k s sl o)))))
+                  (into-kid! n h i child k s sl sc o)
+                  (into-kid! n h (+ i 1) right (- k lb) s sl sc o)))
+            (into-kid! n h i child k s sl sc o)))))
 
-(: (-> TextNode int int TextNode int string int long void))
-(defun (into-kid! n h i child k s sl o)
-  (insert-into! child (- h 1) k s sl o)
+(: (-> TextNode int int TextNode int string int int long void))
+(defun (into-kid! n h i child k s sl sc o)
+  (insert-into! child (- h 1) k s sl sc o)
   (add-slot-bytes! n i (string-length s))
-  (set-slot-lines! n i (+ (slot-lines n i) sl)))
+  (set-slot-lines! n i (+ (slot-lines n i) sl))
+  (set-slot-chars! n i (+ (slot-chars n i) sc)))
 
 (: (-> Text int string long Text))
 (defun (insert-with r at s o)
@@ -1152,32 +1209,28 @@
      (def h (.height r))
      (def n (editable h (.root r) o))
      (def sl (newlines-in s))
+     (def sc (chars-in s))
      (def (Tuple root height)
        (if (= (node-count n) cap)
            (begin
              (def right (split-half! h n o))
              (Tuple (pair-node (+ h 1) n right o) (+ h 1)))
            (Tuple n h)))
-     (insert-into! root height at s sl o)
-     (Text (root root) (height height) (bytes (+ (.bytes r) slen)) (lines (+ (.lines r) sl)) (small "")))
+     (insert-into! root height at s sl sc o)
+     (Text (root root) (height height) (bytes (+ (.bytes r) slen)) (lines (+ (.lines r) sl)) (chars (+ (.chars r) sc))
+           (small "")))
     (else
      (def (Tuple l rr) (split-with r at "text-insert" o))
      (concat-with (concat-with l (string->text s) o) rr o))))
 
-(: (-> Text int string Text))
-(defun (text-insert r at s) (insert-with r at s (owner-next)))
+(: (-> Text TextCursor string Text))
+(defun (text-insert r c s) (insert-with r (.at c) s (owner-next)))
 
-(: (-> Text int Text Text))
-(defun (text-insert-text r at x)
+(: (-> Text TextCursor Text Text))
+(defun (text-insert-text r c x)
   (def o (owner-next))
-  (def (Tuple l rr) (split-with r at "text-insert-text" o))
+  (def (Tuple l rr) (split-with r (.at c) "text-insert-text" o))
   (concat-with (concat-with l x o) rr o))
-
-(: (-> Text string Text))
-(defun (text-append r s) (insert-with r (.bytes r) s (owner-next)))
-
-(: (-> Text string Text))
-(defun (text-prepend r s) (insert-with r 0 s (owner-next)))
 
 ;; ---------------------------------------------------------------------------
 ;; Deleting
@@ -1206,9 +1259,9 @@
           (put-kid! n (+ a 1) y)))))
 
 ;; Deletes bytes `at` to `at + len` of the editable node `n`, all in one
-;; chunk, and returns how many newlines they held.
-(: (-> TextNode int int int long int))
-(defun (delete-into! n h at len o)
+;; chunk, which hold `dl` newlines and `dc` characters.
+(: (-> TextNode int int int int int long void))
+(defun (delete-into! n h at len dl dc o)
   (def (Tuple i k) (slot-starting n at))
   (if (= h 1)
       (begin
@@ -1217,24 +1270,23 @@
         (def cl (string-length c))
         (check-boundary c k "text-delete")
         (check-boundary c (+ k len) "text-delete")
-        (def dl (newlines-between c k (+ k len)))
         (if (= len cl)
             (remove-slot! 1 n i)
             (begin
               (set-chunk! l i (concat3 (piece c 0 k) "" (piece c (+ k len) cl)))
               (set-slot-bytes! n i (- cl len))
               (set-slot-lines! n i (- (slot-lines n i) dl))
-              (merge-small-chunk! n i)))
-        dl)
+              (set-slot-chars! n i (- (slot-chars n i) dc))
+              (merge-small-chunk! n i))))
       (begin
         (def b (as-branch n))
         (def child (editable (- h 1) (kid b i) o))
         (set-kid! b i child)
-        (def dl (delete-into! child (- h 1) k len o))
+        (delete-into! child (- h 1) k len dl dc o)
         (add-slot-bytes! n i (- len))
         (set-slot-lines! n i (- (slot-lines n i) dl))
-        (when (< (node-count child) min-kids) (fix-underflow! n h i o))
-        dl)))
+        (set-slot-chars! n i (- (slot-chars n i) dc))
+        (when (< (node-count child) min-kids) (fix-underflow! n h i o)))))
 
 (: (-> Text int int long Text))
 (defun (delete-with r from to o)
@@ -1253,27 +1305,32 @@
          (begin
            (def h (.height r))
            (def n (editable h (.root r) o))
-           (def dl (delete-into! n h from len o))
-           (tree->text-sized n h (- (.bytes r) len) (- (.lines r) dl)))
+           (def k (- from start))
+           (check-boundary c k "text-delete")
+           (check-boundary c (+ k len) "text-delete")
+           (def dl (newlines-between c k (+ k len)))
+           (def dc (chars-between c k (+ k len)))
+           (delete-into! n h from len dl dc o)
+           (tree->text-sized n h (- (.bytes r) len) (- (.lines r) dl) (- (.chars r) dc)))
          (begin
            (def (Tuple l tail) (split-with r from "text-delete" o))
            (def (Tuple _ rr) (split-with tail len "text-delete" o))
            (concat-with l rr o))))))
 
-;; `tree->text` for a root whose bytes and newlines are known.
-(: (-> TextNode int int int Text))
-(defun (tree->text-sized n h bytes lines)
+;; `tree->text` for a root whose bytes, newlines and characters are known.
+(: (-> TextNode int int int int Text))
+(defun (tree->text-sized n h bytes lines chars)
   (if (or (<= bytes chunk-max) (and (> h 1) (= (node-count n) 1)))
       (tree->text n h)
-      (Text (root n) (height h) (bytes bytes) (lines lines) (small ""))))
+      (Text (root n) (height h) (bytes bytes) (lines lines) (chars chars) (small ""))))
 
-(: (-> Text int int Text))
-(defun (text-delete r from to) (delete-with r from to (owner-next)))
+(: (-> Text TextCursor TextCursor Text))
+(defun (text-delete r a b) (delete-with r (.at a) (.at b) (owner-next)))
 
-(: (-> Text int int string Text))
-(defun (text-replace-range r from to s)
+(: (-> Text TextCursor TextCursor string Text))
+(defun (text-replace-range r a b s)
   (def o (owner-next))
-  (insert-with (delete-with r from to o) from s o))
+  (insert-with (delete-with r (.at a) (.at b) o) (.at a) s o))
 
 ;; ---------------------------------------------------------------------------
 ;; Characters and text
@@ -1304,37 +1361,9 @@
                                      (bitwise-ior (shift-left (bitwise-and (byte-at sp (+ k 2)) 63) 6)
                                                   (bitwise-and (byte-at sp (+ k 3)) 63))))))))
 
-(: (-> Text int string void))
-(defun (check-char r at who)
-  (when (or (< at 0) (>= at (.bytes r)))
-    (out-of-range #"${who}: there is no character at ${at} in a text of ${(.bytes r)} bytes.")))
-
-;; The character that starts at byte `at`.
-(: (-> Text int char))
-(defun (text-ref r at)
-  (check-char r at "text-ref")
-  (def (Tuple c start) (chunk-of r at))
-  (check-boundary c (- at start) "text-ref")
-  (decode-at c (- at start)))
-
-;; The offset of the character after the one at `at`.
-(: (-> Text int int))
-(defun (text-next r at)
-  (check-char r at "text-next")
-  (def (Tuple c start) (chunk-of r at))
-  (+ at (char-width (byte-at (.AsSpan c) (- at start)))))
-
-;; The offset of the character before `at`, which is after the first.
-(: (-> Text int int))
-(defun (text-prev r at)
-  (when (or (<= at 0) (> at (.bytes r)))
-    (out-of-range #"text-prev: there is no character before ${at} in a text of ${(.bytes r)} bytes."))
-  (def (Tuple c start) (chunk-of r (- at 1)))
-  (+ start (boundary-before c (- (- at 1) start))))
-
 ;; Bytes `from` to `to` as a string of their own.
 (: (-> Text int int string))
-(defun (text-substring r from to)
+(defun (substring-string r from to)
   (check-range r from to "text-substring")
   (cond
     ((= from to) "")
@@ -1386,7 +1415,7 @@
                  (concat-all (array->ro-span parts)))))))))
 
 (: (-> Text int))
-(defun (text-char-count r) (text-fold-chunks (fun (c n) (+ n (.Count c))) 0 r))
+(defun (text-count r) (.chars r))
 
 ;; ---------------------------------------------------------------------------
 ;; Lines
@@ -1417,8 +1446,8 @@
 
 ;; The offset of the first byte of line `n`, counting from 0.
 (: (-> Text int int))
-(defun (text-line-start r n)
-  (check-line r n "text-line-start")
+(defun (line-start r n)
+  (check-line r n "text-line")
   (cond
     ((= n 0) 0)
     ((= (.height r) 0) (nth-newline-end (.small r) n))
@@ -1427,14 +1456,13 @@
 ;; The offset of the newline that ends line `n`, or the end of the text for
 ;; the last line.
 (: (-> Text int int))
-(defun (text-line-end r n)
-  (check-line r n "text-line-end")
-  (if (= n (.lines r)) (.bytes r) (- (text-line-start r (+ n 1)) 1)))
+(defun (line-end r n)
+  (check-line r n "text-line")
+  (if (= n (.lines r)) (.bytes r) (- (line-start r (+ n 1)) 1)))
 
 ;; The line that byte `at` is on: the newlines before it.
 (: (-> Text int int))
-(defun (text-line-of r at)
-  (check-offset r at "text-line-of")
+(defun (line-of r at)
   (if (= (.height r) 0)
       (newlines-between (.small r) 0 at)
       (let go ((n (.root r)) (h (.height r)) (at at) (acc 0))
@@ -1445,9 +1473,9 @@
             (go (kid (as-branch n) i) (- h 1) k before)))))
 
 ;; Line `n`, without its newline.
-(: (-> Text int string))
+(: (-> Text int Text))
 (defun (text-line r n)
-  (text-substring r (text-line-start r n) (text-line-end r n)))
+  (range->text r (line-start r n) (line-end r n)))
 
 ;; ---------------------------------------------------------------------------
 ;; Searching
@@ -1515,8 +1543,7 @@
 
 ;; The offset of the first `s` at or after `#:from`.
 (: (-> Text string (#:from int) (Option int)))
-(defun (text-index-of r s #:from 0)
-  (check-offset r from "text-index-of")
+(defun (index-of r s #:from 0)
   (def m (string-length s))
   (cond
     ((= m 0) (Some from))
@@ -1529,7 +1556,7 @@
      (if (>= k 0) (Some k) None))))
 
 (: (-> Text string bool))
-(defun (text-contains? r s) (some? (text-index-of r s)))
+(defun (text-contains? r s) (some? (index-of r s)))
 
 (: (-> Text string bool))
 (defun (text-starts-with? r s) (matches-at? r 0 s))
@@ -1544,8 +1571,7 @@
 ;; - Each chunk, last first, is searched for the matches that start in it and
 ;;   end in a later one, and then for those inside it.
 (: (-> Text string (#:to int) (Option int)))
-(defun (text-last-index-of r s #:to (text-length r))
-  (check-offset r to "text-last-index-of")
+(defun (last-index-of r s #:to (text-length r))
   (def m (string-length s))
   (cond
     ((= m 0) (Some to))
@@ -1807,28 +1833,28 @@
   (defun (iterable-done? r w) (string-walk-done? (.walk w)))
   (defun (iterable-current r w) (string-walk-current (.walk w)))
   (defun (iterable-next r w) (text-walk-next w))
-  (defun (count r) (text-char-count r)))
+  (defun (count r) (.chars r)))
 
 (impl (Collection Text)
   (type %content char)
-  (defun (length r) (text-char-count r))
+  (defun (length r) (.chars r))
   (defun (empty? r) (text-empty? r)))
 
 (impl (Refable Text)
   (type %index TextCursor)
   (type %out char)
-  (defun (ref r c) (text-cursor-ref c))
-  (defun (try-ref r c) (if (text-cursor-end? c) None (Some (char-at c)))))
+  (defun (ref r c) (text-cursor-ref r c))
+  (defun (try-ref r c) (if (at-end? c) None (Some (char-at c)))))
 
 (impl (Cursor Text)
   (type %elem char)
   (type %cursor TextCursor)
   (defun (cursor-start r) (text-cursor-start r))
   (defun (cursor-end r) (text-cursor-end r))
-  (defun (cursor-end? r c) (text-cursor-end? c))
-  (defun (cursor-ref r c) (text-cursor-ref c))
-  (defun (cursor-next r c) (text-cursor-next c))
-  (defun (cursor-prev r c) (text-cursor-prev c)))
+  (defun (cursor-end? r c) (at-end? c))
+  (defun (cursor-ref r c) (text-cursor-ref r c))
+  (defun (cursor-next r c) (text-cursor-next r c))
+  (defun (cursor-prev r c) (text-cursor-prev r c)))
 
 ;; ---------------------------------------------------------------------------
 ;; As a string has them
@@ -1838,53 +1864,52 @@
 (defun (check-count who n)
   (when (< n 0) (bad-argument #"${who}: the count ${n} is negative.")))
 
+;; The high bit of each byte of a word.
+(def high-bits (cast ulong 0x8080808080808080UL))
+
 ;; The bytes of the first `n` characters of `c`, or all of it when it has
 ;; fewer.
+;;
+;; - Reads 8 bytes at a time as a word. A byte 10xxxxxx continues a
+;;   character, and every other byte starts one: `x & ~(x << 1)` has the high
+;;   bit of each continuing byte, and the rest of the word's bytes start
+;;   characters.
+;; - Scans the bytes of the word that holds the start of character `n`.
 (: (-> string int int))
 (defun (bytes-of-first c n)
   (def sp (.AsSpan c))
   (def len (string-length c))
-  (let go ((k 0) (n n))
-    (if (or (= n 0) (>= k len)) k (go (+ k (char-width (byte-at sp k))) (- n 1)))))
+  (def words (/ len 8))
+  (def (: ws (RoSpan ulong)) (ro-span-> (ro-span-slice sp #:from 0 #:to (* 8 words))))
+  (let go ((w 0) (n n))
+    (if (>= w words)
+        (nth-start c (* 8 w) n)
+        (begin
+          (def x (ro-span-ref ws w))
+          (def k (- 8 (pop-count (bitwise-and (bitwise-and x (bitwise-not (shift-left x 1))) high-bits))))
+          (if (< n k) (nth-start c (* 8 w) n) (go (+ w 1) (- n k)))))))
 
-;; The bytes of the last `n` characters of `c`, or all of it when it has
-;; fewer.
-(: (-> string int int))
-(defun (bytes-of-last c n)
+;; The byte from `k` on where the `n`-th character after `k` that starts there
+;; or later starts, counting from 0, or the length of `c` when there are fewer.
+(: (-> string int int int))
+(defun (nth-start c k n)
+  (def sp (.AsSpan c))
   (def len (string-length c))
-  (let go ((k len) (n n))
-    (if (or (= n 0) (<= k 0)) (- len k) (go (boundary-before c (- k 1)) (- n 1)))))
+  (let step ((k k) (n n))
+    (cond
+      ((>= k len) len)
+      ((= (bitwise-and (byte-at sp k) 192) 128) (step (+ k 1) n))
+      ((= n 0) k)
+      (else (step (+ k 1) (- n 1))))))
 
 ;; The offset after the first `n` characters of `r`, or its end when it has
-;; fewer. Skips whole chunks by their character counts.
+;; fewer.
 (: (-> Text int int))
-(defun (offset-after-chars r n)
-  (if (or (= n 0) (= (.bytes r) 0))
-      0
-      (begin
-        (def it (chunk-iter r 0))
-        (let go ((n n))
-          (def c (.chunk it))
-          (def k (.Count c))
-          (cond
-            ((< n k) (+ (.start it) (bytes-of-first c n)))
-            ((chunk-iter-next! it) (go (- n k)))
-            (else (.bytes r)))))))
+(defun (offset-after-chars r n) (byte-of-char r (min n (.chars r))))
 
 ;; The offset before the last `n` characters of `r`, or 0 when it has fewer.
 (: (-> Text int int))
-(defun (offset-before-last-chars r n)
-  (if (or (= n 0) (= (.bytes r) 0))
-      (.bytes r)
-      (begin
-        (def it (chunk-iter r (- (.bytes r) 1)))
-        (let go ((n n))
-          (def c (.chunk it))
-          (def k (.Count c))
-          (cond
-            ((< n k) (- (+ (.start it) (string-length c)) (bytes-of-last c n)))
-            ((chunk-iter-prev! it) (go (- n k)))
-            (else 0))))))
+(defun (offset-before-last-chars r n) (byte-of-char r (max 0 (- (.chars r) n))))
 
 ;; Adds bytes `from` to `to` of `r` to `b`, from the chunks of `it`, which is on
 ;; the chunk that holds `from` or one before it. Leaves `it` on the chunk that
@@ -1941,8 +1966,7 @@
   (def start (.start it))
   (cond
     ((<= to (+ start (string-length c))) (small-text (piece c (- from start) (- to start))))
-    ((<= (- to from) chunk-max) (small-text (text-substring r from to)))
-    (else (text-slice r from to))))
+    (else (range->text r from to))))
 
 ;; `r` with every `old` replaced by `new`, left to right without overlaps.
 ;;
@@ -1998,7 +2022,7 @@
 ;; The text before the first `sep` and the text after it, or None.
 (: (-> Text string (Option (Tuple Text Text))))
 (defun (text-split-once r sep)
-  (match (text-index-of r sep)
+  (match (index-of r sep)
     ((Some k)
      (def o (owner-next))
      (def (Tuple l rest) (split-with r k "text-split-once" o))
@@ -2018,15 +2042,15 @@
 
 ;; The cursor on the first `needle` in `r`. An empty needle is at the start.
 (: (-> Text string (Option TextCursor)))
-(defun (text-search r needle) (text-cursor-search (text-cursor-start r) needle))
+(defun (text-search r needle) (text-cursor-search r (text-cursor-start r) needle))
 
 ;; The cursor on the last `needle` in `r`. An empty needle is at the end.
 (: (-> Text string (Option TextCursor)))
-(defun (text-search-backward r needle) (text-cursor-search-backward (text-cursor-end r) needle))
+(defun (text-search-backward r needle) (text-cursor-search-backward r (text-cursor-end r) needle))
 
 ;; The cursor on the first character of `r` that `pred` holds for.
 (: (-> (-?-> char bool) Text (Option TextCursor)))
-(defun (text-index pred r) (text-cursor-find pred (text-cursor-start r)))
+(defun (text-index pred r) (text-cursor-find pred r (text-cursor-start r)))
 
 ;; The cursor on the first character at or after `start` that is in `chars`.
 ;;
@@ -2035,20 +2059,20 @@
 (: (-> Text string TextCursor (Option TextCursor)))
 (defun (text-search-any r chars start)
   (cond
-    ((or (string-empty? chars) (text-cursor-end? start)) None)
+    ((or (string-empty? chars) (at-end? start)) None)
     ((= (string-length chars) (string-count chars))
      (def set (.AsSpan chars))
      (def it (chunk-iter r (.at start)))
      (let go ((from (- (.at start) (.start it))))
        (def k (span-index-of-any (ro-span-slice (.AsSpan (.chunk it)) #:from from) set))
        (cond
-         ((>= k 0) (Some (text-cursor-at r (+ (.start it) from k))))
+         ((>= k 0) (Some (cursor-at-byte r (+ (.start it) from k))))
          ((chunk-iter-next! it) (go 0))
          (else None))))
     (else
      (def set (loop (:for ch chars) (:acc (arraying ch))))
      (def n (array-length set))
-     (text-cursor-find (fun (ch) (let go ((i 0)) (and (< i n) (or (char=? (array-ref set i) ch) (go (+ i 1)))))) start))))
+     (text-cursor-find (fun (ch) (let go ((i 0)) (and (< i n) (or (char=? (array-ref set i) ch) (go (+ i 1)))))) r start))))
 
 ;; Whether `ch` is not white space.
 (: (-> char bool))
@@ -2058,16 +2082,16 @@
 (: (-> Text Text))
 (defun (text-trim-left r)
   (match (text-index not-space? r)
-    ((Some c) (if (text-cursor-start? c) r (text-cursor-slice c (text-cursor-end r))))
+    ((Some c) (if (at-start? c) r (range->text r (.at c) (.bytes r))))
     (None empty-text)))
 
 ;; `r` without the white space at its end.
 (: (-> Text Text))
 (defun (text-trim-right r)
-  (match (text-cursor-find-backward not-space? (text-cursor-end r))
+  (match (text-cursor-find-backward not-space? r (text-cursor-end r))
     ((Some c)
-     (def e (text-cursor-next c))
-     (if (text-cursor-end? e) r (text-cursor-slice (text-cursor-start r) e)))
+     (def e (step-next c))
+     (if (at-end? e) r (range->text r 0 (.at e))))
     (None empty-text)))
 
 ;; `r` without the white space at both ends.
@@ -2084,14 +2108,14 @@
 ;; `r` with `#:with` before it until it is `width` characters long.
 (: (-> Text int (#:with char) Text))
 (defun (text-pad-left r width #:with #\space)
-  (def k (- width (text-char-count r)))
-  (if (<= k 0) r (text-prepend r (repeated-char with k))))
+  (def k (- width (.chars r)))
+  (if (<= k 0) r (insert-with r 0 (repeated-char with k) (owner-next))))
 
 ;; `r` with `#:with` after it until it is `width` characters long.
 (: (-> Text int (#:with char) Text))
 (defun (text-pad-right r width #:with #\space)
-  (def k (- width (text-char-count r)))
-  (if (<= k 0) r (text-append r (repeated-char with k))))
+  (def k (- width (.chars r)))
+  (if (<= k 0) r (insert-with r (.bytes r) (repeated-char with k) (owner-next))))
 
 ;; `r` with each character uppercased in the invariant culture, chunk by chunk.
 (: (-> Text Text))
@@ -2120,6 +2144,25 @@
           (textbuilder-add! b (.Reverse (.chunk it)))
           (when (chunk-iter-prev! it) (go)))
         (textbuilder->text b))))
+
+;; Folds `f` over the characters of `r`, first to last.
+(: (-> (-?-> char %a %a) %a Text %a))
+(defun (text-fold f init r)
+  (loop (:for ch r) (:acc acc (folding init (f ch acc))) => acc))
+
+;; Folds `f` over the characters of `r`, last to first.
+(: (-> (-?-> char %a %a) %a Text %a))
+(defun (text-fold-right f init r)
+  (loop (:for ch (text-backward r (text-cursor-end r))) (:acc acc (folding init (f ch acc))) => acc))
+
+(: (-> (-?-> char void) Text void))
+(defun (text-for-each f r) (loop (:for ch r) (:do (f ch))))
+
+(: (-> Text (List char)))
+(defun (text->list r) (text-fold-right (fun (ch acc) (Cons ch acc)) Nil r))
+
+(: (-> Text (Vec char)))
+(defun (text->vec r) (loop (:for ch r) (:acc (vecing ch))))
 
 ;; ---------------------------------------------------------------------------
 ;; Collecting and adding
@@ -2170,7 +2213,7 @@
 
 (impl (Addable Text)
   (type %elem string)
-  (defun (add r s) (text-append r s)))
+  (defun (add r s) (insert-with r (.bytes r) s (owner-next))))
 
 (impl (Addable! TextBuilder)
   (type %elem string)
@@ -2218,15 +2261,63 @@
   (def (Tuple c start) (chunk-scanning r at))
   (TextCursor (text r) (chunk c) (start start) (end (+ start (string-length c))) (at at)))
 
+;; The cursor at byte `at`, a character boundary of `r`.
 (: (-> Text int TextCursor))
-(defun (text-cursor-at r at)
-  (check-offset r at "text-cursor-at")
-  (if (= at (.bytes r))
-      (end-cursor r)
-      (begin
-        (def c (cursor-in r at))
-        (check-boundary (.chunk c) (- at (.start c)) "text-cursor-at")
-        c)))
+(defun (cursor-at-byte r at)
+  (if (= at (.bytes r)) (end-cursor r) (cursor-in r at)))
+
+;; The characters before slot `i` of `n`.
+(: (-> TextNode int int))
+(defun (chars-before-slot n i)
+  (let go ((j 0) (acc 0)) (if (< j i) (go (+ j 1) (+ acc (slot-chars n j))) acc)))
+
+;; The cursor on character `n` of `r`, where 0 <= `n` <= its characters.
+;;
+;; - Descends by the character counts of the nodes, then steps through one
+;;   chunk; a chunk with as many characters as bytes is ASCII, and needs no
+;;   steps.
+(: (-> Text int TextCursor))
+(defun (cursor-of-char r n) #:no-inline
+  (cond
+    ((>= n (.chars r)) (end-cursor r))
+    ((= (.height r) 0)
+     (def c (.small r))
+     (def at (if (= (.chars r) (.bytes r)) n (bytes-of-first c n)))
+     (TextCursor (text r) (chunk c) (start 0) (end (string-length c)) (at at)))
+    (else
+     (let go ((nd (.root r)) (h (.height r)) (n n) (start 0))
+       (def last (- (node-count nd) 1))
+       (def (Tuple i k)
+         (let scan ((i 0) (k n))
+           (def ci (slot-chars nd i))
+           (if (and (< i last) (>= k ci)) (scan (+ i 1) (- k ci)) (Tuple i k))))
+       (def s2 (+ start (slot-base nd i)))
+       (if (= h 1)
+           (begin
+             (def c (chunk-at (as-leaves nd) i))
+             (def cl (string-length c))
+             (def off (if (= (slot-chars nd i) cl) k (bytes-of-first c k)))
+             (TextCursor (text r) (chunk c) (start s2) (end (+ s2 cl)) (at (+ s2 off))))
+           (go (kid (as-branch nd) i) (- h 1) k s2))))))
+
+;; The byte offset of character `n` of `r`, where 0 <= `n` <= its characters.
+(: (-> Text int int))
+(defun (byte-of-char r n) (.at (cursor-of-char r n)))
+
+;; The characters before byte `at`, a boundary of `r`.
+(: (-> Text int int))
+(defun (chars-before r at)
+  (cond
+    ((= at 0) 0)
+    ((= at (.bytes r)) (.chars r))
+    ((= (.height r) 0) (chars-between (.small r) 0 at))
+    (else
+     (let go ((n (.root r)) (h (.height r)) (at at) (acc 0))
+       (def (Tuple i k) (slot-starting n at))
+       (def before (+ acc (chars-before-slot n i)))
+       (if (= h 1)
+           (+ before (chars-between (chunk-at (as-leaves n) i) 0 k))
+           (go (kid (as-branch n) i) (- h 1) k before))))))
 
 (: (-> Text TextCursor))
 (defun (text-cursor-start r)
@@ -2235,25 +2326,27 @@
 (: (-> Text TextCursor))
 (defun (text-cursor-end r) (end-cursor r))
 
-(: (-> TextCursor int))
-(defun (text-cursor-offset c) (.at c))
-
-(: (-> TextCursor Text))
-(defun (text-cursor-text c) (.text c))
+(: (-> TextCursor bool))
+(defun (at-end? c) (= (.at c) (.bytes (.text c))))
 
 (: (-> TextCursor bool))
-(defun (text-cursor-end? c) (= (.at c) (.bytes (.text c))))
+(defun (at-start? c) (= (.at c) 0))
 
-(: (-> TextCursor bool))
-(defun (text-cursor-start? c) (= (.at c) 0))
+;; Whether `c`, a cursor of `r`, is at its end.
+(: (-> Text TextCursor bool))
+(defun (text-cursor-end? r c) (at-end? c))
+
+;; Whether `c`, a cursor of `r`, is at its start.
+(: (-> Text TextCursor bool))
+(defun (text-cursor-start? r c) (at-start? c))
 
 (: (-> TextCursor string void))
 (defun (check-not-end c who)
-  (when (text-cursor-end? c) (cursor-at-edge who "end")))
+  (when (at-end? c) (cursor-at-edge who "end")))
 
 (: (-> TextCursor string void))
 (defun (check-not-start c who)
-  (when (text-cursor-start? c) (cursor-at-edge who "start")))
+  (when (at-start? c) (cursor-at-edge who "start")))
 
 ;; Raises that the cursor is at the `edge` of the text. Not inlined, so that
 ;; the message is not built in the steps that check.
@@ -2298,115 +2391,142 @@
         (go (- k 1))
         (record-set p (at (+ (.start p) k))))))
 
-(: (-> TextCursor char))
-(defun (text-cursor-ref c)
+;; The character at `c`, a cursor of `r`.
+(: (-> Text TextCursor char))
+(defun (text-cursor-ref r c)
   (check-not-end c "text-cursor-ref")
   (char-at c))
 
-(: (-> TextCursor TextCursor))
-(defun (text-cursor-next c)
+(: (-> Text TextCursor TextCursor))
+(defun (text-cursor-next r c)
   (check-not-end c "text-cursor-next")
   (step-next c))
 
-(: (-> TextCursor TextCursor))
-(defun (text-cursor-prev c)
+(: (-> Text TextCursor TextCursor))
+(defun (text-cursor-prev r c)
   (check-not-start c "text-cursor-prev")
   (step-prev c))
 
-(: (-> TextCursor (Tuple char TextCursor)))
-(defun (text-cursor-ref+next c)
+(: (-> Text TextCursor (Tuple char TextCursor)))
+(defun (text-cursor-ref+next r c)
   (check-not-end c "text-cursor-ref+next")
   (ref+next c))
 
-(: (-> TextCursor int TextCursor))
-(defun (text-cursor-forward c n)
-  (when (< n 0) (bad-argument #"text-cursor-forward: the count ${n} is negative."))
-  (let go ((p c) (k n))
-    (cond
-      ((= k 0) p)
-      ((text-cursor-end? p)
-       (out-of-range #"text-cursor-forward: there are fewer than ${n} characters after the cursor."))
-      (else (go (step-next p) (- k 1))))))
+;; Raises that a count is negative. Not inlined, as `cursor-at-edge`.
+(: (-> string int void))
+(defun (negative-count who n) #:no-inline
+  (bad-argument #"${who}: the count ${n} is negative."))
 
-(: (-> TextCursor int TextCursor))
-(defun (text-cursor-back c n)
-  (when (< n 0) (bad-argument #"text-cursor-back: the count ${n} is negative."))
-  (let go ((p c) (k n))
-    (cond
-      ((= k 0) p)
-      ((text-cursor-start? p)
-       (out-of-range #"text-cursor-back: there are fewer than ${n} characters before the cursor."))
-      (else (go (step-prev p) (- k 1))))))
+;; Raises that there are fewer than `n` characters on the `side` of the
+;; cursor. Not inlined, as `cursor-at-edge`.
+(: (-> string int string void))
+(defun (too-few who n side) #:no-inline
+  (out-of-range #"${who}: there are fewer than ${n} characters ${side} the cursor."))
+
+;; The steps a cursor takes one character at a time. A longer move finds its
+;; character from the root, by the character counts.
+(def few-steps 16)
+
+;; The cursor `n` characters after `c`, a cursor of `r`.
+(: (-> Text TextCursor int TextCursor))
+(defun (text-cursor-forward r c n)
+  (when (< n 0) (negative-count "text-cursor-forward" n))
+  (if (<= n few-steps)
+      (let go ((p c) (k n))
+        (cond
+          ((= k 0) p)
+          ((at-end? p) (too-few "text-cursor-forward" n "after") p)
+          (else (go (step-next p) (- k 1)))))
+      (begin
+        (def t (.text c))
+        (def target (+ (chars-before t (.at c)) n))
+        (when (> target (.chars t)) (too-few "text-cursor-forward" n "after"))
+        (cursor-of-char t target))))
+
+;; The cursor `n` characters before `c`, a cursor of `r`.
+(: (-> Text TextCursor int TextCursor))
+(defun (text-cursor-back r c n)
+  (when (< n 0) (negative-count "text-cursor-back" n))
+  (if (<= n few-steps)
+      (let go ((p c) (k n))
+        (cond
+          ((= k 0) p)
+          ((at-start? p) (too-few "text-cursor-back" n "before") p)
+          (else (go (step-prev p) (- k 1)))))
+      (begin
+        (def t (.text c))
+        (def target (- (chars-before t (.at c)) n))
+        (when (< target 0) (too-few "text-cursor-back" n "before"))
+        (cursor-of-char t target))))
 
 ;; The cursor `column` characters into line `n`, or at the line's end when
 ;; it is shorter.
 (: (-> Text int (#:column int) TextCursor))
 (defun (text-cursor-at-line r n #:column 0)
-  (def from (text-line-start r n))
-  (def e (text-line-end r n))
-  (let go ((p (text-cursor-at r from)) (k column))
+  (def from (line-start r n))
+  (def e (line-end r n))
+  (let go ((p (cursor-at-byte r from)) (k column))
     (if (or (<= k 0) (>= (.at p) e)) p (go (step-next p) (- k 1)))))
 
-(: (-> TextCursor int))
-(defun (text-cursor-line c) (text-line-of (.text c) (.at c)))
+;; The line of `c`, a cursor of `r`, counting from 0.
+(: (-> Text TextCursor int))
+(defun (text-cursor-line r c) (line-of (.text c) (.at c)))
 
-(: (-> TextCursor TextCursor))
-(defun (text-cursor-line-start c)
-  (def r (.text c))
-  (text-cursor-at r (text-line-start r (text-cursor-line c))))
+(: (-> Text TextCursor TextCursor))
+(defun (text-cursor-line-start r c)
+  (def t (.text c))
+  (cursor-at-byte t (line-start t (line-of t (.at c)))))
 
-(: (-> TextCursor TextCursor))
-(defun (text-cursor-line-end c)
-  (def r (.text c))
-  (text-cursor-at r (text-line-end r (text-cursor-line c))))
+(: (-> Text TextCursor TextCursor))
+(defun (text-cursor-line-end r c)
+  (def t (.text c))
+  (cursor-at-byte t (line-end t (line-of t (.at c)))))
 
 ;; The characters between the start of the cursor's line and the cursor.
-(: (-> TextCursor int))
-(defun (text-cursor-column c)
-  (let go ((p (text-cursor-line-start c)) (k 0))
-    (if (>= (.at p) (.at c)) k (go (step-next p) (+ k 1)))))
+(: (-> Text TextCursor int))
+(defun (text-cursor-column r c)
+  (def t (.text c))
+  (def from (line-start t (line-of t (.at c))))
+  (- (chars-before t (.at c)) (chars-before t from)))
 
-;; The first `s` that starts at or after `c`.
-(: (-> TextCursor string (Option TextCursor)))
-(defun (text-cursor-search c s)
-  (match (text-index-of (.text c) s #:from (.at c))
-    ((Some k) (Some (text-cursor-at (.text c) k)))
+;; The first `s` that starts at or after `c`, a cursor of `r`.
+(: (-> Text TextCursor string (Option TextCursor)))
+(defun (text-cursor-search r c s)
+  (def t (.text c))
+  (match (index-of t s #:from (.at c))
+    ((Some k) (Some (cursor-at-byte t k)))
     (None None)))
 
-;; The last `s` that ends at or before `c`.
-(: (-> TextCursor string (Option TextCursor)))
-(defun (text-cursor-search-backward c s)
-  (match (text-last-index-of (.text c) s #:to (.at c))
-    ((Some k) (Some (text-cursor-at (.text c) k)))
+;; The last `s` that ends at or before `c`, a cursor of `r`.
+(: (-> Text TextCursor string (Option TextCursor)))
+(defun (text-cursor-search-backward r c s)
+  (def t (.text c))
+  (match (last-index-of t s #:to (.at c))
+    ((Some k) (Some (cursor-at-byte t k)))
     (None None)))
 
-;; The first character at or after `c` that `pred` holds for.
-(: (-> (-?-> char bool) TextCursor (Option TextCursor)))
-(defun (text-cursor-find pred c)
+;; The first character at or after `c`, a cursor of `r`, that `pred` holds
+;; for.
+(: (-> (-?-> char bool) Text TextCursor (Option TextCursor)))
+(defun (text-cursor-find pred r c)
   (let go ((p c))
     (cond
-      ((text-cursor-end? p) None)
+      ((at-end? p) None)
       (else
        (def (Tuple ch n) (ref+next p))
        (if (pred ch) (Some p) (go n))))))
 
-;; The last character before `c` that `pred` holds for.
-(: (-> (-?-> char bool) TextCursor (Option TextCursor)))
-(defun (text-cursor-find-backward pred c)
+;; The last character before `c`, a cursor of `r`, that `pred` holds for.
+(: (-> (-?-> char bool) Text TextCursor (Option TextCursor)))
+(defun (text-cursor-find-backward pred r c)
   (let go ((p c))
-    (if (text-cursor-start? p)
+    (if (at-start? p)
         None
         (begin
           (def q (step-prev p))
           (if (pred (char-at q)) (Some q) (go q))))))
 
-(: (-> TextCursor TextCursor string))
-(defun (text-cursor-substring a b) (text-substring (.text a) (.at a) (.at b)))
-
-(: (-> TextCursor TextCursor Text))
-(defun (text-cursor-slice a b) (text-slice (.text a) (.at a) (.at b)))
-
-;; Comparisons of the offsets of two cursors of one text.
+;; Comparisons of two cursors of one text.
 (: (-> TextCursor TextCursor bool))
 (defun (text-cursor=? a b) (= (.at a) (.at b)))
 (: (-> TextCursor TextCursor bool))
@@ -2430,7 +2550,7 @@
   (type %elem char)
   (type %cursor TextCursor)
   (defun (iterable-start c) c)
-  (defun (iterable-done? c p) (text-cursor-end? p))
+  (defun (iterable-done? c p) (at-end? p))
   (defun (iterable-current c p) (char-at p))
   (defun (iterable-next c p) (step-next p)))
 
@@ -2440,12 +2560,13 @@
 ;; A step of a backward loop: the cursor on its character, or done.
 (type (: TextBackwardStep #:opaque (Struct (: on TextCursor) (: done? bool))))
 
-(: (-> TextCursor TextBackward))
-(defun (text-backward c) (TextBackward (from c)))
+;; The characters before `c`, a cursor of `r`, last first.
+(: (-> Text TextCursor TextBackward))
+(defun (text-backward r c) (TextBackward (from c)))
 
 (: (-> TextCursor TextBackwardStep))
 (defun (backward-from c)
-  (if (text-cursor-start? c)
+  (if (at-start? c)
       (TextBackwardStep (on c) (done? #t))
       (TextBackwardStep (on (step-prev c)) (done? #f))))
 
@@ -2465,21 +2586,28 @@
 ;; own yet. `transienttext->text` returns the text it holds and takes a new
 ;; owner, so that the text does not change after.
 ;;
+;; - Positions are character indices, from 0 to the characters it holds.
 ;; - The hot chunk: the chunk of the last edit, held in `buf` as bytes 0 to
-;;   `hot-len`, which starts at byte `hot-start` of the text. `path` holds the
-;;   nodes down to it, the leaves node first, and `slots` the slot taken in
-;;   each. `hot-len` is -1 when no chunk is hot.
+;;   `hot-len`, with `hot-chars` characters, the first of which is character
+;;   `hot-first` of the text. `path` holds the nodes down to it, the leaves
+;;   node first, and `slots` the slot taken in each. `hot-len` is -1 when no
+;;   chunk is hot.
+;; - `mark-char` and `mark-byte` are a character of the hot chunk and its byte
+;;   in `buf`, where the last edit in it ended: the next edit steps from there
+;;   to its own byte, and a chunk with as many bytes as characters needs no
+;;   steps.
 ;; - An edit inside the hot chunk moves bytes in `buf` and adds to the newline
-;;   counts on the path, and allocates nothing. The byte counts on the path
-;;   stay those of the old string until `cool!`. It must leave the chunk at most
-;;   `chunk-max` bytes, and not empty unless the text is one string.
-;; - While a chunk is hot, `bytes` and `lines` are the text's, not those in
-;;   `text`, and when `dirty?` its slot holds an old string. `cool!` puts the
-;;   chunk back; every other operation cools first.
+;;   and character counts on the path, and allocates nothing. The byte counts
+;;   on the path stay those of the old string until `cool!`. It must leave the
+;;   chunk at most `chunk-max` bytes, and not empty unless the text is one
+;;   string.
+;; - While a chunk is hot, `bytes`, `lines` and `chars` are the text's, not
+;;   those in `text`, and when `dirty?` its slot holds an old string. `cool!`
+;;   puts the chunk back; every other operation cools first.
 ;; - An edit outside the hot chunk makes its own chunk hot only when it is
-;;   within `hot-reach` bytes of `last`, where the edit before it ended. Edits
-;;   far apart edit the tree, which costs less than copying each chunk in and
-;;   out for one edit.
+;;   within `hot-reach` characters of `last`, where the edit before it ended.
+;;   Edits far apart edit the tree, which costs less than copying each chunk
+;;   in and out for one edit.
 (def hot-reach 64)
 
 (type (: TransientText #:opaque
@@ -2489,10 +2617,14 @@
                  (: path (Array TextNode))
                  (: slots (Array int))
                  (: hot-len int #:mutable)
-                 (: hot-start int #:mutable)
+                 (: hot-chars int #:mutable)
+                 (: hot-first int #:mutable)
+                 (: mark-char int #:mutable)
+                 (: mark-byte int #:mutable)
                  (: dirty? bool #:mutable)
                  (: bytes int #:mutable)
                  (: lines int #:mutable)
+                 (: chars int #:mutable)
                  (: last int #:mutable))))
 
 (: (-> Text TransientText))
@@ -2501,7 +2633,8 @@
                  (buf (make-array chunk-max #:fill (cast byte 0)))
                  (path (make-array 24 #:fill no-node))
                  (slots (make-array 24 #:fill 0))
-                 (hot-len -1) (hot-start 0) (dirty? #f) (bytes 0) (lines 0) (last 0)))
+                 (hot-len -1) (hot-chars 0) (hot-first 0) (mark-char 0) (mark-byte 0)
+                 (dirty? #f) (bytes 0) (lines 0) (chars 0) (last 0)))
 
 ;; Copies the bytes of `s` into `buf` from `at`.
 (: (-> string (Array byte) int void))
@@ -2532,16 +2665,18 @@
             #f
             (begin
               (copy-into! (.small r) buf 0)
-              (record-set! t (hot-len len) (hot-start 0) (dirty? #f) (bytes len) (lines (.lines r)))
+              (record-set! t (hot-len len) (hot-chars (.chars r)) (hot-first 0) (mark-char 0) (mark-byte 0)
+                           (dirty? #f) (bytes len) (lines (.lines r)) (chars (.chars r)))
               #t)))
       (begin
         (def path (.path t))
         (def slots (.slots t))
         (def root (editable h (.root r) o))
         (unless (= (node-owner (.root r)) o)
-          (record-set! t (text (Text (root root) (height h) (bytes (.bytes r)) (lines (.lines r)) (small "")))))
-        (let go ((n root) (lvl (- h 1)) (at at) (start 0))
+          (record-set! t (text (Text (root root) (height h) (bytes (.bytes r)) (lines (.lines r)) (chars (.chars r)) (small "")))))
+        (let go ((n root) (lvl (- h 1)) (at at) (first 0))
           (def (Tuple i k) (if left? (slot-ending n at) (slot-starting n at)))
+          (def f (+ first (chars-before-slot n i)))
           (array-set! path lvl n)
           (array-set! slots lvl i)
           (if (= lvl 0)
@@ -2552,24 +2687,26 @@
                     #f
                     (begin
                       (copy-into! c buf 0)
-                      (record-set! t (hot-len len) (hot-start (+ start (- at k))) (dirty? #f)
-                                   (bytes (.bytes r)) (lines (.lines r)))
+                      (record-set! t (hot-len len) (hot-chars (slot-chars n i)) (hot-first f) (mark-char 0) (mark-byte 0)
+                                   (dirty? #f) (bytes (.bytes r)) (lines (.lines r)) (chars (.chars r)))
                       #t)))
               (begin
                 (def b (as-branch n))
                 (def child (editable lvl (kid b i) o))
                 (set-kid! b i child)
-                (go child (- lvl 1) k (+ start (- at k)))))))))
+                (go child (- lvl 1) k f)))))))
 
-;; Adds `dl` newlines to the slots on the path to the hot chunk.
-(: (-> TransientText int void))
-(defun (adjust-path-lines! t dl)
+;; Adds `dl` newlines and `dc` characters to the slots on the path to the hot
+;; chunk.
+(: (-> TransientText int int void))
+(defun (adjust-path-counts! t dl dc)
   (def path (.path t))
   (def slots (.slots t))
   (loop (:for lvl (range 0 (.height (.text t))))
         (:do (def n (array-ref path lvl))
              (def i (array-ref slots lvl))
-             (set-slot-lines! n i (+ (slot-lines n i) dl)))))
+             (set-slot-lines! n i (+ (slot-lines n i) dl))
+             (set-slot-chars! n i (+ (slot-chars n i) dc)))))
 
 ;; Adds `db` bytes to the slots on the path to the hot chunk.
 (: (-> TransientText int void))
@@ -2579,47 +2716,76 @@
   (loop (:for lvl (range 0 (.height (.text t))))
         (:do (add-slot-bytes! (array-ref path lvl) (array-ref slots lvl) db))))
 
-;; Whether an edit at `at` is near enough the last one to make its chunk hot.
+;; Whether an edit at character `n` is near enough the last one to make its
+;; chunk hot.
 (: (-> TransientText int bool))
-(defun (near? t at) #:inline
-  (<= (abs (- at (.last t))) hot-reach))
+(defun (near? t n) #:inline
+  (<= (abs (- n (.last t))) hot-reach))
 
-;; Puts `s` at byte `at` when that is in the hot chunk and `s` fits in it, and
-;; returns whether it did.
-(: (-> TransientText int string bool))
-(defun (hot-insert! t at s)
+;; The byte in `buf` that `k` characters after byte `b` start at.
+(: (-> (Array byte) int int int))
+(defun (buf-forward buf b k)
+  (let go ((b b) (k k))
+    (if (= k 0) b (go (+ b (char-width (cast int (array-ref buf b)))) (- k 1)))))
+
+;; The byte in `buf` that `k` characters before byte `b` start at.
+(: (-> (Array byte) int int int))
+(defun (buf-back buf b k)
+  (let go ((b b) (k k))
+    (if (= k 0)
+        b
+        (go (let back ((p (- b 1))) (if (continues? buf p) (back (- p 1)) p)) (- k 1)))))
+
+;; The byte in `buf` where character `kc` of the hot chunk starts, stepped
+;; from the mark.
+(: (-> TransientText int int))
+(defun (hot-byte t kc)
+  (def m (.mark-char t))
+  (cond
+    ((= (.hot-chars t) (.hot-len t)) kc)
+    ((>= kc m) (buf-forward (.buf t) (.mark-byte t) (- kc m)))
+    (else (buf-back (.buf t) (.mark-byte t) (- m kc)))))
+
+;; Puts `s`, of `sc` characters, at character `n` when that is in the hot
+;; chunk and `s` fits in it, and returns whether it did.
+(: (-> TransientText int string int bool))
+(defun (hot-insert! t n s sc)
   (def len (.hot-len t))
-  (def k (- at (.hot-start t)))
+  (def kc (- n (.hot-first t)))
   (def slen (string-length s))
-  (if (and (>= k 0) (<= k len) (<= (+ len slen) chunk-max))
+  (if (and (>= len 0) (>= kc 0) (<= kc (.hot-chars t)) (<= (+ len slen) chunk-max))
       (begin
         (def buf (.buf t))
-        (when (and (< k len) (continues? buf k))
-          (bad-argument "text-insert: the offset is in the middle of a character."))
+        (def k (hot-byte t kc))
         (array-copy! buf k buf (+ k slen) (- len k))
         (copy-into! s buf k)
         (def sl (newlines-in s))
-        (adjust-path-lines! t sl)
-        (record-set! t (hot-len (+ len slen)) (dirty? #t) (bytes (+ (.bytes t) slen)) (lines (+ (.lines t) sl)))
+        (adjust-path-counts! t sl sc)
+        (record-set! t (hot-len (+ len slen)) (hot-chars (+ (.hot-chars t) sc))
+                     (mark-char (+ kc sc)) (mark-byte (+ k slen)) (dirty? #t)
+                     (bytes (+ (.bytes t) slen)) (lines (+ (.lines t) sl)) (chars (+ (.chars t) sc)))
         #t)
       #f))
 
-;; Deletes bytes `from` to `to`, where `from` < `to`, when they are in the hot
-;; chunk and leave some of it in a tree, and returns whether it did.
+;; Deletes characters `from` to `to`, where `from` < `to`, when they are in
+;; the hot chunk and leave some of it in a tree, and returns whether it did.
 (: (-> TransientText int int bool))
 (defun (hot-delete! t from to)
   (def len (.hot-len t))
-  (def k (- from (.hot-start t)))
-  (def e (- to (.hot-start t)))
-  (if (and (>= k 0) (<= e len) (or (< (- e k) len) (= (.height (.text t)) 0)))
+  (def hc (.hot-chars t))
+  (def kc (- from (.hot-first t)))
+  (def ec (- to (.hot-first t)))
+  (if (and (>= len 0) (>= kc 0) (<= ec hc) (or (< (- ec kc) hc) (= (.height (.text t)) 0)))
       (begin
         (def buf (.buf t))
-        (when (or (continues? buf k) (and (< e len) (continues? buf e)))
-          (bad-argument "text-delete: the offset is in the middle of a character."))
+        (def dc (- ec kc))
+        (def k (hot-byte t kc))
+        (def e (if (= hc len) (+ k dc) (buf-forward buf k dc)))
         (def dl (span-count (ro-span-slice (array->ro-span buf) #:from k #:to e) newline))
         (array-copy! buf e buf k (- len e))
-        (adjust-path-lines! t (- dl))
-        (record-set! t (hot-len (- len (- e k))) (dirty? #t) (bytes (- (.bytes t) (- e k))) (lines (- (.lines t) dl)))
+        (adjust-path-counts! t (- dl) (- dc))
+        (record-set! t (hot-len (- len (- e k))) (hot-chars (- hc dc)) (mark-char kc) (mark-byte k) (dirty? #t)
+                     (bytes (- (.bytes t) (- e k))) (lines (- (.lines t) dl)) (chars (- (.chars t) dc)))
         #t)
       #f))
 
@@ -2649,7 +2815,7 @@
             (loop (:for lvl (range 1 h))
                   (:do (when (< (node-count (array-ref path (- lvl 1))) min-kids)
                          (fix-underflow! (array-ref path lvl) (+ lvl 1) (array-ref slots lvl) o)))))
-          (record-set! t (text (tree->text-sized (.root r) h (.bytes t) (.lines t)))))))
+          (record-set! t (text (tree->text-sized (.root r) h (.bytes t) (.lines t) (.chars t)))))))
   (record-set! t (hot-len -1) (dirty? #f)))
 
 (: (-> TransientText Text))
@@ -2658,35 +2824,62 @@
   (record-set! t (owner (owner-next)))
   (.text t))
 
+;; The bytes of the text it holds.
 (: (-> TransientText int))
 (defun (transienttext-length t)
   (if (>= (.hot-len t) 0) (.bytes t) (.bytes (.text t))))
 
+;; The characters of the text it holds.
+(: (-> TransientText int))
+(defun (transienttext-count t)
+  (if (>= (.hot-len t) 0) (.chars t) (.chars (.text t))))
+
+;; Raises that character index `n` is outside a text of `chars` characters.
+;; Not inlined, as `cursor-at-edge`.
+(: (-> string int int void))
+(defun (index-outside who n chars) #:no-inline
+  (out-of-range #"${who}: the index ${n} is outside the text, of ${chars} characters."))
+
+(: (-> Text int string void))
+(defun (check-index r n who)
+  (when (or (< n 0) (> n (.chars r))) (index-outside who n (.chars r))))
+
+;; Puts `s` before character `n`.
 (: (-> TransientText int string void))
-(defun (transienttext-insert! t at s)
+(defun (transienttext-insert! t n s)
   (def slen (string-length s))
-  (unless (hot-insert! t at s)
+  (def sc (chars-in s))
+  (unless (hot-insert! t n s sc)
     (cool! t)
-    (check-offset (.text t) at "text-insert")
-    (unless (and (> slen 0) (<= slen small-insert) (near? t at) (heat! t at #t slen) (hot-insert! t at s))
+    (check-index (.text t) n "transienttext-insert!")
+    (def at (byte-of-char (.text t) n))
+    (unless (and (> slen 0) (<= slen small-insert) (near? t n) (heat! t at #t slen) (hot-insert! t n s sc))
       (cool! t)
       (record-set! t (text (insert-with (.text t) at s (.owner t))))))
-  (record-set! t (last (+ at slen))))
+  (record-set! t (last (+ n sc))))
 
 (: (-> TransientText string void))
 (defun (transienttext-append! t s)
-  (transienttext-insert! t (transienttext-length t) s))
+  (transienttext-insert! t (transienttext-count t) s))
 
+;; Deletes characters `from` to `to`.
 (: (-> TransientText int int void))
 (defun (transienttext-delete! t from to)
   (unless (and (< from to) (hot-delete! t from to))
     (cool! t)
-    (check-range (.text t) from to "text-delete")
-    (unless (and (< from to) (near? t from) (heat! t from #f 0) (hot-delete! t from to))
-      (cool! t)
-      (record-set! t (text (delete-with (.text t) from to (.owner t))))))
+    (def r (.text t))
+    (check-index r from "transienttext-delete!")
+    (check-index r to "transienttext-delete!")
+    (when (> from to) (backward-range "transienttext-delete!"))
+    (when (< from to)
+      (def a (byte-of-char r from))
+      (unless (and (near? t from) (heat! t a #f 0) (hot-delete! t from to))
+        (cool! t)
+        (def r2 (.text t))
+        (record-set! t (text (delete-with r2 a (byte-of-char r2 to) (.owner t)))))))
   (record-set! t (last from)))
 
+;; Replaces characters `from` to `to` with `s`.
 (: (-> TransientText int int string void))
 (defun (transienttext-replace-range! t from to s)
   (transienttext-delete! t from to)
@@ -2717,12 +2910,14 @@
                    ((> (string-length c) chunk-max) (Some #"a chunk of ${(string-length c)} bytes"))
                    ((not (= (slot-bytes n i) (string-length c))) (Some "a chunk's byte count is wrong"))
                    ((not (= (slot-lines n i) (newlines-in c))) (Some "a chunk's newline count is wrong"))
+                   ((not (= (slot-chars n i) (chars-in c))) (Some "a chunk's character count is wrong"))
                    (else (go (+ i 1)))))
                (begin
                  (def k (kid (as-branch n) i))
                  (cond
                    ((not (= (slot-bytes n i) (sum-bytes k))) (Some #"a node of height ${h} has a wrong byte count"))
                    ((not (= (slot-lines n i) (sum-lines k))) (Some #"a node of height ${h} has a wrong newline count"))
+                   ((not (= (slot-chars n i) (sum-chars k))) (Some #"a node of height ${h} has a wrong character count"))
                    (else
                     (match (check-node k (- h 1) #f)
                       ((Some why) (Some why))
@@ -2737,9 +2932,11 @@
        ((> (.bytes r) chunk-max) (Some "a text of one string is longer than a chunk"))
        ((not (= (.bytes r) (string-length (.small r)))) (Some "the byte count is wrong"))
        ((not (= (.lines r) (newlines-in (.small r)))) (Some "the newline count is wrong"))
+       ((not (= (.chars r) (chars-in (.small r)))) (Some "the character count is wrong"))
        (else None)))
     ((not (= (.bytes r) (sum-bytes (.root r)))) (Some "the byte count is wrong"))
     ((not (= (.lines r) (sum-lines (.root r)))) (Some "the newline count is wrong"))
+    ((not (= (.chars r) (sum-chars (.root r)))) (Some "the character count is wrong"))
     ((<= (.bytes r) chunk-max) (Some "a tree holds no more than one chunk"))
     ((and (> (.height r) 1) (< (node-count (.root r)) 2)) (Some "a root branch has one child"))
     (else (check-node (.root r) (.height r) #t))))
