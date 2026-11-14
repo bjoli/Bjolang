@@ -390,10 +390,11 @@
   (def fwd
     (let go ((c (text-cursor-start r)) (i 0) (ok #t))
       (if (text-cursor-end? r c)
-          (and ok (= i n) (= (offset-in r c) len))
+          (and ok (= i n) (= (offset-in r c) len) (= (text-cursor-index r c) n))
           (begin
             (def (Tuple ch nxt) (text-cursor-ref+next r c))
-            (go nxt (+ i 1) (and ok (or (> (% i 97) 0) (= (offset-in r c) (vec-ref offs i))) (= ch (vec-ref chars i))))))))
+            (go nxt (+ i 1) (and ok (or (> (% i 97) 0) (= (offset-in r c) (vec-ref offs i))) (= ch (vec-ref chars i))
+                                 (= (text-cursor-index r c) i)))))))
   (def back
     (let go ((c (text-cursor-end r)) (i n) (ok #t))
       (if (text-cursor-start? r c)
@@ -413,6 +414,7 @@
                        (def before (loop (:for ch (text-backward r c)) (:acc (vecing ch))))
                        (and ok
                             (= (offset-in r c) (vec-ref offs i))
+                            (= (text-cursor-index r c) i)
                             (= after (vec-drop chars i))
                             (= before (vec-reverse (vec-take chars i)))
                             (= (text-cursor-back r (text-cursor-end r) (- n i)) c)
@@ -570,7 +572,8 @@
   (expect-true "cursors on the empty text"
                (and (text-cursor-end? e (text-cursor-start e))
                     (= (loop (:for _ (text-cursor-start e)) (:acc (summing 1))) 0)
-                    (= (text-cursor-search e (text-cursor-start e) "") (Some (text-cursor-start e)))))
+                    (= (text-cursor-search e (text-cursor-start e) "") (Some (text-cursor-start e)))
+                    (= (text-cursor-index e (text-cursor-end e)) 0)))
   (def acute (string->text "é"))
   (expect "a cursor past the end"
           (match (try (text-cursor-forward acute (text-cursor-start acute) 2) #:catch (System.ArgumentOutOfRangeException))

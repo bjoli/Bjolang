@@ -56,7 +56,7 @@
   ;; Cursors
   text-cursor-start text-cursor-end text-cursor-start? text-cursor-end?
   text-cursor-ref text-cursor-next text-cursor-prev text-cursor-ref+next text-cursor-forward text-cursor-back
-  text-cursor-at-line text-cursor-line text-cursor-column text-cursor-line-start text-cursor-line-end
+  text-cursor-at-line text-cursor-index text-cursor-line text-cursor-column text-cursor-line-start text-cursor-line-end
   text-cursor-search text-cursor-search-backward text-cursor-find text-cursor-find-backward
   text-cursor=? text-cursor<? text-cursor>? text-cursor<=? text-cursor>=?
   text-backward
@@ -81,6 +81,7 @@
   (StringWalk (: Bjolang.Runtime.StringWalk)))
 
 (import/class ((Lanes %a) (: System.Runtime.Intrinsics.Vector128)))
+(import/class ((Bytes32 %a) (: System.Runtime.Intrinsics.Vector256)))
 
 (import/extern
   (new-branch      (: Bjolang.Runtime.TextTree.TextNodes.NewBranch   (-> long TextBranch)))
@@ -127,7 +128,13 @@
   (span-last-index-of (: System.MemoryExtensions.LastIndexOf    (-> (RoSpan byte) byte int)))
   (span-index-of-any (: System.MemoryExtensions.IndexOfAny      (-> (RoSpan byte) (RoSpan byte) int)))
   (span-first-outside (: System.MemoryExtensions.IndexOfAnyExceptInRange (-> (RoSpan int) int int int)))
-  (pop-count       (: System.Numerics.BitOperations.PopCount (-> ulong int)))
+  (pop-count32     (: System.Numerics.BitOperations.PopCount (-> uint int)))
+  ;; 32 bytes at once.
+  (bytes32-of      (: System.Runtime.Intrinsics.Vector256.Create (-> (RoSpan byte) (Bytes32 byte))))
+  (bytes32-splat   (: System.Runtime.Intrinsics.Vector256.Create (-> byte (Bytes32 byte))))
+  (bytes32-and     (: System.Runtime.Intrinsics.Vector256.BitwiseAnd (-> (Bytes32 byte) (Bytes32 byte) (Bytes32 byte))))
+  (bytes32-eq      (: System.Runtime.Intrinsics.Vector256.Equals (-> (Bytes32 byte) (Bytes32 byte) (Bytes32 byte))))
+  (bytes32-mask    (: System.Runtime.Intrinsics.Vector256.ExtractMostSignificantBits (-> (Bytes32 byte) uint)))
   ;; Four ints at once.
   (lanes-splat     (: System.Runtime.Intrinsics.Vector128.Create (-> int (Lanes int))))
   (lanes-of        (: System.Runtime.Intrinsics.Vector128.Create (-> int int int int (Lanes int))))
@@ -169,10 +176,30 @@
 (: (-> string int))
 (defun (chars-in s) #:inline (if (<= (string-length s) 1) (string-length s) (.Count s)))
 
-;; The characters in bytes `from` to `to` of `s`.
+;; The characters in bytes `from` to `to` of `s`, boundaries of `s`.
+;;
+;; - Returns the bytes less those that continue a character (10xxxxxx),
+;;   counted 32 at a time.
+;; - Allocates nothing.
 (: (-> string int int int))
 (defun (chars-between s from to)
-  (if (= from to) 0 (.Count (piece s from to))))
+  (def sp (ro-span-slice (.AsSpan s) #:from from #:to to))
+  (def len (- to from))
+  (def blocks (* 32 (/ len 32)))
+  (def top (bytes32-splat (cast byte 192)))
+  (def cont (bytes32-splat (cast byte 128)))
+  (def in-blocks
+    (let go ((j 0) (n 0))
+      (if (>= j blocks)
+          n
+          (begin
+            (def v (bytes32-of (ro-span-slice sp #:from j #:to (+ j 32))))
+            (go (+ j 32) (+ n (pop-count32 (bytes32-mask (bytes32-eq (bytes32-and v top) cont)))))))))
+  (let step ((j blocks) (n in-blocks))
+    (cond
+      ((>= j len) (- len n))
+      ((= (bitwise-and (cast int (ro-span-ref sp j)) 192) 128) (step (+ j 1) (+ n 1)))
+      (else (step (+ j 1) n)))))
 
 ;; Whether byte `k` of `s` starts a character, or is its end.
 (: (-> string int bool))
@@ -1864,30 +1891,26 @@
 (defun (check-count who n)
   (when (< n 0) (bad-argument #"${who}: the count ${n} is negative.")))
 
-;; The high bit of each byte of a word.
-(def high-bits (cast ulong 0x8080808080808080UL))
 
 ;; The bytes of the first `n` characters of `c`, or all of it when it has
 ;; fewer.
 ;;
-;; - Reads 8 bytes at a time as a word. A byte 10xxxxxx continues a
-;;   character, and every other byte starts one: `x & ~(x << 1)` has the high
-;;   bit of each continuing byte, and the rest of the word's bytes start
-;;   characters.
-;; - Scans the bytes of the word that holds the start of character `n`.
+;; - Counts the characters of 32 bytes at a time, as `chars-between` does,
+;;   and scans the bytes of the block that holds the start of character `n`.
+;; - Allocates nothing.
 (: (-> string int int))
 (defun (bytes-of-first c n)
   (def sp (.AsSpan c))
-  (def len (string-length c))
-  (def words (/ len 8))
-  (def (: ws (RoSpan ulong)) (ro-span-> (ro-span-slice sp #:from 0 #:to (* 8 words))))
-  (let go ((w 0) (n n))
-    (if (>= w words)
-        (nth-start c (* 8 w) n)
+  (def blocks (* 32 (/ (string-length c) 32)))
+  (def top (bytes32-splat (cast byte 192)))
+  (def cont (bytes32-splat (cast byte 128)))
+  (let go ((j 0) (n n))
+    (if (>= j blocks)
+        (nth-start c j n)
         (begin
-          (def x (ro-span-ref ws w))
-          (def k (- 8 (pop-count (bitwise-and (bitwise-and x (bitwise-not (shift-left x 1))) high-bits))))
-          (if (< n k) (nth-start c (* 8 w) n) (go (+ w 1) (- n k)))))))
+          (def v (bytes32-of (ro-span-slice sp #:from j #:to (+ j 32))))
+          (def k (- 32 (pop-count32 (bytes32-mask (bytes32-eq (bytes32-and v top) cont)))))
+          (if (< n k) (nth-start c j n) (go (+ j 32) (- n k)))))))
 
 ;; The byte from `k` on where the `n`-th character after `k` that starts there
 ;; or later starts, counting from 0, or the length of `c` when there are fewer.
@@ -1901,6 +1924,17 @@
       ((= (bitwise-and (byte-at sp k) 192) 128) (step (+ k 1) n))
       ((= n 0) k)
       (else (step (+ k 1) (- n 1))))))
+
+;; The characters in the first `k` bytes of `c`, which has `cc` characters.
+;; Counts from the nearer end: a chunk with as many characters as bytes is
+;; ASCII, and needs no count.
+(: (-> string int int int))
+(defun (chars-of-first c cc k)
+  (def cl (string-length c))
+  (cond
+    ((= cc cl) k)
+    ((> (* 2 k) cl) (- cc (chars-between c k cl)))
+    (else (chars-between c 0 k))))
 
 ;; The offset after the first `n` characters of `r`, or its end when it has
 ;; fewer.
@@ -2310,13 +2344,13 @@
   (cond
     ((= at 0) 0)
     ((= at (.bytes r)) (.chars r))
-    ((= (.height r) 0) (chars-between (.small r) 0 at))
+    ((= (.height r) 0) (chars-of-first (.small r) (.chars r) at))
     (else
      (let go ((n (.root r)) (h (.height r)) (at at) (acc 0))
        (def (Tuple i k) (slot-starting n at))
        (def before (+ acc (chars-before-slot n i)))
        (if (= h 1)
-           (+ before (chars-between (chunk-at (as-leaves n) i) 0 k))
+           (+ before (chars-of-first (chunk-at (as-leaves n) i) (slot-chars n i) k))
            (go (kid (as-branch n) i) (- h 1) k before))))))
 
 (: (-> Text TextCursor))
@@ -2481,6 +2515,11 @@
 (defun (text-cursor-line-end r c)
   (def t (.text c))
   (cursor-at-byte t (line-end t (line-of t (.at c)))))
+
+;; The characters before cursor `c` of `r`: its index, from 0 to
+;; `text-count`. O(log n) time.
+(: (-> Text TextCursor int))
+(defun (text-cursor-index r c) (chars-before (.text c) (.at c)))
 
 ;; The characters between the start of the cursor's line and the cursor.
 (: (-> Text TextCursor int))
