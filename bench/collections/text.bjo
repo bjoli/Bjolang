@@ -124,7 +124,7 @@
     (stringbuilder->string b)))
 
 (def mb-text (string->text megabyte))
-(def mb-other (text-concat (text-take mb-text 333333) (text-drop mb-text 333333)))
+(def mb-other (text-concat (text-slice mb-text 0 333333) (text-slice mb-text 333333 (text-length mb-text))))
 
 (def rng (make-random/seed64 (cast ulong 7)))
 
@@ -146,7 +146,7 @@
 (def/bench "1 MB: delete a character, 1024 times"
   (loop (:for at offsets) (:do (ignore (text-delete mb-text at (+ at 1))))))
 (def/bench "1 MB: split and join, 1024 times"
-  (loop (:for at offsets) (:do (def (Tuple a b) (text-split mb-text at)) (ignore (text-concat b a)))))
+  (loop (:for at offsets) (:do (def (Tuple a b) (text-split-at mb-text at)) (ignore (text-concat b a)))))
 (def/bench "1 MB: text-ref, 1024 times"
   (loop (:for at offsets) (:acc (summing (char->integer (text-ref mb-text at))))))
 (def/bench "1 MB: text-line-start, 1024 times"
@@ -229,5 +229,15 @@
       ((Some p) (go (text-cursor-next p) (+ n 1)))
       (None n))))
 (def/bench "text-last-index-of, not there" (text-last-index-of mb-text "line 99999999"))
+
+;; The functions a string has, against the string's.
+(def/bench "1 MB: text-replace" (text-replace mb-text "blåbär" "lingon"))
+(def/bench "1 MB: string-replace" (string-replace megabyte "blåbär" "lingon"))
+(def/bench "1 MB: text-split" (vec-length (text-split mb-text "\n")))
+(def/bench "1 MB: string-split" (vec-length (string-split megabyte "\n")))
+(def/bench "1 MB: text-upcase" (text-upcase mb-text))
+(def/bench "1 MB: string-upcase" (string-upcase megabyte))
+(def/bench "1 MB: text-reverse" (text-reverse mb-text))
+(def/bench "1 MB: string-reverse" (string-reverse megabyte))
 
 (run-benches)

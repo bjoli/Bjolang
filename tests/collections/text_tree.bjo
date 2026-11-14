@@ -143,9 +143,9 @@
           (go (+ i 1) (text-concat r (string->text t)) (string-append s t)))
          ((= op 5)
           (def t (random-text rng max-text))
-          (go (+ i 1) (text-replace r lo hi t) (str (part s 0 lo) t (part s hi len))))
+          (go (+ i 1) (text-replace-range r lo hi t) (str (part s 0 lo) t (part s hi len))))
          ((= op 6)
-          (def (Tuple x y) (text-split r a))
+          (def (Tuple x y) (text-split-at r a))
           (if (and (= (text->string x) (part s 0 a)) (= (text->string y) (part s a len))
                    (none? (text-check x)) (none? (text-check y)))
               (go (+ i 1) (text-concat x y) s)
@@ -153,7 +153,7 @@
          ((= op 7)
           (def m (text-slice r lo hi))
           (if (and (= (text->string m) (part s lo hi)) (none? (text-check m)))
-              (go (+ i 1) (text-concat (text-take r lo) (text-drop r hi)) (string-append (part s 0 lo) (part s hi len)))
+              (go (+ i 1) (text-concat (text-slice r 0 lo) (text-slice r hi (text-length r))) (string-append (part s 0 lo) (part s hi len)))
               (begin (println #"step ${i}: slice ${lo} to ${hi}") #f)))
          (else
           ;; Mostly short deletes, as typing makes.
@@ -192,12 +192,12 @@
           (def hi (boundary-before s (min len (+ a (random-int 0 20000 #:rng rng)))))
           (go (+ i 1) (text-delete r a hi) (string-append (part s 0 a) (part s hi len)) tallest2))
          ((= k 2)
-          (def (Tuple x y) (text-split r a))
+          (def (Tuple x y) (text-split-at r a))
           (def hi (boundary-before s (min len (+ a (random-int 0 4000 #:rng rng)))))
-          (go (+ i 1) (text-concat y (text-take x a)) (string-append (part s a len) (part s 0 a)) tallest2))
+          (go (+ i 1) (text-concat y (text-slice x 0 a)) (string-append (part s a len) (part s 0 a)) tallest2))
          (else
           (def t (random-text rng 300))
-          (go (+ i 1) (text-replace r a (boundary-before s (min len (+ a 5))) t)
+          (go (+ i 1) (text-replace-range r a (boundary-before s (min len (+ a 5))) t)
               (str (part s 0 a) t (part s (boundary-before s (min len (+ a 5))) len)) tallest2)))))))
 
 ;; Random edits through a transient, with a text taken from it halfway that
@@ -439,6 +439,80 @@
   (and (check "a tree of several chunks" (> (text-chunk-count r) 10))
        (check "forward" fwd) (check "backward" back) (check "loops" loops) (check "lines" lines) searches))
 
+
+;; ---------------------------------------------------------------------------
+;; The functions a string has, against the string's
+;; ---------------------------------------------------------------------------
+
+(def needles ["a" "\n" "€" "😀" "ab" "line\n" "\n\n" " " "zz"])
+(def char-sets ["\n€" "ab" "😀é" "xyz" " \n" ""])
+
+(: (-> Text string bool))
+(defun (same-text? t s) (and (= (text->string t) s) (none? (text-check t))))
+
+(: (-> string bool bool))
+(defun (alike name ok)
+  (unless ok (println #"differs from the string: ${name}"))
+  ok)
+
+(: (-> Text (Option TextCursor) (Option string)))
+(defun (text-before r oc)
+  (match oc ((Some c) (Some (text-cursor-substring (text-cursor-start r) c))) (None None)))
+
+(: (-> string (Option StringCursor) (Option string)))
+(defun (string-before s oc)
+  (match oc ((Some c) (Some (substring s (string-cursor-start s) c))) (None None)))
+
+(: (-> RandomSource bool))
+(defun (like-string-once? rng)
+  (def s (random-text rng 20000))
+  (def r (cut-up rng s))
+  (def n (string-count s))
+  (def k (random-int 0 (+ n 3) #:rng rng))
+  (def needle (vec-ref needles (random-int 0 (- (vec-length needles) 1) #:rng rng)))
+  (def chars (vec-ref char-sets (random-int 0 (- (vec-length char-sets) 1) #:rng rng)))
+  (def new (random-text rng 30))
+  (def width (random-int 0 (+ n 40) #:rng rng))
+  (def parts (string-split s needle))
+  (and (alike "take" (same-text? (text-take r k) (string-take s k)))
+       (alike "drop" (same-text? (text-drop r k) (string-drop s k)))
+       (alike "take-right" (same-text? (text-take-right r k) (string-take-right s k)))
+       (alike "drop-right" (same-text? (text-drop-right r k) (string-drop-right s k)))
+       (alike "replace" (same-text? (text-replace r needle new) (string-replace s needle new)))
+       (alike "split" (= (vec-map text->string (text-split r needle)) parts))
+       (alike "split-once"
+              (= (match (text-split-once r needle)
+                   ((Some (Tuple a b)) (Some (Tuple (text->string a) (text->string b))))
+                   (None None))
+                 (string-split-once s needle)))
+       (alike "join" (same-text? (text-join (vec-map string->text parts) needle) (string-join parts needle)))
+       (alike "search" (= (text-before r (text-search r needle)) (string-before s (string-search s needle))))
+       (alike "search-backward"
+              (= (text-before r (text-search-backward r needle)) (string-before s (string-search-backward s needle))))
+       (alike "search-any"
+              (= (text-before r (text-search-any r chars (text-cursor-start r)))
+                 (string-before s (string-search-any s chars (string-cursor-start s)))))
+       (alike "index" (= (text-before r (text-index char-whitespace? r)) (string-before s (string-index char-whitespace? s))))
+       (alike "trim" (same-text? (text-trim r) (string-trim s)))
+       (alike "trim-left" (same-text? (text-trim-left r) (string-trim-left s)))
+       (alike "trim-right" (same-text? (text-trim-right r) (string-trim-right s)))
+       (alike "pad-left" (same-text? (text-pad-left r width #:with #\.) (string-pad-left s width #:with #\.)))
+       (alike "pad-right" (same-text? (text-pad-right r width) (string-pad-right s width)))
+       (alike "upcase" (same-text? (text-upcase r) (string-upcase s)))
+       (alike "downcase" (same-text? (text-downcase r) (string-downcase s)))
+       (alike "reverse" (same-text? (text-reverse r) (string-reverse s)))
+       (alike "texting characters" (same-text? (loop (:for c r) (:acc (texting c))) s))
+       (alike "ref by a cursor"
+              (if (= n 0)
+                  (none? (try-ref r (text-cursor-start r)))
+                  (= (ref r (text-cursor-start r)) (string-cursor-ref s (string-cursor-start s)))))
+       (alike "a generic cursor" (= (cursor-end? r (cursor-start r)) (= n 0)))))
+
+(: (-> int int bool))
+(defun (like-strings? seed rounds)
+  (def rng (make-random/seed64 (cast ulong seed)))
+  (loop (:for _ (range 0 rounds)) (:acc ok (folding #t (and ok (like-string-once? rng)))) => ok))
+
 (defun (main args)
   (loop (:for seed (range 1 7))
         (:do (expect-true #"random edits, seed ${seed}" (random-edits? seed 3000 2000))))
@@ -456,6 +530,8 @@
         (:do (expect-true #"searching, seed ${seed}" (search? seed))))
   (loop (:for seed (range 1 6))
         (:do (expect-true #"cursors, seed ${seed}" (cursors? seed))))
+  (loop (:for seed (range 1 4))
+        (:do (expect-true #"like strings, seed ${seed}" (like-strings? seed 80))))
   (expect-true "cursors on the empty text"
                (and (text-cursor-end? (text-cursor-start (text-empty)))
                     (= (loop (:for _ (text-cursor-start (text-empty))) (:acc (summing 1))) 0)

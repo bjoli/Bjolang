@@ -3,7 +3,7 @@
 
 (:doc #:module
   (summary "Persistent text for editing: a B+ tree of UTF-8 chunks, with builder and transient.")
-  (see Text text-insert text-delete text-split text-concat text-line-start TextCursor TransientText TextBuilder Texting)
+  (see Text text-insert text-delete text-split-at text-concat text-line-start TextCursor TransientText TextBuilder Texting text-replace text-split)
   (example """
     (import (std text))
 
@@ -46,6 +46,15 @@
     end, and @code{(:for c (text-backward cursor))} goes back to the start.
     The names follow the string cursors'.
 
+    @strong{As a string.} The functions a string has are here under the
+    same names and return what the string's return: @code{text-take} and
+    @code{text-drop} count characters, @code{text-replace} and
+    @code{text-split} take a string to match, and @code{text-search},
+    @code{text-search-any} and @code{text-index} return cursors. There are
+    also the trims, pads, @code{text-join}, @code{text-upcase},
+    @code{text-downcase} and @code{text-reverse}. @code{text-split-at} and
+    @code{text-replace-range} take byte offsets instead.
+
     @strong{Batch edits.} A @code{TransientText} edits nodes it owns in place
     and keeps the chunk being edited in a mutable buffer: a run of edits close
     together, such as typing, allocates nothing. A @code{TextBuilder} appends
@@ -54,8 +63,8 @@
 
     @strong{Traits.} Implements @code{Eq}, @code{Ord}, @code{Iterable} (the
     characters), @code{Collection} (whose length is the character count),
-    @code{Written}, @code{Displayed} and @code{Addable} (of strings, at the
-    end). Equality, order and hashing depend on the characters only, not on
+    @code{Refable} and @code{Cursor} (by @code{TextCursor}), @code{Written},
+    @code{Displayed} and @code{Addable} (of strings, at the end). Equality, order and hashing depend on the characters only, not on
     how they are split into chunks. @code{TextBuilder} and
     @code{TransientText} implement @code{Addable!}.
     """))
@@ -129,20 +138,33 @@
     """))
 
 (:doc Texting
-  (summary "The collector that gathers strings into a text.")
-  (case texting "Written in an :acc clause with the string to add.")
-  (see TextBuilder TextingInto Stringing)
+  (summary "The collector that gathers characters or strings into a text.")
+  (case texting "Written in an :acc clause with the character or string to add.")
+  (see TextBuilder TextingInto TextPiece Stringing)
   (example """
     (loop (:for line lines)
           (:acc t (texting #"${line}\n"))
           => t)                                     ; a text of the lines
     (loop (:for w words) (:acc (texting w #:into t)))   ; t with the words after it
+    (loop (:for c t) (:acc (texting (char-upcase c))))  ; a map over a text
     """)
   (reference """
-    Its accumulator is a @code{TextBuilder}, so the text is built in one pass
-    and long strings are shared, not copied. @code{#:into} starts from a text:
-    its chunks are added first, and it is not changed.
+    The pieces are of one type, as @code{TextPiece} gives: a loop adds
+    characters, as @code{stringing} does, or strings. Its accumulator is a
+    @code{TextBuilder}, so the text is built in one pass and long strings are
+    shared, not copied. @code{#:into} starts from a text: its chunks are
+    added first, and it is not changed.
     """))
+
+(:doc TextPiece
+  (summary "What a text builder takes a piece of text as: a string or a character.")
+  (see Texting textbuilder-add-piece!))
+
+(:doc textbuilder-add-piece!
+  (summary "Adds a string or a character to the end of a builder.")
+  (arg b "The builder.")
+  (arg x "The string or character.")
+  (see textbuilder-add! textbuilder-add-char! Texting))
 
 (:doc TextingInto
   (summary "The collector a texting clause with #:into makes: it starts from a text.")
@@ -246,36 +268,18 @@
   (returns "A text of bytes from to to, sharing r's chunks and nodes, in O(log n) time.")
   (raises System.ArgumentOutOfRangeException "When the range is not in r, or ends before it starts.")
   (raises System.ArgumentException "When from or to is in the middle of a character.")
-  (see text-substring text-take text-drop text-split))
+  (see text-substring text-split-at text-take text-drop))
 
-(:doc text-take
-  (summary "The start of a text.")
-  (arg r "The text (unmodified).")
-  (arg at "The offset to end at.")
-  (returns "A text of the bytes before at.")
-  (raises System.ArgumentOutOfRangeException "When at is outside r.")
-  (raises System.ArgumentException "When at is in the middle of a character.")
-  (see text-drop text-split))
-
-(:doc text-drop
-  (summary "A text without its start.")
-  (arg r "The text (unmodified).")
-  (arg at "The offset to start from.")
-  (returns "A text of the bytes from at.")
-  (raises System.ArgumentOutOfRangeException "When at is outside r.")
-  (raises System.ArgumentException "When at is in the middle of a character.")
-  (see text-take text-split))
-
-(:doc text-split
+(:doc text-split-at
   (summary "A text split in two at an offset.")
   (arg r "The text (unmodified).")
   (arg at "The offset to split at.")
   (returns "(Tuple before after): the texts of the bytes before at and from at, in O(log n) time.")
   (raises System.ArgumentOutOfRangeException "When at is outside r.")
   (raises System.ArgumentException "When at is in the middle of a character.")
-  (see text-concat text-take text-drop)
+  (see text-concat text-slice text-split)
   (example """
-    (def (Tuple a b) (text-split (string->text "hello world") 5))
+    (def (Tuple a b) (text-split-at (string->text "hello world") 5))
     (text->string b)   ; " world"
     """))
 
@@ -284,7 +288,7 @@
   (arg a "The first text (unmodified).")
   (arg b "The second text (unmodified).")
   (returns "A text of the text of a and then b, sharing their nodes, in O(log n) time.")
-  (see text-split text-insert-text text-append))
+  (see text-split-at text-insert-text text-append text-join))
 
 (:doc text-append
   (summary "A text with text added at the end.")
@@ -308,7 +312,7 @@
   (returns "A text of r's text with s from byte at, in O(log n) time. Copies the nodes on the path and one chunk.")
   (raises System.ArgumentOutOfRangeException "When at is outside r.")
   (raises System.ArgumentException "When at is in the middle of a character.")
-  (see text-insert-text text-delete text-replace transienttext-insert!))
+  (see text-insert-text text-delete text-replace-range transienttext-insert!))
 
 (:doc text-insert-text
   (summary "A text with another text inserted at an offset.")
@@ -328,9 +332,9 @@
   (returns "A text of r's text without bytes from to to, in O(log n) time.")
   (raises System.ArgumentOutOfRangeException "When the range is not in r, or ends before it starts.")
   (raises System.ArgumentException "When from or to is in the middle of a character.")
-  (see text-insert text-replace transienttext-delete!))
+  (see text-insert text-replace-range transienttext-delete!))
 
-(:doc text-replace
+(:doc text-replace-range
   (summary "A text with a range of bytes replaced by text.")
   (arg r "The text (unmodified).")
   (arg from "The first byte to replace.")
@@ -339,7 +343,173 @@
   (returns "A text of r's text with bytes from to to replaced by s.")
   (raises System.ArgumentOutOfRangeException "When the range is not in r, or ends before it starts.")
   (raises System.ArgumentException "When from or to is in the middle of a character.")
-  (see text-insert text-delete transienttext-replace!))
+  (see text-insert text-delete text-replace transienttext-replace-range!))
+
+;; ---------------------------------------------------------------------------
+;; As a string has them
+;; ---------------------------------------------------------------------------
+
+(:doc text-take
+  (summary "The first characters of a text.")
+  (arg r "The text (unmodified).")
+  (arg n "How many characters.")
+  (returns "A text of the first n characters of r, or r when it has fewer. Shares r's chunks.")
+  (raises System.ArgumentException "When n is negative.")
+  (see text-drop text-take-right text-split-at))
+
+(:doc text-drop
+  (summary "A text without its first characters.")
+  (arg r "The text (unmodified).")
+  (arg n "How many characters to leave out.")
+  (returns "A text of r after its first n characters, or the empty text when it has fewer.")
+  (raises System.ArgumentException "When n is negative.")
+  (see text-take text-drop-right text-split-at))
+
+(:doc text-take-right
+  (summary "The last characters of a text.")
+  (arg r "The text (unmodified).")
+  (arg n "How many characters.")
+  (returns "A text of the last n characters of r, or r when it has fewer.")
+  (raises System.ArgumentException "When n is negative.")
+  (see text-drop-right text-take))
+
+(:doc text-drop-right
+  (summary "A text without its last characters.")
+  (arg r "The text (unmodified).")
+  (arg n "How many characters to leave out.")
+  (returns "A text of r before its last n characters, or the empty text when it has fewer.")
+  (raises System.ArgumentException "When n is negative.")
+  (see text-take-right text-drop))
+
+(:doc text-replace
+  (summary "A text with every occurrence of one string replaced by another.")
+  (arg r "The text (unmodified).")
+  (arg old "The string to replace.")
+  (arg new "The string to put in its place.")
+  (returns "A text of r with each old, from the start and not overlapping, replaced by new. r itself when there is none.")
+  (raises System.ArgumentException "When old is empty.")
+  (see text-replace-range text-search text-split)
+  (example """
+    (text->string (text-replace (string->text "a-b-c") "-" ", "))   ; "a, b, c"
+    """)
+  (reference """
+    The text between the matches is added from r's chunks, so the result is
+    built in one pass and shares the arrays of the chunks it keeps whole.
+    """))
+
+(:doc text-split
+  (summary "The fields of a text between occurrences of a separator.")
+  (arg r "The text (unmodified).")
+  (arg sep "The separator.")
+  (returns "The fields in order, empty ones kept: one more than the separators in r. An empty separator gives r as the one field.")
+  (see text-split-once text-join text-split-at)
+  (example """
+    (vec-length (text-split (string->text "a,,b") ","))   ; 3
+    (text-split r "\n")                                    ; the lines of r
+    """)
+  (reference """
+    A field of up to a chunk is a text of its own string; a longer one shares
+    r's chunks.
+    """))
+
+(:doc text-split-once
+  (summary "A text split around the first occurrence of a separator.")
+  (arg r "The text (unmodified).")
+  (arg sep "The separator.")
+  (returns "(Some (Tuple before after)), the texts before and after the first sep, or None when there is none.")
+  (see text-split text-split-at))
+
+(:doc text-join
+  (summary "Texts joined with a separator between them.")
+  (arg parts "The texts, in order (unmodified).")
+  (arg sep "The separator.")
+  (returns "A text of the parts with sep between each two, built in one pass.")
+  (see text-split text-concat Texting))
+
+(:doc text-search
+  (summary "Where the first occurrence of a string in a text starts.")
+  (arg r "The text.")
+  (arg needle "The string to look for.")
+  (returns "(Some cursor) on the start of the first needle, or None. An empty needle is found at the start.")
+  (see text-search-backward text-cursor-search text-index text-contains?))
+
+(:doc text-search-backward
+  (summary "Where the last occurrence of a string in a text starts.")
+  (arg r "The text.")
+  (arg needle "The string to look for.")
+  (returns "(Some cursor) on the start of the last needle, or None. An empty needle is found at the end.")
+  (see text-search text-cursor-search-backward))
+
+(:doc text-search-any
+  (summary "Where the first character of a set is, at or after a cursor.")
+  (arg r "The text to search.")
+  (arg chars "The set, as a string of its characters. Their order does not matter.")
+  (arg start "Where to start, a cursor of r.")
+  (returns "(Some cursor) on the first character at or after start that is in chars, or None. An empty set is never found.")
+  (see text-search text-index text-cursor-find)
+  (reference """
+    A set of ASCII characters is searched for in each chunk's bytes, many at
+    a time.
+    """))
+
+(:doc text-index
+  (summary "Where the first character satisfying a predicate is.")
+  (arg pred "The test, given each character in turn from the start.")
+  (arg r "The text.")
+  (returns "(Some cursor) on the first character pred holds for, or None.")
+  (see text-cursor-find text-search-any))
+
+(:doc text-trim
+  (summary "A text without the white space at both ends.")
+  (arg r "The text (unmodified).")
+  (returns "A text of r without its leading and trailing white space, as char-whitespace? says. r itself when there is none.")
+  (see text-trim-left text-trim-right))
+
+(:doc text-trim-left
+  (summary "A text without the white space at its start.")
+  (arg r "The text (unmodified).")
+  (returns "A text of r from its first character that is not white space.")
+  (see text-trim text-trim-right))
+
+(:doc text-trim-right
+  (summary "A text without the white space at its end.")
+  (arg r "The text (unmodified).")
+  (returns "A text of r up to its last character that is not white space.")
+  (see text-trim text-trim-left))
+
+(:doc text-pad-left
+  (summary "A text padded at the start to a width in characters.")
+  (arg r "The text (unmodified).")
+  (arg width "The width to pad to.")
+  (key with "The character to pad with, a space by default.")
+  (returns "A text of r with copies of with before it until it is width characters long; r when it is that long already.")
+  (see text-pad-right))
+
+(:doc text-pad-right
+  (summary "A text padded at the end to a width in characters.")
+  (arg r "The text (unmodified).")
+  (arg width "The width to pad to.")
+  (key with "The character to pad with, a space by default.")
+  (returns "A text of r with copies of with after it until it is width characters long; r when it is that long already.")
+  (see text-pad-left))
+
+(:doc text-upcase
+  (summary "A text in upper case.")
+  (arg r "The text (unmodified).")
+  (returns "A text of r with each character uppercased in the invariant culture.")
+  (see text-downcase))
+
+(:doc text-downcase
+  (summary "A text in lower case.")
+  (arg r "The text (unmodified).")
+  (returns "A text of r with each character lowercased in the invariant culture.")
+  (see text-upcase))
+
+(:doc text-reverse
+  (summary "A text with its characters in reverse order.")
+  (arg r "The text (unmodified).")
+  (returns "A text of r's characters, last first.")
+  (see text-backward))
 
 ;; ---------------------------------------------------------------------------
 ;; Lines
@@ -723,6 +893,12 @@
   (arg s "The text. The chunks of a long string share its bytes.")
   (see textbuilder-add-text! textbuilder->text))
 
+(:doc textbuilder-add-char!
+  (summary "Adds a character to the end of a builder.")
+  (arg b "The builder.")
+  (arg ch "The character.")
+  (see textbuilder-add! textbuilder-add-piece!))
+
 (:doc textbuilder-add-text!
   (summary "Adds the text of a text to the end of a builder.")
   (arg b "The builder.")
@@ -775,7 +951,7 @@
   (raises System.ArgumentException "When from or to is in the middle of a character.")
   (see transienttext-insert! text-delete))
 
-(:doc transienttext-replace!
+(:doc transienttext-replace-range!
   (summary "Replaces a range of bytes of a transient with text.")
   (arg t "The transient.")
   (arg from "The first byte to replace.")
@@ -783,7 +959,7 @@
   (arg s "The text to put in their place.")
   (raises System.ArgumentOutOfRangeException "When the range is not in t's text, or ends before it starts.")
   (raises System.ArgumentException "When from or to is in the middle of a character.")
-  (see transienttext-insert! transienttext-delete! text-replace))
+  (see transienttext-insert! transienttext-delete! text-replace-range))
 
 (:doc transienttext-append!
   (summary "Adds text to the end of a transient.")

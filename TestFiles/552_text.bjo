@@ -41,7 +41,7 @@
   (expect "lines" (text-line-count big) 2001)
   (expect "line 1234" (text-line big 1234) "line 1234: blåbär €")
   (expect "the line of its start" (text-line-of big (text-line-start big 1234)) 1234)
-  (def (Tuple a b) (text-split big (text-line-start big 1500)))
+  (def (Tuple a b) (text-split-at big (text-line-start big 1500)))
   (expect "split and join" (= (text-concat a b) big) #t)
   (expect "equal texts hash alike" (= (eq-hash (text-concat a b)) (eq-hash big)) #t)
   (def s5 (text-line-start big 5))
@@ -94,6 +94,21 @@
   (def tb (textbuilder-empty))
   (add-all! tb words)
   (expect "add-all! to a builder" (text->string (textbuilder->text tb)) "one two three")
+  (expect "texting characters" (text->string (loop (:for ch (string->text "abc")) (:acc (texting (char-upcase ch))))) "ABC")
+
+  ;; As a string has them.
+  (def s (string->text "  one, two, three  "))
+  (expect "take characters" (text->string (text-take (string->text "blåbär") 3)) "blå")
+  (expect "drop characters" (text->string (text-drop (string->text "blåbär") 3)) "bär")
+  (expect "replace" (text->string (text-replace s "," ";")) "  one; two; three  ")
+  (expect "split" (vec-map text->string (text-split (text-trim s) ", ")) ["one" "two" "three"])
+  (expect "join" (text->string (text-join (text-split (text-trim s) ", ") "+")) "one+two+three")
+  (expect "trim" (text->string (text-trim s)) "one, two, three")
+  (expect "pad" (text->string (text-pad-left (string->text "7") 3 #:with #\0)) "007")
+  (expect "reverse" (text->string (text-reverse (string->text "blåbär"))) "räbålb")
+  (expect "a search" (text-cursor-offset (option-ref (text-search s "two"))) 7)
+  (expect "a replace across chunks" (text-replace big "blåbär" "x") (string->text (string-replace text "blåbär" "x")))
+  (expect "ref by a cursor" (ref s (text-cursor-forward (text-cursor-start s) 2)) #\o)
 
   ;; Errors.
   (expect "an offset in a character" (outcome (fun () (ignore (text-insert big 14 "x")))) "mid-character")
