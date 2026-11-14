@@ -1,0 +1,103 @@
+(import (std prelude))
+(import (std simpletest))
+(import (std text))
+
+;; A text of `n` numbered lines, a few characters of them not ASCII.
+(: (-> int string))
+(defun (lines-of n)
+  (def b (stringbuilder-empty))
+  (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! b #"line ${i}: blåbär €\n")))
+  (stringbuilder->string b))
+
+(: (-> (-> void) string))
+(defun (outcome f)
+  (def inner (fun () (match (try (f) #:catch (System.ArgumentOutOfRangeException)) ((Ok _) "done") ((Err _) "out of range"))))
+  (match (try (inner) #:catch (System.ArgumentException)) ((Ok s) s) ((Err _) "mid-character")))
+
+(: (-> int string string))
+(defun (repeated n s)
+  (def b (stringbuilder-empty))
+  (loop (:for _ (range 0 n)) (:do (stringbuilder-add-string! b s)))
+  (stringbuilder->string b))
+
+(defun (main)
+  ;; The module's example.
+  (def r (string->text "hello world\nsecond line"))
+  (def r2 (text-insert r 5 ","))
+  (expect "insert" (text->string r2) "hello, world\nsecond line")
+  (expect "delete" (text->string (text-delete r2 5 6)) "hello world\nsecond line")
+  (expect "a line" (text-line r2 1) "second line")
+  (expect "the line of an offset" (text-line-of r2 15) 1)
+  (expect "search" (text-index-of r2 "world") (Some 7))
+  (expect "the old text is unchanged" (text->string r) "hello world\nsecond line")
+
+  ;; A text of many chunks.
+  (def text (lines-of 2000))
+  (def big (string->text text))
+  (expect "a tree" (> (text-height big) 0) #t)
+  (expect "sound" (text-check big) None)
+  (expect "bytes" (text-length big) (string-length text))
+  (expect "characters" (text-char-count big) (.Count text))
+  (expect "lines" (text-line-count big) 2001)
+  (expect "line 1234" (text-line big 1234) "line 1234: blåbär €")
+  (expect "the line of its start" (text-line-of big (text-line-start big 1234)) 1234)
+  (def (Tuple a b) (text-split big (text-line-start big 1500)))
+  (expect "split and join" (= (text-concat a b) big) #t)
+  (expect "equal texts hash alike" (= (eq-hash (text-concat a b)) (eq-hash big)) #t)
+  (def s5 (text-line-start big 5))
+  (def s10 (text-line-start big 10))
+  (expect "a slice" (text->string (text-slice big s5 s10)) (string-copy (.SliceBytes text s5 (- s10 s5))))
+  (expect "a match across chunks" (text-index-of big "line 1999: ") (Some (text-line-start big 1999)))
+
+  ;; Typing into a transient, with a text taken halfway.
+  (def t (text->transienttext big))
+  (def at (text-line-start big 1000))
+  (loop (:for i (range 0 500)) (:do (transienttext-insert! t (+ at i) "x")))
+  (def mid (transienttext->text t))
+  (loop (:for _ (range 0 200)) (:do (transienttext-delete! t (+ at 299) (+ at 300))))
+  (transienttext-insert! t at "€")
+  (def done (transienttext->text t))
+  (expect "the transient's length" (transienttext-length t) (+ (string-length text) 303))
+  (expect "the text taken halfway" (text-substring mid at (+ at 500)) (repeated 500 "x"))
+  (expect "is sound" (text-check mid) None)
+  (expect "the text at the end" (text-line done 1000) #"€${(repeated 300 "x")}line 1000: blåbär €")
+  (expect "is sound too" (text-check done) None)
+  (expect "the first text is unchanged" (text->string big) text)
+
+  ;; Cursors.
+  (def tr (string->text "one two\nthree"))
+  (def c (option-ref (text-cursor-search (text-cursor-start tr) "two")))
+  (expect "a cursor found" (text-cursor-offset c) 4)
+  (expect "its character" (text-cursor-ref c) #\t)
+  (expect "four on" (text-cursor-line (text-cursor-forward c 4)) 1)
+  (expect "a loop from it" (loop (:for ch c) (:acc (stringing ch))) "two\nthree")
+  (expect "a loop back from it" (loop (:for ch (text-backward c)) (:acc (stringing ch))) " eno")
+  (expect "the column" (text-cursor-column (text-cursor-forward c 6)) 2)
+  (expect "a line down, same column"
+          (text-cursor-offset (text-cursor-at-line tr 1 #:column (text-cursor-column c))) 12)
+  (expect "the end of its line" (text-cursor-offset (text-cursor-line-end c)) 7)
+  (expect "back to a space" (text-cursor-offset (option-ref (text-cursor-find-backward char-whitespace? c))) 3)
+  (expect "between two cursors" (text-cursor-substring c (text-cursor-line-end c)) "two")
+  (def bc (text-cursor-at big (text-line-start big 1500)))
+  (expect "a search back across chunks"
+          (text-cursor-offset (option-ref (text-cursor-search-backward bc "line 1234: "))) (text-line-start big 1234))
+  (expect "steps across chunks"
+          (text-cursor-offset (text-cursor-back (text-cursor-forward bc 5000) 5000)) (text-cursor-offset bc))
+  (expect "cursors compare" (text-cursor<? (text-cursor-start big) bc) #t)
+
+  ;; Collecting.
+  (def words (list "one" " " "two" " " "three"))
+  (expect "texting" (text->string (loop (:for w words) (:acc (texting w)))) "one two three")
+  (expect "texting into a text" (text->string (loop (:for w words) (:acc (texting w #:into (string->text "> "))))) "> one two three")
+  (expect "texting many lines" (loop (:for i (range 0 2000)) (:acc (texting #"line ${i}: blåbär €\n"))) big)
+  (expect "add" (text->string (add (string->text "ab") "cd")) "abcd")
+  (def tb (textbuilder-empty))
+  (add-all! tb words)
+  (expect "add-all! to a builder" (text->string (textbuilder->text tb)) "one two three")
+
+  ;; Errors.
+  (expect "an offset in a character" (outcome (fun () (ignore (text-insert big 14 "x")))) "mid-character")
+  (expect "an offset outside" (outcome (fun () (ignore (text-delete big 0 (+ (text-length big) 1))))) "out of range")
+  (expect "a transient offset in a character" (outcome (fun () (transienttext-insert! t (+ at 1) "x"))) "mid-character")
+  (expect "the transient is unchanged" (transienttext->text t) done)
+  0)

@@ -3,29 +3,32 @@
 
 What each change guarantees, and what it leaves open.
 
-* (std rope): persistent text that is cheap to edit anywhere
+* (std text): persistent text that is cheap to edit anywhere
 
-- A ~Rope~ is immutable UTF-8 text in a B+ tree: chunks of at most 1024
+- A ~Text~ is immutable UTF-8 text in a B+ tree: chunks of at most 1024
   bytes, nodes of up to 16 children that keep each child's bytes and
   newlines. Insert, delete, split, concat, slice and the line lookups
-  (~rope-line-start~, ~rope-line-of~) are O(log n) and share what they do
+  (~text-line-start~, ~text-line-of~) are O(log n) and share what they do
   not change. Offsets are bytes; one inside a character raises
   ~ArgumentException~.
 - Equality, order and hashing depend on the text, not on the chunks. A
-  ~RopeBuilder~ builds in one pass; ~rope->string~ is one allocation.
-- A ~TransientRope~ edits the nodes it owns in place, and keeps the chunk
+  ~TextBuilder~ builds in one pass; ~text->string~ is one allocation.
+- A ~TransientText~ edits the nodes it owns in place, and keeps the chunk
   of the last edit in a mutable buffer: edits inside it allocate nothing.
   The automerge-paper editing trace (259,778 edits) replays in 5.7 ms
   through a transient, 40 ms persistently, and 2 s on a string.
-- A ~RopeCursor~ is a position that holds its chunk: it steps by
-  characters both ways, finds text (~rope-cursor-search~, ~-backward~) and
-  characters (~rope-cursor-find~, ~-backward~), knows its line and column,
+- A ~TextCursor~ is a position that holds its chunk: it steps by
+  characters both ways, finds text (~text-cursor-search~, ~-backward~) and
+  characters (~text-cursor-find~, ~-backward~), knows its line and column,
   and starts a loop, forward with ~(:for c cursor)~ and back with
-  ~rope-backward~. The names follow the string cursors'. A step inside a
+  ~text-backward~. The names follow the string cursors'. A step inside a
   chunk allocates nothing; a loop over 1 MB takes 1.3 ms, where a string
-  cursor takes 0.9 ms. ~rope-last-index-of~ searches backward.
-- The string baselines are in the rope benchmarks too.
-- Only the node classes are C# (~Bjolang.Runtime.Rope~); every operation
+  cursor takes 0.9 ms. ~text-last-index-of~ searches backward.
+- The ~texting~ collector gathers strings into a text, through a builder,
+  and takes ~#:into~ a text to start from. A text is ~Addable~ (at the
+  end), and its builder and transient are ~Addable!~.
+- The string baselines are in the text benchmarks too.
+- Only the node classes are C# (~Bjolang.Runtime.TextTree~); every operation
   is Bjolang.
 
 * Benchmarks can count every thread's allocation; a loop with no exit and C# type-name clashes are reported

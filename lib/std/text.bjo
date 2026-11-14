@@ -10,14 +10,14 @@
 ;; in such object code or executable form without complying with the source code
 ;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
 
-;; std/rope.bjo — persistent text: a B+ tree of UTF-8 chunks. Inserting,
+;; std/text.bjo — persistent text: a B+ tree of UTF-8 chunks. Inserting,
 ;; deleting, splitting and joining are O(log n) and share what they do not
 ;; change.
 ;;
 ;; - Positions are byte offsets, as a string's cursors are. An offset in the
 ;;   middle of a character is an error.
-;; - A rope of at most `chunk-max` bytes is one string and no tree.
-;; - The tree's nodes are C# (`Bjolang.Runtime.Rope`), because they hold their
+;; - A text of at most `chunk-max` bytes is one string and no tree.
+;; - The tree's nodes are C# (`Bjolang.Runtime.TextTree`), because they hold their
 ;;   slots in inline arrays. Every operation is here, including those on one
 ;;   node.
 ;; - A node has up to 16 children and keeps each one's length in bytes and its
@@ -34,67 +34,67 @@
 (import (std prelude))
 (import (std atomic))
 
-(:doc #:file "rope.bjodoc")
+(:doc #:file "text.bjodoc")
 
 (export
-  Rope RopeWalk RopeBuilder TransientRope RopeCursor RopeBackward RopeBackwardStep
-  ;; Ropes
-  rope-empty rope string->rope rope->string rope-length rope-empty? rope-line-count rope-char-count
-  rope-ref rope-substring rope-slice rope-take rope-drop rope-split
-  rope-concat rope-append rope-prepend rope-insert rope-insert-rope rope-delete rope-replace
+  Text TextWalk TextBuilder TransientText TextCursor TextBackward TextBackwardStep Texting TextingInto
+  ;; Texts
+  text-empty text string->text text->string text-length text-empty? text-line-count text-char-count
+  text-ref text-substring text-slice text-take text-drop text-split
+  text-concat text-append text-prepend text-insert text-insert-text text-delete text-replace
   ;; Lines
-  rope-line-start rope-line-end rope-line-of rope-line
+  text-line-start text-line-end text-line-of text-line
   ;; Characters
-  rope-next rope-prev
+  text-next text-prev
   ;; Searching
-  rope-index-of rope-last-index-of rope-contains? rope-starts-with? rope-ends-with?
+  text-index-of text-last-index-of text-contains? text-starts-with? text-ends-with?
   ;; Cursors
-  rope-cursor-at rope-cursor-start rope-cursor-end rope-cursor-at-line rope-cursor-offset rope-cursor-rope
-  rope-cursor-start? rope-cursor-end? rope-cursor-ref rope-cursor-next rope-cursor-prev rope-cursor-ref+next
-  rope-cursor-forward rope-cursor-back rope-cursor-line rope-cursor-column rope-cursor-line-start rope-cursor-line-end
-  rope-cursor-search rope-cursor-search-backward rope-cursor-find rope-cursor-find-backward
-  rope-cursor=? rope-cursor<? rope-cursor>? rope-cursor<=? rope-cursor>=?
-  rope-cursor-substring rope-cursor-slice rope-backward
+  text-cursor-at text-cursor-start text-cursor-end text-cursor-at-line text-cursor-offset text-cursor-text
+  text-cursor-start? text-cursor-end? text-cursor-ref text-cursor-next text-cursor-prev text-cursor-ref+next
+  text-cursor-forward text-cursor-back text-cursor-line text-cursor-column text-cursor-line-start text-cursor-line-end
+  text-cursor-search text-cursor-search-backward text-cursor-find text-cursor-find-backward
+  text-cursor=? text-cursor<? text-cursor>? text-cursor<=? text-cursor>=?
+  text-cursor-substring text-cursor-slice text-backward
   ;; Chunks
-  rope-fold-chunks rope-for-each-chunk rope-chunk-count
+  text-fold-chunks text-for-each-chunk text-chunk-count
   ;; Builders
-  ropebuilder-empty ropebuilder-add! ropebuilder-add-rope! ropebuilder-length ropebuilder->rope
+  textbuilder-empty textbuilder-add! textbuilder-add-text! textbuilder-length textbuilder->text
   ;; Transients
-  rope->transientrope transientrope->rope transientrope-insert! transientrope-delete!
-  transientrope-replace! transientrope-append! transientrope-length
+  text->transienttext transienttext->text transienttext-insert! transienttext-delete!
+  transienttext-replace! transienttext-append! transienttext-length
   ;; Checks, for tests
-  rope-check rope-height)
+  text-check text-height)
 
 (import/class
   (ArgumentException (: System.ArgumentException))
   (Utf8Builder (: BjoString.Utf8StringBuilder))
   (ArgumentOutOfRangeException (: System.ArgumentOutOfRangeException))
   (Exception (: System.Exception))
-  (RopeNode (: Bjolang.Runtime.Rope.RopeNode))
-  (RopeBranch (: Bjolang.Runtime.Rope.RopeBranch))
-  (RopeLeaves (: Bjolang.Runtime.Rope.RopeLeaves))
+  (TextNode (: Bjolang.Runtime.TextTree.TextNode))
+  (TextBranch (: Bjolang.Runtime.TextTree.TextBranch))
+  (TextLeaves (: Bjolang.Runtime.TextTree.TextLeaves))
   (StringWalk (: Bjolang.Runtime.StringWalk)))
 
 (import/extern
-  (new-branch      (: Bjolang.Runtime.Rope.RopeNodes.NewBranch   (-> long RopeBranch)))
-  (new-leaves      (: Bjolang.Runtime.Rope.RopeNodes.NewLeaves   (-> long RopeLeaves)))
-  (copy-branch     (: Bjolang.Runtime.Rope.RopeNodes.CopyBranch  (-> RopeBranch long RopeBranch)))
-  (copy-leaves     (: Bjolang.Runtime.Rope.RopeNodes.CopyLeaves  (-> RopeLeaves long RopeLeaves)))
-  (as-branch       (: Bjolang.Runtime.Rope.RopeNodes.AsBranch    (-> RopeNode RopeBranch)))
-  (as-leaves       (: Bjolang.Runtime.Rope.RopeNodes.AsLeaves    (-> RopeNode RopeLeaves)))
-  (branch-node     (: Bjolang.Runtime.Rope.RopeNodes.BranchNode  (-> RopeBranch RopeNode)))
-  (leaves-node     (: Bjolang.Runtime.Rope.RopeNodes.LeavesNode  (-> RopeLeaves RopeNode)))
-  (node-owner      (: Bjolang.Runtime.Rope.RopeNodes.Owner       (-> RopeNode long)))
-  (node-count      (: Bjolang.Runtime.Rope.RopeNodes.Count       (-> RopeNode int)))
-  (set-count!      (: Bjolang.Runtime.Rope.RopeNodes.SetCount    (-> RopeNode int void)))
-  (slot-bytes      (: Bjolang.Runtime.Rope.RopeNodes.Bytes       (-> RopeNode int int)))
-  (set-slot-bytes! (: Bjolang.Runtime.Rope.RopeNodes.SetBytes    (-> RopeNode int int void)))
-  (slot-lines      (: Bjolang.Runtime.Rope.RopeNodes.Lines       (-> RopeNode int int)))
-  (set-slot-lines! (: Bjolang.Runtime.Rope.RopeNodes.SetLines    (-> RopeNode int int void)))
-  (kid             (: Bjolang.Runtime.Rope.RopeNodes.Kid         (-> RopeBranch int RopeNode)))
-  (set-kid!        (: Bjolang.Runtime.Rope.RopeNodes.SetKid      (-> RopeBranch int RopeNode void)))
-  (chunk-at        (: Bjolang.Runtime.Rope.RopeNodes.Chunk       (-> RopeLeaves int string)))
-  (set-chunk!      (: Bjolang.Runtime.Rope.RopeNodes.SetChunk    (-> RopeLeaves int string void)))
+  (new-branch      (: Bjolang.Runtime.TextTree.TextNodes.NewBranch   (-> long TextBranch)))
+  (new-leaves      (: Bjolang.Runtime.TextTree.TextNodes.NewLeaves   (-> long TextLeaves)))
+  (copy-branch     (: Bjolang.Runtime.TextTree.TextNodes.CopyBranch  (-> TextBranch long TextBranch)))
+  (copy-leaves     (: Bjolang.Runtime.TextTree.TextNodes.CopyLeaves  (-> TextLeaves long TextLeaves)))
+  (as-branch       (: Bjolang.Runtime.TextTree.TextNodes.AsBranch    (-> TextNode TextBranch)))
+  (as-leaves       (: Bjolang.Runtime.TextTree.TextNodes.AsLeaves    (-> TextNode TextLeaves)))
+  (branch-node     (: Bjolang.Runtime.TextTree.TextNodes.BranchNode  (-> TextBranch TextNode)))
+  (leaves-node     (: Bjolang.Runtime.TextTree.TextNodes.LeavesNode  (-> TextLeaves TextNode)))
+  (node-owner      (: Bjolang.Runtime.TextTree.TextNodes.Owner       (-> TextNode long)))
+  (node-count      (: Bjolang.Runtime.TextTree.TextNodes.Count       (-> TextNode int)))
+  (set-count!      (: Bjolang.Runtime.TextTree.TextNodes.SetCount    (-> TextNode int void)))
+  (slot-bytes      (: Bjolang.Runtime.TextTree.TextNodes.Bytes       (-> TextNode int int)))
+  (set-slot-bytes! (: Bjolang.Runtime.TextTree.TextNodes.SetBytes    (-> TextNode int int void)))
+  (slot-lines      (: Bjolang.Runtime.TextTree.TextNodes.Lines       (-> TextNode int int)))
+  (set-slot-lines! (: Bjolang.Runtime.TextTree.TextNodes.SetLines    (-> TextNode int int void)))
+  (kid             (: Bjolang.Runtime.TextTree.TextNodes.Kid         (-> TextBranch int TextNode)))
+  (set-kid!        (: Bjolang.Runtime.TextTree.TextNodes.SetKid      (-> TextBranch int TextNode void)))
+  (chunk-at        (: Bjolang.Runtime.TextTree.TextNodes.Chunk       (-> TextLeaves int string)))
+  (set-chunk!      (: Bjolang.Runtime.TextTree.TextNodes.SetChunk    (-> TextLeaves int string void)))
   (string-walk         (: Bjolang.Runtime.StringWalks.Start   (-> string StringWalk)))
   (string-walk-done?   (: Bjolang.Runtime.StringWalks.Done    (-> StringWalk bool)))
   (string-walk-current (: Bjolang.Runtime.StringWalks.Current (-> StringWalk char)))
@@ -165,47 +165,47 @@
 (: (-> long))
 (defun (owner-next) (atomic-increment! owners))
 
-;; A node that holds nothing, the root of a rope that is one string.
+;; A node that holds nothing, the root of a text that is one string.
 (def no-node (leaves-node (new-leaves 0L)))
 
-(: (-> int long RopeNode))
+(: (-> int long TextNode))
 (defun (new-node h o)
   (if (= h 1) (leaves-node (new-leaves o)) (branch-node (new-branch o))))
 
 ;; `n` if `o` owns it, and otherwise a copy that `o` owns.
-(: (-> int RopeNode long RopeNode))
+(: (-> int TextNode long TextNode))
 (defun (editable h n o)
   (cond
     ((and (not (= o 0L)) (= (node-owner n) o)) n)
     ((= h 1) (leaves-node (copy-leaves (as-leaves n) o)))
     (else (branch-node (copy-branch (as-branch n) o)))))
 
-(: (-> RopeNode int))
+(: (-> TextNode int))
 (defun (sum-bytes n)
   (def count (node-count n))
   (let go ((i 0) (acc 0)) (if (< i count) (go (+ i 1) (+ acc (slot-bytes n i))) acc)))
 
-(: (-> RopeNode int))
+(: (-> TextNode int))
 (defun (sum-lines n)
   (def count (node-count n))
   (let go ((i 0) (acc 0)) (if (< i count) (go (+ i 1) (+ acc (slot-lines n i))) acc)))
 
 ;; Slot `i` of the leaves node `n` holds `c`.
-(: (-> RopeNode int string void))
+(: (-> TextNode int string void))
 (defun (put-chunk! n i c)
   (set-chunk! (as-leaves n) i c)
   (set-slot-bytes! n i (string-length c))
   (set-slot-lines! n i (newlines-in c)))
 
 ;; Slot `i` of the branch `n` holds the node `k`.
-(: (-> RopeNode int RopeNode void))
+(: (-> TextNode int TextNode void))
 (defun (put-kid! n i k)
   (set-kid! (as-branch n) i k)
   (set-slot-bytes! n i (sum-bytes k))
   (set-slot-lines! n i (sum-lines k)))
 
 ;; Copies slot `from` of `src` to slot `to` of `dst`, both of height `h`.
-(: (-> int RopeNode int RopeNode int void))
+(: (-> int TextNode int TextNode int void))
 (defun (copy-slot! h src from dst to)
   (set-slot-bytes! dst to (slot-bytes src from))
   (set-slot-lines! dst to (slot-lines src from))
@@ -215,14 +215,14 @@
 
 ;; Copies `n` slots of `src` from `from` to `dst` from `to`. The ranges may
 ;; overlap in one node.
-(: (-> int RopeNode int RopeNode int int void))
+(: (-> int TextNode int TextNode int int void))
 (defun (move-slots! h src from dst to n)
   (if (<= to from)
       (loop (:for i (range 0 n)) (:do (copy-slot! h src (+ from i) dst (+ to i))))
       (loop (:for i (down-from (- n 1) #:to 0)) (:do (copy-slot! h src (+ from i) dst (+ to i))))))
 
 ;; Empties slots `from` to `to`, so that they keep nothing alive.
-(: (-> int RopeNode int int void))
+(: (-> int TextNode int int void))
 (defun (clear-slots! h n from to)
   (loop (:for i (range from to))
         (:do (if (= h 1)
@@ -231,14 +231,14 @@
 
 ;; Opens slot `i` of the editable node `n`, which has room, moving the slots
 ;; after it one to the right.
-(: (-> int RopeNode int void))
+(: (-> int TextNode int void))
 (defun (open-slot! h n i)
   (def count (node-count n))
   (move-slots! h n i n (+ i 1) (- count i))
   (set-count! n (+ count 1)))
 
 ;; Removes slot `i` of the editable node `n`.
-(: (-> int RopeNode int void))
+(: (-> int TextNode int void))
 (defun (remove-slot! h n i)
   (def count (node-count n))
   (move-slots! h n (+ i 1) n i (- count i 1))
@@ -246,7 +246,7 @@
   (set-count! n (- count 1)))
 
 ;; A new node with slots `from` to `to` of `n`.
-(: (-> int RopeNode int int long RopeNode))
+(: (-> int TextNode int int long TextNode))
 (defun (node-part h n from to o)
   (def part (new-node h o))
   (move-slots! h n from part 0 (- to from))
@@ -255,7 +255,7 @@
 
 ;; Moves the second half of the editable node `n` into a new node, and returns
 ;; that.
-(: (-> int RopeNode long RopeNode))
+(: (-> int TextNode long TextNode))
 (defun (split-half! h n o)
   (def count (node-count n))
   (def keep (/ count 2))
@@ -265,7 +265,7 @@
   right)
 
 ;; Moves every slot of `r` to the end of the editable node `l`, which has room.
-(: (-> int RopeNode RopeNode void))
+(: (-> int TextNode TextNode void))
 (defun (append-slots! h l r)
   (def cl (node-count l))
   (def cr (node-count r))
@@ -274,7 +274,7 @@
 
 ;; Moves slots between the editable neighbours `l` and `r` until each has
 ;; half of them.
-(: (-> int RopeNode RopeNode void))
+(: (-> int TextNode TextNode void))
 (defun (even-out! h l r)
   (def cl (node-count l))
   (def cr (node-count r))
@@ -298,7 +298,7 @@
 
 ;; The slot of `n` whose bytes hold offset `at`, and the offset in it. An
 ;; offset between two slots is the end of the first.
-(: (-> RopeNode int (Tuple int int)))
+(: (-> TextNode int (Tuple int int)))
 (defun (slot-ending n at)
   (def last (- (node-count n) 1))
   (let go ((i 0) (at at))
@@ -307,7 +307,7 @@
 
 ;; As `slot-ending`, but an offset between two slots is the start of the
 ;; second.
-(: (-> RopeNode int (Tuple int int)))
+(: (-> TextNode int (Tuple int int)))
 (defun (slot-starting n at)
   (def last (- (node-count n) 1))
   (let go ((i 0) (at at))
@@ -315,46 +315,46 @@
     (if (and (< i last) (>= at b)) (go (+ i 1) (- at b)) (Tuple i at))))
 
 ;; ---------------------------------------------------------------------------
-;; The rope
+;; The text
 ;; ---------------------------------------------------------------------------
 
 ;; `small` is the text when `height` is 0, and `root` is unused. Otherwise
 ;; `root` is a node of that height and `small` is "".
-(type (: Rope #:opaque
-         (Record (: root RopeNode)
+(type (: Text #:opaque
+         (Record (: root TextNode)
                  (: height int)
                  (: bytes int)
                  (: lines int)
                  (: small string))))
 
-(: (-> string Rope))
-(defun (small-rope s)
-  (Rope (root no-node) (height 0) (bytes (string-length s)) (lines (newlines-in s)) (small s)))
+(: (-> string Text))
+(defun (small-text s)
+  (Text (root no-node) (height 0) (bytes (string-length s)) (lines (newlines-in s)) (small s)))
 
-(def empty-rope (small-rope ""))
+(def empty-text (small-text ""))
 
-(: (-> Rope))
-(defun (rope-empty) empty-rope)
+(: (-> Text))
+(defun (text-empty) empty-text)
 
-(: (-> Rope int))
-(defun (rope-length r) (.bytes r))
+(: (-> Text int))
+(defun (text-length r) (.bytes r))
 
-(: (-> Rope bool))
-(defun (rope-empty? r) (= (.bytes r) 0))
+(: (-> Text bool))
+(defun (text-empty? r) (= (.bytes r) 0))
 
 ;; Lines are separated by "\n": one more than the newlines.
-(: (-> Rope int))
-(defun (rope-line-count r) (+ (.lines r) 1))
+(: (-> Text int))
+(defun (text-line-count r) (+ (.lines r) 1))
 
-(: (-> Rope int))
-(defun (rope-height r) (.height r))
+(: (-> Text int))
+(defun (text-height r) (.height r))
 
 ;; ---------------------------------------------------------------------------
 ;; Chunks of a tree
 ;; ---------------------------------------------------------------------------
 
 ;; Folds `f` over the chunks of `n`, of height `h`, in order.
-(: (-> (-?-> string %a %a) %a RopeNode int %a))
+(: (-> (-?-> string %a %a) %a TextNode int %a))
 (defun (fold-node-chunks f acc n h)
   (def count (node-count n))
   (if (= h 1)
@@ -363,32 +363,32 @@
       (let go ((i 0) (acc acc))
         (if (< i count) (go (+ i 1) (fold-node-chunks f acc (kid (as-branch n) i) (- h 1))) acc))))
 
-(: (-> (-?-> string %a %a) %a Rope %a))
-(defun (rope-fold-chunks f init r)
+(: (-> (-?-> string %a %a) %a Text %a))
+(defun (text-fold-chunks f init r)
   (cond
     ((> (.height r) 0) (fold-node-chunks f init (.root r) (.height r)))
     ((= (.bytes r) 0) init)
     (else (f (.small r) init))))
 
-(: (-> (-?-> string void) RopeNode int void))
+(: (-> (-?-> string void) TextNode int void))
 (defun (each-node-chunk f n h)
   (def count (node-count n))
   (if (= h 1)
       (loop (:for i (range 0 count)) (:do (f (chunk-at (as-leaves n) i))))
       (loop (:for i (range 0 count)) (:do (each-node-chunk f (kid (as-branch n) i) (- h 1))))))
 
-(: (-> (-?-> string void) Rope void))
-(defun (rope-for-each-chunk f r)
+(: (-> (-?-> string void) Text void))
+(defun (text-for-each-chunk f r)
   (cond
     ((> (.height r) 0) (each-node-chunk f (.root r) (.height r)))
     ((> (.bytes r) 0) (f (.small r)))
     (else unit)))
 
-(: (-> Rope int))
-(defun (rope-chunk-count r) (rope-fold-chunks (fun (_ n) (+ n 1)) 0 r))
+(: (-> Text int))
+(defun (text-chunk-count r) (text-fold-chunks (fun (_ n) (+ n 1)) 0 r))
 
 ;; The number of chunks under `n`.
-(: (-> RopeNode int int))
+(: (-> TextNode int int))
 (defun (node-chunks n h)
   (def count (node-count n))
   (if (= h 1)
@@ -397,7 +397,7 @@
         (if (< i count) (go (+ i 1) (+ acc (node-chunks (kid (as-branch n) i) (- h 1)))) acc))))
 
 ;; Puts the chunks under `n` in `out` from `at`, and returns the slot after.
-(: (-> RopeNode int (Array string) int int))
+(: (-> TextNode int (Array string) int int))
 (defun (gather-chunks! n h out at)
   (def count (node-count n))
   (if (= h 1)
@@ -408,31 +408,31 @@
         (if (< i count) (go (+ i 1) (gather-chunks! (kid (as-branch n) i) (- h 1) out at)) at))))
 
 ;; The text under `n`, in one allocation of its size.
-(: (-> RopeNode int int string))
+(: (-> TextNode int int string))
 (defun (node->string n h bytes)
   (def (: out (Array string)) (make-array (node-chunks n h) #:fill ""))
   (ignore (gather-chunks! n h out 0))
   (concat-all (array->ro-span out)))
 
-(: (-> Rope string))
-(defun (rope->string r)
+(: (-> Text string))
+(defun (text->string r)
   (if (= (.height r) 0) (.small r) (node->string (.root r) (.height r) (.bytes r))))
 
-;; The rope of a tree, which may be empty (height 0), have a root with one
+;; The text of a tree, which may be empty (height 0), have a root with one
 ;; child, or hold no more than one chunk's worth.
-(: (-> RopeNode int Rope))
-(defun (tree->rope n h)
+(: (-> TextNode int Text))
+(defun (tree->text n h)
   (cond
-    ((or (= h 0) (= (node-count n) 0)) empty-rope)
-    ((and (> h 1) (= (node-count n) 1)) (tree->rope (kid (as-branch n) 0) (- h 1)))
+    ((or (= h 0) (= (node-count n) 0)) empty-text)
+    ((and (> h 1) (= (node-count n) 1)) (tree->text (kid (as-branch n) 0) (- h 1)))
     (else
      (def bytes (sum-bytes n))
      (if (<= bytes chunk-max)
-         (small-rope (node->string n h bytes))
-         (Rope (root n) (height h) (bytes bytes) (lines (sum-lines n)) (small ""))))))
+         (small-text (node->string n h bytes))
+         (Text (root n) (height h) (bytes bytes) (lines (sum-lines n)) (small ""))))))
 
-;; The tree of a rope: its root and height, and height 0 for an empty one.
-(: (-> Rope long (Tuple RopeNode int)))
+;; The tree of a text: its root and height, and height 0 for an empty one.
+(: (-> Text long (Tuple TextNode int)))
 (defun (tree-of r o)
   (cond
     ((> (.height r) 0) (Tuple (.root r) (.height r)))
@@ -444,8 +444,8 @@
      (Tuple n 1))))
 
 ;; The chunk that holds byte `at`, and the offset it starts at. The end of the
-;; rope is in its last chunk.
-(: (-> Rope int (Tuple string int)))
+;; text is in its last chunk.
+(: (-> Text int (Tuple string int)))
 (defun (chunk-of r at)
   (if (= (.height r) 0)
       (Tuple (.small r) 0)
@@ -459,32 +459,32 @@
 ;; Building
 ;; ---------------------------------------------------------------------------
 
-;; Builds a rope from strings added at its end.
+;; Builds a text from strings added at its end.
 ;;
 ;; - `levels` holds the open node of each level, the leaves node at 0. A full
 ;;   node is closed, into the level above, when the next item comes.
 ;; - Text shorter than a chunk waits in `pending`. A longer string is cut into
 ;;   chunks that share its array.
-;; - `ropebuilder->rope` closes the open nodes. The last node of a level, if
+;; - `textbuilder->text` closes the open nodes. The last node of a level, if
 ;;   it has fewer than `min-kids` children, is merged with or evened out with
 ;;   the one before it.
-(type (: RopeBuilder #:opaque
-         (Record (: levels (Array RopeNode))
+(type (: TextBuilder #:opaque
+         (Record (: levels (Array TextNode))
                  (: top int #:mutable)
                  (: pending StringBuilder)
                  (: owner long #:mutable)
                  (: bytes int #:mutable))))
 
-(: (-> RopeBuilder))
-(defun (ropebuilder-empty)
-  (RopeBuilder (levels (make-array 24 #:fill no-node)) (top -1) (pending (Utf8Builder. chunk-max))
+(: (-> TextBuilder))
+(defun (textbuilder-empty)
+  (TextBuilder (levels (make-array 24 #:fill no-node)) (top -1) (pending (Utf8Builder. chunk-max))
                (owner (owner-next)) (bytes 0)))
 
-(: (-> RopeBuilder int))
-(defun (ropebuilder-length b) (.bytes b))
+(: (-> TextBuilder int))
+(defun (textbuilder-length b) (.bytes b))
 
 ;; The open node of level `lvl`, made if there is none.
-(: (-> RopeBuilder int RopeNode))
+(: (-> TextBuilder int TextNode))
 (defun (open-node b lvl)
   (when (> lvl (.top b))
     (array-set! (.levels b) lvl (new-node (+ lvl 1) (.owner b)))
@@ -492,14 +492,14 @@
   (array-ref (.levels b) lvl))
 
 ;; Closes the full open node of level `lvl` into the level above.
-(: (-> RopeBuilder int void))
+(: (-> TextBuilder int void))
 (defun (close-level! b lvl)
   (def full (array-ref (.levels b) lvl))
   (array-set! (.levels b) lvl (new-node (+ lvl 1) (.owner b)))
   (add-node! b (+ lvl 1) full))
 
 ;; Adds `k`, a node of height `lvl`, to level `lvl`.
-(: (-> RopeBuilder int RopeNode void))
+(: (-> TextBuilder int TextNode void))
 (defun (add-node! b lvl k)
   (when (= (node-count (open-node b lvl)) cap) (close-level! b lvl))
   (def n (array-ref (.levels b) lvl))
@@ -507,7 +507,7 @@
   (set-count! n (+ i 1))
   (put-kid! n i k))
 
-(: (-> RopeBuilder string void))
+(: (-> TextBuilder string void))
 (defun (add-chunk! b c)
   (when (= (node-count (open-node b 0)) cap) (close-level! b 0))
   (def n (array-ref (.levels b) 0))
@@ -515,7 +515,7 @@
   (set-count! n (+ i 1))
   (put-chunk! n i c))
 
-(: (-> RopeBuilder void))
+(: (-> TextBuilder void))
 (defun (flush-pending! b)
   (def p (.pending b))
   (when (> (stringbuilder-length p) 0)
@@ -523,8 +523,8 @@
     (stringbuilder-clear! p)
     (add-chunk! b c)))
 
-(: (-> RopeBuilder string void))
-(defun (ropebuilder-add! b s)
+(: (-> TextBuilder string void))
+(defun (textbuilder-add! b s)
   (def len (string-length s))
   (def p (.pending b))
   (def pl (stringbuilder-length p))
@@ -557,13 +557,13 @@
                  (add-chunk! b (piece s at len))
                  (stringbuilder-add-string! p (piece s at len)))))))))
 
-(: (-> RopeBuilder Rope void))
-(defun (ropebuilder-add-rope! b r)
-  (rope-for-each-chunk (fun (c) (ropebuilder-add! b c)) r))
+(: (-> TextBuilder Text void))
+(defun (textbuilder-add-text! b r)
+  (text-for-each-chunk (fun (c) (textbuilder-add! b c)) r))
 
 ;; The pending text as the last chunk. A short one is merged with the chunk
 ;; before it, or evened out with it.
-(: (-> RopeBuilder void))
+(: (-> TextBuilder void))
 (defun (flush-last! b)
   (def p (.pending b))
   (def pl (stringbuilder-length p))
@@ -584,8 +584,8 @@
                 (put-chunk! n (- count 1) (piece t 0 cut))
                 (add-chunk! b (piece t cut (string-length t)))))))))
 
-(: (-> RopeBuilder Rope))
-(defun (ropebuilder->rope b)
+(: (-> TextBuilder Text))
+(defun (textbuilder->text b)
   (flush-last! b)
   (def levels (.levels b))
   ;; Each level's open node goes into the level above, from the bottom. The
@@ -611,34 +611,34 @@
             (add-node! b (+ lvl 1) x)))
       (go (+ lvl 1))))
   (def top (.top b))
-  (def result (if (< top 0) empty-rope (tree->rope (array-ref levels top) (+ top 1))))
+  (def result (if (< top 0) empty-text (tree->text (array-ref levels top) (+ top 1))))
   ;; Start over, with an owner that does not own what was given away.
   (loop (:for i (range 0 (+ top 1))) (:do (array-set! levels i no-node)))
   (record-set! b (top -1) (owner (owner-next)) (bytes 0))
   result)
 
-;; A rope of the strings, in order.
-(: (-> #:rest string Rope))
-(defun (rope #:rest parts)
-  (def b (ropebuilder-empty))
-  (loop (:for s parts) (:do (ropebuilder-add! b s)))
-  (ropebuilder->rope b))
+;; A text of the strings, in order.
+(: (-> #:rest string Text))
+(defun (text #:rest parts)
+  (def b (textbuilder-empty))
+  (loop (:for s parts) (:do (textbuilder-add! b s)))
+  (textbuilder->text b))
 
-(: (-> string Rope))
-(defun (string->rope s)
+(: (-> string Text))
+(defun (string->text s)
   (if (<= (string-length s) chunk-max)
-      (small-rope s)
+      (small-text s)
       (begin
-        (def b (ropebuilder-empty))
-        (ropebuilder-add! b s)
-        (ropebuilder->rope b))))
+        (def b (textbuilder-empty))
+        (textbuilder-add! b s)
+        (textbuilder->text b))))
 
 ;; ---------------------------------------------------------------------------
 ;; Joining
 ;; ---------------------------------------------------------------------------
 
 ;; A new node of height `h` with the children `a` and `b`.
-(: (-> int RopeNode RopeNode long RopeNode))
+(: (-> int TextNode TextNode long TextNode))
 (defun (pair-node h a b o)
   (def n (new-node h o))
   (set-count! n 2)
@@ -648,7 +648,7 @@
 
 ;; Merges the chunks at slots `i - 1` and `i` of the editable leaves node `n`
 ;; when one is shorter than `chunk-min` and the two fit in one.
-(: (-> int RopeNode int void))
+(: (-> int TextNode int void))
 (defun (tidy-seam! h n i)
   (when (and (= h 1) (> i 0) (< i (node-count n)))
     (def a (slot-bytes n (- i 1)))
@@ -660,7 +660,7 @@
 
 ;; Puts `k` in slot `j` of the editable node `n`. A full `n` is split first;
 ;; the result is then the two halves in order and #t.
-(: (-> RopeNode int int RopeNode long (Tuple RopeNode RopeNode bool)))
+(: (-> TextNode int int TextNode long (Tuple TextNode TextNode bool)))
 (defun (add-kid-at n h j k o)
   (if (< (node-count n) cap)
       (begin
@@ -678,7 +678,7 @@
 ;; Joins `b`, of height `hb`, to the right of `a`, of the greater height `ha`.
 ;; The result is a node of height `ha`, and a second one after it when the
 ;; first had no room.
-(: (-> RopeNode int RopeNode int long (Tuple RopeNode RopeNode bool)))
+(: (-> TextNode int TextNode int long (Tuple TextNode TextNode bool)))
 (defun (join-right a ha b hb o)
   (def n (editable ha a o))
   (def last (- (node-count n) 1))
@@ -709,7 +709,7 @@
 
 ;; Joins `a`, of height `ha`, to the left of `b`, of the greater height `hb`,
 ;; as `join-right` does.
-(: (-> RopeNode int RopeNode int long (Tuple RopeNode RopeNode bool)))
+(: (-> TextNode int TextNode int long (Tuple TextNode TextNode bool)))
 (defun (join-left a ha b hb o)
   (def n (editable hb b o))
   (def y (kid (as-branch n) 0))
@@ -739,7 +739,7 @@
 
 ;; The tree of `a` followed by `b`. Either may be empty (height 0) or have a
 ;; root with fewer than `min-kids` children; every other node is full enough.
-(: (-> RopeNode int RopeNode int long (Tuple RopeNode int)))
+(: (-> TextNode int TextNode int long (Tuple TextNode int)))
 (defun (join a ha b hb o)
   (cond
     ((= ha 0) (Tuple b hb))
@@ -765,7 +765,7 @@
      (def (Tuple first second split?) (join-left a ha b hb o))
      (if split? (Tuple (pair-node (+ hb 1) first second o) (+ hb 1)) (Tuple first hb)))))
 
-(: (-> Rope Rope long Rope))
+(: (-> Text Text long Text))
 (defun (concat-with a b o)
   (cond
     ((= (.bytes a) 0) b)
@@ -776,10 +776,10 @@
      (def (Tuple na ha) (tree-of a o))
      (def (Tuple nb hb) (tree-of b o))
      (def (Tuple n h) (join na ha nb hb o))
-     (tree->rope n h))))
+     (tree->text n h))))
 
-(: (-> Rope Rope Rope))
-(defun (rope-concat a b) (concat-with a b (owner-next)))
+(: (-> Text Text Text))
+(defun (text-concat a b) (concat-with a b (owner-next)))
 
 ;; ---------------------------------------------------------------------------
 ;; Splitting
@@ -793,7 +793,7 @@
 ;; Merges the chunk at slot `i` of the editable leaves node `n` with a
 ;; neighbour when it is shorter than `chunk-min`: into one chunk if they fit,
 ;; and otherwise into two of about the same length.
-(: (-> RopeNode int void))
+(: (-> TextNode int void))
 (defun (merge-small-chunk! n i)
   (def count (node-count n))
   (when (and (> count 1) (< (slot-bytes n i) chunk-min))
@@ -810,7 +810,7 @@
 
 ;; The trees of the bytes of `n`, of height `h`, before and after `at`, where
 ;; 0 < `at` < the bytes of `n`.
-(: (-> RopeNode int int string long (Tuple RopeNode int RopeNode int)))
+(: (-> TextNode int int string long (Tuple TextNode int TextNode int)))
 (defun (split-tree n h at who o)
   (def (Tuple i k) (slot-ending n at))
   (def count (node-count n))
@@ -845,47 +845,47 @@
             (def (Tuple r2 rh2) (join rn rh (node-part h n (+ i 1) count o) (if (= (+ i 1) count) 0 h) o))
             (Tuple l2 lh2 r2 rh2)))))
 
-(: (-> Rope int string long (Tuple Rope Rope)))
+(: (-> Text int string long (Tuple Text Text)))
 (defun (split-with r at who o)
   (check-offset r at who)
   (cond
-    ((= at 0) (Tuple empty-rope r))
-    ((= at (.bytes r)) (Tuple r empty-rope))
+    ((= at 0) (Tuple empty-text r))
+    ((= at (.bytes r)) (Tuple r empty-text))
     ((= (.height r) 0)
      (def s (.small r))
      (check-boundary s at who)
-     (Tuple (small-rope (piece s 0 at)) (small-rope (piece s at (.bytes r)))))
+     (Tuple (small-text (piece s 0 at)) (small-text (piece s at (.bytes r)))))
     (else
      (def (Tuple ln lh rn rh) (split-tree (.root r) (.height r) at who o))
-     (Tuple (tree->rope ln lh) (tree->rope rn rh)))))
+     (Tuple (tree->text ln lh) (tree->text rn rh)))))
 
-(: (-> Rope int string void))
+(: (-> Text int string void))
 (defun (check-offset r at who)
   (when (or (< at 0) (> at (.bytes r)))
-    (out-of-range #"${who}: the offset ${at} is outside the rope, of ${(.bytes r)} bytes.")))
+    (out-of-range #"${who}: the offset ${at} is outside the text, of ${(.bytes r)} bytes.")))
 
-(: (-> Rope int (Tuple Rope Rope)))
-(defun (rope-split r at) (split-with r at "rope-split" (owner-next)))
+(: (-> Text int (Tuple Text Text)))
+(defun (text-split r at) (split-with r at "text-split" (owner-next)))
 
-(: (-> Rope int Rope))
-(defun (rope-take r at)
-  (def (Tuple l _) (split-with r at "rope-take" (owner-next)))
+(: (-> Text int Text))
+(defun (text-take r at)
+  (def (Tuple l _) (split-with r at "text-take" (owner-next)))
   l)
 
-(: (-> Rope int Rope))
-(defun (rope-drop r at)
-  (def (Tuple _ rr) (split-with r at "rope-drop" (owner-next)))
+(: (-> Text int Text))
+(defun (text-drop r at)
+  (def (Tuple _ rr) (split-with r at "text-drop" (owner-next)))
   rr)
 
-(: (-> Rope int int Rope))
-(defun (rope-slice r from to)
-  (check-range r from to "rope-slice")
+(: (-> Text int int Text))
+(defun (text-slice r from to)
+  (check-range r from to "text-slice")
   (def o (owner-next))
-  (def (Tuple _ tail) (split-with r from "rope-slice" o))
-  (def (Tuple mid _) (split-with tail (- to from) "rope-slice" o))
+  (def (Tuple _ tail) (split-with r from "text-slice" o))
+  (def (Tuple mid _) (split-with tail (- to from) "text-slice" o))
   mid)
 
-(: (-> Rope int int string void))
+(: (-> Text int int string void))
 (defun (check-range r from to who)
   (check-offset r from who)
   (check-offset r to who)
@@ -898,7 +898,7 @@
 
 ;; Puts `s`, of `sl` newlines and at most `small-insert` bytes, at byte `at`
 ;; of the editable node `n`, which has room for one more slot.
-(: (-> RopeNode int int string int long void))
+(: (-> TextNode int int string int long void))
 (defun (insert-into! n h at s sl o)
   (def slen (string-length s))
   (def (Tuple i k) (slot-ending n at))
@@ -906,7 +906,7 @@
       (begin
         (def l (as-leaves n))
         (def c (chunk-at l i))
-        (check-boundary c k "rope-insert")
+        (check-boundary c k "text-insert")
         (def cl (string-length c))
         (def t (concat3 (piece c 0 k) s (piece c k cl)))
         (if (<= (+ cl slen) chunk-max)
@@ -936,25 +936,25 @@
                   (into-kid! n h (+ i 1) right (- k lb) s sl o)))
             (into-kid! n h i child k s sl o)))))
 
-(: (-> RopeNode int int RopeNode int string int long void))
+(: (-> TextNode int int TextNode int string int long void))
 (defun (into-kid! n h i child k s sl o)
   (insert-into! child (- h 1) k s sl o)
   (set-slot-bytes! n i (+ (slot-bytes n i) (string-length s)))
   (set-slot-lines! n i (+ (slot-lines n i) sl)))
 
-(: (-> Rope int string long Rope))
+(: (-> Text int string long Text))
 (defun (insert-with r at s o)
-  (check-offset r at "rope-insert")
+  (check-offset r at "text-insert")
   (def slen (string-length s))
   (cond
     ((= slen 0) r)
     ((= (.height r) 0)
      (def s0 (.small r))
      (def len0 (.bytes r))
-     (check-boundary s0 at "rope-insert")
+     (check-boundary s0 at "text-insert")
      (if (<= (+ len0 slen) chunk-max)
-         (small-rope (concat3 (piece s0 0 at) s (piece s0 at len0)))
-         (rope (piece s0 0 at) s (piece s0 at len0))))
+         (small-text (concat3 (piece s0 0 at) s (piece s0 at len0)))
+         (text (piece s0 0 at) s (piece s0 at len0))))
     ((<= slen small-insert)
      (def h (.height r))
      (def n (editable h (.root r) o))
@@ -966,25 +966,25 @@
              (Tuple (pair-node (+ h 1) n right o) (+ h 1)))
            (Tuple n h)))
      (insert-into! root height at s sl o)
-     (Rope (root root) (height height) (bytes (+ (.bytes r) slen)) (lines (+ (.lines r) sl)) (small "")))
+     (Text (root root) (height height) (bytes (+ (.bytes r) slen)) (lines (+ (.lines r) sl)) (small "")))
     (else
-     (def (Tuple l rr) (split-with r at "rope-insert" o))
-     (concat-with (concat-with l (string->rope s) o) rr o))))
+     (def (Tuple l rr) (split-with r at "text-insert" o))
+     (concat-with (concat-with l (string->text s) o) rr o))))
 
-(: (-> Rope int string Rope))
-(defun (rope-insert r at s) (insert-with r at s (owner-next)))
+(: (-> Text int string Text))
+(defun (text-insert r at s) (insert-with r at s (owner-next)))
 
-(: (-> Rope int Rope Rope))
-(defun (rope-insert-rope r at x)
+(: (-> Text int Text Text))
+(defun (text-insert-text r at x)
   (def o (owner-next))
-  (def (Tuple l rr) (split-with r at "rope-insert-rope" o))
+  (def (Tuple l rr) (split-with r at "text-insert-text" o))
   (concat-with (concat-with l x o) rr o))
 
-(: (-> Rope string Rope))
-(defun (rope-append r s) (insert-with r (.bytes r) s (owner-next)))
+(: (-> Text string Text))
+(defun (text-append r s) (insert-with r (.bytes r) s (owner-next)))
 
-(: (-> Rope string Rope))
-(defun (rope-prepend r s) (insert-with r 0 s (owner-next)))
+(: (-> Text string Text))
+(defun (text-prepend r s) (insert-with r 0 s (owner-next)))
 
 ;; ---------------------------------------------------------------------------
 ;; Deleting
@@ -992,7 +992,7 @@
 
 ;; Merges child `i` of the editable branch `n`, of height `h`, which has fewer
 ;; than `min-kids` children, with a neighbour, or evens the two out.
-(: (-> RopeNode int int long void))
+(: (-> TextNode int int long void))
 (defun (fix-underflow! n h i o)
   (def count (node-count n))
   (when (> count 1)
@@ -1014,7 +1014,7 @@
 
 ;; Deletes bytes `at` to `at + len` of the editable node `n`, all in one
 ;; chunk, and returns how many newlines they held.
-(: (-> RopeNode int int int long int))
+(: (-> TextNode int int int long int))
 (defun (delete-into! n h at len o)
   (def (Tuple i k) (slot-starting n at))
   (if (= h 1)
@@ -1022,8 +1022,8 @@
         (def l (as-leaves n))
         (def c (chunk-at l i))
         (def cl (string-length c))
-        (check-boundary c k "rope-delete")
-        (check-boundary c (+ k len) "rope-delete")
+        (check-boundary c k "text-delete")
+        (check-boundary c (+ k len) "text-delete")
         (def dl (newlines-between c k (+ k len)))
         (if (= len cl)
             (remove-slot! 1 n i)
@@ -1043,17 +1043,17 @@
         (when (< (node-count child) min-kids) (fix-underflow! n h i o))
         dl)))
 
-(: (-> Rope int int long Rope))
+(: (-> Text int int long Text))
 (defun (delete-with r from to o)
-  (check-range r from to "rope-delete")
+  (check-range r from to "text-delete")
   (def len (- to from))
   (cond
     ((= len 0) r)
     ((= (.height r) 0)
      (def s (.small r))
-     (check-boundary s from "rope-delete")
-     (check-boundary s to "rope-delete")
-     (small-rope (concat3 (piece s 0 from) "" (piece s to (.bytes r)))))
+     (check-boundary s from "text-delete")
+     (check-boundary s to "text-delete")
+     (small-text (concat3 (piece s 0 from) "" (piece s to (.bytes r)))))
     (else
      (def (Tuple c start) (chunk-of r from))
      (if (<= to (+ start (string-length c)))
@@ -1061,24 +1061,24 @@
            (def h (.height r))
            (def n (editable h (.root r) o))
            (def dl (delete-into! n h from len o))
-           (tree->rope-sized n h (- (.bytes r) len) (- (.lines r) dl)))
+           (tree->text-sized n h (- (.bytes r) len) (- (.lines r) dl)))
          (begin
-           (def (Tuple l tail) (split-with r from "rope-delete" o))
-           (def (Tuple _ rr) (split-with tail len "rope-delete" o))
+           (def (Tuple l tail) (split-with r from "text-delete" o))
+           (def (Tuple _ rr) (split-with tail len "text-delete" o))
            (concat-with l rr o))))))
 
-;; `tree->rope` for a root whose bytes and newlines are known.
-(: (-> RopeNode int int int Rope))
-(defun (tree->rope-sized n h bytes lines)
+;; `tree->text` for a root whose bytes and newlines are known.
+(: (-> TextNode int int int Text))
+(defun (tree->text-sized n h bytes lines)
   (if (or (<= bytes chunk-max) (and (> h 1) (= (node-count n) 1)))
-      (tree->rope n h)
-      (Rope (root n) (height h) (bytes bytes) (lines lines) (small ""))))
+      (tree->text n h)
+      (Text (root n) (height h) (bytes bytes) (lines lines) (small ""))))
 
-(: (-> Rope int int Rope))
-(defun (rope-delete r from to) (delete-with r from to (owner-next)))
+(: (-> Text int int Text))
+(defun (text-delete r from to) (delete-with r from to (owner-next)))
 
-(: (-> Rope int int string Rope))
-(defun (rope-replace r from to s)
+(: (-> Text int int string Text))
+(defun (text-replace r from to s)
   (def o (owner-next))
   (insert-with (delete-with r from to o) from s o))
 
@@ -1111,37 +1111,37 @@
                                      (bitwise-ior (shift-left (bitwise-and (byte-at sp (+ k 2)) 63) 6)
                                                   (bitwise-and (byte-at sp (+ k 3)) 63))))))))
 
-(: (-> Rope int string void))
+(: (-> Text int string void))
 (defun (check-char r at who)
   (when (or (< at 0) (>= at (.bytes r)))
-    (out-of-range #"${who}: there is no character at ${at} in a rope of ${(.bytes r)} bytes.")))
+    (out-of-range #"${who}: there is no character at ${at} in a text of ${(.bytes r)} bytes.")))
 
 ;; The character that starts at byte `at`.
-(: (-> Rope int char))
-(defun (rope-ref r at)
-  (check-char r at "rope-ref")
+(: (-> Text int char))
+(defun (text-ref r at)
+  (check-char r at "text-ref")
   (def (Tuple c start) (chunk-of r at))
-  (check-boundary c (- at start) "rope-ref")
+  (check-boundary c (- at start) "text-ref")
   (decode-at c (- at start)))
 
 ;; The offset of the character after the one at `at`.
-(: (-> Rope int int))
-(defun (rope-next r at)
-  (check-char r at "rope-next")
+(: (-> Text int int))
+(defun (text-next r at)
+  (check-char r at "text-next")
   (def (Tuple c start) (chunk-of r at))
   (+ at (char-width (byte-at (.AsSpan c) (- at start)))))
 
 ;; The offset of the character before `at`, which is after the first.
-(: (-> Rope int int))
-(defun (rope-prev r at)
+(: (-> Text int int))
+(defun (text-prev r at)
   (when (or (<= at 0) (> at (.bytes r)))
-    (out-of-range #"rope-prev: there is no character before ${at} in a rope of ${(.bytes r)} bytes."))
+    (out-of-range #"text-prev: there is no character before ${at} in a text of ${(.bytes r)} bytes."))
   (def (Tuple c start) (chunk-of r (- at 1)))
   (+ start (boundary-before c (- (- at 1) start))))
 
 ;; Calls `f` with each chunk of `n` that holds bytes from `from` to `to`, and
 ;; the part of it they are.
-(: (-> RopeNode int int int (-> string int int void) void))
+(: (-> TextNode int int int (-> string int int void) void))
 (defun (each-piece n h from to f)
   (let go ((i 0) (base 0))
     (when (and (< i (node-count n)) (< base to))
@@ -1156,26 +1156,26 @@
       (go (+ i 1) end))))
 
 ;; Bytes `from` to `to` as a string of their own.
-(: (-> Rope int int string))
-(defun (rope-substring r from to)
-  (check-range r from to "rope-substring")
+(: (-> Text int int string))
+(defun (text-substring r from to)
+  (check-range r from to "text-substring")
   (cond
     ((= from to) "")
     ((= (.height r) 0)
-     (check-boundary (.small r) from "rope-substring")
-     (check-boundary (.small r) to "rope-substring")
+     (check-boundary (.small r) from "text-substring")
+     (check-boundary (.small r) to "text-substring")
      (string-copy (piece (.small r) from to)))
     (else
      (def b (Utf8Builder. (- to from)))
      (each-piece (.root r) (.height r) from to
                  (fun (c a z)
                    (when (or (not (boundary? c a)) (not (boundary? c z)))
-                     (bad-argument "rope-substring: an offset is in the middle of a character."))
+                     (bad-argument "text-substring: an offset is in the middle of a character."))
                    (stringbuilder-add-string! b (if (and (= a 0) (= z (string-length c))) c (piece c a z)))))
      (stringbuilder->string b))))
 
-(: (-> Rope int))
-(defun (rope-char-count r) (rope-fold-chunks (fun (c n) (+ n (.Count c))) 0 r))
+(: (-> Text int))
+(defun (text-char-count r) (text-fold-chunks (fun (c n) (+ n (.Count c))) 0 r))
 
 ;; ---------------------------------------------------------------------------
 ;; Lines
@@ -1190,7 +1190,7 @@
     (if (= left 1) (+ j 1) (go (+ j 1) (- left 1)))))
 
 ;; The offset after the `line`-th newline of `n`, counting from 1.
-(: (-> RopeNode int int int))
+(: (-> TextNode int int int))
 (defun (line-start-in n h line)
   (let go ((i 0) (line line) (off 0))
     (def l (slot-lines n i))
@@ -1199,31 +1199,31 @@
       ((= h 1) (+ off (nth-newline-end (chunk-at (as-leaves n) i) line)))
       (else (+ off (line-start-in (kid (as-branch n) i) (- h 1) line))))))
 
-(: (-> Rope int string void))
+(: (-> Text int string void))
 (defun (check-line r n who)
   (when (or (< n 0) (> n (.lines r)))
-    (out-of-range #"${who}: there is no line ${n} in a rope of ${(+ (.lines r) 1)} lines.")))
+    (out-of-range #"${who}: there is no line ${n} in a text of ${(+ (.lines r) 1)} lines.")))
 
 ;; The offset of the first byte of line `n`, counting from 0.
-(: (-> Rope int int))
-(defun (rope-line-start r n)
-  (check-line r n "rope-line-start")
+(: (-> Text int int))
+(defun (text-line-start r n)
+  (check-line r n "text-line-start")
   (cond
     ((= n 0) 0)
     ((= (.height r) 0) (nth-newline-end (.small r) n))
     (else (line-start-in (.root r) (.height r) n))))
 
-;; The offset of the newline that ends line `n`, or the end of the rope for
+;; The offset of the newline that ends line `n`, or the end of the text for
 ;; the last line.
-(: (-> Rope int int))
-(defun (rope-line-end r n)
-  (check-line r n "rope-line-end")
-  (if (= n (.lines r)) (.bytes r) (- (rope-line-start r (+ n 1)) 1)))
+(: (-> Text int int))
+(defun (text-line-end r n)
+  (check-line r n "text-line-end")
+  (if (= n (.lines r)) (.bytes r) (- (text-line-start r (+ n 1)) 1)))
 
 ;; The line that byte `at` is on: the newlines before it.
-(: (-> Rope int int))
-(defun (rope-line-of r at)
-  (check-offset r at "rope-line-of")
+(: (-> Text int int))
+(defun (text-line-of r at)
+  (check-offset r at "text-line-of")
   (if (= (.height r) 0)
       (newlines-between (.small r) 0 at)
       (let go ((n (.root r)) (h (.height r)) (at at) (acc 0))
@@ -1236,16 +1236,16 @@
             (else (go (kid (as-branch n) i) (- h 1) at acc)))))))
 
 ;; Line `n`, without its newline.
-(: (-> Rope int string))
-(defun (rope-line r n)
-  (rope-substring r (rope-line-start r n) (rope-line-end r n)))
+(: (-> Text int string))
+(defun (text-line r n)
+  (text-substring r (text-line-start r n) (text-line-end r n)))
 
 ;; ---------------------------------------------------------------------------
 ;; Searching
 ;; ---------------------------------------------------------------------------
 
 ;; Whether the bytes of `r` from `at` are those of `s`.
-(: (-> Rope int string bool))
+(: (-> Text int string bool))
 (defun (matches-at? r at s)
   (def m (string-length s))
   (def ss (.AsSpan s))
@@ -1261,9 +1261,9 @@
                     (go e)))))))
 
 ;; The offset of the first `s` at or after `#:from`.
-(: (-> Rope string (#:from int) (Option int)))
-(defun (rope-index-of r s #:from 0)
-  (check-offset r from "rope-index-of")
+(: (-> Text string (#:from int) (Option int)))
+(defun (text-index-of r s #:from 0)
+  (check-offset r from "text-index-of")
   (def m (string-length s))
   (def bytes (.bytes r))
   (cond
@@ -1292,14 +1292,14 @@
                      ((matches-at? r (+ start (+ p q)) s) (Some (+ start (+ p q))))
                      (else (straddle (+ (+ p q) 1))))))))))))
 
-(: (-> Rope string bool))
-(defun (rope-contains? r s) (some? (rope-index-of r s)))
+(: (-> Text string bool))
+(defun (text-contains? r s) (some? (text-index-of r s)))
 
-(: (-> Rope string bool))
-(defun (rope-starts-with? r s) (matches-at? r 0 s))
+(: (-> Text string bool))
+(defun (text-starts-with? r s) (matches-at? r 0 s))
 
-(: (-> Rope string bool))
-(defun (rope-ends-with? r s)
+(: (-> Text string bool))
+(defun (text-ends-with? r s)
   (def at (- (.bytes r) (string-length s)))
   (and (>= at 0) (matches-at? r at s)))
 
@@ -1307,9 +1307,9 @@
 ;;
 ;; - Each chunk, last first, is searched for the matches that start in it and
 ;;   end in a later one, and then for those inside it.
-(: (-> Rope string (#:to int) (Option int)))
-(defun (rope-last-index-of r s #:to (rope-length r))
-  (check-offset r to "rope-last-index-of")
+(: (-> Text string (#:to int) (Option int)))
+(defun (text-last-index-of r s #:to (text-length r))
+  (check-offset r to "text-last-index-of")
   (def m (string-length s))
   (cond
     ((= m 0) (Some to))
@@ -1358,7 +1358,7 @@
 ;; part, where a part lies in one chunk of each. Returns 0 if they are all
 ;; equal. Otherwise the order of the first part that differs when `order?`,
 ;; and 1 when not.
-(: (-> Rope Rope int bool int))
+(: (-> Text Text int bool int))
 (defun (compare-parts a b len order?)
   (let go ((p 0))
     (if (>= p len)
@@ -1372,16 +1372,16 @@
                                 order?))
           (if (= d 0) (go e) d)))))
 
-(: (-> Rope Rope bool))
-(defun (rope=? a b)
+(: (-> Text Text bool))
+(defun (text=? a b)
   (and (= (.bytes a) (.bytes b))
        (= (.lines a) (.lines b))
        (if (and (= (.height a) 0) (= (.height b) 0))
            (= (.small a) (.small b))
            (= (compare-parts a b (.bytes a) #f) 0))))
 
-(: (-> Rope Rope int))
-(defun (rope-compare a b)
+(: (-> Text Text int))
+(defun (text-compare a b)
   (def d (compare-parts a b (min (.bytes a) (.bytes b)) #t))
   (cond
     ((< d 0) -1)
@@ -1425,158 +1425,204 @@
              (set! i (+ i 1))))
   (HashState (h h) (w w) (n n)))
 
-(: (-> Rope int))
-(defun (rope-hash r)
-  (def st (rope-fold-chunks hash-chunk (HashState (h (cast ulong 0)) (w (cast ulong 0)) (n 0)) r))
+(: (-> Text int))
+(defun (text-hash r)
+  (def st (text-fold-chunks hash-chunk (HashState (h (cast ulong 0)) (w (cast ulong 0)) (n 0)) r))
   (def fin (mix (if (> (.n st) 0) (mix (.h st) (.w st)) (.h st)) (cast ulong (.bytes r))))
   (cast int (bitwise-xor fin (shift-right-logical fin 32))))
 
-(impl (Eq Rope)
-  (defun (= a b) (rope=? a b))
-  (defun (eq-hash r) (rope-hash r)))
+(impl (Eq Text)
+  (defun (= a b) (text=? a b))
+  (defun (eq-hash r) (text-hash r)))
 
-(impl (Ord Rope)
-  (defun (compare a b) (rope-compare a b)))
+(impl (Ord Text)
+  (defun (compare a b) (text-compare a b)))
 
-(impl (Written Rope)
-  (defun (write-into r b) (write-into (rope->string r) b)))
+(impl (Written Text)
+  (defun (write-into r b) (write-into (text->string r) b)))
 
-(impl (Displayed Rope)
-  (defun (display-into r b) (rope-for-each-chunk (fun (c) (stringbuilder-add-string! b c)) r))
-  (defun (displayed r) (rope->string r)))
+(impl (Displayed Text)
+  (defun (display-into r b) (text-for-each-chunk (fun (c) (stringbuilder-add-string! b c)) r))
+  (defun (displayed r) (text->string r)))
 
 ;; ---------------------------------------------------------------------------
 ;; Iteration
 ;; ---------------------------------------------------------------------------
 
-;; A walk over the characters of a rope, a struct: a walk over one chunk, and
+;; A walk over the characters of a text, a struct: a walk over one chunk, and
 ;; the offset of the next. A step off the end of a chunk moves on to the
 ;; next one, so that only the last chunk's walk is ever done.
-(type (: RopeWalk #:opaque
-         (Struct (: rope Rope)
+(type (: TextWalk #:opaque
+         (Struct (: text Text)
                  (: walk StringWalk)
                  (: next int))))
 
-(: (-> Rope RopeWalk))
-(defun (rope-walk r)
+(: (-> Text TextWalk))
+(defun (text-walk r)
   (if (= (.height r) 0)
-      (RopeWalk (rope r) (walk (string-walk (.small r))) (next (.bytes r)))
-      (rope-walk-at r 0)))
+      (TextWalk (text r) (walk (string-walk (.small r))) (next (.bytes r)))
+      (text-walk-at r 0)))
 
 ;; The walk over the chunk that starts at `at`.
-(: (-> Rope int RopeWalk))
-(defun (rope-walk-at r at)
+(: (-> Text int TextWalk))
+(defun (text-walk-at r at)
   (def (Tuple c _) (chunk-of r at))
-  (RopeWalk (rope r) (walk (string-walk c)) (next (+ at (string-length c)))))
+  (TextWalk (text r) (walk (string-walk c)) (next (+ at (string-length c)))))
 
-(: (-> RopeWalk RopeWalk))
-(defun (rope-walk-next w)
+(: (-> TextWalk TextWalk))
+(defun (text-walk-next w)
   (def s (string-walk-next (.walk w)))
-  (if (and (string-walk-done? s) (< (.next w) (.bytes (.rope w))))
-      (rope-walk-at (.rope w) (.next w))
+  (if (and (string-walk-done? s) (< (.next w) (.bytes (.text w))))
+      (text-walk-at (.text w) (.next w))
       (record-set w (walk s))))
 
-(impl (Iterable Rope)
+(impl (Iterable Text)
   (type %elem char)
-  (type %cursor RopeWalk)
-  (defun (iterable-start r) (rope-walk r))
+  (type %cursor TextWalk)
+  (defun (iterable-start r) (text-walk r))
   (defun (iterable-done? r w) (string-walk-done? (.walk w)))
   (defun (iterable-current r w) (string-walk-current (.walk w)))
-  (defun (iterable-next r w) (rope-walk-next w))
-  (defun (count r) (rope-char-count r)))
+  (defun (iterable-next r w) (text-walk-next w))
+  (defun (count r) (text-char-count r)))
 
-(impl (Collection Rope)
+(impl (Collection Text)
   (type %content char)
-  (defun (length r) (rope-char-count r))
-  (defun (empty? r) (rope-empty? r)))
+  (defun (length r) (text-char-count r))
+  (defun (empty? r) (text-empty? r)))
+
+;; ---------------------------------------------------------------------------
+;; Collecting and adding
+;; ---------------------------------------------------------------------------
+
+;; The collector that gathers strings into a text, through a builder.
+(type (: Texting (Union texting)))
+
+(impl (Collector Texting)
+  (type %elem string)
+  (type %acc TextBuilder)
+  (type %out Text)
+  (defun (collector-init c) (textbuilder-empty))
+  (defun (collector-step c acc s) (textbuilder-add! acc s) acc)
+  (defun (collector-finish c acc) (textbuilder->text acc)))
+
+;; `(texting s #:into t)`: the builder starts with the chunks of `t`.
+(type (: TextingInto (Struct (: seed Text))))
+
+(impl (Collector TextingInto)
+  (type %elem string)
+  (type %acc TextBuilder)
+  (type %out Text)
+  (defun (collector-init c)
+    (def b (textbuilder-empty))
+    (textbuilder-add-text! b (.seed c))
+    b)
+  (defun (collector-step c acc s) (textbuilder-add! acc s) acc)
+  (defun (collector-finish c acc) (textbuilder->text acc)))
+
+(impl (CollectorInto Texting)
+  (type %seed Text)
+  (type %into TextingInto)
+  (defun (collector-into c seed) (TextingInto (seed seed))))
+
+(impl (Addable Text)
+  (type %elem string)
+  (defun (add r s) (text-append r s)))
+
+(impl (Addable! TextBuilder)
+  (type %elem string)
+  (defun (add! b s) (textbuilder-add! b s)))
+
+(impl (Addable! TransientText)
+  (type %elem string)
+  (defun (add! t s) (transienttext-append! t s)))
 
 ;; ---------------------------------------------------------------------------
 ;; Cursors
 ;; ---------------------------------------------------------------------------
 
-;; A position in a rope, a struct that holds the chunk it is in.
+;; A position in a text, a struct that holds the chunk it is in.
 ;;
 ;; - `at` is a byte offset on a character boundary. `chunk` starts at byte
-;;   `start` of the rope, ends at byte `end`, and holds the character at `at`.
-;; - At the end of the rope, `chunk` is "" and `start` and `end` are `at`.
+;;   `start` of the text, ends at byte `end`, and holds the character at `at`.
+;; - At the end of the text, `chunk` is "" and `start` and `end` are `at`.
 ;; - A step inside the chunk reads its bytes only; a step out of it finds the
 ;;   next chunk from the root.
-(type (: RopeCursor #:opaque
-         (Struct (: rope Rope)
+(type (: TextCursor #:opaque
+         (Struct (: text Text)
                  (: chunk string)
                  (: start int)
                  (: end int)
                  (: at int))))
 
-(: (-> Rope RopeCursor))
+(: (-> Text TextCursor))
 (defun (end-cursor r)
-  (RopeCursor (rope r) (chunk "") (start (.bytes r)) (end (.bytes r)) (at (.bytes r))))
+  (TextCursor (text r) (chunk "") (start (.bytes r)) (end (.bytes r)) (at (.bytes r))))
 
 ;; The cursor at `at`, a boundary below the length of `r`.
-(: (-> Rope int RopeCursor))
+(: (-> Text int TextCursor))
 (defun (cursor-in r at)
   (def (Tuple c start) (chunk-of r at))
-  (RopeCursor (rope r) (chunk c) (start start) (end (+ start (string-length c))) (at at)))
+  (TextCursor (text r) (chunk c) (start start) (end (+ start (string-length c))) (at at)))
 
-(: (-> Rope int RopeCursor))
-(defun (rope-cursor-at r at)
-  (check-offset r at "rope-cursor-at")
+(: (-> Text int TextCursor))
+(defun (text-cursor-at r at)
+  (check-offset r at "text-cursor-at")
   (if (= at (.bytes r))
       (end-cursor r)
       (begin
         (def c (cursor-in r at))
-        (check-boundary (.chunk c) (- at (.start c)) "rope-cursor-at")
+        (check-boundary (.chunk c) (- at (.start c)) "text-cursor-at")
         c)))
 
-(: (-> Rope RopeCursor))
-(defun (rope-cursor-start r)
+(: (-> Text TextCursor))
+(defun (text-cursor-start r)
   (if (= (.bytes r) 0) (end-cursor r) (cursor-in r 0)))
 
-(: (-> Rope RopeCursor))
-(defun (rope-cursor-end r) (end-cursor r))
+(: (-> Text TextCursor))
+(defun (text-cursor-end r) (end-cursor r))
 
-(: (-> RopeCursor int))
-(defun (rope-cursor-offset c) (.at c))
+(: (-> TextCursor int))
+(defun (text-cursor-offset c) (.at c))
 
-(: (-> RopeCursor Rope))
-(defun (rope-cursor-rope c) (.rope c))
+(: (-> TextCursor Text))
+(defun (text-cursor-text c) (.text c))
 
-(: (-> RopeCursor bool))
-(defun (rope-cursor-end? c) (= (.at c) (.bytes (.rope c))))
+(: (-> TextCursor bool))
+(defun (text-cursor-end? c) (= (.at c) (.bytes (.text c))))
 
-(: (-> RopeCursor bool))
-(defun (rope-cursor-start? c) (= (.at c) 0))
+(: (-> TextCursor bool))
+(defun (text-cursor-start? c) (= (.at c) 0))
 
-(: (-> RopeCursor string void))
+(: (-> TextCursor string void))
 (defun (check-not-end c who)
-  (when (rope-cursor-end? c)
-    (out-of-range #"${who}: the cursor is at the end of the rope.")))
+  (when (text-cursor-end? c)
+    (out-of-range #"${who}: the cursor is at the end of the text.")))
 
-(: (-> RopeCursor string void))
+(: (-> TextCursor string void))
 (defun (check-not-start c who)
-  (when (rope-cursor-start? c)
-    (out-of-range #"${who}: the cursor is at the start of the rope.")))
+  (when (text-cursor-start? c)
+    (out-of-range #"${who}: the cursor is at the start of the text.")))
 
 ;; The character at `c`, which is not at the end.
-(: (-> RopeCursor char))
+(: (-> TextCursor char))
 (defun (char-at c) #:inline (decode-at (.chunk c) (- (.at c) (.start c))))
 
 ;; The cursor `to`, after the character at `c`.
-(: (-> RopeCursor int RopeCursor))
+(: (-> TextCursor int TextCursor))
 (defun (moved-to c to)
   (cond
     ((< to (.end c)) (record-set c (at to)))
-    ((< to (.bytes (.rope c))) (cursor-in (.rope c) to))
-    (else (end-cursor (.rope c)))))
+    ((< to (.bytes (.text c))) (cursor-in (.text c) to))
+    (else (end-cursor (.text c)))))
 
 ;; The cursor after the character at `c`, which is not at the end.
-(: (-> RopeCursor RopeCursor))
+(: (-> TextCursor TextCursor))
 (defun (step-next c)
   (moved-to c (+ (.at c) (char-width (byte-at (.AsSpan (.chunk c)) (- (.at c) (.start c)))))))
 
 ;; The character at `c`, which is not at the end, and the cursor after it,
 ;; from one read of the chunk.
-(: (-> RopeCursor (Tuple char RopeCursor)))
+(: (-> TextCursor (Tuple char TextCursor)))
 (defun (ref+next c)
   (def sp (.AsSpan (.chunk c)))
   (def k (- (.at c) (.start c)))
@@ -1585,169 +1631,169 @@
   (Tuple ch (moved-to c (+ (.at c) (char-width b0)))))
 
 ;; The cursor on the character before `c`, which is not at the start.
-(: (-> RopeCursor RopeCursor))
+(: (-> TextCursor TextCursor))
 (defun (step-prev c)
-  (def p (if (> (.at c) (.start c)) c (cursor-in (.rope c) (- (.at c) 1))))
+  (def p (if (> (.at c) (.start c)) c (cursor-in (.text c) (- (.at c) 1))))
   (def sp (.AsSpan (.chunk p)))
   (let go ((k (- (- (.at c) 1) (.start p))))
     (if (and (> k 0) (= (bitwise-and (byte-at sp k) 192) 128))
         (go (- k 1))
         (record-set p (at (+ (.start p) k))))))
 
-(: (-> RopeCursor char))
-(defun (rope-cursor-ref c)
-  (check-not-end c "rope-cursor-ref")
+(: (-> TextCursor char))
+(defun (text-cursor-ref c)
+  (check-not-end c "text-cursor-ref")
   (char-at c))
 
-(: (-> RopeCursor RopeCursor))
-(defun (rope-cursor-next c)
-  (check-not-end c "rope-cursor-next")
+(: (-> TextCursor TextCursor))
+(defun (text-cursor-next c)
+  (check-not-end c "text-cursor-next")
   (step-next c))
 
-(: (-> RopeCursor RopeCursor))
-(defun (rope-cursor-prev c)
-  (check-not-start c "rope-cursor-prev")
+(: (-> TextCursor TextCursor))
+(defun (text-cursor-prev c)
+  (check-not-start c "text-cursor-prev")
   (step-prev c))
 
-(: (-> RopeCursor (Tuple char RopeCursor)))
-(defun (rope-cursor-ref+next c)
-  (check-not-end c "rope-cursor-ref+next")
+(: (-> TextCursor (Tuple char TextCursor)))
+(defun (text-cursor-ref+next c)
+  (check-not-end c "text-cursor-ref+next")
   (ref+next c))
 
-(: (-> RopeCursor int RopeCursor))
-(defun (rope-cursor-forward c n)
-  (when (< n 0) (bad-argument #"rope-cursor-forward: the count ${n} is negative."))
+(: (-> TextCursor int TextCursor))
+(defun (text-cursor-forward c n)
+  (when (< n 0) (bad-argument #"text-cursor-forward: the count ${n} is negative."))
   (let go ((p c) (k n))
     (cond
       ((= k 0) p)
-      ((rope-cursor-end? p)
-       (out-of-range #"rope-cursor-forward: there are fewer than ${n} characters after the cursor."))
+      ((text-cursor-end? p)
+       (out-of-range #"text-cursor-forward: there are fewer than ${n} characters after the cursor."))
       (else (go (step-next p) (- k 1))))))
 
-(: (-> RopeCursor int RopeCursor))
-(defun (rope-cursor-back c n)
-  (when (< n 0) (bad-argument #"rope-cursor-back: the count ${n} is negative."))
+(: (-> TextCursor int TextCursor))
+(defun (text-cursor-back c n)
+  (when (< n 0) (bad-argument #"text-cursor-back: the count ${n} is negative."))
   (let go ((p c) (k n))
     (cond
       ((= k 0) p)
-      ((rope-cursor-start? p)
-       (out-of-range #"rope-cursor-back: there are fewer than ${n} characters before the cursor."))
+      ((text-cursor-start? p)
+       (out-of-range #"text-cursor-back: there are fewer than ${n} characters before the cursor."))
       (else (go (step-prev p) (- k 1))))))
 
 ;; The cursor `column` characters into line `n`, or at the line's end when
 ;; it is shorter.
-(: (-> Rope int (#:column int) RopeCursor))
-(defun (rope-cursor-at-line r n #:column 0)
-  (def from (rope-line-start r n))
-  (def e (rope-line-end r n))
-  (let go ((p (rope-cursor-at r from)) (k column))
+(: (-> Text int (#:column int) TextCursor))
+(defun (text-cursor-at-line r n #:column 0)
+  (def from (text-line-start r n))
+  (def e (text-line-end r n))
+  (let go ((p (text-cursor-at r from)) (k column))
     (if (or (<= k 0) (>= (.at p) e)) p (go (step-next p) (- k 1)))))
 
-(: (-> RopeCursor int))
-(defun (rope-cursor-line c) (rope-line-of (.rope c) (.at c)))
+(: (-> TextCursor int))
+(defun (text-cursor-line c) (text-line-of (.text c) (.at c)))
 
-(: (-> RopeCursor RopeCursor))
-(defun (rope-cursor-line-start c)
-  (def r (.rope c))
-  (rope-cursor-at r (rope-line-start r (rope-cursor-line c))))
+(: (-> TextCursor TextCursor))
+(defun (text-cursor-line-start c)
+  (def r (.text c))
+  (text-cursor-at r (text-line-start r (text-cursor-line c))))
 
-(: (-> RopeCursor RopeCursor))
-(defun (rope-cursor-line-end c)
-  (def r (.rope c))
-  (rope-cursor-at r (rope-line-end r (rope-cursor-line c))))
+(: (-> TextCursor TextCursor))
+(defun (text-cursor-line-end c)
+  (def r (.text c))
+  (text-cursor-at r (text-line-end r (text-cursor-line c))))
 
 ;; The characters between the start of the cursor's line and the cursor.
-(: (-> RopeCursor int))
-(defun (rope-cursor-column c)
-  (let go ((p (rope-cursor-line-start c)) (k 0))
+(: (-> TextCursor int))
+(defun (text-cursor-column c)
+  (let go ((p (text-cursor-line-start c)) (k 0))
     (if (>= (.at p) (.at c)) k (go (step-next p) (+ k 1)))))
 
 ;; The first `s` that starts at or after `c`.
-(: (-> RopeCursor string (Option RopeCursor)))
-(defun (rope-cursor-search c s)
-  (match (rope-index-of (.rope c) s #:from (.at c))
-    ((Some k) (Some (rope-cursor-at (.rope c) k)))
+(: (-> TextCursor string (Option TextCursor)))
+(defun (text-cursor-search c s)
+  (match (text-index-of (.text c) s #:from (.at c))
+    ((Some k) (Some (text-cursor-at (.text c) k)))
     (None None)))
 
 ;; The last `s` that ends at or before `c`.
-(: (-> RopeCursor string (Option RopeCursor)))
-(defun (rope-cursor-search-backward c s)
-  (match (rope-last-index-of (.rope c) s #:to (.at c))
-    ((Some k) (Some (rope-cursor-at (.rope c) k)))
+(: (-> TextCursor string (Option TextCursor)))
+(defun (text-cursor-search-backward c s)
+  (match (text-last-index-of (.text c) s #:to (.at c))
+    ((Some k) (Some (text-cursor-at (.text c) k)))
     (None None)))
 
 ;; The first character at or after `c` that `pred` holds for.
-(: (-> (-?-> char bool) RopeCursor (Option RopeCursor)))
-(defun (rope-cursor-find pred c)
+(: (-> (-?-> char bool) TextCursor (Option TextCursor)))
+(defun (text-cursor-find pred c)
   (let go ((p c))
     (cond
-      ((rope-cursor-end? p) None)
+      ((text-cursor-end? p) None)
       (else
        (def (Tuple ch n) (ref+next p))
        (if (pred ch) (Some p) (go n))))))
 
 ;; The last character before `c` that `pred` holds for.
-(: (-> (-?-> char bool) RopeCursor (Option RopeCursor)))
-(defun (rope-cursor-find-backward pred c)
+(: (-> (-?-> char bool) TextCursor (Option TextCursor)))
+(defun (text-cursor-find-backward pred c)
   (let go ((p c))
-    (if (rope-cursor-start? p)
+    (if (text-cursor-start? p)
         None
         (begin
           (def q (step-prev p))
           (if (pred (char-at q)) (Some q) (go q))))))
 
-(: (-> RopeCursor RopeCursor string))
-(defun (rope-cursor-substring a b) (rope-substring (.rope a) (.at a) (.at b)))
+(: (-> TextCursor TextCursor string))
+(defun (text-cursor-substring a b) (text-substring (.text a) (.at a) (.at b)))
 
-(: (-> RopeCursor RopeCursor Rope))
-(defun (rope-cursor-slice a b) (rope-slice (.rope a) (.at a) (.at b)))
+(: (-> TextCursor TextCursor Text))
+(defun (text-cursor-slice a b) (text-slice (.text a) (.at a) (.at b)))
 
-;; Comparisons of the offsets of two cursors of one rope.
-(: (-> RopeCursor RopeCursor bool))
-(defun (rope-cursor=? a b) (= (.at a) (.at b)))
-(: (-> RopeCursor RopeCursor bool))
-(defun (rope-cursor<? a b) (< (.at a) (.at b)))
-(: (-> RopeCursor RopeCursor bool))
-(defun (rope-cursor>? a b) (> (.at a) (.at b)))
-(: (-> RopeCursor RopeCursor bool))
-(defun (rope-cursor<=? a b) (<= (.at a) (.at b)))
-(: (-> RopeCursor RopeCursor bool))
-(defun (rope-cursor>=? a b) (>= (.at a) (.at b)))
+;; Comparisons of the offsets of two cursors of one text.
+(: (-> TextCursor TextCursor bool))
+(defun (text-cursor=? a b) (= (.at a) (.at b)))
+(: (-> TextCursor TextCursor bool))
+(defun (text-cursor<? a b) (< (.at a) (.at b)))
+(: (-> TextCursor TextCursor bool))
+(defun (text-cursor>? a b) (> (.at a) (.at b)))
+(: (-> TextCursor TextCursor bool))
+(defun (text-cursor<=? a b) (<= (.at a) (.at b)))
+(: (-> TextCursor TextCursor bool))
+(defun (text-cursor>=? a b) (>= (.at a) (.at b)))
 
-(impl (Eq RopeCursor)
+(impl (Eq TextCursor)
   (defun (= a b) (= (.at a) (.at b)))
   (defun (eq-hash c) (eq-hash (.at c))))
 
-(impl (Ord RopeCursor)
+(impl (Ord TextCursor)
   (defun (compare a b) (compare (.at a) (.at b))))
 
 ;; The characters from the cursor to the end.
-(impl (Iterable RopeCursor)
+(impl (Iterable TextCursor)
   (type %elem char)
-  (type %cursor RopeCursor)
+  (type %cursor TextCursor)
   (defun (iterable-start c) c)
-  (defun (iterable-done? c p) (rope-cursor-end? p))
+  (defun (iterable-done? c p) (text-cursor-end? p))
   (defun (iterable-current c p) (char-at p))
   (defun (iterable-next c p) (step-next p)))
 
 ;; The characters before a cursor, last first.
-(type (: RopeBackward #:opaque (Struct (: from RopeCursor))))
+(type (: TextBackward #:opaque (Struct (: from TextCursor))))
 
 ;; A step of a backward loop: the cursor on its character, or done.
-(type (: RopeBackwardStep #:opaque (Struct (: on RopeCursor) (: done? bool))))
+(type (: TextBackwardStep #:opaque (Struct (: on TextCursor) (: done? bool))))
 
-(: (-> RopeCursor RopeBackward))
-(defun (rope-backward c) (RopeBackward (from c)))
+(: (-> TextCursor TextBackward))
+(defun (text-backward c) (TextBackward (from c)))
 
-(: (-> RopeCursor RopeBackwardStep))
+(: (-> TextCursor TextBackwardStep))
 (defun (backward-from c)
-  (if (rope-cursor-start? c)
-      (RopeBackwardStep (on c) (done? #t))
-      (RopeBackwardStep (on (step-prev c)) (done? #f))))
+  (if (text-cursor-start? c)
+      (TextBackwardStep (on c) (done? #t))
+      (TextBackwardStep (on (step-prev c)) (done? #f))))
 
-(impl (Iterable RopeBackward)
+(impl (Iterable TextBackward)
   (type %elem char)
-  (type %cursor RopeBackwardStep)
+  (type %cursor TextBackwardStep)
   (defun (iterable-start b) (backward-from (.from b)))
   (defun (iterable-done? b s) (.done? s))
   (defun (iterable-current b s) (char-at (.on s)))
@@ -1757,19 +1803,19 @@
 ;; Transients
 ;; ---------------------------------------------------------------------------
 
-;; A rope that is edited in place: its edits copy only the nodes it does not
-;; own yet. `transientrope->rope` returns the rope it holds and takes a new
-;; owner, so that the rope does not change after.
+;; A text that is edited in place: its edits copy only the nodes it does not
+;; own yet. `transienttext->text` returns the text it holds and takes a new
+;; owner, so that the text does not change after.
 ;;
 ;; - The hot chunk: the chunk of the last edit, held in `buf` as bytes 0 to
-;;   `hot-len`, which starts at byte `hot-start` of the rope. `path` holds the
+;;   `hot-len`, which starts at byte `hot-start` of the text. `path` holds the
 ;;   nodes down to it, the leaves node first, and `slots` the slot taken in
 ;;   each. `hot-len` is -1 when no chunk is hot.
 ;; - An edit inside the hot chunk moves bytes in `buf` and adds to the counts
 ;;   on the path, and allocates nothing. It must leave the chunk at most
-;;   `chunk-max` bytes, and not empty unless the rope is one string.
-;; - While a chunk is hot, `bytes` and `lines` are the rope's, not those in
-;;   `rope`, and when `dirty?` its slot holds an old string. `cool!` puts the
+;;   `chunk-max` bytes, and not empty unless the text is one string.
+;; - While a chunk is hot, `bytes` and `lines` are the text's, not those in
+;;   `text`, and when `dirty?` its slot holds an old string. `cool!` puts the
 ;;   chunk back; every other operation cools first.
 ;; - An edit outside the hot chunk makes its own chunk hot only when it is
 ;;   within `hot-reach` bytes of `last`, where the edit before it ended. Edits
@@ -1777,11 +1823,11 @@
 ;;   out for one edit.
 (def hot-reach 64)
 
-(type (: TransientRope #:opaque
-         (Record (: rope Rope #:mutable)
+(type (: TransientText #:opaque
+         (Record (: text Text #:mutable)
                  (: owner long #:mutable)
                  (: buf (Array byte))
-                 (: path (Array RopeNode))
+                 (: path (Array TextNode))
                  (: slots (Array int))
                  (: hot-len int #:mutable)
                  (: hot-start int #:mutable)
@@ -1790,9 +1836,9 @@
                  (: lines int #:mutable)
                  (: last int #:mutable))))
 
-(: (-> Rope TransientRope))
-(defun (rope->transientrope r)
-  (TransientRope (rope r) (owner (owner-next))
+(: (-> Text TransientText))
+(defun (text->transienttext r)
+  (TransientText (text r) (owner (owner-next))
                  (buf (make-array chunk-max #:fill (cast byte 0)))
                  (path (make-array 24 #:fill no-node))
                  (slots (make-array 24 #:fill 0))
@@ -1814,9 +1860,9 @@
 ;; - Copies the nodes on the path that the transient does not own.
 ;; - Returns #f, and leaves no chunk hot, when the chunk does not have `room`
 ;;   bytes free before `chunk-max`.
-(: (-> TransientRope int bool int bool))
+(: (-> TransientText int bool int bool))
 (defun (heat! t at left? room)
-  (def r (.rope t))
+  (def r (.text t))
   (def h (.height r))
   (def o (.owner t))
   (def buf (.buf t))
@@ -1834,7 +1880,7 @@
         (def slots (.slots t))
         (def root (editable h (.root r) o))
         (unless (= (node-owner (.root r)) o)
-          (record-set! t (rope (Rope (root root) (height h) (bytes (.bytes r)) (lines (.lines r)) (small "")))))
+          (record-set! t (text (Text (root root) (height h) (bytes (.bytes r)) (lines (.lines r)) (small "")))))
         (let go ((n root) (lvl (- h 1)) (at at) (start 0))
           (def (Tuple i k) (if left? (slot-ending n at) (slot-starting n at)))
           (array-set! path lvl n)
@@ -1857,24 +1903,24 @@
                 (go child (- lvl 1) k (+ start (- at k)))))))))
 
 ;; Adds `db` bytes and `dl` newlines to the slots on the path to the hot chunk.
-(: (-> TransientRope int int void))
+(: (-> TransientText int int void))
 (defun (adjust-path! t db dl)
   (def path (.path t))
   (def slots (.slots t))
-  (loop (:for lvl (range 0 (.height (.rope t))))
+  (loop (:for lvl (range 0 (.height (.text t))))
         (:do (def n (array-ref path lvl))
              (def i (array-ref slots lvl))
              (set-slot-bytes! n i (+ (slot-bytes n i) db))
              (set-slot-lines! n i (+ (slot-lines n i) dl)))))
 
 ;; Whether an edit at `at` is near enough the last one to make its chunk hot.
-(: (-> TransientRope int bool))
+(: (-> TransientText int bool))
 (defun (near? t at) #:inline
   (<= (abs (- at (.last t))) hot-reach))
 
 ;; Puts `s` at byte `at` when that is in the hot chunk and `s` fits in it, and
 ;; returns whether it did.
-(: (-> TransientRope int string bool))
+(: (-> TransientText int string bool))
 (defun (hot-insert! t at s)
   (def len (.hot-len t))
   (def k (- at (.hot-start t)))
@@ -1883,7 +1929,7 @@
       (begin
         (def buf (.buf t))
         (when (and (< k len) (continues? buf k))
-          (bad-argument "rope-insert: the offset is in the middle of a character."))
+          (bad-argument "text-insert: the offset is in the middle of a character."))
         (array-copy! buf k buf (+ k slen) (- len k))
         (copy-into! s buf k)
         (def sl (newlines-in s))
@@ -1894,16 +1940,16 @@
 
 ;; Deletes bytes `from` to `to`, where `from` < `to`, when they are in the hot
 ;; chunk and leave some of it in a tree, and returns whether it did.
-(: (-> TransientRope int int bool))
+(: (-> TransientText int int bool))
 (defun (hot-delete! t from to)
   (def len (.hot-len t))
   (def k (- from (.hot-start t)))
   (def e (- to (.hot-start t)))
-  (if (and (>= k 0) (<= e len) (or (< (- e k) len) (= (.height (.rope t)) 0)))
+  (if (and (>= k 0) (<= e len) (or (< (- e k) len) (= (.height (.text t)) 0)))
       (begin
         (def buf (.buf t))
         (when (or (continues? buf k) (and (< e len) (continues? buf e)))
-          (bad-argument "rope-delete: the offset is in the middle of a character."))
+          (bad-argument "text-delete: the offset is in the middle of a character."))
         (def dl (span-count (ro-span-slice (array->ro-span buf) #:from k #:to e) newline))
         (array-copy! buf e buf k (- len e))
         (adjust-path! t (- k e) (- dl))
@@ -1916,15 +1962,15 @@
 ;; - A chunk left shorter than `chunk-min` is merged with a neighbour, and
 ;;   nodes left with fewer than `min-kids` children on the path then too, as
 ;;   a delete does.
-(: (-> TransientRope void))
+(: (-> TransientText void))
 (defun (cool! t)
   (when (and (>= (.hot-len t) 0) (.dirty? t))
-    (def r (.rope t))
+    (def r (.text t))
     (def h (.height r))
     (def len (.hot-len t))
     (def c (utf8->string (ro-span-slice (array->ro-span (.buf t)) #:from 0 #:to len)))
     (if (= h 0)
-        (record-set! t (rope (small-rope c)))
+        (record-set! t (text (small-text c)))
         (begin
           (def path (.path t))
           (def slots (.slots t))
@@ -1936,48 +1982,48 @@
             (loop (:for lvl (range 1 h))
                   (:do (when (< (node-count (array-ref path (- lvl 1))) min-kids)
                          (fix-underflow! (array-ref path lvl) (+ lvl 1) (array-ref slots lvl) o)))))
-          (record-set! t (rope (tree->rope-sized (.root r) h (.bytes t) (.lines t)))))))
+          (record-set! t (text (tree->text-sized (.root r) h (.bytes t) (.lines t)))))))
   (record-set! t (hot-len -1) (dirty? #f)))
 
-(: (-> TransientRope Rope))
-(defun (transientrope->rope t)
+(: (-> TransientText Text))
+(defun (transienttext->text t)
   (cool! t)
   (record-set! t (owner (owner-next)))
-  (.rope t))
+  (.text t))
 
-(: (-> TransientRope int))
-(defun (transientrope-length t)
-  (if (>= (.hot-len t) 0) (.bytes t) (.bytes (.rope t))))
+(: (-> TransientText int))
+(defun (transienttext-length t)
+  (if (>= (.hot-len t) 0) (.bytes t) (.bytes (.text t))))
 
-(: (-> TransientRope int string void))
-(defun (transientrope-insert! t at s)
+(: (-> TransientText int string void))
+(defun (transienttext-insert! t at s)
   (def slen (string-length s))
   (unless (hot-insert! t at s)
     (cool! t)
-    (check-offset (.rope t) at "rope-insert")
+    (check-offset (.text t) at "text-insert")
     (unless (and (> slen 0) (<= slen small-insert) (near? t at) (heat! t at #t slen) (hot-insert! t at s))
       (cool! t)
-      (record-set! t (rope (insert-with (.rope t) at s (.owner t))))))
+      (record-set! t (text (insert-with (.text t) at s (.owner t))))))
   (record-set! t (last (+ at slen))))
 
-(: (-> TransientRope string void))
-(defun (transientrope-append! t s)
-  (transientrope-insert! t (transientrope-length t) s))
+(: (-> TransientText string void))
+(defun (transienttext-append! t s)
+  (transienttext-insert! t (transienttext-length t) s))
 
-(: (-> TransientRope int int void))
-(defun (transientrope-delete! t from to)
+(: (-> TransientText int int void))
+(defun (transienttext-delete! t from to)
   (unless (and (< from to) (hot-delete! t from to))
     (cool! t)
-    (check-range (.rope t) from to "rope-delete")
+    (check-range (.text t) from to "text-delete")
     (unless (and (< from to) (near? t from) (heat! t from #f 0) (hot-delete! t from to))
       (cool! t)
-      (record-set! t (rope (delete-with (.rope t) from to (.owner t))))))
+      (record-set! t (text (delete-with (.text t) from to (.owner t))))))
   (record-set! t (last from)))
 
-(: (-> TransientRope int int string void))
-(defun (transientrope-replace! t from to s)
-  (transientrope-delete! t from to)
-  (transientrope-insert! t from s))
+(: (-> TransientText int int string void))
+(defun (transienttext-replace! t from to s)
+  (transienttext-delete! t from to)
+  (transienttext-insert! t from s))
 
 ;; ---------------------------------------------------------------------------
 ;; Checks
@@ -1985,7 +2031,7 @@
 
 ;; What is wrong with the tree under `n`, of height `h`, if anything: the
 ;; first problem found.
-(: (-> RopeNode int bool (Option string)))
+(: (-> TextNode int bool (Option string)))
 (defun (check-node n h root?)
   (def count (node-count n))
   (cond
@@ -2016,12 +2062,12 @@
                       (None (go (+ i 1)))))))))))))
 
 ;; What is wrong with `r`, if anything. For tests.
-(: (-> Rope (Option string)))
-(defun (rope-check r)
+(: (-> Text (Option string)))
+(defun (text-check r)
   (cond
     ((= (.height r) 0)
      (cond
-       ((> (.bytes r) chunk-max) (Some "a rope of one string is longer than a chunk"))
+       ((> (.bytes r) chunk-max) (Some "a text of one string is longer than a chunk"))
        ((not (= (.bytes r) (string-length (.small r)))) (Some "the byte count is wrong"))
        ((not (= (.lines r) (newlines-in (.small r)))) (Some "the newline count is wrong"))
        (else None)))

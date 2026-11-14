@@ -1,138 +1,162 @@
-;; Docs for std/rope.bjo, read through (:doc #:file "rope.bjodoc").
+;; Docs for std/text.bjo, read through (:doc #:file "text.bjodoc").
 ;; The texts are samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
   (summary "Persistent text for editing: a B+ tree of UTF-8 chunks, with builder and transient.")
-  (see Rope rope-insert rope-delete rope-split rope-concat rope-line-start RopeCursor TransientRope RopeBuilder)
+  (see Text text-insert text-delete text-split text-concat text-line-start TextCursor TransientText TextBuilder Texting)
   (example """
-    (import (std rope))
+    (import (std text))
 
-    (def r (string->rope "hello world\nsecond line"))
-    (def r2 (rope-insert r 5 ","))           ; "hello, world\nsecond line"
-    (rope->string (rope-delete r2 5 6))     ; "hello world\nsecond line"
-    (rope-line r2 1)                        ; "second line"
-    (rope-line-of r2 15)                    ; 1
-    (rope-index-of r2 "world")              ; (Some 7)
-    (rope->string r)                        ; r is unchanged
+    (def r (string->text "hello world\nsecond line"))
+    (def r2 (text-insert r 5 ","))           ; "hello, world\nsecond line"
+    (text->string (text-delete r2 5 6))     ; "hello world\nsecond line"
+    (text-line r2 1)                        ; "second line"
+    (text-line-of r2 15)                    ; 1
+    (text-index-of r2 "world")              ; (Some 7)
+    (text->string r)                        ; r is unchanged
     """)
   (reference """
-    A @code{Rope} is immutable text that is cheap to edit at any position.
+    A @code{Text} is immutable text that is cheap to edit at any position.
     Inserting, deleting, splitting, joining and slicing take O(log n) time
     and share every chunk and node they do not change, so old versions stay
     valid and cost only what differs.
 
     @strong{Offsets.} Every position is a byte offset into the UTF-8 text, as
-    a string's cursors are. @code{rope-length} is in bytes;
-    @code{rope-char-count} counts characters. An offset in the middle of a
-    character raises @code{ArgumentException}, and one outside the rope raises
-    @code{ArgumentOutOfRangeException}. @code{rope-next} and @code{rope-prev}
+    a string's cursors are. @code{text-length} is in bytes;
+    @code{text-char-count} counts characters. An offset in the middle of a
+    character raises @code{ArgumentException}, and one outside the text raises
+    @code{ArgumentOutOfRangeException}. @code{text-next} and @code{text-prev}
     step between characters.
 
     @strong{Lines.} Every node keeps the newlines of its children, so
-    @code{rope-line-start}, @code{rope-line-end} and @code{rope-line-of} take
+    @code{text-line-start}, @code{text-line-end} and @code{text-line-of} take
     O(log n) time. Lines are separated by @code{"\n"} and counted from 0; a
-    rope has one line more than it has newlines.
+    text has one line more than it has newlines.
 
     @strong{Structure.} Text is held in chunks of at most 1024 bytes, in
     nodes of up to 16 children, each with the byte length and newline count
-    of every child. A rope of at most 1024 bytes is a single string and no
-    tree. Only the nodes are C# (@code{Bjolang.Runtime.Rope}), because they
+    of every child. A text of at most 1024 bytes is a single string and no
+    tree. Only the nodes are C# (@code{Bjolang.Runtime.TextTree}), because they
     hold their slots in inline arrays; every operation is Bjolang.
 
-    @strong{Cursors.} A @code{RopeCursor} is a position that holds the chunk
+    @strong{Cursors.} A @code{TextCursor} is a position that holds the chunk
     it is in, so stepping it reads that chunk's bytes and does not search the
     tree again. It steps by characters both ways, finds text and characters
     forward and backward, and starts a loop: @code{(:for c cursor)} goes to the
-    end, and @code{(:for c (rope-backward cursor))} goes back to the start.
+    end, and @code{(:for c (text-backward cursor))} goes back to the start.
     The names follow the string cursors'.
 
-    @strong{Batch edits.} A @code{TransientRope} edits nodes it owns in place
+    @strong{Batch edits.} A @code{TransientText} edits nodes it owns in place
     and keeps the chunk being edited in a mutable buffer: a run of edits close
-    together, such as typing, allocates nothing. A @code{RopeBuilder} appends
-    text and builds the tree in one pass.
+    together, such as typing, allocates nothing. A @code{TextBuilder} appends
+    strings and builds the tree in one pass, and the @code{texting} collector
+    does that in a loop.
 
     @strong{Traits.} Implements @code{Eq}, @code{Ord}, @code{Iterable} (the
     characters), @code{Collection} (whose length is the character count),
-    @code{Written} and @code{Displayed}. Equality, order and hashing depend on
-    the text only, not on how it is split into chunks.
+    @code{Written}, @code{Displayed} and @code{Addable} (of strings, at the
+    end). Equality, order and hashing depend on the characters only, not on
+    how they are split into chunks. @code{TextBuilder} and
+    @code{TransientText} implement @code{Addable!}.
     """))
 
 ;; ---------------------------------------------------------------------------
 ;; Types
 ;; ---------------------------------------------------------------------------
 
-(:doc Rope
+(:doc Text
   (summary "Immutable text as a balanced tree of UTF-8 chunks.")
-  (see string->rope rope->string rope-insert rope-delete TransientRope)
+  (see string->text text->string text-insert text-delete TransientText)
   (example """
-    (def r (rope "abc" "def"))
-    (rope-length r)                 ; 6
-    (= r (string->rope "abcdef"))   ; #t
+    (def r (text "abc" "def"))
+    (text-length r)                 ; 6
+    (= r (string->text "abcdef"))   ; #t
     (loop (:for c r) (:do (display c)))
     """))
 
-(:doc RopeWalk
-  (summary "The cursor of a loop over a rope's characters.")
-  (see Rope)
+(:doc TextWalk
+  (summary "The cursor of a loop over a text's characters.")
+  (see Text)
   (reference """
     A struct holding the cursor of the current chunk; a loop with
     @code{(:for c r)} uses it and allocates nothing.
     """))
 
-(:doc RopeCursor
-  (summary "A position in a rope, on a character boundary, that steps by characters.")
-  (see rope-cursor-at rope-cursor-start rope-cursor-next rope-cursor-prev rope-cursor-search rope-backward)
+(:doc TextCursor
+  (summary "A position in a text, on a character boundary, that steps by characters.")
+  (see text-cursor-at text-cursor-start text-cursor-next text-cursor-prev text-cursor-search text-backward)
   (example """
-    (def r (string->rope "one two\nthree"))
-    (def c (option-ref (rope-cursor-search (rope-cursor-start r) "two")))
-    (rope-cursor-offset c)                        ; 4
-    (rope-cursor-ref c)                           ; #\t
-    (rope-cursor-line (rope-cursor-forward c 4))  ; 1
+    (def r (string->text "one two\nthree"))
+    (def c (option-ref (text-cursor-search (text-cursor-start r) "two")))
+    (text-cursor-offset c)                        ; 4
+    (text-cursor-ref c)                           ; #\t
+    (text-cursor-line (text-cursor-forward c 4))  ; 1
     (loop (:for ch c) (:acc (stringing ch)))      ; "two\nthree"
     """)
   (reference """
-    A struct of the rope, the chunk the position is in, and the byte offset.
-    It holds its rope, so its operations take no other argument, and it stays
-    valid for as long as the rope does: ropes do not change.
+    A struct of the text, the chunk the position is in, and the byte offset.
+    It holds its text, so its operations take no other argument, and it stays
+    valid for as long as the text does: texts do not change.
 
     A step inside the chunk reads its bytes and allocates nothing; a step out
     of it looks up the next chunk from the root, once per chunk. Making a
     cursor at an offset costs one look-up.
 
     @code{=} and @code{compare} compare the offsets. So do
-    @code{rope-cursor<?} and the rest, since @code{<} is for numbers. Cursors
-    of two ropes compare without complaint and mean nothing.
+    @code{text-cursor<?} and the rest, since @code{<} is for numbers. Cursors
+    of two texts compare without complaint and mean nothing.
 
     As an @code{Iterable}, a cursor is the characters from it to the end.
     """))
 
-(:doc RopeBackward
+(:doc TextBackward
   (summary "The characters before a cursor, last first, as a loop goes over them.")
-  (see rope-backward RopeCursor))
+  (see text-backward TextCursor))
 
-(:doc RopeBackwardStep
-  (summary "The step of a loop over a RopeBackward.")
-  (see RopeBackward)
+(:doc TextBackwardStep
+  (summary "The step of a loop over a TextBackward.")
+  (see TextBackward)
   (reference "A struct of the cursor on the current character. Exported because the loop that uses it is compiled where it is written."))
 
-(:doc RopeBuilder
-  (summary "Mutable builder that appends text and returns a rope.")
-  (see ropebuilder-empty ropebuilder-add! ropebuilder->rope)
+(:doc TextBuilder
+  (summary "Mutable builder that appends text and returns a text.")
+  (see textbuilder-empty textbuilder-add! textbuilder->text)
   (example """
-    (def b (ropebuilder-empty))
-    (ropebuilder-add! b "first line\n")
-    (ropebuilder-add! b "second line\n")
-    (ropebuilder->rope b)
+    (def b (textbuilder-empty))
+    (textbuilder-add! b "first line\n")
+    (textbuilder-add! b "second line\n")
+    (textbuilder->text b)
     """))
 
-(:doc TransientRope
-  (summary "Mutable rope for batch edits in place.")
-  (see rope->transientrope transientrope->rope transientrope-insert! transientrope-delete!)
+(:doc Texting
+  (summary "The collector that gathers strings into a text.")
+  (case texting "Written in an :acc clause with the string to add.")
+  (see TextBuilder TextingInto Stringing)
   (example """
-    (def t (rope->transientrope r))
-    (transientrope-insert! t 0 "# ")
-    (transientrope-delete! t 10 12)
-    (transientrope->rope t)
+    (loop (:for line lines)
+          (:acc t (texting #"${line}\n"))
+          => t)                                     ; a text of the lines
+    (loop (:for w words) (:acc (texting w #:into t)))   ; t with the words after it
+    """)
+  (reference """
+    Its accumulator is a @code{TextBuilder}, so the text is built in one pass
+    and long strings are shared, not copied. @code{#:into} starts from a text:
+    its chunks are added first, and it is not changed.
+    """))
+
+(:doc TextingInto
+  (summary "The collector a texting clause with #:into makes: it starts from a text.")
+  (field seed "The text to start from, which is not changed.")
+  (see Texting))
+
+(:doc TransientText
+  (summary "Mutable text for batch edits in place.")
+  (see text->transienttext transienttext->text transienttext-insert! transienttext-delete!)
+  (example """
+    (def t (text->transienttext r))
+    (transienttext-insert! t 0 "# ")
+    (transienttext-delete! t 10 12)
+    (transienttext->text t)
     """)
   (reference """
     Edits copy each node they do not own once, and then edit it in place.
@@ -142,616 +166,616 @@
     """))
 
 ;; ---------------------------------------------------------------------------
-;; Ropes
+;; Texts
 ;; ---------------------------------------------------------------------------
 
-(:doc rope-empty
-  (summary "The empty rope.")
-  (returns "A rope of no text.")
-  (see rope string->rope))
+(:doc text-empty
+  (summary "The empty text.")
+  (returns "A text of no text.")
+  (see text string->text))
 
-(:doc rope
-  (summary "A rope of strings joined in order.")
+(:doc text
+  (summary "A text of strings joined in order.")
   (rest parts "The strings.")
-  (returns "A rope of the strings, one after the other.")
-  (see string->rope ropebuilder-empty)
+  (returns "A text of the strings, one after the other.")
+  (see string->text textbuilder-empty)
   (example """
-    (rope->string (rope "ab" "" "cd"))   ; "abcd"
+    (text->string (text "ab" "" "cd"))   ; "abcd"
     """))
 
-(:doc string->rope
-  (summary "A rope of a string's text.")
+(:doc string->text
+  (summary "A text of a string's text.")
   (arg s "The text. Chunks of a long string share its bytes.")
-  (returns "A rope of the text of s.")
-  (see rope->string rope))
+  (returns "A text of the text of s.")
+  (see text->string text))
 
-(:doc rope->string
-  (summary "The text of a rope as one string.")
-  (arg r "The rope.")
+(:doc text->string
+  (summary "The text of a text as one string.")
+  (arg r "The text.")
   (returns "A string of the text of r, made in one allocation of its size.")
-  (see string->rope rope-substring))
+  (see string->text text-substring))
 
-(:doc rope-length
-  (summary "The length of a rope in bytes.")
-  (arg r "The rope.")
+(:doc text-length
+  (summary "The length of a text in bytes.")
+  (arg r "The text.")
   (returns "The number of bytes of r's UTF-8 text, in O(1) time.")
-  (see rope-char-count rope-line-count))
+  (see text-char-count text-line-count))
 
-(:doc rope-empty?
-  (summary "Whether a rope has no text.")
-  (arg r "The rope.")
+(:doc text-empty?
+  (summary "Whether a text has no text.")
+  (arg r "The text.")
   (returns "#t when r has no bytes.")
-  (see rope-length))
+  (see text-length))
 
-(:doc rope-line-count
-  (summary "The number of lines in a rope.")
-  (arg r "The rope.")
-  (returns "One more than the number of newlines in r, in O(1) time. The empty rope has one line.")
-  (see rope-line-start rope-line))
+(:doc text-line-count
+  (summary "The number of lines in a text.")
+  (arg r "The text.")
+  (returns "One more than the number of newlines in r, in O(1) time. The empty text has one line.")
+  (see text-line-start text-line))
 
-(:doc rope-char-count
-  (summary "The number of characters in a rope.")
-  (arg r "The rope.")
+(:doc text-char-count
+  (summary "The number of characters in a text.")
+  (arg r "The text.")
   (returns "The number of characters of r. Counts every chunk: O(n) time.")
-  (see rope-length))
+  (see text-length))
 
-(:doc rope-ref
+(:doc text-ref
   (summary "The character at a byte offset.")
-  (arg r "The rope.")
+  (arg r "The text.")
   (arg at "The offset of the character's first byte.")
   (returns "The character that starts at byte at.")
   (raises System.ArgumentOutOfRangeException "When at is not below the length of r.")
   (raises System.ArgumentException "When at is in the middle of a character.")
-  (see rope-next rope-prev))
+  (see text-next text-prev))
 
-(:doc rope-substring
-  (summary "Part of a rope as a string.")
-  (arg r "The rope.")
+(:doc text-substring
+  (summary "Part of a text as a string.")
+  (arg r "The text.")
   (arg from "The first byte.")
   (arg to "The byte after the last.")
   (returns "A new string of bytes from to to.")
   (raises System.ArgumentOutOfRangeException "When the range is not in r, or ends before it starts.")
   (raises System.ArgumentException "When from or to is in the middle of a character.")
-  (see rope-slice rope-line))
+  (see text-slice text-line))
 
-(:doc rope-slice
-  (summary "Part of a rope as a rope.")
-  (arg r "The rope (unmodified).")
+(:doc text-slice
+  (summary "Part of a text as a text.")
+  (arg r "The text (unmodified).")
   (arg from "The first byte.")
   (arg to "The byte after the last.")
-  (returns "A rope of bytes from to to, sharing r's chunks and nodes, in O(log n) time.")
+  (returns "A text of bytes from to to, sharing r's chunks and nodes, in O(log n) time.")
   (raises System.ArgumentOutOfRangeException "When the range is not in r, or ends before it starts.")
   (raises System.ArgumentException "When from or to is in the middle of a character.")
-  (see rope-substring rope-take rope-drop rope-split))
+  (see text-substring text-take text-drop text-split))
 
-(:doc rope-take
-  (summary "The start of a rope.")
-  (arg r "The rope (unmodified).")
+(:doc text-take
+  (summary "The start of a text.")
+  (arg r "The text (unmodified).")
   (arg at "The offset to end at.")
-  (returns "A rope of the bytes before at.")
+  (returns "A text of the bytes before at.")
   (raises System.ArgumentOutOfRangeException "When at is outside r.")
   (raises System.ArgumentException "When at is in the middle of a character.")
-  (see rope-drop rope-split))
+  (see text-drop text-split))
 
-(:doc rope-drop
-  (summary "A rope without its start.")
-  (arg r "The rope (unmodified).")
+(:doc text-drop
+  (summary "A text without its start.")
+  (arg r "The text (unmodified).")
   (arg at "The offset to start from.")
-  (returns "A rope of the bytes from at.")
+  (returns "A text of the bytes from at.")
   (raises System.ArgumentOutOfRangeException "When at is outside r.")
   (raises System.ArgumentException "When at is in the middle of a character.")
-  (see rope-take rope-split))
+  (see text-take text-split))
 
-(:doc rope-split
-  (summary "A rope split in two at an offset.")
-  (arg r "The rope (unmodified).")
+(:doc text-split
+  (summary "A text split in two at an offset.")
+  (arg r "The text (unmodified).")
   (arg at "The offset to split at.")
-  (returns "(Tuple before after): the ropes of the bytes before at and from at, in O(log n) time.")
+  (returns "(Tuple before after): the texts of the bytes before at and from at, in O(log n) time.")
   (raises System.ArgumentOutOfRangeException "When at is outside r.")
   (raises System.ArgumentException "When at is in the middle of a character.")
-  (see rope-concat rope-take rope-drop)
+  (see text-concat text-take text-drop)
   (example """
-    (def (Tuple a b) (rope-split (string->rope "hello world") 5))
-    (rope->string b)   ; " world"
+    (def (Tuple a b) (text-split (string->text "hello world") 5))
+    (text->string b)   ; " world"
     """))
 
-(:doc rope-concat
-  (summary "Two ropes joined.")
-  (arg a "The first rope (unmodified).")
-  (arg b "The second rope (unmodified).")
-  (returns "A rope of the text of a and then b, sharing their nodes, in O(log n) time.")
-  (see rope-split rope-insert-rope rope-append))
+(:doc text-concat
+  (summary "Two texts joined.")
+  (arg a "The first text (unmodified).")
+  (arg b "The second text (unmodified).")
+  (returns "A text of the text of a and then b, sharing their nodes, in O(log n) time.")
+  (see text-split text-insert-text text-append))
 
-(:doc rope-append
-  (summary "A rope with text added at the end.")
-  (arg r "The rope (unmodified).")
+(:doc text-append
+  (summary "A text with text added at the end.")
+  (arg r "The text (unmodified).")
   (arg s "The text to add.")
-  (returns "A rope of r's text and then s.")
-  (see rope-prepend rope-insert rope-concat))
+  (returns "A text of r's text and then s.")
+  (see text-prepend text-insert text-concat))
 
-(:doc rope-prepend
-  (summary "A rope with text added at the start.")
-  (arg r "The rope (unmodified).")
+(:doc text-prepend
+  (summary "A text with text added at the start.")
+  (arg r "The text (unmodified).")
   (arg s "The text to add.")
-  (returns "A rope of s and then r's text.")
-  (see rope-append rope-insert))
+  (returns "A text of s and then r's text.")
+  (see text-append text-insert))
 
-(:doc rope-insert
-  (summary "A rope with text inserted at an offset.")
-  (arg r "The rope (unmodified).")
+(:doc text-insert
+  (summary "A text with text inserted at an offset.")
+  (arg r "The text (unmodified).")
   (arg at "The offset to insert at.")
   (arg s "The text to insert.")
-  (returns "A rope of r's text with s from byte at, in O(log n) time. Copies the nodes on the path and one chunk.")
+  (returns "A text of r's text with s from byte at, in O(log n) time. Copies the nodes on the path and one chunk.")
   (raises System.ArgumentOutOfRangeException "When at is outside r.")
   (raises System.ArgumentException "When at is in the middle of a character.")
-  (see rope-insert-rope rope-delete rope-replace transientrope-insert!))
+  (see text-insert-text text-delete text-replace transienttext-insert!))
 
-(:doc rope-insert-rope
-  (summary "A rope with another rope inserted at an offset.")
-  (arg r "The rope (unmodified).")
+(:doc text-insert-text
+  (summary "A text with another text inserted at an offset.")
+  (arg r "The text (unmodified).")
   (arg at "The offset to insert at.")
-  (arg x "The rope to insert (unmodified).")
-  (returns "A rope of r's text with x's from byte at, sharing x's nodes.")
+  (arg x "The text to insert (unmodified).")
+  (returns "A text of r's text with x's from byte at, sharing x's nodes.")
   (raises System.ArgumentOutOfRangeException "When at is outside r.")
   (raises System.ArgumentException "When at is in the middle of a character.")
-  (see rope-insert rope-concat))
+  (see text-insert text-concat))
 
-(:doc rope-delete
-  (summary "A rope with a range of bytes removed.")
-  (arg r "The rope (unmodified).")
+(:doc text-delete
+  (summary "A text with a range of bytes removed.")
+  (arg r "The text (unmodified).")
   (arg from "The first byte to remove.")
   (arg to "The byte after the last to remove.")
-  (returns "A rope of r's text without bytes from to to, in O(log n) time.")
+  (returns "A text of r's text without bytes from to to, in O(log n) time.")
   (raises System.ArgumentOutOfRangeException "When the range is not in r, or ends before it starts.")
   (raises System.ArgumentException "When from or to is in the middle of a character.")
-  (see rope-insert rope-replace transientrope-delete!))
+  (see text-insert text-replace transienttext-delete!))
 
-(:doc rope-replace
-  (summary "A rope with a range of bytes replaced by text.")
-  (arg r "The rope (unmodified).")
+(:doc text-replace
+  (summary "A text with a range of bytes replaced by text.")
+  (arg r "The text (unmodified).")
   (arg from "The first byte to replace.")
   (arg to "The byte after the last to replace.")
   (arg s "The text to put in their place.")
-  (returns "A rope of r's text with bytes from to to replaced by s.")
+  (returns "A text of r's text with bytes from to to replaced by s.")
   (raises System.ArgumentOutOfRangeException "When the range is not in r, or ends before it starts.")
   (raises System.ArgumentException "When from or to is in the middle of a character.")
-  (see rope-insert rope-delete transientrope-replace!))
+  (see text-insert text-delete transienttext-replace!))
 
 ;; ---------------------------------------------------------------------------
 ;; Lines
 ;; ---------------------------------------------------------------------------
 
-(:doc rope-line-start
+(:doc text-line-start
   (summary "The offset where a line starts.")
-  (arg r "The rope.")
+  (arg r "The text.")
   (arg n "The line, counting from 0.")
   (returns "The offset of the first byte of line n: 0 for line 0, otherwise the byte after the n-th newline. O(log n) time.")
   (raises System.ArgumentOutOfRangeException "When r has no line n.")
-  (see rope-line-end rope-line-of rope-line))
+  (see text-line-end text-line-of text-line))
 
-(:doc rope-line-end
+(:doc text-line-end
   (summary "The offset where a line ends.")
-  (arg r "The rope.")
+  (arg r "The text.")
   (arg n "The line, counting from 0.")
   (returns "The offset of the newline that ends line n, or the length of r for the last line.")
   (raises System.ArgumentOutOfRangeException "When r has no line n.")
-  (see rope-line-start rope-line))
+  (see text-line-start text-line))
 
-(:doc rope-line-of
+(:doc text-line-of
   (summary "The line a byte offset is on.")
-  (arg r "The rope.")
+  (arg r "The text.")
   (arg at "The offset, at most the length of r.")
   (returns "The number of newlines before byte at, which is its line counting from 0. O(log n) time.")
   (raises System.ArgumentOutOfRangeException "When at is outside r.")
-  (see rope-line-start))
+  (see text-line-start))
 
-(:doc rope-line
+(:doc text-line
   (summary "The text of a line.")
-  (arg r "The rope.")
+  (arg r "The text.")
   (arg n "The line, counting from 0.")
   (returns "A string of line n, without its newline.")
   (raises System.ArgumentOutOfRangeException "When r has no line n.")
-  (see rope-line-start rope-line-end rope-substring)
+  (see text-line-start text-line-end text-substring)
   (example """
-    (rope-line (string->rope "one\ntwo\n") 1)   ; "two"
-    (rope-line (string->rope "one\ntwo\n") 2)   ; ""
+    (text-line (string->text "one\ntwo\n") 1)   ; "two"
+    (text-line (string->text "one\ntwo\n") 2)   ; ""
     """))
 
 ;; ---------------------------------------------------------------------------
 ;; Characters
 ;; ---------------------------------------------------------------------------
 
-(:doc rope-next
+(:doc text-next
   (summary "The offset of the next character.")
-  (arg r "The rope.")
+  (arg r "The text.")
   (arg at "The offset of a character.")
   (returns "The offset just after the character that starts at at.")
   (raises System.ArgumentOutOfRangeException "When at is not below the length of r.")
-  (see rope-prev rope-ref))
+  (see text-prev text-ref))
 
-(:doc rope-prev
+(:doc text-prev
   (summary "The offset of the previous character.")
-  (arg r "The rope.")
+  (arg r "The text.")
   (arg at "An offset after the first character.")
   (returns "The offset of the character that ends just before at.")
   (raises System.ArgumentOutOfRangeException "When at is 0 or past the end of r.")
-  (see rope-next rope-ref))
+  (see text-next text-ref))
 
 ;; ---------------------------------------------------------------------------
 ;; Searching
 ;; ---------------------------------------------------------------------------
 
-(:doc rope-index-of
-  (summary "The first offset of a string in a rope.")
-  (arg r "The rope.")
+(:doc text-index-of
+  (summary "The first offset of a string in a text.")
+  (arg r "The text.")
   (arg s "The text to find.")
   (key from "The offset to search from. Default 0.")
   (returns "(Some k) for the first k at or after from where r's bytes are those of s, or None. Finds matches that span chunks.")
   (raises System.ArgumentOutOfRangeException "When from is outside r.")
-  (see rope-contains? rope-starts-with?))
+  (see text-contains? text-starts-with?))
 
-(:doc rope-last-index-of
-  (summary "The last offset of a string in a rope.")
-  (arg r "The rope.")
+(:doc text-last-index-of
+  (summary "The last offset of a string in a text.")
+  (arg r "The text.")
   (arg s "The text to find.")
   (key to "The offset the match must end at or before. Default: the length of r.")
   (returns "(Some k) for the last k where r's bytes from k are those of s and k plus the length of s is at most to, or None. Finds matches that span chunks.")
   (raises System.ArgumentOutOfRangeException "When to is outside r.")
-  (see rope-index-of rope-cursor-search-backward))
+  (see text-index-of text-cursor-search-backward))
 
-(:doc rope-contains?
-  (summary "Whether a rope contains a string.")
-  (arg r "The rope.")
+(:doc text-contains?
+  (summary "Whether a text contains a string.")
+  (arg r "The text.")
   (arg s "The text to find.")
   (returns "#t when s occurs in r.")
-  (see rope-index-of))
+  (see text-index-of))
 
-(:doc rope-starts-with?
-  (summary "Whether a rope starts with a string.")
-  (arg r "The rope.")
+(:doc text-starts-with?
+  (summary "Whether a text starts with a string.")
+  (arg r "The text.")
   (arg s "The text.")
   (returns "#t when r's first bytes are those of s.")
-  (see rope-ends-with? rope-index-of))
+  (see text-ends-with? text-index-of))
 
-(:doc rope-ends-with?
-  (summary "Whether a rope ends with a string.")
-  (arg r "The rope.")
+(:doc text-ends-with?
+  (summary "Whether a text ends with a string.")
+  (arg r "The text.")
   (arg s "The text.")
   (returns "#t when r's last bytes are those of s.")
-  (see rope-starts-with?))
+  (see text-starts-with?))
 
 ;; ---------------------------------------------------------------------------
 ;; Cursors
 ;; ---------------------------------------------------------------------------
 
-(:doc rope-cursor-at
+(:doc text-cursor-at
   (summary "A cursor at a byte offset.")
-  (arg r "The rope.")
+  (arg r "The text.")
   (arg at "The offset, at most the length of r.")
   (returns "The cursor on the character that starts at at, or the end cursor when at is the length of r.")
   (raises System.ArgumentOutOfRangeException "When at is outside r.")
   (raises System.ArgumentException "When at is in the middle of a character.")
-  (see rope-cursor-offset rope-cursor-at-line rope-cursor-start))
+  (see text-cursor-offset text-cursor-at-line text-cursor-start))
 
-(:doc rope-cursor-start
-  (summary "A cursor on the first character of a rope.")
-  (arg r "The rope.")
-  (returns "The cursor at offset 0. For the empty rope it is also the end.")
-  (see rope-cursor-end rope-cursor-next)
+(:doc text-cursor-start
+  (summary "A cursor on the first character of a text.")
+  (arg r "The text.")
+  (returns "The cursor at offset 0. For the empty text it is also the end.")
+  (see text-cursor-end text-cursor-next)
   (example """
-    (let go ((c (rope-cursor-start r)))
-      (unless (rope-cursor-end? c)
-        (println (char->string (rope-cursor-ref c)))
-        (go (rope-cursor-next c))))
+    (let go ((c (text-cursor-start r)))
+      (unless (text-cursor-end? c)
+        (println (char->string (text-cursor-ref c)))
+        (go (text-cursor-next c))))
     """))
 
-(:doc rope-cursor-end
-  (summary "The past-the-end cursor of a rope.")
-  (arg r "The rope.")
+(:doc text-cursor-end
+  (summary "The past-the-end cursor of a text.")
+  (arg r "The text.")
   (returns "The cursor after the last character, at the length of r.")
-  (see rope-cursor-end? rope-cursor-prev rope-backward))
+  (see text-cursor-end? text-cursor-prev text-backward))
 
-(:doc rope-cursor-at-line
+(:doc text-cursor-at-line
   (summary "A cursor on a line, a number of characters in.")
-  (arg r "The rope.")
+  (arg r "The text.")
   (arg n "The line, counting from 0.")
   (key column "How many characters into the line. Default 0.")
   (returns "The cursor column characters after the start of line n, or at the end of the line when it is shorter.")
   (raises System.ArgumentOutOfRangeException "When r has no line n.")
-  (see rope-cursor-line rope-cursor-column rope-line-start)
+  (see text-cursor-line text-cursor-column text-line-start)
   (example """
     ;; One line down, in the same column, as an editor moves.
-    (rope-cursor-at-line r (+ (rope-cursor-line c) 1) #:column (rope-cursor-column c))
+    (text-cursor-at-line r (+ (text-cursor-line c) 1) #:column (text-cursor-column c))
     """)
   (reference "The column counts characters, not bytes, and takes time in its size."))
 
-(:doc rope-cursor-offset
+(:doc text-cursor-offset
   (summary "The byte offset of a cursor.")
   (arg c "The cursor.")
-  (returns "Its offset in its rope, which the other rope functions take.")
-  (see rope-cursor-at))
+  (returns "Its offset in its text, which the other text functions take.")
+  (see text-cursor-at))
 
-(:doc rope-cursor-rope
-  (summary "The rope of a cursor.")
+(:doc text-cursor-text
+  (summary "The text of a cursor.")
   (arg c "The cursor.")
-  (returns "The rope it was made from.")
-  (see rope-cursor-at))
+  (returns "The text it was made from.")
+  (see text-cursor-at))
 
-(:doc rope-cursor-start?
-  (summary "Whether a cursor is at the start of its rope.")
+(:doc text-cursor-start?
+  (summary "Whether a cursor is at the start of its text.")
   (arg c "The cursor.")
   (returns "#t when its offset is 0, and there is no character before it.")
-  (see rope-cursor-end? rope-cursor-prev))
+  (see text-cursor-end? text-cursor-prev))
 
-(:doc rope-cursor-end?
-  (summary "Whether a cursor has reached the end of its rope.")
+(:doc text-cursor-end?
+  (summary "Whether a cursor has reached the end of its text.")
   (arg c "The cursor.")
   (returns "#t when it is the past-the-end cursor, and there is no character at it.")
-  (see rope-cursor-start? rope-cursor-ref))
+  (see text-cursor-start? text-cursor-ref))
 
-(:doc rope-cursor-ref
+(:doc text-cursor-ref
   (summary "The character at a cursor.")
   (arg c "A cursor, not at the end.")
   (returns "The character c is on.")
-  (raises System.ArgumentOutOfRangeException "When c is at the end of its rope.")
-  (see rope-cursor-ref+next rope-cursor-end?))
+  (raises System.ArgumentOutOfRangeException "When c is at the end of its text.")
+  (see text-cursor-ref+next text-cursor-end?))
 
-(:doc rope-cursor-next
+(:doc text-cursor-next
   (summary "The cursor on the next character.")
   (arg c "A cursor, not at the end.")
   (returns "The cursor after the character at c, which is the end after the last one.")
-  (raises System.ArgumentOutOfRangeException "When c is at the end of its rope.")
-  (see rope-cursor-prev rope-cursor-ref+next rope-cursor-forward))
+  (raises System.ArgumentOutOfRangeException "When c is at the end of its text.")
+  (see text-cursor-prev text-cursor-ref+next text-cursor-forward))
 
-(:doc rope-cursor-prev
+(:doc text-cursor-prev
   (summary "The cursor on the previous character.")
   (arg c "A cursor, not at the start.")
   (returns "The cursor on the character before c.")
-  (raises System.ArgumentOutOfRangeException "When c is at the start of its rope.")
-  (see rope-cursor-next rope-cursor-back rope-backward))
+  (raises System.ArgumentOutOfRangeException "When c is at the start of its text.")
+  (see text-cursor-next text-cursor-back text-backward))
 
-(:doc rope-cursor-ref+next
+(:doc text-cursor-ref+next
   (summary "The character at a cursor and the cursor after it, in one call.")
   (arg c "A cursor, not at the end.")
   (returns "A tuple of the character at c and the cursor on the next one.")
-  (raises System.ArgumentOutOfRangeException "When c is at the end of its rope.")
-  (see rope-cursor-ref rope-cursor-next)
+  (raises System.ArgumentOutOfRangeException "When c is at the end of its text.")
+  (see text-cursor-ref text-cursor-next)
   (example """
-    (def (Tuple ch next) (rope-cursor-ref+next c))
+    (def (Tuple ch next) (text-cursor-ref+next c))
     """)
   (reference "One read of the chunk gives both, so it is the fastest step of a loop that wants the characters."))
 
-(:doc rope-cursor-forward
+(:doc text-cursor-forward
   (summary "The cursor n characters after another.")
   (arg c "The cursor.")
   (arg n "How many characters, 0 or more.")
   (returns "The cursor after the n characters from c.")
   (raises System.ArgumentOutOfRangeException "When there are fewer than n characters after c.")
   (raises System.ArgumentException "When n is negative.")
-  (see rope-cursor-back rope-cursor-next))
+  (see text-cursor-back text-cursor-next))
 
-(:doc rope-cursor-back
+(:doc text-cursor-back
   (summary "The cursor n characters before another.")
   (arg c "The cursor.")
   (arg n "How many characters, 0 or more.")
   (returns "The cursor n characters before c.")
   (raises System.ArgumentOutOfRangeException "When there are fewer than n characters before c.")
   (raises System.ArgumentException "When n is negative.")
-  (see rope-cursor-forward rope-cursor-prev))
+  (see text-cursor-forward text-cursor-prev))
 
-(:doc rope-cursor-line
+(:doc text-cursor-line
   (summary "The line a cursor is on.")
   (arg c "The cursor.")
   (returns "Its line, counting from 0: the newlines before it. O(log n) time.")
-  (see rope-cursor-column rope-cursor-line-start rope-line-of))
+  (see text-cursor-column text-cursor-line-start text-line-of))
 
-(:doc rope-cursor-column
+(:doc text-cursor-column
   (summary "How many characters a cursor is into its line.")
   (arg c "The cursor.")
   (returns "The characters between the start of its line and c.")
-  (see rope-cursor-line rope-cursor-at-line)
+  (see text-cursor-line text-cursor-at-line)
   (reference "Characters, not bytes. Takes time in the column."))
 
-(:doc rope-cursor-line-start
+(:doc text-cursor-line-start
   (summary "The cursor at the start of a cursor's line.")
   (arg c "The cursor.")
   (returns "The cursor on the first character of its line.")
-  (see rope-cursor-line-end rope-line-start))
+  (see text-cursor-line-end text-line-start))
 
-(:doc rope-cursor-line-end
+(:doc text-cursor-line-end
   (summary "The cursor at the end of a cursor's line.")
   (arg c "The cursor.")
   (returns "The cursor on the newline that ends its line, or the end cursor on the last line.")
-  (see rope-cursor-line-start rope-line-end))
+  (see text-cursor-line-start text-line-end))
 
-(:doc rope-cursor-search
+(:doc text-cursor-search
   (summary "Where the first occurrence of a text at or after a cursor starts.")
   (arg c "The cursor to search from.")
   (arg s "The text to find.")
   (returns "(Some cursor) on the start of the first occurrence that starts at or after c, or None. An empty s is found at c.")
-  (see rope-cursor-search-backward rope-index-of rope-cursor-find))
+  (see text-cursor-search-backward text-index-of text-cursor-find))
 
-(:doc rope-cursor-search-backward
+(:doc text-cursor-search-backward
   (summary "Where the last occurrence of a text before a cursor starts.")
   (arg c "The cursor to search back from.")
   (arg s "The text to find.")
   (returns "(Some cursor) on the start of the last occurrence that ends at or before c, or None. An empty s is found at c.")
-  (see rope-cursor-search rope-last-index-of))
+  (see text-cursor-search text-last-index-of))
 
-(:doc rope-cursor-find
+(:doc text-cursor-find
   (summary "The first character at or after a cursor that satisfies a predicate.")
   (arg pred "The test, given each character in turn.")
   (arg c "The cursor to start at.")
   (returns "(Some cursor) on the first character from c that pred returns #t for, or None.")
-  (see rope-cursor-find-backward rope-cursor-search)
+  (see text-cursor-find-backward text-cursor-search)
   (example """
-    (rope-cursor-find char-whitespace? c)   ; the next space, tab or newline
+    (text-cursor-find char-whitespace? c)   ; the next space, tab or newline
     """))
 
-(:doc rope-cursor-find-backward
+(:doc text-cursor-find-backward
   (summary "The last character before a cursor that satisfies a predicate.")
   (arg pred "The test, given each character in turn, going back.")
   (arg c "The cursor to search back from.")
   (returns "(Some cursor) on the last character before c that pred returns #t for, or None.")
-  (see rope-cursor-find))
+  (see text-cursor-find))
 
-(:doc rope-cursor=?
+(:doc text-cursor=?
   (summary "Whether two cursors are at the same position.")
   (arg a "A cursor.")
-  (arg b "A cursor of the same rope.")
+  (arg b "A cursor of the same text.")
   (returns "#t when their offsets are equal. The same as =.")
-  (see rope-cursor<?))
+  (see text-cursor<?))
 
-(:doc rope-cursor<?
+(:doc text-cursor<?
   (summary "Whether one cursor is before another.")
   (arg a "A cursor.")
-  (arg b "A cursor of the same rope.")
+  (arg b "A cursor of the same text.")
   (returns "#t when a's offset is less than b's.")
-  (see rope-cursor<=? rope-cursor>? rope-cursor=?))
+  (see text-cursor<=? text-cursor>? text-cursor=?))
 
-(:doc rope-cursor>?
+(:doc text-cursor>?
   (summary "Whether one cursor is after another.")
   (arg a "A cursor.")
-  (arg b "A cursor of the same rope.")
+  (arg b "A cursor of the same text.")
   (returns "#t when a's offset is greater than b's.")
-  (see rope-cursor>=? rope-cursor<?))
+  (see text-cursor>=? text-cursor<?))
 
-(:doc rope-cursor<=?
+(:doc text-cursor<=?
   (summary "Whether one cursor is before another or at it.")
   (arg a "A cursor.")
-  (arg b "A cursor of the same rope.")
+  (arg b "A cursor of the same text.")
   (returns "#t when a is not after b.")
-  (see rope-cursor<? rope-cursor>=?))
+  (see text-cursor<? text-cursor>=?))
 
-(:doc rope-cursor>=?
+(:doc text-cursor>=?
   (summary "Whether one cursor is after another or at it.")
   (arg a "A cursor.")
-  (arg b "A cursor of the same rope.")
+  (arg b "A cursor of the same text.")
   (returns "#t when a is not before b.")
-  (see rope-cursor>? rope-cursor<=?))
+  (see text-cursor>? text-cursor<=?))
 
-(:doc rope-cursor-substring
+(:doc text-cursor-substring
   (summary "The text between two cursors, as a string.")
   (arg a "Where it begins.")
-  (arg b "Where it ends, not included. A cursor of the same rope, not before a.")
+  (arg b "Where it ends, not included. A cursor of the same text, not before a.")
   (returns "A new string of the bytes from a to b.")
   (raises System.ArgumentOutOfRangeException "When b is before a.")
-  (see rope-cursor-slice rope-substring))
+  (see text-cursor-slice text-substring))
 
-(:doc rope-cursor-slice
-  (summary "The text between two cursors, as a rope.")
+(:doc text-cursor-slice
+  (summary "The text between two cursors, as a text.")
   (arg a "Where it begins.")
-  (arg b "Where it ends, not included. A cursor of the same rope, not before a.")
-  (returns "A rope of the bytes from a to b, sharing the rope's chunks and nodes.")
+  (arg b "Where it ends, not included. A cursor of the same text, not before a.")
+  (returns "A text of the bytes from a to b, sharing the text's chunks and nodes.")
   (raises System.ArgumentOutOfRangeException "When b is before a.")
-  (see rope-cursor-substring rope-slice))
+  (see text-cursor-substring text-slice))
 
-(:doc rope-backward
+(:doc text-backward
   (summary "The characters before a cursor, last first, for a loop.")
   (arg c "The cursor.")
-  (returns "A RopeBackward: (:for ch (rope-backward c)) goes from the character before c back to the first.")
-  (see RopeCursor rope-cursor-prev rope-cursor-find-backward)
+  (returns "A TextBackward: (:for ch (text-backward c)) goes from the character before c back to the first.")
+  (see TextCursor text-cursor-prev text-cursor-find-backward)
   (example """
-    (loop (:for ch (rope-backward (rope-cursor-end r))) (:acc (stringing ch)))   ; r reversed
+    (loop (:for ch (text-backward (text-cursor-end r))) (:acc (stringing ch)))   ; r reversed
     """))
 
 ;; ---------------------------------------------------------------------------
 ;; Chunks
 ;; ---------------------------------------------------------------------------
 
-(:doc rope-fold-chunks
-  (summary "Folds over a rope's chunks in order.")
+(:doc text-fold-chunks
+  (summary "Folds over a text's chunks in order.")
   (arg f "Called with each chunk and the accumulator, and returns the next accumulator.")
   (arg init "The first accumulator.")
-  (arg r "The rope.")
+  (arg r "The text.")
   (returns "The last accumulator.")
-  (see rope-for-each-chunk rope-chunk-count)
+  (see text-for-each-chunk text-chunk-count)
   (reference """
     The chunks are strings that start and end on character boundaries. How
-    a text is split into chunks depends on its history; the empty rope has
+    a text is split into chunks depends on its history; the empty text has
     none.
     """))
 
-(:doc rope-for-each-chunk
-  (summary "Calls a function with each of a rope's chunks in order.")
+(:doc text-for-each-chunk
+  (summary "Calls a function with each of a text's chunks in order.")
   (arg f "Called with each chunk.")
-  (arg r "The rope.")
-  (see rope-fold-chunks))
+  (arg r "The text.")
+  (see text-fold-chunks))
 
-(:doc rope-chunk-count
-  (summary "The number of chunks of a rope.")
-  (arg r "The rope.")
+(:doc text-chunk-count
+  (summary "The number of chunks of a text.")
+  (arg r "The text.")
   (returns "The number of chunks r's text is held in.")
-  (see rope-fold-chunks))
+  (see text-fold-chunks))
 
 ;; ---------------------------------------------------------------------------
 ;; Builders
 ;; ---------------------------------------------------------------------------
 
-(:doc ropebuilder-empty
-  (summary "A new, empty rope builder.")
+(:doc textbuilder-empty
+  (summary "A new, empty text builder.")
   (returns "A builder with no text.")
-  (see ropebuilder-add! ropebuilder->rope))
+  (see textbuilder-add! textbuilder->text))
 
-(:doc ropebuilder-add!
+(:doc textbuilder-add!
   (summary "Adds text to the end of a builder.")
   (arg b "The builder.")
   (arg s "The text. The chunks of a long string share its bytes.")
-  (see ropebuilder-add-rope! ropebuilder->rope))
+  (see textbuilder-add-text! textbuilder->text))
 
-(:doc ropebuilder-add-rope!
-  (summary "Adds the text of a rope to the end of a builder.")
+(:doc textbuilder-add-text!
+  (summary "Adds the text of a text to the end of a builder.")
   (arg b "The builder.")
-  (arg r "The rope, whose chunks are added in order.")
-  (see ropebuilder-add!))
+  (arg r "The text, whose chunks are added in order.")
+  (see textbuilder-add!))
 
-(:doc ropebuilder-length
+(:doc textbuilder-length
   (summary "The bytes added to a builder.")
   (arg b "The builder.")
   (returns "The number of bytes added since it was made or last emptied.")
-  (see ropebuilder-add!))
+  (see textbuilder-add!))
 
-(:doc ropebuilder->rope
-  (summary "The rope of a builder's text, emptying the builder.")
+(:doc textbuilder->text
+  (summary "The text of a builder's text, emptying the builder.")
   (arg b "The builder.")
-  (returns "A rope of the text added, in order. The builder is then empty and can be used again.")
-  (see ropebuilder-empty))
+  (returns "A text of the text added, in order. The builder is then empty and can be used again.")
+  (see textbuilder-empty))
 
 ;; ---------------------------------------------------------------------------
 ;; Transients
 ;; ---------------------------------------------------------------------------
 
-(:doc rope->transientrope
-  (summary "A transient that starts from a rope.")
-  (arg r "The rope, which the transient's edits do not change.")
+(:doc text->transienttext
+  (summary "A transient that starts from a text.")
+  (arg r "The text, which the transient's edits do not change.")
   (returns "A transient holding r's text.")
-  (see transientrope->rope TransientRope))
+  (see transienttext->text TransientText))
 
-(:doc transientrope->rope
-  (summary "The rope of a transient's text.")
+(:doc transienttext->text
+  (summary "The text of a transient's text.")
   (arg t "The transient.")
-  (returns "A rope of t's text. Later edits to t do not change it, and t can be edited further.")
-  (see rope->transientrope))
+  (returns "A text of t's text. Later edits to t do not change it, and t can be edited further.")
+  (see text->transienttext))
 
-(:doc transientrope-insert!
+(:doc transienttext-insert!
   (summary "Inserts text into a transient at an offset.")
   (arg t "The transient.")
   (arg at "The offset to insert at.")
   (arg s "The text to insert.")
   (raises System.ArgumentOutOfRangeException "When at is outside t's text.")
   (raises System.ArgumentException "When at is in the middle of a character.")
-  (see transientrope-delete! rope-insert))
+  (see transienttext-delete! text-insert))
 
-(:doc transientrope-delete!
+(:doc transienttext-delete!
   (summary "Removes a range of bytes from a transient.")
   (arg t "The transient.")
   (arg from "The first byte to remove.")
   (arg to "The byte after the last to remove.")
   (raises System.ArgumentOutOfRangeException "When the range is not in t's text, or ends before it starts.")
   (raises System.ArgumentException "When from or to is in the middle of a character.")
-  (see transientrope-insert! rope-delete))
+  (see transienttext-insert! text-delete))
 
-(:doc transientrope-replace!
+(:doc transienttext-replace!
   (summary "Replaces a range of bytes of a transient with text.")
   (arg t "The transient.")
   (arg from "The first byte to replace.")
@@ -759,36 +783,36 @@
   (arg s "The text to put in their place.")
   (raises System.ArgumentOutOfRangeException "When the range is not in t's text, or ends before it starts.")
   (raises System.ArgumentException "When from or to is in the middle of a character.")
-  (see transientrope-insert! transientrope-delete! rope-replace))
+  (see transienttext-insert! transienttext-delete! text-replace))
 
-(:doc transientrope-append!
+(:doc transienttext-append!
   (summary "Adds text to the end of a transient.")
   (arg t "The transient.")
   (arg s "The text to add.")
-  (see transientrope-insert!))
+  (see transienttext-insert!))
 
-(:doc transientrope-length
+(:doc transienttext-length
   (summary "The length of a transient's text in bytes.")
   (arg t "The transient.")
   (returns "The number of bytes of t's text, in O(1) time.")
-  (see rope-length))
+  (see text-length))
 
 ;; ---------------------------------------------------------------------------
 ;; Checks
 ;; ---------------------------------------------------------------------------
 
-(:doc rope-check
-  (summary "What is wrong with a rope's tree, if anything. For tests.")
-  (arg r "The rope.")
+(:doc text-check
+  (summary "What is wrong with a text's tree, if anything. For tests.")
+  (arg r "The text.")
   (returns "None when r's tree is sound, otherwise (Some why) for the first problem found.")
   (reference """
     Checks the heights, the number of children of every node, the size of
     every chunk, and the byte and newline counts. O(n) time.
     """)
-  (see rope-height))
+  (see text-height))
 
-(:doc rope-height
-  (summary "The height of a rope's tree. For tests.")
-  (arg r "The rope.")
-  (returns "0 for a rope that is one string, otherwise the levels of nodes above the chunks.")
-  (see rope-check))
+(:doc text-height
+  (summary "The height of a text's tree. For tests.")
+  (arg r "The text.")
+  (returns "0 for a text that is one string, otherwise the levels of nodes above the chunks.")
+  (see text-check))
