@@ -3500,6 +3500,25 @@ and private initType (env: Env) (e: Expr) : HMType option =
         | _ -> None
     | _ -> None
 
+/// Whether every tail position of `e` is a call to one of `names`, so that
+/// `e` never returns. Conservative: a form it does not know counts as an exit,
+/// and so does a binding that shadows one of the names.
+and private exitsOnlyByCalling (names: string list) (e: TypedExpr) : bool =
+    let inner (bound: string list) (b: TypedExpr) =
+        not (bound |> List.exists (fun n -> List.contains n names)) && exitsOnlyByCalling names b
+
+    match e.Node with
+    | TApply({ Node = TIdent(n, _) }, _, _) -> List.contains n names
+    | TIf(_, t, f) -> exitsOnlyByCalling names t && exitsOnlyByCalling names f
+    | TMatch(_, clauses) ->
+        not clauses.IsEmpty
+        && clauses |> List.forall (fun c -> inner (AlphaRename.patternNames c.Pattern) c.Body)
+    | TLet(n, _, _, _, b)
+    | TLetMutable(n, _, b) -> inner [ n ] b
+    | TLetTuple(ns, _, b) -> inner ns b
+    | TLetRec(bindings, b) -> inner (bindings |> List.map (fun (n, _, _, _) -> n)) b
+    | _ -> false
+
 and private inferLetRec (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (bindings: (string * bool * DefunArg list * FType option * Expr) list) (body: Expr) (r: Range) : HMType * TypedExpr =
     let bindingMetas = bindings |> List.map (fun (n, _, _, _, _) -> n, freshMeta ())
 
@@ -3593,6 +3612,23 @@ and private inferLetRec (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (bi
 
             unify env.Registry valType expectedType
             name, isFun, localFun, typedVal)
+
+    // A named let in which every exit calls a member of the group again.
+    // Its result type is then still open, and it is recorded so that an
+    // error about it names the loop. See `exitsOnlyByCalling`.
+    match body with
+    | EApp(EIdent(callee, _), _, _) ->
+        let groupNames = bindings |> List.map (fun (n, _, _, _, _) -> n)
+
+        match List.tryFind (fun (n, _, _, _) -> n = callee) typedBindings with
+        | Some(_, true, _, { Type = TFun(_, result, _); Node = TLambda(_, loopBody) }) when
+            exitsOnlyByCalling groupNames loopBody
+            ->
+            match prune env.Registry result with
+            | TMeta m -> recordLoopWithoutExit m callee r
+            | _ -> ()
+        | _ -> ()
+    | _ -> ()
 
     // No own level for the group, unlike `ELet`. Each member
     // is bound monomorphically in `recEnv` while the bodies are checked, so

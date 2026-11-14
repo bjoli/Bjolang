@@ -377,8 +377,13 @@ let rec buildEvidence
     // A type with no head, such as a projection nothing reduced. There is
     // nothing to key an implementation by, so not even a blanket is reachable.
     | other ->
-        failwithf
-            $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType other}', needed %s{describe}. That type has no head constructor, so it cannot have one — and a blanket implementation is only reached through a head.%s{within}"
+        match Unification.loopWithoutExitFor other with
+        | Some(loopName, loopRange) ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos range}: the loop '%s{loopName}' at %s{Lexer.formatPos loopRange} never returns, because each of its branches calls it again. Nothing gives its result a type, so there is no implementation of trait '%s{traitName}' to find for it, needed %s{describe}. Give the loop a branch that returns a value.%s{within}"
+        | None ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType other}', needed %s{describe}. That type has no head constructor, so it cannot have one — and a blanket implementation is only reached through a head.%s{within}"
 
 /// Whether naming `name` here means naming a C# method that takes dictionary
 /// parameters — which is what makes such a method not the delegate its Bjolang

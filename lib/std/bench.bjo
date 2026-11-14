@@ -60,7 +60,8 @@
   (bench-keep!      (: Bjolang.Runtime.BjoBench.Consume (-> %a void)))
   (collect!         (: Bjolang.Runtime.BjoBench.Collect (-> void)))
   (gc-count         (: Bjolang.Runtime.BjoBench.Collections (-> int int)))
-  (allocated        (: Bjolang.Runtime.BjoBench.AllocatedOnThread (-> long)))
+  (allocated-thread  (: Bjolang.Runtime.BjoBench.AllocatedOnThread (-> long)))
+  (allocated-process (: Bjolang.Runtime.BjoBench.AllocatedInProcess (-> long)))
   (cpu-model        (: Bjolang.Runtime.BjoBench.CpuModel (-> string)))
   (core-count       (: Bjolang.Runtime.BjoBench.Cores (-> int)))
   (os-name          (: Bjolang.Runtime.BjoBench.OperatingSystemName (-> string)))
@@ -131,8 +132,26 @@
 (: (-> %a void))
 (defun (time-it-keep x) (bench-keep! x))
 
-(: (-> long))
-(defun (bench-allocated) (allocated))
+;; What `alloc/op` counts when a benchmark does not say: "thread" or
+;; "process". `--alloc` sets it.
+(: (Box string))
+(def alloc-default (make-box "thread"))
+
+;; A benchmark's `#:alloc`, or the run's default for "".
+(: (-> string string))
+(defun (alloc-counted mode)
+  (if (string-empty? mode) (box-ref alloc-default) mode))
+
+;; The bytes allocated so far, as `mode` counts them:
+;;
+;; - "thread": this thread's, exact, and blind to the work a body hands to
+;;   fibers or the pool.
+;; - "process": every thread's, also the JIT's background compiles and
+;;   timers, so noisier. The read is precise, and not free.
+;; - "": the run's default.
+(: (-> string long))
+(defun (bench-allocated mode)
+  (if (= (alloc-counted mode) "process") (allocated-process) (allocated-thread)))
 
 ;; ---------------------------------------------------------------------------
 ;; Benchmarks and their registry
@@ -143,7 +162,10 @@
 ;; answers the call's nanoseconds and the bytes it allocated, the setup's
 ;; left out of both.
 (type (: CaseRun (Record (: batch (-> long void))
-                         (: call (Option (-> (Tuple long long)))))))
+                         (: call (Option (-> (Tuple long long))))
+                         ;; The benchmark's `#:alloc`: "thread", "process", or
+                         ;; "" for the run's default.
+                         (: alloc string))))
 
 ;; One row: a benchmark at one combination of its parameters. `labels` are the
 ;; parameters' names and values as the report shows them; `prepare` runs the
@@ -162,6 +184,8 @@
                        (: group string)
                        (: skip string)
                        (: once int)
+                       ;; Its `#:alloc`, or "".
+                       (: alloc string)
                        (: param-names (List string))
                        (: cases (-> (List BenchCase))))))
 
@@ -169,11 +193,11 @@
 (: (Box (List Bench)))
 (def bench-registry (make-box (list)))
 
-(: (-> string string string int string string int (List string) (-> (List BenchCase)) int))
-(defun (register-bench! name module file line group skip once param-names cases)
+(: (-> string string string int string string int string (List string) (-> (List BenchCase)) int))
+(defun (register-bench! name module file line group skip once alloc param-names cases)
   (box-set! bench-registry
             (cons (Bench (name name) (module module) (file file) (line line) (group group)
-                         (skip skip) (once once) (param-names param-names) (cases cases))
+                         (skip skip) (once once) (alloc alloc) (param-names param-names) (cases cases))
                   (box-ref bench-registry)))
   0)
 
@@ -245,12 +269,13 @@
                              (: once Syntax)
                              (: group Syntax)
                              (: skip Syntax)
+                             (: alloc Syntax)
                              (: body (List Syntax)))))
 
 (: (-> BenchSyntax))
 (defun (no-bench-options)
   (BenchSyntax (setup (list)) (setup-every (list)) (params (list)) (once #'0) (group #'"")
-               (skip #'"") (body (list))))
+               (skip #'"") (alloc #'"") (body (list))))
 
 (: (-> Syntax (List Syntax) BenchSyntax BenchSyntax))
 (defun (bench-options form items o)
@@ -271,8 +296,15 @@
       ((#:once n more ...) (go more (record-set o (once n))))
       ((#:group g more ...) (go more (record-set o (group g))))
       ((#:skip why more ...) (go more (record-set o (skip why))))
+      ((#:alloc mode more ...)
+       (case (syntax->string mode)
+         ("'thread" (go more (record-set o (alloc #'"thread"))))
+         ("'process" (go more (record-set o (alloc #'"process"))))
+         (else
+          (ignore (syntax-error mode "#:alloc takes 'thread or 'process: what alloc/op counts, this thread's allocation or every thread's."))
+          o)))
       ((first more ...) (record-set o (body (cons first more))))
-      (_ (ignore (syntax-error form "def/bench takes a name and a body: (def/bench \"name\" body ...), with options such as #:setup, #:setup-every, #:params, #:once, #:group and #:skip after the name."))
+      (_ (ignore (syntax-error form "def/bench takes a name and a body: (def/bench \"name\" body ...), with options such as #:setup, #:setup-every, #:params, #:once, #:group, #:skip and #:alloc after the name."))
          o))))
 
 (: (-> (List Syntax) (List Syntax) (List (Tuple Syntax Syntax))))
@@ -292,6 +324,7 @@
 (defun (prepare-expansion form o)
   (def body #'(begin ,@(record-ref o body)))
   (def setup (SList (record-ref o setup)))
+  (def alloc (record-ref o alloc))
   (match (record-ref o setup-every)
     (Nil
      #'(fun ()
@@ -301,7 +334,8 @@
                                (when (< i k)
                                  (bench-keep! ,body)
                                  (lp (+ i 1L))))))
-                    (call None)))))
+                    (call None)
+                    (alloc ,alloc)))))
     (every-bindings
      ;; Made again before every call, outside the time and the allocation:
      ;; each call is timed on its own.
@@ -315,11 +349,12 @@
                                  (lp (+ i 1L))))))
                     (call (Some (fun ()
                                   (let* ,every
-                                    (let* ((b0 (bench-allocated))
+                                    (let* ((b0 (bench-allocated ,alloc))
                                            (t0 (bench-now)))
                                       (bench-keep! ,body)
                                       (let ((t1 (bench-now)))
-                                        (Tuple (- t1 t0) (- (bench-allocated) b0))))))))))))))
+                                        (Tuple (- t1 t0) (- (bench-allocated ,alloc) b0))))))))
+                    (alloc ,alloc)))))))
 
 ;; The cases: one per combination of the parameters' values, the last varying
 ;; fastest.
@@ -361,13 +396,14 @@
   (def param-names (list-map (fun (p) (match p ((Tuple n _) (SStr (syntax->string n))))) (record-ref o params)))
   #'(def registered
       (register-bench! ,name (current-module) ,(SStr (syntax-file form)) ,(SInt (int->string (syntax-line form)))
-                       ,(record-ref o group) ,(record-ref o skip) ,(record-ref o once)
+                       ,(record-ref o group) ,(record-ref o skip) ,(record-ref o once) ,(record-ref o alloc)
                        (list ,@param-names)
                        ,(cases-expansion form o))))
 
 ;; `(def/bench "name" body ...)`, with options after the name in any order:
 ;; `#:setup ((name e) ...)`, `#:setup-every ((name e) ...)`,
-;; `#:params ((p values) ...)`, `#:once n`, `#:group "g"` and `#:skip "why"`.
+;; `#:params ((p values) ...)`, `#:once n`, `#:group "g"`, `#:skip "why"` and
+;; `#:alloc 'process`.
 ;; The body is forms, which the parameters and the setups' names are in
 ;; scope for. Registers the benchmark; `(run-benches)` runs it.
 (def/macro (def/bench form inject compare)
@@ -411,7 +447,10 @@
                               ;; `seed`.
                               (: compare-within bool)
                               (: rounds int)
-                              (: seed (Option ulong)))))
+                              (: seed (Option ulong))
+                              ;; What alloc/op counts where a benchmark does
+                              ;; not say: "thread" or "process".
+                              (: alloc string))))
 
 ;; `2`, `2%` or `0.5` as a fraction of one: a percentage.
 (: (-> string (Option double)))
@@ -431,7 +470,7 @@
                                                     (save None) (compare None) (alpha 0.05)
                                                     (threshold 0.02) (p-raw #f) (fail-slower None) (serve #f)
                                                     (cases None) (scaling #f) (compare-within #f)
-                                                    (rounds 20) (seed None))))
+                                                    (rounds 20) (seed None) (alloc "thread"))))
     (defun (value-of flag more k)
       (match more
         ((Cons v after) (k v after))
@@ -467,6 +506,12 @@
               (match (all-ints (string-split v ","))
                 ((Some is) (go after (record-set o (cases (Some is)))))
                 (None (Err #"--cases takes case numbers, 0,3,4: ${v}"))))))
+         ("--alloc"
+          (value-of a more
+            (fun (v after)
+              (if (or (= v "thread") (= v "process"))
+                  (go after (record-set o (alloc v)))
+                  (Err #"--alloc takes thread or process: ${v}")))))
          ("--save" (value-of a more (fun (v after) (go after (record-set o (save (Some v)))))))
          ("--compare" (value-of a more (fun (v after) (go after (record-set o (compare (Some v)))))))
          ("--alpha"
@@ -509,7 +554,7 @@
                 ((Err e) (Err e))))))
          (else
           (if (string-starts-with? a "--")
-              (Err #"unknown flag ${a}. The flags are --all, --list, --quick, --long, --detail, --min-samples N, --max-time S, --params P=V,..., --save FILE, --compare FILE, --alpha P, --threshold PCT, --p-raw, --fail-slower PCT, --serve, --cases I,J,..., --scaling, --compare-within, -N ROUNDS and --seed N")
+              (Err #"unknown flag ${a}. The flags are --all, --list, --quick, --long, --detail, --min-samples N, --max-time S, --params P=V,..., --save FILE, --compare FILE, --alpha P, --threshold PCT, --p-raw, --fail-slower PCT, --serve, --cases I,J,..., --scaling, --compare-within, -N ROUNDS, --seed N and --alloc thread|process")
               (go more (record-set o (filters (vec-add (record-ref o filters) a)))))))))))
 
 ;; Every text a number, or none of them.
@@ -591,7 +636,8 @@
   (def g0 (gc-count 0))
   (def g1 (gc-count 1))
   (def g2 (gc-count 2))
-  (def b0 (allocated))
+  (def alloc (record-ref run alloc))
+  (def b0 (bench-allocated alloc))
   (def (Tuple ns bytes)
     (match (record-ref run call)
       ;; `#:setup-every`: each call on its own, its setup outside the time
@@ -601,7 +647,7 @@
          (if (< i k)
              (match (call) ((Tuple t b) (go (+ i 1L) (+ total t) (+ bytes b))))
              (Tuple total bytes))))
-      (None (let ((t (time-batch run k))) (Tuple t (- (allocated) b0))))))
+      (None (let ((t (time-batch run k))) (Tuple t (- (bench-allocated alloc) b0))))))
   (Sample (ns ns) (bytes bytes)
           (gc0 (cast System.Int64 (- (gc-count 0) g0)))
           (gc1 (cast System.Int64 (- (gc-count 1) g1)))
@@ -915,6 +961,24 @@
                      (if (and (not (string-empty? gov)) (not (= gov "performance")))
                          #"bench: warning: CPU frequency governor is '${gov}'; results will be noisy" ""))))
 
+;; What alloc/op counts: a line when it is every thread's, by `--alloc` or by
+;; a benchmark's `#:alloc`. The default, this thread's, says nothing.
+(: (-> (List Selection) (List string)))
+(defun (alloc-lines chosen)
+  (def default (box-ref alloc-default))
+  (def others
+    (loop (:for p chosen)
+          (:let b (sel-bench p))
+          (:when (not (= (alloc-counted (record-ref b alloc)) default)))
+          (:acc (listing (record-ref b name)))))
+  (def what (fun (mode) (if (= mode "process") "every thread of the process" "the measuring thread")))
+  (def names (string-join (list->vec others) ", "))
+  (cond
+    ((list-empty? others)
+     (if (= default "process") (list #"bench: alloc/op counts ${(what default)}") (list)))
+    (else
+     (list #"bench: alloc/op counts ${(what default)}, and ${(what (if (= default "process") "thread" "process"))} for ${names} (#:alloc)"))))
+
 ;; What a run is asked to measure: benchmarks, each with the cases chosen.
 (type (: Selection (Record (: bench Bench) (: cases (List BenchCase)))))
 
@@ -1046,6 +1110,7 @@
   (def s (bench-settings o))
   (def count (case-count chosen))
   (loop (:for l (header-lines count)) (:do (println l)))
+  (loop (:for l (alloc-lines chosen)) (:do (println l)))
   (def layout (layout-for chosen (record-ref o scaling)))
   (print-head layout)
   (flush-port (parameter-ref current-output-port))
@@ -1686,6 +1751,7 @@
 (: (-> string BenchOptions int))
 (defun (run-with-options module o)
   (bench-params-set! (record-ref o params))
+  (box-set! alloc-default (record-ref o alloc))
   (def benches (module-benches module))
   (cond
     ((record-ref o serve)
@@ -1757,7 +1823,7 @@
 ;; than a second is not run again: that run is the measurement.
 (: (-> string (-> long void) void))
 (defun (time-it-run label batch)
-  (def run (CaseRun (batch batch) (call None)))
+  (def run (CaseRun (batch batch) (call None) (alloc "")))
   (def first (time-batch run 1L))
   (if (>= first 1000000000L)
       (println (str label ": " (time-text (cast System.Double first))
@@ -1823,7 +1889,7 @@
 ;; and `n` timed ones, as `time-it` always did, reported on the new line.
 (: (-> string int int (-> long void) void))
 (defun (time-it-fixed label times warm batch)
-  (def run (CaseRun (batch batch) (call None)))
+  (def run (CaseRun (batch batch) (call None) (alloc "")))
   (loop (:for _ (up-from 0 #:to warm)) (:do ((record-ref run batch) 1L)))
   (def taken (loop (:for _ (up-from 0 #:to times)) (:acc out (vecing (take-sample run 1L))) => out))
   (def xs (vec-map (fun (x) (cast System.Double (record-ref x ns))) taken))

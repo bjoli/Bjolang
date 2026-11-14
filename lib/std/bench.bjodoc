@@ -50,7 +50,10 @@
 
     The median per call, its median absolute deviation as a percentage
     (@code{±}), the fastest sample, the bytes allocated per call, and the
-    collections per thousand calls of each generation. The marks are
+    collections per thousand calls of each generation. The bytes are those
+    of the measuring thread, unless @code{--alloc process} or a
+    benchmark's @code{#:alloc 'process} counts every thread's, and the
+    header then says so. The marks are
     @code{noisy} (± above 3%), @code{unsteady}, outliers (beyond Tukey's
     fences and 2% from the median), and for @code{#:setup-every} a body
     below the clock's resolution.
@@ -69,8 +72,9 @@
     @code{--save FILE} keeps every sample, and @code{--compare FILE}
     compares with what was kept: see @code{(std bench store)}.
     @code{--compare-within} compares the benchmarks of each @code{#:group}
-    with its first, in @code{-N} interleaved rounds. @code{parse-bench-args}
-    lists them all.
+    with its first, in @code{-N} interleaved rounds. @code{--alloc process}
+    counts the allocation of every thread. @code{parse-bench-args} lists
+    them all.
 
     @strong{Two versions.} @code{bjo bench FILE --against REF} runs the
     file against itself at a git ref, or against another path, in
@@ -99,6 +103,7 @@
   (form (def/bench name #:once n body ...))
   (form (def/bench name #:group group body ...))
   (form (def/bench name #:skip why body ...))
+  (form (def/bench name #:alloc 'process body ...))
   (arg name "A string: the benchmark's name, which the filters of a run match.")
   (arg setup-name "A name the setup binds, which the body and the bindings after it can use.")
   (arg setup-expr "Its value: made once, before the benchmark is warmed up, outside the time.")
@@ -152,6 +157,13 @@
       @item{@code{#:once n} is for bodies of seconds: no warm-up and no
         calibration, @code{n} runs timed one at a time, the first cold.
         Each is shown under the row.}
+      @item{@code{#:alloc 'process} counts the allocation of every thread
+        in @code{alloc/op}, for a body that hands work to fibers or the
+        pool, whose allocation the measuring thread does not see. It also
+        counts the JIT's background compiles, timers and anything else
+        running, so it is noisier. @code{#:alloc 'thread}, the default,
+        counts the measuring thread's, exactly. It replaces
+        @code{--alloc} for this benchmark.}
     }
     """))
 
@@ -223,6 +235,7 @@
   (field group "Its #:group, or empty.")
   (field skip "Why it is skipped, or empty.")
   (field once "The number of cold runs of a #:once benchmark; 0 for a calibrated one.")
+  (field alloc "Its #:alloc, \"thread\" or \"process\", or empty for the run's --alloc.")
   (field param-names "The names of its parameters, in order.")
   (field cases "Makes its cases: a function, so that the values are read after --params.")
   (see BenchCase registered-benches))
@@ -236,7 +249,8 @@
 (:doc CaseRun
   (summary "What a prepared case runs.")
   (field batch "Runs the body k times, its value kept alive each time.")
-  (field call "For #:setup-every: one call after its setup, answering the call's nanoseconds and bytes.")
+  (field call "For #:setup-every: one call after its setup, returning the call's nanoseconds and bytes.")
+  (field alloc "Which allocation is counted: \"thread\", \"process\", or empty for the run's --alloc.")
   (see measure-case))
 
 (:doc registered-benches
@@ -275,6 +289,7 @@
   (field compare-within "--compare-within: each #:group's cases against its first, in rounds.")
   (field rounds "-N: the rounds of --compare-within. 20.")
   (field seed "--seed: the order of the rounds; from the clock unless given.")
+  (field alloc "--alloc: what alloc/op counts where a benchmark does not say, \"thread\" or \"process\". \"thread\".")
   (see parse-bench-args bench-settings))
 
 (:doc parse-bench-args
@@ -288,8 +303,8 @@
     N}, @code{--max-time S}, @code{--params P=V,...}, @code{--save FILE},
     @code{--compare FILE}, @code{--alpha P}, @code{--threshold PCT},
     @code{--p-raw}, @code{--fail-slower PCT}, @code{--compare-within},
-    @code{-N ROUNDS}, @code{--seed N}, @code{--serve} and @code{--cases
-    I,J,...}. A percentage is written @code{2} or @code{2%}. Anything else
+    @code{-N ROUNDS}, @code{--seed N}, @code{--alloc thread|process},
+    @code{--serve} and @code{--cases I,J,...}. A percentage is written @code{2} or @code{2%}. Anything else
     that starts with @code{--} is an error; the rest are names.
     """))
 
@@ -513,6 +528,7 @@
   (arg group "The #:group, or empty.")
   (arg skip "The #:skip reason, or empty.")
   (arg once "The #:once count, or 0.")
+  (arg alloc "Its #:alloc, or empty.")
   (arg param-names "The parameters' names.")
   (arg cases "Makes the cases.")
   (returns "0, so that the call is a top-level def.")
@@ -540,8 +556,9 @@
   (returns "The nanoseconds."))
 
 (:doc bench-allocated
-  (summary "The bytes this thread has allocated so far.")
-  (returns "The bytes."))
+  (summary "The bytes allocated so far, by this thread or by the process.")
+  (arg mode "\"thread\", \"process\", or empty for the run's --alloc.")
+  (returns "The bytes. A thread's count is exact; the process's also holds the runtime's own work."))
 
 (:doc time-it-run
   (summary "What time-it expands to: measures a batch with --quick's targets and prints its line.")

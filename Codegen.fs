@@ -9586,6 +9586,53 @@ let generateProgram
                         r
                         $"'%s{first}' and '%s{second}' are both '%s{spelled.TrimStart '@'}' in the C# this module is compiled to, which cannot declare one name twice. Rename one of them."
                 | _ -> ())
+
+            // The same for types: `Some-clash` and `Somesubclash` are one C#
+            // class, and so are their impl classes (CS0101). An alias declares
+            // nothing. A newtype has no class, but its impls do, named after
+            // it. The cases of a union are checked within it, since each
+            // union's cases are its own.
+            let bare (key: string) =
+                match Naming.typeKeyParts key with
+                | Some (_, name) -> name
+                | None -> key
+
+            let reportClashes (named: (string * Lexer.Range) list) =
+                named
+                |> List.distinctBy fst
+                |> List.groupBy (fun (n, _) -> declaredTypeName n)
+                |> List.iter (fun (spelled, group) ->
+                    match group with
+                    | (first, _) :: (second, r) :: _ ->
+                        codegenError
+                            r
+                            $"'%s{bare first}' and '%s{bare second}' are both '%s{spelled.TrimStart '@'}' in the C# this module is compiled to, which cannot declare one name twice. Rename one of them."
+                    | _ -> ())
+
+            let typeDefs =
+                innerDecls
+                |> List.collect (function
+                    | TType (defs, _)
+                    | TTypeRec (defs, _) -> defs
+                    | _ -> [])
+
+            typeDefs
+            |> List.filter (fun td ->
+                match td.Kind with
+                | Alias _ -> false
+                | _ -> true)
+            |> List.map (fun td -> td.Name, td.Range)
+            |> reportClashes
+
+            for td in typeDefs do
+                match td.Kind with
+                | Union cases ->
+                    cases
+                    |> List.map (function
+                        | SimpleCase (n, r) -> n, r
+                        | DataCase (n, _, r) -> n, r)
+                    |> reportClashes
+                | _ -> ()
         | _ -> ()
 
     // Where each top-level name is emitted from, and under what member name.

@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* Benchmarks can count every thread's allocation; a loop with no exit and C# type-name clashes are reported
+
+- ~alloc/op~ counted the measuring thread only, so a body that hands work
+  to the pool or spawns fibers allocated more than it said. ~#:alloc
+  'process~ on a ~def/bench~, or ~--alloc process~ for the run, counts
+  every thread of the process (~GC.GetTotalAllocatedBytes(precise: true)~),
+  which also takes in the JIT's background work and timers. The header says
+  which was counted, and names the benchmarks whose ~#:alloc~ differs from
+  the run's. ~Bench~, ~CaseRun~ and ~BenchOptions~ have an ~alloc~ field,
+  and ~bench-allocated~ takes the mode.
+- A named let in which every branch calls the loop again never returns, and
+  nothing gives its result a type. A trait it is then needed for, as by
+  ~length~, was reported as "no implementation ... for '?a' ... no head
+  constructor"; it is now reported as that loop never returning, with its
+  location. Only the branches of ~if~, ~match~ and the ~let~ forms are
+  followed, so a loop that leaves by ~panic!~ is not named. Unused, such a
+  result is still emitted as ~object~, which no value ever reaches.
+- Two types, or two cases of a union, whose names C# spells alike, such as
+  ~Some-clash~ and ~Somesubclash~, are an error at the declaration, as two
+  such values already were. They gave CS0101 in the C#.
+
 * ~write-json~ writes as it goes; unreachable nested ~or~ and ~:is~ clauses are reported
 
 - ~write-json~ sends its builder to the port each time it holds 32 KB, and

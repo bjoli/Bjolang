@@ -58,6 +58,33 @@ let atLevel (f: unit -> 'a) : 'a =
 /// would then drop a type parameter that the interface demands of it.
 let freshMetaInner () : HMType = atLevel freshMeta
 
+/// Result types of named lets in which every exit calls the loop again, with
+/// the loop's name and range. Recorded by `inferLetRec`. Nothing gives such a
+/// result a type, so an error about an unresolved meta uses this to name the
+/// loop instead.
+let private loopsWithoutExit = ResizeArray<MetaVar * string * Lexer.Range>()
+
+let recordLoopWithoutExit (result: MetaVar) (name: string) (r: Lexer.Range) : unit =
+    loopsWithoutExit.Add(result, name, r)
+
+/// The name and range of the loop with no exit whose result is `t`, when `t`
+/// is still an unresolved meta.
+let loopWithoutExitFor (t: HMType) : (string * Lexer.Range) option =
+    let rec chase t =
+        match t with
+        | TMeta { Value = Some inner } -> chase inner
+        | t -> t
+
+    match chase t with
+    | TMeta m ->
+        loopsWithoutExit
+        |> Seq.tryFind (fun (result, _, _) ->
+            match chase (TMeta result) with
+            | TMeta r -> r.Id = m.Id
+            | _ -> false)
+        |> Option.map (fun (_, name, r) -> name, r)
+    | _ -> None
+
 let mutable private nextEffectId = 0
 
 /// A fresh, unsolved effect: what an `EPoly` becomes at a use site.
