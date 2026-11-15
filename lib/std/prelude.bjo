@@ -3911,6 +3911,22 @@
         ((Err e) (Err e))
         ((Ok it) ,(try-steps #'it rest))))))
 
+;; `(:acc found (finding x))`: `(Some x)` for the first round that reaches it,
+;; which ends the loop, or `None` when the loop ends first.
+;;
+;; - A `folding` from `None` to `(Some x)`, and a `:finish` after it.
+;; - With `#:when cond`, `cond` is evaluated once, and gates both: a round it
+;;   does not hold for neither finds nor finishes.
+(def/acc-clause (finding form inject compare)
+  (syntax-match form
+    ((_ name (_ x)) #'(begin (:acc ,name (folding None (Some ,x))) (:finish #t)))
+    ((_ (_ x)) #'(begin (:acc (folding None (Some ,x))) (:finish #t)))
+    ((_ name (_ x) #:when c)
+     #'(begin (:let found? ,c) (:acc ,name (folding None (Some ,x)) #:when found?) (:finish found?)))
+    ((_ (_ x) #:when c)
+     #'(begin (:let found? ,c) (:acc (folding None (Some ,x)) #:when found?) (:finish found?)))
+    (bad (syntax-error bad "finding takes one expression: (:acc found (finding x)), or {finding x (:for x xs)}"))))
+
 ;; ---------------------------------------------------------------------------
 ;; Paths: get, try-get, set, update and set!
 ;; ---------------------------------------------------------------------------

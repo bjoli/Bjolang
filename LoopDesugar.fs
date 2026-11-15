@@ -386,6 +386,12 @@ let private prologueAsLet (s: SExpr) : SExpr =
     | other ->
         failwithf $"Invalid (:prologue ...) at %s{Lexer.formatPos (getRange other)}. Expected: (:prologue pattern expr)"
 
+/// A loop clause a macro is to be asked about: the `:for` of a clause macro,
+/// or the `:acc` of a collector macro.
+type private MacroClause =
+    | ForClause of Expansion
+    | AccClause of Expansion
+
 /// Expands the clause macros of a clause list, and places what they give.
 ///
 /// A `(:for pat (head ...))` whose `head` is a clause macro (`def/loop-clause`) is
@@ -412,6 +418,12 @@ let private prologueAsLet (s: SExpr) : SExpr =
 /// of the list there is no clause before it, and its prologue is answered
 /// instead: `desugarLoop` binds it before the loop, and a `(:subloop ...)`
 /// form's is put before the form.
+///
+/// A collector macro (`def/acc-clause`), at the head of the collector in
+/// `(:acc [acc] (head ...) [#:when cond])`, is replaced by the clauses it
+/// returns, all of them where the `:acc` was and in that order. An
+/// `:acc` is not a driver and stands in no driver group, so the clauses may
+/// not be drivers, a bare `(:subloop)` or a `(:prologue ...)`.
 ///
 /// `inExpansion` is for a macro's own clauses: every prologue among them, the
 /// nested macros' too, is answered as the macro's, wherever it stands.
@@ -447,14 +459,52 @@ let rec private placeClauses (inExpansion: bool) (forms: SExpr list) : SExpr lis
         | SList([ _; _; SList(SAtom { Token = Symbol h } :: _, _) ], _) -> headName h
         | _ -> "?"
 
+    let accMacroName (form: SExpr) =
+        match form with
+        | SList(_ :: SAtom { Token = Symbol _ } :: SList(SAtom { Token = Symbol h } :: _, _) :: _, _)
+        | SList(_ :: SList(SAtom { Token = Symbol h } :: _, _) :: _, _) -> headName h
+        | _ -> "?"
+
     for form in forms do
         let expansion =
             match form with
-            | SList([ SAtom { Token = Keyword "for" }; _; SList(SAtom { Token = Symbol _ } :: _, _) ], _) -> clauseExpandHook form
+            | SList([ SAtom { Token = Keyword "for" }; _; SList(SAtom { Token = Symbol _ } :: _, _) ], _) ->
+                clauseExpandHook form |> Option.map ForClause
+            | SList(SAtom { Token = Keyword "acc" } :: _, _) -> accExpandHook form |> Option.map AccClause
             | _ -> None
 
+        // Each kind is asked in its own clause only. One in the other's would
+        // read as a call to its transformer, and fail later as a type error.
+        if expansion.IsNone then
+            match form with
+            | SList([ SAtom { Token = Keyword "for" }; _; SList(SAtom { Token = Symbol h } :: _, _) ], r) when isAccMacroName h ->
+                failwithf
+                    $"'%s{headName h}' at %s{Lexer.formatPos r} is a collector macro, and goes in an (:acc ...): (:acc name (%s{headName h} ...))."
+            | SList(SAtom { Token = Keyword "acc" } :: _, r) when (accMacroName form) <> "?" && isClauseMacroName (accMacroName form) ->
+                failwithf
+                    $"'%s{accMacroName form}' at %s{Lexer.formatPos r} is a clause macro, and goes in a (:for ...): (:for x (%s{accMacroName form} ...))."
+            | _ -> ()
+
         match expansion with
-        | Some expansion ->
+        | Some(AccClause expansion) ->
+            clauseResolves <- expansion.Resolve :: clauseResolves
+            let prologue, placed = placeClauses true (spliceBegin expansion.Form)
+
+            let misplaced =
+                placed
+                |> List.exists (fun c ->
+                    isDriverForm c
+                    || (match c with
+                        | SList([ SAtom { Token = Keyword "subloop" } ], _) -> true
+                        | _ -> false))
+
+            if misplaced || not prologue.IsEmpty then
+                failwithf
+                    $"The collector macro '%s{accMacroName form}' at %s{Lexer.formatPos (getRange form)} returns a driver, a (:subloop) or a (:prologue ...). Its clauses go where the (:acc ...) was, which is in no driver group: a collector macro returns accumulators and the clauses that act on them, such as (:let ...), (:when ...) and (:finish ...)."
+
+            flush ()
+            out.AddRange placed
+        | Some(ForClause expansion) ->
             clauseResolves <- expansion.Resolve :: clauseResolves
             let prologue, placed = placeClauses true (spliceBegin expansion.Form)
             let drivers = placed |> List.takeWhile isDriverForm

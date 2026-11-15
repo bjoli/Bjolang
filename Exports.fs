@@ -104,6 +104,7 @@ let metadata
     (declaredPatternMacros: string list)
     (declaredHashMacros: string list)
     (declaredClauseMacros: string list)
+    (declaredAccMacros: string list)
     (inputFilePath: string)
     (isLibrary: bool)
     : ModuleMetadata.Metadata =
@@ -121,6 +122,7 @@ let metadata
                 && declaredPatternMacros.IsEmpty
                 && declaredHashMacros.IsEmpty
                 && declaredClauseMacros.IsEmpty
+                && declaredAccMacros.IsEmpty
             )
 
         if not (isLibrary && publishesMacros) then
@@ -1716,6 +1718,7 @@ let metadata
     let patternMacros = publish declaredPatternMacros
     let hashMacros = publish declaredHashMacros
     let clauseMacros = publish declaredClauseMacros
+    let accMacros = publish declaredAccMacros
 
     if isLibrary && not declaredClauseMacros.IsEmpty then
         Diagnostics.progress (
@@ -1723,6 +1726,13 @@ let metadata
                 "Publishing %d clause macro(s): %s"
                 declaredClauseMacros.Length
                 (String.concat ", " declaredClauseMacros))
+
+    if isLibrary && not declaredAccMacros.IsEmpty then
+        Diagnostics.progress (
+            sprintf
+                "Publishing %d collector macro(s): %s"
+                declaredAccMacros.Length
+                (String.concat ", " declaredAccMacros))
 
     if isLibrary && not declaredMacros.IsEmpty then
         Diagnostics.progress (
@@ -1822,8 +1832,9 @@ let metadata
       PatternMacros = patternMacros
       HashMacros = hashMacros
       ClauseMacros = clauseMacros
+      AccMacros = accMacros
       MacroTraitMethods =
-        if macros.IsEmpty && patternMacros.IsEmpty && hashMacros.IsEmpty && clauseMacros.IsEmpty then []
+        if macros.IsEmpty && patternMacros.IsEmpty && hashMacros.IsEmpty && clauseMacros.IsEmpty && accMacros.IsEmpty then []
         // The key a method is bound under, and the bare name a template
         // writes.
         else

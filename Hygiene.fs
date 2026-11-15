@@ -47,6 +47,18 @@ let mutable hashExpandHook: SExpr -> Expansion option = fun _ -> None
 /// `LoopDesugar` asks it for each `:for` before the clauses are read.
 let mutable clauseExpandHook: SExpr -> Expansion option = fun _ -> None
 
+/// Expands one loop clause `(:acc [acc] (head ...) [#:when cond])` whose `head`
+/// is a collector macro (`def/acc-clause`), handed the whole clause.
+/// Installed by `Macro.install`; `LoopDesugar` asks it for each `:acc` before
+/// the clauses are read.
+let mutable accExpandHook: SExpr -> Expansion option = fun _ -> None
+
+/// Whether a head symbol names a clause macro, or a collector macro. Asked
+/// where the other kind is expanded, so that one written in the wrong clause
+/// says so rather than reading as a call to its transformer.
+let mutable isClauseMacroName: string -> bool = fun _ -> false
+let mutable isAccMacroName: string -> bool = fun _ -> false
+
 /// Whether a head symbol names a macro, without running the transformer.
 ///
 /// `parseBody` needs to know before it decides how to read a form, because a

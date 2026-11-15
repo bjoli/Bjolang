@@ -531,6 +531,7 @@ let private surfaceOf
     (patternMacros: ModuleMetadata.MacroEntry list)
     (hashMacros: ModuleMetadata.MacroEntry list)
     (clauseMacros: ModuleMetadata.MacroEntry list)
+    (accMacros: ModuleMetadata.MacroEntry list)
     : ImportSurface =
     let bare = Naming.bareTypeName moduleName
 
@@ -580,6 +581,7 @@ let private surfaceOf
         @ (macros |> List.map (fun m -> m.Name))
         @ (patternMacros |> List.map (fun m -> m.Name))
         @ (clauseMacros |> List.map (fun m -> m.Name))
+        @ (accMacros |> List.map (fun m -> m.Name))
         |> Set.ofList
 
       HashMacros = hashMacros |> List.map (fun m -> m.Name) |> Set.ofList
@@ -1408,12 +1410,13 @@ let private registerMacros
     (patternEntries: ModuleMetadata.MacroEntry list)
     (hashEntries: ModuleMetadata.MacroEntry list)
     (clauseEntries: ModuleMetadata.MacroEntry list)
+    (accEntries: ModuleMetadata.MacroEntry list)
     (decls: Decl list)
     (renaming: Map<string, string>)
     (hashRenaming: Map<string, string>)
     : unit =
 
-    if not (entries.IsEmpty && patternEntries.IsEmpty && hashEntries.IsEmpty && clauseEntries.IsEmpty) then
+    if not (entries.IsEmpty && patternEntries.IsEmpty && hashEntries.IsEmpty && clauseEntries.IsEmpty && accEntries.IsEmpty) then
         // The name, and the module whose class actually holds it. `""` is this
         // one — the spelling a `.dll`'s metadata uses for a name its own module
         // defined, and the only thing a `DDefun` here can mean.
@@ -1502,6 +1505,11 @@ let private registerMacros
             | None -> ()
             | Some visibleName -> Macro.registerClause (bindingOf "clause macro" entry entry.Transformer visibleName)
 
+        for entry in accEntries do
+            match Map.tryFind entry.Name renaming with
+            | None -> ()
+            | Some visibleName -> Macro.registerAcc (bindingOf "collector macro" entry entry.Transformer visibleName)
+
         for entry in hashEntries do
             match Map.tryFind entry.Name hashRenaming with
             | None -> ()
@@ -1535,6 +1543,7 @@ type LoadedModule = {
     PatternMacros: ModuleMetadata.MacroEntry list
     HashMacros: ModuleMetadata.MacroEntry list
     ClauseMacros: ModuleMetadata.MacroEntry list
+    AccMacros: ModuleMetadata.MacroEntry list
     Assembly: System.Reflection.Assembly option
 }
 
@@ -1585,6 +1594,7 @@ type private CachedDll =
       PatternMacros: ModuleMetadata.MacroEntry list
       HashMacros: ModuleMetadata.MacroEntry list
       ClauseMacros: ModuleMetadata.MacroEntry list
+      AccMacros: ModuleMetadata.MacroEntry list
       Assembly: System.Reflection.Assembly
       /// Everything reading it added to the link set — itself, and the
       /// transitive dependencies its metadata named.
@@ -2381,7 +2391,7 @@ let loadModuleGraph
                 else
                     None
 
-            let parsedDecls, carriedDecls, deps, macros, patternMacros, hashMacros, clauseMacros, assembly =
+            let parsedDecls, carriedDecls, deps, macros, patternMacros, hashMacros, clauseMacros, accMacros, assembly =
                 match cached with
                 | Some hit ->
                     // The link set is per compilation and the parse is not, so
@@ -2397,7 +2407,7 @@ let loadModuleGraph
 
                     InferExpr.runGrammarCheck <- runGrammarCheck
                     assembliesByModule[Naming.moduleKeyOfPath absPath] <- hit.Assembly
-                    hit.Decls, hit.Carried, [], hit.Macros, hit.PatternMacros, hit.HashMacros, hit.ClauseMacros, Some hit.Assembly
+                    hit.Decls, hit.Carried, [], hit.Macros, hit.PatternMacros, hit.HashMacros, hit.ClauseMacros, hit.AccMacros, Some hit.Assembly
                 | None ->
 
                 if absPath.EndsWith(".dll") then
@@ -2797,6 +2807,7 @@ let loadModuleGraph
                               PatternMacros = meta.PatternMacros
                               HashMacros = meta.HashMacros
                               ClauseMacros = meta.ClauseMacros
+                              AccMacros = meta.AccMacros
                               Assembly = asm
                               // The resolved paths rather than the entries: a
                               // replay adds assemblies, and resolving a module
@@ -2805,7 +2816,7 @@ let loadModuleGraph
                               Linked = absPath :: linkedDeps
                               Frameworks = meta.Frameworks }
 
-                    decls, carriedDecls, [], meta.Macros, meta.PatternMacros, meta.HashMacros, meta.ClauseMacros, Some asm
+                    decls, carriedDecls, [], meta.Macros, meta.PatternMacros, meta.HashMacros, meta.ClauseMacros, meta.AccMacros, Some asm
                 else
                     // Reported rather than left to `File.ReadAllText`, whose
                     // `FileNotFoundException` is not a diagnostic and so prints
@@ -2859,6 +2870,7 @@ let loadModuleGraph
                     let localPatternMacros = declaredHere "def/pattern"
                     let localHashMacros = declaredHere "def/hash-extend"
                     let localClauseMacros = declaredHere "def/loop-clause"
+                    let localAccMacros = declaredHere "def/acc-clause"
 
                     // Resolved *and built*: an imported `.bjo` becomes a `.dll`
                     // here, so every edge in the graph names a compiled unit and
@@ -2904,7 +2916,7 @@ let loadModuleGraph
                         // keyed by path and shared by every importer.
                         let m = resolvedModules[dep]
                         let surface =
-                            surfaceOf m.ModuleName m.ParsedDecls m.Carried m.Macros m.PatternMacros m.HashMacros m.ClauseMacros
+                            surfaceOf m.ModuleName m.ParsedDecls m.Carried m.Macros m.PatternMacros m.HashMacros m.ClauseMacros m.AccMacros
                         let renaming = defRenaming r (Path.GetFileName dep) surface spec.Modifiers
 
                         if spec.Path <> preludePath then
@@ -2933,6 +2945,7 @@ let loadModuleGraph
                                 m.PatternMacros
                                 m.HashMacros
                                 m.ClauseMacros
+                                m.AccMacros
                                 m.ParsedDecls
                                 renaming
                                 (hashRenaming surface spec.Modifiers)
@@ -2954,6 +2967,7 @@ let loadModuleGraph
                             Macro.aliasPattern newName oldName |> ignore
                             Macro.aliasHash newName oldName |> ignore
                             Macro.aliasClause newName oldName |> ignore
+                            Macro.aliasAcc newName oldName |> ignore
                         | _ -> ()
 
                     // Set immediately before parsing, and not earlier: loading a
@@ -2963,6 +2977,7 @@ let loadModuleGraph
                     Macro.setLocalPatternMacros localPatternMacros
                     Macro.setLocalHashMacros localHashMacros
                     Macro.setLocalClauseMacros localClauseMacros
+                    Macro.setLocalAccMacros localAccMacros
                     // Saved and put back: parsing a module can load and parse
                     // another, and each answers `(current-module)` for itself.
                     let outerModuleKey = Parser.currentModuleKey
@@ -2996,7 +3011,7 @@ let loadModuleGraph
                             else
                                 Map.add ownKey kept Diagnostics.ambiguousImports
 
-                    setAmbiguous (Set.unionMany [ localMacros; localPatternMacros; localHashMacros; localClauseMacros ])
+                    setAmbiguous (Set.unionMany [ localMacros; localPatternMacros; localHashMacros; localClauseMacros; localAccMacros ])
 
                     Diagnostics.withheldNames <-
                         match withheldNames edgeSurfaces with
@@ -3011,7 +3026,7 @@ let loadModuleGraph
 
                     // And a name this module defines wins over an import (rule
                     // 1), so it is no ambiguity.
-                    setAmbiguous (Set.unionMany [ localMacros; localPatternMacros; localHashMacros; localClauseMacros; ownNames parsed ])
+                    setAmbiguous (Set.unionMany [ localMacros; localPatternMacros; localHashMacros; localClauseMacros; localAccMacros; ownNames parsed ])
 
                     // `(export name)` or `(re-export name)` of an imported
                     // macro publishes the macro again
@@ -3032,6 +3047,7 @@ let loadModuleGraph
                     Macro.setLocalPatternMacros Set.empty
                     Macro.setLocalHashMacros Set.empty
                     Macro.setLocalClauseMacros Set.empty
+                    Macro.setLocalAccMacros Set.empty
 
                     // Only the file being compiled has an entry point. A `main`
                     // in a module this one imports is one of its functions.
@@ -3054,7 +3070,7 @@ let loadModuleGraph
                         else
                             parsed
 
-                    parsed, [], (importEdges |> List.map (fun (dep, _, _) -> dep)), [], [], [], [], None
+                    parsed, [], (importEdges |> List.map (fun (dep, _, _) -> dep)), [], [], [], [], [], None
 
             // Dependencies were loaded above, before this module was parsed. A
             // `.dll` has none to load: its transitive deps are link-only and
@@ -3084,6 +3100,7 @@ let loadModuleGraph
                 PatternMacros = patternMacros
                 HashMacros = hashMacros
                 ClauseMacros = clauseMacros
+                AccMacros = accMacros
                 Assembly = assembly
             }
             currentPath.Remove(absPath) |> ignore
@@ -3394,14 +3411,15 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         //
         // Read here rather than after type checking, because `DMacro` does not
         // survive it: a macro is checked as the `defun` it also produced.
-        let declaredMacros, declaredPatternMacros, declaredHashMacros, declaredClauseMacros =
+        let declaredMacros, declaredPatternMacros, declaredHashMacros, declaredClauseMacros, declaredAccMacros =
             match List.tryLast parsedModuleDecls with
             | Some(DModule(_, decls, _)) ->
                 decls |> List.choose (function DMacro(n, _) -> Some n | _ -> None),
                 decls |> List.choose (function DPatternMacro(n, _) -> Some n | _ -> None),
                 decls |> List.choose (function DHashMacro(n, _) -> Some n | _ -> None),
-                decls |> List.choose (function DClauseMacro(n, _) -> Some n | _ -> None)
-            | _ -> [], [], [], []
+                decls |> List.choose (function DClauseMacro(n, _) -> Some n | _ -> None),
+                decls |> List.choose (function DAccMacro(n, _) -> Some n | _ -> None)
+            | _ -> [], [], [], [], []
 
         // The parse gate. A form that failed to parse contributed no
         // declarations, so what follows would type check a module with holes in
@@ -3710,7 +3728,7 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         // succeeded still has warnings to pass on, and they are collected now
         // rather than printed where they were raised.
         Diagnostics.report ()
-        Some (env, uniquifiedAst, dllDeps, declaredMacros, declaredPatternMacros, declaredHashMacros, declaredClauseMacros)
+        Some (env, uniquifiedAst, dllDeps, declaredMacros, declaredPatternMacros, declaredHashMacros, declaredClauseMacros, declaredAccMacros)
     with ex ->
         // Whatever ended the compilation joins what the phase gates already
         // collected, so that one report answers for the whole of it. A bug is

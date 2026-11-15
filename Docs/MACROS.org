@@ -589,6 +589,44 @@ zipped columns on one row. A macro that binds the caller's pattern with
 ~(:as pat expr)~ among its drivers instead keeps it in the group, where a test
 beside the macro reads it.
 
+** ~def/acc-clause~: a macro for a loop's ~:acc~
+
+~def/acc-clause~ writes the same three declarations into a fifth table. Its
+transformer runs when the name heads the *collector* of a loop's ~:acc~,
+~(:acc name (head ...) #:when cond)~, the name and the ~#:when~ optional, and
+it is handed the whole clause. A comprehension's ~{head x clause ...}~ is a
+loop with such an ~:acc~, so a collector macro is one there too. What it
+returns is loop clauses, one or several in a ~(begin ...)~, and they go where
+the ~:acc~ was, in that order.
+
+#+BEGIN_SRC scheme
+;; The prelude's finding: the first value, which ends the loop.
+(def/acc-clause (finding form inject compare)
+  (syntax-match form
+    ((_ name (_ x)) #'(begin (:acc ,name (folding None (Some ,x))) (:finish #t)))
+    ((_ (_ x)) #'(begin (:acc (folding None (Some ,x))) (:finish #t)))
+    ((_ name (_ x) #:when c)
+     #'(begin (:let found? ,c) (:acc ,name (folding None (Some ,x)) #:when found?) (:finish found?)))
+    ...))
+
+{finding x (:for x xs) (:when (even? x))}            ;; (Some 8), or None
+(loop (:for x xs) (:acc at (finding x) #:when (> x 3)) => at)
+#+END_SRC
+
+- *What it may return.* Accumulators and the clauses that act in a round:
+  ~:let~, ~:when~, ~:do~, ~:finish~, ~:final~, a ~(:subloop ...)~ form. Not a
+  driver, a bare ~(:subloop)~ or a ~(:prologue ...)~: an ~:acc~ stands in no
+  driver group, and those would open or start one. Each is rejected, naming
+  the macro.
+- *The caller's name and ~#:when~.* They arrive in the clause and the macro
+  places them, so a macro that takes a ~#:when~ matches it in a pattern of its
+  own. One that returns ~:finish~ beside its accumulator should gate both on
+  the condition, evaluated once, as ~finding~ does.
+- *Names and helpers.* As for a clause macro: the template's bindings are
+  renamed, and a free name reaches the macro module's binding.
+- *The other position.* A collector macro in a ~:for~, or a clause macro in an
+  ~:acc~, is rejected with a message naming the clause it goes in.
+
 ** ~def/hash-extend~: a macro spelled ~#name(...)~
 
 #+BEGIN_SRC scheme
@@ -672,9 +710,10 @@ Colour.
 - *Appear anywhere but where a whole expression or declaration is expected.* Not
   as a ~loop~ clause, a ~match~ arm, a ~let~ binding or a type: those are read
   structurally by their parent and never reach the point where a head symbol is
-  dispatched. Two positions are the exception, each with a table of its own: a
-  *pattern* (~def/pattern~ above), and the sequence of a loop's ~:for~
-  (~def/loop-clause~). A *hash macro* is narrower still: expression position only.
+  dispatched. Three positions are the exception, each with a table of its own:
+  a *pattern* (~def/pattern~ above), the sequence of a loop's ~:for~
+  (~def/loop-clause~) and the collector of its ~:acc~ (~def/acc-clause~). A
+  *hash macro* is narrower still: expression position only.
 - *Shadow a special form.* Expansion is tried after every special form has
   failed to match, so a macro named ~if~ is never reached.
 - *Be shadowed by a local binding at a call.* A macro is chosen by its name,
@@ -706,8 +745,8 @@ which is what the hundred-level expansion limit is for.
 |--------------------------------+---------------------------------|
 | the ~Syntax~ type              | ~BjolangRuntime/Syntax.cs~      |
 | ~#'~, ~,@~ and the desugaring  | ~Lexer.fs~, ~Pipeline.read~, ~Parser.desugarSyntaxQuote~ |
-| ~def/macro~, ~def/pattern~, ~def/loop-clause~ | ~DeclParser.parseDeclForms~ |
-| where clause macros' clauses go | ~LoopDesugar.placeClauseMacros~ |
+| ~def/macro~, ~def/pattern~, ~def/loop-clause~, ~def/acc-clause~ | ~DeclParser.parseDeclForms~ |
+| where clause and collector macros' clauses go | ~LoopDesugar.placeClauses~ |
 | marshalling, renaming, the call | ~Macro.fs~                     |
 | the ~BjolangMacros~ metadata   | ~Program.fs~, ~Pipeline.parseMacroEntries~ |
 | ~begin~ splicing               | ~Parser.parseDeclForms~, ~Parser.parseBody~ |
@@ -717,6 +756,7 @@ which is what the hundred-level expansion limit is for.
 | ~#"..."~ across a macro        | ~TestFiles/inc/interp_macros.bjo~, ~TestFiles/099_interpolation.bjo~ |
 | pattern macros                 | ~TestFiles/inc/pattern_macros.bjo~, ~TestFiles/201_pattern_macros.bjo~ |
 | clause macros                  | ~TestFiles/inc/clause_macros.bjo~, ~TestFiles/505_clause_macros.bjo~ |
+| collector macros               | ~TestFiles/inc/acc_macros.bjo~, ~TestFiles/555_acc_macros.bjo~, the prelude's ~finding~ |
 | hash macros                    | ~TestFiles/inc/hashmacros.bjo~, ~TestFiles/215_hash_macros.bjo~, the prelude's ~#fl~ ~#fr~ ~#ch~ ~#map~ |
 | splicing examples              | ~TestFiles/122_splice.bjo~, ~TestFiles/123_begin.bjo~ |
     | ~TestFiles/122_splice.bjo~, ~TestFiles/123_begin.bjo~ |

@@ -7,6 +7,31 @@
 ;; Control
 ;; ---------------------------------------------------------------------------
 
+(:doc finding
+  (summary "An accumulator of the first value a loop reaches it with, which ends the loop: (Some x), or None.")
+  (form (finding x))
+  (arg x "The value to find. Evaluated once, in the first round that reaches the accumulator.")
+  (see if-let)
+  (example """
+    {finding x (:for x xs) (:when (even? x))}      ; the first even element, or None
+    {finding (* x x) :when (> x 3) (:for x xs)}    ; the square of the first above 3
+    (loop (:for (Tuple i x) (enumerate xs))
+          (:acc at (finding i) #:when (= x 0))
+          => at)                                    ; where the first 0 is
+    """)
+  (reference """
+    Written @code{(:acc name (finding x))} in a loop, and
+    @code{{finding x clause ...}} as a comprehension. Its value is
+    @code{(Some x)} for the first round that reaches it, or @code{None} when
+    the loop ends before one does.
+
+    A collector macro, @code{def/acc-clause}: it returns a
+    @code{folding} from @code{None} to @code{(Some x)}, and a
+    @code{(:finish ...)} after it, so the round that finds ends the loop,
+    and the clauses after it in that round do not run. With @code{#:when},
+    the condition is evaluated once and gates both.
+    """))
+
 (:doc if-let
   (summary "Evaluates then with name bound to the value of an Option, or evaluates else when None.")
   (form (if-let (name expr) then else))

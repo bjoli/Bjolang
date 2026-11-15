@@ -1,0 +1,39 @@
+;; Collector macros for 555_acc_macros.bjo.
+(import (std syntax-match))
+(import "clause_helpers.bjo")
+
+;; The sum of the squares: one accumulator, rewritten.
+(def/acc-clause (summing-squares form inject compare)
+  (syntax-match form
+    ((_ name (_ x)) #'(:acc ,name (summing (* ,x ,x))))
+    (bad (syntax-error bad "(:acc name (summing-squares x))"))))
+
+;; The sum of three times each value. The template calls `thrice`, which this
+;; module imports and the loop's module does not: it reaches this module's.
+(def/acc-clause (summing-thrice form inject compare)
+  (syntax-match form
+    ((_ name (_ x)) #'(:acc ,name (summing (thrice ,x))))
+    (bad (syntax-error bad "(:acc name (summing-thrice x))"))))
+
+;; The first even value: a collector macro that answers another, the
+;; prelude's `finding`. `v` is the macro's own: the loop can have a `v` too.
+(def/acc-clause (finding-even form inject compare)
+  (syntax-match form
+    ((_ name (_ x))
+     #'(begin
+         (:let v ,x)
+         (:acc ,name (finding v) #:when (= (% v 2) 0))))
+    ((_ name (_ x) #:when c)
+     #'(begin
+         (:let v ,x)
+         (:acc ,name (finding v) #:when (and ,c (= (% v 2) 0)))))
+    (bad (syntax-error bad "(:acc name (finding-even x))"))))
+
+;; A collector macro that answers a driver: refused at its use.
+(def/acc-clause (summing-pairs form inject compare)
+  (syntax-match form
+    ((_ name (_ x))
+     #'(begin
+         (:for y [1 2])
+         (:acc ,name (summing (+ ,x y)))))
+    (bad (syntax-error bad "(:acc name (summing-pairs x))"))))

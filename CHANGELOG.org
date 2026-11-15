@@ -3,6 +3,23 @@
 
 What each change guarantees, and what it leaves open.
 
+* Collector macros: ~def/acc-clause~, and ~finding~
+
+- ~def/acc-clause~ defines a macro for the collector of a loop's ~:acc~, as
+  ~def/loop-clause~ does for the sequence of a ~:for~. It is handed the whole
+  ~(:acc [name] (head ...) [#:when cond])~ clause and returns loop clauses,
+  which go where the ~:acc~ was. A comprehension ~{head x clause ...}~ is a
+  loop with such an ~:acc~, so it works there too.
+- A collector macro may not return a driver, a bare ~(:subloop)~ or a
+  ~(:prologue ...)~: an ~:acc~ stands in no driver group. A collector macro
+  in a ~:for~, or a clause macro in an ~:acc~, is rejected, naming the clause
+  it goes in.
+- The prelude's ~finding~ is one: ~{finding x (:for x xs) (:when (even? x))}~
+  is ~(Some x)~ for the first round that reaches it, which ends the loop, or
+  ~None~. With ~#:when~ the condition is evaluated once and gates both the
+  accumulator and the finish.
+- The module metadata is version 32: ~AccMacros~ after ~ClauseMacros~.
+
 * ~\u{...}~ in strings, an escape that is not defined is an error, and bjodat reads strings as Bjolang does
 
 - ~\u{H}~ is the code point of 1 to 6 hex digits, in plain and interpolated

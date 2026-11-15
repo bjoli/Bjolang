@@ -761,6 +761,13 @@ type Decl =
     // clause, it answers loop clauses. A table of its own, as for patterns.
     | DClauseMacro of string * Range
 
+    // `(def/acc-clause (name form inject compare) body...)`: a macro for the
+    // collector of a loop's `:acc`. Called with the whole `(:acc [acc] (name
+    // ...) [#:when cond])` clause, it returns loop clauses, which go where the
+    // `:acc` was. A table of its own: a name may be a clause macro and an
+    // collector macro, and neither is asked in the other's position.
+    | DAccMacro of string * Range
+
     /// `(def/dimension ...)`, `(def/unit ...)`, `(def/prefix ...)`: an entry
     /// of the unit table. See Docs/Units.org.
     | DUnitDecl of UnitDecl * Range
@@ -855,7 +862,7 @@ let rec declRange (decl: Decl) : Range =
     | DImplExtern(_, _, _, _, r) | DImplVia(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
     | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
     | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
-    | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DPatternMacro(_, r) | DClauseMacro(_, r) | DHashMacro(_, r)
+    | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DPatternMacro(_, r) | DClauseMacro(_, r) | DAccMacro(_, r) | DHashMacro(_, r)
     | DUnitDecl(_, r)
     | DSyncOnly(_, r) -> r
     | DNoInline(_, r) -> r
@@ -1486,6 +1493,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DGrammar _
         | DMacro _
         | DClauseMacro _
+        | DAccMacro _
         | DUnitDecl _
         | DPatternMacro _
         | DHashMacro _
@@ -1552,6 +1560,7 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DImportClass _
     | DMacro _
     | DClauseMacro _
+    | DAccMacro _
     | DUnitDecl _
     | DPatternMacro _
     | DHashMacro _

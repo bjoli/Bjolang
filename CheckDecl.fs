@@ -983,6 +983,7 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
     // `checkDeclGroup` before any body is looked at.
     | DMacro _
     | DClauseMacro _
+    | DAccMacro _
     | DPatternMacro _
     | DHashMacro _
     | DSyncOnly _
@@ -1730,6 +1731,7 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
                 | DDefun(n, _, _, _, _)
                 | DMacro(n, _)
                 | DClauseMacro(n, _)
+                | DAccMacro(n, _)
                 | DPatternMacro(n, _) -> [ n ]
                 | DDefTuple(ns, _, _) -> ns
                 | DDefPattern(pattern, _, _) -> patternBinders pattern

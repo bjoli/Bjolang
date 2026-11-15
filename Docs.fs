@@ -377,6 +377,7 @@ let private kindsOf (decls: Decl list) : Map<string, Kind> * Set<string> =
         |> List.choose (function
             | DMacro(n, _)
             | DClauseMacro(n, _)
+            | DAccMacro(n, _)
             | DPatternMacro(n, _) -> Some n
             | _ -> None)
         |> Set.ofList
@@ -1178,6 +1179,7 @@ let check (env: Env) (moduleKey: string) (decls: Decl list) (entries: Entry list
                                 $"%s{m}, a method of the exported trait %s{n}, has no (:doc %s{m} ...), at %s{formatPos r}. %s{why}"
             | DMacro(n, r)
             | DClauseMacro(n, r)
+            | DAccMacro(n, r)
             | DPatternMacro(n, r) when not (Set.contains n documented) ->
                 Diagnostics.warn $"The macro %s{n} at %s{formatPos r} has no (:doc %s{n} ...). Every macro is published. %s{why}"
             | DHashMacro(n, r) when not (Set.contains n documentedReaders) ->
