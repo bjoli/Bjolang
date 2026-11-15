@@ -929,11 +929,10 @@ let private quoted (s: string) =
     + "\""
 
 /// A clause is published as written, and what `parseClause` lets one hold is
-/// what bjodat reads too, except in a string. Source writes `\u{41}` where
-/// bjodat writes `\u0041`, and a line continuation depends on the column the
-/// string starts at. A string that writes either is reported, rather than
-/// published as text that does not read back. The lexer rejects every other
-/// escape that bjodat does not have.
+/// what bjodat reads too, escapes included, except for a line continuation in
+/// a string: what it stands for depends on the column the string starts at,
+/// and a published doc puts the string at another. A string that continues a
+/// line is reported, rather than published as text that reads differently.
 let private checkPublishable (clause: Range) =
     // Whether the backslash at `i` ends its line, spaces and tabs after it
     // aside: a line continuation.
@@ -953,23 +952,12 @@ let private checkPublishable (clause: Range) =
                         if i + 1 < written.Length then
                             if written[i] <> '\\' then
                                 scan (i + 1)
-                            elif "ntr\"\\".Contains written[i + 1] then
-                                scan (i + 2)
                             elif continues written i then
-                                // What a continued line stands for depends on
-                                // the column the string starts at, which a
-                                // published doc does not have.
                                 reportAt
                                     t.Range
                                     "this string continues a line with a backslash, which a published doc cannot. Write the doc's text on one line, or as a raw string over several lines."
-                            elif written[i + 1] = 'u' then
-                                reportAt
-                                    t.Range
-                                    "this string writes \\u{...}, which a published doc cannot: bjodat writes a code point as \\uXXXX. Write the character itself."
                             else
-                                reportAt
-                                    t.Range
-                                    $"this string writes \\%c{written[i + 1]}, which a published doc cannot. Write the text without it."
+                                scan (i + 2)
 
                     scan 1
                 | _ -> ()

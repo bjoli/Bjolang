@@ -1,0 +1,57 @@
+;; String escapes, read by both readers that have to read them.
+;;
+;; `554_string_escapes.in` is read twice: included here, so the compiler's
+;; lexer reads it, and fed to this program as its standard input, so bjodat's
+;; reader reads it. Every case is checked against the code points it should
+;; be, and bjodat's reading against the compiler's. A rule changed in one
+;; reader and not the other fails here, and so do columns counted differently
+;; for a line continuation.
+;;
+;; The compiler's refusals are in errors/string_escape_*.bjo, and bjodat's in
+;; 381_bjodat_reader_edges.bjo.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text bjodat-core))
+
+(: escape-cases (Vec (Vec string)))
+(include "554_string_escapes.in")
+
+;; The code points of `s`, as the cases write them.
+(: (-> string string))
+(defun (codes s)
+  (string-join (loop (:for c s) (:acc (vecing (int->string (char->integer c))))) ","))
+
+(: (-> Bjodat (Vec Bjodat)))
+(defun (bjodat-cases v)
+  (match v
+    ((BjoList form)
+     (match (vec-ref (list->vec form) 2)
+       ((BjoVec cases) cases)
+       (_ (vec-empty))))
+    (_ (vec-empty))))
+
+(: (-> Bjodat int string))
+(defun (case-text c i)
+  (match c
+    ((BjoVec parts)
+     (match (vec-ref parts i)
+       ((BjoStr s) s)
+       (_ "<not a string>")))
+    (_ "<not a case>")))
+
+(defun (main args)
+  (loop (:for c escape-cases)
+        (:do (expect (str (vec-ref c 0) ", as the compiler reads it") (codes (vec-ref c 1)) (vec-ref c 2))))
+
+  (match (read-bjodat (parameter-ref current-input-port))
+    ((Err e) (expect "bjodat reads the fixture" e ""))
+    ((Ok v)
+     (def cases (bjodat-cases v))
+     (expect "bjodat finds every case" (vec-length cases) (vec-length escape-cases))
+     (loop (:for i (range 0 (vec-length cases)))
+           (:do (let ((label (case-text (vec-ref cases i) 0))
+                      (read (case-text (vec-ref cases i) 1)))
+                  (expect (str label ", as bjodat reads it") (codes read) (case-text (vec-ref cases i) 2))
+                  (expect (str label ", the same in both") read (vec-ref (vec-ref escape-cases i) 1)))))))
+  0)

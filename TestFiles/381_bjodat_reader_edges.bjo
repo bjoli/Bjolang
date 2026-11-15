@@ -1,4 +1,4 @@
-;; The bjodat reader at its edges: surrogate escapes, the end of a number, the
+;; The bjodat reader at its edges: the escapes it refuses, the end of a number, the
 ;; range of a hex or binary long, the sign of a number, a character literal
 ;; and the line count. And the one-pass and the tree decoders, which have to
 ;; agree on a repeated key, a `#:key` key and a clause that does not begin
@@ -47,32 +47,42 @@
     ((Err e) (str "err: " e))))
 
 (defun (main args)
-  ;; --- surrogates in a \u escape ---------------------------------------
-  ;; Added as they were, they made text that is not UTF-8, and
-  ;; `stringbuilder->string` raised out of the reader.
-  (expect "a low surrogate alone is refused"
-          (read "\"\\uDC00\"")
-          "err: line 1, column 8: a low surrogate with no high surrogate before it")
-  (expect "a high surrogate alone is refused"
-          (read "\"\\uD83D\"")
-          "err: line 1, column 8: a high surrogate has to be followed by \\u and its low surrogate")
-  (expect "a high surrogate and a character that is not its low one"
-          (read "\"\\uD83Dx\"")
-          "err: line 1, column 8: a high surrogate has to be followed by \\u and its low surrogate")
-  (expect "two high surrogates"
-          (read "\"\\uD83D\\uD83D\"")
-          "err: line 1, column 14: a high surrogate has to be followed by \\u and its low surrogate")
-  (expect "through a decoder too, as a refusal"
-          (m-one-pass "{:name \"\\uDC00\"}")
-          "err: line 1, column 15: a low surrogate with no high surrogate before it")
-  (expect "a pair is one character"
-          (match (parse-bjodat "\"\\uD83D\\uDE00\"")
-            ((Ok (BjoStr s)) (displayed (string-length s)))
-            (_ "not a string"))
-          "4")
-  (expect "and the character it is"
-          (read "\"\\uD83D\\uDE00\"")
+  ;; --- escapes: a string is read as Bjolang reads one ------------------
+  ;; 554_string_escapes reads the same strings with the compiler. These are
+  ;; bjodat's refusals, and `\r\n`, which that fixture cannot hold.
+  (expect "an escape Bjolang does not have is refused, at its backslash"
+          (read "\"a\\q\"")
+          "err: line 1, column 3: \\q is not an escape. A string's escapes are \\n, \\t, \\r, \\\", \\\\ and \\u{...}. For a backslash, write \\\\, or write the text as a raw string")
+  (expect "so is JSON's \\0"
+          (read "\"\\0\"")
+          "err: line 1, column 2: \\0 is not an escape. A string's escapes are \\n, \\t, \\r, \\\", \\\\ and \\u{...}. For a backslash, write \\\\, or write the text as a raw string")
+  (expect "and JSON's \\uXXXX"
+          (read "\"\\u0041\"")
+          "err: line 1, column 2: \\u is written \\u{...}, with 1 to 6 hex digits between the braces, as in \\u{E9} or \\u{1F600}")
+  (expect "\\u{} has a digit"
+          (read "\"\\u{}\"")
+          "err: line 1, column 2: \\u is written \\u{...}, with 1 to 6 hex digits between the braces, as in \\u{E9} or \\u{1F600}")
+  (expect "and no more than six"
+          (read "\"\\u{0000041}\"")
+          "err: line 1, column 2: \\u is written \\u{...}, with 1 to 6 hex digits between the braces, as in \\u{E9} or \\u{1F600}")
+  (expect "a surrogate is refused"
+          (read "\"\\u{D800}\"")
+          "err: line 1, column 2: \\u{D800} is not a Unicode scalar value. A surrogate, D800 to DFFF, is half of a UTF-16 pair, and nothing is above 10FFFF")
+  (expect "and so is a value above 10FFFF"
+          (read "\"\\u{110000}\"")
+          "err: line 1, column 2: \\u{110000} is not a Unicode scalar value. A surrogate, D800 to DFFF, is half of a UTF-16 pair, and nothing is above 10FFFF")
+  (expect "a backslash before a space that does not end the line"
+          (read "\"a\\ b\"")
+          "err: line 1, column 3: a backslash before a space is an escape only at the end of a line, where it continues the string on the next. For a backslash, write \\\\")
+  (expect "through a decoder too"
+          (m-one-pass "{:name \"\\q\"}")
+          "err: line 1, column 9: \\q is not an escape. A string's escapes are \\n, \\t, \\r, \\\", \\\\ and \\u{...}. For a backslash, write \\\\, or write the text as a raw string")
+  (expect "\\u{...} is the character"
+          (read "\"\\u{1F600}\"")
           (bjodat->string (BjoStr (list->string (list (integer->char 128512))))))
+  (expect "\\r\\n after a backslash continues the line"
+          (read "\"a\\\r\n b\"")
+          "\"ab\"")
 
   ;; --- a number ends at a delimiter ------------------------------------
   ;; Each of these was read as two values.

@@ -1,0 +1,38 @@
+;; String escapes, read twice: 554_string_escapes.bjo includes this file, so
+;; the compiler's lexer reads it, and it is that program's standard input,
+;; so bjodat's reader reads it. Each case is a label, a string, and the code
+;; points it should read as.
+
+(def escape-cases
+  [["the five" "\n\t\r\"\\" "10,9,13,34,92"]
+   ["u with two digits" "caf\u{E9}" "99,97,102,233"]
+   ["lower case, and outside the BMP" "\u{1f600}" "128512"]
+   ["the first and the last code point" "\u{0}\u{10FFFF}" "0,1114111"]
+   ["six digits" "\u{000041}" "65"]
+   ["a written backslash before u" "\\u{41}" "92,117,123,52,49,125"]
+   ["a line break in the text" "a
+b" "97,10,98"]
+   ["a continued line lines up with the text"
+    "one \
+     two"
+    "111,110,101,32,116,119,111"]
+   ["spaces and tabs before the line break are not text"
+    "one \  	
+     two"
+    "111,110,101,32,116,119,111"]
+   ["indentation beyond the text is kept"
+    "one\
+       two"
+    "111,110,101,32,32,116,119,111"]
+   ["a line indented less loses all of it"
+    "one\
+  two"
+    "111,110,101,116,119,111"]
+   ["an escaped backslash before a line break is a backslash and a line break"
+    "one\\
+two"
+    "111,110,101,92,10,116,119,111"]
+   ["an escape after a continuation"
+    "one\
+     \u{42}"
+    "111,110,101,66"]])

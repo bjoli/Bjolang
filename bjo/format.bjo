@@ -457,8 +457,8 @@
 
 ;; A string's tabs written `\t`, as its value is unchanged by: outside the
 ;; holes of an interpolated string, and never in a raw one, which has no
-;; escapes. A tab after a backslash is an escape the lexer does not know,
-;; which keeps both, so it becomes `\\\t`.
+;; escapes. A tab after a backslash is kept: the continuations are joined
+;; already, so the lexer rejects it, and fmt does not make it mean something.
 (: escape-tabs (-> string string))
 (defun (escape-tabs s)
   (cond
@@ -473,9 +473,6 @@
        (when (< p n)
          (def c (vec-ref cs p))
          (cond
-           ((and (= c #\\) (= (char-at cs (+ p 1)) #\tab))
-            (stringbuilder-add-string! sb "\\\\\\t")
-            (go (+ p 2)))
            ((= c #\\)
             (copy p (+ p 2))
             (go (+ p 2)))

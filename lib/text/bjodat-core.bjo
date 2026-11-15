@@ -624,65 +624,90 @@
     ((and (char>=? c #\A) (char<=? c #\F)) (- (char->integer c) 55))
     (else -1)))
 
-;; The escapes source writes. `\n`, `\t`, `\r`, `\\`, `\"`, `\0`, and `\uXXXX`.
-(: (-> Reader StringBuilder (Result string bool)))
-(defun (read-escape! rd sb)
+;; The escapes of a Bjolang string, read by the rules `readEscape` in the
+;; compiler's Lexer.fs reads them by:
+;;
+;; - `\n`, `\t`, `\r`, `\"` and `\\`.
+;; - `\u{H}`: the character of 1 to 6 hex digits, a Unicode scalar value.
+;; - A backslash that ends its line, spaces and tabs after it aside, continues
+;;   the string on the next line. That line's spaces and tabs up to
+;;   `text-col`, the column the string's text starts at, stand for nothing.
+;; - Any other escape is refused, at its backslash.
+(: (-> Reader StringBuilder int (Result string bool)))
+(defun (read-escape! rd sb text-col)
+  (def row (record-ref rd row))
+  (def col (record-ref rd col))
+  (def refuse (fun (what) (Err (str "line " (int->string row) ", column " (int->string col) ": " what))))
+  (step! rd)
+  (def c (held-code rd))
+  (def add (fun (code) (stringbuilder-add-code! sb code) (step! rd) (Ok #t)))
+  (cond
+    ((= c spent) (Err (at rd "the document ended inside a string")))
+    ((= c 110) (add 10))
+    ((= c 116) (add 9))
+    ((= c 114) (add 13))
+    ((= c 34) (add 34))
+    ((= c 92) (add 92))
+    ((= c 117) (read-code-point! rd sb refuse))
+    ((or (= c 32) (= c 9) (= c 10) (= c 13)) (read-continuation! rd refuse text-col))
+    (else
+     (refuse (str (if (< c 128) (str "\\" (list->string (list (integer->char c)))) (str "a backslash before " (found rd)))
+                  " is not an escape. A string's escapes are \\n, \\t, \\r, \\\", \\\\ and \\u{...}. "
+                  "For a backslash, write \\\\, or write the text as a raw string")))))
+
+;; `\u{H}`, at its `u`.
+(: (-> Reader StringBuilder (-> string (Result string bool)) (Result string bool)))
+(defun (read-code-point! rd sb refuse)
+  (def shape "\\u is written \\u{...}, with 1 to 6 hex digits between the braces, as in \\u{E9} or \\u{1F600}")
   (step! rd)
   (cond
-    ((at-end? rd) (Err (at rd "the document ended inside a string")))
+    ((not (= (held-code rd) 123)) (refuse shape))
     (else
-     (def c (peek rd))
-     (cond
-       ((char=? c #\n) (stringbuilder-add-code! sb 10) (step! rd) (Ok #t))
-       ((char=? c #\t) (stringbuilder-add-code! sb 9) (step! rd) (Ok #t))
-       ((char=? c #\r) (stringbuilder-add-code! sb 13) (step! rd) (Ok #t))
-       ((char=? c #\0) (stringbuilder-add-code! sb 0) (step! rd) (Ok #t))
-       ((char=? c #\\) (stringbuilder-add-code! sb 92) (step! rd) (Ok #t))
-       ((char=? c #\") (stringbuilder-add-code! sb 34) (step! rd) (Ok #t))
-       ((char=? c #\u) (read-unicode-escape! rd sb))
-       (else (Err (at rd (str "\\" (list->string (list c)) " is not an escape"))))))))
-
-;; The four hex digits of a `\u` escape. The `u` has been stepped over.
-(: (-> Reader (Result string int)))
-(defun (read-hex4 rd)
-  (let go ((k 0) (acc 0))
-    (cond
-      ((= k 4) (Ok acc))
-      ((at-end? rd) (Err (at rd "the document ended inside a \\u escape")))
-      (else
+     (step! rd)
+     (let go ((digits "") (n 0))
        (def d (hex-digit (peek rd)))
        (cond
-         ((< d 0) (Err (at rd (str "a \\u escape wants four hex digits, and this is "
-                                   (found rd)))))
-         (else (step! rd) (go (+ k 1) (+ (* acc 16) d))))))))
+         ((and (= (held-code rd) 125) (> (string-length digits) 0))
+          (step! rd)
+          (cond
+            ((or (> n 1114111) (and (>= n 55296) (<= n 57343)))
+             (refuse (str "\\u{" digits "} is not a Unicode scalar value. A surrogate, D800 to DFFF, "
+                          "is half of a UTF-16 pair, and nothing is above 10FFFF")))
+            (else (stringbuilder-add! sb (integer->char n)) (Ok #t))))
+         ((and (>= d 0) (< (string-length digits) 6))
+          (def digit (peek rd))
+          (step! rd)
+          (go (str digits (list->string (list digit))) (+ (* n 16) d)))
+         (else (refuse shape)))))))
 
-(: (-> int bool))
-(defun (high-surrogate? n) (and (>= n 55296) (<= n 56319)))
-
-(: (-> int bool))
-(defun (low-surrogate? n) (and (>= n 56320) (<= n 57343)))
-
-;; `\uXXXX`. A surrogate is half of a character: a high one must have a
-;; `\u` escape of a low one right after it, and the two are one character. A
-;; surrogate alone is refused. Added to the string as it is, it would make text
-;; that is not UTF-8, and `stringbuilder->string` would raise.
-(: (-> Reader StringBuilder (Result string bool)))
-(defun (read-unicode-escape! rd sb)
-  (def incomplete "a high surrogate has to be followed by \\u and its low surrogate")
-  (step! rd)
-  (def (Ok n) (read-hex4 rd) :propagate)
+;; A backslash before a space, a tab or a line break, at that character: the
+;; end of the line, and the margin of the next, stand for nothing.
+(: (-> Reader (-> string (Result string bool)) int (Result string bool)))
+(defun (read-continuation! rd refuse text-col)
+  (let blanks ()
+    (def c (held-code rd))
+    (when (or (= c 32) (= c 9))
+      (step! rd)
+      (blanks)))
+  (def broke
+    (cond
+      ((= (held-code rd) 10) (newline! rd) #t)
+      ((= (held-code rd) 13)
+       (step! rd)
+       (cond
+         ((= (held-code rd) 10) (newline! rd) #t)
+         (else #f)))
+      (else #f)))
   (cond
-    ((low-surrogate? n) (Err (at rd "a low surrogate with no high surrogate before it")))
-    ((not (high-surrogate? n)) (stringbuilder-add-unit! sb n) (Ok #t))
-    ((not (= (held-code rd) 92)) (Err (at rd incomplete)))
-    (:do (step! rd))
-    ((not (= (held-code rd) 117)) (Err (at rd incomplete)))
-    (:do (step! rd))
-    (:def (Ok lo) (read-hex4 rd) :propagate)
-    ((not (low-surrogate? lo)) (Err (at rd incomplete)))
+    ((not broke)
+     (refuse (str "a backslash before a space is an escape only at the end of a line, where it "
+                  "continues the string on the next. For a backslash, write \\\\")))
     (else
-     (stringbuilder-add-unit! sb n)
-     (stringbuilder-add-unit! sb lo)
+     (let margin ()
+       (def c (held-code rd))
+       (when (and (< (record-ref rd col) text-col) (or (= c 32) (= c 9)))
+         (step! rd)
+         (margin)))
      (Ok #t))))
 
 ;; A string, raw or escaped. `""` is the empty string, and a third quote after
@@ -966,6 +991,8 @@
 (: (-> Reader (Result string string)))
 (defun (read-escaped-text rd)
   (def sb (buffer rd))
+  ;; The column after the opening quote, which a continued line lines up with.
+  (def text-col (record-ref rd col))
   (let go ()
     (take-run! rd sb)
     (cond
@@ -974,7 +1001,7 @@
       (def c (held-code rd))
       (cond
        ((= c 34) (step! rd) (Ok (stringbuilder->string sb)))
-       ((= c 92) (match (read-escape! rd sb)
+       ((= c 92) (match (read-escape! rd sb text-col)
                    ((Err e) (Err e))
                    ((Ok _) (go))))
        ((= c 10)

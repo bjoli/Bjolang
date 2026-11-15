@@ -114,6 +114,8 @@ module Lexer =
     ///
     /// One reader for both string syntaxes, so that they cannot drift apart.
     /// A line continuation is not an escape: the callers handle it first.
+    /// `read-escape!` in lib/text/bjodat-core.bjo reads the same escapes, and
+    /// TestFiles/381_bjodat_reader_edges.bjo reads strings with both.
     let private readEscape (s: string) (i: int) (allowDollar: bool) (at: unit -> string) : string * int =
         let fail (what: string) : 'a = failwith $"Syntax error at %s{at ()}: %s{what}"
 
