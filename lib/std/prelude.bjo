@@ -2766,7 +2766,7 @@
 
 (import/class
   ;; What the `FS` effect's openers answer, and what a file port is over.
-  (Stream (: System.IO.Stream))
+  (ClrStream (: System.IO.Stream))
   ;; `IOException` covers `CreateNew` finding the file already there, as well
   ;; as the not-found exceptions below it.
   (FileStream (: System.IO.FileStream (-> string FileMode FileAccess FileShare FileStream)
@@ -2804,9 +2804,9 @@
 
 (import/extern
   ;; A port over a stream, registered on the ambient scope.
-  (owned-port-over (: Bjolang.Runtime.BytePorts.FromStream (-> Stream InputPort)))
+  (owned-port-over (: Bjolang.Runtime.BytePorts.FromStream (-> ClrStream InputPort)))
   (string-port  (: Bjolang.Runtime.InputPorts.FromString (-> string InputPort)))
-  (owned-port-out (: Bjolang.Runtime.OutputPorts.FromStream (-> Stream OutputPort)))
+  (owned-port-out (: Bjolang.Runtime.OutputPorts.FromStream (-> ClrStream OutputPort)))
   (string-port-out (: Bjolang.Runtime.OutputPorts.OpenString (-> OutputPort)))
   (output-bytes (: Bjolang.Runtime.OutputPorts.GetBytes (-> OutputPort (Array byte))))
   (close-in     (: BjolangRuntime.CloseInput  (-> InputPort void)))
@@ -2816,7 +2816,7 @@
 ;; An input port over a stream an opener answered, registered on the ambient
 ;; scope. Whatever the stream is - a file, or a `MemoryStream` a fake
 ;; filesystem made - the port is owned the same way.
-(: (-> (Result Exception Stream) (Result Exception InputPort)))
+(: (-> (Result Exception ClrStream) (Result Exception InputPort)))
 (defun (stream->input-port opened)
   (match opened
     ((Ok s) (Ok (owned-port-over s)))
@@ -2824,7 +2824,7 @@
 
 ;; The same for an output port: a file port is buffered a block at a time, and
 ;; closing it, or its scope ending, writes what is left.
-(: (-> (Result Exception Stream) (Result Exception OutputPort)))
+(: (-> (Result Exception ClrStream) (Result Exception OutputPort)))
 (defun (stream->output-port opened)
   (match opened
     ((Ok s) (Ok (owned-port-out s)))
@@ -2874,7 +2874,7 @@
 ;; fall back to their `/raw` defaults using standard .NET calls.
 ;;
 ;; Design:
-;; - Openers return raw CLR `Stream`s rather than ports. Higher-level functions
+;; - Openers return raw `ClrStream`s rather than ports. Higher-level functions
 ;;   (like `open-input-file` or `(std ports)` byte openers) construct ports and
 ;;   register them in the ambient scope, allowing mock handlers to work uniformly
 ;;   across text and byte I/O.
@@ -2905,10 +2905,10 @@
 
 ;; Read-only, and other readers allowed alongside, as `StreamReader`'s own
 ;; path constructor opens.
-(: (-> string (Result Exception Stream)))
+(: (-> string (Result Exception ClrStream)))
 (defun (open-read-stream/raw path)
   (match (FileStream. path FileMode.Open FileAccess.Read FileShare.Read)
-    ((Ok s) (Ok (cast Stream s)))
+    ((Ok s) (Ok (cast ClrStream s)))
     ((Err e) (Err e))))
 
 (: (-> WriteMode FileMode))
@@ -2920,10 +2920,10 @@
 
 ;; Write-only, readers allowed alongside, as `StreamWriter`'s path constructor
 ;; opens.
-(: (-> string WriteMode (Result Exception Stream)))
+(: (-> string WriteMode (Result Exception ClrStream)))
 (defun (open-write-stream/raw path mode)
   (match (FileStream. path (write-mode->file-mode mode) FileAccess.Write FileShare.Read)
-    ((Ok s) (Ok (cast Stream s)))
+    ((Ok s) (Ok (cast ClrStream s)))
     ((Err e) (Err e))))
 
 ;; .NET ticks at 1970-01-01T00:00Z, and per millisecond.
@@ -3032,8 +3032,8 @@
                    (clr-file-move from to (match mode (MoveNew #f) (MoveReplace #t))))))
 
 (defeffect FS
-  (open-read-stream    (-> string (Result Exception Stream)))
-  (open-write-stream   (-> string WriteMode (Result Exception Stream)))
+  (open-read-stream    (-> string (Result Exception ClrStream)))
+  (open-write-stream   (-> string WriteMode (Result Exception ClrStream)))
   (fs-info             (-> string (Option FsInfo)))
   (fs-list             (-> string (Result Exception (Vec string))))
   (fs-create-directory (-> string (Result Exception Unit)))
@@ -3102,7 +3102,7 @@
 ;; --- Bytes, copies and lines ---
 ;;
 ;; Because the prelude has no byte port type, byte I/O and file copying operate
-;; directly on CLR `Stream`s returned by the `FS` effect openers (`open-read-stream`
+;; directly on `ClrStream`s returned by the `FS` effect openers (`open-read-stream`
 ;; and `open-write-stream`).
 ;;
 ;; Like the text port functions, these helpers provide both sync and suspending
@@ -3115,43 +3115,43 @@
   (IOException (: System.IO.IOException (-> string IOException))))
 
 (import/extern
-  (clr-copy-to            (: System.IO.Stream.CopyTo      (-> Stream Stream void) #:blocking))
-  (clr-copy-to-await      (: System.IO.Stream.CopyToAsync (-> Stream Stream void) #:async))
-  (clr-stream-write       (: System.IO.Stream.Write       (-> Stream (Array byte) int int void) #:blocking))
-  (clr-stream-write-await (: System.IO.Stream.WriteAsync  (-> Stream (Array byte) int int void) #:async))
-  (clr-stream-flush       (: System.IO.Stream.Flush       (-> Stream void) #:blocking))
-  (clr-stream-flush-await (: System.IO.Stream.FlushAsync  (-> Stream void) #:async)))
+  (clr-copy-to            (: System.IO.Stream.CopyTo      (-> ClrStream ClrStream void) #:blocking))
+  (clr-copy-to-await      (: System.IO.Stream.CopyToAsync (-> ClrStream ClrStream void) #:async))
+  (clr-stream-write       (: System.IO.Stream.Write       (-> ClrStream (Array byte) int int void) #:blocking))
+  (clr-stream-write-await (: System.IO.Stream.WriteAsync  (-> ClrStream (Array byte) int int void) #:async))
+  (clr-stream-flush       (: System.IO.Stream.Flush       (-> ClrStream void) #:blocking))
+  (clr-stream-flush-await (: System.IO.Stream.FlushAsync  (-> ClrStream void) #:async)))
 
-(: (-> Stream Stream void))
+(: (-> ClrStream ClrStream void))
 (defbjouble (stream-copy! from to)
   (#:sync (clr-copy-to from to))
   (#:bjo  (clr-copy-to-await from to)))
 
-(: (-> Stream (Array byte) void))
+(: (-> ClrStream (Array byte) void))
 (defbjouble (stream-write! s bytes)
   (#:sync (clr-stream-write s bytes 0 (array-length bytes)))
   (#:bjo  (clr-stream-write-await s bytes 0 (array-length bytes))))
 
-(: (-> Stream void))
+(: (-> ClrStream void))
 (defbjouble (stream-flush! s)
   (#:sync (clr-stream-flush s))
   (#:bjo  (clr-stream-flush-await s)))
 
 (import/extern
-  (clr-stream-read       (: System.IO.Stream.Read      (-> Stream (Array byte) int int int) #:blocking))
-  (clr-stream-read-await (: System.IO.Stream.ReadAsync (-> Stream (Array byte) int int int) #:async))
-  (clr-stream-length     (: System.IO.Stream.Length (-> Stream long) #:get))
+  (clr-stream-read       (: System.IO.Stream.Read      (-> ClrStream (Array byte) int int int) #:blocking))
+  (clr-stream-read-await (: System.IO.Stream.ReadAsync (-> ClrStream (Array byte) int int int) #:async))
+  (clr-stream-length     (: System.IO.Stream.Length (-> ClrStream long) #:get))
   (clr-new-guid          (: System.Guid.NewGuid (-> System.Guid)))
   (clr-guid-text         (: System.Guid.ToString (-> System.Guid string string))))
 
 ;; Up to `n` bytes into the start of `buffer`; the number read, 0 at the end.
-(: (-> Stream (Array byte) int int))
+(: (-> ClrStream (Array byte) int int))
 (defbjouble (stream-read-some! s buffer n)
   (#:sync (clr-stream-read s buffer 0 n))
   (#:bjo  (clr-stream-read-await s buffer 0 n)))
 
 ;; The first `n` bytes of `buffer`.
-(: (-> Stream (Array byte) int void))
+(: (-> ClrStream (Array byte) int void))
 (defbjouble (stream-write-some! s buffer n)
   (#:sync (clr-stream-write s buffer 0 n))
   (#:bjo  (clr-stream-write-await s buffer 0 n)))
@@ -3163,7 +3163,7 @@
 ;;   as the copy writes, and the file grows until the disk is full. Copying
 ;;   the length that the source had when it was opened ends.
 ;; - Stops early when the source ends before `count` bytes.
-(: (-> Stream Stream long void))
+(: (-> ClrStream ClrStream long void))
 (defun (stream-copy-count! from to count)
   (def buffer (make-array (cast int (min 81920L (max count 1L)))))
   (let go ((left count))
@@ -3217,7 +3217,7 @@
 (defun (file-read-bytes path)
   (with-open ((in (raise-err (open-read-stream path))))
     (def buffer (MemoryStream.))
-    (stream-copy! in (cast Stream buffer))
+    (stream-copy! in (cast ClrStream buffer))
     (.ToArray buffer)))
 
 (: (-> string (Array byte) WriteMode void))

@@ -33,7 +33,7 @@
   (int->byte (: System.Convert.ToByte  (-> int byte)))
   (byte->int (: System.Convert.ToInt32 (-> byte int))))
 
-;; A `Stream` somebody else owns, for `stream->input-port`. The byte[]
+;; A `ClrStream` somebody else owns, for `stream->input-port`. The byte[]
 ;; constructor gives a stream over exactly that array, so a write through a port
 ;; lands somewhere this file can look at afterwards.
 (import/class
@@ -560,13 +560,13 @@
   ;; =========================================================================
   ;;
   ;; The pair `(std net)` and a web framework reach for, and the only way into
-  ;; this module from outside it. Owned like a file, because a `Stream` is a
+  ;; this module from outside it. Owned like a file, because a `ClrStream` is a
   ;; handle in every case that matters.
-  (with-open ((borrowed (stream->input-port (cast Stream (MemStream. raw)))))
+  (with-open ((borrowed (stream->input-port (cast ClrStream (MemStream. raw)))))
     (expect "a port over a borrowed stream reads it"
             (shown (read-bytes borrowed 6)) "104.105.255.128.0.200."))
 
-  (def sink (stream->output-port (cast Stream (MemStream. scratch))))
+  (def sink (stream->output-port (cast ClrStream (MemStream. scratch))))
   (write-bytes! sink four)
   (flush-port sink)
   (expect "a port over a borrowed stream writes to it" (bytes->text scratch) "11.22.33.44.")

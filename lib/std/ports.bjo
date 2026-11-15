@@ -40,7 +40,7 @@
   ;; --- Bytes ---------------------------------------------------------------
 
   ;; The types. `Encoding` is the prelude's, its values `(text encodings)`'s.
-  Stream
+  ClrStream
 
   ;; Reading, as events. These are what go in a `choose`.
   read-some-evt read-bytes-evt eof-evt
@@ -172,12 +172,12 @@
   ;; The pipe object, which exists only so that `byte-pipe` can take its two
   ;; halves off it. Not exported: a pipe *is* its two ports.
   (BytePipe       (: Bjolang.Runtime.BjoBytePipe))
-  (Stream         (: System.IO.Stream)))
+  (ClrStream      (: System.IO.Stream)))
 
 (import/extern
   ;; Sources.
-  (clr-from-stream (: Bjolang.Runtime.BytePorts.FromStream (-> Stream InputPort)))
-  (clr-to-stream   (: Bjolang.Runtime.OutputPorts.FromStream (-> Stream OutputPort)))
+  (clr-from-stream (: Bjolang.Runtime.BytePorts.FromStream (-> ClrStream InputPort)))
+  (clr-to-stream   (: Bjolang.Runtime.OutputPorts.FromStream (-> ClrStream OutputPort)))
   (clr-make-pipe   (: Bjolang.Runtime.BytePorts.MakePipe   (-> BytePipe)))
   (clr-pipe-in     (: Bjolang.Runtime.BytePorts.PipeInput  (-> BytePipe InputPort)))
   (clr-pipe-out    (: Bjolang.Runtime.BytePorts.PipeOutput (-> BytePipe OutputPort)))
@@ -353,17 +353,17 @@
 ;; there is one kind of input port and one kind of output port, and a file port
 ;; takes bytes as readily as text.
 
-;; A port over a `Stream` somebody else handed over — a `NetworkStream`, a
+;; A port over a `ClrStream` somebody else handed over — a `NetworkStream`, a
 ;; request body, a `MemoryStream`. This pair is what `(std net)` and a web
 ;; framework reach for, and it is the only way into this module from outside it.
 ;;
-;; Owned like a file, because a `Stream` is a handle in every case that matters.
-(: (-> Stream InputPort))
+;; Owned like a file, because a `ClrStream` is a handle in every case that matters.
+(: (-> ClrStream InputPort))
 (defun (stream->input-port s)
   (ignore (current-scope))
   (clr-from-stream s))
 
-(: (-> Stream OutputPort))
+(: (-> ClrStream OutputPort))
 (defun (stream->output-port s)
   (ignore (current-scope))
   (clr-to-stream s))

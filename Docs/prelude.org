@@ -829,7 +829,7 @@ Every operation spends one of the dynamic environment's 31 cheap parameter ids. 
 
 *** ~#:adopt~, for an operation that hands back a resource
 
-~#:adopt ((op fn))~ passes a handler's returned value through ~fn~ before it reaches the caller, so a handler that returns a resource has it adopted into the current scope. The prelude's ~FS~ effect does not need it: its openers answer a ~Stream~, and the port over it is registered by the function that builds the port.
+~#:adopt ((op fn))~ passes a handler's returned value through ~fn~ before it reaches the caller, so a handler that returns a resource has it adopted into the current scope. The prelude's ~FS~ effect does not need it: its openers return a ~ClrStream~, and the port over it is registered by the function that builds the port.
 
 *** Forwarding
 
@@ -1115,8 +1115,8 @@ Everything in the prelude and ~(std ports)~ that reaches the disk goes through t
 
 | Operation                         | Answers                                |
 |-----------------------------------+----------------------------------------|
-| ~(open-read-stream path)~         | ~(Result Exception Stream)~            |
-| ~(open-write-stream path mode)~   | ~(Result Exception Stream)~            |
+| ~(open-read-stream path)~         | ~(Result Exception ClrStream)~         |
+| ~(open-write-stream path mode)~   | ~(Result Exception ClrStream)~         |
 | ~(fs-info path)~                  | ~(Option FsInfo)~: see ~file-info~     |
 | ~(fs-list path)~                  | ~(Result Exception (Vec string))~: whole paths, files and directories |
 | ~(fs-create-directory path)~      | ~(Result Exception Unit)~              |
@@ -1124,7 +1124,7 @@ Everything in the prelude and ~(std ports)~ that reaches the disk goes through t
 | ~(fs-delete-directory path)~      | ~(Result Exception Unit)~              |
 | ~(fs-move from to mode)~          | ~(Result Exception Unit)~              |
 
-The openers answer a ~Stream~, not a port. ~open-input-file~ and ~open-output-file~ build the port over it and register it on the ambient scope, so one handler serves text and bytes, and a ~MemoryStream~ a handler made is owned exactly as a file is. A handler is installed per operation:
+The openers return a ~ClrStream~, not a port. ~open-input-file~ and ~open-output-file~ build the port over it and register it on the ambient scope, so one handler serves text and bytes, and a ~MemoryStream~ a handler made is owned exactly as a file is. A handler is installed per operation:
 
 #+BEGIN_SRC scheme
 (with-handler ((open-write-stream (fun (path mode) ...))

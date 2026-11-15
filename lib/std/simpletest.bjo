@@ -187,7 +187,7 @@
 ;; opened here, because one would hide from `with-test` what the body left open.
 
 (import/class
-  (Stream (: System.IO.Stream))
+  (ClrStream (: System.IO.Stream))
   (MemoryStream (: System.IO.MemoryStream (-> MemoryStream)))
   (Encoding (: System.Text.Encoding))
   (FileNotFound (: System.IO.FileNotFoundException (-> string FileNotFound)))
@@ -197,7 +197,7 @@
 
 (import/extern
   (clr-utf8 (: System.Text.Encoding.UTF8 #:get))
-  (stream-position! (: System.IO.Stream.Position (-> Stream long void) #:set)))
+  (stream-position! (: System.IO.Stream.Position (-> ClrStream long void) #:set)))
 
 ;; A seeded file holds its text. A written one holds the stream it was written
 ;; through, which is read when the file is: the writer may still be open, and a
@@ -367,7 +367,7 @@
 (defun (fake-memory-stream bytes)
   (def s (MemoryStream.))
   (.Write s bytes 0 (array-length bytes))
-  (stream-position! (cast Stream s) 0L)
+  (stream-position! (cast ClrStream s) 0L)
   s)
 
 (: (-> Exception (Result Exception %a)))
@@ -391,19 +391,19 @@
 
 ;; --- The handlers --------------------------------------------------------------
 
-(: (-> FakeFs (-> string (Result Exception Stream))))
+(: (-> FakeFs (-> string (Result Exception ClrStream))))
 (defun (fake-fs-reader fs)
   (fun (raw)
     (def path (fake-path raw))
     (match (fake-kind fs path)
       ((Some FsDirectory) (access-denied path))
       ((Some FsFile) (match (fake-bytes-at fs path)
-                       ((Some bytes) (Ok (cast Stream (fake-memory-stream bytes))))
+                       ((Some bytes) (Ok (cast ClrStream (fake-memory-stream bytes))))
                        (None (not-found path))))
       (None (if (fake-dir? fs (fake-parent path)) (not-found path) (no-directory path))))))
 
 ;; `Append` starts the new stream with what the path held.
-(: (-> FakeFs (-> string WriteMode (Result Exception Stream))))
+(: (-> FakeFs (-> string WriteMode (Result Exception ClrStream))))
 (defun (fake-fs-writer fs)
   (fun (raw mode)
     (def path (fake-path raw))
@@ -417,12 +417,12 @@
          (_
           (def s (match (Tuple mode (fake-bytes-at fs path))
                    ((Tuple Append (Some bytes)) (let ((m (fake-memory-stream bytes)))
-                                                 (stream-position! (cast Stream m) (.-Length m))
+                                                 (stream-position! (cast ClrStream m) (.-Length m))
                                                  m))
                    (_ (MemoryStream.))))
           (fake-update! fs (map-set (fake-entries fs) path (FakeWritten s)))
           (fake-stamp! fs path)
-          (Ok (cast Stream s))))))))
+          (Ok (cast ClrStream s))))))))
 
 (: (-> FakeFs (-> string (Option FsInfo))))
 (defun (fake-fs-info fs)

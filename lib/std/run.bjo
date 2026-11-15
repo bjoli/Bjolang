@@ -46,15 +46,15 @@
   (Process (: System.Diagnostics.Process))
   (ProcessStartInfo (: System.Diagnostics.ProcessStartInfo (-> ProcessStartInfo)))
   ;; Stream types for Process.
-  (Stream (: System.IO.Stream))
+  (ClrStream (: System.IO.Stream))
   (StreamReader (: System.IO.StreamReader))
   ;; An input port over a stream, registered on no scope: a child's pipes are
   ;; `run`'s to close, not the ambient scope's.
-  (PipePort (: Bjolang.Runtime.BjoInputPort (-> Stream PipePort)))
+  (PipePort (: Bjolang.Runtime.BjoInputPort (-> ClrStream PipePort)))
   (StreamWriter (: System.IO.StreamWriter))
   ;; An output port over a stream, registered on no scope, for the same
   ;; reason: a child's stdin and a redirect's file are `run`'s to close.
-  (PortOver (: Bjolang.Runtime.BjoOutputPort (-> Stream bool PortOver)))
+  (PortOver (: Bjolang.Runtime.BjoOutputPort (-> ClrStream bool PortOver)))
   (BufferMode (: Bjolang.Runtime.BufferMode))
   ;; An output port joined to an input port. See `BjolangRuntime/BjoProcess.cs`.
   (BjoPipe (: BjoPipe))
@@ -86,7 +86,7 @@
   (process-code  (: System.Diagnostics.Process.ExitCode (-> Process int) #:get))
   (process-stdin (: System.Diagnostics.Process.StandardInput (-> Process StreamWriter) #:get))
   ;; The pipe under a child's input writer, written by nothing yet.
-  (writer-bytes  (: System.IO.StreamWriter.BaseStream (-> StreamWriter Stream) #:get))
+  (writer-bytes  (: System.IO.StreamWriter.BaseStream (-> StreamWriter ClrStream) #:get))
   (port-mode!    (: Bjolang.Runtime.BjoOutputPort.Mode (-> OutputPort BufferMode void) #:set))
   ;; The synchronous close. What `run` closes on a caller's behalf is a child's
   ;; stdin or a pipe's writer, both unbuffered, so there is nothing left to
@@ -96,7 +96,7 @@
   (process-stdout (: System.Diagnostics.Process.StandardOutput (-> Process StreamReader) #:get))
   (process-stderr (: System.Diagnostics.Process.StandardError (-> Process StreamReader) #:get))
   ;; The pipe under a child's output reader, read by nothing yet.
-  (reader-bytes   (: System.IO.StreamReader.BaseStream (-> StreamReader Stream) #:get))
+  (reader-bytes   (: System.IO.StreamReader.BaseStream (-> StreamReader ClrStream) #:get))
   ;; Killing something that has already exited is the ordinary case when a
   ;; later stage fails to start, so the raise is turned into a value here.
   (process-kill  (: System.Diagnostics.Process.Kill (-> Process void)

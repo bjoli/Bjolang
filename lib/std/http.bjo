@@ -69,7 +69,7 @@
   (StatusCode     (: System.Net.HttpStatusCode))
   (Decompression  (: System.Net.DecompressionMethods))
   (Span           (: System.TimeSpan))
-  (Stream         (: System.IO.Stream))
+  (ClrStream      (: System.IO.Stream))
   (Uri            (: System.Uri (-> string Uri) #:exceptions (System.UriFormatException)))
   (Failure        (: System.Net.Http.HttpRequestException (-> string Failure)))
   (Object         (: System.Object))
@@ -83,7 +83,7 @@
   (no-timeout     (: System.Threading.Timeout.InfiniteTimeSpan #:get))
   ;; Bytes in a declared encoding as an input port: read as they are when
   ;; they are UTF-8, transcoded to UTF-8 otherwise.
-  (text-port-over (: Bjolang.Runtime.InputPorts.Over (-> Stream Encoding InputPort)))
+  (text-port-over (: Bjolang.Runtime.InputPorts.Over (-> ClrStream Encoding InputPort)))
   ;; Named `span-seconds` rather than `seconds`: `std/prelude` exports a
   ;; `seconds` that answers milliseconds, for a deadline, and two bindings of
   ;; one name that differ only in what they return is the kind of collision
@@ -121,8 +121,8 @@
 
   ;; The body, both ways. A `defbjouble` pair: the synchronous one parks a
   ;; thread, which is right for a plain `defun`, and the other suspends.
-  (clr-stream       (: System.Net.Http.HttpContent.ReadAsStream (-> Content Stream)))
-  (clr-stream-await (: System.Net.Http.HttpContent.ReadAsStreamAsync (-> Content Stream) #:async)))
+  (clr-stream       (: System.Net.Http.HttpContent.ReadAsStream (-> Content ClrStream)))
+  (clr-stream-await (: System.Net.Http.HttpContent.ReadAsStreamAsync (-> Content ClrStream) #:async)))
 
 ;; Nothing in the language builds an `Exception`, and every rejection below is
 ;; this module's own rather than .NET's.
@@ -386,7 +386,7 @@
 ;; The body
 ;; ===========================================================================
 
-(: (-> Content Stream))
+(: (-> Content ClrStream))
 (defbjouble (body-stream content)
   (#:sync (clr-stream content))
   (#:bjo  (clr-stream-await content)))
