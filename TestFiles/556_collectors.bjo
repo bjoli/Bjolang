@@ -1,7 +1,7 @@
 (import (std prelude))
 (import (std simpletest))
 
-;; The prelude's collectors beyond the builders: anding, oring, taking,
+;; The prelude's collectors beyond the builders: someing, anding, oring, taking,
 ;; maximizing and minimizing, the -by forms, tallying and grouping.
 
 ;; The number of rounds a loop over xs runs before `f` ends it.
@@ -14,6 +14,30 @@
 (defun (main)
   (def xs [3 5 8 9 10])
   (def none (: [] (Vec int)))
+
+  ;; --- someing ----------------------------------------------------------
+  (def ages (->map (list (Tuple "bo" 7) (Tuple "li" 12))))
+  (expect "someing: the first Some, as it is" {someing (map-try-ref ages n) (:for n (list "ann" "li" "bo"))} (Some 12))
+  (expect "someing: None when every round is None" {someing (map-try-ref ages n) (:for n (list "ann" "eve"))} None)
+  (expect "someing: no rounds" {someing (map-try-ref ages n) (:for n (: (list) (List string)))} None)
+  (expect "someing with a loose :when"
+          {someing (map-try-ref ages n) :when (not (= n "li")) (:for n (list "ann" "li" "bo"))}
+          (Some 7))
+  (expect "someing in a loop, beside another accumulator"
+          (loop (:for n (list "ann" "eve" "bo" "li")) (:acc seen (counting n)) (:acc a (someing (map-try-ref ages n))) => (Tuple seen a))
+          (Tuple 3 (Some 7)))
+  (def/mutable looked 0)
+  (expect "someing ends the loop in the round that gives Some"
+          (loop (:for n (list "ann" "li" "bo"))
+                (:acc a (someing (begin (set! looked (+ looked 1)) (map-try-ref ages n))))
+                => a)
+          (Some 12))
+  (expect "and evaluates its expression once a round" looked 2)
+  (def/mutable gated 0)
+  (ignore (loop (:for n (list "ann" "li" "bo"))
+                (:acc a (someing (begin (set! gated (+ gated 1)) (map-try-ref ages n))) #:when (= n "bo"))
+                => a))
+  (expect "with #:when, only the rounds it holds for evaluate it" gated 1)
 
   ;; --- anding and oring ---------------------------------------------------
   (expect "anding: every round holds" {anding (> x 2) (:for x xs)} #t)
@@ -90,12 +114,18 @@
           (->map (list (Tuple #t (list 3 5 9)) (Tuple #f (list 8 10)))))
 
   ;; --- hygiene ------------------------------------------------------------
-  ;; The macros' own names (ok?, limit, taken) do not meet the loop's.
+  ;; The macros' own names (got, ok?, limit, taken) do not meet the loop's.
   (def ok? 'outer)
   (def limit 100)
   (expect "anding's ok? is its own"
           (loop (:for x [1 2]) (:let ok? 'mine) (:acc a (anding (> x 0))) (:acc seen (listing ok?)) => (Tuple a seen))
           (Tuple #t (list 'mine 'mine)))
+  (expect "someing's got is its own"
+          (loop (:for x [1 2 3]) (:let got 'mine)
+                (:acc a (someing (if (= x 2) (Some x) None)))
+                (:acc seen (listing got))
+                => (Tuple a seen))
+          (Tuple (Some 2) (list 'mine)))
   (expect "taking's limit is its own" (loop (:for x xs) (:let limit 1) (:acc t (taking 2 (+ x limit))) => t) (list 4 6))
   (expect "and the defs outside are untouched" (Tuple ok? limit) (Tuple 'outer 100))
   0)

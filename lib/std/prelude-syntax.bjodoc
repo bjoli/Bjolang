@@ -11,7 +11,7 @@
   (summary "An accumulator of the first value a loop reaches it with, which ends the loop: (Some x), or None.")
   (form (finding x))
   (arg x "The value to find. Evaluated once, in the first round that reaches the accumulator.")
-  (see if-let)
+  (see someing oring if-let)
   (example """
     {finding x (:for x xs) (:when (even? x))}      ; the first even element, or None
     {finding (* x x) :when (> x 3) (:for x xs)}    ; the square of the first above 3
@@ -25,11 +25,34 @@
     @code{(Some x)} for the first round that reaches it, or @code{None} when
     the loop ends before one does.
 
-    A collector macro, @code{def/acc-clause}: it returns a
-    @code{folding} from @code{None} to @code{(Some x)}, and a
-    @code{(:finish ...)} after it, so the round that finds ends the loop,
-    and the clauses after it in that round do not run. With @code{#:when},
-    the condition is evaluated once and gates both.
+    A collector macro, @code{def/acc-clause}: it is
+    @code{(someing (Some x))}, so the round that finds ends the loop, and
+    the clauses after it in that round do not run. With @code{#:when}, the
+    condition is evaluated once and gates both.
+    """))
+
+(:doc someing
+  (summary "An accumulator of the first (Some v) an Option expression evaluates to, which ends the loop, or None.")
+  (form (someing expr))
+  (arg expr "An Option. Evaluated once a round.")
+  (see finding oring if-let)
+  (example """
+    {someing (map-try-ref ages n) (:for n names)}   ; the age of the first name in ages, or None
+    """)
+  (reference """
+    Written @code{(:acc name (someing expr))} in a loop, and
+    @code{{someing expr clause ...}} as a comprehension. Its value is the
+    @code{(Some v)} as @code{expr} gave it, not wrapped again, or
+    @code{None} when every round gave @code{None}.
+
+    @code{finding} is the case where every round that reaches it gives a
+    value: @code{(finding x)} is @code{(someing (Some x))}.
+
+    A collector macro: it returns a @code{folding} of @code{expr} and a
+    @code{(:finish ...)} after it, so the round that gives a @code{Some} is
+    the last, and the clauses after it in that round do not run. With
+    @code{#:when}, the rounds the condition does not hold for do not
+    evaluate @code{expr}.
     """))
 
 (:doc anding

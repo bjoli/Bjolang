@@ -3949,21 +3949,35 @@
     ((Some c) #'(if ,c ,test ,otherwise))
     (None test)))
 
+;; `(:acc found (someing expr))`: the first `(Some v)` that `expr`, an
+;; Option, evaluates to, which ends the loop, or `None` when the loop ends
+;; first.
+;;
+;; - A `folding` of `expr`, and a `:finish` after it. Every round before the
+;;   last gave `None`, so the fold needs no condition.
+;; - `expr` is evaluated once a round. With `#:when cond`, a round `cond` does
+;;   not hold for does not evaluate it.
+(def/acc-clause (someing form inject compare)
+  (expand-acc-clause form "someing takes one Option: (:acc found (someing (map-try-ref m k))), or {someing (map-try-ref m k) (:for k ks)}"
+    (fun (name args when)
+      (match args
+        ((Cons expr Nil)
+         (Some #'(begin (:let got ,(acc-gated when expr #'None))
+                        (:acc ,@name (folding None got))
+                        (:finish (some? got)))))
+        (_ None)))))
+
 ;; `(:acc found (finding x))`: `(Some x)` for the first round that reaches it,
 ;; which ends the loop, or `None` when the loop ends first.
 ;;
-;; - A `folding` from `None` to `(Some x)`, and a `:finish` after it.
+;; - `(someing (Some x))`.
 ;; - With `#:when cond`, `cond` is evaluated once, and gates both: a round it
 ;;   does not hold for neither finds nor finishes.
 (def/acc-clause (finding form inject compare)
   (expand-acc-clause form "finding takes one expression: (:acc found (finding x)), or {finding x (:for x xs)}"
     (fun (name args when)
       (match args
-        ((Cons x Nil)
-         (Some (match when
-                 ((Some c)
-                  #'(begin (:let found? ,c) (:acc ,@name (folding None (Some ,x)) #:when found?) (:finish found?)))
-                 (None #'(begin (:acc ,@name (folding None (Some ,x))) (:finish #t))))))
+        ((Cons x Nil) (Some (acc-form name #'(someing (Some ,x)) when)))
         (_ None)))))
 
 ;; `(:acc all? (anding test))`: whether `test` holds in every round. The
