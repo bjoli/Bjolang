@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~\u{...}~ in strings, and an escape that is not defined is an error
+
+- ~\u{H}~ is the code point of 1 to 6 hex digits, in plain and interpolated
+  strings: ~"caf\u{E9}"~, ~"\u{1F600}"~. A surrogate or a value above
+  10FFFF is an error.
+- Every other escape that is not ~\n~, ~\t~, ~\r~, ~\"~ or ~\\~ (or ~\$~ in
+  ~#"..."~) is an error at its backslash. It used to keep both of its
+  characters, so ~"\u001b"~ was six characters: the progress lines of
+  ~(std bench)~ and ~bjo bench~ printed ~\u001b[K~ where they meant ESC.
+- Breaking: a plain string that writes ~\q~, ~\d~ or ~\$~ no longer
+  compiles. Write ~\\~ for a backslash, or a raw string.
+- A doc string that writes ~\u{...}~ is reported, because a doc is published
+  as written and bjodat writes a code point as ~\uXXXX~.
+
 * (std unicode grapheme): grapheme clusters for strings and texts
 
 - Extended grapheme clusters by UAX #29 of Unicode 18.0, including its new

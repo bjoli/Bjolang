@@ -99,9 +99,22 @@
   (expect "...nor before a quote" (codes "\\\"") "92,34")
   (expect "two escaped backslashes are two backslashes" (codes "\\\\") "92,92")
 
-  ;; An escape nobody defined keeps both of its characters, so a Windows path
-  ;; reads as itself instead of failing.
-  (expect "an unknown escape keeps both characters" (codes "\\q") "92,113")
+  ;; An escape nobody defined is an error (TestFiles/errors/string_escape_*),
+  ;; so a backslash is written as two.
+  (expect "a written backslash before a letter" (codes "\\q") "92,113")
+
+  ;; `\u{...}` is one code point, of 1 to 6 hex digits.
+  (expect "a \\u escape" (codes "\u{E9}") "233")
+  (expect "in either case, and outside the BMP" (codes "\u{e9}\u{1F600}") "233,128512")
+  (expect "the first code point" (codes "\u{0}") "0")
+  (expect "the last" (codes "\u{10FFFF}") "1114111")
+  (expect "six digits, with leading zeros" (codes "\u{000041}") "65")
+  (expect "the same string as the characters" "\u{1F1F8}\u{1F1EA}" "🇸🇪")
+  (expect "a written backslash before u" (codes "\\u{41}") "92,117,123,52,49,125")
+  (expect "in an interpolated string" (codes #"\u{41}${x}\u{1B}") "65,53,27")
+  (expect "in a string in a hole" #"${"\u{42}"}" "B")
+  (expect "after a line continuation" (codes "a\
+                                              \u{42}") "97,66")
 
   ;; The same table on the interpolated side — `\r` in particular, which a
   ;; plain string used to leave as two characters while `#"..."` decoded it.
@@ -109,7 +122,6 @@
   (expect "including carriage return" (codes #"\r${x}") "13,53")
   (expect "and the dollar escape is still interpolation's own"
           (codes #"\$") "36")
-  (expect "which a plain string has no need of" (codes "\$") "92,36")
 
   ;; ---- What a hole may contain --------------------------------------------
   ;;

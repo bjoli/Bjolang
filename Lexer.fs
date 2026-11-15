@@ -103,32 +103,62 @@ module Lexer =
 
     type LexedToken = { Token: Token; Range: Range }
 
-    /// What a backslash escape stands for, or `None` for one this syntax does
-    /// not define.
+    /// The escape whose backslash is at `i` of `s`, which has a character
+    /// after it: the text it stands for, and the index just past it.
     ///
-    /// One table for both string syntaxes so they cannot drift apart — they
-    /// had, and a plain `"\r"` was two characters while an interpolated one was
-    /// a carriage return. `$` is the single difference and takes a flag rather
-    /// than a table of its own: it is special only where a hole can open, and
-    /// escaping it in a plain string would be escaping nothing.
-    let private escapeOf (allowDollar: bool) (c: char) : char option =
-        match c with
-        | 'n' -> Some '\n'
-        | 't' -> Some '\t'
-        | 'r' -> Some '\r'
-        | '"' -> Some '"'
-        | '\\' -> Some '\\'
-        | '$' when allowDollar -> Some '$'
-        | _ -> None
+    /// - `\n`, `\t`, `\r`, `\"` and `\\`.
+    /// - `\$`, in an interpolated string only (`allowDollar`): `$` is special
+    ///   only where a hole can open.
+    /// - `\u{H}`: the character of 1 to 6 hex digits, a Unicode scalar value.
+    /// - Raises for any other escape. `at ()` is the backslash's position.
+    ///
+    /// One reader for both string syntaxes, so that they cannot drift apart.
+    /// A line continuation is not an escape: the callers handle it first.
+    let private readEscape (s: string) (i: int) (allowDollar: bool) (at: unit -> string) : string * int =
+        let fail (what: string) : 'a = failwith $"Syntax error at %s{at ()}: %s{what}"
 
-    /// An unrecognized escape keeps both of its characters.
-    ///
-    /// So `"C:\path"` reads as itself rather than failing, and a backslash that
-    /// meant nothing in particular survives to be looked at.
-    let private appendEscape (sb: Text.StringBuilder) (allowDollar: bool) (escaped: char) =
-        match escapeOf allowDollar escaped with
-        | Some c -> sb.Append(c) |> ignore
-        | None -> sb.Append('\\').Append(escaped) |> ignore
+        match s[i + 1] with
+        | 'n' -> "\n", i + 2
+        | 't' -> "\t", i + 2
+        | 'r' -> "\r", i + 2
+        | '"' -> "\"", i + 2
+        | '\\' -> "\\", i + 2
+        | '$' when allowDollar -> "$", i + 2
+        | 'u' ->
+            let shape =
+                "\\u is written \\u{...}, with 1 to 6 hex digits between the braces, as in \\u{E9} or \\u{1F600}."
+
+            let first = i + 3
+
+            if first >= s.Length || s[i + 2] <> '{' then
+                fail shape
+
+            let mutable j = first
+
+            while j < s.Length && j - first <= 6 && Char.IsAsciiHexDigit s[j] do
+                j <- j + 1
+
+            let digits = s.Substring(first, j - first)
+
+            if digits.Length = 0 || digits.Length > 6 || j >= s.Length || s[j] <> '}' then
+                fail shape
+
+            let value = Convert.ToInt32(digits, 16)
+
+            if value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF) then
+                fail
+                    $"\\u{{%s{digits}}} is not a Unicode scalar value. A surrogate, D800 to DFFF, is half of a UTF-16 pair, and nothing is above 10FFFF."
+
+            Char.ConvertFromUtf32 value, j + 1
+        | '$' -> fail "\\$ escapes nothing in a plain string: $ opens a hole only in #\"...\". Write the $ alone."
+        | c when Char.IsWhiteSpace c ->
+            fail
+                "a backslash before a space is an escape only at the end of a line, where it continues the string on the next. For a backslash, write \\\\."
+        | _ ->
+            let written = Globalization.StringInfo.GetNextTextElement(s, i + 1)
+
+            fail
+                $"\\%s{written} is not an escape. A string's escapes are \\n, \\t, \\r, \\\", \\\\ and \\u{{...}}, and \\$ in #\"...\". For a backslash, write \\\\, or write the text as a raw string, \"\"\"...\"\"\"."
 
     /// A line continuation: a backslash at `i` that ends its line, perhaps
     /// with spaces or tabs between it and the line break. It stands for
@@ -166,7 +196,9 @@ module Lexer =
     /// an escaped backslash could not protect the character after it and
     /// `"\\n"` came out as a backslash followed by a newline. A literal
     /// backslash before an `n`, a `t` or a quote was unwritable.
-    let private unescapeString (raw: string) (textCol: int) : string =
+    ///
+    /// `at k` is the position of the character at `k` of `raw`, for an error.
+    let private unescapeString (raw: string) (textCol: int) (at: int -> string) : string =
         let sb = Text.StringBuilder(raw.Length)
         let mutable i = 0
 
@@ -175,8 +207,10 @@ module Lexer =
                 match continuationEnd raw i textCol with
                 | Some past -> i <- past
                 | None ->
-                    appendEscape sb false raw[i + 1]
-                    i <- i + 2
+                    let k = i
+                    let text, past = readEscape raw k false (fun () -> at k)
+                    sb.Append(text) |> ignore
+                    i <- past
             else
                 sb.Append(raw[i]) |> ignore
                 i <- i + 1
@@ -570,7 +604,11 @@ module Lexer =
                     let len = nextPos - pos
                     let rawStr = input.Substring(pos + 1, len - 2)
 
-                    let unescaped = unescapeString rawStr (col + 1)
+                    let escapeAt (k: int) =
+                        let l, c = advance (input.Substring(pos, k + 1)) line col
+                        formatAt file l c
+
+                    let unescaped = unescapeString rawStr (col + 1) escapeAt
 
                     let text = input.Substring(pos, len)
                     let endLine, endCol = advance text line col
@@ -837,10 +875,12 @@ module Lexer =
                     while p < past do
                         step input[p]
                 | None ->
-                    let escaped = input[p + 1]
-                    appendEscape literal true escaped
-                    step '\\'
-                    step escaped
+                    let escLine, escCol = l, c
+                    let text, past = readEscape input p true (fun () -> formatAt file escLine escCol)
+                    literal.Append(text) |> ignore
+
+                    while p < past do
+                        step input[p]
 
             | '$' when p + 1 < length && input[p + 1] = '{' ->
                 flush ()
