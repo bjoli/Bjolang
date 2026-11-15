@@ -8,6 +8,7 @@
 (import (std prelude))
 (import (std simpletest))
 (import (std run))
+(import (std stream))
 
 (import/class
   (Refusal (: System.InvalidOperationException (-> string Refusal))))
@@ -180,6 +181,31 @@
              "first")
      (kill p)))
 
+  ;; ---- a form as a stream ------------------------------------------------
+  (expect "a form as a stream"
+          {listing line (:for line (run/stream '(echo "one\ntwo\nthree") read-line))}
+          (list "one" "two" "three"))
+  (expect "a stream through a filter"
+          {listing line (:for line (run/stream '(pipe (echo "a\nb") ,shout) read-line))}
+          (list "A" "B"))
+
+  ;; The loop owns the form: taking the first line kills it. The marker is
+  ;; written 300ms later unless it was.
+  (let ((marker (scratch "stream-not-killed.txt")))
+    (when (file-exists? marker) (file-delete marker))
+    (expect "a loop left early"
+            {taking 1 line (:for line (run/stream '("sh" "-c" ,(str "echo first; sleep 0.3; echo alive > " marker)) read-line))}
+            (list "first"))
+    (sync (timeout (milliseconds 600)))
+    (expect "kills the form" (file-exists? marker) #f))
+
+  (expect "a form whose output goes to a file raises in the loop"
+          (match (try {listing line (:for line (run/stream '(into-file ,(scratch "stream-out.txt") (echo "x")) read-line))}
+                      #:catch (System.InvalidOperationException))
+            ((Ok _) "returned")
+            ((Err _) "raised"))
+          "raised")
+
   ;; `with-run` reaps on the way out, including out of a raise.
   (expect "with-run kills on the way out"
           (with-run (p '(cat))
@@ -189,16 +215,12 @@
 
 ;; Take items until the form says there are no more.
 ;;
-;; One `(exited p)` per item, which is what makes this more than a channel
-;; test: a form's exit has to be askable about repeatedly, and a `Process` may
-;; only be awaited once. See `awaiting-exit` in `std/run`.
+;; `in-chan` syncs the one `(exited p)` once per item, which is what makes this
+;; more than a channel test: a form's exit has to be askable about repeatedly,
+;; and a `Process` may only be awaited once. See `awaiting-exit` in `std/run`.
 (: (-> (Chan string) Proc string))
 (defbjo (collect items p)
-  (let go ((acc (vec-empty)))
-    (match (sync (choose (wrap (chan-recv items) (fun (x) (Got x)))
-                         (wrap (exited p) (fun (r) Ended))))
-      ((Got x) (go (vec-add acc x)))
-      (Ended (string-join acc "|")))))
+  (string-join {vecing x (:for x (in-chan items (exited p)))} "|"))
 
 (: (-> InputPort Unit))
 (defbjo (drain-away out) (ignore (read-all out)) unit)

@@ -21,16 +21,18 @@
 ;; producer raised.
 (type (: (Item %a) (Union (: Next %a) Done (: Failed Exception))))
 
-;; Where a producer sends its values.
-(type (: (Emitter %a) #:opaque (Struct (: chan (Chan (Item %a))))))
+;; Where a producer sends its values, and receives the loop's requests for
+;; the next one.
+(type (: (Emitter %a) #:opaque (Struct (: chan (Chan (Item %a))) (: demand (Chan Unit)))))
 
 ;; The producer's body. Each loop runs it afresh.
 (type (: (Stream %a) #:opaque (Struct (: body (-bjo-> (Emitter %a) void)))))
 
-;; A loop's cursor over a stream: the running producer, the cancel thunk that
-;; stops it, and the item the loop is at.
+;; A loop's cursor over a stream: the running producer's channels, the cancel
+;; thunk that stops it, and the item the loop is at.
 (type (: (StreamRun %a) #:opaque
          (Record (: chan (Chan (Item %a)))
+                 (: demand (Chan Unit))
                  (: stop (-> CancelReason void))
                  (: item (Item %a) #:mutable))))
 
@@ -41,13 +43,15 @@
 (: (-> (-bjo-> (Emitter %a) void) (Stream %a)))
 (defun (make-stream body) (Stream (body body)))
 
-;; Sends `v` to the loop, and waits until the loop takes it.
+;; Sends `v` to the loop, then waits until the loop asks for the next value.
 ;;
+;; - The producer computes nothing the loop has not asked for.
 ;; - Raises `Cancelled` when the loop has ended, so the producer unwinds and
 ;;   its own releases run.
 (: (-> (Emitter %a) %a void))
 (defbjo (emit! out v) #:inline
-  (sync (chan-send (.chan out) (Next v))))
+  (sync (chan-send (.chan out) (Next v)))
+  (sync (chan-recv (.demand out))))
 
 ;; The two halves of a receive: a bjoroutine's loop suspends, any other code
 ;; parks the thread.
@@ -56,6 +60,12 @@
   (#:sync (sync/blocking (chan-recv c)))
   (#:bjo (sync (chan-recv c))))
 
+;; Asks the producer for its next item, and receives it.
+(: (-> (Chan Unit) (Chan %a) %a))
+(defbjouble (chan-ask demand c)
+  (#:sync (sync/blocking (chan-send demand unit)) (sync/blocking (chan-recv c)))
+  (#:bjo (sync (chan-send demand unit)) (sync (chan-recv c))))
+
 (: (-> (Chan %a) (Event %e) (Option %a)))
 (defbjouble (chan-take-until c end)
   (#:sync (sync/blocking (choose (wrap (chan-recv c) (fun (x) (Some x))) (wrap end (fun (_) None)))))
@@ -63,24 +73,27 @@
 
 ;; Runs the producer's body, then sends the end: `Done`, or `Failed` with what
 ;; the body raised. A body that was cancelled sends nothing: the loop is gone.
-(: (-> (-bjo-> (Emitter %a) void) (Chan (Item %a)) CancelToken void))
-(defbjo (run-producer body out token)
-  (match (try (body (Emitter (chan out))) #:catch (System.Exception))
+;;
+;; - The loop asked for the first item by starting the producer, and for each
+;;   later one through `demand`, so the end is always asked for.
+(: (-> (-bjo-> (Emitter %a) void) (Chan (Item %a)) (Chan Unit) CancelToken void))
+(defbjo (run-producer body out demand token)
+  (match (try (body (Emitter (chan out) (demand demand))) #:catch (System.Exception))
     ((Ok _) (sync (chan-send out Done)))
     ((Err e) (if (cancelled? token) (raise e) (sync (chan-send out (Failed e)))))))
 
-;; Receives the next item into the cursor. A `Failed` is raised here, in the
-;; loop.
-(: (-> (StreamRun %a) (StreamRun %a)))
-(defun (stream-step! run)
-  (match (chan-take (.chan run))
+;; Stores an item in the cursor. A `Failed` is raised here, in the loop.
+(: (-> (StreamRun %a) (Item %a) (StreamRun %a)))
+(defun (stream-set! run item)
+  (match item
     ((Failed e) (raise e))
-    (item (record-set! run (item item)) run)))
+    (_ (record-set! run (item item)) run)))
 
 ;; A stream as a driver.
 ;;
 ;; - `iterable-start` starts the producer under a cancel token of its own,
 ;;   linked to the ambient one, and receives the first item.
+;; - `iterable-next` asks for the next item, and receives it.
 ;; - `iterable-end` and `iterable-cleanup` cancel it: at a `:finish`, an
 ;;   `:abandon`, a driver beside it that ran out, an exception or a `ret`.
 (impl (Iterable (Stream %a))
@@ -90,14 +103,15 @@
     (def (Tuple stop token) (make-cancel))
     (link-cancel (parameter-ref current-cancel) token)
     (def c (make-chan))
-    (ignore (parameterize ((current-cancel token)) (bjo (run-producer (.body s) c token))))
-    (stream-step! (StreamRun (chan c) (stop stop) (item Done))))
+    (def demand (make-chan))
+    (ignore (parameterize ((current-cancel token)) (bjo (run-producer (.body s) c demand token))))
+    (stream-set! (StreamRun (chan c) (demand demand) (stop stop) (item Done)) (chan-take c)))
   (defun (iterable-done? s run) (match (.item run) (Done #t) (_ #f)))
   (defun (iterable-current s run)
     (match (.item run)
       ((Next x) x)
       (_ (panic! "iterable-current of a stream that has ended"))))
-  (defun (iterable-next s run) (stream-step! run))
+  (defun (iterable-next s run) (stream-set! run (chan-ask (.demand run) (.chan run))))
   (defun (iterable-end s run) ((.stop run) (Requested "the loop over the stream ended")))
   (defun (iterable-cleanup s run) ((.stop run) (Requested "the loop over the stream was left"))))
 

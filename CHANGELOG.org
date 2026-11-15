@@ -3,6 +3,23 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~port->stream~ and ~run/stream~: a port and a program's output as loop drivers
+
+- ~(port->stream reader p)~ in ~(std ports)~ is the items ~reader~ reads
+  from ~p~ until EOF, as a ~Stream~. Each item is read when the loop asks
+  for it, so a loop left early, a header loop say, leaves the port just
+  after the last item it took. What ~reader~ raises is raised in the loop.
+- It replaces ~port->chan~ and ~chan-next~, which are removed. ~chan-next~
+  took a reader that failed part-way for the end of the stream, so the
+  consumer worked on truncated data without knowing (correctness.md).
+- ~(run/stream form reader)~ in ~(std run)~ is a form's output as a
+  ~Stream~. Each loop runs the form afresh, closes its input, and kills it
+  however the loop ends. The exit code is dropped, as ~run/strings~ drops
+  it. A form that cannot start, whose output goes to a file, or whose filter
+  or redirection fails raises in the loop.
+- ~run/channel~'s output is read with ~(:for x (in-chan items (exited p)))~:
+  its docs, and test 134, use that in place of a hand-written ~choose~ loop.
+
 * ~(std stream)~: loops over values that suspending work produces
 
 - A ~Stream~ is a recipe for a producer: a bjoroutine given an ~Emitter~,
@@ -10,8 +27,9 @@ What each change guarantees, and what it leaves open.
   driver, ~(:for x s)~. Each loop over it starts the producer in a fiber of
   its own and stops it when the loop ends, however it ends: the producer
   returned, a ~:finish~ or ~:abandon~, a driver beside it ran out,
-  ~finding~ or ~taking~, an exception or a ~ret~. The producer is at most one
-  value ahead, raises ~Cancelled~ where it waits when it is stopped, and what
+  ~finding~ or ~taking~, an exception or a ~ret~. The producer computes a
+  value only when the loop asks for it, raises ~Cancelled~ where it waits
+  when it is stopped, and what
   it raises for its own reasons is raised in the loop. At an inner level a
   stream ends its level, as a list does.
 - ~{streaming expr clause ...}~ is a stream of ~expr~ for each round of the
@@ -23,8 +41,11 @@ What each change guarantees, and what it leaves open.
 - In a bjoroutine each receive suspends: the ~Iterable~ methods call a
   ~defbjouble~ leaf, and a loop in a bjoroutine reaches its suspending
   copy. In ordinary code it parks the thread.
-- 1M ints through ~{streaming ...}~ take about 90 ns each, against 71 ns for
-  a bare channel rendezvous. ~emit!~ is ~#:inline~: as a call it cost 231 ns.
+- 1M ints through ~{streaming ...}~ take about 160 ns each, against 71 ns for
+  a bare channel rendezvous: one rendezvous carries the loop's request, one
+  the value. Sending values ahead took 95 ns, but a loop left early then lost
+  the value already computed, a line read from a port say. ~emit!~ is
+  ~#:inline~: as a call it cost 231 ns.
 - A comprehension whose head names a macro is a call of that macro, with a
   loose ~:when~ passed as a last ~(:when ...)~ clause. ~streaming~ is one.
 

@@ -3,7 +3,7 @@
 
 (:doc #:module
   (summary "Byte-level I/O operations, CML event-driven reads, streaming conversions, and port adapters.")
-  (see read-some-evt read-some read-bytes peek-bytes write-bytes! shutdown! byte-pipe port->vec port->chan)
+  (see read-some-evt read-some read-bytes peek-bytes write-bytes! shutdown! byte-pipe port->vec port->stream)
   (example """
     (import (std ports))
 
@@ -54,8 +54,8 @@
     @strong{Draining and streaming.} @code{port->list}, @code{port->vec},
     and @code{port->lines} eagerly consume a port until EOF. @code{port->seq}
     and @code{file->seq} provide lazy evaluation sequences.
-    @code{port->chan} offloads reads to a dedicated background fiber that sends
-    items over a channel.
+    @code{port->stream} is the lazy one for a bjoroutine: a loop over it
+    suspends at each read.
 
     @strong{Stream adapters.} Files are opened via prelude functions
     @code{open-input-file} and @code{open-output-file}. A .NET stream, a
@@ -76,7 +76,7 @@
   (arg reader "Reader function or bjoroutine invoked to read each item.")
   (arg p "The input port.")
   (returns "A list of read items in order of occurrence.")
-  (see port->vec port->lines port->seq port->chan)
+  (see port->vec port->lines port->seq port->stream)
   (example """
     (port->list read-char (open-input-string "abc"))   ; (#\\a #\\b #\\c)
     """)
@@ -95,7 +95,7 @@
   (arg reader "Reader function or bjoroutine invoked to read each item.")
   (arg p "The input port.")
   (returns "A vector containing all read items in order.")
-  (see port->list port->lines port->chan)
+  (see port->list port->lines port->stream)
   (reference """
     Equivalent to @code{port->list}, but collects items into an indexed
     vector.
@@ -121,7 +121,7 @@
   (arg reader "Reader function invoked to produce each item.")
   (arg p "The input port.")
   (returns "A lazy sequence that reads from the port as elements are evaluated.")
-  (see port->vec port->chan file->seq)
+  (see port->vec port->stream file->seq)
   (reference """
     Items are read on demand during sequence iteration, not at sequence
     creation time. The port is not closed upon completion. Reading mutates
@@ -129,7 +129,7 @@
     traversal ended.
 
     Sequence evaluation cannot suspend cooperatively; within a bjoroutine,
-    use @code{port->vec} or @code{port->chan} instead.
+    use @code{port->vec} or @code{port->stream} instead.
     """))
 
 (:doc file->seq
@@ -148,41 +148,28 @@
 ;; Streaming that suspends
 ;; ---------------------------------------------------------------------------
 
-(:doc port->chan
-  (summary "Spawns a fiber that reads items from a port and streams them over a channel.")
-  (arg reader "Bjoroutine reader invoked to read each item.")
+(:doc port->stream
+  (summary "The items a reader reads from a port until EOF, as a Stream: a driver for a loop in a bjoroutine.")
+  (arg reader "Reads one item. A bjoroutine, such as @code{read-line}.")
   (arg p "The input port.")
-  (returns "A tuple containing the output channel and a completion promise holding the count of read items.")
-  (raises Bjolang.Runtime.ScopeEnded "When invoked outside an ambient structured concurrency scope.")
-  (see chan-next port->vec)
+  (returns "A @code{Stream}. Nothing is read until a loop over it starts.")
+  (see port->seq Stream in-chan)
   (example """
-    (match (port->chan read-line port)
-      ((Tuple lines done)
-       (let go ()
-         (match (chan-next lines done)
-           ((Some line) (handle line) (go))
-           (None 'finished)))))
+    ;; The headers, up to the blank line; the body is still in the port.
+    (def headers
+      (loop (:for line (port->stream read-line p))
+            (:until (string-empty? line))
+            (:acc hs (listing line))
+            => hs))
+    (def body (read-all p))
     """)
   (reference """
-    The producer fiber executes within the ambient scope. The unbuffered
-    channel ensures backpressure: the worker fiber reads the next item only
-    after the receiver consumes the previous one. The port is not closed
-    automatically.
+    Each item is read when the loop asks for it, so a loop left early leaves
+    the port just after the last item it took. What @code{reader} raises is
+    raised in the loop. The port is not closed.
 
-    If the reader throws an exception, the completion promise fails and no
-    further items are emitted.
-    """))
-
-(:doc chan-next
-  (summary "Fetches the next item from a port->chan stream, or None at EOF.")
-  (arg c "The channel returned by @code{port->chan}.")
-  (arg done "The completion promise returned by @code{port->chan}.")
-  (returns "@code{(Some item)} if an item is available, or @code{None} if the stream completed.")
-  (see port->chan)
-  (reference """
-    Synchronizes on both the channel and the completion promise. To check
-    for errors after @code{None} is returned, join the completion promise:
-    @code{(sync (promise-join done))}.
+    It is @code{port->seq} for a bjoroutine: a @code{Seq} cannot suspend, so
+    pulling from one parks the thread on every read.
     """))
 
 ;; ---------------------------------------------------------------------------

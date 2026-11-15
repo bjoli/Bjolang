@@ -49,19 +49,19 @@
   ;; --- leaving early stops the producer -------------------------------------
   (set! produced 0)
   (expect "taking 3 of 1000" {taking 3 x (:for x (upto 1000))} (list 0 1 2))
-  (expect "the producer stopped at once" (<= produced 4) #t)
+  (expect "the producer computed only what was taken" produced 3)
   (set! produced 0)
   (expect "finding" {finding x (:for x (upto 1000)) (:when (> x 5))} (Some 6))
-  (expect "and finding stops it" (<= produced 8) #t)
+  (expect "and finding stops it" produced 7)
   (set! produced 0)
   (expect "zipped with a shorter list" {listing (Tuple x c) (:for x (upto 1000)) (:for c (list "a" "b"))} (list (Tuple 0 "a") (Tuple 1 "b")))
-  (expect "and the list's end stops it" (<= produced 4) #t)
+  (expect "and the list's end stops it: the loop steps both drivers, so one value more" produced 3)
   (expect "two streams zipped" {listing (+ x y) (:for x (upto 3)) (:for y (upto 5))} (list 0 2 4))
   (set! produced 0)
   (expect "a consumer that raises"
           (match (try (consumer-raises) #:catch (System.InvalidOperationException)) ((Ok _) "returned") ((Err _) "raised"))
           "raised")
-  (expect "stops the producer" (<= produced 4) #t)
+  (expect "stops the producer" produced 3)
 
   ;; --- levels -----------------------------------------------------------------
   (expect "at an inner level a stream ends its level only"
@@ -71,7 +71,7 @@
   (expect "an inner level abandoned, three times"
           (loop (:for _r (list 1 2 3)) (:subloop) (:for x (upto 1000)) (:abandon (>= x 2)) (:acc l (listing x)) => l)
           (list 0 1 0 1 0 1))
-  (expect "each producer stopped at once" (<= produced 12) #t)
+  (expect "each producer stopped at once" produced 9)
 
   ;; --- a producer that raises -------------------------------------------------
   (expect "the producer's failure is raised in the loop"

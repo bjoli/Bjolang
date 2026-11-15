@@ -2689,7 +2689,7 @@ Covered with no bugs found (differential/randomised tests, all passed):
 
 ### ports: `chan-next` hides a failed reader as end of stream
 - Severity: Low
-- Status: Suspected (from reading)
+- Status: Moot. `port->chan` and `chan-next` were replaced by `port->stream`, which raises the reader's failure in the loop (TestFiles/157_port_chan.bjo).
 - Location: lib/std/ports.bjo (`chan-next`: `(wrap (promise-join done) (fun (r) None))`)
 - Description: `port->chan` runs the reader in `port-fill`. If the reader raises, for example on a decoding or I/O error part-way through, the promise fails. `chan-next` maps any `promise-join` result, `Err` included, to `None`, so the consumer sees a normal end of stream and silently works with truncated data. The `Err` should be passed on.
 

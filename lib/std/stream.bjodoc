@@ -7,7 +7,7 @@
   (example """
     (import (std stream))
 
-    ;; The lines of each page, fetched one page at a time as the loop wants them.
+    ;; Pages, fetched one at a time as the loop wants them.
     (def pages {streaming (fetch url) (:for url urls)})
     {taking 10 page (:for page pages)}     ; fetches ten pages, then stops
     """)
@@ -27,14 +27,22 @@
     producer.
 
     @strong{The loop owns the producer.} A stream is a recipe. Holding one
-    runs nothing. Each loop over it starts the producer, which is at most one
-    value ahead of the loop, and stops it when the loop ends: when the
-    producer is done, at a @code{:finish} or an @code{:abandon}, when a
-    driver beside it runs out, at @code{finding} or @code{taking}, at an
-    exception or a @code{ret}. A producer stopped so raises
-    @code{Cancelled} where it waits, and its own releases run. What the
+    runs nothing. Each loop over it starts the producer, and stops it when the
+    loop ends: when the producer is done, at a @code{:finish} or an
+    @code{:abandon}, when a driver beside it runs out, at @code{finding} or
+    @code{taking}, at an exception or a @code{ret}. A producer stopped so raises
+    @code{Cancelled} where it waits, and its own releases run. It unwinds in
+    its own fiber: the loop does not wait for that, the enclosing scope does.
+    What the
     producer raises for its own reasons is raised in the loop. A loop at an
     inner level gets a producer each time the level starts.
+
+    @strong{Nothing is computed ahead.} The producer computes a value only
+    when the loop asks for it: after each @code{emit!} it waits for the next
+    request. So a loop left early has cost exactly the values it took, and
+    @code{port->stream} in @code{(std ports)} leaves the port just after the
+    last item taken. One exception: a driver beside the stream that runs out
+    is seen after the stream has stepped, so that costs one value more.
 
     @strong{A channel somebody else fills} is read with @code{in-chan}, which
     ends when an event commits, such as the producer's
@@ -95,14 +103,14 @@
     """))
 
 (:doc emit!
-  (summary "Hands a value to the loop over the stream, and waits until the loop takes it.")
+  (summary "Hands a value to the loop over the stream, and waits until the loop asks for the next one.")
   (arg out "The producer's Emitter.")
   (arg v "The value.")
   (raises Bjolang.Runtime.Cancelled "When the loop has ended. The producer then unwinds.")
   (see make-stream)
   (reference """
-    A rendezvous: the producer goes on once the loop has the value, so it is
-    never more than one value ahead.
+    The producer goes on only when the loop asks for another value, so it
+    computes nothing the loop does not take.
     """))
 
 (:doc in-chan

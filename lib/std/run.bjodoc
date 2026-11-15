@@ -3,7 +3,7 @@
 
 (:doc #:module
   (summary "Running programs: pipelines and redirections written as quoted forms.")
-  (see run/string run Form running run/channel with-run)
+  (see run/string run Form running run/stream run/channel with-run)
   (example """
     (import (std run))
 
@@ -11,15 +11,11 @@
     (run/status '(into-file "out.txt" (from-file "in.txt" (pipe (grep "x") sort))))
     """)
   (example """
-    ;; From inside a bjoroutine: lines as they come, until the form exits.
-    (match (run/channel '(cat "log.txt") by-lines)
-      ((Err e) 0)
-      ((Ok (Tuple items p))
-       (let go ((n 0))
-         (match (sync (choose (wrap (chan-recv items) (fun (line) (Got line)))
-                              (wrap (exited p)        (fun (r) Ended))))
-           ((Got line) (go (+ n 1)))
-           (Ended n)))))
+    ;; From inside a bjoroutine: lines as they come. Leaving the loop early
+    ;; kills the program.
+    (import (std stream))
+
+    {taking 10 line (:for line (run/stream '(tail -f "log.txt") read-line))}
     """)
   (reference """
     A @em{form} is one thing to run, written as a quoted literal.
@@ -63,8 +59,8 @@
     @strong{Blocking or not.} @code{run/string}, @code{run/strings},
     @code{run/status}, @code{run/output} and @code{wait} block, which is
     right in an ordinary function. Inside a bjoroutine, blocking parks a pool
-    thread the fibers need: use @code{exited}, @code{running} or
-    @code{run/channel}, or @code{(blocking ...)}.
+    thread the fibers need: use @code{exited}, @code{running},
+    @code{run/stream} or @code{run/channel}, or @code{(blocking ...)}.
 
     @strong{Gotchas.}
 
@@ -309,12 +305,42 @@
     closed at once, and a branch that loses kills it.
     """))
 
+(:doc run/stream
+  (summary "The items a reader reads from a form's output, as a Stream. Each loop over it runs the form afresh.")
+  (arg form "What to run.")
+  (arg reader "Reads one item. A bjoroutine, such as @code{read-line}.")
+  (returns "A @code{Stream}. Nothing runs until a loop over it starts.")
+  (raises System.InvalidOperationException "In the loop, when the form cannot start or its output goes to a file.")
+  (see run/channel Stream)
+  (example """
+    (loop (:for line (run/stream '(git log "--oneline") read-line))
+          (:until (string-contains? line "release"))
+          (:do (println line)))
+    """)
+  (reference """
+    The loop owns the form. Its input is closed at once, and each item is
+    read when the loop asks for it. However the loop ends, at the end of the
+    output, early or by a raise, the form is killed. It is dead by the time
+    the scope the loop runs in ends.
+
+    The exit code is dropped, as @code{run/strings} drops it. A filter or a
+    redirection that fails, and what @code{reader} raises, are raised in the
+    loop. For the code, or for output that something else should read too,
+    use @code{run/channel}.
+    """))
+
 (:doc run/channel
   (summary "Runs a form and sends its output onto a channel, as items.")
   (arg form "What to run.")
   (arg read "Turns the output into items.")
   (returns "The channel and the running form; @code{Err} if it cannot start, or its output goes to a file.")
-  (see by-lines exited Reader)
+  (see by-lines exited Reader in-chan run/stream)
+  (example """
+    (match (run/channel '(cat "log.txt") by-lines)
+      ((Err e) 0)
+      ((Ok (Tuple lines p))
+       {counting line (:for line (in-chan lines (exited p)))}))
+    """)
   (reference """
     The reader runs as a stage of the form, so @code{wait} and @code{exited}
     cover it: the form has not exited until the reader has returned.

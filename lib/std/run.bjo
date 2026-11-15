@@ -13,6 +13,7 @@
 ;; std/run.bjo — run external programs.
 (import (std prelude))
 (import (std syntax-match))
+(import (std stream))
 
 ;; Every export is documented there; the module doc is too.
 (:doc #:file "run.bjodoc")
@@ -32,7 +33,7 @@
   proc-input proc-output wait wait/all kill
 
   ;; ...and from inside a bjoroutine
-  Reader exited running run/channel by-lines
+  Reader exited running run/channel by-lines run/stream
 
   ;; Scoped
   with-run)
@@ -793,6 +794,43 @@
        (sync (chan-send items line))
        (next))
       (None unit))))
+
+
+;; ===========================================================================
+;; A form as a stream
+;; ===========================================================================
+
+;; The items `reader` reads from a form's output, as a `Stream`. Each loop
+;; over it runs the form afresh.
+;;
+;; - The form's input is closed at once. Each item is read when the loop asks
+;;   for it.
+;; - The exit code is dropped, as `run/strings` drops it.
+;; - Lifecycle: the form is killed however the loop ends, early included.
+;; - Raises in the loop: when the form cannot start, its output goes to a
+;;   file, a filter or a redirection fails, or `reader` raises.
+(: (-> Form (-bjo-> InputPort %a) (Stream %a)))
+(defun (run/stream form reader)
+  (make-stream (bjoroutine (out) (stream-form form reader out))))
+
+(: (-> Form (-bjo-> InputPort %a) (Emitter %a) void))
+(defbjo (stream-form form reader out)
+  (match (run form)
+    ((Err e) (raise e))
+    ((Ok p)
+     (close-input p)
+     (try
+       (match (proc-output p)
+         (None (raise (run-error "this form sends its output to a file, so there is nothing left to stream")))
+         ((Some port)
+          (let go ()
+            (unless (port-eof? port)
+              (emit! out (reader port))
+              (go)))
+          (match (waiting p)
+            ((Err e) (raise e))
+            ((Ok _) unit))))
+       #:finally (kill p)))))
 
 
 ;; ===========================================================================

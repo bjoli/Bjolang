@@ -35,7 +35,7 @@
   port->list port->vec port->lines
   ;; Streaming
   port->seq file->seq
-  port->chan chan-next
+  port->stream
 
   ;; --- Bytes ---------------------------------------------------------------
 
@@ -65,6 +65,7 @@
   reencode-input-port reencode-output-port)
 
 (import (std prelude))
+(import (std stream))
 
 (:doc #:file "ports.bjodoc")
 
@@ -113,32 +114,20 @@
 ;; ---------------------------------------------------------------------------
 ;; Streaming that suspends
 ;; ---------------------------------------------------------------------------
+
+;; The items `reader` reads from `p` until EOF, as a `Stream`.
 ;;
-;; Streaming that suspends.
-;; Returns a channel and end-of-stream promise.
-
-;; Reads port on a fiber into a channel.
-(: (-> (-bjo-> InputPort %a) InputPort (Tuple (Chan %a) (Promise int))))
-(defun (port->chan reader p)
-  (def c (make-chan))
-  (Tuple c (bjo (port-fill c reader p))))
-
-;; Reader loop run on fiber.
-(: (-bjo-> (Chan %a) (-bjo-> InputPort %a) InputPort int))
-(defbjo (port-fill c reader p)
-  (let go ((n 0))
-    (cond
-      ((port-eof? p) n)
-      (else
-       ;; Send item.
-       (ignore (sync (chan-send c (reader p))))
-       (go (+ n 1))))))
-
-;; Gets next item or None.
-(: (-bjo-> (Chan %a) (Promise int) (Option %a)))
-(defbjo (chan-next c done)
-  (sync (choose (wrap (chan-recv c) (fun (x) (Some x)))
-                (wrap (promise-join done) (fun (r) None)))))
+;; - Each item is read when the loop asks for it, so a loop left early leaves
+;;   the port just after the last item it took.
+;; - What `reader` raises is raised in the loop.
+;; - The port is not closed.
+(: (-> (-bjo-> InputPort %a) InputPort (Stream %a)))
+(defun (port->stream reader p)
+  (make-stream (bjoroutine (out)
+                 (let go ()
+                   (unless (port-eof? p)
+                     (emit! out (reader p))
+                     (go))))))
 
 ;; Streams file contents as Seq.
 (: file->seq #:sync (-> (-> InputPort %a) string (Result Exception (Seq %a))))
