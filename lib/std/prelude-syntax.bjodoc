@@ -32,6 +32,113 @@
     the condition is evaluated once and gates both.
     """))
 
+(:doc anding
+  (summary "An accumulator of whether a test holds in every round. The first round it does not hold in ends the loop.")
+  (form (anding test))
+  (arg test "A bool. Evaluated once a round.")
+  (see oring finding all?)
+  (example """
+    {anding (> x 0) (:for x xs)}                     ; whether every element is positive
+    (loop (:for x xs)
+          (:acc ok (anding (even? x)) #:when (> x 0))
+          => ok)                                     ; whether every positive element is even
+    """)
+  (reference """
+    Written @code{(:acc name (anding test))} in a loop, and
+    @code{{anding test clause ...}} as a comprehension. It is @code{#t} for
+    a loop of no rounds.
+
+    A collector macro: it returns a @code{folding} of the test and a
+    @code{(:finish ...)} after it, so the round whose test fails is the last.
+    With @code{#:when}, the rounds the condition does not hold for are not
+    tested.
+    """))
+
+(:doc oring
+  (summary "An accumulator of whether a test holds in some round. The first round it holds in ends the loop.")
+  (form (oring test))
+  (arg test "A bool. Evaluated once a round.")
+  (see anding finding any?)
+  (example """
+    {oring (string-empty? s) (:for s lines)}        ; whether any line is empty
+    """)
+  (reference """
+    Written @code{(:acc name (oring test))} in a loop, and
+    @code{{oring test clause ...}} as a comprehension. It is @code{#f} for a
+    loop of no rounds.
+
+    A collector macro: it returns a @code{folding} of the test and a
+    @code{(:finish ...)} after it, so the round whose test holds is the last.
+    With @code{#:when}, the rounds the condition does not hold for are not
+    tested. Use @code{finding} for the value that held.
+    """))
+
+(:doc taking
+  (summary "An accumulator of a list of the first n values. The round that takes the nth ends the loop.")
+  (form (taking n x))
+  (arg n "How many to take, an int. Evaluated once a round.")
+  (arg x "The value to take.")
+  (see take finding Listing)
+  (example """
+    {taking 3 x (:for x xs) (:when (prime? x))}     ; the first three primes in xs
+    """)
+  (reference """
+    Written @code{(:acc name (taking n x))} in a loop, and
+    @code{{taking n x clause ...}} as a comprehension. The list is in the
+    order taken, and shorter than @code{n} when the loop ends first.
+
+    For a sequence, @code{(:for x (take n xs))} does the same.
+    @code{taking} is for counting only the rounds that reach it, after a
+    @code{:when} or with @code{#:when}.
+
+    A collector macro: it returns a @code{listing} that takes a value only
+    while it holds fewer than @code{n}, and a @code{(:finish ...)} after it.
+    An @code{n} of 0 or less takes nothing, but the loop still runs its
+    first round.
+    """))
+
+(:doc maximizing-by
+  (summary "An accumulator of the value with the greatest key: (Some x), or None for no rounds.")
+  (form (maximizing-by key x))
+  (arg key "The key to compare, by Ord. Evaluated once a round.")
+  (arg x "The value kept for the key.")
+  (see minimizing-by Maximizing MaximizingPairs)
+  (example """
+    {maximizing-by (string-length w) w (:for w words)}   ; the longest word
+    """)
+  (reference """
+    Of equal keys the first is kept. A collector macro: it is the
+    collector @code{(maximizing/pairs (Tuple key x))}.
+    """))
+
+(:doc minimizing-by
+  (summary "An accumulator of the value with the least key: (Some x), or None for no rounds.")
+  (form (minimizing-by key x))
+  (arg key "The key to compare, by Ord. Evaluated once a round.")
+  (arg x "The value kept for the key.")
+  (see maximizing-by Minimizing MinimizingPairs)
+  (example """
+    {minimizing-by (abs (- x target)) x (:for x xs)}    ; the one nearest target
+    """)
+  (reference """
+    Of equal keys the first is kept. A collector macro: it is the
+    collector @code{(minimizing/pairs (Tuple key x))}.
+    """))
+
+(:doc grouping
+  (summary "An accumulator of a map from each key to the list of its values, in the order they came.")
+  (form (grouping key x))
+  (arg key "The key to group by, by Eq. Evaluated once a round.")
+  (arg x "The value put in the key's list.")
+  (see Tallying GroupingPairs Mapping)
+  (example """
+    {grouping (string-length w) w (:for w words)}   ; the words of each length
+    """)
+  (reference """
+    A collector macro: it is the collector
+    @code{(grouping/pairs (Tuple key x))}.
+    """))
+
 (:doc if-let
   (summary "Evaluates then with name bound to the value of an Option, or evaluates else when None.")
   (form (if-let (name expr) then else))

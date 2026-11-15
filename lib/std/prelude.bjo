@@ -22,6 +22,7 @@
   VecBackCursor StringWalk ListTails PortReads UpFrom DownFrom
   Enumerated Zipped Cycled Pairwise Repeated Chained
   Listing ListingReverse Vecing VecingSmall Arraying Mapping Stringing Summing Counting Folding
+  Maximizing Minimizing MaximizingPairs MinimizingPairs Tallying GroupingPairs
   VecingInto ListingInto ListingReverseInto MappingInto
   InputPort OutputPort Exception Encoding
 
@@ -3911,6 +3912,43 @@
         ((Err e) (Err e))
         ((Ok it) ,(try-steps #'it rest))))))
 
+;; ---------------------------------------------------------------------------
+;; Collector macros and the collectors they expand to
+;; ---------------------------------------------------------------------------
+
+;; Expands a collector macro's `(:acc [name] (head arg ...) [#:when cond])`.
+;;
+;; - `build` gets the name (a list of zero or one), the head's arguments and
+;;   the condition, and returns the clauses.
+;; - `build` returns None for arguments it does not take. That, and a clause
+;;   of any other shape, is a syntax error with `usage`.
+(: (-> Syntax string (-> (List Syntax) (List Syntax) (Option Syntax) (Option Syntax)) Syntax))
+(defun (expand-acc-clause form usage build)
+  (def built
+    (syntax-match form
+      ((_ (_ arg ...)) (build (list) arg None))
+      ((_ (_ arg ...) #:when c) (build (list) arg (Some c)))
+      ((_ name (_ arg ...)) (build (list name) arg None))
+      ((_ name (_ arg ...) #:when c) (build (list name) arg (Some c)))
+      (_ None)))
+  (match built
+    ((Some clauses) clauses)
+    (None (syntax-error form usage))))
+
+;; `(:acc ,@name ,collector [#:when ,cond])`.
+(: (-> (List Syntax) Syntax (Option Syntax) Syntax))
+(defun (acc-form name collector when)
+  (match when
+    ((Some c) #'(:acc ,@name ,collector #:when ,c))
+    (None #'(:acc ,@name ,collector))))
+
+;; `test`, or `(if ,cond ,test ,otherwise)` with a condition.
+(: (-> (Option Syntax) Syntax Syntax Syntax))
+(defun (acc-gated when test otherwise)
+  (match when
+    ((Some c) #'(if ,c ,test ,otherwise))
+    (None test)))
+
 ;; `(:acc found (finding x))`: `(Some x)` for the first round that reaches it,
 ;; which ends the loop, or `None` when the loop ends first.
 ;;
@@ -3918,14 +3956,199 @@
 ;; - With `#:when cond`, `cond` is evaluated once, and gates both: a round it
 ;;   does not hold for neither finds nor finishes.
 (def/acc-clause (finding form inject compare)
-  (syntax-match form
-    ((_ name (_ x)) #'(begin (:acc ,name (folding None (Some ,x))) (:finish #t)))
-    ((_ (_ x)) #'(begin (:acc (folding None (Some ,x))) (:finish #t)))
-    ((_ name (_ x) #:when c)
-     #'(begin (:let found? ,c) (:acc ,name (folding None (Some ,x)) #:when found?) (:finish found?)))
-    ((_ (_ x) #:when c)
-     #'(begin (:let found? ,c) (:acc (folding None (Some ,x)) #:when found?) (:finish found?)))
-    (bad (syntax-error bad "finding takes one expression: (:acc found (finding x)), or {finding x (:for x xs)}"))))
+  (expand-acc-clause form "finding takes one expression: (:acc found (finding x)), or {finding x (:for x xs)}"
+    (fun (name args when)
+      (match args
+        ((Cons x Nil)
+         (Some (match when
+                 ((Some c)
+                  #'(begin (:let found? ,c) (:acc ,@name (folding None (Some ,x)) #:when found?) (:finish found?)))
+                 (None #'(begin (:acc ,@name (folding None (Some ,x))) (:finish #t))))))
+        (_ None)))))
+
+;; `(:acc all? (anding test))`: whether `test` holds in every round. The
+;; first round it does not hold in ends the loop. #t for no rounds.
+;;
+;; - With `#:when cond`, a round `cond` does not hold for is not tested.
+(def/acc-clause (anding form inject compare)
+  (expand-acc-clause form "anding takes one test: (:acc all? (anding (even? x))), or {anding (even? x) (:for x xs)}"
+    (fun (name args when)
+      (match args
+        ((Cons test Nil)
+         (Some #'(begin (:let ok? ,(acc-gated when test #'#t))
+                        (:acc ,@name (folding #t ok?))
+                        (:finish (not ok?)))))
+        (_ None)))))
+
+;; `(:acc any? (oring test))`: whether `test` holds in some round. The first
+;; round it holds in ends the loop. #f for no rounds.
+;;
+;; - With `#:when cond`, a round `cond` does not hold for is not tested.
+(def/acc-clause (oring form inject compare)
+  (expand-acc-clause form "oring takes one test: (:acc any? (oring (even? x))), or {oring (even? x) (:for x xs)}"
+    (fun (name args when)
+      (match args
+        ((Cons test Nil)
+         (Some #'(begin (:let ok? ,(acc-gated when test #'#f))
+                        (:acc ,@name (folding #f ok?))
+                        (:finish ok?))))
+        (_ None)))))
+
+;; `(:acc firsts (taking n x))`: a list of the first `n` values, in order. The
+;; round that takes the `n`th ends the loop.
+;;
+;; - `n` is evaluated each round, before the value.
+;; - With `#:when cond`, only the rounds `cond` holds for are taken.
+;; - An `n` of 0 or less takes nothing, but still ends the loop only after
+;;   its first round.
+(def/acc-clause (taking form inject compare)
+  (expand-acc-clause form "taking takes a count and an expression: (:acc firsts (taking 3 x)), or {taking 3 x (:for x xs)}"
+    (fun (name args when)
+      (def acc (match name ((Cons n Nil) n) (_ #'taken)))
+      (match args
+        ((Cons n (Cons x Nil))
+         (Some #'(begin (:let limit ,n)
+                        ,(acc-form (list acc) #'(listing ,x)
+                                   (Some (acc-gated when #'(< (length ,acc) limit) #'#f)))
+                        (:finish (>= (length ,acc) limit)))))
+        (_ None)))))
+
+;; `(:acc best (maximizing-by key x))`: `(Some x)` of the greatest `key`, or
+;; `None` for no rounds. Of equal keys the first is kept.
+;;
+;; - `key` is evaluated once a round, and is compared by Ord.
+;; - `maximizing/pairs` of `(Tuple key x)`.
+(def/acc-clause (maximizing-by form inject compare)
+  (expand-acc-clause form "maximizing-by takes a key and an expression: (:acc best (maximizing-by (score x) x))"
+    (fun (name args when)
+      (match args
+        ((Cons key (Cons x Nil)) (Some (acc-form name #'(maximizing/pairs (Tuple ,key ,x)) when)))
+        (_ None)))))
+
+;; `(:acc best (minimizing-by key x))`: `(Some x)` of the least `key`, or
+;; `None` for no rounds. Of equal keys the first is kept.
+;;
+;; - `key` is evaluated once a round, and is compared by Ord.
+;; - `minimizing/pairs` of `(Tuple key x)`.
+(def/acc-clause (minimizing-by form inject compare)
+  (expand-acc-clause form "minimizing-by takes a key and an expression: (:acc best (minimizing-by (cost x) x))"
+    (fun (name args when)
+      (match args
+        ((Cons key (Cons x Nil)) (Some (acc-form name #'(minimizing/pairs (Tuple ,key ,x)) when)))
+        (_ None)))))
+
+;; `(:acc groups (grouping key x))`: a map from each `key` to the list of its
+;; `x`s, in the order they came.
+;;
+;; - `key` is evaluated once a round, and is compared by Eq.
+;; - `grouping/pairs` of `(Tuple key x)`.
+(def/acc-clause (grouping form inject compare)
+  (expand-acc-clause form "grouping takes a key and an expression: (:acc groups (grouping (string-length w) w))"
+    (fun (name args when)
+      (match args
+        ((Cons key (Cons x Nil)) (Some (acc-form name #'(grouping/pairs (Tuple ,key ,x)) when)))
+        (_ None)))))
+
+;; The greatest or least value by Ord, or None. Of equal ones the first is kept.
+(type (: (Maximizing %a) (Union maximizing)))
+
+(impl (Collector (Maximizing %a))
+  (where (Ord %a))
+  (type %elem %a)
+  (type %acc (Option %a))
+  (type %out (Option %a))
+  (defun (collector-init c) None)
+  (defun (collector-step c acc x)
+    (match acc
+      ((Some best) (if (greater? x best) (Some x) acc))
+      (None (Some x))))
+  (defun (collector-finish c acc) acc))
+
+(type (: (Minimizing %a) (Union minimizing)))
+
+(impl (Collector (Minimizing %a))
+  (where (Ord %a))
+  (type %elem %a)
+  (type %acc (Option %a))
+  (type %out (Option %a))
+  (defun (collector-init c) None)
+  (defun (collector-step c acc x)
+    (match acc
+      ((Some best) (if (less? x best) (Some x) acc))
+      (None (Some x))))
+  (defun (collector-finish c acc) acc))
+
+;; Of `(Tuple key value)`s: the value of the greatest or least key by Ord, or
+;; None. Of equal keys the first is kept.
+(type (: (MaximizingPairs %k %v) (Union maximizing/pairs)))
+
+(impl (Collector (MaximizingPairs %k %v))
+  (where (Ord %k))
+  (type %elem (Tuple %k %v))
+  (type %acc (Option (Tuple %k %v)))
+  (type %out (Option %v))
+  (defun (collector-init c) None)
+  (defun (collector-step c acc kv)
+    (match acc
+      ((Some best) (if (greater? (fst kv) (fst best)) (Some kv) acc))
+      (None (Some kv))))
+  (defun (collector-finish c acc)
+    (match acc
+      ((Some (Tuple _ v)) (Some v))
+      (None None))))
+
+(type (: (MinimizingPairs %k %v) (Union minimizing/pairs)))
+
+(impl (Collector (MinimizingPairs %k %v))
+  (where (Ord %k))
+  (type %elem (Tuple %k %v))
+  (type %acc (Option (Tuple %k %v)))
+  (type %out (Option %v))
+  (defun (collector-init c) None)
+  (defun (collector-step c acc kv)
+    (match acc
+      ((Some best) (if (less? (fst kv) (fst best)) (Some kv) acc))
+      (None (Some kv))))
+  (defun (collector-finish c acc)
+    (match acc
+      ((Some (Tuple _ v)) (Some v))
+      (None None))))
+
+;; A map from each value to how many times it came.
+(type (: (Tallying %a) (Union tallying)))
+
+(impl (Collector (Tallying %a))
+  (where (Eq %a))
+  (type %elem %a)
+  (type %acc (TransientMap %a int))
+  (type %out (Map %a int))
+  (defun (collector-init c) (transientmap-empty))
+  (defun (collector-step c acc x)
+    (transientmap-set! acc x (+ (transientmap-ref-or acc x 0) 1))
+    acc)
+  (defun (collector-finish c acc) (transientmap->map acc)))
+
+;; Of `(Tuple key value)`s: a map from each key to the list of its values, in
+;; the order they came.
+(type (: (GroupingPairs %k %v) (Union grouping/pairs)))
+
+(impl (Collector (GroupingPairs %k %v))
+  (where (Eq %k))
+  (type %elem (Tuple %k %v))
+  (type %acc (TransientMap %k (ListBuilder %v)))
+  (type %out (Map %k (List %v)))
+  (defun (collector-init c) (transientmap-empty))
+  (defun (collector-step c acc kv)
+    (def (k v) kv)
+    (match (transientmap-try-ref acc k)
+      ((Some b) (listbuilder-add! b v))
+      (None
+       (def b (listbuilder-empty))
+       (listbuilder-add! b v)
+       (transientmap-set! acc k b)))
+    acc)
+  (defun (collector-finish c acc)
+    (map-map-values listbuilder->list (transientmap->map acc))))
 
 ;; ---------------------------------------------------------------------------
 ;; Paths: get, try-get, set, update and set!
