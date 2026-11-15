@@ -3,6 +3,31 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std stream)~: loops over values that suspending work produces
+
+- A ~Stream~ is a recipe for a producer: a bjoroutine given an ~Emitter~,
+  made with ~make-stream~, that sends each value with ~emit!~. It is a
+  driver, ~(:for x s)~. Each loop over it starts the producer in a fiber of
+  its own and stops it when the loop ends, however it ends: the producer
+  returned, a ~:finish~ or ~:abandon~, a driver beside it ran out,
+  ~finding~ or ~taking~, an exception or a ~ret~. The producer is at most one
+  value ahead, raises ~Cancelled~ where it waits when it is stopped, and what
+  it raises for its own reasons is raised in the loop. At an inner level a
+  stream ends its level, as a list does.
+- ~{streaming expr clause ...}~ is a stream of ~expr~ for each round of the
+  clauses, which run in the producer and may suspend: the ~seqing~ for that
+  case, which a ~Seq~, a .NET iterator, cannot be.
+- ~(in-chan c end)~ reads a channel that something else fills until the
+  event ~end~ commits, such as the producer's ~promise-join~. It does not
+  own the producer, so leaving early leaves the rest for another reader.
+- In a bjoroutine each receive suspends: the ~Iterable~ methods call a
+  ~defbjouble~ leaf, and a loop in a bjoroutine reaches its suspending
+  copy. In ordinary code it parks the thread.
+- 1M ints through ~{streaming ...}~ take about 90 ns each, against 71 ns for
+  a bare channel rendezvous. ~emit!~ is ~#:inline~: as a call it cost 231 ns.
+- A comprehension whose head names a macro is a call of that macro, with a
+  loose ~:when~ passed as a last ~(:when ...)~ clause. ~streaming~ is one.
+
 * ~Stream~ is ~ClrStream~
 
 - ~(std ports)~ exports .NET's ~System.IO.Stream~ as ~ClrStream~, the name

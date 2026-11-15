@@ -1036,6 +1036,14 @@ and internal desugarComprehension (fns: ParseFns) (allForms: SExpr list) (r: Ran
         | _ -> ())
 
     match accParts with
+    // A head that names a macro: the comprehension is a call of it, with the
+    // head's arguments, then the clauses, and a loose `:when` as a last
+    // `(:when ...)`. A library writes a comprehension that is not a fold this
+    // way, as `(std stream)` does `{streaming x (:for x xs)}`.
+    | SAtom { Token = Symbol head } :: _ when Hygiene.isMacroName head ->
+        let guard = accWhen |> Option.toList |> List.map (fun c -> SList([ at (Keyword "when"); c ], r))
+        fns.Expr(SList(accParts @ clauses @ guard, r))
+
     // `seqing` yields rather than folds, so it is a `seql` with no accumulator.
     | [ SAtom { Token = Symbol "seqing" }; expr ] ->
         let guard = accWhen |> Option.toList |> List.map (fun c -> SList([ at (Keyword "when"); c ], r))

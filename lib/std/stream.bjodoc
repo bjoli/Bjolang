@@ -1,0 +1,143 @@
+;; Docs for std/stream.bjo, read through (:doc #:file "stream.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Loops over values that suspending work produces: streams, and channels read until an end.")
+  (see Stream make-stream emit! streaming in-chan)
+  (example """
+    (import (std stream))
+
+    ;; The lines of each page, fetched one page at a time as the loop wants them.
+    (def pages {streaming (fetch url) (:for url urls)})
+    {taking 10 page (:for page pages)}     ; fetches ten pages, then stops
+    """)
+  (example """
+    ;; A producer written by hand.
+    (def ticks
+      (make-stream (bjoroutine (out)
+                     (loop (:for i (range 0 3))
+                           (:do (sync (timeout (seconds 1))) (emit! out i)))))))
+    (loop (:for t ticks) (:do (println (int->string t))))
+    """)
+  (reference """
+    A @code{Seq} cannot suspend: it is a .NET iterator, and an iterator
+    cannot also await. A @code{Stream} is the sequence for that case. Its
+    producer runs in a fiber of its own and hands each value over a channel,
+    so the producer can wait for anything, and the loop over it waits for the
+    producer.
+
+    @strong{The loop owns the producer.} A stream is a recipe. Holding one
+    runs nothing. Each loop over it starts the producer, which is at most one
+    value ahead of the loop, and stops it when the loop ends: when the
+    producer is done, at a @code{:finish} or an @code{:abandon}, when a
+    driver beside it runs out, at @code{finding} or @code{taking}, at an
+    exception or a @code{ret}. A producer stopped so raises
+    @code{Cancelled} where it waits, and its own releases run. What the
+    producer raises for its own reasons is raised in the loop. A loop at an
+    inner level gets a producer each time the level starts.
+
+    @strong{A channel somebody else fills} is read with @code{in-chan}, which
+    ends when an event commits, such as the producer's
+    @code{promise-join}. That loop does not own the producer: leaving it
+    early leaves the producer and the channel as they are, for another
+    reader.
+
+    @strong{Where the loop runs.} In a bjoroutine, each receive suspends. In
+    ordinary code it parks the thread, as @code{sync/blocking} does.
+    """))
+
+(:doc Stream
+  (summary "A sequence whose values a producer that may suspend emits. Each loop over it runs the producer afresh.")
+  (tparam %a "The type of the values.")
+  (see make-stream streaming emit! Iterable)
+  (reference """
+    An @code{Iterable}: @code{(:for x s)} in a loop or a comprehension. Its
+    cursor is a @code{StreamRun}, made when the loop starts.
+    """))
+
+(:doc Emitter
+  (summary "Where a stream's producer sends its values, with emit!.")
+  (tparam %a "The type of the values.")
+  (see emit! make-stream))
+
+(:doc StreamRun
+  (summary "A loop's cursor over a stream: the running producer, and the value the loop is at.")
+  (tparam %a "The type of the values.")
+  (see Stream)
+  (reference """
+    Made by @code{iterable-start} and ended by @code{iterable-end} or
+    @code{iterable-cleanup}, which stop the producer.
+    """))
+
+(:doc Item
+  (summary "What a stream's producer hands the loop: a value, the end, or what the producer raised.")
+  (tparam %a "The type of the values.")
+  (case Next "A value.")
+  (case Done "The producer returned.")
+  (case Failed "The producer raised this. The loop raises it again.")
+  (see Stream))
+
+(:doc ChanReads
+  (summary "The values received on a channel until an event commits: what in-chan makes.")
+  (tparam %a "The type of the values.")
+  (tparam %e "The type of the end event's value, which is dropped.")
+  (see in-chan))
+
+(:doc make-stream
+  (summary "A stream whose producer is body.")
+  (arg body "A bjoroutine given an Emitter. It emits each value with emit!, and the stream ends when it returns.")
+  (returns "The stream. Nothing runs until a loop over it starts.")
+  (see emit! streaming Stream)
+  (example """
+    (make-stream (bjoroutine (out)
+                   (emit! out 1)
+                   (emit! out 2)))
+    """))
+
+(:doc emit!
+  (summary "Hands a value to the loop over the stream, and waits until the loop takes it.")
+  (arg out "The producer's Emitter.")
+  (arg v "The value.")
+  (raises Bjolang.Runtime.Cancelled "When the loop has ended. The producer then unwinds.")
+  (see make-stream)
+  (reference """
+    A rendezvous: the producer goes on once the loop has the value, so it is
+    never more than one value ahead.
+    """))
+
+(:doc in-chan
+  (summary "The values received on a channel, until an event commits.")
+  (arg c "The channel.")
+  (arg end "The event that ends the reading, such as (promise-join producer) or (timeout d).")
+  (returns "A ChanReads, for (:for x (in-chan c end)).")
+  (see Stream promise-join chan-recv)
+  (example """
+    (def feeder (bjo (feed jobs urls)))
+    (loop (:for url (in-chan jobs (promise-join feeder)))
+          (:do (fetch url)))
+    """)
+  (reference """
+    Each step receives from @code{c} or waits for @code{end}, whichever
+    commits first. A channel is a rendezvous, so a producer that has
+    returned has handed over every value it sent: its promise is a safe end.
+
+    The loop does not own the producer. Leaving it early stops the reading
+    only; what is not read is still there for another reader.
+    """))
+
+(:doc streaming
+  (summary "A stream of an expression for each round of a loop, which runs in the producer and may suspend.")
+  (form (streaming expr clause ...))
+  (arg expr "The value emitted each round.")
+  (rest clause "Loop clauses, as in a comprehension.")
+  (see Stream make-stream)
+  (example """
+    {streaming (fetch url) (:for url urls)}
+    {streaming i :when (odd? i) (:for i (range 0 10))}
+    """)
+  (reference """
+    Written as a comprehension, @code{{streaming expr clause ...}}. It is
+    @code{seqing} for work that suspends: the loop of the clauses runs in the
+    stream's producer and emits @code{expr} each round, and a loose
+    @code{:when} gates it.
+    """))

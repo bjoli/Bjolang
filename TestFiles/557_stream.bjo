@@ -1,0 +1,106 @@
+(import (std prelude))
+(import (std simpletest))
+(import (std stream))
+
+(import/class
+  (Refusal (: System.InvalidOperationException (-> string Refusal))))
+
+;; (std stream): a stream is a driver whose producer the loop starts, and
+;; stops however the loop ends; in-chan reads a channel until an end event.
+
+(def/mutable produced 0)
+
+(: (-> int (Stream int)))
+(defun (upto n)
+  (make-stream (bjoroutine (out)
+                 (loop (:for i (range 0 n))
+                       (:do (set! produced (+ produced 1)) (emit! out i))))))
+
+(: (-> (Emitter int) void))
+(defbjo (fails out)
+  (emit! out 1)
+  (raise (cast Exception (Refusal. "the producer failed"))))
+
+(: (-> void))
+(defbjo (consumer-raises)
+  (loop (:for x (upto 1000))
+        (:do (when (= x 2) (raise (cast Exception (Refusal. "the consumer failed")))))))
+
+(: (-> (Chan int) int void))
+(defbjo (feed ch n)
+  (loop (:for i (range 0 n)) (:do (sync (chan-send ch i)))))
+
+(defbjo (main args)
+  ;; --- a stream as a driver -------------------------------------------------
+  (expect "a loop" (loop (:for x (upto 4)) (:acc l (listing x)) => l) (list 0 1 2 3))
+  (expect "a comprehension" {listing x (:for x (upto 4))} (list 0 1 2 3))
+  (expect "an empty stream" {listing x (:for x (upto 0))} (: (list) (List int)))
+  (set! produced 0)
+  (def s (upto 3))
+  (expect "holding a stream runs nothing" produced 0)
+  (expect "each loop runs it afresh"
+          (Tuple {summing x (:for x s)} {summing x (:for x s)})
+          (Tuple 3 3))
+  (expect "the producer ran twice" produced 6)
+  (expect "a destructuring pattern"
+          {listing (+ a b) (:for (Tuple a b) (make-stream (bjoroutine (out) (emit! out (Tuple 1 2)) (emit! out (Tuple 3 4)))))}
+          (list 3 7))
+
+  ;; --- leaving early stops the producer -------------------------------------
+  (set! produced 0)
+  (expect "taking 3 of 1000" {taking 3 x (:for x (upto 1000))} (list 0 1 2))
+  (expect "the producer stopped at once" (<= produced 4) #t)
+  (set! produced 0)
+  (expect "finding" {finding x (:for x (upto 1000)) (:when (> x 5))} (Some 6))
+  (expect "and finding stops it" (<= produced 8) #t)
+  (set! produced 0)
+  (expect "zipped with a shorter list" {listing (Tuple x c) (:for x (upto 1000)) (:for c (list "a" "b"))} (list (Tuple 0 "a") (Tuple 1 "b")))
+  (expect "and the list's end stops it" (<= produced 4) #t)
+  (expect "two streams zipped" {listing (+ x y) (:for x (upto 3)) (:for y (upto 5))} (list 0 2 4))
+  (set! produced 0)
+  (expect "a consumer that raises"
+          (match (try (consumer-raises) #:catch (System.InvalidOperationException)) ((Ok _) "returned") ((Err _) "raised"))
+          "raised")
+  (expect "stops the producer" (<= produced 4) #t)
+
+  ;; --- levels -----------------------------------------------------------------
+  (expect "at an inner level a stream ends its level only"
+          {listing (Tuple r x) (:for r (list 1 2 3)) (:subloop) (:for x (upto r))}
+          (list (Tuple 1 0) (Tuple 2 0) (Tuple 2 1) (Tuple 3 0) (Tuple 3 1) (Tuple 3 2)))
+  (set! produced 0)
+  (expect "an inner level abandoned, three times"
+          (loop (:for _r (list 1 2 3)) (:subloop) (:for x (upto 1000)) (:abandon (>= x 2)) (:acc l (listing x)) => l)
+          (list 0 1 0 1 0 1))
+  (expect "each producer stopped at once" (<= produced 12) #t)
+
+  ;; --- a producer that raises -------------------------------------------------
+  (expect "the producer's failure is raised in the loop"
+          (match (try {listing x (:for x (make-stream fails))} #:catch (System.InvalidOperationException))
+            ((Ok _) "returned")
+            ((Err _) "raised"))
+          "raised")
+
+  ;; --- streaming --------------------------------------------------------------
+  (expect "streaming" {listing x (:for x {streaming (* i i) (:for i (range 0 4))})} (list 0 1 4 9))
+  (expect "streaming with a loose :when"
+          {listing x (:for x {streaming i :when (odd? i) (:for i (range 0 6))})}
+          (list 1 3 5))
+  (def ch (make-chan))
+  (ignore (bjo (feed ch 3)))
+  (expect "a streaming loop may suspend"
+          {listing x (:for x {streaming (* 10 (sync (chan-recv ch))) (:for _i (range 0 3))})}
+          (list 0 10 20))
+
+  ;; --- in-chan ----------------------------------------------------------------
+  (def jobs (make-chan))
+  (def fed (bjo (feed jobs 4)))
+  (expect "in-chan, until the producer's promise"
+          {listing x (:for x (in-chan jobs (promise-join fed)))}
+          (list 0 1 2 3))
+  (def shared (make-chan))
+  (def fed2 (bjo (feed shared 4)))
+  (expect "leaving early takes only what it read" {taking 2 x (:for x (in-chan shared (promise-join fed2)))} (list 0 1))
+  (expect "and the rest is still there for another reader"
+          {listing x (:for x (in-chan shared (promise-join fed2)))}
+          (list 2 3))
+  0)
