@@ -67,9 +67,8 @@
 ;; does. The text is quoted in the error: "12,5" is not a decimal.
 (: (-> string string (-> string %a) (Result string %a)))
 (defun (parsed s what parse)
-  (match (try (parse s) #:catch (System.FormatException System.OverflowException))
-    ((Ok v) (Ok v))
-    ((Err _) (Err (str (written s) " is not " what)))))
+  (result-map-err (fun (_) (str (written s) " is not " what))
+                  (try (parse s) #:catch (System.FormatException System.OverflowException))))
 
 (impl (csv-field-> string) (defun (csv-field-> s) (Ok s)))
 (impl (csv-field-> int) (defun (csv-field-> s) (parsed s "an int" string->int)))
@@ -146,9 +145,7 @@
   (def pos (iarray-ref at k))
   (if (>= pos (iarray-length row))
       (Err (Tuple k "the row ends before this column"))
-      (match (csv-field-> (iarray-ref row pos))
-        ((Ok v) (Ok v))
-        ((Err e) (Err (Tuple k e))))))
+      (result-map-err (fun (e) (Tuple k e)) (csv-field-> (iarray-ref row pos)))))
 
 ;; The same, with `fallback` when the header has no such column, or the row
 ;; ends before it, or the field is empty.
@@ -160,9 +157,7 @@
     (:def s (iarray-ref row pos))
     ((string-empty? s) (Ok fallback))
     (else
-     (match (csv-field-> s)
-       ((Ok v) (Ok v))
-       ((Err e) (Err (Tuple k e)))))))
+     (result-map-err (fun (e) (Tuple k e)) (csv-field-> s)))))
 
 ;; ===========================================================================
 ;; Reading

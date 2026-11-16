@@ -110,9 +110,7 @@
 
 (: (-> Url (Option string)))
 (defun (url-host u)
-  (match (record-ref u authority)
-    ((Some a) (Some (record-ref a host)))
-    (None None)))
+  (option-map (fun (a) (record-ref a host)) (record-ref u authority)))
 
 (: (-> Url (Option int)))
 (defun (url-port u)
@@ -248,9 +246,8 @@
   (let go ((i 0))
     (cond
       ((>= i n)
-       (match (try (stringbuilder->string sb) #:catch (System.InvalidOperationException))
-         ((Ok text) (Ok text))
-         ((Err _) (Err "the percent-encoded bytes are not UTF-8"))))
+       (result-map-err (fun (_) "the percent-encoded bytes are not UTF-8")
+                       (try (stringbuilder->string sb) #:catch (System.InvalidOperationException))))
       (else
        (def b (byte-at bytes i))
        (cond
@@ -734,13 +731,6 @@
   (Host (string #:check host))
   (Port (int #:check port)))
 
-;; `f` of the value in `o`, if there is one.
-(: (-> (-> %a %b) (Option %a) (Option %b)))
-(defun (opt-map f o)
-  (match o
-    ((Some x) (Some (f x)))
-    (None None)))
-
 (: (-> UrlText string))
 (defun (text-of t)
   (match t
@@ -781,7 +771,7 @@
       (string-join (list->vec (list-map (fun (s) (str "/" (encode-segment s))) segs)) "")))
 
 (: (-> (Option UrlText) (Option string)))
-(defun (fragment-text f) (opt-map (fun (t) (encode-fragment (text-of t))) f))
+(defun (fragment-text f) (option-map (fun (t) (encode-fragment (text-of t))) f))
 
 ;; The `Url` that a literal stands for. The grammar and the checks refused
 ;; each bad literal, so this does not fail.
@@ -791,19 +781,19 @@
     ((LinkPath parts)
      (Url (scheme None) (authority None)
           (path (path-text (pieces-texts (record-ref parts segments))))
-          (query (opt-map query-text (record-ref parts query)))
+          (query (option-map query-text (record-ref parts query)))
           (fragment (fragment-text (record-ref parts fragment)))))
     ((LinkUrl s h parts)
      (Url (scheme (Some (scheme->string s)))
           (authority (Some (Authority
-                            (userinfo (opt-map (fun (t) (encode-userinfo (text-of t)))
-                                               (record-ref parts user)))
+                            (userinfo (option-map (fun (t) (encode-userinfo (text-of t)))
+                                                  (record-ref parts user)))
                             (host (host->string h))
-                            (port (opt-map port->int (record-ref parts port))))))
+                            (port (option-map port->int (record-ref parts port))))))
           (path (match (record-ref parts path)
                   ((Some pieces) (path-text (pieces-texts pieces)))
                   (None "")))
-          (query (opt-map query-text (record-ref parts query)))
+          (query (option-map query-text (record-ref parts query)))
           (fragment (fragment-text (record-ref parts fragment)))))))
 
 ;; The text of a literal: `(url->string (make-url l))`.

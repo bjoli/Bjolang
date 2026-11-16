@@ -247,12 +247,10 @@
 ;; short-circuits to.
 (: (-> string (Option (Tuple string string))))
 (defun (split-line line)
-  (match (string-find #(char=? & #\space) line)
-    ((Some space)
-     (Some (Tuple (substring line (string-cursor-start line) space)
-                  (substring line (string-cursor-next line space)
-                             (string-cursor-end line)))))
-    (None None)))
+  (option-map (fun (space)
+                (Tuple (substring line (string-cursor-start line) space)
+                       (substring line (string-cursor-next line space) (string-cursor-end line))))
+              (string-find #(char=? & #\space) line)))
 
 ;; A `link` or `native` value: a name, then a path. A value with no space in it
 ;; is a name with no path, which a publish reports as a file that is not there.

@@ -171,7 +171,7 @@
 (: (-> string))
 (defun (compiler-dir)
   (match (get-environment-variable "BJOLANG_COMPILER")
-    ((Some path) (option-value (parent-directory (path-absolute path)) "."))
+    ((Some path) (option-ref-or (parent-directory (path-absolute path)) "."))
     (None
      (path-combine (match (get-environment-variable "BJO_ROOT")
                      ((Some dir) dir)
@@ -201,9 +201,8 @@
 (defun (read-package file)
   (if (not (file-exists? file))
       (Err #"bjo: no manifest at ${file}.")
-      (match (bjodat-parse-Package (file-read-text file))
-        ((Err why) (Err #"bjo: ${file}: ${why}"))
-        ((Ok package) (Ok package)))))
+      (result-map-err (fun (why) #"bjo: ${file}: ${why}")
+                      (bjodat-parse-Package (file-read-text file)))))
 
 ;; The project a directory holds, manifest read and nothing else checked yet.
 (: (-> string (Result string Project)))
@@ -396,9 +395,7 @@
         (manifest-file (path-combine dir manifest-name)))
   (if (not (file-exists? manifest-file))
       None
-      (match (bjodat-parse-Package (file-read-text manifest-file))
-        ((Err _) None)
-        ((Ok package) (Some package)))))
+      (result->option (bjodat-parse-Package (file-read-text manifest-file)))))
 
 ;; What one root's package declares, or nothing when it has no manifest to say
 ;; it in — which is what a root without one means.

@@ -147,7 +147,7 @@
     (None Nil)
     ((Some lib)
      (loop (:for dir (directory-subdirectories lib))
-           (:acc out (listing (PackageRoot (name (Cons (string->symbol (option-value (path-filename dir) "")) Nil))
+           (:acc out (listing (PackageRoot (name (Cons (string->symbol (option-ref-or (path-filename dir) "")) Nil))
                                            (directory (path-absolute dir))
                                            (standard #t))))
            => out))))
@@ -177,9 +177,7 @@
   (match parts
     (Nil (Some Nil))
     ((Cons (BjoSym s) rest)
-     (match (symbols-of rest)
-       ((Some more) (Some (Cons s more)))
-       (None None)))
+     (option-map (fun (more) (Cons s more)) (symbols-of rest)))
     (_ None)))
 
 (: (-> string (List Bjodat) (Result string (List PackageRoot))))
@@ -204,9 +202,8 @@
         ((Err why) (Err #"${file}: ${why}"))
         ((Ok (BjoList (Cons (BjoSym head) entries)))
          (if (= (symbol->string head) "roots")
-             (match (root-entries (option-value (parent-of file) ".") entries)
-               ((Err why) (Err #"${file}: ${why}"))
-               ((Ok roots) (Ok roots)))
+             (result-map-err (fun (why) #"${file}: ${why}")
+                             (root-entries (option-ref-or (parent-of file) ".") entries))
              (Err #"${file}: expected one (roots ...) form")))
         ((Ok _) (Err #"${file}: expected one (roots ...) form")))))
 

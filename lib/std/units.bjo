@@ -243,17 +243,15 @@
 ;; a/b, or None when b's coefficient is zero.
 (: (-> Resolved Resolved (Option Resolved)))
 (defun (resolved/ a b)
-  (match (factor-expt (resolved-coeff b) (rational -1 1))
-    ((Some inv)
-     (Some (resolved* a (Resolved (coeff inv) (term (exps-invert (resolved-term b))) (atoms (resolved-atoms b))))))
-    (None None)))
+  (option-map (fun (inv)
+                (resolved* a (Resolved (coeff inv) (term (exps-invert (resolved-term b))) (atoms (resolved-atoms b)))))
+              (factor-expt (resolved-coeff b) (rational -1 1))))
 
 ;; r^q, or None when the coefficient's power is irrational.
 (: (-> Resolved Rational (Option Resolved)))
 (defun (resolved-expt r q)
-  (match (factor-expt (resolved-coeff r) q)
-    ((Some c) (Some (Resolved (coeff c) (term (exps-scale (resolved-term r) q)) (atoms (resolved-atoms r)))))
-    (None None)))
+  (option-map (fun (c) (Resolved (coeff c) (term (exps-scale (resolved-term r) q)) (atoms (resolved-atoms r))))
+              (factor-expt (resolved-coeff r) q)))
 
 (: (-> Resolved (OrderedMap string Rational)))
 (defun (resolved-dims r)
@@ -352,19 +350,13 @@
 (: (-> UnitTable string string (Result string UnitTable)))
 (defun (def-unit t name definition)
   (def (Ok _) (check-new-name t name) :propagate)
-  (def (Ok r) (map-err (fun (e) (str name ": " e)) (resolve-unit t definition)) :propagate)
-  (def (Ok f) (map-err (fun (e) (str name ": " e)) (resolved-factor r)) :propagate)
+  (def (Ok r) (result-map-err (fun (e) (str name ": " e)) (resolve-unit t definition)) :propagate)
+  (def (Ok f) (result-map-err (fun (e) (str name ": " e)) (resolved-factor r)) :propagate)
   (def entry
     (if (factor-one? (resolved-coeff r))
         (UnitAlias r)
         (UnitAtom (atom name (resolved-dims r) f))))
   (Ok (record-set t (units (orderedmap-set (record-ref t units) name entry)))))
-
-(: (-> (-> %e %f) (Result %e %a) (Result %f %a)))
-(defun (map-err f r)
-  (match r
-    ((Ok v) (Ok v))
-    ((Err e) (Err (f e)))))
 
 ;; A prefix and its value: (def-prefix t "k" "1000"), (def-prefix t "m" "1|1000").
 (: (-> UnitTable string string (Result string UnitTable)))
@@ -698,9 +690,7 @@
     ((EDiv a b)
      (def (Ok x) (resolve-expr t a) :propagate)
      (def (Ok y) (resolve-expr t b) :propagate)
-     (match (resolved/ x y)
-       ((Some r) (Ok r))
-       (None (Err "division by zero"))))
+     (option->result (resolved/ x y) "division by zero"))
     ((EPow a q)
      (def (Ok x) (resolve-expr t a) :propagate)
      (match (resolved-expt x q)

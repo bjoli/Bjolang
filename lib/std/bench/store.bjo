@@ -167,7 +167,7 @@
 (defun (all-some xs)
   (match xs
     (Nil (Some (list)))
-    ((Cons (Some x) more) (match (all-some more) ((Some rest) (Some (cons x rest))) (None None)))
+    ((Cons (Some x) more) (option-map (fun (rest) (cons x rest)) (all-some more)))
     ((Cons None _) None)))
 
 (: (-> (List Bjodat) (Result string SavedCase)))
@@ -234,9 +234,7 @@
       (Err #"${path} does not exist")
       (match (try (file-read-text path) #:catch (System.Exception))
         ((Ok text)
-         (match (parse-saved-run text)
-           ((Ok r) (Ok r))
-           ((Err e) (Err #"${path}: ${e}"))))
+         (result-map-err (fun (e) #"${path}: ${e}") (parse-saved-run text)))
         (_ (Err #"${path} could not be read")))))
 
 ;; ---------------------------------------------------------------------------

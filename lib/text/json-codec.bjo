@@ -188,9 +188,7 @@
   (match (json-object-ref m key)
     (None (Err (str owner ": the object has no \"" key "\" field")))
     ((Some j)
-     (match (json-> j)
-       ((Err e) (Err (str owner "." key ": " e)))
-       ((Ok v) (Ok v))))))
+     (result-map-err (fun (e) (str owner "." key ": " e)) (json-> j)))))
 
 ;; Absent and null ar the same in the sense that a nullable has the default value None
 (: (-> string Json string %a (Result string %a)) (where (json-> %a)))
@@ -199,9 +197,7 @@
     (None (Ok fallback))
     ((Some JsonNull) (Ok fallback))
     ((Some j)
-     (match (json-> j)
-       ((Err e) (Err (str owner "." key ": " e)))
-       ((Ok v) (Ok v))))))
+     (result-map-err (fun (e) (str owner "." key ": " e)) (json-> j)))))
 
 ;; ---------------------------------------------------------------------------
 ;; The generator

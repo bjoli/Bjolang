@@ -208,9 +208,7 @@
 ;; Either case. `None` for an odd length or a character that is not a hex digit.
 (: (-> string (Option (Array byte))))
 (defun (hex->bytes text)
-  (match (try (clr-from-hex text) #:catch (System.FormatException))
-    ((Ok bytes) (Some bytes))
-    ((Err _) None)))
+  (result->option (try (clr-from-hex text) #:catch (System.FormatException))))
 
 ;; ---------------------------------------------------------------------------
 ;; Passwords
@@ -275,9 +273,7 @@
       (_ None)))
   (match padded
     ((Some t)
-     (match (try (clr-from-base64 t) #:catch (System.FormatException))
-       ((Ok bytes) (Some bytes))
-       ((Err _) None)))
+     (result->option (try (clr-from-base64 t) #:catch (System.FormatException))))
     (None None)))
 
 ;; One or more ASCII digits, as an int of at least 1. `None` for anything

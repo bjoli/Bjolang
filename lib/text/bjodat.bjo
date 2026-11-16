@@ -292,9 +292,7 @@
   (match (bjodat-ref entries key)
     (None (Err (str owner ": the map has no :" (keyword->string key) " entry")))
     ((Some v)
-     (match (bjodat-> v)
-       ((Err e) (Err (str owner "." (keyword->string key) ": " e)))
-       ((Ok x) (Ok x))))))
+     (result-map-err (fun (e) (str owner "." (keyword->string key) ": " e)) (bjodat-> v)))))
 
 ;; Absent is the default. Unlike JSON there is no null to mean it as well.
 (: (-> string (Vec Bjodat) Keyword %a (Result string %a)) (where (bjodat-> %a)))
@@ -302,9 +300,7 @@
   (match (bjodat-ref entries key)
     (None (Ok fallback))
     ((Some v)
-     (match (bjodat-> v)
-       ((Err e) (Err (str owner "." (keyword->string key) ": " e)))
-       ((Ok x) (Ok x))))))
+     (result-map-err (fun (e) (str owner "." (keyword->string key) ": " e)) (bjodat-> v)))))
 
 ;; --- and what a one-pass decoder calls --------------------------------------
 ;;
@@ -342,9 +338,7 @@
   (match (field-value rd)
     ((Err e) (Err e))
     ((Ok v)
-     (match (bjodat-> v)
-       ((Err e) (Err (str owner "." (keyword->string key) ": " e)))
-       ((Ok x) (Ok x))))))
+     (result-map-err (fun (e) (str owner "." (keyword->string key) ": " e)) (bjodat-> v)))))
 
 ;; A field that was never met. The message is `bjodat-field`'s, word for word,
 ;; so which decoder read the document is not something an error report reveals.
@@ -412,9 +406,7 @@
 (defun (bjodat-one-value owner name vs)
   (match vs
     ((Cons v Nil)
-     (match (bjodat-> v)
-       ((Err e) (Err (str owner "." name ": " e)))
-       ((Ok x) (Ok x))))
+     (result-map-err (fun (e) (str owner "." name ": " e)) (bjodat-> v)))
     (_ (Err (str owner "." name ": a clause holds a field name and one value")))))
 
 ;; Every value of a clause, for a `#:rest` field.

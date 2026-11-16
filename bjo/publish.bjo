@@ -122,7 +122,7 @@
 (defun (nuget-packages-dir)
   (match (get-environment-variable "NUGET_PACKAGES")
     ((Some dir) #:when (not (= dir "")) dir)
-    (_ (path-combine (option-value (get-environment-variable "HOME") "/") ".nuget" "packages"))))
+    (_ (path-combine (option-ref-or (get-environment-variable "HOME") "/") ".nuget" "packages"))))
 
 ;; The path of a NuGet package's file below its store, or `None` for a file
 ;; that is in neither store:
@@ -349,6 +349,4 @@
           (count-files out))
         #:catch (System.Exception)))
 
-    (match copied
-      ((Ok n) (Ok n))
-      ((Err e) (Err (str "bjo publish: " (error-message e)))))))
+    (result-map-err (fun (e) (str "bjo publish: " (error-message e))) copied)))

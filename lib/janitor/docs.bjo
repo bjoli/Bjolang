@@ -132,9 +132,7 @@
   (match xs
     (Nil (Some Nil))
     ((Cons (BjoSym s) rest)
-     (match (symbol-list rest)
-       ((Some more) (Some (Cons s more)))
-       (None None)))
+     (option-map (fun (more) (Cons s more)) (symbol-list rest)))
     (_ None)))
 
 ;; A clause by its head. `#:rng` and `rng` are the same key.
@@ -268,9 +266,7 @@
       (match (clr-read-metadata path "BjolangDocs")
         ((Err e) (Err #"${path}: ${(.-Message e)}"))
         ((Ok text)
-         (match (parse-docs text)
-           ((Err why) (Err #"${path}: ${why}"))
-           ((Ok docs) (Ok docs)))))))
+         (result-map-err (fun (why) #"${path}: ${why}") (parse-docs text))))))
 
 (:doc module-docs
   (summary "The docs of a module, by name.")

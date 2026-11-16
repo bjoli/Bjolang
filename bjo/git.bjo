@@ -70,9 +70,8 @@
 ;; `Err`. `Err` is git not starting at all.
 (: git-run #:sync (-> Tool (Vec string) (Result string (Tuple int string))))
 (defun (git-run g arguments)
-  (match (run/output '(errors-into-file ,(record-ref g errors) (git ,arguments)))
-    ((Err e) (Err (str "bjo: could not run git: " (error-message e))))
-    ((Ok answer) (Ok answer))))
+  (result-map-err (fun (e) (str "bjo: could not run git: " (error-message e)))
+                  (run/output '(errors-into-file ,(record-ref g errors) (git ,arguments)))))
 
 ;; A command that has to work, with what git said when it did not.
 (: git-must #:sync (-> Tool (Vec string) string (Result string string)))

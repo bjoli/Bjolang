@@ -1,6 +1,6 @@
 ;; The prelude's Option and Result functions: option-map, option-filter,
-;; option-or, option->result, result-map-err and result->option, with plain
-;; and suspending callbacks.
+;; option-or, option->result, result-ref, result-ref-or, result-map-err and
+;; result->option, with plain and suspending callbacks.
 
 (import (std prelude))
 (import (std simpletest))
@@ -40,6 +40,11 @@
   (expect "result->option of an Err" (result->option bad) None)
   (expect "the two conversions return the value"
           (result->option (option->result (Some 7) "e")) (Some 7))
+  (expect "result-ref of an Ok" (result-ref ok) 5)
+  (expect-true "result-ref of an Err raises"
+               (err? (try (result-ref bad) #:catch (System.InvalidOperationException))))
+  (expect "result-ref-or of an Ok" (result-ref-or ok 0) 5)
+  (expect "result-ref-or of an Err" (result-ref-or bad 0) 0)
 
   ;; --- suspending callbacks -------------------------------------------------
   (expect "option-map with a suspending function" (option-map slow-double (Some 4)) (Some 8))

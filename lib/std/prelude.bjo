@@ -124,8 +124,8 @@
   transientmap-empty? transientmap-filter!
 
   ;; Results
-  ok? err? result-map result-map-err result->option
-  option-value option-map option-filter option-or option->result
+  ok? err? result-ref result-ref-or result-map result-map-err result->option
+  option-map option-filter option-or option->result
   ;; Pairs
   fst snd
 
@@ -1817,18 +1817,12 @@
     ((Ok v) #f)
     ((Err e) #t)))
 
-;; The `Ok` value through `f`, which may suspend; an `Err` answers itself.
+;; The `Ok` value through `f`, which may suspend; an `Err` returns itself.
 (: (-> (-?-> %a %b) (Result %e %a) (Result %e %b)))
 (defun (result-map f r)
   (match r
     ((Ok v) (Ok (f v)))
     ((Err e) (Err e))))
-
-(: (-> (Option %a) %a %a))
-(defun (option-value opt fallback)
-  (match opt
-    ((Some v) v)
-    (None fallback)))
 
 ;; The `Err` value through `f`, which may suspend; an `Ok` returns itself.
 (: (-> (-?-> %e %f) (Result %e %a) (Result %f %a)))
@@ -1836,6 +1830,25 @@
   (match r
     ((Ok v) (Ok v))
     ((Err e) (Err (f e)))))
+
+(import/class
+  (ResultRefError (: System.InvalidOperationException (-> string ResultRefError))))
+
+;; The `Ok` value. An `Err` raises InvalidOperationException, as
+;; `option-ref` does for `None`.
+(: (-> (Result %e %a) %a))
+(defun (result-ref r)
+  (match r
+    ((Ok v) v)
+    ((Err _) (raise (cast Exception (ResultRefError. "result-ref on Err"))))))
+
+;; The `Ok` value, or `fallback` for an `Err`. `fallback` is evaluated
+;; first, as for any call.
+(: (-> (Result %e %a) %a %a))
+(defun (result-ref-or r fallback)
+  (match r
+    ((Ok v) v)
+    ((Err _) fallback)))
 
 ;; `(Some v)` for `(Ok v)`, and `None` for an `Err`, whose value is dropped.
 (: (-> (Result %e %a) (Option %a)))
@@ -2301,19 +2314,17 @@
 ;; not in s.
 (: (-> string string (Option (Tuple string string))))
 (defun (string-split-once s sep)
-  (match (string-search s sep)
-    ((Some c)
-     (Some (Tuple (substring s (string-cursor-start s) c)
-                  (substring s (string-cursor-forward s c (string-count sep)) (string-cursor-end s)))))
-    (None None)))
+  (option-map (fun (c)
+                (Tuple (substring s (string-cursor-start s) c)
+                       (substring s (string-cursor-forward s c (string-count sep)) (string-cursor-end s))))
+              (string-search s sep)))
 
 (: (-> string string (Option (Tuple string string))))
 (defun (string-split-once/slice s sep)
-  (match (string-search s sep)
-    ((Some c)
-     (Some (Tuple (substring/slice s (string-cursor-start s) c)
-                  (substring/slice s (string-cursor-forward s c (string-count sep)) (string-cursor-end s)))))
-    (None None)))
+  (option-map (fun (c)
+                (Tuple (substring/slice s (string-cursor-start s) c)
+                       (substring/slice s (string-cursor-forward s c (string-count sep)) (string-cursor-end s))))
+              (string-search s sep)))
 
 ;; Pad width.
 (: (-> string int (#:with char) string))
@@ -2676,9 +2687,7 @@
 ;; What a path names, for the functions below that only ask that.
 (: (-> string (Option FsKind)))
 (defun (kind-of path)
-  (match (fs-info path)
-    ((Some info) (Some (record-ref info kind)))
-    (None None)))
+  (option-map (fun (info) (record-ref info kind)) (fs-info path)))
 
 (: (-> string bool))
 (defun (file-exists? path)
