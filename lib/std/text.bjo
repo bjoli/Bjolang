@@ -48,7 +48,7 @@
   text-take text-drop text-take-right text-drop-right
   text-contains? text-starts-with? text-ends-with?
   text-replace text-split text-split-once text-join
-  text-search text-search-backward text-search-any text-index
+  text-search text-search-backward text-search-any text-find
   text-trim text-trim-left text-trim-right text-pad-left text-pad-right
   text-upcase text-downcase text-reverse
   text-fold text-fold-right text-for-each text->list text->vec
@@ -67,7 +67,7 @@
   ;; Chunks
   text-fold-chunks text-for-each-chunk text-chunk-count
   ;; Builders
-  textbuilder-empty textbuilder-add! textbuilder-add-char! textbuilder-add-text! textbuilder-length textbuilder->text
+  textbuilder-empty textbuilder-add-string! textbuilder-add! textbuilder-add-text! textbuilder-length textbuilder->text
   ;; Transients
   text->transienttext transienttext->text transienttext-insert! transienttext-delete!
   transienttext-replace-range! transienttext-append! transienttext-length transienttext-count
@@ -756,7 +756,7 @@
     (add-chunk! b c)))
 
 (: (-> TextBuilder string void))
-(defun (textbuilder-add! b s)
+(defun (textbuilder-add-string! b s)
   (def len (string-length s))
   (def p (.pending b))
   (def pl (stringbuilder-length p))
@@ -792,8 +792,8 @@
 ;; Adds `ch`, in the pending chunk, which goes to the tree first when `ch`
 ;; would take it past `chunk-max`.
 (: (-> TextBuilder char void))
-(defun (textbuilder-add-char! b ch)
-  (def cp (char->integer ch))
+(defun (textbuilder-add! b ch)
+  (def cp (char->int ch))
   (def w (cond ((< cp 128) 1) ((< cp 2048) 2) ((< cp 65536) 3) (else 4)))
   (def p (.pending b))
   (when (> (+ (stringbuilder-length p) w) chunk-max) (flush-pending! b))
@@ -802,7 +802,7 @@
 
 (: (-> TextBuilder Text void))
 (defun (textbuilder-add-text! b r)
-  (text-for-each-chunk (fun (c) (textbuilder-add! b c)) r))
+  (text-for-each-chunk (fun (c) (textbuilder-add-string! b c)) r))
 
 ;; The pending text as the last chunk. A short one is merged with the chunk
 ;; before it, or evened out with it.
@@ -864,7 +864,7 @@
 (: (-> #:rest string Text))
 (defun (text #:rest parts)
   (def b (textbuilder-empty))
-  (loop (:for s parts) (:do (textbuilder-add! b s)))
+  (loop (:for s parts) (:do (textbuilder-add-string! b s)))
   (textbuilder->text b))
 
 (: (-> string Text))
@@ -873,7 +873,7 @@
       (small-text s)
       (begin
         (def b (textbuilder-empty))
-        (textbuilder-add! b s)
+        (textbuilder-add-string! b s)
         (textbuilder->text b))))
 
 ;; ---------------------------------------------------------------------------
@@ -1380,7 +1380,7 @@
 (defun (decode-at c k)
   (def sp (.AsSpan c))
   (def b0 (byte-at sp k))
-  (integer->char
+  (int->char
    (cond
      ((< b0 128) b0)
      ((< b0 224) (bitwise-ior (shift-left (bitwise-and b0 31) 6) (bitwise-and (byte-at sp (+ k 1)) 63)))
@@ -1961,7 +1961,7 @@
     (def start (.start it))
     (def e (min to (+ start (string-length c))))
     (when (< from e)
-      (textbuilder-add! b (piece c (- (max from start) start) (- e start))))
+      (textbuilder-add-string! b (piece c (- (max from start) start) (- e start))))
     (when (and (< e to) (chunk-iter-next! it)) (go))))
 
 ;; The first `n` characters of `r`, or all of it when it has fewer.
@@ -2029,7 +2029,7 @@
            (def it (chunk-iter r 0))
            (let go ((from 0) (at first))
              (add-range! b r it from at)
-             (textbuilder-add! b new)
+             (textbuilder-add-string! b new)
              (def next (+ at m))
              (def k (index-from! r si old next))
              (if (>= k 0)
@@ -2074,7 +2074,7 @@
   (def b (textbuilder-empty))
   (loop (:with first? #t #f)
         (:for part parts)
-        (:do (unless first? (textbuilder-add! b sep))
+        (:do (unless first? (textbuilder-add-string! b sep))
              (textbuilder-add-text! b part)))
   (textbuilder->text b))
 
@@ -2088,7 +2088,7 @@
 
 ;; The cursor on the first character of `r` that `pred` holds for.
 (: (-> (-?-> char bool) Text (Option TextCursor)))
-(defun (text-index pred r) (text-cursor-find pred r (text-cursor-start r)))
+(defun (text-find pred r) (text-cursor-find pred r (text-cursor-start r)))
 
 ;; The cursor on the first character at or after `start` that is in `chars`.
 ;;
@@ -2119,7 +2119,7 @@
 ;; `r` without the white space at its start.
 (: (-> Text Text))
 (defun (text-trim-left r)
-  (match (text-index not-space? r)
+  (match (text-find not-space? r)
     ((Some c) (if (at-start? c) r (range->text r (.at c) (.bytes r))))
     (None empty-text)))
 
@@ -2159,14 +2159,14 @@
 (: (-> Text Text))
 (defun (text-upcase r)
   (def b (textbuilder-empty))
-  (text-for-each-chunk (fun (c) (textbuilder-add! b (.ToUpperInvariant c))) r)
+  (text-for-each-chunk (fun (c) (textbuilder-add-string! b (.ToUpperInvariant c))) r)
   (textbuilder->text b))
 
 ;; `r` with each character lowercased in the invariant culture, chunk by chunk.
 (: (-> Text Text))
 (defun (text-downcase r)
   (def b (textbuilder-empty))
-  (text-for-each-chunk (fun (c) (textbuilder-add! b (.ToLowerInvariant c))) r)
+  (text-for-each-chunk (fun (c) (textbuilder-add-string! b (.ToLowerInvariant c))) r)
   (textbuilder->text b))
 
 ;; The characters of `r` in reverse order: its chunks from the last, each
@@ -2179,7 +2179,7 @@
         (def b (textbuilder-empty))
         (def it (chunk-iter r (- (.bytes r) 1)))
         (let go ()
-          (textbuilder-add! b (.Reverse (.chunk it)))
+          (textbuilder-add-string! b (.Reverse (.chunk it)))
           (when (chunk-iter-prev! it) (go)))
         (textbuilder->text b))))
 
@@ -2211,10 +2211,10 @@
   (: textbuilder-add-piece! (-> TextBuilder %a void)))
 
 (impl (TextPiece string)
-  (defun (textbuilder-add-piece! b s) (textbuilder-add! b s)))
+  (defun (textbuilder-add-piece! b s) (textbuilder-add-string! b s)))
 
 (impl (TextPiece char)
-  (defun (textbuilder-add-piece! b ch) (textbuilder-add-char! b ch)))
+  (defun (textbuilder-add-piece! b ch) (textbuilder-add! b ch)))
 
 ;; The collector that gathers characters or strings into a text, through a
 ;; builder, as `stringing` gathers characters into a string.
@@ -2254,8 +2254,8 @@
   (defun (add r s) (insert-with r (.bytes r) s (owner-next))))
 
 (impl (Addable! TextBuilder)
-  (type %elem string)
-  (defun (add! b s) (textbuilder-add! b s)))
+  (type %elem char)
+  (defun (add! b ch) (textbuilder-add! b ch)))
 
 (impl (Addable! TransientText)
   (type %elem string)
@@ -2416,7 +2416,7 @@
   (def sp (.AsSpan (.chunk c)))
   (def k (- (.at c) (.start c)))
   (def b0 (byte-at sp k))
-  (def ch (if (< b0 128) (integer->char b0) (decode-at (.chunk c) k)))
+  (def ch (if (< b0 128) (int->char b0) (decode-at (.chunk c) k)))
   (Tuple ch (moved-to c (+ (.at c) (char-width b0)))))
 
 ;; The cursor on the character before `c`, which is not at the start.

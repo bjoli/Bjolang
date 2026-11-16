@@ -13,38 +13,25 @@
   (summary "The codepoint of a character.")
   (arg c "The character.")
   (returns "Its Unicode scalar value, from 0 to #x10FFFF, never a surrogate.")
-  (see int->char char->integer char->string)
+  (see int->char char->string)
   (example """
     (char->int #\a)    ; 97
     """)
   (reference """
     A codepoint rather than a UTF-16 code unit: a character outside the
     Basic Multilingual Plane returns its full scalar value, not a
-    surrogate. @code{char->integer} is the same function under R6RS's name.
+    surrogate. @code{char->int} is the same function under R6RS's name.
     """))
-
-(:doc char->integer
-  (summary "The codepoint of a character, under R6RS's name.")
-  (arg c "The character.")
-  (returns "Its Unicode scalar value.")
-  (see char->int integer->char))
 
 (:doc int->char
   (summary "The character with a given codepoint.")
   (arg n "A Unicode scalar value: from 0 to #x10FFFF, outside the surrogates #xD800 to #xDFFF.")
   (returns "The character.")
   (raises System.ArgumentOutOfRangeException "When n is not a Unicode scalar value: negative, a surrogate, or above #x10FFFF.")
-  (see char->int integer->char)
+  (see char->int)
   (example """
     (int->char 955)    ; #\λ
     """))
-
-(:doc integer->char
-  (summary "The character with a given codepoint, under R6RS's name.")
-  (arg n "A Unicode scalar value.")
-  (returns "The character.")
-  (raises System.ArgumentOutOfRangeException "When n is not a Unicode scalar value, as for int->char.")
-  (see int->char char->integer))
 
 (:doc char->string
   (summary "A string of one character.")
@@ -373,7 +360,7 @@
   (summary "Adds a character to the end of a string builder, in place.")
   (arg b "The builder.")
   (arg c "The character, encoded as UTF-8.")
-  (see stringbuilder-add-string! stringbuilder-add-code!))
+  (see stringbuilder-add-string! stringbuilder-add-byte!))
 
 (:doc stringbuilder-add-string!
   (summary "Adds a string to the end of a string builder, in place.")
@@ -401,12 +388,12 @@
   (arg bytes "The array.")
   (arg start "The first byte, from 0.")
   (arg end "The byte after the last, not before start and at most the array's length.")
-  (see stringbuilder-add-code! stringbuilder->string)
+  (see stringbuilder-add-byte! stringbuilder->string)
   (reference """
-    What @code{stringbuilder-add-code!} adds a byte at a time, in one piece:
+    What @code{stringbuilder-add-byte!} adds a byte at a time, in one piece:
     for a reader that copies a run of its input. The bytes are checked as
-    those are, when the builder becomes a string, which raises if they do not
-    form whole characters. A range outside the array raises here.
+    those are, when the text leaves the builder. A range outside the array
+    raises here.
     """))
 
 (:doc stringbuilder-add-long!
@@ -431,19 +418,24 @@
     culture.
     """))
 
-(:doc stringbuilder-add-code!
+(:doc stringbuilder-add-byte!
   (summary "Adds one UTF-8 byte to the end of a string builder, in place.")
   (arg b "The builder.")
   (arg n "The byte, from 0 to 255.")
-  (see stringbuilder-code-ref stringbuilder-add! stringbuilder->string)
+  (see stringbuilder-byte-ref stringbuilder-add! stringbuilder->string)
   (reference """
     For a scanner that copies its input a byte at a time and already holds
     the number: it skips decoding and re-encoding a character.
 
     A number outside 0 to 255 raises
-    @code{System.ArgumentOutOfRangeException}. Whether the bytes form whole
-    characters is not checked here: @code{stringbuilder->string} checks
-    that, and raises if they do not.
+    @code{System.ArgumentOutOfRangeException}.
+
+    @strong{Validity.} A builder never gives out invalid UTF-8. A character
+    of several bytes is incomplete until its last byte is added, so the
+    bytes are checked when the text leaves the builder, not here:
+    @code{stringbuilder->string} raises
+    @code{System.InvalidOperationException} if they do not form whole
+    characters, and so does a write of the builder to a port.
     """))
 
 (:doc stringbuilder-add-unit!
@@ -462,17 +454,17 @@
   (summary "How much text a string builder holds, in bytes.")
   (arg b "The builder.")
   (returns "The number of UTF-8 bytes added so far, not characters.")
-  (see stringbuilder-code-ref string-length))
+  (see stringbuilder-byte-ref string-length))
 
-(:doc stringbuilder-code-ref
+(:doc stringbuilder-byte-ref
   (summary "One byte of what a string builder holds.")
   (arg b "The builder.")
   (arg i "The byte index, from 0, less than stringbuilder-length.")
   (returns "The byte at i, from 0 to 255.")
   (raises System.ArgumentOutOfRangeException "When i is negative or not less than the builder's length.")
-  (see stringbuilder-add-code! stringbuilder-length)
+  (see stringbuilder-add-byte! stringbuilder-length)
   (reference """
-    The counterpart of @code{stringbuilder-add-code!}, for a scanner that
+    The counterpart of @code{stringbuilder-add-byte!}, for a scanner that
     looks back at what it wrote. Indices are bytes, not characters.
     """))
 
@@ -502,7 +494,7 @@
   (summary "The text a string builder holds, as a string.")
   (arg b "The builder.")
   (returns "A copy of the text so far.")
-  (raises System.InvalidOperationException "When bytes from stringbuilder-add-code!, or a surrogate from stringbuilder-add-unit! left unpaired, do not form valid UTF-8.")
+  (raises System.InvalidOperationException "When bytes from stringbuilder-add-byte! or stringbuilder-add-bytes!, or a surrogate from stringbuilder-add-unit! left unpaired, do not form valid UTF-8.")
   (see stringbuilder-empty stringbuilder-clear!)
   (reference """
     The string is a copy: the builder keeps its text and can go on

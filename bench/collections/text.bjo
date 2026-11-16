@@ -160,15 +160,15 @@
 (def/bench "1 MB: split and append, 1024 times"
   (loop (:for c cursors) (:do (def (Tuple a b) (text-split-at mb-text c)) (ignore (text-append b a)))))
 (def/bench "1 MB: character n, 1024 times"
-  (loop (:for n indices) (:acc (summing (char->integer (text-cursor-ref mb-text (text-cursor-forward mb-text mb-start n)))))))
+  (loop (:for n indices) (:acc (summing (char->int (text-cursor-ref mb-text (text-cursor-forward mb-text mb-start n)))))))
 (def/bench "1 MB: the start of line n, 1024 times"
   (loop (:for n lines) (:acc (summing (if (text-cursor-end? mb-text (text-cursor-at-line mb-text n)) 0 1)))))
 (def/bench "1 MB: the line of a cursor, 1024 times"
   (loop (:for c cursors) (:acc (summing (text-cursor-line mb-text c)))))
 (def/bench "1 MB: the index of a cursor, 1024 times"
   (loop (:for c cursors) (:acc (summing (text-cursor-index mb-text c)))))
-(def/bench "1 MB: every character" (loop (:for c mb-text) (:acc (summing (char->integer c)))))
-(def/bench "1 MB: every character of the string" (loop (:for c megabyte) (:acc (summing (char->integer c)))))
+(def/bench "1 MB: every character" (loop (:for c mb-text) (:acc (summing (char->int c)))))
+(def/bench "1 MB: every character of the string" (loop (:for c megabyte) (:acc (summing (char->int c)))))
 (def/bench "1 MB: equal, other chunks" (= mb-text mb-other))
 (def/bench "1 MB: hash" (eq-hash mb-text))
 (def/bench "1 MB: search, not there" (text-search mb-text "line 99999999"))
@@ -197,7 +197,7 @@
 
 (def/bench "vs string: character n by stepping, 64 times"
   (loop (:for n (vec-take (array->vec indices) 64))
-        (:acc (summing (char->integer (string-cursor-ref megabyte (string-cursor-forward megabyte (string-cursor-start megabyte) n)))))))
+        (:acc (summing (char->int (string-cursor-ref megabyte (string-cursor-forward megabyte (string-cursor-start megabyte) n)))))))
 (def/bench "vs string: line start by scanning, 1024 times"
   (loop (:for n lines) (:acc (summing (string-line-start megabyte n)))))
 (def/bench "vs string: line of an offset by counting, 1024 times"
@@ -229,16 +229,16 @@
 
 (def/bench "cursor: every character, ref+next"
   (let go ((c mb-start) (acc 0))
-    (if (text-cursor-end? mb-text c) acc (begin (def (Tuple ch n) (text-cursor-ref+next mb-text c)) (go n (+ acc (char->integer ch)))))))
+    (if (text-cursor-end? mb-text c) acc (begin (def (Tuple ch n) (text-cursor-ref+next mb-text c)) (go n (+ acc (char->int ch)))))))
 (def/bench "vs string cursor: every character, ref+next"
   (let go ((c (string-cursor-start megabyte)) (acc 0))
-    (if (string-cursor-end? megabyte c) acc (begin (def (Tuple ch n) (string-cursor-ref+next megabyte c)) (go n (+ acc (char->integer ch)))))))
+    (if (string-cursor-end? megabyte c) acc (begin (def (Tuple ch n) (string-cursor-ref+next megabyte c)) (go n (+ acc (char->int ch)))))))
 (def/bench "cursor: every character backwards"
-  (loop (:for ch (text-backward mb-text (text-cursor-end mb-text))) (:acc (summing (char->integer ch)))))
+  (loop (:for ch (text-backward mb-text (text-cursor-end mb-text))) (:acc (summing (char->int ch)))))
 (def/bench "vs string cursor: every character backwards"
   (let go ((c (string-cursor-end megabyte)) (acc 0))
     (if (string-cursor=? c (string-cursor-start megabyte)) acc
-        (begin (def p (string-cursor-prev megabyte c)) (go p (+ acc (char->integer (string-cursor-ref megabyte p))))))))
+        (begin (def p (string-cursor-prev megabyte c)) (go p (+ acc (char->int (string-cursor-ref megabyte p))))))))
 (def/bench "cursor: every newline by find"
   (let go ((c mb-start) (n 0))
     (match (text-cursor-find (fun (ch) (= ch #\newline)) mb-text c)

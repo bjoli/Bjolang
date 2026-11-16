@@ -186,9 +186,9 @@
 
 (: (-> StringBuilder int void))
 (defun (add-escape! sb b)
-  (stringbuilder-add-code! sb 37)
-  (stringbuilder-add-code! sb (byte-at hex-bytes (/ b 16)))
-  (stringbuilder-add-code! sb (byte-at hex-bytes (% b 16))))
+  (stringbuilder-add-byte! sb 37)
+  (stringbuilder-add-byte! sb (byte-at hex-bytes (/ b 16)))
+  (stringbuilder-add-byte! sb (byte-at hex-bytes (% b 16))))
 
 ;; `s` as UTF-8, with each byte that `keep?` refuses written `%XX`. With `plus`,
 ;; a space is `+`, as a form writes it.
@@ -199,8 +199,8 @@
   (loop (:for i (range 0 (array-length bytes)))
         (:do (let ((b (byte-at bytes i)))
                (cond
-                 ((keep? b) (stringbuilder-add-code! sb b))
-                 ((and plus (= b 32)) (stringbuilder-add-code! sb 43))
+                 ((keep? b) (stringbuilder-add-byte! sb b))
+                 ((and plus (= b 32)) (stringbuilder-add-byte! sb 43))
                  (else (add-escape! sb b))))))
   (stringbuilder->string sb))
 
@@ -258,11 +258,11 @@
           (def hi (if (< (+ i 1) n) (hex-value (byte-at bytes (+ i 1))) -1))
           (def lo (if (< (+ i 2) n) (hex-value (byte-at bytes (+ i 2))) -1))
           (if (and (>= hi 0) (>= lo 0))
-              (begin (stringbuilder-add-code! sb (+ (* hi 16) lo)) (go (+ i 3)))
+              (begin (stringbuilder-add-byte! sb (+ (* hi 16) lo)) (go (+ i 3)))
               (Err (str "column " (int->string (+ i 1))
                         ": a '%' begins an escape of two hex digits"))))
-         ((and plus (= b 43)) (stringbuilder-add-code! sb 32) (go (+ i 1)))
-         (else (stringbuilder-add-code! sb b) (go (+ i 1))))))))
+         ((and plus (= b 43)) (stringbuilder-add-byte! sb 32) (go (+ i 1)))
+         (else (stringbuilder-add-byte! sb b) (go (+ i 1))))))))
 
 (: (-> string (Result string string)))
 (defun (percent-decode s) (decode-with #f s))
@@ -292,7 +292,7 @@
     ((= b 32) "a space")
     ((>= b 128) "a character that is not ASCII")
     ((< b 32) "a control character")
-    (else (str "'" (list->string (list (integer->char b))) "'"))))
+    (else (str "'" (list->string (list (int->char b))) "'"))))
 
 (: (-> int string (Result string %a)))
 (defun (refuse-at i what) (Err (str "column " (int->string (+ i 1)) ": " what)))

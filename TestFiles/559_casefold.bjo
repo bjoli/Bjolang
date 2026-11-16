@@ -1,0 +1,67 @@
+;; Full Unicode case folding: `string-foldcase` from (std unicode casefold).
+;; Every mapping of the table is checked against the cases that gen_casefold.py
+;; writes from the same CaseFolding.txt.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std unicode casefold))
+
+(include "assets/unicode/casefold-cases.protobjo")
+
+;; The value of a hex number.
+(: (-> string int))
+(defun (hex->int s)
+  (loop (:for ch s)
+        (:acc n (folding 0 (+ (* 16 n) (let ((d (char->int ch))) (if (<= d 57) (- d 48) (- d 55))))))))
+
+;; The string of the code points written in hex in `s`, separated by spaces.
+(: (-> string string))
+(defun (hex->string s)
+  (def sb (stringbuilder-empty))
+  (loop (:for t (string-split s " "))
+        (:when (not (string-empty? t)))
+        (:do (stringbuilder-add! sb (int->char (hex->int t)))))
+  (stringbuilder->string sb))
+
+(defun (main args)
+  (expect "the table is of the cases' version" casefold-unicode-version casefold-cases-version)
+
+  ;; --- every mapping ----------------------------------------------------------
+  (def lines (vec-filter (fun (l) (not (string-empty? l))) (vec-map string-trim (string-split casefold-cases "\n"))))
+  (def wrong
+    (loop (:for line lines)
+          (:acc (vecing (let* ((parts (string-split line ";"))
+                               (from (hex->string (vec-ref parts 0)))
+                               (to (hex->string (vec-ref parts 1))))
+                          (if (= (string-foldcase from) to) "" line))))))
+  (expect "every mapping of the table" (vec-filter (fun (l) (not (string-empty? l))) wrong) [])
+  (expect "the cases are all there" (vec-length lines) 1606)
+
+  ;; --- one to many ------------------------------------------------------------
+  (expect "ß folds to ss" (string-foldcase "Straße") "strasse")
+  (expect "ẞ folds to ss" (string-foldcase "GROẞ") "gross")
+  (expect "ﬁ folds to fi" (string-foldcase "ﬁle") "file")
+  (expect "ŉ folds to two" (string-foldcase "ŉ") "ʼn")
+
+  ;; --- one to one -------------------------------------------------------------
+  (expect "ASCII" (string-foldcase "Hello, World! 123") "hello, world! 123")
+  (expect "final sigma and capital sigma fold to σ" (string-foldcase "ΣΑΣ ς") "σασ σ")
+  (expect "long s" (string-foldcase "ſ") "s")
+  (expect "Kelvin sign" (string-foldcase "K") "k")
+  (expect "Ångström sign" (string-foldcase "Å") "å")
+  (expect "Cherokee folds to upper case" (string-foldcase "ꭰ") "Ꭰ")
+  (expect "outside the BMP" (string-foldcase "𐐀𞤀") "𐐨𞤢")
+  (expect "case-insensitive equality"
+          (= (string-foldcase "ΣΊΣΥΦΟΣ") (string-foldcase "σίσυφος")) #t)
+
+  ;; --- not Turkic -------------------------------------------------------------
+  (expect "I folds to i" (string-foldcase "I") "i")
+  (expect "İ folds to i and a combining dot" (string-foldcase "İ") "i̇")
+  (expect "ı does not fold" (string-foldcase "ı") "ı")
+
+  ;; --- nothing to fold --------------------------------------------------------
+  (expect "empty" (string-foldcase "") "")
+  (def plain "already folded: ss σ 漢字 🇸🇪")
+  (expect "a string with nothing to fold is unchanged" (string-foldcase plain) plain)
+  (expect "the prefix before the first fold is kept" (string-foldcase "abc漢字D") "abc漢字d")
+  0)

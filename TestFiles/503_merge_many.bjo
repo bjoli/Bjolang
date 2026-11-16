@@ -1,7 +1,7 @@
 (import (std prelude))
 (import (std simpletest))
 
-;; `vec-merge` and `list-append` take two or more. Two vecs are one merge;
+;; `vec-append` and `list-append` take two or more. Two vecs are one merge;
 ;; more go to a concatenation that copies small vecs into full leaves and
 ;; merges big ones. Each result is checked against the same elements joined
 ;; one at a time.
@@ -21,15 +21,15 @@
 ;; The same joined one merge at a time.
 (: (-> (List (Vec int)) (Vec int)))
 (defun (two-at-a-time ps)
-  (loop (:for p ps) (:acc acc (folding [] (vec-merge acc p))) => acc))
+  (loop (:for p ps) (:acc acc (folding [] (vec-append acc p))) => acc))
 
 (: (-> (List int) int))
 (defun (total sizes) (fold + 0 sizes))
 
 (defun (main)
-  (expect "two" (vec-merge [1 2] [3]) [1 2 3])
-  (expect "three" (vec-merge [1] [2] [3 4]) [1 2 3 4])
-  (expect "empty ones" (vec-merge [] [1] [] [2 3] []) [1 2 3])
+  (expect "two" (vec-append [1 2] [3]) [1 2 3])
+  (expect "three" (vec-append [1] [2] [3 4]) [1 2 3 4])
+  (expect "empty ones" (vec-append [] [1] [] [2 3] []) [1 2 3])
 
   ;; Small vecs only, which are copied; big only, which are merged; and the
   ;; two mixed, with runs of small ones between big ones.
@@ -40,11 +40,11 @@
       (match ps
         ((Cons a (Cons b rest))
          (expect #"apply over ${(list-length sizes)} vecs"
-                 (apply vec-merge a b rest) want)
+                 (apply vec-append a b rest) want)
          (expect #"as two at a time, over ${(list-length sizes)} vecs"
-                 (apply vec-merge a b rest) (two-at-a-time ps))
+                 (apply vec-append a b rest) (two-at-a-time ps))
          (expect #"walked, over ${(list-length sizes)} vecs"
-                 {listing x (:for x (apply vec-merge a b rest))}
+                 {listing x (:for x (apply vec-append a b rest))}
                  {listing x (:for x want)}))
         (_ (expect "two vecs at least" #f #t))))
     (list {listing (+ 1 (% (* k 7) 40)) (:for k (range 0 500))}

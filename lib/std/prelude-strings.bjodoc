@@ -132,7 +132,7 @@
   (arg s "The string to search.")
   (arg needle "The text to look for.")
   (returns "(Some cursor) on the start of the first occurrence, or None. An empty needle is found at the start.")
-  (see string-search-backward string-index substring string-contains?)
+  (see string-search-backward string-find substring string-contains?)
   (example """
     (match (string-search line "=")
       ((Some c) (substring line (string-cursor-start line) c))   ; the key
@@ -157,7 +157,7 @@
   (arg chars "The set, as a string of its characters. Their order does not matter.")
   (arg start "Where to start, a cursor of s.")
   (returns "(Some cursor) on the first character at or after start that is in chars, or None. An empty set is never found.")
-  (see string-search string-index stringbuilder-add-substring!)
+  (see string-search string-find stringbuilder-add-substring!)
   (example """
     ;; `&` and `<` as HTML has them. The text between them is copied whole.
     (def b (stringbuilder-empty))
@@ -172,7 +172,7 @@
   (reference """
     When every character of the set is ASCII, the search is a vectorized
     search of the bytes, which is many times faster than a
-    @code{string-index} that tests each character. An ASCII byte is never part
+    @code{string-find} that tests each character. An ASCII byte is never part
     of a longer character in UTF-8, so the cursor found is on a character. A
     set with a character outside ASCII is searched one character at a time.
 
@@ -184,14 +184,14 @@
     from, as for @code{string-search}.
     """))
 
-(:doc string-index
+(:doc string-find
   (summary "Where the first character satisfying a predicate is.")
   (arg pred "The test, given each character in turn from the start.")
   (arg s "The string.")
   (returns "(Some cursor) on the first character pred returns #t for, or None.")
   (see string-search substring)
   (example """
-    (string-index char-whitespace? "key value")   ; (Some cursor) on the space
+    (string-find char-whitespace? "key value")   ; (Some cursor) on the space
     """)
   (reference """
     A cursor rather than a character, so the result goes straight to
@@ -357,7 +357,7 @@
   (returns "The characters from start up to end, with bytes of their own; s itself when that is all of it.")
   (raises System.ArgumentException "When start is after end, or a cursor is not on a character boundary of s.")
   (raises System.ArgumentOutOfRangeException "When a cursor is outside s.")
-  (see substring/slice string-search string-index string-cursor-start)
+  (see substring/slice string-search string-find string-cursor-start)
   (example """
     (substring s (string-cursor-next s (string-cursor-start s))
                  (string-cursor-end s))   ; all but the first character
@@ -377,7 +377,7 @@
     text, and goes anywhere a string goes. Two things set it apart.
 
     @strong{Its cursors are its source's.} A cursor found in a slice, by
-    @code{string-search}, @code{string-index} or a regex, is a position in
+    @code{string-search}, @code{string-find} or a regex, is a position in
     the string it was taken from, and @code{(string-cursor-start sl)} is
     where the slice begins in it.
 

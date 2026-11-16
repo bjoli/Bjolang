@@ -22,7 +22,7 @@
 (: (-> InputPort string))
 (defun (first-char-in p)
   (match (try (reader-read-char! p) #:catch (System.Exception))
-    ((Ok c) (str "read " (int->string (char->integer c))))
+    ((Ok c) (str "read " (int->string (char->int c))))
     ((Err e) (.-Message e))))
 
 (: (-> string string))
@@ -30,14 +30,14 @@
 
 ;; U+1F600, four bytes of UTF-8.
 (: string)
-(def emoji (list->string (list (integer->char 128512))))
+(def emoji (list->string (list (int->char 128512))))
 
 (defun (main)
   ;; --- what it reads -------------------------------------------------------
   (expect "an ASCII character" (first-char "abc") "read 97")
   ;; The lexer has no \u escape, so é is spelled by its codepoint.
   (expect "a two-byte character"
-          (first-char (list->string (list (integer->char 233) #\x)))
+          (first-char (list->string (list (int->char 233) #\x)))
           "read 233")
   ;; Four bytes in, one scalar out.
   (expect "an astral character is one char" (first-char emoji) "read 128512")
@@ -73,6 +73,6 @@
 
   ;; The colour-aware `read-char` is the same reader underneath.
   (expect "read-char agrees on an astral character"
-          (int->string (char->integer (read-char (open-input-string emoji))))
+          (int->string (char->int (read-char (open-input-string emoji))))
           "128512")
   0)

@@ -200,7 +200,7 @@ The pad is a ~char~, so an astral one counts as the single character it is.
 *** Slices =(std prelude)=
 A slice is a string that shares the bytes of the string it was taken from instead of copying them. It is a ~string~ like any other — it equals, hashes and orders by its text, finds a map key with that text, and goes anywhere a string goes — and only the forms named ~/slice~ make one: ~substring/slice~, ~string-trim/slice~, ~string-trim-left/slice~, ~string-trim-right/slice~, ~string-split/slice~, ~string-split-once/slice~, and the four ~string-take~ and ~string-drop~ forms with ~/slice~.
 
-- *Its cursors are its source's.* A cursor found in a slice, by ~string-search~, ~string-index~ or a regex, is a position in the string it was taken from, and ~(string-cursor-start sl)~ is where the slice begins in it.
+- *Its cursors are its source's.* A cursor found in a slice, by ~string-search~, ~string-find~ or a regex, is a position in the string it was taken from, and ~(string-cursor-start sl)~ is where the slice begins in it.
 - *It keeps all of its source alive.* A ten-byte slice of a megabyte keeps the megabyte. That is why the plain forms copy: a slice is for a scanner that cuts many short pieces out of one text and lets them go, not for keeping a piece.
 - ~(string-copy s)~ : the same text with bytes of its own, and ~s~ itself when it already has them. Copy a slice before holding on to it.
 - ~(string-join parts sep)~ : the elements with ~sep~ between them, through one buffer.
@@ -213,8 +213,8 @@ A ~char~ is a Unicode *scalar value* — a codepoint — backed by ~Bjolang.Runt
 There is no ~char?~: a value's type is a static question here, and the predicate could only ever answer true.
 
 *** Conversions
-- ~(char->int c)~ / ~(char->integer c)~ : The codepoint. =(std prelude)=
-- ~(int->char n)~ / ~(integer->char n)~ : The character with codepoint ~n~.
+- ~(char->int c)~ / ~(char->int c)~ : The codepoint. =(std prelude)=
+- ~(int->char n)~ / ~(int->char n)~ : The character with codepoint ~n~.
 - ~(char->string c)~ : A one-character string. For an astral character that string has ~string-length~ 4 and ~string-count~ 1.
 
 *** Comparison =(std prelude)=
@@ -283,7 +283,7 @@ them; a walk is always on a character of its own string, and
 - ~(string-fold f init s)~ : Left fold; ~f~ receives ~(char acc)~.
 - ~(string-fold-right f init s)~ : Right fold; ~f~ receives ~(char acc)~. Walks backwards with ~string-cursor-prev~, so it is a loop rather than n stack frames.
 - ~(string-for-each f s)~ : Applies ~f~ to each character for side effects.
-- ~(string-index pred s)~ : The first character satisfying ~pred~, as ~(Some cursor)~, or ~None~. A cursor, so the result goes straight to ~substring~.
+- ~(string-find pred s)~ : The first character satisfying ~pred~, as ~(Some cursor)~, or ~None~. A cursor, so the result goes straight to ~substring~.
 
 *** Conversions =(std prelude)=
 - ~(string->list s)~ : ~(List char)~.
@@ -302,8 +302,8 @@ The accumulator behind the ~Stringing~ collector, and the same shape as the vect
 - ~(stringbuilder-add-substring! b s start end)~ : Appends the text between two cursors of ~s~, copied as it is, without the string ~substring~ would make.
 - ~(stringbuilder-add-long! b n)~ / ~(stringbuilder-add-double! b d)~ : Appends a number as ~long->string~ or ~double->string~ writes it, without making the string.
 - ~(stringbuilder-length b)~ : The length so far, in bytes.
-- ~(stringbuilder-add-code! b n)~ / ~(stringbuilder-code-ref b i)~ : One byte in or out, for scanners that copy input a byte at a time. Bytes added this way are checked when the builder becomes a string, which throws if they do not form whole characters.
-- ~(stringbuilder-add-bytes! b bytes start end)~ : Bytes ~start~ to ~end~ of an array in one piece, checked as ~stringbuilder-add-code!~'s are: for a scanner that copies a run of its input.
+- ~(stringbuilder-add-byte! b n)~ / ~(stringbuilder-byte-ref b i)~ : One byte in or out, for scanners that copy input a byte at a time. Bytes added this way are checked when the text leaves the builder, as a string or in a write to a port, which throws if they do not form whole characters.
+- ~(stringbuilder-add-bytes! b bytes start end)~ : Bytes ~start~ to ~end~ of an array in one piece, checked as ~stringbuilder-add-byte!~'s are: for a scanner that copies a run of its input.
 - ~(stringbuilder=? b s)~ : Whether the builder holds exactly ~s~, without building a string — what a reader interning names compares with.
 - ~(stringbuilder-add-unit! b n)~ : One UTF-16 code unit, for a reader taking units from a text port; a surrogate pair given in two calls becomes its character.
 - ~(stringbuilder->string b)~ : Freezes the builder into a string.
@@ -464,7 +464,7 @@ Persistent immutable vectors.
 - ~(vec-pop vec)~ : Returns a new vector with the last element removed.
 - ~(vec-pop-first vec)~ : Returns a new vector with the first element removed.
 - ~(vec-slice vec start count)~ : Returns a sub-vector.
-- ~(vec-merge vec other more ...)~ : Concatenates two or more vectors. Big ones are joined without a copy, small ones copied into full leaves.
+- ~(vec-append vec other more ...)~ : Concatenates two or more vectors. Big ones are joined without a copy, small ones copied into full leaves.
 - ~(vec-split vec index)~ : Splits the vector into two vectors at ~index~.
 - ~(vec-map f vec)~ : Maps ~f~ over the vector.
 - ~(vec-filter f vec)~ : Filters the vector.
@@ -645,7 +645,6 @@ The pair is also what ~map->list~, ~map->seq~, ~map-cursor-current~, ~map-find~ 
 - ~(map-iter f map)~ : Iterates with early exit; ~f~ receives ~(key value)~ and returns a boolean.
 - ~(map-any? f map)~ : True if ~(f key value)~ holds of any entry.
 - ~(map-find f map)~ : ~(Some entry)~ for the first entry where ~(f key value)~ holds, or ~None~. The entry is a pair.
-- ~(map-try-find f map)~ : the same as ~map-find~.
 - ~(map-fold f init map)~ : Folds over the map; ~f~ receives ~(key value acc)~.
 - ~(map-filter f map)~ : Returns a new map containing only entries where ~(f key value)~ is true.
 - ~(map-map f map)~ : Returns a new map whose values are ~(f key value)~. The key is what the result is filed under, so the mapper cannot move it.

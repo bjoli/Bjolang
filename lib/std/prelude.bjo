@@ -87,7 +87,7 @@
   map-keys map-values map-merge map-merge-with
   ;; Walking and rebuilding
   map-map map-map-values map-filter map-fold
-  map-for-each map-iter map-any? map-find map-try-find map-split
+  map-for-each map-iter map-any? map-find map-split
   ;; The cursor `Iterable` walks with
   map-cursor map-cursor-done? map-cursor-current map-cursor-next
   ;; Conversions.
@@ -152,12 +152,11 @@
   string-take/slice string-drop/slice string-take-right/slice string-drop-right/slice
   string-cursor-forward string-cursor-back
   ;; Characters.
-  char->integer integer->char
   char=? char<? char>? char<=? char>=?
   char-ci=? char-ci<? char-ci>? char-ci<=? char-ci>=?
   ;; String cursors.
   string-cursor=? string-cursor<? string-cursor>? string-cursor<=? string-cursor>=?
-  string-fold string-fold-right string-for-each string-index
+  string-fold string-fold-right string-for-each string-find
   string->list list->string string->vec string-reverse
   ;; Conversions
   int->string long->string double->string byte->string number->string
@@ -708,10 +707,6 @@
   (match (map-try-ref m k)
     ((Some old) (Err old))
     (None (Ok (map-set m k v)))))
-
-;; Find first. The same as `map-try-find`.
-(: (-> (-?-> %k %v bool) (Map %k %v) (Option (Tuple %k %v))))
-(defun (map-find pred m) (map-try-find pred m))
 
 ;; Two maps are equal when they hold the same entries.
 
@@ -2439,13 +2434,6 @@
 ;; ---------------------------------------------------------------------------
 ;; Characters
 ;; ---------------------------------------------------------------------------
-;; Unicode characters.
-(: (-> char int))
-(defun (char->integer c) (char->int c))
-
-(: (-> int char))
-(defun (integer->char n) (int->char n))
-
 ;; Character ordering.
 (: (-> char char bool))
 (defun (char=? a b) (= a b))
@@ -2530,9 +2518,9 @@
       (f ch)
       (loop next))))
 
-;; String index.
+;; The cursor on the first character of `s` that `pred` holds for.
 (: (-> (-> char bool) string (Option StringCursor)))
-(defun (string-index pred s)
+(defun (string-find pred s)
   (let loop ((c (string-cursor-start s)))
     (if (string-cursor-end? s c)
         None

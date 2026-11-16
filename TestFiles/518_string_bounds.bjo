@@ -12,7 +12,7 @@
 ;; The reference answer: no loop of ours.
 (: (-> string int))
 (defun (sum-list s)
-  (list-foldl (fun (ch acc) (+ acc (char->integer ch))) 0 (string->list s)))
+  (list-foldl (fun (ch acc) (+ acc (char->int ch))) 0 (string->list s)))
 
 ;; A named let over a string from outside the loop.
 (: (-> string int))
@@ -21,14 +21,14 @@
     (if (string-cursor-end? s c)
         acc
         (match (string-cursor-ref+next s c)
-          ((Tuple ch next) (loop next (+ acc (char->integer ch))))))))
+          ((Tuple ch next) (loop next (+ acc (char->int ch))))))))
 
 ;; A function that passes its string on unchanged, with ref and next apart.
 (: (-> string StringCursor int int))
 (defun (sum-from s c acc)
   (if (string-cursor-end? s c)
       acc
-      (sum-from s (string-cursor-next s c) (+ acc (char->integer (string-cursor-ref s c))))))
+      (sum-from s (string-cursor-next s c) (+ acc (char->int (string-cursor-ref s c))))))
 
 ;; Backwards, with prev.
 (: (-> string int))
@@ -37,7 +37,7 @@
     (if (string-cursor=? c (string-cursor-start s))
         acc
         (let ((p (string-cursor-prev s c)))
-          (loop p (+ acc (char->integer (string-cursor-ref s p))))))))
+          (loop p (+ acc (char->int (string-cursor-ref s p))))))))
 
 ;; Counts the characters from `c`, which may be a cursor that `s` rejects.
 (: (-> string StringCursor int))
@@ -104,7 +104,7 @@
         (begin
           (sync (timeout (milliseconds 0)))
           (match (string-cursor-ref+next s c)
-            ((Tuple ch next) (loop next (+ acc (char->integer ch)))))))))
+            ((Tuple ch next) (loop next (+ acc (char->int ch)))))))))
 
 (defbjo (main args)
   (def text "ab,cé,😀€z")
@@ -123,7 +123,7 @@
   (def before (string-cursor-start text))
   (expect "a cursor outside the slice"
           (raised (fun () (count-from middle before)))
-          (raised (fun () (char->integer (string-cursor-ref middle before)))))
+          (raised (fun () (char->int (string-cursor-ref middle before)))))
   (expect "says so" (string-contains? (raised (fun () (count-from middle before))) "outside the slice") #t)
   ;; A cursor from another string, which is inside the é here: also the lone
   ;; step's error.
@@ -132,7 +132,7 @@
   (def inside (string-cursor-next other (string-cursor-start other)))
   (expect "a cursor that is not on a boundary"
           (raised (fun () (count-from accented inside)))
-          (raised (fun () (char->integer (string-cursor-ref accented inside)))))
+          (raised (fun () (char->int (string-cursor-ref accented inside)))))
   (expect "says so too" (string-contains? (raised (fun () (count-from accented inside))) "boundary") #t)
   ;; From the é: é , 😀 € z.
   (def at-e (string-cursor-next text (string-cursor-next text (string-cursor-next text (string-cursor-next text before)))))

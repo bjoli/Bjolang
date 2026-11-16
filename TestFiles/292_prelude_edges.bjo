@@ -40,15 +40,15 @@
   (expect-true "and at a negative index"
                (raised? (try (vecbuilder-ref b -1) #:catch (System.IndexOutOfRangeException))))
 
-  ;; --- stringbuilder-add-code! and -add-unit! ------------------------------
+  ;; --- stringbuilder-add-byte! and -add-unit! ------------------------------
   (def sb (stringbuilder-empty))
-  (stringbuilder-add-code! sb 104)
+  (stringbuilder-add-byte! sb 104)
   (stringbuilder-add-unit! sb 105)
   (expect "a byte and a code unit in range" (stringbuilder->string sb) "hi")
   (expect-true "a byte of 256 raises"
-               (raised? (try (stringbuilder-add-code! sb 256) #:catch (System.ArgumentOutOfRangeException))))
+               (raised? (try (stringbuilder-add-byte! sb 256) #:catch (System.ArgumentOutOfRangeException))))
   (expect-true "and of -1"
-               (raised? (try (stringbuilder-add-code! sb -1) #:catch (System.ArgumentOutOfRangeException))))
+               (raised? (try (stringbuilder-add-byte! sb -1) #:catch (System.ArgumentOutOfRangeException))))
   (expect-true "a code unit of 65536 raises"
                (raised? (try (stringbuilder-add-unit! sb 65536) #:catch (System.ArgumentOutOfRangeException))))
   (expect "and nothing was added" (stringbuilder->string sb) "hi")
@@ -83,7 +83,7 @@
   ;; against an array, through its inlined body and through its C# copy, which
   ;; a function read from a vec takes.
   (def big (vec-add-first
-            (vec-merge (vec-slice (loop (:for i (range 0 5000)) (:acc (vecing i))) 7 4000)
+            (vec-append (vec-slice (loop (:for i (range 0 5000)) (:acc (vecing i))) 7 4000)
                        (loop (:for i (range 0 3333)) (:acc (vecing (* i 3)))))
             -1))
   (def big-array (vec->array big))

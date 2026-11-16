@@ -999,9 +999,9 @@ let prelude : Env =
         // One UTF-8 byte rather than a scalar, for a reader that holds codes.
         // The bytes are checked when the builder becomes a string, which
         // fails if they do not form whole scalars.
-        "stringbuilder-add-code!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] unitType); IsMutable = false }
+        "stringbuilder-add-byte!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] unitType); IsMutable = false }
         // Bytes `start` to `end` of an array, the second exclusive, checked
-        // as `add-code!`'s are: for a reader that copies a run of its input
+        // as `add-byte!`'s are: for a reader that copies a run of its input
         // in one piece.
         "stringbuilder-add-bytes!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; makeArrayType byteType; intType; intType] unitType); IsMutable = false }
         // One UTF-16 code unit, for a reader taking units from a text port. A
@@ -1009,9 +1009,9 @@ let prelude : Env =
         // unpaired fails when the builder becomes a string.
         "stringbuilder-add-unit!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] unitType); IsMutable = false }
         "stringbuilder-length", {Scheme = Scheme([], [], makeFunType [stringBuilderType] intType); IsMutable = false }
-        // One UTF-8 byte back out, the counterpart of `add-code!`, for a reader
+        // One UTF-8 byte back out, the counterpart of `add-byte!`, for a reader
         // that holds codes. Indices are bytes, not characters.
-        "stringbuilder-code-ref", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] intType); IsMutable = false }
+        "stringbuilder-byte-ref", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] intType); IsMutable = false }
         // Does the builder hold exactly this text? What lets a name be compared
         // against one already interned without building the string to compare
         // with — the allocation is the cost of interning a name a document
@@ -1070,7 +1070,7 @@ let prelude : Env =
         "vec-pop-first", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a")] (makeVecType (TVar "a"))); IsMutable = false }
         // Variadic past the first two, through its `FunMeta` below, so its flat
         // type takes the rest array.
-        "vec-merge", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); makeVecType (TVar "a"); makeArrayType (makeVecType (TVar "a"))] (makeVecType (TVar "a"))); IsMutable = false }
+        "vec-append", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); makeVecType (TVar "a"); makeArrayType (makeVecType (TVar "a"))] (makeVecType (TVar "a"))); IsMutable = false }
         // The seven `vec-` operations that take a procedure are not here, for
         // the reason the `list-` ones are not: their callbacks are declared
         // `-?->` and a suspending copy is only generated from a Bjolang body.
@@ -1286,8 +1286,8 @@ let prelude : Env =
           // `(make-array n #:fill x)`. The runtime has an overload for each:
           // C# picks the filling one only when `__kw_fill:` is passed.
           ("make-array", { MandatoryCount = 1; KeywordParams = [ ("fill", TVar "a") ]; RestParam = None })
-          // `(vec-merge a b c ...)`: two vecs at least, and any more after.
-          ("vec-merge", { MandatoryCount = 2; KeywordParams = []; RestParam = Some (TCon("Vec", [ TVar "a" ])) })
+          // `(vec-append a b c ...)`: two vecs at least, and any more after.
+          ("vec-append", { MandatoryCount = 2; KeywordParams = []; RestParam = Some (TCon("Vec", [ TVar "a" ])) })
       ]
       CurrentModule = ""
       // A `with-return` is the only thing that puts one of these in scope, and

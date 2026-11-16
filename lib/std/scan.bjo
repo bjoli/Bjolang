@@ -220,18 +220,18 @@
 (defun (decode-char b pos c)
   (cond
     ((>= c 240)
-     (Tuple (integer->char (bitwise-ior (bitwise-ior (shift-left (bitwise-and c 7) 18)
+     (Tuple (int->char (bitwise-ior (bitwise-ior (shift-left (bitwise-and c 7) 18)
                                                      (shift-left (continued b (+ pos 1)) 12))
                                         (bitwise-ior (shift-left (continued b (+ pos 2)) 6)
                                                      (continued b (+ pos 3)))))
             (+ pos 4)))
     ((>= c 224)
-     (Tuple (integer->char (bitwise-ior (bitwise-ior (shift-left (bitwise-and c 15) 12)
+     (Tuple (int->char (bitwise-ior (bitwise-ior (shift-left (bitwise-and c 15) 12)
                                                      (shift-left (continued b (+ pos 1)) 6))
                                         (continued b (+ pos 2))))
             (+ pos 3)))
     (else
-     (Tuple (integer->char (bitwise-ior (shift-left (bitwise-and c 31) 6) (continued b (+ pos 1))))
+     (Tuple (int->char (bitwise-ior (shift-left (bitwise-and c 31) 6) (continued b (+ pos 1))))
             (+ pos 2)))))
 
 ;; One character, whatever it is.
@@ -239,9 +239,9 @@
 (defun (scan-char s pos) #:inline
   (def b (line-bytes s))
   (if (>= pos (ro-span-length b))
-      (Tuple (integer->char 0) -1)
+      (Tuple (int->char 0) -1)
       (let ((c (byte-at b pos)))
-        (if (< c 128) (Tuple (integer->char c) (+ pos 1)) (decode-char b pos c)))))
+        (if (< c 128) (Tuple (int->char c) (+ pos 1)) (decode-char b pos c)))))
 
 ;; One or more characters up to whitespace or the end.
 (: (-> string int int int))
@@ -431,7 +431,7 @@
 (defun (mask text)
   (string-fold
    (fun (c acc)
-     (def (l . h) (char-bit (char->integer c)))
+     (def (l . h) (char-bit (char->int c)))
      (Tuple (bitwise-ior (fst acc) l) (bitwise-ior (snd acc) h)))
    (Tuple 0L 0L) text))
 
@@ -441,12 +441,12 @@
 (defun (with-ranges text form at)
   (defun (span from to)
     (let go ((c to) (acc Nil))
-      (if (< c from) (list->string acc) (go (- c 1) (Cons (integer->char c) acc)))))
+      (if (< c from) (list->string acc) (go (- c 1) (Cons (int->char c) acc)))))
   (let go ((cs (string->list text)) (acc ""))
     (match cs
       ((Cons a (Cons dash (Cons b rest))) #:when (char=? dash #\-)
-       (def* (from (char->integer a))
-             (to (char->integer b)))
+       (def* (from (char->int a))
+             (to (char->int b)))
        (when (> from to)
          (ignore (ret-error at (str form " has the range " (char->string a) "-" (char->string b) ", which goes backwards."))))
        (go rest (str acc (span from to))))
@@ -473,7 +473,7 @@
     (ignore (ret-error whole (str form " needs at least one character."))))
   (string-for-each
    (fun (c)
-     (when (>= (char->integer c) 128)
+     (when (>= (char->int c) 128)
        (ignore (ret-error whole (str form " takes ASCII characters only, and " (char->string c) " is not one.")))))
    text)
   (def written
@@ -645,7 +645,7 @@
   (match item
     ((ILit text)
      (def q (fresh ctx "q"))
-     (def codes (list-map char->integer (string->list text)))
+     (def codes (list-map char->int (string->list text)))
      (def n (list-length codes))
      (def step
        (cond ((not (all? #(< & 128) codes)) #'(scan-lit ,s ,p ,(SStr text)))
@@ -672,7 +672,7 @@
      (def step
        (cond ((not until?) #'(scan-chars ,s ,p ,(long-literal low) ,(long-literal high) ,w))
              ((= (string-length text) 1)
-              #'(scan-until-byte ,s ,p ,(int-literal (char->integer (list-head (string->list text)))) ,w))
+              #'(scan-until-byte ,s ,p ,(int-literal (char->int (list-head (string->list text)))) ,w))
              (else #'(scan-until ,s ,p ,(long-literal low) ,(long-literal high) ,w))))
      (gen-text ctx item step p ok fail))
     ((IGroup items) (gen-seq ctx items p Nil ok fail))

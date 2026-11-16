@@ -564,14 +564,14 @@ public static partial class BjolangRuntime {
     // string, which throws if they did not form whole scalars. A number that
     // is not a byte is refused rather than cut down to one.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit stringbuildersubaddsubcode_BANG(Utf8StringBuilder b, int code) {
-        if ((uint)code > 0xFF) ThrowNotA("stringbuilder-add-code!", "byte, 0 to 255", code);
+    public static Unit stringbuildersubaddsubbyte_BANG(Utf8StringBuilder b, int code) {
+        if ((uint)code > 0xFF) ThrowNotA("stringbuilder-add-byte!", "byte, 0 to 255", code);
         b.AppendByte((byte)code);
         return unit;
     }
 
     // Bytes `start` to `end` of an array, the second exclusive, in one piece,
-    // checked as `add-code!`'s are when the builder becomes a string. A range
+    // checked as `add-byte!`'s are when the builder becomes a string. A range
     // outside the array raises, as the slice of it does.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Unit stringbuildersubaddsubbytes_BANG(Utf8StringBuilder b, byte[] bytes, int start, int end) {
@@ -597,9 +597,9 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int stringbuildersublength(Utf8StringBuilder b) => b.ByteLength;
 
-    // One byte out of the buffer, the counterpart of `add-code!`.
+    // One byte out of the buffer, the counterpart of `add-byte!`.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int stringbuildersubcodesubref(Utf8StringBuilder b, int i) => b.ByteAt(i);
+    public static int stringbuildersubbytesubref(Utf8StringBuilder b, int i) => b.ByteAt(i);
 
     // This is what lets a reader answer "is what I just buffered the name I
     // already have?" without building the string to ask — which is the whole
@@ -687,7 +687,7 @@ public static partial class BjolangRuntime {
     // Two vecs are one Merge. More go to Concat, which copies small vecs into
     // full leaves and merges big ones: cheaper than a Merge for each.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubmerge<T>(Bjolang.Runtime.Rrb.RrbList<T> list, Bjolang.Runtime.Rrb.RrbList<T> other, Bjolang.Runtime.Rrb.RrbList<T>[] more) where T : notnull {
+    public static Bjolang.Runtime.Rrb.RrbList<T> vecsubappend<T>(Bjolang.Runtime.Rrb.RrbList<T> list, Bjolang.Runtime.Rrb.RrbList<T> other, Bjolang.Runtime.Rrb.RrbList<T>[] more) where T : notnull {
         if (more.Length == 0) return Bjolang.Runtime.Rrb.RrbFun.Merge(list, other, false);
         var all = new Bjolang.Runtime.Rrb.RrbList<T>[more.Length + 2];
         all[0] = list;

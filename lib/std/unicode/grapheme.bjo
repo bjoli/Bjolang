@@ -107,7 +107,7 @@
 ;; - bits 5-6, Indic_Conjunct_Break (the incb- constants).
 (: (-> char int))
 (defun (props-of ch) #:inline
-  (def cp (char->integer ch))
+  (def cp (char->int ch))
   (cast int (array-ref stage2 (+ (shift-left (cast int (array-ref stage1 (shift-right cp 8))) 8)
                                  (bitwise-and cp 255)))))
 
@@ -232,7 +232,7 @@
 ;;   Prepend (GB9b), and the state after it is that of Other.
 (: (-> int char int))
 (defun (grapheme-step st ch) #:inline
-  (if (printable-ascii? (char->integer ch))
+  (if (printable-ascii? (char->int ch))
       (if (= (gcb st) gcb-prepend) 0 fwd-break)
       (grapheme-step-table st ch)))
 
@@ -285,14 +285,14 @@
 ;; the parity of those that end at `b` matters only then.
 (: (-> char bool))
 (defun (grapheme-back-needs-after? b) #:inline
-  (and (not (printable-ascii? (char->integer b))) (= (gcb (props-of b)) gcb-ri)))
+  (and (not (printable-ascii? (char->int b))) (= (gcb (props-of b)) gcb-ri)))
 
 ;; The backward state of a cursor on a cluster boundary, before `ch`.
 ;; - A boundary before a regional indicator has an even number of them
 ;;   before it, which saves counting them.
 (: (-> char int))
 (defun (grapheme-back-start-before ch)
-  (if (and (not (printable-ascii? (char->integer ch))) (= (gcb (props-of ch)) gcb-ri)) back-known 0))
+  (if (and (not (printable-ascii? (char->int ch))) (= (gcb (props-of ch)) gcb-ri)) back-known 0))
 
 ;; The state for the boundary between `a` and `b`, where `b` is the first
 ;; character given before, or the one before the cursor.
@@ -302,7 +302,7 @@
 ;;   indicators end at `a`.
 (: (-> int char char int))
 (defun (grapheme-back-pair w a b) #:inline
-  (if (grapheme-plain-break? (char->integer a) (char->integer b))
+  (if (grapheme-plain-break? (char->int a) (char->int b))
       (bitwise-ior back-break back-known)
       (grapheme-back-pair-table w a b)))
 

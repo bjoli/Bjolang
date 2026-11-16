@@ -137,7 +137,7 @@
 ;; This was a class in `BjolangRuntime/BjoText.cs` — a hundred lines of C# that
 ;; existed for one library. It is here instead because a library in the standard
 ;; library should not need a file in the runtime; what the runtime owes it is
-;; primitives, and `stringbuilder-code-ref` and `stringbuilder=?` are the two it
+;; primitives, and `stringbuilder-byte-ref` and `stringbuilder=?` are the two it
 ;; was missing.
 
 (: int)
@@ -162,10 +162,10 @@
 (defun (name-slot sb n)
   (if (= n 0)
       0
-      (bitwise-and (+ (* (+ (* (+ (* (stringbuilder-code-ref sb 0) 31)
-                                  (stringbuilder-code-ref sb (shift-right n 1)))
+      (bitwise-and (+ (* (+ (* (+ (* (stringbuilder-byte-ref sb 0) 31)
+                                  (stringbuilder-byte-ref sb (shift-right n 1)))
                                31)
-                            (stringbuilder-code-ref sb (- n 1)))
+                            (stringbuilder-byte-ref sb (- n 1)))
                          31)
                       n)
                    (- name-slots 1))))
@@ -337,7 +337,7 @@
 (: (-> Reader char))
 (defun (peek rd)
   (def c (held-code rd))
-  (if (and (>= c 0) (< c 128)) (integer->char c) #\nul))
+  (if (and (>= c 0) (< c 128)) (int->char c) #\nul))
 
 ;; Moves past the byte being looked at, which is a character of its own: every
 ;; caller has just looked at it and found it ASCII. A character of several
@@ -421,7 +421,7 @@
   (def b (record-ref rd bytes))
   (def i (record-ref rd next))
   (loop (:for k (range 0 n))
-        (:do (stringbuilder-add-code! sb (cast int (array-ref b (+ i k))))))
+        (:do (stringbuilder-add-byte! sb (cast int (array-ref b (+ i k))))))
   (record-set! rd
                (next (+ i n))
                (col (+ (record-ref rd col) 1))))
@@ -596,7 +596,7 @@
   (def c (held-code rd))
   (cond
     ((= c spent) "the document ended")
-    ((< c 128) (str "'" (list->string (list (integer->char c))) "'"))
+    ((< c 128) (str "'" (list->string (list (int->char c))) "'"))
     (else
      (def n (sequence-length rd))
      (if (= n 0)
@@ -619,9 +619,9 @@
 (: (-> char int))
 (defun (hex-digit c)
   (cond
-    ((and (char>=? c #\0) (char<=? c #\9)) (- (char->integer c) 48))
-    ((and (char>=? c #\a) (char<=? c #\f)) (- (char->integer c) 87))
-    ((and (char>=? c #\A) (char<=? c #\F)) (- (char->integer c) 55))
+    ((and (char>=? c #\0) (char<=? c #\9)) (- (char->int c) 48))
+    ((and (char>=? c #\a) (char<=? c #\f)) (- (char->int c) 87))
+    ((and (char>=? c #\A) (char<=? c #\F)) (- (char->int c) 55))
     (else -1)))
 
 ;; The escapes of a Bjolang string, read by the rules `readEscape` in the
@@ -640,7 +640,7 @@
   (def refuse (fun (what) (Err (str "line " (int->string row) ", column " (int->string col) ": " what))))
   (step! rd)
   (def c (held-code rd))
-  (def add (fun (code) (stringbuilder-add-code! sb code) (step! rd) (Ok #t)))
+  (def add (fun (code) (stringbuilder-add-byte! sb code) (step! rd) (Ok #t)))
   (cond
     ((= c spent) (Err (at rd "the document ended inside a string")))
     ((= c 110) (add 10))
@@ -651,7 +651,7 @@
     ((= c 117) (read-code-point! rd sb refuse))
     ((or (= c 32) (= c 9) (= c 10) (= c 13)) (read-continuation! rd refuse text-col))
     (else
-     (refuse (str (if (< c 128) (str "\\" (list->string (list (integer->char c)))) (str "a backslash before " (found rd)))
+     (refuse (str (if (< c 128) (str "\\" (list->string (list (int->char c)))) (str "a backslash before " (found rd)))
                   " is not an escape. A string's escapes are \\n, \\t, \\r, \\\", \\\\ and \\u{...}. "
                   "For a backslash, write \\\\, or write the text as a raw string")))))
 
@@ -673,7 +673,7 @@
             ((or (> n 1114111) (and (>= n 55296) (<= n 57343)))
              (refuse (str "\\u{" digits "} is not a Unicode scalar value. A surrogate, D800 to DFFF, "
                           "is half of a UTF-16 pair, and nothing is above 10FFFF")))
-            (else (stringbuilder-add! sb (integer->char n)) (Ok #t))))
+            (else (stringbuilder-add! sb (int->char n)) (Ok #t))))
          ((and (>= d 0) (< (string-length digits) 6))
           (def digit (peek rd))
           (step! rd)
@@ -741,7 +741,7 @@
 (: (-> StringBuilder int void))
 (defun (add-quotes! sb k)
   (loop (:for _ (range 0 k))
-        (:do (stringbuilder-add-code! sb 34))))
+        (:do (stringbuilder-add-byte! sb 34))))
 
 (: (-> Reader int int string))
 (defun (too-many-quotes rd n k)
@@ -765,7 +765,7 @@
      (step! rd)
      (cond
        ((= (held-code rd) 10) (newline! rd) (read-raw-lines rd n))
-       (else (stringbuilder-add-code! sb 13) (read-raw-line rd n sb))))
+       (else (stringbuilder-add-byte! sb 13) (read-raw-line rd n sb))))
     (else (read-raw-line rd n sb))))
 
 ;; A raw string on the line of its opening quotes, which ends on that line.
@@ -821,7 +821,7 @@
               ((= (held-code rd) 10)
                (newline! rd)
                (next-line (Cons (Tuple row (stringbuilder->string sb)) lines)))
-              (else (stringbuilder-add-code! sb 13) (go))))
+              (else (stringbuilder-add-byte! sb 13) (go))))
            ((= c 34)
             (def k (skip-quotes! rd))
             (cond
@@ -835,7 +835,7 @@
 
 (: (-> string bool))
 (defun (blank? s)
-  (none? (string-index #(not (or (char=? &1 #\space) (char=? &1 #\tab))) s)))
+  (none? (string-find #(not (or (char=? &1 #\space) (char=? &1 #\tab))) s)))
 
 ;; What follows `prefix` in `s`, which starts with it.
 (: (-> string string string))
@@ -855,7 +855,7 @@
     (match left
       (Nil (Ok (stringbuilder->string out)))
       ((Cons (Tuple row s) more)
-       (unless first (stringbuilder-add-code! out 10))
+       (unless first (stringbuilder-add-byte! out 10))
        (cond
          ((string-starts-with? s margin)
           (stringbuilder-add-string! out (after-prefix s margin))
@@ -1092,7 +1092,7 @@
   (if (not (= (held-code rd) 46))
       (Ok #f)
       (begin
-        (stringbuilder-add-code! sb 46)
+        (stringbuilder-add-byte! sb 46)
         (step! rd)
         (if (= (take-digits! rd sb) 0)
             (Err (at rd (str "a number needs a digit after its decimal point, and this is "
@@ -1105,7 +1105,7 @@
   (cond
     ((not (or (= c 101) (= c 69))) (Ok #f))
     (else
-     (stringbuilder-add-code! sb 101)
+     (stringbuilder-add-byte! sb 101)
      (step! rd)
      ;; `s` is bound rather than read three times, and it is not only the
      ;; calls: with a name, `(or (= s 43) (= s 45))` is emitted as a
@@ -1146,7 +1146,7 @@
        ((or (= c 98) (= c 66)) (read-radix rd neg 2))
        (else
         (def sb (signed-buffer rd neg))
-        (stringbuilder-add-code! sb 48)
+        (stringbuilder-add-byte! sb 48)
         (finish-number rd neg sb))))
     (else (finish-number rd neg (signed-buffer rd neg)))))
 
@@ -1156,7 +1156,7 @@
 (: (-> Reader bool StringBuilder))
 (defun (signed-buffer rd neg)
   (def sb (buffer rd))
-  (when neg (stringbuilder-add-code! sb 45))
+  (when neg (stringbuilder-add-byte! sb 45))
   sb)
 
 (: (-> Reader bool StringBuilder (Result string Bjodat)))
@@ -1280,7 +1280,7 @@
     ((= (sequence-length rd) 0) (Err (not-utf-8-here rd)))
     (else
      (def lead (held-code rd))
-     (def first (if (< lead 128) (integer->char lead) (held-character rd (sequence-length rd))))
+     (def first (if (< lead 128) (int->char lead) (held-character rd (sequence-length rd))))
      (def sb (buffer rd))
      ;; `#\` and a line feed is the line feed, and the next line begins.
      (if (= lead 10)
@@ -1300,7 +1300,7 @@
         (def code (named-char name))
         (if (< code 0)
             (Err (at rd (str "#\\" name " is not a character")))
-            (Ok (BjoChar (integer->char code)))))))))
+            (Ok (BjoChar (int->char code)))))))))
 
 ;; `#t`, `#f`, `#\c`, `#:keyword`. The `#` is held.
 (: (-> Reader (Result string Bjodat)))
@@ -1455,7 +1455,7 @@
           ((digit-code? (held-code rd)) (read-magnitude rd #t))
           (else
            (def sb (buffer rd))
-           (stringbuilder-add-code! sb 45)
+           (stringbuilder-add-byte! sb 45)
            (ignore (take-name! rd sb))
            (Ok (name-value rd sb)))))
        (else (read-symbol rd))))))
@@ -1864,7 +1864,7 @@
 (defun (escape-into! sb s)
   (stringbuilder-add! sb #\")
   (loop (:for c s)
-        (:do (let* ((n (char->integer c)))
+        (:do (let* ((n (char->int c)))
                (cond
                  ((= n 34) (stringbuilder-add-string! sb "\\\""))
                  ((= n 92) (stringbuilder-add-string! sb "\\\\"))
@@ -1876,7 +1876,7 @@
 
 (: (-> StringBuilder char void))
 (defun (char-into! sb c)
-  (def n (char->integer c))
+  (def n (char->int c))
   (stringbuilder-add-string! sb "#\\")
   (cond
     ((= n 10) (stringbuilder-add-string! sb "newline"))

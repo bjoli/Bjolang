@@ -1,0 +1,52 @@
+;; Docs for std/unicode/casefold.bjo, read through (:doc #:file "casefold.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Full Unicode case folding, to compare strings without case.")
+  (see string-foldcase casefold-unicode-version)
+  (example """
+    (import (std unicode casefold))
+
+    (string-foldcase "Straße")                          ; "strasse"
+    (= (string-foldcase "ΣΊΣΥΦΟΣ") (string-foldcase "σίσυφος"))   ; #t
+    (string-foldcase "ﬁle")                             ; "file"
+    """)
+  (reference """
+    Case folding makes strings that differ only in case equal. It is for
+    comparison and lookup, not for display: the result is not always
+    lower case, and it is not always the same length as the input.
+
+    @strong{The fold.} This is the full, default fold of the Unicode
+    Character Database, @code{CaseFolding.txt}, with the mappings of status
+    C and F. One character can fold to more than one: @code{ß} folds to
+    @code{ss}, and @code{ﬁ} to @code{fi}.
+
+    @strong{Culture.} The fold does not depend on a culture. The Turkic
+    mappings (status T) are not used: @code{I} folds to @code{i}, and
+    @code{İ} folds to @code{i} followed by U+0307 COMBINING DOT ABOVE.
+
+    @strong{Normalization.} The fold does not normalize. Two strings that
+    are canonically equivalent, such as @code{é} as one character and as
+    @code{e} with U+0301, do not fold to the same string.
+
+    @strong{Compared to the prelude.} @code{char-foldcase} and the
+    @code{char-ci} comparisons map one character to one character, so they
+    cannot fold @code{ß}. Use @code{string-foldcase} on whole strings to
+    compare them without case.
+    """))
+
+(:doc string-foldcase
+  (summary "The full Unicode case fold of a string.")
+  (arg s "The string to fold.")
+  (returns "The fold of @code{s}. If no character of @code{s} folds, @code{s} itself, with no copy.")
+  (example """
+    (string-foldcase "HELLO")     ; "hello"
+    (string-foldcase "Maße")      ; "masse"
+    (string-foldcase "ſ")         ; "s"
+    (string-foldcase "abc")       ; "abc", the same string
+    """)
+  (see casefold-unicode-version char-foldcase))
+
+(:doc casefold-unicode-version
+  (summary "The version of the Unicode Character Database the fold is from.")
+  (see string-foldcase))

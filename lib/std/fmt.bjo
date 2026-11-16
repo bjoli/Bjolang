@@ -464,7 +464,7 @@
 ;; character and not a search for whatever the machine calls a separator.
 (: (-> string (Tuple string string)))
 (defun (split-at-point s)
-  (match (string-index (fun (c) (char=? c #\.)) s)
+  (match (string-find (fun (c) (char=? c #\.)) s)
     ((Some c) (Tuple (substring s (string-cursor-start s) c)
                      (substring s (string-cursor-next s c) (string-cursor-end s))))
     (None (Tuple s ""))))
@@ -851,7 +851,7 @@
 ;; on. A line without one is all before.
 (: (-> char string (Tuple string string)))
 (defun (split-on c s)
-  (match (string-index (fun (x) (char=? x c)) s)
+  (match (string-find (fun (x) (char=? x c)) s)
     ((Some at) (Tuple (substring s (string-cursor-start s) at) (substring s at (string-cursor-end s))))
     (None (Tuple s ""))))
 
@@ -1083,7 +1083,7 @@
     ((Tuple OverflowCut AlignCentre) (vec-map (fun (l) (trim/both w l)) lines))
     ((Tuple OverflowCut _) (vec-map (fun (l) (trim/left w l)) lines))
     ((Tuple OverflowWrap _)
-     (vec-fold (fun (l acc) (vec-merge acc (wrapped-line w l))) [] lines))))
+     (vec-fold (fun (l acc) (vec-append acc (wrapped-line w l))) [] lines))))
 
 ;; A row's cells made to fit their columns.
 (: (-> Overflow (Vec Align) (Vec int) (Vec (Vec string)) (Vec (Vec string))))
@@ -1379,7 +1379,7 @@
 (: (-> string StringCursor StringCursor))
 (defun (after-escape s c)
   (def next (string-cursor-next s c))
-  (defun (char-at k) (if (string-cursor-end? s k) 0 (char->integer (string-cursor-ref s k))))
+  (defun (char-at k) (if (string-cursor-end? s k) 0 (char->int (string-cursor-ref s k))))
   (cond
     ((string-cursor-end? s next) next)
     ((= (char-at next) 91)
@@ -1407,7 +1407,7 @@
     (if (string-cursor-end? s c)
         total
         (let ()
-          (def cp (char->integer (string-cursor-ref s c)))
+          (def cp (char->int (string-cursor-ref s c)))
           (def next (string-cursor-next s c))
           (cond
             ((= cp 27) (lp (after-escape s c) total last joined? open-flag?))
@@ -1517,7 +1517,7 @@
                             (match r
                               ((RowOf cells) (vec-add acc (list->vec cells)))
                               ((RowSpliced cells) (vec-add acc cells))
-                              ((RowsSpliced more) (vec-merge acc more))))
+                              ((RowsSpliced more) (vec-append acc more))))
                           []
                           (record-ref t rows)))
         (laid (tabular/rows (table-cells cols rows)

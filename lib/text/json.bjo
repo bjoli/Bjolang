@@ -209,10 +209,10 @@
 (defun (key-slot sb n)
   (if (= n 0)
       0
-      (bitwise-and (+ (* (+ (* (+ (* (stringbuilder-code-ref sb 0) 31)
-                                  (stringbuilder-code-ref sb (shift-right n 1)))
+      (bitwise-and (+ (* (+ (* (+ (* (stringbuilder-byte-ref sb 0) 31)
+                                  (stringbuilder-byte-ref sb (shift-right n 1)))
                                31)
-                            (stringbuilder-code-ref sb (- n 1)))
+                            (stringbuilder-byte-ref sb (- n 1)))
                          31)
                       n)
                    (- key-slots 1))))
@@ -314,7 +314,7 @@
 (: (-> Reader char))
 (defun (peek rd)
   (def c (held-code rd))
-  (if (and (>= c 0) (< c 128)) (integer->char c) #\nul))
+  (if (and (>= c 0) (< c 128)) (int->char c) #\nul))
 
 ;; Moves past the byte being looked at, which is a character of its own.
 ;;
@@ -489,7 +489,7 @@
   (def b (record-ref rd bytes))
   (def i (record-ref rd next))
   (loop (:for k (range 0 n))
-        (:do (stringbuilder-add-code! sb (cast int (array-ref b (+ i k))))))
+        (:do (stringbuilder-add-byte! sb (cast int (array-ref b (+ i k))))))
   (record-set! rd
                (next (+ i n))
                (col (+ (record-ref rd col) 1))))
@@ -510,7 +510,7 @@
   (def c (held-code rd))
   (cond
     ((= c spent) "the document ended")
-    ((< c 128) (str "'" (list->string (list (integer->char c))) "'"))
+    ((< c 128) (str "'" (list->string (list (int->char c))) "'"))
     (else
      (def n (sequence-length rd))
      (def i (record-ref rd next))
@@ -529,17 +529,17 @@
 
 ;; The Bjolang lexer has no \b or \f of its own.
 (: string)
-(def escaped-backspace (list->string (list (integer->char 8))))
+(def escaped-backspace (list->string (list (int->char 8))))
 
 (: string)
-(def escaped-formfeed (list->string (list (integer->char 12))))
+(def escaped-formfeed (list->string (list (int->char 12))))
 
 (: (-> char int))
 (defun (hex-digit c)
   (cond
-    ((and (char>=? c #\0) (char<=? c #\9)) (- (char->integer c) 48))
-    ((and (char>=? c #\a) (char<=? c #\f)) (- (char->integer c) 87))
-    ((and (char>=? c #\A) (char<=? c #\F)) (- (char->integer c) 55))
+    ((and (char>=? c #\0) (char<=? c #\9)) (- (char->int c) 48))
+    ((and (char>=? c #\a) (char<=? c #\f)) (- (char->int c) 87))
+    ((and (char>=? c #\A) (char<=? c #\F)) (- (char->int c) 55))
     (else -1)))
 
 (: (-> int bool))
@@ -576,7 +576,7 @@
    (:do (step! rd))
    (:def (Ok lo) (read-hex4 rd)
      :propagate)
-   ((low-surrogate? lo) (Ok (list->string (list (integer->char (scalar-of hi lo))))))
+   ((low-surrogate? lo) (Ok (list->string (list (int->char (scalar-of hi lo))))))
    (else (Err (at rd incomplete)))))
 
 (: (-> Reader (Result string string)))
@@ -586,7 +586,7 @@
   (cond
     ((low-surrogate? n) (Err (at rd "a low surrogate with no high surrogate before it")))
     ((high-surrogate? n) (read-low-surrogate rd n))
-    (else (Ok (list->string (list (integer->char n)))))))
+    (else (Ok (list->string (list (int->char n)))))))
 
 (: (-> Reader (Result string string)))
 (defun (read-escape rd)
@@ -1297,7 +1297,7 @@
 ;; surrogate pair of them.
 (: (-> StringBuilder char bool void))
 (defun (add-char! sb c ascii)
-  (def n (char->integer c))
+  (def n (char->int c))
   (cond
     ((= n 34) (stringbuilder-add-string! sb "\\\""))
     ((= n 92) (stringbuilder-add-string! sb "\\\\"))
@@ -1318,7 +1318,7 @@
 ;; characters. All ASCII, so `string-search-any` finds them with a byte search.
 (: string)
 (def must-escape
-  (str "\"\\" (list->string (loop (:for n (range 0 32)) (:acc (listing (integer->char n)))))))
+  (str "\"\\" (list->string (loop (:for n (range 0 32)) (:acc (listing (int->char n)))))))
 
 ;; A string, quoted. The runs between the characters that have to be escaped
 ;; are copied whole. With `ascii` every character outside ASCII has to be
@@ -1350,7 +1350,7 @@
   (def fraction?
     (let go ((i from))
       (cond ((= i (stringbuilder-length sb)) #f)
-            ((let ((b (stringbuilder-code-ref sb i))) (or (= b 46) (= b 69) (= b 101))) #t)
+            ((let ((b (stringbuilder-byte-ref sb i))) (or (= b 46) (= b 69) (= b 101))) #t)
             (else (go (+ i 1))))))
   (unless fraction?
     (stringbuilder-add-string! sb ".0")))

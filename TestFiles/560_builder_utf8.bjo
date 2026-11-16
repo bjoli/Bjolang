@@ -1,0 +1,100 @@
+;; A string builder never gives out invalid UTF-8. Bytes from
+;; `stringbuilder-add-byte!` and `stringbuilder-add-bytes!`, and code units
+;; from `stringbuilder-add-unit!`, are checked when the text leaves the
+;; builder: as a string, or in a write of the builder to a port.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/extern
+  (write-builder (: Bjolang.Runtime.BjoOutputPort.WriteBuilder (-> OutputPort StringBuilder void))))
+
+;; True if `r` is the error a `try` caught.
+(: (-> (Result %a %e) bool))
+(defun (raised? r)
+  (match r
+    ((Ok _) #f)
+    ((Err _) #t)))
+
+;; A builder holding `bytes`, added one at a time.
+(: (-> (List int) StringBuilder))
+(defun (builder-of bytes)
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-string! sb "ok ")
+  (loop (:for b bytes) (:do (stringbuilder-add-byte! sb b)))
+  sb)
+
+;; True if making a string of `sb` raises.
+(: (-> StringBuilder bool))
+(defun (string-raises? sb)
+  (raised? (try (stringbuilder->string sb) #:catch (System.InvalidOperationException))))
+
+;; An array of the bytes `bytes`.
+(: (-> (List int) (Array byte)))
+(defun (byte-array bytes)
+  (def (: out (Array byte)) (make-array (list-length bytes)))
+  (loop (:for b bytes) (:for i (range 0 (list-length bytes)))
+        (:do (array-set! out i (cast byte b))))
+  out)
+
+(defun (main args)
+  ;; --- valid --------------------------------------------------------------
+  (expect "ASCII" (stringbuilder->string (builder-of (list 104 105))) "ok hi")
+  (expect "a character of two bytes" (stringbuilder->string (builder-of (list 0xC3 0xA5))) "ok å")
+  (expect "a character of four bytes"
+          (stringbuilder->string (builder-of (list 0xF0 0x9F 0x98 0x80))) "ok 😀")
+  (expect "a byte at a time between checked appends"
+          (let ((sb (builder-of (list 0xC3 0xA5))))
+            (stringbuilder-add! sb #\ä)
+            (stringbuilder-add-byte! sb 0xC3)
+            (stringbuilder-add-byte! sb 0xB6)
+            (stringbuilder->string sb))
+          "ok åäö")
+
+  ;; --- invalid ------------------------------------------------------------
+  (expect-true "a byte that is never UTF-8" (string-raises? (builder-of (list 0xFF))))
+  (expect-true "a lone continuation byte" (string-raises? (builder-of (list 0x80))))
+  (expect-true "a character cut short at the end" (string-raises? (builder-of (list 0xE2 0x82))))
+  (expect-true "a character cut short by ASCII" (string-raises? (builder-of (list 0xC3 65))))
+  (expect-true "an overlong form" (string-raises? (builder-of (list 0xC0 0xAF))))
+  (expect-true "an encoded surrogate" (string-raises? (builder-of (list 0xED 0xA0 0x80))))
+  (expect-true "past U+10FFFF" (string-raises? (builder-of (list 0xF4 0x90 0x80 0x80))))
+  (expect-true "a continuation byte after a checked character"
+               (let ((sb (stringbuilder-empty)))
+                 (stringbuilder-add! sb #\å)
+                 (stringbuilder-add-byte! sb 0xA5)
+                 (string-raises? sb)))
+  (expect-true "add-bytes! of invalid bytes"
+               (let ((sb (stringbuilder-empty)))
+                 (stringbuilder-add-bytes! sb (byte-array (list 97 0xFF 98)) 0 3)
+                 (string-raises? sb)))
+  (expect-true "add-bytes! of half a character"
+               (let ((sb (stringbuilder-empty)))
+                 (stringbuilder-add-bytes! sb (string->bytes "blå") 0 3)
+                 (string-raises? sb)))
+  (expect-true "an unpaired surrogate from add-unit!"
+               (let ((sb (stringbuilder-empty)))
+                 (stringbuilder-add-unit! sb 0xD83D)
+                 (string-raises? sb)))
+
+  ;; --- after a check ------------------------------------------------------
+  (def sb (builder-of (list 0xC3)))
+  (expect-true "an incomplete character raises" (string-raises? sb))
+  (stringbuilder-add-byte! sb 0xA5)
+  (expect "and is a string once it is complete" (stringbuilder->string sb) "ok å")
+  (stringbuilder-add-byte! sb 0xA5)
+  (expect-true "a byte added after a check is checked" (string-raises? sb))
+  (stringbuilder-clear! sb)
+  (stringbuilder-add-string! sb "fresh")
+  (expect "a cleared builder starts over" (stringbuilder->string sb) "fresh")
+
+  ;; --- a write to a port --------------------------------------------------
+  (def good (open-output-string))
+  (write-builder good (builder-of (list 0xC3 0xA5)))
+  (expect "a valid builder is written" (get-output-string good) "ok å")
+  (def bad (open-output-string))
+  (expect-true "an invalid builder raises when written"
+               (raised? (try (write-builder bad (builder-of (list 0xC3)))
+                             #:catch (System.InvalidOperationException))))
+  (expect "and nothing was written" (get-output-string bad) "")
+  0)
