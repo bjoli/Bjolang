@@ -884,6 +884,71 @@
     give the same result for the same value.
     """))
 
+(:doc option-map
+  (summary "Applies a function to the value inside a Some.")
+  (arg f "The function applied to the value. It may suspend.")
+  (arg opt "The Option.")
+  (returns "(Some (f v)) for (Some v), and None for None.")
+  (see option-filter option-or result-map some->)
+  (example """
+    (option-map string-length (Some "abc"))   ; (Some 3)
+    """)
+  (reference """
+    To chain a function that itself returns an @code{Option}, use
+    @code{some->}, or @code{bind} from @code{(std monad)}.
+    """))
+
+(:doc option-filter
+  (summary "A Some whose value a predicate holds for, else None.")
+  (arg pred "The predicate. It may suspend.")
+  (arg opt "The Option.")
+  (returns "opt when it is (Some v) and (pred v) holds; None otherwise.")
+  (see option-map)
+  (example """
+    (option-filter (fun (n) (> n 0)) (Some 4))    ; (Some 4)
+    (option-filter (fun (n) (> n 0)) (Some -3))   ; None
+    """))
+
+(:doc option-or
+  (summary "The first of two Options that is a Some.")
+  (arg opt "The Option tried first.")
+  (arg other "The Option returned when opt is None.")
+  (returns "opt when it is a Some, else other.")
+  (see option-ref-or option-map)
+  (example """
+    (option-or (map-try-ref local k) (map-try-ref global k))
+    """)
+  (reference """
+    Both arguments are evaluated, as for any call. To get a plain value
+    out with a default, use @code{option-ref-or}.
+    """))
+
+(:doc option->result
+  (summary "An Option as a Result, with an error for None.")
+  (arg opt "The Option.")
+  (arg e "The error for None.")
+  (returns "(Ok v) for (Some v), and (Err e) for None.")
+  (see result->option)
+  (example """
+    (option->result (map-try-ref users id) "no such user")
+    """))
+
+(:doc result-map-err
+  (summary "Applies a function to the value inside an Err.")
+  (arg f "The function applied to the error. It may suspend.")
+  (arg r "The Result.")
+  (returns "(Err (f e)) for (Err e); an Ok unchanged.")
+  (see result-map result->option)
+  (example """
+    (result-map-err (fun (e) (str "config: " e)) (Err "no port"))   ; (Err "config: no port")
+    """))
+
+(:doc result->option
+  (summary "A Result as an Option, without the error.")
+  (arg r "The Result.")
+  (returns "(Some v) for (Ok v), and None for an Err.")
+  (see option->result ok?))
+
 (:doc ok?
   (summary "Whether a Result is Ok.")
   (arg r "The Result.")

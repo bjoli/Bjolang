@@ -1,0 +1,49 @@
+;; The prelude's Option and Result functions: option-map, option-filter,
+;; option-or, option->result, result-map-err and result->option, with plain
+;; and suspending callbacks.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: (-bjo-> int int))
+(defbjo (slow-double n)
+  (sync (timeout (milliseconds 0)))
+  (* n 2))
+
+(: (-bjo-> int bool))
+(defbjo (slow-positive? n)
+  (sync (timeout (milliseconds 0)))
+  (> n 0))
+
+(defbjo (main args)
+  (def (: none (Option int)) None)
+  (def (: ok (Result string int)) (Ok 5))
+  (def (: bad (Result string int)) (Err "no"))
+
+  ;; --- Option ---------------------------------------------------------------
+  (expect "option-map of a Some" (option-map (fun (n) (+ n 1)) (Some 1)) (Some 2))
+  (expect "option-map of None" (option-map (fun (n) (+ n 1)) none) None)
+  (expect "option-map changes the type" (option-map string-length (Some "abc")) (Some 3))
+  (expect "option-filter keeps" (option-filter (fun (n) (> n 0)) (Some 4)) (Some 4))
+  (expect "option-filter drops" (option-filter (fun (n) (> n 0)) (Some -4)) None)
+  (expect "option-filter of None" (option-filter (fun (n) (> n 0)) none) None)
+  (expect "option-or takes the first Some" (option-or (Some 1) (Some 2)) (Some 1))
+  (expect "option-or falls back" (option-or none (Some 2)) (Some 2))
+  (expect "option-or of two Nones" (option-or none none) None)
+  (expect "option->result of a Some" (option->result (Some 1) "missing") (: (Ok 1) (Result string int)))
+  (expect "option->result of None" (option->result none "missing") (: (Err "missing") (Result string int)))
+
+  ;; --- Result ---------------------------------------------------------------
+  (expect "result-map-err of an Err" (result-map-err string-length bad) (: (Err 2) (Result int int)))
+  (expect "result-map-err of an Ok" (result-map-err string-length ok) (: (Ok 5) (Result int int)))
+  (expect "result->option of an Ok" (result->option ok) (Some 5))
+  (expect "result->option of an Err" (result->option bad) None)
+  (expect "the two conversions return the value"
+          (result->option (option->result (Some 7) "e")) (Some 7))
+
+  ;; --- suspending callbacks -------------------------------------------------
+  (expect "option-map with a suspending function" (option-map slow-double (Some 4)) (Some 8))
+  (expect "option-filter with a suspending predicate" (option-filter slow-positive? (Some -1)) None)
+  (expect "result-map-err with a suspending function"
+          (result-map-err slow-double (: (Err 3) (Result int string))) (: (Err 6) (Result int string)))
+  0)

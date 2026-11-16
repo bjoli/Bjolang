@@ -124,8 +124,8 @@
   transientmap-empty? transientmap-filter!
 
   ;; Results
-  ok? err? result-map
-  option-value
+  ok? err? result-map result-map-err result->option
+  option-value option-map option-filter option-or option->result
   ;; Pairs
   fst snd
 
@@ -1829,6 +1829,49 @@
   (match opt
     ((Some v) v)
     (None fallback)))
+
+;; The `Err` value through `f`, which may suspend; an `Ok` returns itself.
+(: (-> (-?-> %e %f) (Result %e %a) (Result %f %a)))
+(defun (result-map-err f r)
+  (match r
+    ((Ok v) (Ok v))
+    ((Err e) (Err (f e)))))
+
+;; `(Some v)` for `(Ok v)`, and `None` for an `Err`, whose value is dropped.
+(: (-> (Result %e %a) (Option %a)))
+(defun (result->option r)
+  (match r
+    ((Ok v) (Some v))
+    ((Err _) None)))
+
+;; The `Some` value through `f`, which may suspend; `None` returns itself.
+(: (-> (-?-> %a %b) (Option %a) (Option %b)))
+(defun (option-map f opt)
+  (match opt
+    ((Some v) (Some (f v)))
+    (None None)))
+
+;; `opt` if `pred` holds for its value, else `None`. `pred` may suspend.
+(: (-> (-?-> %a bool) (Option %a) (Option %a)))
+(defun (option-filter pred opt)
+  (match opt
+    ((Some v) (if (pred v) opt None))
+    (None None)))
+
+;; `opt` if it is a `Some`, else `other`. Both are evaluated, as for any
+;; call.
+(: (-> (Option %a) (Option %a) (Option %a)))
+(defun (option-or opt other)
+  (match opt
+    ((Some _) opt)
+    (None other)))
+
+;; `(Ok v)` for `(Some v)`, and `(Err e)` for `None`.
+(: (-> (Option %a) %e (Result %e %a)))
+(defun (option->result opt e)
+  (match opt
+    ((Some v) (Ok v))
+    (None (Err e))))
 
 ;; --- Pairs ---
 
