@@ -42,6 +42,7 @@
   mutablemap-ref mutablemap-try-ref mutablemap-ref-or
   mutablemap-set! mutablemap-add-new! mutablemap-try-add-new!
   mutablemap-remove! mutablemap-clear!
+  mutablemap-alter! mutablemap-update!
   mutablemap-contains? mutablemap-has-key? mutablemap-keys mutablemap-values mutablemap-copy
   mutablemap-enumerator mutablemap-enumerator-next! mutablemap-enumerator-current
   mutablemap-for-each
@@ -103,6 +104,30 @@
   (match (add-or-existing! m k v)
     ((Some old) (Err old))
     (None (Ok unit))))
+
+;; The entry of `k` decided by `f`, written in place:
+;; - `f` is given `(Some v)` for the value of `k`, or `None` if `k` is absent.
+;; - `(Some v)` from `f` sets `k` to `v`, and `None` removes `k`.
+;; - A lookup, then a set or a remove.
+(: (-> (MutableMap %k %v) %k (-?-> (Option %v) (Option %v)) void))
+(defun (mutablemap-alter! m k f)
+  (def old (mutablemap-try-ref m k))
+  (match (f old)
+    ((Some v) (mutablemap-set! m k v))
+    (None (when (some? old) (ignore (mutablemap-remove! m k))))))
+
+;; `k` set to `f` of its value, in place. A missing key raises
+;; `KeyNotFoundException`, unless `#:default (Some d)` is given: then `f` is
+;; applied to `d`.
+(: (-> (MutableMap %k %v) %k (-?-> %v %v) (#:default (Option %v)) void))
+(defun (mutablemap-update! m k f #:default None)
+  (def old (match (mutablemap-try-ref m k)
+             ((Some v) v)
+             (None (match default
+                     ((Some d) d)
+                     ;; Raises KeyNotFoundException.
+                     (None (mutablemap-ref m k))))))
+  (mutablemap-set! m k (f old)))
 
 ;; The key and the value as two arguments, which is what a caller of a map
 ;; almost always wants and what the `Iterable` walk over pairs cannot give.

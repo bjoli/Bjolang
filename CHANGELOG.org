@@ -3,6 +3,23 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~X-alter~ and ~X-update~ on every map
+
+- ~(map-alter m k f)~: ~f~ is given ~(Some v)~ for the value of ~k~, or
+  ~None~ when ~k~ is absent, and returns ~(Some v)~ to set ~k~ or ~None~ to
+  remove it. On ~Map~ and ~TransientMap~ this is one descent of the trie,
+  where ~map-try-ref~ and then ~map-set~ took two. Haskell's
+  ~Data.Map.alter~ is the same function.
+- ~(map-update m k f)~ sets ~k~ to ~(f v)~. A missing key raises
+  ~KeyNotFoundException~, as the ~update~ path macro does, unless
+  ~#:default (Some d)~ is given: then ~f~ is applied to ~d~. A count is
+  ~(map-update m w (fun (n) (+ n 1)) #:default (Some 0))~.
+- Both are on ~Map~, ~OrderedMap~, and, in place, on ~TransientMap~,
+  ~TransientOrderedMap~ and ~MutableMap~ (~transientmap-alter!~ and so
+  on). The ordered maps and ~MutableMap~ do a lookup, then a set or a
+  remove.
+- ~f~ may suspend: each function has a suspending copy.
+
 * ~stringbuilder-add-byte!~: a builder never gives out invalid UTF-8
 
 - ~stringbuilder-add-code!~ is now ~stringbuilder-add-byte!~, and

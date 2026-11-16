@@ -40,6 +40,7 @@
   orderedmap-empty orderedmap-length orderedmap-empty? orderedmap-clear
   orderedmap-ref orderedmap-ref-or orderedmap-try-ref orderedmap-contains? orderedmap-has-key?
   orderedmap-set orderedmap-set-all orderedmap-remove orderedmap-remove-all
+  orderedmap-alter orderedmap-update
   orderedmap-keys orderedmap-values
   orderedmap-merge orderedmap-merge-with
   ;; Order
@@ -60,6 +61,7 @@
   ;; Transients
   transientorderedmap-empty orderedmap->transientorderedmap transientorderedmap->orderedmap
   transientorderedmap-set! transientorderedmap-set-all! transientorderedmap-remove!
+  transientorderedmap-alter! transientorderedmap-update!
   transientorderedmap-remove-all! transientorderedmap-contains? transientorderedmap-has-key? transientorderedmap-ref
   transientorderedmap-ref-or transientorderedmap-try-ref transientorderedmap-length
   transientorderedmap-empty? transientorderedmap-filter!)
@@ -534,6 +536,41 @@
       m))
 
 ;; ---------------------------------------------------------------------------
+;; Alter and update
+;; ---------------------------------------------------------------------------
+;;
+;; A read descent, then a set or a remove. The read allocates nothing, and the
+;; write copies the path as `orderedmap-set` and `orderedmap-remove` do.
+
+;; The value an update applies its function to: the key's value, else the
+;; default. Raises `KeyNotFoundException` when there is neither.
+(: (-> (Option %v) (Option %v) %v))
+(defun (update-start old default)
+  (match old
+    ((Some v) v)
+    (None (match default
+            ((Some d) d)
+            (None (key-not-found))))))
+
+;; `m` with the entry of `k` decided by `f`:
+;; - `f` is given `(Some v)` for the value of `k`, or `None` if `k` is absent.
+;; - `(Some v)` from `f` sets `k` to `v`, and `None` removes `k`.
+;; - `None` for an absent key returns `m` itself.
+(: (-> (OrderedMap %k %v) %k (-?-> (Option %v) (Option %v)) (OrderedMap %k %v)))
+(defun (orderedmap-alter m k f)
+  (def old (orderedmap-try-ref m k))
+  (match (f old)
+    ((Some v) (orderedmap-set m k v))
+    (None (if (some? old) (orderedmap-remove m k) m))))
+
+;; `m` with `k` set to `f` of its value. A missing key raises
+;; `KeyNotFoundException`, unless `#:default (Some d)` is given: then `f` is
+;; applied to `d`.
+(: (-> (OrderedMap %k %v) %k (-?-> %v %v) (#:default (Option %v)) (OrderedMap %k %v)))
+(defun (orderedmap-update m k f #:default None)
+  (orderedmap-set m k (f (update-start (orderedmap-try-ref m k) default))))
+
+;; ---------------------------------------------------------------------------
 ;; The cursor
 ;; ---------------------------------------------------------------------------
 
@@ -884,6 +921,19 @@
   (def (: vt (Option %v)) None)
   (def (Tuple root removed?) (remove-in (.comparer t) (.root t) k (.owner t) vt))
   (when removed? (record-set! t (root root) (count (- (.count t) 1)))))
+
+;; `orderedmap-alter` in place.
+(: (-> (TransientOrderedMap %k %v) %k (-?-> (Option %v) (Option %v)) void))
+(defun (transientorderedmap-alter! t k f)
+  (def old (transientorderedmap-try-ref t k))
+  (match (f old)
+    ((Some v) (transientorderedmap-set! t k v))
+    (None (when (some? old) (transientorderedmap-remove! t k)))))
+
+;; `orderedmap-update` in place.
+(: (-> (TransientOrderedMap %k %v) %k (-?-> %v %v) (#:default (Option %v)) void))
+(defun (transientorderedmap-update! t k f #:default None)
+  (transientorderedmap-set! t k (f (update-start (transientorderedmap-try-ref t k) default))))
 
 (: (-> (TransientOrderedMap %k %v) (Seq (Tuple %k %v)) void))
 (defun (transientorderedmap-set-all! t kvs)

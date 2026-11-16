@@ -265,6 +265,41 @@
   (returns "The map without k. When k is not there, m itself.")
   (see map-remove-all map-filter))
 
+(:doc map-alter
+  (summary "A map with the entry of a key decided by a function, in one lookup.")
+  (arg m "The map, which is left as it was.")
+  (arg k "The key.")
+  (arg f "Called once with (Some v) for the value of k, or None when k is not there. It returns (Some v) to set k to v, or None to remove k.")
+  (returns "The map with k set or removed as f says. When nothing changes, m itself.")
+  (see map-update map-set map-remove transientmap-alter!)
+  (example """
+    (map-alter m "k" (fun (old) (Some (+ 1 (option-ref-or old 0)))))   ; a count
+    (map-alter m "k" (fun (old) None))                                 ; map-remove
+    """)
+  (reference """
+    One descent of the trie finds the key and writes the result. A
+    @code{map-try-ref} followed by a @code{map-set} or @code{map-remove}
+    takes two. Haskell's @code{Data.Map.alter} is the same function.
+    """))
+
+(:doc map-update
+  (summary "A map with a key set to a function of its value, in one lookup.")
+  (arg m "The map, which is left as it was.")
+  (arg k "The key.")
+  (arg f "Called once with the value of k, or with the default. Its result is the new value.")
+  (key #:default "(Some d) gives the value f is applied to when k is not there. The default is None.")
+  (returns "The map with k set to the value f returns.")
+  (raises System.Collections.Generic.KeyNotFoundException "When k is not there and no #:default is given.")
+  (see map-alter update map-set transientmap-update!)
+  (example """
+    (map-update m "k" (fun (n) (+ n 1)) #:default (Some 0))   ; a count
+    (map-update m "k" string-upcase)                         ; k must be there
+    """)
+  (reference """
+    The same contract as the @code{update} path macro: a missing key raises.
+    @code{#:default} makes it an insert for that key.
+    """))
+
 (:doc map-remove-all
   (summary "A map without every key of a sequence.")
   (arg m "The map, which is left as it was.")
@@ -579,6 +614,22 @@
   (arg t "The transient.")
   (arg k "The key. When it is not there, nothing happens.")
   (see transientmap-remove-all! map-remove))
+
+(:doc transientmap-alter!
+  (summary "Sets or removes the entry of a key, as a function decides, in a transient map, in place.")
+  (arg t "The transient.")
+  (arg k "The key.")
+  (arg f "Called once with (Some v) for the value of k, or None when k is not there. It returns (Some v) to set k to v, or None to remove k.")
+  (see transientmap-update! map-alter))
+
+(:doc transientmap-update!
+  (summary "Sets a key to a function of its value in a transient map, in place.")
+  (arg t "The transient.")
+  (arg k "The key.")
+  (arg f "Called once with the value of k, or with the default. Its result is the new value.")
+  (key #:default "(Some d) gives the value f is applied to when k is not there. The default is None.")
+  (raises System.Collections.Generic.KeyNotFoundException "When k is not there and no #:default is given.")
+  (see transientmap-alter! map-update))
 
 (:doc transientmap-remove-all!
   (summary "Removes every key of a sequence from a transient map, in place.")

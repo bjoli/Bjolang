@@ -304,6 +304,80 @@
       (Map (root r) (count (- (map-length m) 1)) (comparer cmp))
       m))
 
+;; Calls `f` on the value of `k` in the subtree `n` at `shift`, `None` when
+;; `k` is absent, and puts what `f` returns there: `None` removes the entry.
+;; One descent does both. Returns the new subtree and the change in the
+;; number of entries: 1, 0 or -1. `n` itself when nothing changes. A child
+;; left empty or with one entry is handled as `hm-delete` handles it.
+(: (-> (TrieNode (Tuple %k %v)) %k (-?-> (Option %v) (Option %v)) int int (EqualityComparer %k) long
+       (Tuple (TrieNode (Tuple %k %v)) int)))
+(defun (hm-alter n k f h shift cmp owner)
+  (def c (hm-probe n k h shift cmp))
+  (cond
+    ((>= c 0)
+     (def ch (hm-child n c))
+     (def (Tuple r delta) (hm-alter ch k f h (+ shift 5) cmp owner))
+     (cond
+       ((and (< delta 0) (hm-leaf? r) (= (hm-node-size r) 0))
+        (Tuple (hm-without-child n c h shift owner) delta))
+       ((and (< delta 0) (hm-leaf? r) (= (hm-node-size r) 1))
+        (Tuple (hm-with-child-inlined n c (hm-element r 0) h shift owner) delta))
+       ((hm-same-node? r ch) (Tuple n delta))
+       (else (Tuple (hm-with-child n c r owner) delta))))
+    ((<= c -4)
+     (def i (- -4 c))
+     (def old (hm-value (hm-element n i)))
+     (match (f (Some old))
+       (None (Tuple (hm-without-element-at n i h shift owner) -1))
+       ((Some v)
+        (if (hm-same-value? old v)
+            (Tuple n 0)
+            (Tuple (hm-with-element-at n i (Tuple k v) owner) 0)))))
+    (else
+     (match (f None)
+       (None (Tuple n 0))
+       ((Some v)
+        (def kv (Tuple k v))
+        (cond
+          ((= c -2) (Tuple (hm-with-element n kv h shift owner) 1))
+          ((hm-collision? n) (Tuple (hm-split-collision n kv h shift owner) 1))
+          (else
+           (def y (hm-element-at n h shift))
+           (Tuple (hm-with-subtree n h shift (hm-join y (hm-hash-of cmp (hm-key y)) kv h (+ shift 5) owner) owner)
+                  1))))))))
+
+;; The value an update applies its function to: the key's value, else the
+;; default. Raises `KeyNotFoundException` when there is neither.
+(: (-> (Option %v) (Option %v) %v))
+(defun (hm-update-start old default)
+  (match old
+    ((Some v) v)
+    (None (match default
+            ((Some d) d)
+            (None (hm-key-not-found))))))
+
+;; `m` with the entry of `k` decided by `f`, in one lookup:
+;; - `f` is given `(Some v)` for the value of `k`, or `None` if `k` is absent.
+;; - `(Some v)` from `f` sets `k` to `v`, and `None` removes `k`.
+;; - Returns `m` itself when nothing changes.
+(: (-> (Map %k %v) %k (-?-> (Option %v) (Option %v)) (Map %k %v)))
+(defun (map-alter m k f)
+  (def cmp (.comparer m))
+  (def root (.root m))
+  (def (Tuple r delta) (hm-alter root k f (hm-hash-of cmp k) 0 cmp hm-no-owner))
+  (if (hm-same-node? r root)
+      m
+      (Map (root r) (count (+ (map-length m) delta)) (comparer cmp))))
+
+;; `m` with `k` set to `f` of its value, in one lookup. A missing key raises
+;; `KeyNotFoundException`, unless `#:default (Some d)` is given: then `f` is
+;; applied to `d`.
+(: (-> (Map %k %v) %k (-?-> %v %v) (#:default (Option %v)) (Map %k %v)))
+(defun (map-update m k f #:default None)
+  (map-alter m k (by-colour
+                   (#:sync (fun (old) (Some (f (hm-update-start old default)))))
+                   (#:bjo (bjoroutine (old) (Some (f (hm-update-start old default))))))))
+
 (: (-> (Map %k %v) (Seq (Tuple %k %v)) (Map %k %v)))
 (defun (map-set-all m kvs)
   (def t (map->transientmap m))
@@ -353,6 +427,20 @@
   (def cmp (.comparer t))
   (def (Tuple r removed?) (hm-delete (.root t) k (hm-hash-of cmp k) 0 cmp (.owner t)))
   (when removed? (record-set! t (root r) (count (- (.count t) 1)))))
+
+;; `map-alter` in place.
+(: (-> (TransientMap %k %v) %k (-?-> (Option %v) (Option %v)) void))
+(defun (transientmap-alter! t k f)
+  (def cmp (.comparer t))
+  (def (Tuple r delta) (hm-alter (.root t) k f (hm-hash-of cmp k) 0 cmp (.owner t)))
+  (record-set! t (root r) (count (+ (.count t) delta))))
+
+;; `map-update` in place.
+(: (-> (TransientMap %k %v) %k (-?-> %v %v) (#:default (Option %v)) void))
+(defun (transientmap-update! t k f #:default None)
+  (transientmap-alter! t k (by-colour
+                             (#:sync (fun (old) (Some (f (hm-update-start old default)))))
+                             (#:bjo (bjoroutine (old) (Some (f (hm-update-start old default))))))))
 
 (: (-> (TransientMap %k %v) (Seq (Tuple %k %v)) void))
 (defun (transientmap-set-all! t kvs)
