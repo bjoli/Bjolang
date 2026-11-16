@@ -199,6 +199,16 @@
     (sync (timeout (milliseconds 600)))
     (expect "kills the form" (file-exists? marker) #f))
 
+  ;; The loop returns after the form's process has exited and been reaped.
+  ;; The program prints its own pid, and its /proc entry is gone as soon as
+  ;; the loop returns, with no wait. Where there is no /proc, this passes
+  ;; without testing anything.
+  (expect "a loop left early returns after the process is reaped"
+          (match {finding line (:for line (run/stream '("sh" "-c" "echo $$; exec sleep 10") read-line))}
+            ((Some pid) (file-exists? (str "/proc/" pid "/stat")))
+            (None #t))
+          #f)
+
   (expect "a form whose output goes to a file raises in the loop"
           (match (try {listing line (:for line (run/stream '(into-file ,(scratch "stream-out.txt") (echo "x")) read-line))}
                       #:catch (System.InvalidOperationException))

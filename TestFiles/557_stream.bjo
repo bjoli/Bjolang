@@ -26,6 +26,35 @@
   (loop (:for x (upto 1000))
         (:do (when (= x 2) (raise (cast Exception (Refusal. "the consumer failed")))))))
 
+;; A producer whose release suspends for 50ms before it counts itself
+;; released. A loop that returned before its producer had unwound would see
+;; `released` unchanged.
+(def/mutable released 0)
+
+(: (-> (Stream int)))
+(defun (slow-release)
+  (make-stream (bjoroutine (out)
+                 (try (loop (:for i (range 0 1000)) (:do (emit! out i)))
+                   #:finally (with-shield #:within (seconds 5)
+                               (sync (timeout (milliseconds 50)))
+                               (set! released (+ released 1)))))))
+
+;; The same loop in ordinary code, where each receive parks the thread.
+(: taking-blocking #:sync (-> (List int)))
+(defun (taking-blocking) {taking 2 x (:for x (slow-release))})
+
+;; A loop left because its scope was cancelled. Returns `released` as the
+;; loop's own `finally` sees it.
+(: (-> int))
+(defbjo (released-after-cancel)
+  (def/mutable seen -1)
+  (ignore (try (with-cancel (cancel)
+                 (try (loop (:for x (slow-release))
+                            (:do (when (= x 1) (ignore (cancel (Requested "stop"))))))
+                   #:finally (set! seen released)))
+               #:catch (System.Exception)))
+  seen)
+
 (: (-> (Chan int) int void))
 (defbjo (feed ch n)
   (loop (:for i (range 0 n)) (:do (sync (chan-send ch i)))))
@@ -62,6 +91,16 @@
           (match (try (consumer-raises) #:catch (System.InvalidOperationException)) ((Ok _) "returned") ((Err _) "raised"))
           "raised")
   (expect "stops the producer" produced 3)
+
+  ;; --- the loop returns after the producer has unwound ----------------------
+  (set! released 0)
+  (expect "taking 2 of a slow release" {taking 2 x (:for x (slow-release))} (list 0 1))
+  (expect "the producer's release ran before the loop returned" released 1)
+  (set! released 0)
+  (expect "in ordinary code" (sync (blocking (fun () (taking-blocking)))) (Ok (list 0 1)))
+  (expect "the release ran there too" released 1)
+  (set! released 0)
+  (expect "a loop left by a cancellation also waits for the release" (released-after-cancel) 1)
 
   ;; --- levels -----------------------------------------------------------------
   (expect "at an inner level a stream ends its level only"

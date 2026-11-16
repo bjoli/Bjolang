@@ -320,8 +320,14 @@
   (reference """
     The loop owns the form. Its input is closed at once, and each item is
     read when the loop asks for it. However the loop ends, at the end of the
-    output, early or by a raise, the form is killed. It is dead by the time
-    the scope the loop runs in ends.
+    output, early or by a raise, the form is killed. When the loop returns,
+    the form's processes have exited.
+
+    The loop waits at most five seconds for the processes to exit. If they
+    take longer, the loop returns, and the scope that the loop runs in waits
+    for the rest. The loop does not wait for the form's filters or pumps. A
+    child process that a program started and that is still alive can keep a
+    pipe open.
 
     The exit code is dropped, as @code{run/strings} drops it. A filter or a
     redirection that fails, and what @code{reader} raises, are raised in the

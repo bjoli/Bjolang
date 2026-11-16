@@ -807,6 +807,7 @@
 ;;   for it.
 ;; - The exit code is dropped, as `run/strings` drops it.
 ;; - Lifecycle: the form is killed however the loop ends, early included.
+;;   When the loop returns, its processes have exited. See `reaping`.
 ;; - Raises in the loop: when the form cannot start, its output goes to a
 ;;   file, a filter or a redirection fails, or `reader` raises.
 (: (-> Form (-bjo-> InputPort %a) (Stream %a)))
@@ -830,7 +831,37 @@
           (match (waiting p)
             ((Err e) (raise e))
             ((Ok _) unit))))
-       #:finally (kill p)))))
+       #:finally (reaping p)))))
+
+;; The longest time `reaping` waits for a killed form's processes to exit.
+(def reap-grace (seconds 5))
+
+;; Awaits the exit of each of `children`.
+(: (-> (Vec Process) Unit))
+(defbjo (awaiting-exits children)
+  (loop (:for child children) (:do (process-await child)))
+  unit)
+
+;; Kills the form, and waits until its processes have exited.
+;;
+;; - After this returns, the processes are dead and reaped, unless they took
+;;   longer than `reap-grace` to exit.
+;; - The wait runs in a shield, so it also works in a fiber that has been
+;;   cancelled.
+;; - Does not raise when the grace passes.
+;; - It waits for the processes only, not for the form's pumps and filters.
+;;   A pump can wait for a pipe that a grandchild process still holds open.
+(: (-> Proc void))
+(defbjo (reaping p)
+  (kill p)
+  ;; The shield's deadline is longer than `reap-grace`, so the timeout always
+  ;; commits first and the shield never raises `Cancelled`. The inner scope
+  ;; cancels the awaits that are still waiting when the grace passes.
+  (with-shield #:within (seconds 6)
+    (with-cancel (stop)
+      (def exited (bjo (awaiting-exits (record-ref p children))))
+      (ignore (sync (choose (wrap (promise-join exited) (fun (_) unit)) (timeout reap-grace))))
+      (ignore (stop (Requested "the grace for the form to exit has passed"))))))
 
 
 ;; ===========================================================================

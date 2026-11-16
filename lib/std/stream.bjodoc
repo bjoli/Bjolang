@@ -31,11 +31,17 @@
     loop ends: when the producer is done, at a @code{:finish} or an
     @code{:abandon}, when a driver beside it runs out, at @code{finding} or
     @code{taking}, at an exception or a @code{ret}. A producer stopped so raises
-    @code{Cancelled} where it waits, and its own releases run. It unwinds in
-    its own fiber: the loop does not wait for that, the enclosing scope does.
-    What the
-    producer raises for its own reasons is raised in the loop. A loop at an
-    inner level gets a producer each time the level starts.
+    @code{Cancelled} where it waits, and its own releases run. The loop
+    returns only after the producer has unwound, so its releases have run
+    when the loop returns. This is also true when the loop is left because
+    its scope was cancelled: the wait runs in a @code{with-shield}.
+
+    The loop waits at most five seconds. A producer that computes without a
+    @code{sync} does not see the stop until it next waits. If the producer
+    has not unwound after five seconds, the loop returns, and the enclosing
+    scope waits for the producer. What the producer raises for its own reasons is raised
+    in the loop. A loop at an inner level gets a producer each time the
+    level starts.
 
     @strong{Nothing is computed ahead.} The producer computes a value only
     when the loop asks for it: after each @code{emit!} it waits for the next
@@ -74,7 +80,8 @@
   (see Stream)
   (reference """
     Made by @code{iterable-start} and ended by @code{iterable-end} or
-    @code{iterable-cleanup}, which stop the producer.
+    @code{iterable-cleanup}. These stop the producer and wait until it has
+    unwound.
     """))
 
 (:doc Item

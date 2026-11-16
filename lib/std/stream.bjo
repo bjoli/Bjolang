@@ -29,11 +29,12 @@
 (type (: (Stream %a) #:opaque (Struct (: body (-bjo-> (Emitter %a) void)))))
 
 ;; A loop's cursor over a stream: the running producer's channels, the cancel
-;; thunk that stops it, and the item the loop is at.
+;; thunk that stops it, its promise, and the item the loop is at.
 (type (: (StreamRun %a) #:opaque
          (Record (: chan (Chan (Item %a)))
                  (: demand (Chan Unit))
                  (: stop (-> CancelReason void))
+                 (: producer (Promise Unit))
                  (: item (Item %a) #:mutable))))
 
 ;; A channel read until `end` commits.
@@ -89,13 +90,39 @@
     ((Failed e) (raise e))
     (_ (record-set! run (item item)) run)))
 
+;; The longest time the end of a loop waits for its producer to unwind.
+(def producer-grace (seconds 5))
+
+;; Waits until `p` lands or `d` has passed, whichever is first.
+(: (-> (Promise %a) Duration void))
+(defbjouble (await-within p d)
+  (#:sync (ignore (sync/blocking (choose (wrap (promise-join p) (fun (_) unit)) (timeout d)))))
+  (#:bjo (ignore (sync (choose (wrap (promise-join p) (fun (_) unit)) (timeout d))))))
+
+;; Stops the producer, and waits until it has unwound.
+;;
+;; - After this returns, the producer's releases have run, unless it took
+;;   longer than `producer-grace` to unwind.
+;; - The wait runs in a shield, so it also works when the loop is left
+;;   because its scope was cancelled.
+;; - Does not raise when the grace passes. The producer then goes on
+;;   unwinding, and the enclosing scope waits for it.
+(: (-> (StreamRun %a) CancelReason void))
+(defun (stop-producer run reason)
+  ((.stop run) reason)
+  ;; The shield's deadline is longer than `producer-grace`, so the timeout
+  ;; always commits first and the shield never raises `Cancelled`.
+  (with-shield #:within (seconds 6)
+    (await-within (.producer run) producer-grace)))
+
 ;; A stream as a driver.
 ;;
 ;; - `iterable-start` starts the producer under a cancel token of its own,
 ;;   linked to the ambient one, and receives the first item.
 ;; - `iterable-next` asks for the next item, and receives it.
-;; - `iterable-end` and `iterable-cleanup` cancel it: at a `:finish`, an
-;;   `:abandon`, a driver beside it that ran out, an exception or a `ret`.
+;; - `iterable-end` and `iterable-cleanup` stop it and wait until it has
+;;   unwound: at a `:finish`, an `:abandon`, a driver beside it that ran out,
+;;   an exception or a `ret`. See `stop-producer`.
 (impl (Iterable (Stream %a))
   (type %elem %a)
   (type %cursor (StreamRun %a))
@@ -104,16 +131,16 @@
     (link-cancel (parameter-ref current-cancel) token)
     (def c (make-chan))
     (def demand (make-chan))
-    (ignore (parameterize ((current-cancel token)) (bjo (run-producer (.body s) c demand token))))
-    (stream-set! (StreamRun (chan c) (demand demand) (stop stop) (item Done)) (chan-take c)))
+    (def producer (parameterize ((current-cancel token)) (bjo (run-producer (.body s) c demand token))))
+    (stream-set! (StreamRun (chan c) (demand demand) (stop stop) (producer producer) (item Done)) (chan-take c)))
   (defun (iterable-done? s run) (match (.item run) (Done #t) (_ #f)))
   (defun (iterable-current s run)
     (match (.item run)
       ((Next x) x)
       (_ (panic! "iterable-current of a stream that has ended"))))
   (defun (iterable-next s run) (stream-set! run (chan-ask (.demand run) (.chan run))))
-  (defun (iterable-end s run) ((.stop run) (Requested "the loop over the stream ended")))
-  (defun (iterable-cleanup s run) ((.stop run) (Requested "the loop over the stream was left"))))
+  (defun (iterable-end s run) (stop-producer run (Requested "the loop over the stream ended")))
+  (defun (iterable-cleanup s run) (stop-producer run (Requested "the loop over the stream was left"))))
 
 ;; The values received on `c` until `end` commits.
 (: (-> (Chan %a) (Event %e) (ChanReads %a %e)))
