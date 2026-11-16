@@ -40,7 +40,7 @@
   mutablevec-ref mutablevec-try-ref mutablevec-set!
   mutablevec-add! mutablevec-add-all! mutablevec-insert!
   mutablevec-remove-at! mutablevec-remove! mutablevec-remove-where!
-  mutablevec-pop! mutablevec-clear!
+  mutablevec-pop! mutablevec-try-pop! mutablevec-clear!
   mutablevec-contains? mutablevec-index-of
   mutablevec-reverse! mutablevec-sort! mutablevec-sort-unstable! mutablevec-sort-by!
   mutablevec-copy
@@ -116,13 +116,24 @@
 ;; The last element, removed. `None` leaves the vector as it was, so a
 ;; stack-shaped loop can pop until it stops.
 (: (-> (MutableVec %a) (Option %a)))
-(defun (mutablevec-pop! v)
+(defun (mutablevec-try-pop! v)
   (def last (- (mutablevec-length v) 1))
   (if (< last 0)
       None
       (let ((x (mutablevec-ref v last)))
         (mutablevec-remove-at! v last)
         (Some x))))
+
+(import/class
+  (EmptyVec (: System.InvalidOperationException (-> string EmptyVec))))
+
+;; The last element, removed.
+;; Raises InvalidOperationException when the vector is empty.
+(: (-> (MutableVec %a) %a))
+(defun (mutablevec-pop! v)
+  (match (mutablevec-try-pop! v)
+    ((Some x) x)
+    (None (raise (cast Exception (EmptyVec. "mutablevec-pop!: the vector is empty."))))))
 
 ;; Removes every element that `pred` accepts, and returns how many it removed.
 (: (-> (MutableVec %a) (-> %a bool) int))

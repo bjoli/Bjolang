@@ -1,0 +1,81 @@
+;; Membership: `X-contains?` for each collection, and `X-has-key?` as an
+;; alias of `X-contains?` for each map.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std orderedmap))
+(import (std mutable map))
+(import (std mutable deque))
+(import (std stm))
+(import (std stm map))
+
+;; Equal when the names are equal, whatever the count. Membership has to go
+;; through this `=`, not through field-wise equality.
+(type (: Tag (Record (: name string) (: count int))))
+
+(impl (Eq Tag)
+  (defun (= a b) (= (record-ref a name) (record-ref b name)))
+  (defun (eq-hash t) (eq-hash (record-ref t name))))
+
+(defun (main args)
+  ;; --- elements ---------------------------------------------------------------
+  (expect "list-contains? hit" (list-contains? (list 1 2 3) 3) #t)
+  (expect "list-contains? miss" (list-contains? (list 1 2 3) 4) #f)
+  (expect "list-contains? empty" (list-contains? (: (list) (List int)) 1) #f)
+
+  (expect "vec-contains? hit" (vec-contains? [1 2 3] 2) #t)
+  (expect "vec-contains? miss" (vec-contains? [1 2 3] 9) #f)
+  (expect "vec-contains? empty" (vec-contains? (: (vec-empty) (Vec int)) 1) #f)
+  (def big {vecing i (:for i (range 0 1000))})
+  (expect "vec-contains? past the first leaf" (vec-contains? big 999) #t)
+
+  (def arr (vec->array ["a" "b"]))
+  (expect "array-contains? hit" (array-contains? arr "b") #t)
+  (expect "array-contains? miss" (array-contains? arr "c") #f)
+
+  (def ia (vec->iarray [4 5]))
+  (expect "iarray-contains? hit" (iarray-contains? ia 4) #t)
+  (expect "iarray-contains? miss" (iarray-contains? ia 6) #f)
+
+  (def tv (vec->transientvec [7 8]))
+  (transientvec-add-first! tv 6)
+  (expect "transientvec-contains? at the head" (transientvec-contains? tv 6) #t)
+  (expect "transientvec-contains? miss" (transientvec-contains? tv 9) #f)
+
+  ;; Elements on both of the deque's internal lists.
+  (def d (deque))
+  (deque-push-back! d 2)
+  (deque-push-front! d 1)
+  (expect "deque-contains? front" (deque-contains? d 1) #t)
+  (expect "deque-contains? back" (deque-contains? d 2) #t)
+  (expect "deque-contains? miss" (deque-contains? d 3) #f)
+  (expect "and the deque is as it was" (deque->list d) (list 1 2))
+
+  ;; Through the type's own `=`.
+  (def tags (list (Tag (name "x") (count 1))))
+  (expect "list-contains? uses =" (list-contains? tags (Tag (name "x") (count 99))) #t)
+  (expect "vec-contains? uses =" (vec-contains? (list->vec tags) (Tag (name "x") (count 99))) #t)
+
+  ;; --- keys -------------------------------------------------------------------
+  (def m (list->map (list (Tuple "k" 1))))
+  (expect "map-has-key?" (Tuple (map-has-key? m "k") (map-has-key? m "z")) (Tuple #t #f))
+  (def tm (map->transientmap m))
+  (expect "transientmap-has-key?" (Tuple (transientmap-has-key? tm "k") (transientmap-has-key? tm "z")) (Tuple #t #f))
+
+  (def om (list->orderedmap (list (Tuple 1 "one"))))
+  (expect "orderedmap-has-key?" (Tuple (orderedmap-has-key? om 1) (orderedmap-has-key? om 2)) (Tuple #t #f))
+  (def tom (orderedmap->transientorderedmap om))
+  (expect "transientorderedmap-has-key?"
+          (Tuple (transientorderedmap-has-key? tom 1) (transientorderedmap-has-key? tom 2))
+          (Tuple #t #f))
+
+  (def mm (mutablemap))
+  (mutablemap-set! mm "k" 1)
+  (expect "mutablemap-has-key?" (Tuple (mutablemap-has-key? mm "k") (mutablemap-has-key? mm "z")) (Tuple #t #f))
+
+  (def stm-map (make-tmap))
+  (atomically (fun (tx) (tmap-set! tx stm-map "k" 1)))
+  (expect "tmap-has-key?"
+          (atomically (fun (tx) (Tuple (tmap-has-key? tx stm-map "k") (tmap-has-key? tx stm-map "z"))))
+          (Tuple #t #f))
+  0)

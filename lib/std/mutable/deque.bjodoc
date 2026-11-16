@@ -3,7 +3,7 @@
 
 (:doc #:module
   (summary "Double-ended mutable queue supporting O(1) amortized push and pop operations at both ends.")
-  (see Deque deque deque-push-back! deque-pop-front!)
+  (see Deque deque deque-push-back! deque-pop-first!)
   (example """
     (import (std mutable deque))
 
@@ -12,8 +12,8 @@
     (deque-push-back! work 1)
     (deque-push-back! work 2)
     (deque-push-front! work 0)
-    (deque-pop-front! work)    ; (Some 0)
-    (deque-pop-back! work)     ; (Some 2)
+    (deque-pop-first! work)    ; 0
+    (deque-pop-last! work)     ; 2
     (deque->list work)         ; (1)
     """)
   (reference """
@@ -41,8 +41,10 @@
     @code{deque-for-each}, and @code{displayed} traverse the elements from
     front to back without altering internal storage.
 
-    @strong{Empty queue behavior.} Popping or peeking from an empty deque returns
-    @code{None} without raising exceptions.
+    @strong{Empty queue behavior.} @code{deque-pop-first!} and
+    @code{deque-pop-last!} raise @code{System.InvalidOperationException} on an
+    empty deque. @code{deque-try-pop-first!} and @code{deque-try-pop-last!}
+    return @code{None}. Peeking at an empty deque returns @code{None}.
 
     @strong{Equality and hashing.} Two deques are @code{=} if they contain
     equal elements in identical logical order. Because deques are mutable,
@@ -94,48 +96,62 @@
   (summary "Prepends an element to the front of the deque.")
   (arg d "The deque to modify.")
   (arg x "The element to prepend.")
-  (see deque-push-back! deque-pop-front!))
+  (see deque-push-back! deque-pop-first!))
 
 (:doc deque-push-back!
   (summary "Appends an element to the back of the deque.")
   (arg d "The deque to modify.")
   (arg x "The element to append.")
-  (see deque-push-front! deque-pop-back!))
+  (see deque-push-front! deque-pop-last!))
 
-(:doc deque-pop-front!
-  (summary "Removes and returns the front element, or None if empty.")
+(:doc deque-pop-first!
+  (summary "Removes and returns the front element.")
   (arg d "The deque to modify.")
-  (returns "(Some x) containing the front element, or None if empty.")
-  (see deque-pop-back! deque-peek-front!)
-  (example """
-    (let loop ()
-      (match (deque-pop-front! work)
-        (None unit)
-        ((Some job) (run job) (loop))))
-    """)
+  (returns "The front element.")
+  (raises System.InvalidOperationException "When the deque is empty.")
+  (see deque-try-pop-first! deque-pop-last! deque-peek-front!)
   (reference """
     Runs in O(1) amortized time. When the front list is empty, half of the back
     list is reversed and moved to the front.
     """))
 
-(:doc deque-pop-back!
-  (summary "Removes and returns the back element, or None if empty.")
+(:doc deque-pop-last!
+  (summary "Removes and returns the back element.")
   (arg d "The deque to modify.")
-  (returns "(Some x) containing the back element, or None if empty.")
-  (see deque-pop-front! deque-peek-back!)
+  (returns "The back element.")
+  (raises System.InvalidOperationException "When the deque is empty.")
+  (see deque-try-pop-last! deque-pop-first! deque-peek-back!)
   (reference """
     Runs in O(1) amortized time. When the back list is empty, half of the front
     list is reversed and moved to the back.
     """))
 
+(:doc deque-try-pop-first!
+  (summary "Removes and returns the front element, or None if empty.")
+  (arg d "The deque to modify.")
+  (returns "(Some x) containing the front element, or None if empty.")
+  (see deque-pop-first! deque-try-pop-last!)
+  (example """
+    (let loop ()
+      (match (deque-try-pop-first! work)
+        (None unit)
+        ((Some job) (run job) (loop))))
+    """))
+
+(:doc deque-try-pop-last!
+  (summary "Removes and returns the back element, or None if empty.")
+  (arg d "The deque to modify.")
+  (returns "(Some x) containing the back element, or None if empty.")
+  (see deque-pop-last! deque-try-pop-first!))
+
 (:doc deque-peek-front!
   (summary "Returns the front element without removing it, or None if empty.")
   (arg d "The deque. Contents are preserved, but internal storage may be rebalanced.")
   (returns "(Some x) containing the front element, or None if empty.")
-  (see deque-pop-front! deque-peek-back!)
+  (see deque-pop-first! deque-peek-back!)
   (reference """
     When the front list is empty, half of the back list is transferred to the
-    front as in @code{deque-pop-front!}. Because internal references are modified,
+    front as in @code{deque-pop-first!}. Because internal references are modified,
     the function is named with a trailing @code{!}.
     """))
 
@@ -143,10 +159,10 @@
   (summary "Returns the back element without removing it, or None if empty.")
   (arg d "The deque. Contents are preserved, but internal storage may be rebalanced.")
   (returns "(Some x) containing the back element, or None if empty.")
-  (see deque-pop-back! deque-peek-front!)
+  (see deque-pop-last! deque-peek-front!)
   (reference """
     When the back list is empty, half of the front list is transferred to the
-    back as in @code{deque-pop-back!}.
+    back as in @code{deque-pop-last!}.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -191,6 +207,17 @@
   (reference """
     Traverses the front list followed by the back list. Do not mutate the
     deque inside callback f.
+    """))
+
+(:doc deque-contains?
+  (summary "Whether the deque holds an element.")
+  (arg d "The deque.")
+  (arg x "The element to look for.")
+  (returns "#t when some element of d is = to x.")
+  (see deque-for-each)
+  (reference """
+    Compares with @code{=}, the @code{Eq} trait, and stops at the first
+    match. O(n). Does not rebalance the deque.
     """))
 
 ;; ---------------------------------------------------------------------------

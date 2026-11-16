@@ -108,9 +108,9 @@
 (: (-> void))
 (defun (vec-as-a-stack)
   (def v (vec-of (Cons 1 (Cons 2 Nil))))
-  (expect-true "the last one out" (gave? (mutablevec-pop! v) 2))
-  (expect-true "then the first" (gave? (mutablevec-pop! v) 1))
-  (expect-true "and then nothing" (nothing? (mutablevec-pop! v)))
+  (expect-true "the last one out" (gave? (mutablevec-try-pop! v) 2))
+  (expect-true "then the first" (gave? (mutablevec-try-pop! v) 1))
+  (expect-true "and then nothing" (nothing? (mutablevec-try-pop! v)))
   (expect-true "empty, and still usable" (mutablevec-empty? v))
   (mutablevec-add! v 7)
   (expect "usable" (mutablevec-length v) 1))
@@ -527,7 +527,7 @@
   (def h (tasks))
   (expect-true "a fresh heap is empty" (mutableheap-empty? h))
   (expect-true "and peeks at nothing" (nothing-popped? (mutableheap-peek h)))
-  (expect-true "and pops nothing" (nothing-popped? (mutableheap-pop! h)))
+  (expect-true "and pops nothing" (nothing-popped? (mutableheap-try-pop! h)))
 
   ;; Added out of order, so only the heap can be putting them back in it.
   (mutableheap-add! h "middle" 5)
@@ -538,10 +538,10 @@
   (expect-true "peek is the least priority" (popped? (mutableheap-peek h) "first" 1))
   (expect "and peeking takes nothing" (mutableheap-length h) 3)
 
-  (expect-true "least out first" (popped? (mutableheap-pop! h) "first" 1))
-  (expect-true "then the next" (popped? (mutableheap-pop! h) "middle" 5))
-  (expect-true "then the last" (popped? (mutableheap-pop! h) "last" 9))
-  (expect-true "and then nothing" (nothing-popped? (mutableheap-pop! h)))
+  (expect-true "least out first" (popped? (mutableheap-try-pop! h) "first" 1))
+  (expect-true "then the next" (popped? (mutableheap-try-pop! h) "middle" 5))
+  (expect-true "then the last" (popped? (mutableheap-try-pop! h) "last" 9))
+  (expect-true "and then nothing" (nothing-popped? (mutableheap-try-pop! h)))
   (expect-true "empty, and usable again" (mutableheap-empty? h))
   (mutableheap-add! h "again" 1)
   (expect "usable" (mutableheap-length h) 1))
@@ -554,13 +554,13 @@
   (mutableheap-add! h "small" 1)
   (mutableheap-add! h "big" 9)
   (mutableheap-add! h "middle" 5)
-  (expect-true "greatest out first" (popped? (mutableheap-pop! h) "big" 9))
-  (expect-true "then the middle" (popped? (mutableheap-pop! h) "middle" 5))
+  (expect-true "greatest out first" (popped? (mutableheap-try-pop! h) "big" 9))
+  (expect-true "then the middle" (popped? (mutableheap-try-pop! h) "middle" 5))
 
   ;; A copy keeps the comparer, so it is still largest-first.
   (def again (mutableheap-copy h))
   (mutableheap-add! again "huge" 99)
-  (expect-true "the copy is ordered the same way" (popped? (mutableheap-pop! again) "huge" 99))
+  (expect-true "the copy is ordered the same way" (popped? (mutableheap-try-pop! again) "huge" 99))
   (expect "and the original is untouched by the copy's write" (mutableheap-length h) 1))
 
 (: (-> void))
@@ -568,7 +568,7 @@
   (def h (tasks))
   (mutableheap-add-all! h (list->seq (Cons (Tuple "b" 2) (Cons (Tuple "a" 1) Nil))))
   (expect "added a run" (mutableheap-length h) 2)
-  (expect-true "still least first" (popped? (mutableheap-pop! h) "a" 1))
+  (expect-true "still least first" (popped? (mutableheap-try-pop! h) "a" 1))
 
   ;; Push and pop as one rebalance. The count does not grow, and what comes off
   ;; may be the element just pushed.

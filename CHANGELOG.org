@@ -3,6 +3,55 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~contains?~ for every collection, ~has-key?~ for every map
+
+- ~vec-contains~ is now ~vec-contains?~, and it is written in the prelude
+  instead of being a compiler builtin. It compares with ~=~, the ~Eq~
+  trait, not with .NET's default equality. The two agree for Bjolang types,
+  whose .NET equality is their ~Eq~.
+- New, each comparing with ~=~ and stopping at the first match:
+  ~list-contains?~, ~array-contains?~, ~iarray-contains?~,
+  ~transientvec-contains?~ and ~deque-contains?~.
+- ~X-has-key?~ is an alias of ~X-contains?~ for every map, as it was for
+  ~Map~ and ~OrderedMap~. New: ~transientmap-has-key?~,
+  ~transientorderedmap-has-key?~, ~mutablemap-has-key?~ and
+  ~tmap-has-key?~.
+
+* ~pop~ and ~try-pop~: one name for each answer
+
+- Each pop now comes in two forms, as ~ref~ and ~try-ref~ do. ~X-pop!~
+  returns the value and raises ~InvalidOperationException~ when the
+  collection is empty. ~X-try-pop!~ returns an ~Option~, and ~None~ leaves
+  the collection as it was.
+- Renamed, because they returned an ~Option~: ~mutablevec-pop!~ is now
+  ~mutablevec-try-pop!~, ~mutableheap-pop!~ is now ~mutableheap-try-pop!~,
+  ~transientpriorityqueue-pop!~ is now ~transientpriorityqueue-try-pop!~,
+  and ~priorityqueue-pop~ is now ~priorityqueue-try-pop~. The old names are
+  the new raising forms, so a caller that matched on ~Some~ and ~None~ is
+  now a type error, not a change in behaviour.
+- The deque's ends are named first and last, as the transient vec's are:
+  ~deque-pop-front!~ and ~deque-pop-back!~ are now ~deque-try-pop-first!~ and
+  ~deque-try-pop-last!~, and ~deque-pop-first!~ and ~deque-pop-last!~ are the
+  raising forms. ~deque-push-front!~, ~deque-push-back!~ and the peeks keep
+  their names for now.
+- New: ~transientvec-try-pop!~, ~transientvec-try-pop-first!~, ~vec-try-pop~
+  and ~vec-try-pop-first~. ~vec-pop~ returns the vec without its last
+  element, not the element, so ~vec-try-pop~ returns ~(Some rest)~.
+- ~queue-pop!~ in ~(std stm queue)~ is unchanged: inside a transaction it
+  retries on an empty queue, which is the raising form's place there.
+
+* A loop over a stream returns after its producer has unwound
+
+- ~iterable-end~ and ~iterable-cleanup~ of a ~Stream~ stop the producer and
+  then wait, in a ~with-shield~, until it has unwound. When the loop
+  returns, the producer's releases have run. This is also true when the
+  loop is left because its scope was cancelled.
+- ~run/stream~ kills the form and waits for its processes to exit. When the
+  loop returns, they have exited and been reaped.
+- Each wait ends after five seconds and does not raise. A producer that
+  computes without a ~sync~ sees the stop only at its next wait, and one
+  that takes longer is left to the enclosing scope, as before.
+
 * ~port->stream~ and ~run/stream~: a port and a program's output as loop drivers
 
 - ~(port->stream reader p)~ in ~(std ports)~ is the items ~reader~ reads

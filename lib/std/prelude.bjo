@@ -68,9 +68,11 @@
 
   ;; List operations.
   list-map list-filter list-foldl list-foldr list-for-each list-unfold
+  list-contains?
 
   ;; Vec operations.
-  vec-take vec-drop vec-reverse vec->array
+  vec-take vec-drop vec-reverse vec->array vec-try-pop vec-try-pop-first
+  vec-contains? array-contains? iarray-contains? transientvec-contains?
   vec-add vec-add-first vec-insert vec-remove-at vec-slice vec-split
   vec-map vec-filter vec-fold vec-reduce
   vec-for-each vec-iter
@@ -97,8 +99,8 @@
   ;; The vec's transient.
   transientvec-empty vec->transientvec transientvec->vec
   transientvec-length transientvec-empty? transientvec-ref transientvec-set!
-  transientvec-add! transientvec-add-all! transientvec-pop!
-  transientvec-add-first! transientvec-pop-first!
+  transientvec-add! transientvec-add-all! transientvec-pop! transientvec-try-pop!
+  transientvec-add-first! transientvec-pop-first! transientvec-try-pop-first!
   ;; The immutable array.
   IArray
   iarray-empty iarray-length iarray-empty? iarray-ref iarray-try-ref
@@ -115,7 +117,7 @@
   ;; Transients.
   transientmap-empty map->transientmap transientmap->map
   transientmap-set! transientmap-set-all! transientmap-remove!
-  transientmap-remove-all! transientmap-contains? transientmap-ref
+  transientmap-remove-all! transientmap-contains? transientmap-has-key? transientmap-ref
   transientmap-ref-or transientmap-try-ref transientmap-length
   transientmap-empty? transientmap-filter!
 
@@ -570,6 +572,18 @@
   (transientvec-pop!       (: Bjolang.Runtime.Rrb.TransientVecModule.Pop      (-> (TransientVec %a) %a)))
   (transientvec-pop-first! (: Bjolang.Runtime.Rrb.TransientVecModule.PopFirst (-> (TransientVec %a) %a))))
 
+;; The last element, removed, or `None` when the transient is empty. `None`
+;; leaves the transient as it was.
+(: (-> (TransientVec %a) (Option %a)))
+(defun (transientvec-try-pop! t)
+  (if (transientvec-empty? t) None (Some (transientvec-pop! t))))
+
+;; The first element, removed, or `None` when the transient is empty. `None`
+;; leaves the transient as it was.
+(: (-> (TransientVec %a) (Option %a)))
+(defun (transientvec-try-pop-first! t)
+  (if (transientvec-empty? t) None (Some (transientvec-pop-first! t))))
+
 ;; ---------------------------------------------------------------------------
 ;; IArray — the immutable array
 ;; ---------------------------------------------------------------------------
@@ -683,6 +697,9 @@
 
 (: (-> (Map %k %v) %k bool))
 (defun (map-has-key? m key) (map-contains? m key))
+
+(: (-> (TransientMap %k %v) %k bool))
+(defun (transientmap-has-key? m key) (transientmap-contains? m key))
 
 ;; `map-add-new` with the failure as a value: `(Err v)` carries the value the
 ;; key already has.
@@ -5569,6 +5586,62 @@
 (: (-> (Vec %a) (Vec %a)))
 (defun (vec-reverse v)
   {vecing x (:for x (in-reverse-vec v))})
+
+;; The vec without its last element, or `None` when it is empty.
+;; `vec-pop`, which raises on an empty vec, is a compiler builtin.
+(: (-> (Vec %a) (Option (Vec %a))))
+(defun (vec-try-pop v)
+  (if (vec-empty? v) None (Some (vec-pop v))))
+
+;; The vec without its first element, or `None` when it is empty.
+(: (-> (Vec %a) (Option (Vec %a))))
+(defun (vec-try-pop-first v)
+  (if (vec-empty? v) None (Some (vec-pop-first v))))
+
+;; ---------------------------------------------------------------------------
+;; Membership
+;; ---------------------------------------------------------------------------
+;;
+;; Whether a collection holds an element. Each compares with `=` and stops at
+;; the first match. Written as loops: `oring` is defined in this file, and a
+;; collector macro cannot be used where it is defined.
+
+(: (-> (List %a) %a bool) (where (Eq %a)))
+(defun (list-contains? xs x)
+  (match xs
+    (Nil #f)
+    ((Cons y rest) (if (= y x) #t (list-contains? rest x)))))
+
+(: (-> (Vec %a) %a bool) (where (Eq %a)))
+(defun (vec-contains? v x)
+  (let go ((c (vec-cursor v)))
+    (if (vec-cursor-done? c)
+        #f
+        (if (= (vec-cursor-current c) x) #t (go (vec-cursor-next c))))))
+
+(: (-> (Array %a) %a bool) (where (Eq %a)))
+(defun (array-contains? a x)
+  (def len (array-length a))
+  (let go ((i 0))
+    (if (= i len)
+        #f
+        (if (= (array-ref a i) x) #t (go (+ i 1))))))
+
+(: (-> (IArray %a) %a bool) (where (Eq %a)))
+(defun (iarray-contains? a x)
+  (def len (iarray-length a))
+  (let go ((i 0))
+    (if (= i len)
+        #f
+        (if (= (iarray-ref a i) x) #t (go (+ i 1))))))
+
+(: (-> (TransientVec %a) %a bool) (where (Eq %a)))
+(defun (transientvec-contains? t x)
+  (def len (transientvec-length t))
+  (let go ((i 0))
+    (if (= i len)
+        #f
+        (if (= (transientvec-ref t i) x) #t (go (+ i 1))))))
 
 ;; The elements in a new array, which the vec does not share. The runtime's,
 ;; which copies the leaves in one pass.

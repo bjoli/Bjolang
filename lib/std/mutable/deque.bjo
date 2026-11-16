@@ -41,8 +41,9 @@
   Deque
   deque deque-length deque-empty? deque-clear!
   deque-push-front! deque-push-back!
-  deque-pop-front! deque-pop-back!
+  deque-pop-first! deque-pop-last! deque-try-pop-first! deque-try-pop-last!
   deque-peek-front! deque-peek-back!
+  deque-contains?
   list->deque deque->list deque-fold deque-for-each
   deque->str)
 
@@ -155,7 +156,7 @@
                (size (+ (record-ref d size) 1))))
 
 (: (-> (Deque %a) (Option %a)))
-(defun (deque-pop-front! d)
+(defun (deque-try-pop-first! d)
   (refill-front! d)
   (match (record-ref d front)
     (Nil None)
@@ -166,7 +167,7 @@
      (Some x))))
 
 (: (-> (Deque %a) (Option %a)))
-(defun (deque-pop-back! d)
+(defun (deque-try-pop-last! d)
   (refill-back! d)
   (match (record-ref d back)
     (Nil None)
@@ -175,6 +176,25 @@
                   (back rest)
                   (size (- (record-ref d size) 1)))
      (Some x))))
+
+(import/class
+  (EmptyDeque (: System.InvalidOperationException (-> string EmptyDeque))))
+
+;; The front element, removed.
+;; Raises InvalidOperationException when the deque is empty.
+(: (-> (Deque %a) %a))
+(defun (deque-pop-first! d)
+  (match (deque-try-pop-first! d)
+    ((Some x) x)
+    (None (raise (cast Exception (EmptyDeque. "deque-pop-first!: the deque is empty."))))))
+
+;; The back element, removed.
+;; Raises InvalidOperationException when the deque is empty.
+(: (-> (Deque %a) %a))
+(defun (deque-pop-last! d)
+  (match (deque-try-pop-last! d)
+    ((Some x) x)
+    (None (raise (cast Exception (EmptyDeque. "deque-pop-last!: the deque is empty."))))))
 
 ;; A look that does not consume — but it still rebalances, hence the `!`.
 ;;
@@ -225,6 +245,12 @@
 (defun (deque-for-each f d)
   (list-for-each f (record-ref d front))
   (list-for-each f (list-reverse (record-ref d back))))
+
+;; Whether the deque holds `x`, compared with `=`. The order of the two lists
+;; does not matter here, so neither is reversed.
+(: (-> (Deque %a) %a bool) (where (Eq %a)))
+(defun (deque-contains? d x)
+  (or (list-contains? (record-ref d front) x) (list-contains? (record-ref d back) x)))
 
 ;; ---------------------------------------------------------------------------
 ;; Equality, and the hash there is not

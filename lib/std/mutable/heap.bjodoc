@@ -12,8 +12,8 @@
     (mutableheap-add! tasks "plan" 1)
     (mutableheap-add! tasks "test" 3)
     (mutableheap-peek tasks)   ; (Some (Tuple "plan" 1))
-    (mutableheap-pop! tasks)   ; (Some (Tuple "plan" 1))
-    (mutableheap-pop! tasks)   ; (Some (Tuple "write" 2))
+    (mutableheap-pop! tasks)   ; (Tuple "plan" 1)
+    (mutableheap-pop! tasks)   ; (Tuple "write" 2)
 
     ;; Max-heap (largest priority first): invert the comparison
     (def big-first (mutableheap-by (fun (a b) (compare b a))))
@@ -42,8 +42,10 @@
     the first comparison raises an exception. Use @code{mutableheap-by} to supply
     a custom comparison function.
 
-    @strong{Empty heap behavior.} Peeking or popping an empty heap returns
-    @code{None} without raising exceptions.
+    @strong{Empty heap behavior.} @code{mutableheap-pop!} raises
+    @code{System.InvalidOperationException} on an empty heap.
+    @code{mutableheap-try-pop!} and @code{mutableheap-peek} return
+    @code{None}.
 
     @strong{Unordered traversals.} Priority queues do not support ordered
     in-place iteration because sorting requires destructive dequeue operations.
@@ -142,14 +144,24 @@
   (see mutableheap-pop!))
 
 (:doc mutableheap-pop!
+  (summary "Removes and returns the element with minimum priority.")
+  (arg h "The heap to modify.")
+  (returns "(Tuple element priority) for the minimum entry.")
+  (raises System.InvalidOperationException "When the heap is empty.")
+  (see mutableheap-try-pop! mutableheap-peek mutableheap-add!)
+  (reference """
+    Runs in O(log n) time.
+    """))
+
+(:doc mutableheap-try-pop!
   (summary "Removes and returns the element with minimum priority, or None if empty.")
   (arg h "The heap to modify.")
-  (returns "(Some (Tuple element priority)) for the minimum entry, or None if empty.")
-  (see mutableheap-peek mutableheap-add!)
+  (returns "(Some (Tuple element priority)) for the minimum entry, or None if empty. None leaves the heap as it was.")
+  (see mutableheap-pop! mutableheap-peek)
   (example """
     ;; Dequeue tasks in priority order:
     (let loop ()
-      (match (mutableheap-pop! tasks)
+      (match (mutableheap-try-pop! tasks)
         (None unit)
         ((Some (Tuple task _)) (run task) (loop))))
     """)
@@ -199,7 +211,7 @@
   (reference """
     Iterates directly over internal heap storage. Mutating the heap during
     traversal can raise @code{System.InvalidOperationException}. To consume
-    elements in priority order, call @code{mutableheap-pop!} repeatedly.
+    elements in priority order, call @code{mutableheap-try-pop!} until it returns @code{None}.
     """))
 
 ;; ---------------------------------------------------------------------------

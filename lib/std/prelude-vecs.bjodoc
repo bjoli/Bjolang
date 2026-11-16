@@ -47,16 +47,15 @@
     walks the leaf arrays instead and costs less per element.
     """))
 
-(:doc vec-contains
+(:doc vec-contains?
   (summary "Whether a vec holds an element.")
   (arg v "The vec.")
   (arg x "The element to look for.")
-  (returns "#t when some element of v equals x.")
-  (see vec-iter)
+  (returns "#t when some element of v is = to x.")
+  (see vec-iter list-contains? transientvec-contains?)
   (reference """
-    A walk from the front that stops at the first match. Elements are
-    compared with .NET's default equality for the type
-    (@code{EqualityComparer<T>.Default}), not through Bjolang's @code{Eq}.
+    Compares with @code{=}, the @code{Eq} trait, from the front, and stops
+    at the first match. O(n).
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -122,17 +121,29 @@
   (arg v "The vec, which is left as it was. Not empty.")
   (returns "A new vec, one shorter.")
   (raises System.InvalidOperationException "When v is empty.")
-  (see vec-pop-first vec-remove-at vec-slice))
+  (see vec-try-pop vec-pop-first vec-remove-at vec-slice))
+
+(:doc vec-try-pop
+  (summary "A vec without its last element, or None when it is empty.")
+  (arg v "The vec, which is left as it was.")
+  (returns "(Some w), where w is one shorter than v, or None when v is empty.")
+  (see vec-pop vec-try-pop-first))
 
 (:doc vec-pop-first
   (summary "A vec without its first element.")
   (arg v "The vec, which is left as it was. Not empty.")
   (returns "A new vec, one shorter.")
   (raises System.InvalidOperationException "When v is empty.")
-  (see vec-pop vec-slice)
+  (see vec-try-pop-first vec-pop vec-slice)
   (reference """
     @code{(vec-slice v 1 (- (vec-length v) 1))}.
     """))
+
+(:doc vec-try-pop-first
+  (summary "A vec without its first element, or None when it is empty.")
+  (arg v "The vec, which is left as it was.")
+  (returns "(Some w), where w is one shorter than v, or None when v is empty.")
+  (see vec-pop-first vec-try-pop))
 
 (:doc vec-slice
   (summary "The part of a vec from an index, for a count of elements.")
@@ -266,7 +277,7 @@
   (arg f "Called with each element, front to back. Returning #f stops traversal.")
   (arg v "The vec.")
   (returns "#t when f returned #t for every element (or if v is empty); #f when stopped early.")
-  (see vec-for-each vec-contains)
+  (see vec-for-each vec-contains?)
   (example """
     (vec-iter (fun (x) (< x 10)) [1 2 30 4])   ; #f, and 4 is never looked at
     """))
@@ -463,6 +474,14 @@
   (raises System.IndexOutOfRangeException "When i is negative or not less than the length.")
   (see transientvec-set!))
 
+(:doc transientvec-contains?
+  (summary "Whether a transient holds an element.")
+  (arg t "The transient.")
+  (arg x "The element to look for.")
+  (returns "#t when some element of t is = to x.")
+  (see vec-contains?)
+  (reference "Compares with @code{=}, the @code{Eq} trait, and stops at the first match. O(n)."))
+
 (:doc transientvec-set!
   (summary "Replaces the element at an index, in place.")
   (arg t "The transient.")
@@ -494,7 +513,19 @@
   (arg t "The transient.")
   (returns "The element that was last.")
   (raises System.InvalidOperationException "When the transient is empty.")
-  (see transientvec-add! transientvec-pop-first!))
+  (see transientvec-try-pop! transientvec-add! transientvec-pop-first!))
+
+(:doc transientvec-try-pop!
+  (summary "Removes the last element, in place, and returns it, or returns None when the transient is empty.")
+  (arg t "The transient.")
+  (returns "(Some x) for the element that was last, or None. None leaves the transient as it was.")
+  (see transientvec-pop! transientvec-try-pop-first!))
+
+(:doc transientvec-try-pop-first!
+  (summary "Removes the first element, in place, and returns it, or returns None when the transient is empty.")
+  (arg t "The transient.")
+  (returns "(Some x) for the element that was first, or None. None leaves the transient as it was.")
+  (see transientvec-pop-first! transientvec-try-pop!))
 
 (:doc transientvec-pop-first!
   (summary "Removes the first element, in place, and answers it.")
@@ -758,6 +789,14 @@
   (returns "Its length.")
   (see make-array))
 
+(:doc array-contains?
+  (summary "Whether an array holds an element.")
+  (arg a "The array.")
+  (arg x "The element to look for.")
+  (returns "#t when some element of a is = to x.")
+  (see iarray-contains? vec-contains?)
+  (reference "Compares with @code{=}, the @code{Eq} trait, and stops at the first match. O(n)."))
+
 (:doc array-resize
   (summary "A new array of another length, holding as much of an array as fits.")
   (arg a "The array, which is left as it was.")
@@ -985,6 +1024,14 @@
   (arg i "Zero-based index.")
   (returns "(Some x) if index i is valid, otherwise None.")
   (see iarray-ref try-ref))
+
+(:doc iarray-contains?
+  (summary "Whether an immutable array holds an element.")
+  (arg a "The array.")
+  (arg x "The element to look for.")
+  (returns "#t when some element of a is = to x.")
+  (see array-contains? vec-contains?)
+  (reference "Compares with @code{=}, the @code{Eq} trait, and stops at the first match. O(n)."))
 
 (:doc iarray-set
   (summary "A copy of an immutable array with the element at an index replaced.")

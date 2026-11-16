@@ -41,10 +41,10 @@
 
   ;; Everything is on `back` at this point, so the first pop is the one that
   ;; pays for a split.
-  (expect-true "1 out first" (gave? (deque-pop-front! d) 1))
-  (expect-true "then 2" (gave? (deque-pop-front! d) 2))
-  (expect-true "then 3" (gave? (deque-pop-front! d) 3))
-  (expect-true "and then nothing" (nothing? (deque-pop-front! d)))
+  (expect-true "1 out first" (gave? (deque-try-pop-first! d) 1))
+  (expect-true "then 2" (gave? (deque-try-pop-first! d) 2))
+  (expect-true "then 3" (gave? (deque-try-pop-first! d) 3))
+  (expect-true "and then nothing" (nothing? (deque-try-pop-first! d)))
   (expect-true "empty" (deque-empty? d)))
 
 (: (-> void))
@@ -53,10 +53,10 @@
   (deque-push-back! d 1)
   (deque-push-back! d 2)
   (deque-push-back! d 3)
-  (expect-true "3 out first" (gave? (deque-pop-back! d) 3))
-  (expect-true "then 2" (gave? (deque-pop-back! d) 2))
-  (expect-true "then 1" (gave? (deque-pop-back! d) 1))
-  (expect-true "and then nothing" (nothing? (deque-pop-back! d))))
+  (expect-true "3 out first" (gave? (deque-try-pop-last! d) 3))
+  (expect-true "then 2" (gave? (deque-try-pop-last! d) 2))
+  (expect-true "then 1" (gave? (deque-try-pop-last! d) 1))
+  (expect-true "and then nothing" (nothing? (deque-try-pop-last! d))))
 
 (: (-> void))
 (defun (both-ends)
@@ -68,8 +68,8 @@
   (expect-true "pushed at both ends" (= (show d) "1 2 3 4 "))
   (expect-int "and counted" (deque-length d) 4)
 
-  (expect-true "front is 1" (gave? (deque-pop-front! d) 1))
-  (expect-true "back is 4" (gave? (deque-pop-back! d) 4))
+  (expect-true "front is 1" (gave? (deque-try-pop-first! d) 1))
+  (expect-true "back is 4" (gave? (deque-try-pop-last! d) 4))
   (expect-true "what is left" (= (show d) "2 3 ")))
 
 ;; The case that decides how refilling is written. Popping alternately from
@@ -80,15 +80,15 @@
 (: (-> void))
 (defun (alternating)
   (def d (list->deque (list 1 2 3 4 5 6)))
-  (expect-true "front 1" (gave? (deque-pop-front! d) 1))
-  (expect-true "back 6" (gave? (deque-pop-back! d) 6))
-  (expect-true "front 2" (gave? (deque-pop-front! d) 2))
-  (expect-true "back 5" (gave? (deque-pop-back! d) 5))
-  (expect-true "front 3" (gave? (deque-pop-front! d) 3))
-  (expect-true "back 4" (gave? (deque-pop-back! d) 4))
+  (expect-true "front 1" (gave? (deque-try-pop-first! d) 1))
+  (expect-true "back 6" (gave? (deque-try-pop-last! d) 6))
+  (expect-true "front 2" (gave? (deque-try-pop-first! d) 2))
+  (expect-true "back 5" (gave? (deque-try-pop-last! d) 5))
+  (expect-true "front 3" (gave? (deque-try-pop-first! d) 3))
+  (expect-true "back 4" (gave? (deque-try-pop-last! d) 4))
   (expect-true "drained" (deque-empty? d))
-  (expect-true "and stays drained" (nothing? (deque-pop-front! d)))
-  (expect-true "from either end" (nothing? (deque-pop-back! d))))
+  (expect-true "and stays drained" (nothing? (deque-try-pop-first! d)))
+  (expect-true "from either end" (nothing? (deque-try-pop-last! d))))
 
 ;; A single element has to be reachable from both ends, which is the boundary
 ;; the split's `k = n / 2` has to get right: it rounds to zero, so the one
@@ -97,11 +97,11 @@
 (defun (singleton)
   (def d (deque))
   (deque-push-back! d 42)
-  (expect-true "one element, from the front" (gave? (deque-pop-front! d) 42))
+  (expect-true "one element, from the front" (gave? (deque-try-pop-first! d) 42))
   (expect-true "gone" (deque-empty? d))
 
   (deque-push-front! d 42)
-  (expect-true "one element, from the back" (gave? (deque-pop-back! d) 42))
+  (expect-true "one element, from the back" (gave? (deque-try-pop-last! d) 42))
   (expect-true "gone again" (deque-empty? d)))
 
 (: (-> void))
@@ -136,7 +136,7 @@
   (expect-true "a callee filled the caller's deque" (= (show d) "3 2 1 "))
 
   (def same d)
-  (ignore (deque-pop-front! same))
+  (ignore (deque-try-pop-first! same))
   (expect-int "and an alias pops from the same one" (deque-length d) 2))
 
 ;; The motivating use: a worklist that is pushed onto while it is being drained.
@@ -144,7 +144,7 @@
 ;; — it is the one thing both halves are talking about.
 (: (-> (Deque int) string string))
 (defun (drain-worklist work acc)
-  (match (deque-pop-front! work)
+  (match (deque-try-pop-first! work)
     (None acc)
     ((Some n)
      (when (> n 1) (deque-push-back! work (- n 1)))
@@ -212,8 +212,8 @@
   (expect-true "different halves, equal deques" (= a b))
 
   ;; And after a pop has split one of them, still equal to a third built plainly.
-  (ignore (deque-pop-front! a))
-  (ignore (deque-pop-front! b))
+  (ignore (deque-try-pop-first! a))
+  (ignore (deque-try-pop-first! b))
   (expect-true "still equal once split" (= a b))
   (expect-true "and equal to one built from a list" (= a (list->deque (list 2 3))))
 

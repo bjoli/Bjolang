@@ -28,7 +28,7 @@
 (: (-> (TransientPriorityQueue %a %p) (List (Tuple %a %p))))
 (defun (drain t)
   (let go ((out Nil))
-    (match (transientpriorityqueue-pop! t)
+    (match (transientpriorityqueue-try-pop! t)
       (None (list-reverse out))
       ((Some e) (go (Cons e out))))))
 
@@ -53,7 +53,7 @@
        (def wanted (match model
                      (Nil None)
                      ((Cons e _) (Some e))))
-       (def from-t (transientpriorityqueue-pop! t))
+       (def from-t (transientpriorityqueue-try-pop! t))
        (def from-q (priorityqueue-peek q))
        (go (+ i 1) (step s) (priorityqueue-remove-min q)
            (match model
@@ -69,7 +69,7 @@
   (expect "and no length" (priorityqueue-length empty) 0)
   (expect-true "and is empty" (priorityqueue-empty? empty))
   (expect-true "pop on empty is None"
-               (match (priorityqueue-pop empty) (None #t) (_ #f)))
+               (match (priorityqueue-try-pop empty) (None #t) (_ #f)))
   (expect-true "remove-min on empty is empty" (priorityqueue-empty? (priorityqueue-remove-min empty)))
 
   (def q (priorityqueue-add (priorityqueue-add (priorityqueue-add empty "write" 2) "plan" 1) "test" 3))
@@ -78,7 +78,7 @@
   (expect "in the order they come out" (priorityqueue->list q)
           (list (Tuple "plan" 1) (Tuple "write" 2) (Tuple "test" 3)))
   (expect-true "pop answers the entry and the rest"
-               (match (priorityqueue-pop q)
+               (match (priorityqueue-try-pop q)
                  ((Some (Tuple x p rest)) (and (= x "plan") (= p 1) (= (priorityqueue-length rest) 2)))
                  (None #f)))
   (expect "unordered-list has every entry"
@@ -123,20 +123,20 @@
   (transientpriorityqueue-add! t "urgent" 0)
   (expect "a transient adds" (transientpriorityqueue-peek t) (Some (Tuple "urgent" 0)))
   (expect "without changing the queue it came from" (priorityqueue-length q) 3)
-  (expect "pop!" (transientpriorityqueue-pop! t) (Some (Tuple "urgent" 0)))
-  (expect "pop! again" (transientpriorityqueue-pop! t) (Some (Tuple "plan" 1)))
+  (expect "pop!" (transientpriorityqueue-try-pop! t) (Some (Tuple "urgent" 0)))
+  (expect "pop! again" (transientpriorityqueue-try-pop! t) (Some (Tuple "plan" 1)))
   (expect "the queue it came from still has plan" (priorityqueue-peek q) (Some (Tuple "plan" 1)))
   (def frozen (transientpriorityqueue->priorityqueue t))
   (expect "freeze" (priorityqueue->list frozen) (list (Tuple "write" 2) (Tuple "test" 3)))
   (transientpriorityqueue-add! t "later" 1)
-  (ignore (transientpriorityqueue-pop! t))
-  (ignore (transientpriorityqueue-pop! t))
+  (ignore (transientpriorityqueue-try-pop! t))
+  (ignore (transientpriorityqueue-try-pop! t))
   (expect "changing the transient after a freeze leaves the frozen queue"
           (priorityqueue->list frozen) (list (Tuple "write" 2) (Tuple "test" 3)))
   (expect "and the transient went on" (transientpriorityqueue-length t) 1)
   (transientpriorityqueue-add-all! t (list (Tuple "x" 7) (Tuple "w" 6)))
   (expect "add-all!" (drain t) (list (Tuple "test" 3) (Tuple "w" 6) (Tuple "x" 7)))
-  (expect "pop! on empty" (transientpriorityqueue-pop! t) None)
+  (expect "pop! on empty" (transientpriorityqueue-try-pop! t) None)
   (expect-true "and it stays empty" (transientpriorityqueue-empty? t))
 
   ;; --- the builder ------------------------------------------------------------

@@ -81,7 +81,7 @@
   (example """
     (def t (priorityqueue->transientpriorityqueue q))
     (transientpriorityqueue-add! t "urgent" 0)
-    (transientpriorityqueue-pop! t)            ; (Some (Tuple "urgent" 0))
+    (transientpriorityqueue-pop! t)            ; (Tuple "urgent" 0)
     (transientpriorityqueue->priorityqueue t)
     """))
 
@@ -171,10 +171,20 @@
 (:doc priorityqueue-pop
   (summary "The entry that comes out first, and the queue without it. O(log n) amortised.")
   (arg q "The queue, which is left as it was.")
-  (returns "(Some (Tuple element priority rest)), or None when the queue is empty.")
-  (see priorityqueue-peek priorityqueue-remove-min)
+  (returns "(Tuple element priority rest).")
+  (raises System.InvalidOperationException "When the queue is empty.")
+  (see priorityqueue-try-pop priorityqueue-peek priorityqueue-remove-min)
   (example """
-    (match (priorityqueue-pop q)
+    (def (Tuple task priority rest) (priorityqueue-pop q))
+    """))
+
+(:doc priorityqueue-try-pop
+  (summary "The entry that comes out first, and the queue without it, or None when the queue is empty. O(log n) amortised.")
+  (arg q "The queue, which is left as it was.")
+  (returns "(Some (Tuple element priority rest)), or None when the queue is empty.")
+  (see priorityqueue-pop priorityqueue-peek)
+  (example """
+    (match (priorityqueue-try-pop q)
       ((Some (Tuple task priority rest)) (run task) rest)
       (None q))
     """))
@@ -310,8 +320,15 @@
 (:doc transientpriorityqueue-pop!
   (summary "Removes the entry that comes out first from a transient, in place. O(log n) amortised.")
   (arg t "The transient.")
+  (returns "(Tuple element priority).")
+  (raises System.InvalidOperationException "When the transient is empty.")
+  (see transientpriorityqueue-try-pop! transientpriorityqueue-peek transientpriorityqueue-add!))
+
+(:doc transientpriorityqueue-try-pop!
+  (summary "Removes the entry that comes out first from a transient, in place, or returns None when it is empty. O(log n) amortised.")
+  (arg t "The transient.")
   (returns "(Some (Tuple element priority)), or None when it is empty, which leaves it as it was.")
-  (see transientpriorityqueue-peek transientpriorityqueue-add!))
+  (see transientpriorityqueue-pop! transientpriorityqueue-peek))
 
 ;; ---------------------------------------------------------------------------
 ;; The builder

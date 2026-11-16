@@ -769,9 +769,6 @@ public static partial class BjolangRuntime {
     public static bool vecsubempty_QMARK<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Count(list) == 0;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool vecsubcontains<T>(Bjolang.Runtime.Rrb.RrbList<T> list, T item) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Contains(list, item);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Bjolang.Runtime.Rrb.RrbList<T> vecsubcompact<T>(Bjolang.Runtime.Rrb.RrbList<T> list) where T : notnull => Bjolang.Runtime.Rrb.RrbFun.Compact(list);
 
     // --- VecBuilder Wrappers ---

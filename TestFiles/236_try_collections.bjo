@@ -11,6 +11,15 @@
 (import (std mutable vec))
 (import (std mutable map))
 (import (std mutable heap))
+(import (std mutable deque))
+(import (std priority-queue))
+
+;; Whether `r` holds an exception.
+(: (-> (Result %a %e) bool))
+(defun (raised? r)
+  (match r
+    ((Ok _) #f)
+    ((Err _) #t)))
 
 (defun (main args)
   ;; Map, with string values.
@@ -53,9 +62,9 @@
   ;; Mutable collections.
   (def v (list->mutablevec (list "p" "q")))
   (expect "mutablevec-try-ref out of range" (mutablevec-try-ref v 5) None)
-  (expect "mutablevec-pop!" (mutablevec-pop! v) (Some "q"))
-  (expect "mutablevec-pop! again" (mutablevec-pop! v) (Some "p"))
-  (expect "mutablevec-pop! empty" (mutablevec-pop! v) None)
+  (expect "mutablevec-try-pop!" (mutablevec-try-pop! v) (Some "q"))
+  (expect "mutablevec-try-pop! again" (mutablevec-try-pop! v) (Some "p"))
+  (expect "mutablevec-try-pop! empty" (mutablevec-try-pop! v) None)
 
   (def mm (mutablemap))
   (mutablemap-set! mm "k" "v")
@@ -65,9 +74,57 @@
   ;; A priority queue drains in priority order, then answers None.
   (def h (list->mutableheap (list (Tuple "c" 3) (Tuple "a" 1) (Tuple "b" 2))))
   (expect "mutableheap-peek" (mutableheap-peek h) (Some (Tuple "a" 1)))
-  (expect "pop 1" (mutableheap-pop! h) (Some (Tuple "a" 1)))
-  (expect "pop 2" (mutableheap-pop! h) (Some (Tuple "b" 2)))
-  (expect "pop 3" (mutableheap-pop! h) (Some (Tuple "c" 3)))
-  (expect "pop empty" (mutableheap-pop! h) None)
+  (expect "pop 1" (mutableheap-try-pop! h) (Some (Tuple "a" 1)))
+  (expect "pop 2" (mutableheap-try-pop! h) (Some (Tuple "b" 2)))
+  (expect "pop 3" (mutableheap-try-pop! h) (Some (Tuple "c" 3)))
+  (expect "pop empty" (mutableheap-try-pop! h) None)
   (expect "peek empty" (mutableheap-peek h) None)
+
+  ;; pop returns the value and raises on empty. try-pop returns an Option.
+  (def pv (list->mutablevec (list 1 2)))
+  (expect "mutablevec-pop!" (mutablevec-pop! pv) 2)
+  (expect "mutablevec-pop! again" (mutablevec-pop! pv) 1)
+  (expect "mutablevec-pop! empty raises"
+          (raised? (try (mutablevec-pop! pv) #:catch (System.InvalidOperationException))) #t)
+
+  (def d (list->deque (list 1 2 3)))
+  (expect "deque-pop-first!" (deque-pop-first! d) 1)
+  (expect "deque-pop-last!" (deque-pop-last! d) 3)
+  (expect "deque-try-pop-first!" (deque-try-pop-first! d) (Some 2))
+  (expect "deque-try-pop-last! empty" (deque-try-pop-last! d) None)
+  (expect "deque-pop-first! empty raises"
+          (raised? (try (deque-pop-first! d) #:catch (System.InvalidOperationException))) #t)
+  (expect "deque-pop-last! empty raises"
+          (raised? (try (deque-pop-last! d) #:catch (System.InvalidOperationException))) #t)
+
+  (def ph (list->mutableheap (list (Tuple "b" 2) (Tuple "a" 1))))
+  (expect "mutableheap-pop!" (mutableheap-pop! ph) (Tuple "a" 1))
+  (expect "mutableheap-pop! again" (mutableheap-pop! ph) (Tuple "b" 2))
+  (expect "mutableheap-pop! empty raises"
+          (raised? (try (mutableheap-pop! ph) #:catch (System.InvalidOperationException))) #t)
+
+  (def pq (list->priorityqueue (list (Tuple "y" 2) (Tuple "x" 1))))
+  (def (Tuple first-item first-priority rest) (priorityqueue-pop pq))
+  (expect "priorityqueue-pop" (Tuple first-item first-priority) (Tuple "x" 1))
+  (expect "priorityqueue-pop leaves the rest" (priorityqueue->list rest) (list (Tuple "y" 2)))
+  (expect "priorityqueue-try-pop empty" (priorityqueue-try-pop (priorityqueue-remove-min rest)) None)
+  (expect "priorityqueue-pop empty raises"
+          (raised? (try (priorityqueue-pop (priorityqueue-remove-min rest)) #:catch (System.InvalidOperationException))) #t)
+  (def tq (priorityqueue->transientpriorityqueue pq))
+  (expect "transientpriorityqueue-pop!" (transientpriorityqueue-pop! tq) (Tuple "x" 1))
+  (expect "transientpriorityqueue-try-pop!" (transientpriorityqueue-try-pop! tq) (Some (Tuple "y" 2)))
+  (expect "transientpriorityqueue-pop! empty raises"
+          (raised? (try (transientpriorityqueue-pop! tq) #:catch (System.InvalidOperationException))) #t)
+
+  (def tv (vec->transientvec [1 2 3]))
+  (expect "transientvec-try-pop!" (transientvec-try-pop! tv) (Some 3))
+  (expect "transientvec-try-pop-first!" (transientvec-try-pop-first! tv) (Some 1))
+  (expect "transientvec-pop!" (transientvec-pop! tv) 2)
+  (expect "transientvec-try-pop! empty" (transientvec-try-pop! tv) None)
+  (expect "transientvec-try-pop-first! empty" (transientvec-try-pop-first! tv) None)
+
+  (expect "vec-try-pop" (vec-try-pop [1 2 3]) (Some [1 2]))
+  (expect "vec-try-pop-first" (vec-try-pop-first [1 2 3]) (Some [2 3]))
+  (expect "vec-try-pop empty" (vec-try-pop (: (vec-empty) (Vec int))) None)
+  (expect "vec-try-pop-first empty" (vec-try-pop-first (: (vec-empty) (Vec int))) None)
   0)

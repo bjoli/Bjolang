@@ -45,7 +45,7 @@
   mutableheap mutableheap-by
   mutableheap-length mutableheap-empty? mutableheap-clear!
   mutableheap-add! mutableheap-add-all! mutableheap-add-pop!
-  mutableheap-peek mutableheap-pop!
+  mutableheap-peek mutableheap-pop! mutableheap-try-pop!
   mutableheap-copy
   list->mutableheap mutableheap->unordered-list
   seq->mutableheap mutableheap->unordered-seq
@@ -78,7 +78,7 @@
                        (-> (MutableHeap %a %p) (out %a) (out %p) (Option (Tuple %a %p)))))
   ;; The least element and its priority, removed. `None` leaves the heap as it
   ;; was, so a drain can pop until it stops.
-  (mutableheap-pop! (: System.Collections.Generic.PriorityQueue.TryDequeue
+  (mutableheap-try-pop! (: System.Collections.Generic.PriorityQueue.TryDequeue
                        (-> (MutableHeap %a %p) (out %a) (out %p) (Option (Tuple %a %p)))))
   (clr-items    (: System.Collections.Generic.PriorityQueue.UnorderedItems (-> (MutableHeap %a %p) (UnorderedItems %a %p)) #:get))
   (clr-comparer (: System.Collections.Generic.PriorityQueue.Comparer (-> (MutableHeap %a %p) (IComparer %p)) #:get))
@@ -87,6 +87,17 @@
 ;; Ordered by `Comparer<P>.Default`, least priority first.
 (: (-> (MutableHeap %a %p)))
 (defun (mutableheap) (MutableHeap.))
+
+(import/class
+  (EmptyHeap (: System.InvalidOperationException (-> string EmptyHeap))))
+
+;; The least element and its priority, removed.
+;; Raises InvalidOperationException when the heap is empty.
+(: (-> (MutableHeap %a %p) (Tuple %a %p)))
+(defun (mutableheap-pop! h)
+  (match (mutableheap-try-pop! h)
+    ((Some entry) entry)
+    (None (raise (cast Exception (EmptyHeap. "mutableheap-pop!: the heap is empty."))))))
 
 ;; Ordered by `cmp`, which is how a priority is ordered by the `Ord` trait
 ;; rather than by .NET.

@@ -1090,7 +1090,6 @@ let prelude : Env =
         // `?` convention demands. The predicate is O(1), off the same stored
         // count `vec-length` reads.
         "vec-empty?", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a")] boolType); IsMutable = false }
-        "vec-contains", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); TVar "a"] boolType); IsMutable = false }
         "vec-compact", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a")] (makeVecType (TVar "a"))); IsMutable = false }
 
         // Array

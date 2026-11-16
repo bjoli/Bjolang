@@ -44,14 +44,15 @@
   priorityqueue-empty priorityqueue-by
   priorityqueue-length priorityqueue-empty? priorityqueue-peek
   priorityqueue-add priorityqueue-add-all priorityqueue-merge
-  priorityqueue-pop priorityqueue-remove-min
+  priorityqueue-pop priorityqueue-try-pop priorityqueue-remove-min
   priorityqueue-balance priorityqueue-balanced?
   list->priorityqueue priorityqueue->list priorityqueue->unordered-list
   priorityqueue->str
   transientpriorityqueue-empty transientpriorityqueue-by
   priorityqueue->transientpriorityqueue transientpriorityqueue->priorityqueue
   transientpriorityqueue-length transientpriorityqueue-empty? transientpriorityqueue-peek
-  transientpriorityqueue-add! transientpriorityqueue-add-all! transientpriorityqueue-pop!
+  transientpriorityqueue-add! transientpriorityqueue-add-all!
+  transientpriorityqueue-pop! transientpriorityqueue-try-pop!
   priorityqueuebuilder-empty priorityqueuebuilder-by
   priorityqueuebuilder-add! priorityqueuebuilder-length priorityqueuebuilder->priorityqueue)
 
@@ -310,11 +311,22 @@
                 (- (record-ref q size) 1) (record-ref q next) #f))))
 
 (: (-> (PriorityQueue %a %p) (Option (Tuple %a %p (PriorityQueue %a %p)))))
-(defun (priorityqueue-pop q)
+(defun (priorityqueue-try-pop q)
   (match (record-ref q tree)
     (Tip None)
     ((Node c)
      (Some (Tuple (record-ref c item) (record-ref c priority) (priorityqueue-remove-min q))))))
+
+(import/class
+  (EmptyQueue (: System.InvalidOperationException (-> string EmptyQueue))))
+
+;; The entry that comes out first, and the queue without it.
+;; Raises InvalidOperationException when the queue is empty.
+(: (-> (PriorityQueue %a %p) (Tuple %a %p (PriorityQueue %a %p))))
+(defun (priorityqueue-pop q)
+  (match (priorityqueue-try-pop q)
+    ((Some entry) entry)
+    (None (raise (cast Exception (EmptyQueue. "priorityqueue-pop: the queue is empty."))))))
 
 ;; O(n), and a field read on a queue that is balanced already. The cells are
 ;; made again, keeping their numbers: the old ones may be in other queues.
@@ -341,7 +353,7 @@
 (defun (priorityqueue->list q)
   (def t (priorityqueue->transientpriorityqueue q))
   (let go ((out Nil))
-    (match (transientpriorityqueue-pop! t)
+    (match (transientpriorityqueue-try-pop! t)
       (None (list-reverse out))
       ((Some entry) (go (Cons entry out))))))
 
@@ -414,7 +426,7 @@
 
 ;; `None` leaves the transient as it was.
 (: (-> (TransientPriorityQueue %a %p) (Option (Tuple %a %p))))
-(defun (transientpriorityqueue-pop! t)
+(defun (transientpriorityqueue-try-pop! t)
   (match (record-ref t tree)
     (Tip None)
     ((Node c)
@@ -422,6 +434,14 @@
                   (tree (link-pairs (record-ref t order) (record-ref t owner) (record-ref c child)))
                   (size (- (record-ref t size) 1)))
      (Some (Tuple (record-ref c item) (record-ref c priority))))))
+
+;; The entry that comes out first, removed in place.
+;; Raises InvalidOperationException when the transient is empty.
+(: (-> (TransientPriorityQueue %a %p) (Tuple %a %p)))
+(defun (transientpriorityqueue-pop! t)
+  (match (transientpriorityqueue-try-pop! t)
+    ((Some entry) entry)
+    (None (raise (cast Exception (EmptyQueue. "transientpriorityqueue-pop!: the queue is empty."))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The builder

@@ -14,7 +14,7 @@
     (mutablevec-sort! v)
     (mutablevec-ref v 0)       ; 1
     (mutablevec-set! v 0 10)
-    (mutablevec-pop! v)        ; (Some 3)
+    (mutablevec-pop! v)        ; 3
     (mutablevec->list v)       ; (10 2)
     """)
   (reference """
@@ -38,8 +38,8 @@
     @code{mutablevec-ref}, @code{mutablevec-set!}, @code{mutablevec-insert!}, or
     @code{mutablevec-remove-at!} raises @code{System.ArgumentOutOfRangeException}.
     Use @code{mutablevec-try-ref} to return @code{Option} safely.
-    @code{mutablevec-pop!} returns @code{None} on an empty vector without
-    raising.
+    @code{mutablevec-pop!} raises @code{System.InvalidOperationException} on
+    an empty vector. @code{mutablevec-try-pop!} returns @code{None}.
 
     @strong{Equality and hashing.} Value searches (@code{mutablevec-contains?},
     @code{mutablevec-index-of}, @code{mutablevec-remove!}) use .NET's default
@@ -185,14 +185,21 @@
     """))
 
 (:doc mutablevec-pop!
+  (summary "Removes and returns the last element of a vector.")
+  (arg v "The vector to modify.")
+  (returns "The last element.")
+  (raises System.InvalidOperationException "When the vector is empty.")
+  (see mutablevec-try-pop! mutablevec-add!))
+
+(:doc mutablevec-try-pop!
   (summary "Removes and returns the last element of a vector, or None if empty.")
   (arg v "The vector to modify.")
-  (returns "(Some x) containing the last element, or None if the vector was empty.")
-  (see mutablevec-add!)
+  (returns "(Some x) containing the last element, or None if the vector was empty. None leaves the vector as it was.")
+  (see mutablevec-pop! mutablevec-add!)
   (example """
     ;; Use the vector as a stack.
     (let loop ()
-      (match (mutablevec-pop! stack)
+      (match (mutablevec-try-pop! stack)
         (None unit)
         ((Some x) (visit x) (loop))))
     """))
