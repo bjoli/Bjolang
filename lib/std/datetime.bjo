@@ -141,6 +141,7 @@
   -hours -minutes -seconds -milliseconds -duration
   +period -period
   +date-period/opt -date-period/opt +duration/opt -duration/opt
+  date-period-series duration-series
   duration->hours duration->minutes duration->seconds duration->milliseconds
   duration-negate
   ;; Differences
@@ -809,6 +810,68 @@
 (: (-> %a Duration (Option %a)) (where (TimeArith %a)))
 (defun (-duration/opt x d)
   (result->option (try (-duration x d) #:catch (System.OverflowException))))
+
+;; ---------------------------------------------------------------------------
+;; Series
+;; ---------------------------------------------------------------------------
+
+;; Element k of a series is x moved by k × the step, from x each time rather
+;; than from element k - 1: month arithmetic clamps, so monthly from January
+;; 31 is February 28 and then March 31, not March 28.
+;; - The series ends at the first element outside the calendar, or once
+;;   k × the step no longer fits its fields.
+;; - A step of zero raises ArgumentException: its series would repeat x
+;;   without end.
+
+;; n × k for one field of a period, or None outside an int.
+(: (-> int long (Option int)))
+(defun (period-field-times n k)
+  (def x (* (long-of n) k))
+  (if (and (>= x -2147483648L) (<= x 2147483647L)) (Some (int-of x)) None))
+
+(: (-> DatePeriod long (Option DatePeriod)))
+(defun (date-period-times p k)
+  (def (Some y) (period-field-times (record-ref p years) k) :propagate)
+  (def (Some m) (period-field-times (record-ref p months) k) :propagate)
+  (def (Some w) (period-field-times (record-ref p weeks) k) :propagate)
+  (def (Some d) (period-field-times (record-ref p days) k) :propagate)
+  (Some (DatePeriod (years y) (months m) (weeks w) (days d))))
+
+;; d × k, or None past the range of a Duration.
+(: (-> Duration long (Option Duration)))
+(defun (duration-times d k)
+  (def t (duration-ticks d))
+  (def (Some u) (checked-mul k (abs t)) :propagate)
+  (Some (ticks->duration (if (< t 0L) (- u) u))))
+
+;; The elements at k = 0, 1, 2 …, where `at` returns element k, until it
+;; returns None.
+(: (-> (-> long (Option %a)) (Seq %a)))
+(defun (series-of at)
+  (seq-unfold (fun (k)
+                (match (at k)
+                  ((Some x) (Some (Tuple x (+ k 1L))))
+                  (None None)))
+              0L))
+
+(: (-> %a DatePeriod (Seq %a)) (where (DateArith %a)))
+(defun (date-period-series x p)
+  (when (and (= (record-ref p years) 0) (= (record-ref p months) 0)
+             (= (record-ref p weeks) 0) (= (record-ref p days) 0))
+    (argument-error "a date-period-series needs a step that is not zero"))
+  (series-of (fun (k)
+               (match (date-period-times p k)
+                 ((Some q) (+date-period/opt x q))
+                 (None None)))))
+
+(: (-> %a Duration (Seq %a)) (where (TimeArith %a)))
+(defun (duration-series x d)
+  (when (= (duration-ticks d) 0L)
+    (argument-error "a duration-series needs a step that is not zero"))
+  (series-of (fun (k)
+               (match (duration-times d k)
+                 ((Some e) (+duration/opt x e))
+                 (None None)))))
 
 
 ;; ===========================================================================
