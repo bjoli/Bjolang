@@ -637,10 +637,18 @@
 
 ;; Everything after the source file belongs to the program, which is the only
 ;; reading that lets a program have flags of its own.
+;;
+;; - A record of a library build is not trusted to mean "no main". A file
+;;   that another file imports is compiled as a library, main or not, and
+;;   that build leaves the record. So a library record that was not just
+;;   built causes one forced build of the file as a program.
+;; - Raises "no main" only when that build also makes a library.
 (: cmd-run #:sync (-> string (List string) bool bool Against int))
 (defun (cmd-run file program-args debug? force? roots)
   (match (ensure-built file debug? #f force? roots)
     ((Err status) status)
+    ((Ok (Tuple rec #f)) #:when (string-ends-with? (record-ref rec output) ".dll")
+     (cmd-run file program-args debug? #t roots))
     ((Ok (Tuple rec _)) #:when (string-ends-with? (record-ref rec output) ".dll")
      (println #"bjo: ${file} has no main, so it builds a library: ${(record-ref rec output)}")
      (println "bjo: there is nothing to run. Use 'bjo build' for a library.")

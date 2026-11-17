@@ -530,6 +530,23 @@ def test_outside_a_project(work, c):
     checked = run_bjo(loose, "check", "one.bjo")
     c.worked("bjo check on a single file", checked)
 
+    # A module with a main of its own, built as a library when another file
+    # imports it. The library's build record must not stop it from running.
+    write(loose / "mod.bjo", '(import (std prelude))\n(export greeting)\n(: greeting (-> string))\n'
+                             '(defun (greeting) "hello")\n(defun (main) (println "module main") 0)\n')
+    write(loose / "user.bjo", '(import (std prelude))\n(import "mod.bjo")\n'
+                              '(defun (main) (println (greeting)) 0)\n')
+    c.says("a file that imports a module with a main runs", run_bjo(loose, "run", "user.bjo"), "hello")
+    module_ran = run_bjo(loose, "run", "mod.bjo")
+    c.worked("bjo run on that module after the import built it as a library", module_ran)
+    c.says("and it runs the module's main", module_ran, "module main")
+
+    write(loose / "nomain.bjo", '(import (std prelude))\n(export f)\n(: f (-> int))\n(defun (f) 1)\n')
+    for attempt in ("built", "from its record"):
+        no_main = run_bjo(loose, "run", "nomain.bjo")
+        c.failed(f"bjo run on a module with no main is refused, {attempt}", no_main)
+        c.says(f"and it says there is no main, {attempt}", no_main, "has no main")
+
 
 # --- 4. a git dependency ----------------------------------------------------
 
