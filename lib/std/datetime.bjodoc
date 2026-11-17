@@ -10,7 +10,7 @@
     (defun (main)
       (def (Some stockholm) (timezone "Europe/Stockholm") :leave-with 1)
       (def (Some noon) (datetime 2026 10 24 #:hours 12) :leave-with 1)
-      (def meeting (datetime->moment noon stockholm (resolver GapPush OverlapEarlier)))
+      (def meeting (datetime->moment noon stockholm compatible-resolver))
       (println (+days meeting 1))     ;; 2026-10-25T12:00:00+01:00[Europe/Stockholm]
       (println (+hours meeting 24))   ;; 2026-10-25T11:00:00+01:00[Europe/Stockholm]
       (println (now))                 ;; 2026-09-28T10:59:20.3067129Z
@@ -73,6 +73,9 @@
     the clocks go forward) or happen twice (an overlap, when they go back),
     so @code{datetime->moment} takes a @code{Resolver} saying what to do with
     each, and @code{datetime->moment/opt} returns @code{None} for both.
+    @code{compatible-resolver} is the usual choice: forward through a gap,
+    the earlier of an overlap. @code{datetime->ambiguous} returns what the
+    zone has instead, an @code{Ambiguous}, for a rule of your own.
 
     Date arithmetic on a moment works on the local time and then finds the
     offset again, since a trait method cannot take a resolver. Through an
@@ -367,10 +370,12 @@
         are one instant and two values; a sorted set keeps both, side by
         side. For the same instant, compare @code{(->instant a)} and
         @code{(->instant b)}.}
-      @item{@strong{The resolvers are a closed set.} A resolver of your own
-        (on a gap, go back to the last valid time) needs a new case here. In
-        return, no resolver can produce a moment at a local time or in a
-        zone that was not asked for, and @code{/opt} covers refusing.}
+      @item{@strong{The resolvers are a closed set, and
+        @code{datetime->ambiguous} is the way out.} No resolver can produce a
+        moment at a local time or in a zone that was not asked for, and
+        @code{/opt} covers refusing. A rule of your own (on a gap, go back by
+        its length) matches on the @code{Ambiguous} instead, which holds
+        only moments the zone has, so no rule can build an invalid one.}
       @item{@strong{Leaving the range raises.}
         @code{(+days (date 9999 12 31) 1)} raises rather than returning an
         @code{Option}, which would force a @code{match} after every
@@ -544,10 +549,34 @@
   (field overlap "What to do in an overlap.")
   (see resolver datetime->moment)
   (reference """
-    A closed set: a resolver of your own, such as going back to the last
-    valid time on a gap, would need a new case here. In return, no resolver
-    can produce a moment at a local time or in a zone that was not asked
-    for, and @code{datetime->moment/opt} covers refusing.
+    A closed set: no resolver can produce a moment at a local time or in a
+    zone that was not asked for, and @code{datetime->moment/opt} covers
+    refusing. For another rule, such as going back by the length of a gap,
+    match on @code{datetime->ambiguous}.
+    """))
+
+(:doc Ambiguous
+  (summary "What a local time finds in a zone: one moment, a gap, or an overlap.")
+  (case AmbiguousOnce "The local time happens once: its moment.")
+  (case AmbiguousGap "The zone skips the local time: the earlier and the later moment, each the gap's length away from it.")
+  (case AmbiguousOverlap "The zone has the local time twice: at the larger offset, then at the smaller.")
+  (see datetime->ambiguous Resolver)
+  (reference """
+    Every moment in it is one the zone has, so a rule of any kind chooses
+    among valid moments.
+
+    @read-table{
+    | Stockholm, local time | Ambiguous |
+    |-----------------------+-----------|
+    | 2026-07-01 12:00 | @code{(AmbiguousOnce 2026-07-01T12:00:00+02:00[…])} |
+    | 2026-03-29 02:30 | @code{(AmbiguousGap 2026-03-29T01:30:00+01:00[…] 2026-03-29T03:30:00+02:00[…])} |
+    | 2026-10-25 02:30 | @code{(AmbiguousOverlap 2026-10-25T02:30:00+02:00[…] 2026-10-25T02:30:00+01:00[…])} |
+    }
+
+    In a gap, the earlier moment is the local time read at the offset after
+    the gap, and the later one is it read at the offset before, which is
+    what @code{GapPush} gives. They are what Temporal and jiff call
+    @code{earlier} and @code{later}.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -813,6 +842,18 @@
     @code{GapNextValid} 03:00+02:00.
     """))
 
+(:doc compatible-resolver
+  (summary "GapPush for a gap and OverlapEarlier for an overlap.")
+  (see resolver datetime->moment)
+  (example """
+    (datetime->moment noon stockholm compatible-resolver)
+    """)
+  (reference """
+    The rule of RFC 5545 (iCalendar) and Temporal's @code{"compatible"}:
+    a time the clocks skipped moves forward by the gap, and a time they have
+    twice is the first of the two.
+    """))
+
 (:doc datetime->moment
   (summary "A local time in a zone, with a resolver for a gap or an overlap.")
   (arg dt "The local time.")
@@ -822,7 +863,7 @@
   (raises OverflowException "Near either end of the calendar, when the local time and its instant cannot both fit.")
   (see datetime->moment/opt resolver instant->moment)
   (example """
-    (datetime->moment noon stockholm (resolver GapPush OverlapEarlier))
+    (datetime->moment noon stockholm compatible-resolver)
     """)
   (reference """
     A local time can be missing from a zone (a gap, when the clocks go
@@ -836,7 +877,27 @@
   (arg dt "The local time.")
   (arg z "The zone.")
   (returns "Some moment when the local time happens exactly once in z, or None. None too when its instant is outside the calendar.")
-  (see datetime->moment))
+  (see datetime->moment datetime->ambiguous))
+
+(:doc datetime->ambiguous
+  (summary "What a local time finds in a zone: one moment, a gap, or an overlap.")
+  (arg dt "The local time.")
+  (arg z "The zone.")
+  (returns "AmbiguousOnce, AmbiguousGap or AmbiguousOverlap, with the moments the zone has.")
+  (raises OverflowException "Near either end of the calendar, when the instant of a moment it would hold is outside it.")
+  (see Ambiguous datetime->moment datetime->moment/opt)
+  (example """
+    ;; In a gap, go back by its length: 02:30 is 01:30+01:00.
+    (match (datetime->ambiguous dt stockholm)
+      ((AmbiguousOnce m) m)
+      ((AmbiguousGap earlier _) earlier)
+      ((AmbiguousOverlap earlier _) earlier))
+    """)
+  (reference """
+    For a rule the resolvers do not have. @code{datetime->moment} with a
+    resolver picks among the same moments, apart from @code{GapNextValid},
+    whose first time after the gap is in neither.
+    """))
 
 (:doc instant->moment
   (summary "The moment an instant is in a zone.")

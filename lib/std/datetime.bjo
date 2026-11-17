@@ -106,7 +106,7 @@
 (export
   ;; Types
   Date Time DateTime Instant TimeZone Moment
-  DatePeriod Period Gap Overlap Resolver
+  DatePeriod Period Gap Overlap Resolver Ambiguous
   ;; Traits
   HasDate ->date HasTime ->time HasInstant ->instant
   DateArith +date-period DateDiff ->date-in-zone-of
@@ -116,7 +116,8 @@
   duration date-period period
   ;; Zones and moments
   timezone utc timezone-id timezone-offset-at
-  resolver datetime->moment datetime->moment/opt instant->moment
+  resolver compatible-resolver datetime->moment datetime->moment/opt datetime->ambiguous
+  instant->moment
   +date-period/resolver -date-period/resolver
   ->utc-offset ->timezone adjust-timezone
   ;; Instants
@@ -183,6 +184,12 @@
 (type (: Gap (Union GapPush GapNextValid)))
 (type (: Overlap (Union OverlapEarlier OverlapLater)))
 (type (: Resolver (Record (: gap Gap) (: overlap Overlap))))
+
+;; What datetime->ambiguous finds for a local time in a zone. Every moment in
+;; it is one the zone has, so a policy of any kind picks among valid moments.
+(type (: Ambiguous (Union (: AmbiguousOnce Moment)
+                          (: AmbiguousGap Moment Moment)
+                          (: AmbiguousOverlap Moment Moment))))
 
 
 ;; ===========================================================================
@@ -974,6 +981,36 @@
          None))
     (_ None)))
 
+;; GapPush for a gap and OverlapEarlier for an overlap: RFC 5545's rule, and
+;; Temporal's "compatible".
+(: Resolver)
+(def compatible-resolver (resolver GapPush OverlapEarlier))
+
+;; A moment at the instant l - o, in z: in a gap, the local time l read at
+;; offset o, which the zone does not have at l.
+(: (-> long long TimeZone Moment))
+(defun (moment-at-offset l o z)
+  (instant->moment (ticks->instant (- l o) "the instant of a local time") z))
+
+;; What a local time finds in a zone:
+;; - AmbiguousOnce: the local time happens once.
+;; - AmbiguousGap: the zone skips it. The earlier moment is the local time read
+;;   at the offset after the gap, the later one at the offset before it, so
+;;   each is the gap's length away from it; the later one is GapPush's.
+;; - AmbiguousOverlap: the zone has it twice, the larger offset first.
+;; Raises OverflowException near either end of the calendar, when the instant
+;; of a moment it holds is outside it.
+(: (-> DateTime TimeZone Ambiguous))
+(defun (datetime->ambiguous dt z)
+  (def l (datetime-ticks dt))
+  (match (local-fit (struct-ref z tz) l)
+    ((Fits earlier later)
+     (if (= earlier later)
+         (AmbiguousOnce (fitted-moment l earlier z))
+         (AmbiguousOverlap (fitted-moment l earlier z) (fitted-moment l later z))))
+    ((Skipped before after)
+     (AmbiguousGap (moment-at-offset l after z) (moment-at-offset l before z)))))
+
 (: (-> Moment DatePeriod Resolver Moment))
 (defun (+date-period/resolver m p r)
   (datetime->moment (datetime+date-period (struct-ref m local) p) (struct-ref m zone) r))
@@ -1069,6 +1106,14 @@
 (impl (Written Overlap)
   (defun (written o) (match o (OverlapEarlier "OverlapEarlier") (OverlapLater "OverlapLater")))
   (defun (write-into o b) (stringbuilder-add-string! b (written o))))
+
+(impl (Written Ambiguous)
+  (defun (written a)
+    (match a
+      ((AmbiguousOnce m) (str "(AmbiguousOnce " (written m) ")"))
+      ((AmbiguousGap e l) (str "(AmbiguousGap " (written e) " " (written l) ")"))
+      ((AmbiguousOverlap e l) (str "(AmbiguousOverlap " (written e) " " (written l) ")"))))
+  (defun (write-into a b) (stringbuilder-add-string! b (written a))))
 
 (impl (Written Resolver)
   (defun (written r)

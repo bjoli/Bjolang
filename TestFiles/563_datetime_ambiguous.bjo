@@ -1,0 +1,100 @@
+;; (std datetime): datetime->ambiguous and compatible-resolver, on the gaps and
+;; overlaps 245_datetime resolves: Stockholm's two changes in 2026, the day
+;; Samoa skipped, the day Alaska had twice, and Brussels' change of standard
+;; time in 1914, which .NET's own checks miss.
+(import (std prelude))
+(import (std simpletest))
+(import (std datetime))
+
+(: (-> (Option %a) %a))
+(defun (the o)
+  (match o
+    ((Some x) x)
+    (None (panic! "a constant date or zone came back None"))))
+
+(: (-> int int int int int DateTime))
+(defun (local y mo d h mi) (the (datetime y mo d #:hours h #:minutes mi)))
+
+;; Every resolver gives the moment of the matching case.
+(: (-> string DateTime TimeZone void))
+(defun (agrees what dt z)
+  (match (datetime->ambiguous dt z)
+    ((AmbiguousOnce m)
+     (expect (str what ": once is datetime->moment/opt") (datetime->moment/opt dt z) (Some m))
+     (expect (str what ": once is every resolver's")
+             (datetime->moment dt z (resolver GapNextValid OverlapLater)) m))
+    ((AmbiguousGap _ later)
+     (expect (str what ": the later is GapPush's") (datetime->moment dt z compatible-resolver) later)
+     (expect-true (str what ": a gap is None") (none? (datetime->moment/opt dt z))))
+    ((AmbiguousOverlap earlier later)
+     (expect (str what ": the earlier is OverlapEarlier's")
+             (datetime->moment dt z (resolver GapPush OverlapEarlier)) earlier)
+     (expect (str what ": the later is OverlapLater's")
+             (datetime->moment dt z (resolver GapPush OverlapLater)) later)
+     (expect-true (str what ": an overlap is None") (none? (datetime->moment/opt dt z))))))
+
+(: (-> TimeZone void))
+(defun (stockholm z)
+  (expect "an ordinary time"
+          (displayed (datetime->ambiguous (local 2026 7 1 12 0) z))
+          "(AmbiguousOnce 2026-07-01T12:00:00+02:00[Europe/Stockholm])")
+  (expect "the gap: an hour either side"
+          (displayed (datetime->ambiguous (local 2026 3 29 2 30) z))
+          "(AmbiguousGap 2026-03-29T01:30:00+01:00[Europe/Stockholm] 2026-03-29T03:30:00+02:00[Europe/Stockholm])")
+  (expect "the gap's first minute"
+          (displayed (datetime->ambiguous (local 2026 3 29 2 0) z))
+          "(AmbiguousGap 2026-03-29T01:00:00+01:00[Europe/Stockholm] 2026-03-29T03:00:00+02:00[Europe/Stockholm])")
+  (expect "the minute after it is once"
+          (displayed (datetime->ambiguous (local 2026 3 29 3 0) z))
+          "(AmbiguousOnce 2026-03-29T03:00:00+02:00[Europe/Stockholm])")
+  (expect "the overlap: the larger offset first"
+          (displayed (datetime->ambiguous (local 2026 10 25 2 30) z))
+          "(AmbiguousOverlap 2026-10-25T02:30:00+02:00[Europe/Stockholm] 2026-10-25T02:30:00+01:00[Europe/Stockholm])")
+  (match (datetime->ambiguous (local 2026 10 25 2 30) z)
+    ((AmbiguousOverlap a b)
+     (expect "an hour apart" (duration-between a b) (duration #:hours 1)))
+    (_ (fail "2026-10-25 02:30 is not an overlap")))
+  (match (datetime->ambiguous (local 2026 3 29 2 30) z)
+    ((AmbiguousGap a b)
+     (expect "the gap's moments are 01:30 and 03:30 in local time"
+             (Tuple (displayed (->time a)) (displayed (->time b))) (Tuple "01:30:00" "03:30:00"))
+     (expect "and an hour apart on the timeline"
+             (duration-between a b) (duration #:hours 1)))
+    (_ (fail "2026-03-29 02:30 is not a gap")))
+  (agrees "Stockholm, ordinary" (local 2026 7 1 12 0) z)
+  (agrees "Stockholm, gap" (local 2026 3 29 2 30) z)
+  (agrees "Stockholm, overlap" (local 2026 10 25 2 30) z)
+  (expect "an ambiguous value equals itself"
+          (datetime->ambiguous (local 2026 10 25 2 30) z)
+          (datetime->ambiguous (local 2026 10 25 2 30) z)))
+
+(: (-> void))
+(defun (whole-days)
+  (match (Tuple (timezone "Pacific/Apia") (timezone "America/Sitka"))
+    ((Tuple (Some apia) (Some sitka))
+     (expect "a day Samoa skipped: a day either side"
+             (displayed (datetime->ambiguous (local 2011 12 30 12 0) apia))
+             "(AmbiguousGap 2011-12-29T12:00:00-10:00[Pacific/Apia] 2011-12-31T12:00:00+14:00[Pacific/Apia])")
+     (agrees "Samoa" (local 2011 12 30 12 0) apia)
+     (expect "a day Alaska had twice"
+             (displayed (datetime->ambiguous (local 1867 10 18 20 0) sitka))
+             "(AmbiguousOverlap 1867-10-18T20:00:00+14:00[America/Sitka] 1867-10-18T20:00:00-09:01[America/Sitka])")
+     (agrees "Alaska" (local 1867 10 18 20 0) sitka))
+    (_ (fail "no Pacific/Apia or America/Sitka"))))
+
+(: (-> void))
+(defun (brussels)
+  (match (timezone "Europe/Brussels")
+    ((Some z)
+     (expect "a change of standard time leaves a gap"
+             (displayed (datetime->ambiguous (local 1914 11 8 0 30) z))
+             "(AmbiguousGap 1914-11-07T23:30:00+00:00[Europe/Brussels] 1914-11-08T01:30:00+01:00[Europe/Brussels])")
+     (agrees "Brussels" (local 1914 11 8 0 30) z))
+    (None (fail "no Europe/Brussels"))))
+
+(defun (main)
+  (expect "compatible-resolver" (displayed compatible-resolver) "(resolver GapPush OverlapEarlier)")
+  (match (timezone "Europe/Stockholm")
+    ((Some z) (stockholm z) (whole-days) (brussels))
+    (None (fail "the IANA time zone database was not found. Install tzdata.")))
+  0)
