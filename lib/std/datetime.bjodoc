@@ -179,8 +179,9 @@
     @code{None}.
 
     @codeblock[#:lang "bjolang"]|{
-    (-days (date 1 1 1) 1)        ;; raises
-    (date 0 12 31)                ;; None
+    (-days (date 1 1 1) 1)                                 ;; raises
+    (-date-period/opt (date 1 1 1) (date-period #:days 1)) ;; None
+    (date 0 12 31)                                         ;; None
     }|
 
     Nothing is clamped or wrapped silently, apart from the month-end rule
@@ -380,7 +381,11 @@
         @code{(+days (date 9999 12 31) 1)} raises rather than returning an
         @code{Option}, which would force a @code{match} after every
         addition. Constructors and readers return @code{None}, since bad
-        input is expected there.}
+        input is expected there. Where leaving the range is expected,
+        @code{+date-period/opt}, @code{+duration/opt} and their @code{-}
+        forms return @code{None} instead: two functions, since every unit
+        is a period or a duration, rather than an @code{/opt} beside each
+        of @code{+days}, @code{+hours} and the rest.}
       @item{@strong{Calendar units take @code{int}, clock units take
         @code{long}.} No date is two billion days away, but an @code{int} of
         seconds runs out at 68 years.}
@@ -1424,6 +1429,53 @@
   (returns "x moved back by p's calendar amounts and then by its duration.")
   (raises OverflowException "When the result is outside the calendar.")
   (see +period))
+
+(:doc +date-period/opt
+  (summary "A value moved by calendar amounts, or None outside the calendar.")
+  (arg x "A date, a datetime or a moment.")
+  (arg p "The period.")
+  (returns "Some x moved by p, as +date-period moves it, or None where +date-period raises.")
+  (see +date-period -date-period/opt +duration/opt)
+  (example """
+    (+date-period/opt (date 9999 12 31) (date-period #:days 1))   ;; None
+    """)
+  (reference """
+    Leaving the calendar is the only way date arithmetic fails, so
+    @code{None} means that and nothing else. For one unit, build the
+    period: @code{(+date-period/opt d (date-period #:months n))} is
+    @code{+months} returning an @code{Option}.
+    """))
+
+(:doc -date-period/opt
+  (summary "A value moved back by calendar amounts, or None outside the calendar.")
+  (arg x "A date, a datetime or a moment.")
+  (arg p "The period, subtracted.")
+  (returns "Some x moved back by p, or None where -date-period raises.")
+  (see -date-period +date-period/opt))
+
+(:doc +duration/opt
+  (summary "A value moved by a duration, or None outside the range.")
+  (arg x "A time, a datetime, an instant, a moment or a duration.")
+  (arg d "The duration.")
+  (returns "Some x moved by d, as +duration moves it, or None where +duration raises: outside the calendar, or for a duration, past ±29 227 years.")
+  (see +duration -duration/opt +date-period/opt)
+  (example """
+    (+duration/opt (datetime 9999 12 31 #:hours 23) (duration #:hours 1))   ;; None
+    """)
+  (reference """
+    A time of day wraps at midnight and never fails, so it is always
+    @code{Some}. For one unit, build the duration:
+    @code{(+duration/opt i (duration #:hours n))} is @code{+hours}
+    returning an @code{Option}. A duration that is itself too long raises
+    where it is built, before this is called.
+    """))
+
+(:doc -duration/opt
+  (summary "A value moved back by a duration, or None outside the range.")
+  (arg x "A time, a datetime, an instant, a moment or a duration.")
+  (arg d "The duration, subtracted.")
+  (returns "Some x moved back by d, or None where -duration raises.")
+  (see -duration +duration/opt))
 
 (:doc duration->hours
   (summary "A duration in whole hours, toward zero.")

@@ -140,6 +140,7 @@
   +hours +minutes +seconds +milliseconds
   -hours -minutes -seconds -milliseconds -duration
   +period -period
+  +date-period/opt -date-period/opt +duration/opt -duration/opt
   duration->hours duration->minutes duration->seconds duration->milliseconds
   duration-negate
   ;; Differences
@@ -785,6 +786,29 @@
 (: (-> %a Period %a) (where (DateArith %a) (TimeArith %a)))
 (defun (-period x p)
   (-duration (-date-period x (record-ref p calendar)) (record-ref p exact)))
+
+;; +date-period, -date-period, +duration and -duration, returning None where
+;; those raise.
+;; - Leaving the range is the only error the arithmetic has, and it raises
+;;   OverflowException, so catching that type alone maps exactly that error
+;;   to None.
+;; - The argument is built by the caller, so a period or a duration that
+;;   itself overflows still raises there.
+(: (-> %a DatePeriod (Option %a)) (where (DateArith %a)))
+(defun (+date-period/opt x p)
+  (result->option (try (+date-period x p) #:catch (System.OverflowException))))
+
+(: (-> %a DatePeriod (Option %a)) (where (DateArith %a)))
+(defun (-date-period/opt x p)
+  (result->option (try (-date-period x p) #:catch (System.OverflowException))))
+
+(: (-> %a Duration (Option %a)) (where (TimeArith %a)))
+(defun (+duration/opt x d)
+  (result->option (try (+duration x d) #:catch (System.OverflowException))))
+
+(: (-> %a Duration (Option %a)) (where (TimeArith %a)))
+(defun (-duration/opt x d)
+  (result->option (try (-duration x d) #:catch (System.OverflowException))))
 
 
 ;; ===========================================================================
