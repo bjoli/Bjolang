@@ -106,11 +106,11 @@
 (export
   ;; Types
   Date Time DateTime Instant TimeZone Moment
-  DatePeriod Period Gap Overlap Resolver Ambiguous
+  DatePeriod Period Gap Overlap Resolver Ambiguous TimeRounding
   ;; Traits
   HasDate ->date HasTime ->time HasInstant ->instant
   DateArith +date-period DateDiff ->date-in-zone-of
-  TimeArith +duration
+  TimeArith +duration TimeRound round-to-duration/mode
   ;; Construction
   date time datetime date+time->datetime ->datetime
   duration date-period period
@@ -142,6 +142,8 @@
   +period -period
   +date-period/opt -date-period/opt +duration/opt -duration/opt
   date-period-series duration-series
+  ;; Rounding
+  round-to-duration round-to-duration/opt start-of-day
   duration->hours duration->minutes duration->seconds duration->milliseconds
   duration-negate
   ;; Differences
@@ -192,6 +194,10 @@
 (type (: Ambiguous (Union (: AmbiguousOnce Moment)
                           (: AmbiguousGap Moment Moment)
                           (: AmbiguousOverlap Moment Moment))))
+
+;; How round-to-duration picks between the multiple below and the one above.
+(type (: TimeRounding (Union TimeFloor TimeCeil TimeTrunc TimeExpand
+                             TimeHalfExpand TimeHalfEven)))
 
 
 ;; ===========================================================================
@@ -384,6 +390,10 @@
 
 (def/trait (TimeArith %a)
   (: +duration (-> %a Duration %a)))
+
+;; Rounds to a multiple of a duration. See the Rounding section.
+(def/trait (TimeRound %a)
+  (: round-to-duration/mode (-> %a Duration TimeRounding %a)))
 
 
 ;; ===========================================================================
@@ -873,6 +883,135 @@
                  ((Some e) (+duration/opt x e))
                  (None None)))))
 
+;; ---------------------------------------------------------------------------
+;; Rounding
+;; ---------------------------------------------------------------------------
+
+;; round-to-duration rounds to a multiple of an increment d:
+;; - Duration: any positive d.
+;; - Time, DateTime and Instant: multiples from midnight, UTC's for an
+;;   instant. d has to divide 24 hours, so the multiples are the same every
+;;   day. A time rounded up to 24:00 wraps to 00:00, as time arithmetic does.
+;; - Moment: below a day, its local time is rounded and finds its offset as
+;;   +date-period does: its own if that still fits, the earlier in an
+;;   overlap, pushed forward through a gap. At 24 hours, it rounds between
+;;   the start of its day and the start of the next, by the time that passed:
+;;   a day can be 23 or 25 hours long.
+;; Raises ArgumentException for a d that is not positive, or for a type with
+;; a calendar, one that does not divide a day. Raises OverflowException when
+;; the result is outside the range.
+
+;; v rounded to a multiple of u, for u > 0, or None past ±long-max.
+(: (-> long long TimeRounding (Option long)))
+(defun (round-ticks v u mode)
+  (def r0 (% v u))
+  (def r (if (< r0 0L) (+ r0 u) r0))
+  (if (= r 0L)
+      (Some v)
+      (let ((down (- v r))
+            (nearer (compare r (- u r))))
+        (def up?
+          (match mode
+            (TimeFloor #f)
+            (TimeCeil #t)
+            (TimeTrunc (< v 0L))
+            (TimeExpand (> v 0L))
+            (TimeHalfExpand (if (= nearer 0) (> v 0L) (> nearer 0)))
+            (TimeHalfEven (if (= nearer 0) (not (= (% (/ down u) 2L) 0L)) (> nearer 0)))))
+        (if up? (checked-add down u) (Some down)))))
+
+;; d's ticks, which have to be positive.
+(: (-> Duration long))
+(defun (increment-ticks d)
+  (def u (duration-ticks d))
+  (if (> u 0L) u (argument-error "a rounding increment has to be positive")))
+
+;; d's ticks, which have to be positive and divide a day.
+(: (-> Duration long))
+(defun (day-increment-ticks d)
+  (def u (increment-ticks d))
+  (if (= (% ticks-per-day u) 0L)
+      u
+      (argument-error (str "a rounding increment has to divide 24 hours, and " (written d) " does not"))))
+
+;; A tick count of the calendar rounded, or OverflowException outside it.
+(: (-> long long TimeRounding string long))
+(defun (round-calendar-ticks t u mode what)
+  (match (round-ticks t u mode)
+    ((Some r) (if (in-calendar? r) r (calendar-error what)))
+    (None (calendar-error what))))
+
+;; The first moment of the day whose local midnight is `midnight`, in z: after
+;; a gap that covers midnight, its end; in an overlap, the earlier of the two.
+(: (-> TimeZone long Moment))
+(defun (day-start z midnight)
+  (resolve-local midnight z (resolver GapNextValid OverlapEarlier)))
+
+(: (-> Moment TimeRounding Moment))
+(defun (moment-round-day m mode)
+  (def z (struct-ref m zone))
+  (def midnight (* (day-number (->date m)) ticks-per-day))
+  (def start (day-start z midnight))
+  (def next-midnight (+ midnight ticks-per-day))
+  (def passed (- (moment-instant-ticks m) (moment-instant-ticks start)))
+  (if (in-calendar? next-midnight)
+      (let ((next (day-start z next-midnight)))
+        (def length (- (moment-instant-ticks next) (moment-instant-ticks start)))
+        (match (round-ticks passed length mode)
+          ((Some 0L) start)
+          (_ next)))
+      ;; 9999-12-31 has no next day: rounding up leaves the calendar.
+      (match (round-ticks passed ticks-per-day mode)
+        ((Some 0L) start)
+        (_ (calendar-error "a moment rounded up to the next day")))))
+
+(: (-> Moment Duration TimeRounding Moment))
+(defun (moment-round m d mode)
+  (def u (day-increment-ticks d))
+  (if (= u ticks-per-day)
+      (moment-round-day m mode)
+      (moment-at-local m (round-calendar-ticks (moment-local-ticks m) u mode
+                                               "a moment rounded"))))
+
+(impl (TimeRound Duration)
+  (defun (round-to-duration/mode x d mode)
+    (match (round-ticks (duration-ticks x) (increment-ticks d) mode)
+      ((Some t) (ticks->duration t))
+      (None (duration-error)))))
+
+(impl (TimeRound Time)
+  (defun (round-to-duration/mode x d mode)
+    (def t (round-calendar-ticks (clr-time-ticks (struct-ref x v)) (day-increment-ticks d) mode
+                                 "a time rounded"))
+    (Time (v (ClrTime. (if (= t ticks-per-day) 0L t))))))
+
+(impl (TimeRound DateTime)
+  (defun (round-to-duration/mode x d mode)
+    (ticks->datetime (round-calendar-ticks (datetime-ticks x) (day-increment-ticks d) mode
+                                           "a datetime rounded"))))
+
+(impl (TimeRound Instant)
+  (defun (round-to-duration/mode x d mode)
+    (Instant (ticks (round-calendar-ticks (instant-ticks x) (day-increment-ticks d) mode
+                                          "an instant rounded")))))
+
+(impl (TimeRound Moment)
+  (defun (round-to-duration/mode x d mode) (moment-round x d mode)))
+
+(: (-> %a Duration (#:mode TimeRounding) %a) (where (TimeRound %a)))
+(defun (round-to-duration x d #:mode TimeHalfExpand) (round-to-duration/mode x d mode))
+
+;; None where round-to-duration raises OverflowException. A bad increment
+;; still raises ArgumentException.
+(: (-> %a Duration (#:mode TimeRounding) (Option %a)) (where (TimeRound %a)))
+(defun (round-to-duration/opt x d #:mode TimeHalfExpand)
+  (result->option (try (round-to-duration/mode x d mode) #:catch (System.OverflowException))))
+
+;; The first time of x's day: midnight, or the first time after a gap that
+;; covers midnight, as when Samoa skipped 2011-12-30.
+(: (-> %a %a) (where (TimeRound %a) (HasDate %a)))
+(defun (start-of-day x) (round-to-duration/mode x (duration #:hours 24) TimeFloor))
+
 
 ;; ===========================================================================
 ;; Differences
@@ -1110,7 +1249,13 @@
 ;; a gap.
 (: (-> Moment DatePeriod Moment))
 (defun (moment+date-period m p)
-  (def l (datetime-ticks (datetime+date-period (struct-ref m local) p)))
+  (moment-at-local m (datetime-ticks (datetime+date-period (struct-ref m local) p))))
+
+;; The local time l, in the calendar, in m's zone: at m's offset when that
+;; fits l, at the earlier offset in an overlap if not, and pushed forward
+;; through a gap.
+(: (-> Moment long Moment))
+(defun (moment-at-local m l)
   (def z (struct-ref m zone))
   (def kept (moment-offset-ticks m))
   (match (local-fit (struct-ref z tz) l)
@@ -1193,6 +1338,13 @@
 (impl (Written Overlap)
   (defun (written o) (match o (OverlapEarlier "OverlapEarlier") (OverlapLater "OverlapLater")))
   (defun (write-into o b) (stringbuilder-add-string! b (written o))))
+
+(impl (Written TimeRounding)
+  (defun (written r)
+    (match r
+      (TimeFloor "TimeFloor") (TimeCeil "TimeCeil") (TimeTrunc "TimeTrunc")
+      (TimeExpand "TimeExpand") (TimeHalfExpand "TimeHalfExpand") (TimeHalfEven "TimeHalfEven")))
+  (defun (write-into r b) (stringbuilder-add-string! b (written r))))
 
 (impl (Written Ambiguous)
   (defun (written a)

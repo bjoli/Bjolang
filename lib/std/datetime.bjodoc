@@ -59,6 +59,7 @@
     | @code{DateArith}  | @code{(+date-period x p)}        | ✓    |      | ✓        | ✓      |         |          |
     | @code{DateDiff}   | @code{(->date-in-zone-of b a)}   | ✓    |      | ✓        | ✓      |         |          |
     | @code{TimeArith}  | @code{(+duration x d)}           |      | ✓    | ✓        | ✓      | ✓       | ✓        |
+    | @code{TimeRound}  | @code{(round-to-duration/mode x d r)} |  | ✓    | ✓        | ✓      | ✓       | ✓        |
     }
 
     Every type has @code{=} and @code{written}; all but @code{TimeZone}, the
@@ -135,6 +136,29 @@
     start: element k is the start plus k steps, computed from the start, so
     monthly from January 31 is February 28 and then March 31 rather than
     March 28. A series ends at the edge of the calendar.
+
+    @strong{Rounding.} @code{round-to-duration} rounds to a multiple of a
+    duration, half-way away from zero unless @code{#:mode} says otherwise.
+
+    @itemlist{
+      @item{A @code{Duration} rounds to any positive multiple.}
+      @item{A @code{Time}, @code{DateTime} or @code{Instant} rounds to
+        multiples from midnight (UTC's for an instant), so the increment has
+        to divide 24 hours: 15 minutes does, 7 minutes does not. A time
+        rounded up to 24:00 wraps to 00:00.}
+      @item{A @code{Moment} below a day rounds its local time, then finds its
+        offset as @code{+date-period} does, as java.time and Temporal do: in
+        Kolkata (+05:30), 10:40 rounds to 11:00, not 10:30; in Stockholm,
+        2026-03-29 01:50 rounds into the gap and is pushed to 03:00+02:00.}
+      @item{A @code{Moment} at 24 hours rounds between the start of its day
+        and the start of the next, by the time that passed. 2026-03-29 has
+        23 hours in Stockholm, so 12:29 (11 h 29 min in) rounds down, and
+        12:30 rounds up.}
+    }
+
+    @code{start-of-day} is a @code{DateTime}'s or a @code{Moment}'s day
+    rounded down: midnight, or the first time after a gap that covers
+    midnight.
 
     @strong{Weeks.} ISO 8601 weeks, as most of Europe numbers them: a week
     runs Monday to Sunday, and week 1 is the week with the year's first
@@ -391,6 +415,18 @@
         forms return @code{None} instead: two functions, since every unit
         is a period or a duration, rather than an @code{/opt} beside each
         of @code{+days}, @code{+hours} and the rest.}
+      @item{@strong{A moment rounds its local time, not its instant.}
+        Rounded on the timeline, 10:40+05:30 in Kolkata to the hour would be
+        10:30, the hour in UTC. A person asking for the nearest hour means
+        the clock on the wall, which is what java.time's
+        @code{truncatedTo}, Temporal's @code{round} and jiff round. A day is
+        the exception: its length is what passed between two midnights, as
+        in Temporal, so the half-way point of a 23-hour day is 11 h 30 min
+        in.}
+      @item{@strong{The increment of a type with a calendar divides a day.}
+        Then the multiples fall on the same times every day, counted from
+        midnight. With 7 minutes, the multiples would start at a different
+        time each day, depending on where counting began.}
       @item{@strong{Calendar units take @code{int}, clock units take
         @code{long}.} No date is two billion days away, but an @code{int} of
         seconds runs out at 68 years.}
@@ -1528,6 +1564,97 @@
 
     A time of day wraps at midnight, so its series repeats every 24 hours
     and ends only when k × d leaves the range of a duration.
+    """))
+
+(:doc TimeRounding
+  (summary "How round-to-duration picks between the multiple below a value and the one above.")
+  (case TimeFloor "The one below: toward the past.")
+  (case TimeCeil "The one above: toward the future.")
+  (case TimeTrunc "Toward zero: below for a positive value, above for a negative one.")
+  (case TimeExpand "Away from zero.")
+  (case TimeHalfExpand "The nearer one, and at half way away from zero: school rounding. The default.")
+  (case TimeHalfEven "The nearer one, and at half way the even multiple, so that halves do not all go one way.")
+  (see round-to-duration)
+  (reference """
+    Only a duration and an instant before 1970 can be negative, and a value
+    of the calendar counts from 0001-01-01, so for the others
+    @code{TimeTrunc} is @code{TimeFloor} and @code{TimeExpand} is
+    @code{TimeCeil}.
+
+    @read-table{
+    | to the hour | 89 min | 90 min | 150 min | −90 min |
+    |-------------+--------+--------+---------+---------|
+    | @code{TimeFloor}      | 1 h | 1 h | 2 h | −2 h |
+    | @code{TimeCeil}       | 2 h | 2 h | 3 h | −1 h |
+    | @code{TimeTrunc}      | 1 h | 1 h | 2 h | −1 h |
+    | @code{TimeExpand}     | 2 h | 2 h | 3 h | −2 h |
+    | @code{TimeHalfExpand} | 1 h | 2 h | 3 h | −2 h |
+    | @code{TimeHalfEven}   | 1 h | 2 h | 2 h | −2 h |
+    }
+    """))
+
+(:doc TimeRound
+  (summary "Rounds to a multiple of a duration: Time, DateTime, Instant, Moment and Duration.")
+  (tparam %a "The type that rounds.")
+  (see round-to-duration start-of-day))
+
+(:doc round-to-duration/mode
+  (summary "TimeRound's method: round-to-duration with the mode given.")
+  (arg x "The value.")
+  (arg d "The increment.")
+  (arg r "The TimeRounding.")
+  (returns "x rounded to a multiple of d.")
+  (raises ArgumentException "As round-to-duration raises it.")
+  (raises OverflowException "As round-to-duration raises it.")
+  (see round-to-duration))
+
+(:doc round-to-duration
+  (summary "A value rounded to a multiple of a duration.")
+  (arg x "A time, a datetime, an instant, a moment or a duration.")
+  (arg d "The increment. For all but a duration, it divides 24 hours.")
+  (key #:mode "A TimeRounding. TimeHalfExpand unless given.")
+  (returns "x rounded to a multiple of d.")
+  (raises ArgumentException "When d is not positive, or x has a calendar and d does not divide 24 hours.")
+  (raises OverflowException "When the result is outside the calendar, or for a duration past ±29 227 years.")
+  (see TimeRounding round-to-duration/opt start-of-day)
+  (example """
+    (round-to-duration (datetime 2026 1 1 #:hours 10 #:minutes 7) (duration #:minutes 15))
+    ;; 2026-01-01T10:00:00
+    (round-to-duration (duration #:minutes 90) (duration #:hours 1) #:mode TimeFloor)
+    ;; PT1H
+    """)
+  (reference """
+    A time, a datetime and an instant round to multiples from midnight,
+    UTC's for an instant; a time rounded up to 24:00 wraps to 00:00.
+
+    A moment below a day rounds its local time, then finds its offset as
+    @code{+date-period} does: its own if that still fits, the earlier in an
+    overlap, pushed forward through a gap. At 24 hours it rounds between the
+    start of its day and the start of the next by the time that passed, so
+    on a 23-hour day in Stockholm half way is 11 h 30 min after midnight.
+    """))
+
+(:doc round-to-duration/opt
+  (summary "A value rounded to a multiple of a duration, or None outside the range.")
+  (arg x "A time, a datetime, an instant, a moment or a duration.")
+  (arg d "The increment, as round-to-duration takes it.")
+  (key #:mode "A TimeRounding. TimeHalfExpand unless given.")
+  (returns "Some x rounded, or None where round-to-duration raises OverflowException.")
+  (raises ArgumentException "As round-to-duration: a bad increment is a mistake in the program, not an edge of the range.")
+  (see round-to-duration))
+
+(:doc start-of-day
+  (summary "The first time of a datetime's or a moment's day.")
+  (arg x "A datetime or a moment.")
+  (returns "Midnight of x's date; for a moment, the first time after a gap that covers midnight, and the earlier midnight in an overlap.")
+  (see round-to-duration)
+  (example """
+    (start-of-day m)   ;; 2026-10-25T00:00:00+02:00[Europe/Stockholm]
+    """)
+  (reference """
+    It is x rounded down to 24 hours. São Paulo began summer time at
+    midnight until 2019, so 2018-11-04 has no 00:00 there and starts at
+    01:00-02:00.
     """))
 
 (:doc duration->hours
