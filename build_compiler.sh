@@ -26,7 +26,7 @@
 # worker, and ReadyToRun saves the time a JIT-only compiler spends compiling
 # itself at each start. The compiler's output is the same either way.
 #
-# `dotnet build -c Release` still works and writes bin/Release/net10.0, which
+# `dotnet build -c Release` still works and writes bin/Release/net11.0, which
 # is what an editor or a debugger uses. No tool runs that build.
 set -e
 

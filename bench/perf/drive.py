@@ -61,7 +61,7 @@ OPS = 1_000_000
 
 BJO = os.path.join(HERE, "bjolang")
 HOPAC = os.path.join(HERE, "hopac")
-HOPAC_DLL = os.path.join(HOPAC, "bin", "Release", "net10.0", "PerfHopac.dll")
+HOPAC_DLL = os.path.join(HOPAC, "bin", "Release", "net11.0", "PerfHopac.dll")
 ROWS = {
     "bjo ring (sync)":  (BJO, ["dotnet", "rows.exe", "ring"]),
     "bjo ring put/get": (BJO, ["dotnet", "rows.exe", "ringput"]),

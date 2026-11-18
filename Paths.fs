@@ -400,6 +400,22 @@ let readyToRun: bool =
     | null | "" | "0" -> true
     | _ -> false
 
+/// The target framework of the .NET runtime that the compiler runs on, such
+/// as `net11.0`. Programs are compiled against that runtime, so they target
+/// it too, and the Bjolang runtime is built for it.
+let targetFramework: string = $"net{Environment.Version.Major}.0"
+
+/// The framework version that a program's runtimeconfig asks for.
+/// - On a released runtime: `<major>.0.0`, such as `11.0.0`. The program runs
+///   on any runtime of that major version.
+/// - On a prerelease runtime: its own version, such as
+///   `11.0.0-rc.3.26522.148`. The host does not roll a request for `11.0.0`
+///   forward to a prerelease of it, because a release is above its
+///   prereleases.
+let frameworkVersion: string =
+    let installed = Path.GetFileName(Path.GetDirectoryName(typeof<obj>.Assembly.Location))
+    if installed.Contains '-' then installed else $"{Environment.Version.Major}.0.0"
+
 /// Directory holding the runtime support assemblies every compiled program
 /// links against.
 ///
@@ -416,13 +432,13 @@ let runtimeDir: string =
     let candidates =
         [ yield! precompiled
           for dir in ancestorsOf AppContext.BaseDirectory do
-              yield Path.Combine(dir, "BjolangRuntime", "bin", "Release", "net10.0")
-          yield Path.Combine(root, "BjolangRuntime", "bin", "Release", "net10.0")
-          yield Path.Combine(Environment.CurrentDirectory, "BjolangRuntime", "bin", "Release", "net10.0") ]
+              yield Path.Combine(dir, "BjolangRuntime", "bin", "Release", targetFramework)
+          yield Path.Combine(root, "BjolangRuntime", "bin", "Release", targetFramework)
+          yield Path.Combine(Environment.CurrentDirectory, "BjolangRuntime", "bin", "Release", targetFramework) ]
 
     candidates
     |> List.tryFind (fun dir -> File.Exists(Path.Combine(dir, "BjolangRuntime.dll")))
-    |> Option.defaultValue (Path.Combine(root, "BjolangRuntime", "bin", "Release", "net10.0"))
+    |> Option.defaultValue (Path.Combine(root, "BjolangRuntime", "bin", "Release", targetFramework))
     |> Path.GetFullPath
 
 /// Absolute paths of the runtime support assemblies, in link order.

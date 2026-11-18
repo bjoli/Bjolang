@@ -66,7 +66,9 @@
   (clr-null-or-empty? (: System.String.IsNullOrEmpty (-> string bool)))
   ;; Where this executable sits, for the `lib` search below. `bjo.bjo` reads
   ;; the same thing for `BJO_ROOT`.
-  (clr-base-dir (: System.AppContext.BaseDirectory #:get)))
+  (clr-base-dir (: System.AppContext.BaseDirectory #:get))
+  (clr-runtime-version (: System.Environment.Version #:get))
+  (version-major (: System.Version.Major (-> System.Version int) #:get)))
 
 
 ;; ---------------------------------------------------------------------------
@@ -158,11 +160,13 @@
 (: (-> Project string))
 (defun (project-nuget-lock-file p) (path-combine (project-dir p) "packages.lock.json"))
 
-;; The target framework the compiler is built for and compiles programs for.
-;; The compiler's own directory is named after it, and a restore has to resolve
-;; packages for it.
+;; The target framework the compiler is built for and compiles programs for,
+;; such as `net11.0`. The compiler's own directory is named after it, and a
+;; restore has to resolve packages for it.
+;; - It is the major version of the .NET runtime that `bjo` runs on. `bjo` and
+;;   the compiler are built with the same SDK, so it is the compiler's too.
 (: string)
-(def target-framework "net10.0")
+(def target-framework (str "net" (int->string (version-major clr-runtime-version)) ".0"))
 
 ;; The compiler's directory, where the Bjolang runtime's assemblies are: a
 ;; package's C# glue is compiled against them. The launcher exports the

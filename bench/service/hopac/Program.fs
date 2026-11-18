@@ -15,7 +15,7 @@
 // bench/service/go/main.go, whose header has the specification. Same counts,
 // same channels, same work, same checksum.
 //
-//     dotnet bin/Release/net10.0/ServiceHopac.dll [REPS [CLIENTS [REQUESTS [RATE]]]]
+//     dotnet bin/Release/net11.0/ServiceHopac.dll [REPS [CLIENTS [REQUESTS [RATE]]]]
 //
 // RATE, in requests a second, makes the loop open; 0 or none keeps it closed.
 // The schedule, and which latencies are sampled, are specified in go/main.go.

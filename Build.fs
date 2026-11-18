@@ -1269,7 +1269,7 @@ let compile (options: Options) (inputFilePath: string) : int =
             let csprojContent = $"""<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>{projType}</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>{Paths.targetFramework}</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
@@ -1318,10 +1318,10 @@ let compile (options: Options) (inputFilePath: string) : int =
                     let frameworkPart =
                         match Frameworks.usedHere () with
                         | [] ->
-                            "    \"framework\": {\n      \"name\": \"Microsoft.NETCore.App\",\n      \"version\": \"10.0.0\"\n    }"
+                            "    \"framework\": {\n      \"name\": \"Microsoft.NETCore.App\",\n      \"version\": \"" + Paths.frameworkVersion + "\"\n    }"
                         | extra ->
                             let entry (name: string) =
-                                "      { \"name\": \"" + name + "\", \"version\": \"10.0.0\" }"
+                                "      { \"name\": \"" + name + "\", \"version\": \"" + Paths.frameworkVersion + "\" }"
 
                             let entries =
                                 (Frameworks.coreFramework :: extra)
@@ -1344,7 +1344,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                             + "\n    }"
 
                     let runtimeConfigContent =
-                        "{\n  \"runtimeOptions\": {\n    \"tfm\": \"net10.0\",\n"
+                        "{\n  \"runtimeOptions\": {\n    \"tfm\": \"" + Paths.targetFramework + "\",\n"
                         + frameworkPart
                         + settingsPart
                         + "\n  }\n}"
@@ -1726,7 +1726,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                 let aotProject = $"""<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>{Paths.targetFramework}</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PublishAot>true</PublishAot>

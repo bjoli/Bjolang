@@ -68,7 +68,7 @@ import argparse, os, statistics, subprocess, sys, tempfile, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-HOPAC_DLL = os.path.join(HERE, "hopac", "bin", "Release", "net10.0", "ServiceHopac.dll")
+HOPAC_DLL = os.path.join(HERE, "hopac", "bin", "Release", "net11.0", "ServiceHopac.dll")
 
 PROGRAMS = {
     "Go":      (os.path.join(HERE, "go"), lambda a: ["./service", "-reps", a[0], "-clients", a[1], "-requests", a[2],

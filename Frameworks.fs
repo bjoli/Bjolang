@@ -63,8 +63,8 @@ let dotnetRoot =
     let coreLib = typeof<obj>.Assembly.Location
     Path.GetFullPath(Path.Combine(Path.GetDirectoryName coreLib, "..", "..", ".."))
 
-/// The version directory the running runtime lives in — `10.0.0`,
-/// `10.0.0-preview.7.25380.108`. The first choice for every other framework,
+/// The version directory the running runtime lives in — `11.0.0`,
+/// `11.0.0-rc.3.26522.148`. The first choice for every other framework,
 /// so that one .NET installation is used as one thing.
 let private runtimeVersionDir =
     Path.GetFileName(Path.GetDirectoryName(typeof<obj>.Assembly.Location))

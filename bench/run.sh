@@ -24,7 +24,7 @@ cd "$(dirname "$0")/.."
 
 echo "=== raw CML (C#) ==="
 dotnet build bench/Cml/Cml.Bench.csproj -c Release >/dev/null
-dotnet bench/Cml/bin/Release/net10.0/CmlBench.dll
+dotnet bench/Cml/bin/Release/net11.0/CmlBench.dll
 
 echo
 echo "=== Bjolang ==="

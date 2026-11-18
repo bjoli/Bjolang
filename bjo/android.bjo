@@ -54,7 +54,9 @@
   (assembly-references (: System.Reflection.Assembly.GetReferencedAssemblies (-> Assembly (Array AssemblyName))))
   (assembly-name-of (: System.Reflection.AssemblyName.GetAssemblyName (-> string AssemblyName)))
   (assembly-simple-name (: System.Reflection.AssemblyName.Name (-> AssemblyName string) #:get))
-  (error-message (: System.Exception.Message (-> Exception string) #:get)))
+  (error-message (: System.Exception.Message (-> Exception string) #:get))
+  (clr-runtime-version (: System.Environment.Version #:get))
+  (version-major (: System.Version.Major (-> System.Version int) #:get)))
 
 ;; What to make an app of.
 ;; - `id`, `label` and `abis`: the manifest's `android-id`, `android-label`
@@ -119,17 +121,20 @@
     (_ "dotnet")))
 
 ;; The target framework of the SDK, such as `net11.0-android`.
+;; - The SDK's major version must be at least that of the runtime `bjo` runs
+;;   on: the Bjolang assemblies are built for that runtime.
 (: android-framework #:sync (-> string (Result string string)))
 (defun (android-framework dotnet)
   (def hint "Set BJO_ANDROID_DOTNET to a .NET SDK with the android workload.")
+  (def least (version-major clr-runtime-version))
   (match (run/output '(,(cmd dotnet "--version")))
     ((Err e) (Err (str "bjo publish --android: could not run " dotnet ": " (error-message e) ". " hint)))
     ((Ok (Tuple 0 out))
      (match (try (string->int (vec-ref (string-split (string-trim out) ".") 0))
                  #:catch (System.FormatException))
-       ((Ok major) #:when (>= major 10) (Ok (str "net" (int->string major) ".0-android")))
+       ((Ok major) #:when (>= major least) (Ok (str "net" (int->string major) ".0-android")))
        (_ (Err (str "bjo publish --android: " dotnet " is .NET " (string-trim out)
-                    ", and an Android app needs .NET 10 or later. " hint)))))
+                    ", and Bjolang is built for .NET " (int->string least) ". " hint)))))
     ((Ok (Tuple _ out))
      (Err (str "bjo publish --android: " dotnet " --version failed: " (string-trim out) " " hint)))))
 
