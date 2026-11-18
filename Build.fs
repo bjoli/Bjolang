@@ -1173,6 +1173,25 @@ let compile (options: Options) (inputFilePath: string) : int =
                 $"        Bjolang.Runtime.Rrb.RrbList<BjoString.Utf8String> bjoArgs = Bjolang.Runtime.Rrb.RrbList<BjoString.Utf8String>.Create(new System.ReadOnlySpan<BjoString.Utf8String>(BjolangRuntime.StringsFromClr(args)));\n" +
                 callMain "bjoArgs"
 
+            // `StartHosted`: the entry for a host that runs the process
+            // itself, such as the Android app that `bjo publish --android`
+            // makes.
+            // - It runs `main` and returns. It does not wait for the fibers
+            //   that `main` started. See `BjolangRuntime.RunMainHosted`.
+            // - It installs no assembly resolver: the host loads the
+            //   assemblies.
+            // - A bjoroutine `main` raises NotSupportedException: it would
+            //   have to block the host's thread until it completes.
+            let hostedBody =
+                if mainIsBjoroutine then
+                    "        throw new System.NotSupportedException(\"A main that suspends cannot be started by a host. Write main with defun.\");\n"
+                else
+                    let main = $"%s{mainModuleClass}.main%s{mainTypeArgs}(bjoArgs)"
+
+                    $"        Bjolang.Runtime.Rrb.RrbList<BjoString.Utf8String> bjoArgs = Bjolang.Runtime.Rrb.RrbList<BjoString.Utf8String>.Create(new System.ReadOnlySpan<BjoString.Utf8String>(BjolangRuntime.StringsFromClr(args)));\n" +
+                    (if mainReturnsInt then $"        _ = BjolangRuntime.RunMainHosted(() => %s{main});\n"
+                     else $"        _ = BjolangRuntime.RunMainHosted(() => {{ %s{main}; return 0; }});\n")
+
             let entryPointCode =
                 if isLibrary then ""
                 else
@@ -1185,6 +1204,9 @@ let compile (options: Options) (inputFilePath: string) : int =
                     "    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]\n" +
                     "    private static int Run(string[] args) {\n" +
                     runBody +
+                    "    }\n" +
+                    "    public static void StartHosted(string[] args) {\n" +
+                    hostedBody +
                     "    }\n" +
                     "}\n"
 

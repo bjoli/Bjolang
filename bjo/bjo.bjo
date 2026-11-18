@@ -56,6 +56,7 @@
 (import "project.bjo")
 (import "resolve.bjo")
 (import "publish.bjo")
+(import "android.bjo")
 (import "bench.bjo")
 (import "format.bjo")
 (import "diff.bjo")
@@ -770,6 +771,9 @@
                      ;; `--whole-stdlib`: `publish` copies all of the standard
                      ;; library, sources and documentation included.
                      (: whole-stdlib bool)
+                     ;; `--android`: `publish` makes an Android app. See
+                     ;; `android.bjo`.
+                     (: android bool)
                      (: rest (List string)))))
 
 ;; The directory a file sits in, for the walk upward that finds a project.
@@ -1025,6 +1029,61 @@
                         ((Some dir) dir)
                         (None (path-combine (file-directory file) "publish"))))))))
 
+;; `bjo publish --android` in a project: a release build of its entry, then an
+;; APK of it. See `android.bjo`.
+;; - The manifest must have `(android-id ...)`.
+;; - The APK goes to `-o`, or to `publish-android/` in the project.
+(: publish-android-project #:sync (-> Project Cmdline int))
+(defun (publish-android-project project line)
+  (with-return ret
+    (def package (project-package project))
+    (unless (project-has-entry? project)
+      (ret (fail (str "bjo publish --android: " (package-name-of project) " is a library — there is no "
+                      (record-ref package entry) " to make an app of."))))
+    (def (Some id) (record-ref package android-id)
+      :leave (None (fail (str "bjo publish --android: the manifest of " (package-name-of project)
+                              " has no (android-id \"org.example.app\"). The id names the app on Android."))))
+    (def (Ok ready) (prepare project (record-ref line locked))
+      :leave ((Err why) (fail why)))
+    (def (Ok (Tuple rec _)) (ensure-built (project-entry project) #f #f (record-ref line force)
+                                          (prepared-against ready))
+      :leave ((Err status) status))
+    (when (string-ends-with? (record-ref rec output) ".dll")
+      (ret (fail (str "bjo publish --android: " (project-entry project) " has no main, so it is a library."))))
+    ;; The root project's packages first: its version of a package wins. A
+    ;; package with `(android #f)` is left out.
+    (def own-name (record-ref package name))
+    (: nuget-of (-> Package (List (Tuple string string))))
+    (defun (nuget-of p)
+      (list-map #(Tuple (nuget-id &) (nuget-version &))
+                (list-filter nuget-android? (record-ref p packages))))
+    (def others
+      (loop (:for r (prepared-roots ready))
+            (:when (not (= (root-name r) own-name)))
+            (:when-let (Some p) (root-package r))
+            (:subloop)
+            (:for n (nuget-of p))
+            (:acc out (listing n))
+            => out))
+    (match (publish-android (AndroidJob (id id)
+                                        (label (option-ref-or (record-ref package android-label)
+                                                              (string-join (list->vec (list-map symbol->string own-name)) ".")))
+                                        (abis (record-ref package android-abis))
+                                        (version (record-ref package version))
+                                        (program (record-ref rec output))
+                                        (links (record-ref rec links))
+                                        (nuget (list-append (nuget-of package) others))
+                                        (dir (path-combine (project-dot-bjo project) "android"))
+                                        (out (match (record-ref line output)
+                                               ((Some dir) dir)
+                                               (None (path-combine (project-dir project) "publish-android"))))
+                                        (exec exec)))
+      ((Err why) (fail why))
+      ((Ok apk)
+       (println #"Published ${(project-entry project)} as ${apk}")
+       (println #"Install it with: adb install -r ${apk}")
+       0))))
+
 
 ;; ---------------------------------------------------------------------------
 ;; The command line
@@ -1039,23 +1098,25 @@
 ;; being an error: `bjo test --seed 7` gives `--seed 7` to the test files.
 (: (-> (List string) bool (Result string Cmdline)))
 (defun (parse-flags argv pass-unknown?)
-  (let go ((left argv) (debug #f) (force #f) (lib #f) (locked #f) (output None) (whole-stdlib #f))
+  (let go ((left argv) (debug #f) (force #f) (lib #f) (locked #f) (output None) (whole-stdlib #f)
+           (android #f))
     (defun (done rest)
       (Cmdline (debug debug) (force force) (lib lib) (locked locked)
-               (output output) (whole-stdlib whole-stdlib) (rest rest)))
+               (output output) (whole-stdlib whole-stdlib) (android android) (rest rest)))
     (match left
       (Nil (Ok (done Nil)))
       ((Cons a more)
        (case a
          ("--" (Ok (done more)))
-         (("-d" "--debug") (go more #t force lib locked output whole-stdlib))
-         (("-c" "--compile") (go more debug #t lib locked output whole-stdlib))
-         ("--lib" (go more debug force #t locked output whole-stdlib))
-         ("--locked" (go more debug force lib #t output whole-stdlib))
-         ("--whole-stdlib" (go more debug force lib locked output #t))
+         (("-d" "--debug") (go more #t force lib locked output whole-stdlib android))
+         (("-c" "--compile") (go more debug #t lib locked output whole-stdlib android))
+         ("--lib" (go more debug force #t locked output whole-stdlib android))
+         ("--locked" (go more debug force lib #t output whole-stdlib android))
+         ("--whole-stdlib" (go more debug force lib locked output #t android))
+         ("--android" (go more debug force lib locked output whole-stdlib #t))
          (("-o" "--output")
           (match more
-            ((Cons dir after) (go after debug force lib locked (Some dir) whole-stdlib))
+            ((Cons dir after) (go after debug force lib locked (Some dir) whole-stdlib android))
             (Nil (Err "bjo: -o needs a directory"))))
          (else
           (if (and (string-starts-with? a "-") (not pass-unknown?))
@@ -1184,6 +1245,10 @@
   (println "  bjo publish [-c] [-o dir] [<file.bjo>]  Build a program for release, and copy it with")
   (println "                                          everything it loads into one directory that")
   (println "                                          runs from anywhere. Default: publish/ beside it.")
+  (println "  bjo publish --android [-c] [-o dir]     Make an Android app (an APK) of this project's")
+  (println "                                          program, which shows itself with bjogui's")
+  (println "                                          run-app. The manifest needs (android-id ...).")
+  (println "                                          Default: publish-android/ in the project.")
   (println "  bjo fmt [--check] [--diff] [files or dirs...]")
   (println "                                          Lay source out as bjo-mode does: those named,")
   (println "                                          or every file under src/, tests/ and benches/.")
@@ -1370,6 +1435,13 @@
      (with-return ret
        (when (or debug? lib?)
          (ret (fail "bjo publish: publishes a release build of a program, so it takes no -d or --lib.")))
+       (when (record-ref line android)
+         (ret (cond
+                ((or (empty? rest) (= rest (list ".")))
+                 (match (project-here "publish")
+                   ((Err why) (fail why))
+                   ((Ok project) (publish-android-project project line))))
+                (else (fail "bjo publish --android: makes an app of this project, so it takes no file.")))))
        (cond
          ((or (empty? rest) (= rest (list ".")))
           (match (project-here "publish")
@@ -1435,4 +1507,6 @@
     ((Err message) (fail message))
     ((Ok line) #:when (and (some? (record-ref line output)) (not (= command "publish")))
      (fail #"bjo ${command}: -o is for publish, which writes a directory; ${command} does not."))
+    ((Ok line) #:when (and (record-ref line android) (not (= command "publish")))
+     (fail #"bjo ${command}: --android is for publish, which makes the app; ${command} does not."))
     ((Ok line) (dispatch command line))))

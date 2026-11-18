@@ -1770,6 +1770,31 @@ public static partial class BjolangRuntime {
             if (FiberTrace.Enabled) FiberTrace.LeaveOutside();
         }
     }
+
+    /// <summary>
+    /// The entry point for an ordinary `main` that a host starts, such as an
+    /// Android app, where the host and not `main` decides when the process
+    /// ends.
+    /// - `main` runs on the calling thread, in a root scope, as under
+    ///   <see cref="RunMainSync"/>. Returns what `main` returns.
+    /// - The scope is not closed when `main` returns. The fibers that `main`
+    ///   started run until the process ends.
+    /// - It does not wait for anything, so the host may call it on its UI
+    ///   thread.
+    /// - An exception from `main` goes to the host. The scope stays open.
+    /// </summary>
+    public static T RunMainHosted<T>(System.Func<T> body) {
+        RunInvariant();
+        InstallStandardPorts();
+
+        var scope = OpenMainScope();
+        var saved = scopesubpush_BANG(scope);
+        try {
+            return body();
+        } finally {
+            _ = dynsubrestore_BANG(saved);
+        }
+    }
 }
 
 namespace Bjolang.Runtime {

@@ -42,7 +42,7 @@
   Git Local Registry Source
   ;; The manifest
   Dep Package
-  NuGetPackage nuget-id nuget-version nuget-precompile
+  NuGetPackage nuget-id nuget-version nuget-precompile nuget-android?
   RuntimeSetting runtime-settings
   module-name->string
   ;; What `def/bjodat-type` generated for the two records people read.
@@ -297,17 +297,26 @@
 ;; precompiled with ReadyToRun. Absent, the package is precompiled. The root
 ;; project's entry for an id wins over a dependency's, so a root can turn it
 ;; back on with `(precompile #t)`. See `bjo/nuget.bjo`.
+;;
+;; `(android #f)` leaves the package out of the app that
+;; `bjo publish --android` makes: a package for the desktop, or for tests.
+;; The code that uses it must not run on Android.
 (def/bjodat-type
   (: NuGetPackage (Record #:tag nuget
                           (: id string)
                           (: version string)
-                          (: precompile (Option bool) #:optional))))
+                          (: precompile (Option bool) #:optional)
+                          (: android (Option bool) #:optional))))
 
 (: (-> NuGetPackage string))
 (defun (nuget-id p) (record-ref p id))
 
 (: (-> NuGetPackage string))
 (defun (nuget-version p) (record-ref p version))
+
+;; Whether the package goes into an Android app: unless it says `(android #f)`.
+(: (-> NuGetPackage bool))
+(defun (nuget-android? p) (option-ref-or (record-ref p android) #t))
 
 ;; What the entry says about precompiling: `None` when it says nothing.
 (: (-> NuGetPackage (Option bool)))
@@ -424,6 +433,21 @@
                      ;; Without it the executable runs on any x86-64 CPU and
                      ;; uses 128-bit vectors. Only `(aot #t)` reads it.
                      (: aot-cpu (Option string) #:optional)
+                     ;; The Android app that `bjo publish --android` makes
+                     ;; of the program. Only the root project's count, as
+                     ;; with `runtime`.
+                     ;; - `(android-id "org.example.todo")`: the
+                     ;;   application ID, which the publish needs. Android
+                     ;;   knows the app by it, so it must not change after
+                     ;;   the app is installed.
+                     ;; - `(android-label "Things to do")`: the name under
+                     ;;   the app's icon. The package's name by default.
+                     ;; - `(android-abis "arm64")`: the processors the APK
+                     ;;   has code for: "arm64", "x64", "arm" and "x86". By
+                     ;;   default "arm64" (phones) and "x64" (the emulator).
+                     (: android-id (Option string) #:optional)
+                     (: android-label (Option string) #:optional)
+                     (: android-abis (List string) #:rest #:default Nil)
                      (: source (Option Source) #:optional)
                      ;; `#:rest`: the clause holds as many packages as it holds,
                      ;; rather than one vec of them. This is the field that made

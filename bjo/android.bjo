@@ -1,0 +1,365 @@
+;; bjo/android.bjo — `bjo publish --android`: an Android app (an APK) made of
+;; a program.
+;;
+;; How the app runs the program:
+;; - The app is an Avalonia app with a single view. Its C# is generated: an
+;;   Activity, an Application, and an Avalonia `App`.
+;; - The `App` calls the program's `BjolangEntryPoint.StartHosted` once
+;;   Avalonia is set up. That runs `main` and returns. bjogui's `run-app`
+;;   sees Avalonia's single-view lifetime there, and shows the program in the
+;;   app's view.
+;;
+;; The project, in `.bjo/android/` of the Bjolang project:
+;;
+;;     AndroidApp.csproj
+;;     App.cs
+;;     Resources/values/styles.xml
+;;     bjolibs/<assembly>.dll      the program and the assemblies it loads
+;;
+;; - Each assembly is copied under its assembly name. Android finds an
+;;   assembly by its file name, and a Bjolang module's file name is not its
+;;   assembly name: `todo.dll` holds `BjoMod.<package>.todo`.
+;; - NuGet packages are not copied. The project names each package of the
+;;   program as a `PackageReference`, with Avalonia.Android at the version of
+;;   Avalonia, so that NuGet gives their Android builds.
+;;
+;; The build:
+;; - `dotnet publish` makes the APK: CoreCLR, ReadyToRun, trimmed.
+;; - The .NET SDK is BJO_ANDROID_DOTNET, a `dotnet` or the directory it is
+;;   in, or else `dotnet`. It must have the android workload. Its version
+;;   gives the target framework: SDK 11 builds `net11.0-android`.
+;; - The Android SDK is ANDROID_HOME (or ANDROID_SDK_ROOT), and the JDK is
+;;   JAVA_HOME, when they are set.
+;; - The APK is signed with the SDK's debug key, and copied to the output
+;;   directory as `<id>.apk`.
+
+(export AndroidJob publish-android)
+
+(import (std prelude))
+(import (std run))
+(import "manifest.bjo")
+(import "publish.bjo")
+
+(import/class
+  (Assembly (: System.Reflection.Assembly))
+  (AssemblyName (: System.Reflection.AssemblyName)))
+
+(import/extern
+  (assembly-load-file (: System.Reflection.Assembly.LoadFile (-> string Assembly)))
+  (assembly-references (: System.Reflection.Assembly.GetReferencedAssemblies (-> Assembly (Array AssemblyName))))
+  (assembly-name-of (: System.Reflection.AssemblyName.GetAssemblyName (-> string AssemblyName)))
+  (assembly-simple-name (: System.Reflection.AssemblyName.Name (-> AssemblyName string) #:get))
+  (error-message (: System.Exception.Message (-> Exception string) #:get)))
+
+;; What to make an app of.
+;; - `id`, `label` and `abis`: the manifest's `android-id`, `android-label`
+;;   (or the package's name) and `android-abis`.
+;; - `version`: the package's, for the app's version.
+;; - `program`: the program's `.exe`. `links`: the `link` lines of its build
+;;   record.
+;; - `nuget`: the NuGet packages of the program's packages, as id and
+;;   version, the root project's first.
+;; - `dir`: where the C# project is written. `out`: where the APK goes.
+;; - `exec`: runs a program on the terminal, and returns its exit code.
+(type (: AndroidJob (Record (: id string)
+                            (: label string)
+                            (: abis (List string))
+                            (: version Version)
+                            (: program string)
+                            (: links (List (Tuple string string)))
+                            (: nuget (List (Tuple string string)))
+                            (: dir string)
+                            (: out string)
+                            (: exec (-> string (Vec string) int)))))
+
+;; ---------------------------------------------------------------------------
+;; The settings
+;; ---------------------------------------------------------------------------
+
+;; The .NET runtime identifier of an ABI that a manifest names.
+(: (-> string (Result string string)))
+(defun (abi-rid abi)
+  (case abi
+    (("arm64" "x64" "arm" "x86") (Ok (str "android-" abi)))
+    (else (Err (str "bjo publish --android: \"" abi "\" is not an ABI. "
+                    "The ABIs are \"arm64\", \"x64\", \"arm\" and \"x86\".")))))
+
+;; The runtime identifiers to build for, joined with `;`.
+(: (-> (List string) (Result string string)))
+(defun (android-rids abis)
+  (def wanted (if (list-empty? abis) (list "arm64" "x64") abis))
+  (loop (:for abi wanted)
+        (:let r (abi-rid abi))
+        (:finish (not (ok? r)) r)
+        (:acc rids (listing (result-ref-or r "")))
+        => (Ok (string-join (list->vec rids) ";"))))
+
+;; The app's version code: a number that a later version makes larger.
+(: (-> Version int))
+(defun (version-code v)
+  (max 1 (+ (* (record-ref v major) 10000) (* (record-ref v minor) 100) (record-ref v patch))))
+
+;; The `dotnet` to build with.
+(: (-> string))
+(defun (android-dotnet)
+  (match (get-environment-variable "BJO_ANDROID_DOTNET")
+    ((Some d) #:when (directory-exists? d) (path-combine d "dotnet"))
+    ((Some d) #:when (not (= d "")) d)
+    (_ "dotnet")))
+
+;; The target framework of the SDK, such as `net11.0-android`.
+(: android-framework #:sync (-> string (Result string string)))
+(defun (android-framework dotnet)
+  (def hint "Set BJO_ANDROID_DOTNET to a .NET SDK with the android workload.")
+  (match (run/output '(,(cmd dotnet "--version")))
+    ((Err e) (Err (str "bjo publish --android: could not run " dotnet ": " (error-message e) ". " hint)))
+    ((Ok (Tuple 0 out))
+     (match (try (string->int (vec-ref (string-split (string-trim out) ".") 0))
+                 #:catch (System.FormatException))
+       ((Ok major) #:when (>= major 10) (Ok (str "net" (int->string major) ".0-android")))
+       (_ (Err (str "bjo publish --android: " dotnet " is .NET " (string-trim out)
+                    ", and an Android app needs .NET 10 or later. " hint)))))
+    ((Ok (Tuple _ out))
+     (Err (str "bjo publish --android: " dotnet " --version failed: " (string-trim out) " " hint)))))
+
+;; The version of the NuGet package `id`, from the first package that names
+;; it.
+(: (-> (List (Tuple string string)) string (Option string)))
+(defun (nuget-version-of packages id)
+  (option-map snd (find #(= (string-downcase (fst &)) (string-downcase id)) packages)))
+
+;; Each package once, the first entry for it winning, and Avalonia.Android
+;; after them when no package names it.
+(: (-> (List (Tuple string string)) string (List (Tuple string string))))
+(defun (package-references packages avalonia)
+  (def unique
+    (loop (:for p packages)
+          (:acc seen (folding Nil
+                              (if (any? #(= (string-downcase (fst &)) (string-downcase (fst p))) seen)
+                                  seen
+                                  (Cons p seen))))
+          => (list-reverse seen)))
+  (if (some? (nuget-version-of unique "Avalonia.Android"))
+      unique
+      (list-append unique (list (Tuple "Avalonia.Android" avalonia)))))
+
+;; ---------------------------------------------------------------------------
+;; The project
+;; ---------------------------------------------------------------------------
+
+(: (-> string string))
+(defun (xml-escape s)
+  (string-replace
+    (string-replace (string-replace (string-replace s "&" "&amp;") "<" "&lt;") ">" "&gt;")
+    "\"" "&quot;"))
+
+(: (-> string string))
+(defun (cs-string s)
+  (str "\"" (string-replace (string-replace s "\\" "\\\\") "\"" "\\\"") "\""))
+
+(: (-> AndroidJob string string (List (Tuple string string)) (List string) string))
+(defun (csproj-text job framework rids packages kept)
+  (def v (record-ref job version))
+  ;; An XML comment may not hold "--", so the flag is not named in it.
+  (str "<!-- Made by bjo publish, for Android. Publishing again writes it again. -->\n"
+       "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
+       "  <PropertyGroup>\n"
+       "    <TargetFramework>" framework "</TargetFramework>\n"
+       "    <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>\n"
+       "    <OutputType>Exe</OutputType>\n"
+       "    <ImplicitUsings>disable</ImplicitUsings>\n"
+       "    <Nullable>disable</Nullable>\n"
+       "    <ApplicationId>" (xml-escape (record-ref job id)) "</ApplicationId>\n"
+       "    <ApplicationVersion>" (int->string (version-code v)) "</ApplicationVersion>\n"
+       "    <ApplicationDisplayVersion>" (version->string v) "</ApplicationDisplayVersion>\n"
+       "    <AndroidPackageFormat>apk</AndroidPackageFormat>\n"
+       "    <RuntimeIdentifiers>" rids "</RuntimeIdentifiers>\n"
+       "    <!-- CoreCLR, not Mono, with ReadyToRun. -->\n"
+       "    <UseMonoRuntime>false</UseMonoRuntime>\n"
+       "    <PublishReadyToRun>true</PublishReadyToRun>\n"
+       "  </PropertyGroup>\n"
+       "  <ItemGroup>\n"
+       (string-join (list->vec (list-map (fun (p)
+                                           (str "    <PackageReference Include=\"" (xml-escape (fst p))
+                                                "\" Version=\"" (xml-escape (snd p)) "\" />\n"))
+                                         packages))
+                    "")
+       "  </ItemGroup>\n"
+       "  <ItemGroup>\n"
+       "    <Reference Include=\"bjolibs/*.dll\" />\n"
+       "    <!-- Kept whole: Bjolang code finds their events by name. -->\n"
+       (string-join (list->vec (list-map #(str "    <TrimmerRootAssembly Include=\"" (xml-escape &) "\" />\n")
+                                         kept))
+                    "")
+       "  </ItemGroup>\n"
+       "</Project>\n"))
+
+(: (-> string string))
+(defun (app-cs-text label)
+  (str "// Made by bjo publish --android. Publishing again writes it again.\n"
+       "using Android.App;\n"
+       "using Android.Content.PM;\n"
+       "using Android.Runtime;\n"
+       "using Avalonia.Android;\n"
+       "\n"
+       "namespace BjoAndroid;\n"
+       "\n"
+       "// Runs the program's main once Avalonia is set up. bjogui's run-app\n"
+       "// then makes the program the main view.\n"
+       "public class App : Avalonia.Application\n"
+       "{\n"
+       "    public override void OnFrameworkInitializationCompleted()\n"
+       "    {\n"
+       "        global::BjolangEntryPoint.StartHosted(System.Array.Empty<string>());\n"
+       "        base.OnFrameworkInitializationCompleted();\n"
+       "    }\n"
+       "}\n"
+       "\n"
+       "[Activity(Label = " (cs-string label) ", Theme = \"@style/AppTheme\", MainLauncher = true, Exported = true,\n"
+       "          ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize | ConfigChanges.UiMode)]\n"
+       "public class MainActivity : AvaloniaMainActivity\n"
+       "{\n"
+       "}\n"
+       "\n"
+       "[Application(Label = " (cs-string label) ")]\n"
+       "public class MainApplication : AvaloniaAndroidApplication<App>\n"
+       "{\n"
+       "    protected MainApplication(nint javaReference, JniHandleOwnership transfer) : base(javaReference, transfer)\n"
+       "    {\n"
+       "    }\n"
+       "}\n"))
+
+(: string)
+(def styles-text
+  (str "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n"
+       "<!-- Made by bjo publish, for Android. -->\n"
+       "<resources>\n"
+       "  <style name=\"AppTheme\" parent=\"@style/Theme.AppCompat.DayNight.NoActionBar\">\n"
+       "    <item name=\"android:windowActionBar\">false</item>\n"
+       "    <item name=\"android:windowNoTitle\">true</item>\n"
+       "  </style>\n"
+       "</resources>\n"))
+
+;; Writes `text` to `path`, unless the file has it already. A file that is not
+;; written keeps its time, so MSBuild does not build again for it.
+(: write-if-changed! #:sync (-> string string void))
+(defun (write-if-changed! path text)
+  (unless (and (file-exists? path) (= (file-read-text path) text))
+    (match (path-directory path)
+      ((Some d) (directory-create d))
+      (None unit))
+    (file-write-text path text)))
+
+;; Copies the program and the assemblies it loads to `<dir>/bjolibs`, each
+;; under its assembly name. NuGet packages' assemblies are left out. Returns
+;; how many were copied.
+(: stage! #:sync (-> string string (List (Tuple string string)) (Result string int)))
+(defun (stage! dir program links)
+  (def libs (path-combine dir "bjolibs"))
+  (when (directory-exists? libs) (directory-delete-tree libs))
+  (directory-create libs)
+  (def own (filter-out-packages links))
+  (match (find #(not (file-exists? (snd &))) own)
+    ((Some (Tuple name path))
+     (Err (str "bjo publish --android: the program loads " name " from " path
+               ", and it is not there. Rebuild with -c and publish again.")))
+    (None
+     (file-copy program (path-combine libs (str (assembly-simple-name (assembly-name-of program)) ".dll"))
+                #:mode Truncate)
+     (loop (:for (Tuple name path) own)
+           (:do (file-copy path (path-combine libs (str name ".dll")) #:mode Truncate)))
+     (Ok (+ 1 (length own))))))
+
+(: (-> (List (Tuple string string)) (List (Tuple string string))))
+(defun (filter-out-packages links)
+  (list-filter #(not (some? (package-store-path (snd &)))) links))
+
+;; The NuGet assemblies that the trimmer must keep whole: those that an
+;; assembly in `libs` references, from the packages in `packages`.
+;; - Bjolang code finds a .NET event by its name, at run time, so the trimmer
+;;   cannot see which events are used. bjogui's `Loaded` is one.
+;; - `links` gives each assembly's file, below the NuGet cache. Its first
+;;   directory there is its package.
+(: kept-assemblies #:sync (-> string (List (Tuple string string)) (List (Tuple string string)) (List string)))
+(defun (kept-assemblies libs links packages)
+  (def referenced
+    (loop (:for f (directory-files libs))
+          (:subloop)
+          (:for n (assembly-references (assembly-load-file (path-absolute f))))
+          (:acc out (listing (assembly-simple-name n)))
+          => out))
+  (def ids (list-map #(string-downcase (fst &)) packages))
+  (loop (:for (Tuple name path) links)
+        (:when-let (Some rel) (package-store-path path))
+        (:when (any? #(= & name) referenced))
+        (:when (any? #(= & (string-downcase (vec-ref (string-split rel "/") 0))) ids))
+        (:acc out (listing name))
+        => out))
+
+;; ---------------------------------------------------------------------------
+;; Publishing
+;; ---------------------------------------------------------------------------
+
+;; Writes the project, builds the APK, and copies it to the output directory.
+;; Returns the APK's path.
+;; - `Err` for an ABI that is not one, for a program without Avalonia, for an
+;;   SDK that cannot build for Android, for an output directory that is not
+;;   bjo's, and for a build that fails.
+(: publish-android #:sync (-> AndroidJob (Result string string)))
+(defun (publish-android job)
+  (with-return ret
+    (def (Ok rids) (android-rids (record-ref job abis)) :propagate)
+    (def (Some avalonia) (nuget-version-of (record-ref job nuget) "Avalonia")
+      :leave (None (Err (str "bjo publish --android: an Android app is drawn by Avalonia, "
+                             "and no package of the program names the NuGet package Avalonia."))))
+    (def dotnet (android-dotnet))
+    (def (Ok framework) (android-framework dotnet) :propagate)
+
+    (def dir (record-ref job dir))
+    (def label (record-ref job label))
+    (def (Ok staged) (stage! dir (record-ref job program) (record-ref job links)) :propagate)
+    (def csproj (path-combine dir "AndroidApp.csproj"))
+    (def kept (kept-assemblies (path-combine dir "bjolibs") (record-ref job links) (record-ref job nuget)))
+    (write-if-changed! csproj (csproj-text job framework rids
+                                           (package-references (record-ref job nuget) avalonia)
+                                           kept))
+    (write-if-changed! (path-combine dir "App.cs") (app-cs-text label))
+    (write-if-changed! (path-combine dir "Resources" "values" "styles.xml") styles-text)
+    (println #"bjo publish --android: ${staged} assemblies in ${dir}. Building the APK for ${rids}.")
+    ;; Before dotnet writes to the same terminal.
+    (flush-port (parameter-ref current-output-port))
+
+    ;; The SDK finds its own runtime and workloads from DOTNET_ROOT.
+    (when (some? (get-environment-variable "BJO_ANDROID_DOTNET"))
+      (match (path-directory (path-absolute dotnet))
+        ((Some d) (set-environment-variable! "DOTNET_ROOT" d))
+        (None unit)))
+    (set-environment-variable! "DOTNET_NOLOGO" "1")
+    (def properties
+      (list-append
+        (match (option-or (get-environment-variable "ANDROID_HOME") (get-environment-variable "ANDROID_SDK_ROOT"))
+          ((Some sdk) #:when (not (= sdk "")) (list (str "-p:AndroidSdkDirectory=" sdk)))
+          (_ Nil))
+        (match (get-environment-variable "JAVA_HOME")
+          ((Some jdk) #:when (not (= jdk "")) (list (str "-p:JavaSdkDirectory=" jdk)))
+          (_ Nil))))
+    (def publish-dir (path-combine dir "bin" "Release" framework "publish"))
+    (when (directory-exists? publish-dir) (directory-delete-tree publish-dir))
+    (def status ((record-ref job exec) dotnet
+                 (list->vec (list-append (list "publish" csproj "-c" "Release") properties))))
+    (unless (= status 0)
+      (ret (Err (str "bjo publish --android: dotnet publish failed (exit code " (int->string status) ")."))))
+
+    (def apk-name (str (record-ref job id) "-Signed.apk"))
+    (def built (path-combine publish-dir apk-name))
+    (unless (file-exists? built)
+      (ret (Err (str "bjo publish --android: dotnet publish made no " built "."))))
+    (def out (path-absolute (record-ref job out)))
+    (match (prepare-output! out)
+      ((Some why) (ret (Err why)))
+      (None unit))
+    (def apk (path-combine out (str (record-ref job id) ".apk")))
+    (file-copy built apk #:mode Truncate)
+    (file-write-text (path-combine out published-marker)
+                     "Made by bjo publish --android. Publishing again replaces this directory.\n")
+    (Ok apk)))
