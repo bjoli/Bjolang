@@ -19,6 +19,27 @@ What each change guarantees, and what it leaves open.
 - In the type checker the call still has the interop void for a type, as a
   statement must. Only the C# changes.
 
+* Host messages, and the Android Share menu
+
+- New: ~Bjolang.Runtime.Host~, strings by kind between a program and the
+  host that runs it. ~Post~ and ~NextAsync~ carry messages from the host to
+  the program. A message waits in a queue until it is taken, at most 64 for
+  a kind. ~SetHandler~ and ~Request~ let the program call a service of the
+  host. Every member may be called on any thread.
+- ~RunMainHosted~ leaves the main scope current on the calling thread after
+  ~main~ returns. Before, it was closed for that thread, and code that the
+  UI thread ran later, such as bjogui's update, raised ~ScopeEnded~ when it
+  started a fiber.
+- The manifest field ~android-share-target~: with ~#t~, the Android app is
+  in the Share menu for ~text/plain~. The generated activity posts each
+  shared text as the host message ~"share-text"~: the subject, a newline,
+  and the text. It does so at a cold start, but not when Android creates
+  the activity again from a saved state.
+- The generated activity has launch mode ~singleTask~, so that a share
+  while the app runs goes to that app. It offers the service ~"share-text"~,
+  which shows Android's Share sheet.
+- Not done: other kinds of shared content, such as images and files.
+
 * ~bjo run --android~
 
 - Builds the project's app for the connected device's ABI, installs it with

@@ -1781,6 +1781,11 @@ public static partial class BjolangRuntime {
     ///   started run until the process ends.
     /// - It does not wait for anything, so the host may call it on its UI
     ///   thread.
+    /// - The scope stays the calling thread's current scope after `main`
+    ///   returns. The host calls the program's code on that thread later,
+    ///   such as bjogui's update on a click, and that code may need a scope,
+    ///   as `file-read-text` does. A program on the desktop runs its UI in
+    ///   `main`, so there the scope is current too.
     /// - An exception from `main` goes to the host. The scope stays open.
     /// </summary>
     public static T RunMainHosted<T>(System.Func<T> body) {
@@ -1788,12 +1793,8 @@ public static partial class BjolangRuntime {
         InstallStandardPorts();
 
         var scope = OpenMainScope();
-        var saved = scopesubpush_BANG(scope);
-        try {
-            return body();
-        } finally {
-            _ = dynsubrestore_BANG(saved);
-        }
+        _ = scopesubpush_BANG(scope);
+        return body();
     }
 }
 

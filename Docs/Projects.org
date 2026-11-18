@@ -767,6 +767,9 @@ adb install -r publish-android/com.example.todoapp.apk
   with no dot is one of Android's: ~"INTERNET"~ is
   ~android.permission.INTERNET~. An app without ~"INTERNET"~ can not
   connect to the network: a connection raises "Permission denied".
+- *~(android-share-target #t)~ puts the app in the Share menu* for text,
+  such as a page shared from a browser. The app gets the text as a host
+  message: see [[*The app and its host][The app and its host]].
 - *The app's version is the package's.* The version code is
   ~major * 10000 + minor * 100 + patch~.
 - *How the program starts.* The app's generated C# calls the program's
@@ -816,6 +819,33 @@ with ReadyToRun. It is the same app, and needs no Android NDK.
   NuGet assemblies that Bjolang code references are kept whole, as for
   CoreCLR, so bjogui's events and styles work. ILC's warnings name the rest.
 - *The build takes longer*: about 2.5 minutes for two ABIs.
+
+**** The app and its host
+
+The app's generated C# is the program's host. The program does not see
+Android's types: it exchanges strings with the host through the runtime's
+~Bjolang.Runtime.Host~. bjogui's (bjogui platform) wraps them as
+subscriptions and commands.
+
+| Member                      | Does                                                      |
+|-----------------------------+-----------------------------------------------------------|
+| ~Host.Post(kind, text)~     | The host gives the program a message of ~kind~            |
+| ~Host.NextAsync(kind, ct)~  | The program takes the next message of ~kind~              |
+| ~Host.SetHandler(kind, f)~  | The host offers a service; ~f~ returns whether it did the work |
+| ~Host.Request(kind, text)~  | The program calls the service; false when there is none   |
+
+- *A message waits in a queue until the program takes it*, so a message
+  posted before the program starts is not lost. A kind keeps at most 64
+  messages: a further one drops the oldest.
+- *The generated app uses the kind ~"share-text"~ both ways.* With
+  ~(android-share-target #t)~ it posts each text shared to the app as the
+  subject, a newline and the text. The subject is "" when the sharer gives
+  none. Its service ~"share-text"~ shows Android's Share sheet for a text.
+- *The activity is ~bjo.MainActivity~, with launch mode ~singleTask~.* A
+  share while the app runs goes to the app that runs, not to a second copy.
+- *~main~'s scope stays open on the UI thread* after ~main~ returns. The
+  code that the UI thread runs later, such as bjogui's ~update~, can start
+  fibers in it.
 
 **** Running on a device
 
