@@ -25,6 +25,11 @@
 ;;
 ;; The build:
 ;; - `dotnet publish` makes the APK: CoreCLR, ReadyToRun, trimmed.
+;; - With `(android-aot #t)` it compiles the app with Native AOT instead.
+;;   The app starts about 4 times as fast, and the APK is smaller. ILC reads
+;;   every assembly that the program references, so the packages with
+;;   `(android #f)` are package references too. ILC compiles only the code
+;;   that the app can reach, so they add little.
 ;; - The .NET SDK is BJO_ANDROID_DOTNET, a `dotnet` or the directory it is
 ;;   in, or else `dotnet`. It must have the android workload. Its version
 ;;   gives the target framework: SDK 11 builds `net11.0-android`.
@@ -59,6 +64,9 @@
 ;;   record.
 ;; - `nuget`: the NuGet packages of the program's packages, as id and
 ;;   version, the root project's first.
+;; - `not-android`: the packages that say `(android #f)`.
+;; - `aot`: the manifest's `android-aot`: compile the app with Native AOT.
+;; - `permissions`: the manifest's `android-permissions`.
 ;; - `dir`: where the C# project is written. `out`: where the APK goes.
 ;; - `exec`: runs a program on the terminal, and returns its exit code.
 (type (: AndroidJob (Record (: id string)
@@ -68,6 +76,9 @@
                             (: program string)
                             (: links (List (Tuple string string)))
                             (: nuget (List (Tuple string string)))
+                            (: not-android (List (Tuple string string)))
+                            (: aot bool)
+                            (: permissions (List string))
                             (: dir string)
                             (: out string)
                             (: exec (-> string (Vec string) int)))))
@@ -174,9 +185,12 @@
        "    <ApplicationDisplayVersion>" (version->string v) "</ApplicationDisplayVersion>\n"
        "    <AndroidPackageFormat>apk</AndroidPackageFormat>\n"
        "    <RuntimeIdentifiers>" rids "</RuntimeIdentifiers>\n"
-       "    <!-- CoreCLR, not Mono, with ReadyToRun. -->\n"
-       "    <UseMonoRuntime>false</UseMonoRuntime>\n"
-       "    <PublishReadyToRun>true</PublishReadyToRun>\n"
+       (if (record-ref job aot)
+           (str "    <!-- Native AOT. -->\n"
+                "    <PublishAot>true</PublishAot>\n")
+           (str "    <!-- CoreCLR, not Mono, with ReadyToRun. -->\n"
+                "    <UseMonoRuntime>false</UseMonoRuntime>\n"
+                "    <PublishReadyToRun>true</PublishReadyToRun>\n"))
        "  </PropertyGroup>\n"
        "  <ItemGroup>\n"
        (string-join (list->vec (list-map (fun (p)
@@ -194,13 +208,22 @@
        "  </ItemGroup>\n"
        "</Project>\n"))
 
+;; The full name of a permission: Android's own for a name with no dot.
 (: (-> string string))
-(defun (app-cs-text label)
+(defun (permission-name p)
+  (if (string-contains? p ".") p (str "android.permission." p)))
+
+(: (-> string (List string) string))
+(defun (app-cs-text label permissions)
   (str "// Made by bjo publish --android. Publishing again writes it again.\n"
        "using Android.App;\n"
        "using Android.Content.PM;\n"
        "using Android.Runtime;\n"
        "using Avalonia.Android;\n"
+       "\n"
+       (string-join (list->vec (list-map #(str "[assembly: UsesPermission(" (cs-string (permission-name &)) ")]\n")
+                                         permissions))
+                    "")
        "\n"
        "namespace BjoAndroid;\n"
        "\n"
@@ -320,12 +343,15 @@
     (def (Ok staged) (stage! dir (record-ref job program) (record-ref job links)) :propagate)
     (def csproj (path-combine dir "AndroidApp.csproj"))
     (def kept (kept-assemblies (path-combine dir "bjolibs") (record-ref job links) (record-ref job nuget)))
-    (write-if-changed! csproj (csproj-text job framework rids
-                                           (package-references (record-ref job nuget) avalonia)
-                                           kept))
-    (write-if-changed! (path-combine dir "App.cs") (app-cs-text label))
+    (def references
+      (if (record-ref job aot)
+          (list-append (record-ref job nuget) (record-ref job not-android))
+          (record-ref job nuget)))
+    (write-if-changed! csproj (csproj-text job framework rids (package-references references avalonia) kept))
+    (write-if-changed! (path-combine dir "App.cs") (app-cs-text label (record-ref job permissions)))
     (write-if-changed! (path-combine dir "Resources" "values" "styles.xml") styles-text)
-    (println #"bjo publish --android: ${staged} assemblies in ${dir}. Building the APK for ${rids}.")
+    (def how (if (record-ref job aot) " with Native AOT" ""))
+    (println #"bjo publish --android: ${staged} assemblies in ${dir}. Building the APK for ${rids}${how}.")
     ;; Before dotnet writes to the same terminal.
     (flush-port (parameter-ref current-output-port))
 

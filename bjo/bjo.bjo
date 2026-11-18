@@ -1050,20 +1050,22 @@
       :leave ((Err status) status))
     (when (string-ends-with? (record-ref rec output) ".dll")
       (ret (fail (str "bjo publish --android: " (project-entry project) " has no main, so it is a library."))))
-    ;; The root project's packages first: its version of a package wins. A
-    ;; package with `(android #f)` is left out.
+    ;; The root project's packages first: its version of a package wins. The
+    ;; packages with `(android #f)` are a list of their own.
     (def own-name (record-ref package name))
-    (: nuget-of (-> Package (List (Tuple string string))))
-    (defun (nuget-of p)
-      (list-map #(Tuple (nuget-id &) (nuget-version &))
-                (list-filter nuget-android? (record-ref p packages))))
-    (def others
+    (def other-packages
       (loop (:for r (prepared-roots ready))
             (:when (not (= (root-name r) own-name)))
             (:when-let (Some p) (root-package r))
+            (:acc out (listing p))
+            => out))
+    (: nuget-of (-> bool (List (Tuple string string))))
+    (defun (nuget-of android?)
+      (loop (:for p (Cons package other-packages))
             (:subloop)
-            (:for n (nuget-of p))
-            (:acc out (listing n))
+            (:for n (record-ref p packages))
+            (:when (= (nuget-android? n) android?))
+            (:acc out (listing (Tuple (nuget-id n) (nuget-version n))))
             => out))
     (match (publish-android (AndroidJob (id id)
                                         (label (option-ref-or (record-ref package android-label)
@@ -1072,7 +1074,10 @@
                                         (version (record-ref package version))
                                         (program (record-ref rec output))
                                         (links (record-ref rec links))
-                                        (nuget (list-append (nuget-of package) others))
+                                        (nuget (nuget-of #t))
+                                        (not-android (nuget-of #f))
+                                        (aot (option-ref-or (record-ref package android-aot) #f))
+                                        (permissions (record-ref package android-permissions))
                                         (dir (path-combine (project-dot-bjo project) "android"))
                                         (out (match (record-ref line output)
                                                ((Some dir) dir)

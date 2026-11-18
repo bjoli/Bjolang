@@ -748,7 +748,9 @@ Android.
   (version "0.1.0")
   (android-id "com.example.todoapp")   ; required: the app's id on Android
   (android-label "Things to do")       ; the name under the icon
-  (android-abis "arm64" "x64"))        ; the CPUs to build for
+  (android-abis "arm64" "x64")         ; the CPUs to build for
+  (android-aot #t)                     ; Native AOT: it starts faster
+  (android-permissions "INTERNET"))    ; what the app asks Android for
 #+END_SRC
 
 #+BEGIN_SRC sh
@@ -761,6 +763,10 @@ adb install -r publish-android/com.example.todoapp.apk
   ~android-abis~ takes ~"arm64"~, ~"x64"~, ~"arm"~ and ~"x86"~, and defaults
   to ~"arm64"~ and ~"x64"~: phones, and the emulator on a PC. Fewer ABIs give
   a smaller APK and a faster build.
+- *~android-permissions~ names the permissions the app asks for.* A name
+  with no dot is one of Android's: ~"INTERNET"~ is
+  ~android.permission.INTERNET~. An app without ~"INTERNET"~ can not
+  connect to the network: a connection raises "Permission denied".
 - *The app's version is the package's.* The version code is
   ~major * 10000 + minor * 100 + patch~.
 - *How the program starts.* The app's generated C# calls the program's
@@ -778,8 +784,8 @@ adb install -r publish-android/com.example.todoapp.apk
   Bjolang code references is kept whole by the trimmer, because bjogui finds
   events by name.
 - *A package that has no place on Android says ~(android #f)~*, such as
-  Avalonia.Desktop. It is left out of the app. The code that uses it must
-  not run on Android:
+  Avalonia.Desktop. It is left out of the app, except with Native AOT (see
+  below). The code that uses it must not run on Android:
 
   #+BEGIN_SRC scheme
   (nuget (id "Avalonia.Desktop") (version "12.1.5") (android #f))
@@ -793,8 +799,23 @@ What the build needs:
 | ~ANDROID_HOME~        | The Android SDK (or ~ANDROID_SDK_ROOT~), when it is not where the .NET SDK looks |
 | ~JAVA_HOME~           | The JDK, when it is not where the .NET SDK looks                |
 
-Use .NET 10 or later. With .NET 11 the app starts in about 1.7 s on the
-emulator, and a todo list app for one ABI is about 31 MB.
+Use .NET 10 or later.
+
+*With ~(android-aot #t)~ the app is compiled with Native AOT*, not CoreCLR
+with ReadyToRun. It is the same app, and needs no Android NDK.
+
+| A todo list app, x64, on the emulator | Native AOT | CoreCLR    |
+|---------------------------------------+------------+------------|
+| Cold start                            | ~0.42 s    | ~1.65 s    |
+| The APK                               | 20.7 MB    | 31.2 MB    |
+
+- *The packages with ~(android #f)~ are in the build.* ILC reads every
+  assembly that the program references, and stops at one that is not there.
+  It compiles only the code that the app can reach, so they add little.
+- *Code that finds members by name at run time may not find them.* The
+  NuGet assemblies that Bjolang code references are kept whole, as for
+  CoreCLR, so bjogui's events and styles work. ILC's warnings name the rest.
+- *The build takes longer*: about 2.5 minutes for two ABIs.
 
 ** The commands
 
