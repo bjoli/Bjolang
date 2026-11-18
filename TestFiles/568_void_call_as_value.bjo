@@ -1,0 +1,77 @@
+;; A call to a .NET method that returns void, where a value is wanted.
+;;
+;; The call has the interop void for a type, which C# has no value of. As an
+;; argument it was written in place, as in `Some(sb.Clear())`, and a type
+;; variable it fixed was spelled `void`, as in `Option<void>`. Both are C#
+;; errors. Now the call is a statement before the enclosing one, its value is
+;; the unit, and a type argument it fixes is the unit.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (Object    (: System.Object))
+  (ArrayList (: System.Collections.ArrayList (-> ArrayList))))
+
+(import/extern
+  (list-clear! (: System.Collections.ArrayList.Clear (-> ArrayList void)))
+  (list-add!   (: System.Collections.ArrayList.Add (-> ArrayList Object int)))
+  (list-count  (: System.Collections.ArrayList.Count (-> ArrayList int) #:get))
+  (pause       (: System.Threading.Tasks.Task.Delay (-> int void) #:async #:uncancellable))
+  (pause/token (: System.Threading.Tasks.Task.Delay (-> int void) #:async)))
+
+(: (-> %a int))
+(defun (one x) 1)
+
+(: (-> %a %b %c (List %a)))
+(defun (first-of a b c) (list a))
+
+(defun (main)
+  (def xs (ArrayList.))
+  (defun (add! n) (list-add! xs (cast Object n)))
+
+  (expect "as an argument" (one (list-clear! xs)) 1)
+  (expect "in Some" (Some (list-clear! xs)) (Some unit))
+  (expect "in a list" (list (list-clear! xs) (list-clear! xs)) (list unit unit))
+  (expect "in a tuple" (Tuple (list-clear! xs) 2) (Tuple unit 2))
+  (expect "in a box" (box-ref (make-box (list-clear! xs))) unit)
+  (expect "in Ok" (match (: (Ok (list-clear! xs)) (Result string void)) ((Ok u) u) ((Err e) unit)) unit)
+
+  ;; The operands run left to right: the void one is not moved ahead of the
+  ;; ones before it.
+  (ignore (add! 1))
+  (expect "the operands run in order"
+          (first-of (list-count xs) (list-clear! xs) (list-count xs))
+          (list 1))
+  (expect "the call ran" (list-count xs) 0)
+
+  ;; A name bound to it.
+  (ignore (add! 1))
+  (def cleared (list-clear! xs))
+  (expect "a name bound to it" (one cleared) 1)
+  (expect "is the unit" cleared unit)
+  (expect "and the call ran" (list-count xs) 0)
+
+  ;; Branches of a value: one is the call, the other the unit.
+  (ignore (add! 1))
+  (expect "an if with one void branch" (one (if (> (list-count xs) 0) unit (list-clear! xs))) 1)
+  (expect "the other branch did not run" (list-count xs) 1)
+  (expect "a void if as an argument"
+          (one (if (> (list-count xs) 0) (list-clear! xs) (list-clear! xs)))
+          1)
+  (expect "it ran" (list-count xs) 0)
+  (ignore (add! 1))
+  (expect "a match of void arms as an argument"
+          (one (match (list-count xs) (1 (list-clear! xs)) (_ (list-clear! xs))))
+          1)
+  (expect "it ran too" (list-count xs) 0)
+
+  ;; `bjo` over a void call returns a promise of the unit.
+  (def p (bjo (pause 1)))
+  (expect "bjo over an uncancellable void call" (sync/blocking (promise-join p)) (Ok unit))
+  (def q (bjo (pause/token 1)))
+  (expect "bjo over a cancellable void call" (sync/blocking (promise-join q)) (Ok unit))
+  (ignore (add! 1))
+  (def r (bjo (list-clear! xs)))
+  (expect "bjo over a plain void call" (sync/blocking (promise-join r)) (Ok unit))
+  (expect "it ran in the fiber" (list-count xs) 0))

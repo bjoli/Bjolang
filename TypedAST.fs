@@ -412,9 +412,12 @@ module TypeConstants =
     /// Reachable only from `mapClrType`, from the statement-shaped forms
     /// (`set!`, `yield`), and from a function whose inferred return type came
     /// from one of those. No Bjolang signature can name it — `void` written in
-    /// source is `unitType` — so it never appears in a published type. `unify`
-    /// lets it meet `unitType`, which is what makes a `(-> ... void)` function
-    /// able to end in a `.Dispose` call.
+    /// source is `unitType`. `unify` lets it meet `unitType`, which is what
+    /// makes a `(-> ... void)` function able to end in a `.Dispose` call.
+    ///
+    /// - A type variable can be bound to it, as in `(Some (.Dispose s))`.
+    ///   `Codegen` spells it `Bjoml.Unit` as a type argument, and emits the
+    ///   expression as a statement whose value is the unit.
     let voidType = TCon(VoidName, [])
 
     let unitType = TCon(UnitName, [])

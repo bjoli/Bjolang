@@ -876,7 +876,9 @@ let rec private unifyIn (registry: TraitRegistry) (place: Place) (t1: HMType) (t
     //
     // Nothing is bound here, so this is not a subtyping rule leaking into
     // inference: neither side is a variable, and the pair either matches or does
-    // not. The conversion it licenses happens once, in `emitTerminal`.
+    // not. `Codegen` does the conversion it licenses: `emitTerminal` where the
+    // expression is a statement or a function's result, `generateExpr` where
+    // it is a value, and `elementTypeToString` where a type argument is void.
     | TCon(TypeConstants.VoidName, []), TCon(TypeConstants.UnitName, [])
     | TCon(TypeConstants.UnitName, []), TCon(TypeConstants.VoidName, []) -> ()
     // Arguments of a `dyn` type constructor are its pinned associated types.

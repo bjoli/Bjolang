@@ -327,6 +327,14 @@ type CodegenContext = {
     /// `InSeq`, it is a property of the method, and every construct opening a
     /// new one sets it afresh.
     ReturnsVoid: bool
+    /// Set by `emitTerminal` for the one `generateExpr` call that emits a
+    /// void expression as a statement of its own. `generateExpr` clears it
+    /// before it emits the operands.
+    ///
+    /// - Without it, a void expression is in a value position, and
+    ///   `generateExpr` hoists it: the statement goes first, and the value is
+    ///   the unit.
+    OwnStatement: bool
     /// The loops that get a vector part, by the name of their loop member.
     /// Found before the code is written: see `findVectorLoops`.
     VectorLoops: System.Collections.Generic.Dictionary<string, VectorLoop>
@@ -771,12 +779,12 @@ let rec typeToString (hm: HMType) : string =
     // A nested .NET type: each level takes its own arguments, and the levels
     // are joined with `.` as C# writes them.
     | TCon (name, args) when DotNetInterop.isNestedClrName name ->
-        DotNetInterop.nestedClrTypeSpelling name (args |> List.map typeToString)
+        DotNetInterop.nestedClrTypeSpelling name (args |> List.map elementTypeToString)
     | TCon (name, args) ->
         let baseName = conBaseName name
         if args.IsEmpty then baseName
         else
-            let argsStr = args |> List.map typeToString |> String.concat ", "
+            let argsStr = args |> List.map elementTypeToString |> String.concat ", "
             $"%s{baseName}<%s{argsStr}>"
     | TNum (carrier, _) -> typeToString carrier
     | TVar name -> typeParamName name
@@ -824,7 +832,7 @@ let rec typeToString (hm: HMType) : string =
     // no forms in it.
     | TTuple [] -> "ValueTuple"
     | TTuple types ->
-        let typesStr = types |> List.map typeToString |> String.concat ", "
+        let typesStr = types |> List.map elementTypeToString |> String.concat ", "
         $"ValueTuple<%s{typesStr}>"
     | TMeta m ->
         match m.Value with
@@ -840,6 +848,14 @@ let rec typeToString (hm: HMType) : string =
         | Some(TAssoc _)
         | None -> "object /* unresolved assoc */"
         | Some reduced -> typeToString reduced
+
+/// A type argument of a generic type, or an element of a tuple. C# has no
+/// `void` there: the interop void is the unit, which is the value a void
+/// expression has in a value position (see `generateExpr`).
+and private elementTypeToString (t: HMType) : string =
+    match typeToString t with
+    | "void" -> "Bjoml.Unit"
+    | s -> s
 
 /// How C# writes a call of a user-defined operator, which it refuses to call
 /// by name (CS0571): `BigInteger.op_Implicit(x)` is `((BigInteger)(x))`, and
@@ -985,7 +1001,7 @@ let private unitValue = "default(Bjoml.Unit)"
 /// generation phase due to an unresolved type.
 let rec private elementTypeString (t: HMType) =
     match eraseNewtypes t with
-    | TCon (_, [ elemT ]) -> typeToString elemT
+    | TCon (_, [ elemT ]) -> elementTypeToString elemT
     | TMeta { Value = Some inner } -> elementTypeString inner
     | _ -> "object"
 
@@ -1475,7 +1491,7 @@ let getUnionTypeString (hm: HMType) (parentName: string) : string =
         let baseName = conBaseName n
         if args.IsEmpty then baseName
         else
-            let argsStr = args |> List.map typeToString |> String.concat ", "
+            let argsStr = args |> List.map elementTypeToString |> String.concat ", "
             $"%s{baseName}<%s{argsStr}>"
     | None ->
         sanitizeIdent parentName
@@ -1905,7 +1921,14 @@ let rec isStatementShaped (expr: TypedExpr) : bool =
 /// statement position out here.
 and containsHoist (expr: TypedExpr) : bool =
     isStatementShaped expr
-    || match expr.Node with
+    // A void expression has no C# value: in a value position it is hoisted.
+    || isVoidType expr.Type
+    || operandsHoist expr
+
+/// True when evaluating an operand of `expr` will hoist statements. Not `expr`
+/// itself: see `containsHoist`.
+and operandsHoist (expr: TypedExpr) : bool =
+    match expr.Node with
        // Both open a block of their own, so nothing inside can need a statement
        // position out here.
        | TLambda _
@@ -3311,6 +3334,14 @@ let private occursIn (name: string) (expr: TypedExpr) : bool =
         false
         expr
 
+/// A name bound to a void value, such as `x` after `(def x (.Dispose s))`.
+/// No local holds it (see `emitTerminal`), and a read of it is the unit.
+let private isVoidName (expr: TypedExpr) : bool =
+    isVoidType expr.Type
+    && (match expr.Node with
+        | TIdent _ -> true
+        | _ -> false)
+
 /// The empty void, which `generateBlock` emits as nothing.
 let private emptyVoid (r: Lexer.Range) : TypedExpr =
     { Type = TypeConstants.voidType
@@ -3318,9 +3349,16 @@ let private emptyVoid (r: Lexer.Range) : TypedExpr =
       Node = TWhen({ Type = TypeConstants.boolType; Range = r; Node = TBool false }, { Type = TypeConstants.unitType; Range = r; Node = TTupleMake [] }, false) }
 
 let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
+    // A void expression is a statement only where `emitTerminal` asked for
+    // one. Its operands are in value positions again.
+    let ownStatement = ctx.OwnStatement
+    let ctx = if ownStatement then { ctx with OwnStatement = false } else ctx
+    let voidValue = isVoidType expr.Type && not ownStatement
+
     match ctx.Prelude with
-    | Some prelude when isStatementShaped expr -> append ctx (hoistToTemp ctx prelude expr)
-    | None when containsHoist expr ->
+    | _ when voidValue && isVoidName expr -> append ctx unitValue
+    | Some prelude when isStatementShaped expr || voidValue -> append ctx (hoistToTemp ctx prelude expr)
+    | None when isStatementShaped expr || voidValue || operandsHoist expr ->
         codegenError
             expr.Range
             "this expression needs statements to evaluate, but it appears where C# has no statement position"
@@ -4362,13 +4400,17 @@ and private hoistDictionary (ctx: CodegenContext) (expr: TypedExpr) (target: Typ
     ctx.Line.Pending <- pendingHere
 
     let classPart = name.Substring(0, name.IndexOf "::")
-    let tyArgsStr = tArgs |> List.map typeToString |> String.concat ", "
+    let tyArgsStr = tArgs |> List.map elementTypeToString |> String.concat ", "
     let csType = $"%s{sanitizeIdent classPart}<%s{tyArgsStr}>"
     hoistLiteral ctx "Dict" classPart csType (scratch.ToString())
 
 /// Evaluates a statement-shaped node into a temporary in the enclosing statement
 /// position and yields the temporary's name.
+///
+/// - A void node is a statement, and yields the unit: C# has no value of it.
 and private hoistToTemp (ctx: CodegenContext) (prelude: ResizeArray<string>) (expr: TypedExpr) : string =
+    if isVoidName expr then unitValue else
+
     let tmp = freshName "__hoist"
     let scratch = StringBuilder()
     let inner = { ctx with Builder = scratch; Prelude = None }
@@ -4391,7 +4433,7 @@ and private hoistToTemp (ctx: CodegenContext) (prelude: ResizeArray<string>) (ex
     // node's own statements, so appending as one unit preserves the order.
     prelude.Add(scratch.ToString())
     ctx.Line.Pending <- pendingHere
-    tmp
+    if isVoidType expr.Type then unitValue else tmp
 
 /// A hoisted form, as the C# expression that reads its value.
 ///
@@ -4616,7 +4658,7 @@ and private inlineBuiltinFor
 
     let rec elementOf (t: HMType) =
         match eraseNewtypes t with
-        | TCon (_, [ elemT ]) -> Some(typeToString elemT)
+        | TCon (_, [ elemT ]) -> Some(elementTypeToString elemT)
         | TMeta { Value = Some inner } -> elementOf inner
         | _ -> None
 
@@ -4899,7 +4941,7 @@ and private generateApply
                 let parts = name.Split("::")
                 let classPart = parts.[0]  // e.g. "Foldable_List.Instance"
                 let methodPart = parts.[1] // e.g. "fold"
-                let tyArgsStr = tArgs |> List.map typeToString |> String.concat ", "
+                let tyArgsStr = tArgs |> List.map elementTypeToString |> String.concat ", "
                 // Insert <T> before ".Instance"
                 let classPortions = classPart.Split('.')
                 if classPortions.Length >= 2 then
@@ -6108,52 +6150,39 @@ and private emitReturnOfNothing (ctx: CodegenContext) : unit =
 
 /// Discharges `target` with an already-formed C# expression fragment.
 ///
-/// A void-typed value cannot be assigned or returned in C#, so under every
-/// target that would bind it the value is emitted as a bare statement instead.
-/// `Return` additionally needs a following `return;`, since the target still has
-/// to be discharged.
+/// - A void-typed value is emitted as a statement of its own, and then the
+///   target is discharged as `dischargeVoid` does: a binding target gets the
+///   unit, and `Return` returns it. A local of type `void` is not declared:
+///   nothing can hold the value, and a read of the name is the unit (see
+///   `generateExpr`).
 and private emitTerminal (ctx: CodegenContext) (target: BlockTarget) (valueType: HMType) (emit: CodegenContext -> unit) : unit =
-    let isVoid = isVoidType valueType
-
     indent ctx
-    match target with
-    | Effect ->
-        // Not terminal, so no `break` and no `return`: whatever follows in the
-        // enclosing block still has to run.
-        if isVoid then
-            emit ctx; appendLine ctx ";"
-        else
+
+    if isVoidType valueType then
+        emit { ctx with OwnStatement = true }
+        appendLine ctx ";"
+
+        match target with
+        | DeclareAndAssign ("void", _) -> exitInlineLoop ctx
+        | _ -> dischargeVoid ctx target
+    else
+        match target with
+        | Effect ->
+            // C# has no expression statement for an arbitrary value, so a
+            // value that is not kept is assigned to `_`. Not terminal: whatever
+            // follows in the enclosing block still has to run.
             append ctx "_ = "; emit ctx; appendLine ctx ";"
-    | Return ->
-        if isVoid then
-            // The value/statement mismatch, and one of the two places it is
-            // resolved — the other being `dischargeVoid`, for forms that emit
-            // their own statements. The expression yields nothing, but unless
-            // the method itself returns `void` it still owes its caller a unit.
-            emit ctx; appendLine ctx ";"
-            emitReturnOfNothing ctx
-        else
+        | Return ->
             append ctx "return "; emit ctx; appendLine ctx ";"
-    | Assign name ->
-        if isVoid then
-            emit ctx; appendLine ctx ";"
-        else
+        | Assign name ->
             append ctx $"%s{name} = "; emit ctx; appendLine ctx ";"
-        exitInlineLoop ctx
-    | DeclareAndAssign (varType, varName) ->
-        if isVoid then
-            emit ctx; appendLine ctx ";"
-        else
+            exitInlineLoop ctx
+        | DeclareAndAssign (varType, varName) ->
             append ctx $"%s{varType} %s{varName} = "; emit ctx; appendLine ctx ";"
-        exitInlineLoop ctx
-    | Discard ->
-        // C# has no expression statement for an arbitrary value, so a discarded
-        // one is assigned to `_`. A void value is already a statement.
-        if isVoid then
-            emit ctx; appendLine ctx ";"
-        else
+            exitInlineLoop ctx
+        | Discard ->
             append ctx "_ = "; emit ctx; appendLine ctx ";"
-        exitInlineLoop ctx
+            exitInlineLoop ctx
 
 /// Emits a clause's `when`: every view's test, then the guard the source wrote.
 ///
@@ -9752,6 +9781,7 @@ let generateProgram
           ClrConstraints = clrConstraintClauses env decls
           FunMetas = Map.fold (fun acc k v -> Map.add k v acc) env.ResolvedFunMetas env.FunMetas
           ReturnsVoid = false
+          OwnStatement = false
           VectorLoops = System.Collections.Generic.Dictionary()
           StringBounds = System.Collections.Generic.Dictionary(HashIdentity.Reference)
           Assigned =
