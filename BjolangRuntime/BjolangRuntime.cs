@@ -1892,6 +1892,10 @@ public static partial class BjolangRuntime {
     /// `Console.Out` is pointed at it too, so that a .NET library writing to the
     /// console is not reordered against the program's own output by two
     /// buffers.
+    ///
+    /// On Android, standard output and standard error are logcat, with the
+    /// tag `bjo`: an app's file descriptors 1 and 2 go nowhere. See
+    /// `AndroidLogStream`.
     public static readonly Bjolang.Runtime.BjoOutputPort StdOut = MakeStandardPorts();
 
     /// The process's standard input, or an empty stream where the platform has
@@ -1907,17 +1911,27 @@ public static partial class BjolangRuntime {
 
     /// Standard error: unbuffered, as Racket's is.
     public static readonly Bjolang.Runtime.BjoOutputPort StdErr =
-        StandardError ?? new(Console.OpenStandardError(), Bjolang.Runtime.BjoOutputPort.SmallBufferSize, ownsInner: false);
+        StandardError ?? new(OpenStandardStream(error: true), Bjolang.Runtime.BjoOutputPort.SmallBufferSize, ownsInner: false);
 
     private static Bjolang.Runtime.BjoOutputPort? StandardError;
 
+    /// Standard output or standard error. On Android, logcat.
+    private static System.IO.Stream OpenStandardStream(bool error) {
+        if (OperatingSystem.IsAndroid())
+            return new Bjolang.Runtime.AndroidLogStream(
+                error ? Bjolang.Runtime.AndroidLogStream.Error : Bjolang.Runtime.AndroidLogStream.Info);
+        return error ? Console.OpenStandardError() : Console.OpenStandardOutput();
+    }
+
     private static Bjolang.Runtime.BjoOutputPort MakeStandardPorts() {
+        // Logcat takes a line at a time, so a block would hold lines back.
+        bool block = Console.IsOutputRedirected && !OperatingSystem.IsAndroid();
         var output = new Bjolang.Runtime.BjoOutputPort(
-            Console.OpenStandardOutput(), Bjolang.Runtime.BjoOutputPort.DefaultBufferSize, ownsInner: false) {
-            Mode = Console.IsOutputRedirected ? Bjolang.Runtime.BufferMode.Block : Bjolang.Runtime.BufferMode.Line,
+            OpenStandardStream(error: false), Bjolang.Runtime.BjoOutputPort.DefaultBufferSize, ownsInner: false) {
+            Mode = block ? Bjolang.Runtime.BufferMode.Block : Bjolang.Runtime.BufferMode.Line,
         };
         var error = new Bjolang.Runtime.BjoOutputPort(
-            Console.OpenStandardError(), Bjolang.Runtime.BjoOutputPort.SmallBufferSize, ownsInner: false) {
+            OpenStandardStream(error: true), Bjolang.Runtime.BjoOutputPort.SmallBufferSize, ownsInner: false) {
             Mode = Bjolang.Runtime.BufferMode.None,
         };
         StandardError = error;

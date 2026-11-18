@@ -817,6 +817,40 @@ with ReadyToRun. It is the same app, and needs no Android NDK.
   CoreCLR, so bjogui's events and styles work. ILC's warnings name the rest.
 - *The build takes longer*: about 2.5 minutes for two ABIs.
 
+**** Running on a device
+
+~bjo run --android~ builds the app for the connected device, installs it,
+starts it, and shows its log. Use it while you work on the app. Use
+~bjo publish --android~ for an APK to give to others.
+
+#+BEGIN_SRC sh
+bjo run --android                   # the emulator, or the phone on USB
+ANDROID_SERIAL=emulator-5554 bjo run --android   # one of several devices
+#+END_SRC
+
+- *The build is a development build.* It is for the device's ABI only, and
+  it is CoreCLR, not trimmed and without ReadyToRun, also with
+  ~(android-aot #t)~. When only the program changed, it takes a few seconds:
+  about 8 s from an edit to the app's first line on the emulator. The APK is
+  about 50 MB. The project is in ~.bjo/android-dev/~, and nothing is copied
+  to ~publish-android/~.
+- *The device* is the one ~adb~ uses: the only one connected, or
+  ~ANDROID_SERIAL~. ~adb~ is the Android SDK's (under ~ANDROID_HOME~), or
+  else ~adb~ on the ~PATH~.
+- *The log* is the app's log from its start: what the program writes (tag
+  ~bjo~), what .NET writes (~DOTNET~), a crash (~AndroidRuntime~), and the
+  errors of the rest of the app. It ends when the app's process ends. Ctrl+C
+  stops the log, and the app runs on. ~adb logcat --uid=<uid>~ shows all of
+  the app's log.
+- *The program takes no arguments* on Android: ~bjo run --android~ takes no
+  file and no arguments.
+
+On Android, standard output and standard error go to logcat, with the tag
+~bjo~: an app's file descriptors 1 and 2 go nowhere. Each line is one log
+entry: ~println~ is at priority Info, and standard error at Error. ~adb
+logcat -s bjo~ shows them for any app, also one installed from
+~bjo publish --android~.
+
 ** The commands
 
 | Command                 | What it does                                                  |
@@ -825,6 +859,7 @@ with ReadyToRun. It is the same app, and needs no Android NDK.
 | ~bjo fetch [--locked]~  | Resolves, fetches, restores NuGet packages, writes ~.bjo/roots~. Compiles nothing |
 | ~bjo build [--locked]~  | ~fetch~, then compile the entry — or every module of a library; what the entry imports, and a library's modules, are built in parallel |
 | ~bjo run [. args...]~   | ~build~, then run the entry                                   |
+| ~bjo run --android~     | Build the app for the connected device, install it, start it, and show its log. See [[*Running on a device][Running on a device]] |
 | ~bjo check~             | Every module of the project, errors only                      |
 | ~bjo publish [-o dir]~  | A release build, and a directory that runs from anywhere      |
 | ~bjo publish --android [-o dir]~ | A release build, and an Android app (an APK) of it. See [[*Android][Android]] |

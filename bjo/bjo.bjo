@@ -1029,27 +1029,29 @@
                         ((Some dir) dir)
                         (None (path-combine (file-directory file) "publish"))))))))
 
-;; `bjo publish --android` in a project: a release build of its entry, then an
-;; APK of it. See `android.bjo`.
+;; The Android app of a project: a release build of its entry, and the job
+;; that makes an APK of it. See `android.bjo`.
+;; - `what` names the command in errors: "bjo publish --android".
 ;; - The manifest must have `(android-id ...)`.
-;; - The APK goes to `-o`, or to `publish-android/` in the project.
-(: publish-android-project #:sync (-> Project Cmdline int))
-(defun (publish-android-project project line)
+;; - Returns the exit code for `bjo` when the project has no app or its
+;;   build fails.
+(: android-job-of #:sync (-> Project Cmdline string (Result int AndroidJob)))
+(defun (android-job-of project line what)
   (with-return ret
     (def package (project-package project))
     (unless (project-has-entry? project)
-      (ret (fail (str "bjo publish --android: " (package-name-of project) " is a library — there is no "
-                      (record-ref package entry) " to make an app of."))))
+      (ret (Err (fail (str what ": " (package-name-of project) " is a library — there is no "
+                           (record-ref package entry) " to make an app of.")))))
     (def (Some id) (record-ref package android-id)
-      :leave (None (fail (str "bjo publish --android: the manifest of " (package-name-of project)
-                              " has no (android-id \"org.example.app\"). The id names the app on Android."))))
+      :leave (None (Err (fail (str what ": the manifest of " (package-name-of project)
+                                   " has no (android-id \"org.example.app\"). The id names the app on Android.")))))
     (def (Ok ready) (prepare project (record-ref line locked))
-      :leave ((Err why) (fail why)))
+      :leave ((Err why) (Err (fail why))))
     (def (Ok (Tuple rec _)) (ensure-built (project-entry project) #f #f (record-ref line force)
                                           (prepared-against ready))
-      :leave ((Err status) status))
+      :leave ((Err status) (Err status)))
     (when (string-ends-with? (record-ref rec output) ".dll")
-      (ret (fail (str "bjo publish --android: " (project-entry project) " has no main, so it is a library."))))
+      (ret (Err (fail (str what ": " (project-entry project) " has no main, so it is a library.")))))
     ;; The root project's packages first: its version of a package wins. The
     ;; packages with `(android #f)` are a list of their own.
     (def own-name (record-ref package name))
@@ -1067,27 +1069,59 @@
             (:when (= (nuget-android? n) android?))
             (:acc out (listing (Tuple (nuget-id n) (nuget-version n))))
             => out))
-    (match (publish-android (AndroidJob (id id)
-                                        (label (option-ref-or (record-ref package android-label)
-                                                              (string-join (list->vec (list-map symbol->string own-name)) ".")))
-                                        (abis (record-ref package android-abis))
-                                        (version (record-ref package version))
-                                        (program (record-ref rec output))
-                                        (links (record-ref rec links))
-                                        (nuget (nuget-of #t))
-                                        (not-android (nuget-of #f))
-                                        (aot (option-ref-or (record-ref package android-aot) #f))
-                                        (permissions (record-ref package android-permissions))
-                                        (dir (path-combine (project-dot-bjo project) "android"))
-                                        (out (match (record-ref line output)
-                                               ((Some dir) dir)
-                                               (None (path-combine (project-dir project) "publish-android"))))
-                                        (exec exec)))
+    (Ok (AndroidJob (id id)
+                    (label (option-ref-or (record-ref package android-label)
+                                          (string-join (list->vec (list-map symbol->string own-name)) ".")))
+                    (abis (record-ref package android-abis))
+                    (version (record-ref package version))
+                    (program (record-ref rec output))
+                    (links (record-ref rec links))
+                    (nuget (nuget-of #t))
+                    (not-android (nuget-of #f))
+                    (aot (option-ref-or (record-ref package android-aot) #f))
+                    (dev #f)
+                    (permissions (record-ref package android-permissions))
+                    (dir (path-combine (project-dot-bjo project) "android"))
+                    (out (Some (match (record-ref line output)
+                                 ((Some dir) dir)
+                                 (None (path-combine (project-dir project) "publish-android")))))
+                    (exec exec)))))
+
+;; `bjo publish --android` in a project: an APK of its program, in `-o` or
+;; in `publish-android/` in the project.
+(: publish-android-project #:sync (-> Project Cmdline int))
+(defun (publish-android-project project line)
+  (with-return ret
+    (def (Ok job) (android-job-of project line "bjo publish --android")
+      :leave ((Err status) status))
+    (match (publish-android job)
       ((Err why) (fail why))
       ((Ok apk)
        (println #"Published ${(project-entry project)} as ${apk}")
        (println #"Install it with: adb install -r ${apk}")
        0))))
+
+;; `bjo run --android` in a project: an APK of its program for the connected
+;; device, installed and started, with the app's log shown.
+;; - The APK is for the device's ABI only. It is a development build (see
+;;   `AndroidJob`), also when the manifest says `(android-aot #t)`.
+;; - The project is `.bjo/android-dev/`, so that it does not replace the
+;;   one of `bjo publish --android`.
+(: run-android-project #:sync (-> Project Cmdline int))
+(defun (run-android-project project line)
+  (with-return ret
+    (def adb (adb-program))
+    (def (Ok abi) (device-abi adb) :leave ((Err why) (fail why)))
+    (def (Ok job) (android-job-of project line "bjo run --android")
+      :leave ((Err status) status))
+    (def dev (record-set job
+                         (abis (list abi))
+                         (aot #f)
+                         (dev #t)
+                         (dir (path-combine (project-dot-bjo project) "android-dev"))
+                         (out None)))
+    (def (Ok apk) (publish-android dev) :leave ((Err why) (fail why)))
+    (run-on-device adb apk (record-ref job id) exec)))
 
 
 ;; ---------------------------------------------------------------------------
@@ -1254,6 +1288,8 @@
   (println "                                          program, which shows itself with bjogui's")
   (println "                                          run-app. The manifest needs (android-id ...).")
   (println "                                          Default: publish-android/ in the project.")
+  (println "  bjo run --android [-c]                  Build this project's app for the connected")
+  (println "                                          device, install it, start it, and show its log.")
   (println "  bjo fmt [--check] [--diff] [files or dirs...]")
   (println "                                          Lay source out as bjo-mode does: those named,")
   (println "                                          or every file under src/, tests/ and benches/.")
@@ -1348,6 +1384,13 @@
        ;; arguments can follow it: everything after the file belongs to the
        ;; program, and a project with no file named has nothing to put them
        ;; after.
+       (when (record-ref line android)
+         (ret (cond
+                ((or (empty? rest) (= rest (list ".")))
+                 (match (project-here "run")
+                   ((Err why) (fail why))
+                   ((Ok project) (run-android-project project line))))
+                (else (fail "bjo run --android: runs this project's app, so it takes no file or arguments.")))))
        (def (Cons name args) rest
          :leave (Nil (match (project-here "run")
                        ((Err why) (fail why))
@@ -1512,6 +1555,6 @@
     ((Err message) (fail message))
     ((Ok line) #:when (and (some? (record-ref line output)) (not (= command "publish")))
      (fail #"bjo ${command}: -o is for publish, which writes a directory; ${command} does not."))
-    ((Ok line) #:when (and (record-ref line android) (not (= command "publish")))
-     (fail #"bjo ${command}: --android is for publish, which makes the app; ${command} does not."))
+    ((Ok line) #:when (and (record-ref line android) (not (or (= command "publish") (= command "run"))))
+     (fail #"bjo ${command}: --android is for publish and run, which make the app; ${command} does not."))
     ((Ok line) (dispatch command line))))

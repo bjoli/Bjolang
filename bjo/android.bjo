@@ -37,8 +37,14 @@
 ;;   JAVA_HOME, when they are set.
 ;; - The APK is signed with the SDK's debug key, and copied to the output
 ;;   directory as `<id>.apk`.
+;;
+;; Running on a device (`bjo run --android`):
+;; - `adb` is the Android SDK's, or else `adb` on the PATH. ANDROID_SERIAL
+;;   chooses the device when more than one is connected, as for adb.
+;; - The APK is installed, the app is stopped and started, and the app's
+;;   log is shown until the app's process ends or Ctrl+C.
 
-(export AndroidJob publish-android)
+(export AndroidJob publish-android adb-program device-abi run-on-device)
 
 (import (std prelude))
 (import (std run))
@@ -68,8 +74,13 @@
 ;;   version, the root project's first.
 ;; - `not-android`: the packages that say `(android #f)`.
 ;; - `aot`: the manifest's `android-aot`: compile the app with Native AOT.
+;; - `dev`: a development build, for `bjo run --android`: CoreCLR, not
+;;   trimmed and without ReadyToRun. It builds in seconds when only the
+;;   program changed, and the APK is about 50 MB. `aot` must be #f.
 ;; - `permissions`: the manifest's `android-permissions`.
-;; - `dir`: where the C# project is written. `out`: where the APK goes.
+;; - `dir`: where the C# project is written.
+;; - `out`: the directory the APK is copied to. None leaves the APK where the
+;;   build wrote it, as `bjo run --android` does.
 ;; - `exec`: runs a program on the terminal, and returns its exit code.
 (type (: AndroidJob (Record (: id string)
                             (: label string)
@@ -80,9 +91,10 @@
                             (: nuget (List (Tuple string string)))
                             (: not-android (List (Tuple string string)))
                             (: aot bool)
+                            (: dev bool)
                             (: permissions (List string))
                             (: dir string)
-                            (: out string)
+                            (: out (Option string))
                             (: exec (-> string (Vec string) int)))))
 
 ;; ---------------------------------------------------------------------------
@@ -190,12 +202,19 @@
        "    <ApplicationDisplayVersion>" (version->string v) "</ApplicationDisplayVersion>\n"
        "    <AndroidPackageFormat>apk</AndroidPackageFormat>\n"
        "    <RuntimeIdentifiers>" rids "</RuntimeIdentifiers>\n"
-       (if (record-ref job aot)
-           (str "    <!-- Native AOT. -->\n"
-                "    <PublishAot>true</PublishAot>\n")
-           (str "    <!-- CoreCLR, not Mono, with ReadyToRun. -->\n"
-                "    <UseMonoRuntime>false</UseMonoRuntime>\n"
-                "    <PublishReadyToRun>true</PublishReadyToRun>\n"))
+       (cond
+         ((record-ref job aot)
+          (str "    <!-- Native AOT. -->\n"
+               "    <PublishAot>true</PublishAot>\n"))
+         ((record-ref job dev)
+          (str "    <!-- CoreCLR, not Mono. A development build: not trimmed, no ReadyToRun. -->\n"
+               "    <UseMonoRuntime>false</UseMonoRuntime>\n"
+               "    <PublishTrimmed>false</PublishTrimmed>\n"
+               "    <PublishReadyToRun>false</PublishReadyToRun>\n"))
+         (else
+          (str "    <!-- CoreCLR, not Mono, with ReadyToRun. -->\n"
+               "    <UseMonoRuntime>false</UseMonoRuntime>\n"
+               "    <PublishReadyToRun>true</PublishReadyToRun>\n")))
        "  </PropertyGroup>\n"
        "  <ItemGroup>\n"
        (string-join (list->vec (list-map (fun (p)
@@ -217,6 +236,11 @@
 (: (-> string string))
 (defun (permission-name p)
   (if (string-contains? p ".") p (str "android.permission." p)))
+
+;; The Java name of the app's activity, so that `adb` can start it as
+;; `<id>/bjo.MainActivity`. Without a name, .NET makes one from a hash.
+(: string)
+(def activity-name "bjo.MainActivity")
 
 (: (-> string (List string) string))
 (defun (app-cs-text label permissions)
@@ -243,7 +267,8 @@
        "    }\n"
        "}\n"
        "\n"
-       "[Activity(Label = " (cs-string label) ", Theme = \"@style/AppTheme\", MainLauncher = true, Exported = true,\n"
+       "[Activity(Name = " (cs-string activity-name) ", Label = " (cs-string label) ",\n"
+       "          Theme = \"@style/AppTheme\", MainLauncher = true, Exported = true,\n"
        "          ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize | ConfigChanges.UiMode)]\n"
        "public class MainActivity : AvaloniaMainActivity\n"
        "{\n"
@@ -355,7 +380,9 @@
     (write-if-changed! csproj (csproj-text job framework rids (package-references references avalonia) kept))
     (write-if-changed! (path-combine dir "App.cs") (app-cs-text label (record-ref job permissions)))
     (write-if-changed! (path-combine dir "Resources" "values" "styles.xml") styles-text)
-    (def how (if (record-ref job aot) " with Native AOT" ""))
+    (def how (cond ((record-ref job aot) " with Native AOT")
+                   ((record-ref job dev) ", a development build")
+                   (else "")))
     (println #"bjo publish --android: ${staged} assemblies in ${dir}. Building the APK for ${rids}${how}.")
     ;; Before dotnet writes to the same terminal.
     (flush-port (parameter-ref current-output-port))
@@ -385,7 +412,8 @@
     (def built (path-combine publish-dir apk-name))
     (unless (file-exists? built)
       (ret (Err (str "bjo publish --android: dotnet publish made no " built "."))))
-    (def out (path-absolute (record-ref job out)))
+    (def (Some to) (record-ref job out) :leave (None (Ok built)))
+    (def out (path-absolute to))
     (match (prepare-output! out)
       ((Some why) (ret (Err why)))
       (None unit))
@@ -394,3 +422,86 @@
     (file-write-text (path-combine out published-marker)
                      "Made by bjo publish --android. Publishing again replaces this directory.\n")
     (Ok apk)))
+
+;; ---------------------------------------------------------------------------
+;; Running on a device
+;; ---------------------------------------------------------------------------
+
+;; `adb`: the Android SDK's, under ANDROID_HOME or ANDROID_SDK_ROOT, or else
+;; `adb` on the PATH.
+(: (-> string))
+(defun (adb-program)
+  (match (option-or (get-environment-variable "ANDROID_HOME") (get-environment-variable "ANDROID_SDK_ROOT"))
+    ((Some sdk) #:when (file-exists? (path-combine sdk "platform-tools" "adb"))
+     (path-combine sdk "platform-tools" "adb"))
+    (_ "adb")))
+
+;; What `adb args...` writes, trimmed. `Err` when adb cannot run or fails.
+(: adb-output #:sync (-> string (List string) (Result string string)))
+(defun (adb-output adb args)
+  (match (run/output '(,(list->vec (Cons adb args))))
+    ((Ok (Tuple 0 out)) (Ok (string-trim out)))
+    ((Ok (Tuple _ out)) (Err (string-trim out)))
+    ((Err e) (Err (str "could not run " adb ": " (error-message e))))))
+
+;; The ABI of the connected device, as a manifest names it: "arm64", "x64",
+;; "arm" or "x86". `Err` when no device is connected, or there are several
+;; and ANDROID_SERIAL does not choose one.
+(: device-abi #:sync (-> string (Result string string)))
+(defun (device-abi adb)
+  (match (adb-output adb (list "shell" "getprop" "ro.product.cpu.abi"))
+    ((Ok "arm64-v8a") (Ok "arm64"))
+    ((Ok "x86_64") (Ok "x64"))
+    ((Ok "armeabi-v7a") (Ok "arm"))
+    ((Ok "x86") (Ok "x86"))
+    ((Ok other) (Err (str "bjo run --android: the device's ABI is \"" other "\", which .NET does not build for.")))
+    ((Err why)
+     ;; adb writes its reason to standard error, which is the terminal's.
+     (Err (str "bjo run --android: no device to run on." (if (= why "") "" (str " " why))
+               "\nStart an emulator or connect a phone. With several, set ANDROID_SERIAL.")))))
+
+;; The uid of the installed app `id`, from `cmd package list packages -U`.
+(: app-uid #:sync (-> string string (Option string)))
+(defun (app-uid adb id)
+  (match (adb-output adb (list "shell" "cmd" "package" "list" "packages" "-U" id))
+    ((Ok out)
+     (def prefix (str "package:" id " uid:"))
+     (match (find (fun (line) (string-starts-with? line prefix))
+                  (vec-map string-trim (string-split out "\n")))
+       ((Some line) (Some (string-drop line (string-length prefix))))
+       (None None)))
+    ((Err _) None)))
+
+;; Installs `apk`, starts the app `id` afresh, and shows its log until its
+;; process ends. Returns the exit code for `bjo`: 0 when the log ends.
+;; - The log is logcat's for the app's uid, from the start: the program's
+;;   output (tag `bjo`), .NET's (`DOTNET`), a crash (`AndroidRuntime`), and
+;;   the errors of everything else. `adb logcat --uid=<uid>` shows all of it.
+;; - The start does not wait for the app (`am start` without `-W`): a
+;;   crash dialog keeps `-W` from returning.
+;; - Ctrl+C stops the log. The app runs on.
+(: run-on-device #:sync (-> string string string (-> string (Vec string) int) int))
+(defun (run-on-device adb apk id exec)
+  (with-return ret
+    (def installed (exec adb ["install" "-r" apk]))
+    (unless (= installed 0) (ret installed))
+    (def (Some uid) (app-uid adb id)
+      :leave (None (println #"bjo run --android: ${id} is installed, and the device does not give its uid.") 1))
+    (ignore (adb-output adb (list "shell" "am" "force-stop" id)))
+    (def (Ok since) (adb-output adb (list "shell" "date" "+%s"))
+      :leave ((Err why) (println #"bjo run --android: ${why}") 1))
+    (def (Ok _) (adb-output adb (list "shell" "am" "start" "-n" (str id "/" activity-name)))
+      :leave ((Err why) (println #"bjo run --android: could not start ${id}: ${why}") 1))
+    (println #"bjo run --android: ${id} started. Its log follows; Ctrl+C stops it.")
+    (flush-port (parameter-ref current-output-port))
+    ;; logcat does not end with the app, so the device's shell ends it:
+    ;; - It waits up to 5 s for the app's process to start.
+    ;; - It waits while the process runs.
+    ;; - It stops logcat a second later, so that a crash report is shown whole.
+    (def running (str "pidof -s " id " >/dev/null"))
+    (ignore (exec adb ["shell" (str "logcat -v tag -T " since ".000 --uid=" uid
+                                    " bjo:V DOTNET:V AndroidRuntime:V '*:E' & l=$!; "
+                                    "i=0; while [ $i -lt 10 ] && ! " running "; do sleep 0.5; i=$((i+1)); done; "
+                                    "while " running "; do sleep 1; done; sleep 1; kill $l")]))
+    (println #"bjo run --android: ${id} has ended.")
+    0))
