@@ -3363,11 +3363,19 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         // after inference, through a metavariable (`TypeEnv.openCase`), so
         // its type can be that variable, solved, rather than the arrow.
         let exprType = NumericLiteral.settled expr.Type
+        // A constructor used as a value is written as a lambda, cast to its
+        // delegate type. An untyped lambda gives C# nothing to infer a type
+        // argument from, so without the cast `(via Loaded)` with
+        // `via<T_a>(Func<T_a, Msg> f)` is rejected (CS0411).
+        let asDelegate (lambda: string) =
+            match exprType with
+            | TFun _ -> $"(({typeToString exprType})({lambda}))"
+            | _ -> lambda
         // Cons/Nil are now builtins backed by SchemeList, not union cases.
         match name with
         // A newtype's constructor as a value: the value it is given is
         // already what it makes.
-        | _ when isNewtypeKey name -> append ctx "(arg0) => arg0"
+        | _ when isNewtypeKey name -> append ctx (asDelegate "(arg0) => arg0")
         // The static itself, not the `Nil<T>()` wrapper. See `inlineBuiltins`.
         | "Nil" ->
             let elemTypeStr = elementTypeString expr.Type
@@ -3383,7 +3391,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 // First-class function value: emit a lambda.
                 let argsList = [for i in 0 .. argTypes.Length - 1 -> $"arg{i}"]
                 let argsStr = String.concat ", " argsList
-                append ctx $"({argsStr}) => Cons({argsStr})"
+                append ctx (asDelegate $"({argsStr}) => Cons({argsStr})")
             | _ ->
                 // Should not happen (Cons always has function type), but safe fallback
                 append ctx "Cons"
@@ -3393,7 +3401,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         | "Ok"
         | "Err" when not (Map.containsKey name ctx.UnionCases) ->
             match exprType with
-            | TFun (_, retType, _) -> append ctx $"(arg0) => {typeToString retType}.{name}(arg0)"
+            | TFun (_, retType, _) -> append ctx (asDelegate $"(arg0) => {typeToString retType}.{name}(arg0)")
             | _ -> append ctx $"{typeToString expr.Type}.{name}"
         // A case of a struct union, here or imported: a static member of the
         // struct.
@@ -3409,7 +3417,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             match exprType with
             | TFun (argTypes, retType, _) ->
                 let argsStr = String.concat ", " [ for i in 0 .. argTypes.Length - 1 -> $"arg{i}" ]
-                append ctx $"({argsStr}) => {typeToString retType}.{declaredTypeName name}({argsStr})"
+                append ctx (asDelegate $"({argsStr}) => {typeToString retType}.{declaredTypeName name}({argsStr})")
             | t -> append ctx $"{typeToString t}.{declaredTypeName name}"
         // The case that is `null` at run time, here or imported. Cast, so that
         // C# knows the type where it infers one, as in `var`.
@@ -3428,7 +3436,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                     // Cast for the same reason as in `generateApply`: the case
                     // class is not the type Bjolang says this has, and a lambda
                     // is exactly where C# infers rather than being told.
-                    append ctx $"({argsStr}) => ({typeStr})new {typeStr}.{declaredTypeName name}({argsStr})"
+                    append ctx (asDelegate $"({argsStr}) => ({typeStr})new {typeStr}.{declaredTypeName name}({argsStr})")
                 | _ ->
                     append ctx $"({typeStr})new {typeStr}.{declaredTypeName name}()"
             else

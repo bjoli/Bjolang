@@ -1,0 +1,38 @@
+;; A constructor passed as a function value to a generic function whose type
+;; parameters only that argument fixes. C# cannot infer a type argument from an
+;; untyped lambda, so the constructor's lambda is cast to its delegate type.
+;; Covers a struct union's case, a class union's case, a newtype, Cons, Ok and
+;; Err.
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Msg (Union (: Loaded int) (: Named string int) Other)))
+(type (: (Tree %a) (Union Leaf (: Node (Tree %a) %a (Tree %a)))))
+(type (: Banana (Newtype int)))
+
+;; %a and %r appear only in the argument's type.
+(: (-> (-> %a %r) (-> %a %r)))
+(defun (via f) (fun (x) (f x)))
+
+(: (-> (-> %a %b %r) (-> %a %b %r)))
+(defun (via2 f) (fun (x y) (f x y)))
+
+(: (-> (-> %a %b %c %r) (-> %a %b %c %r)))
+(defun (via3 f) (fun (x y z) (f x y z)))
+
+(: (-> Banana int))
+(defun (peel b) (def (Banana n) b) n)
+
+(defun (main)
+  (expect "a struct union's case of one field" (displayed ((via Loaded) 3)) "(Loaded 3)")
+  (expect "a struct union's case of two fields" (displayed ((via2 Named) "a" 4)) "(Named \"a\" 4)")
+  (expect "a class union's case"
+          (match ((via3 Node) Leaf 5 Leaf)
+            ((Node Leaf x Leaf) x)
+            (_ 0))
+          5)
+  (expect "a newtype" (peel ((via Banana) 7)) 7)
+  (expect "Cons" ((via2 Cons) 1 (list 2 3)) (list 1 2 3))
+  (expect "Ok" (: ((via Ok) 8) (Result string int)) (Ok 8))
+  (expect "Err" (: ((via Err) "no") (Result string int)) (Err "no"))
+  0)
