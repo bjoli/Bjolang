@@ -43,6 +43,8 @@ type private Resolved =
       Compile: string list
       /// (assembly name, path), one per runtime assembly.
       Runtime: (string * string) list
+      /// The same assemblies' own files, not their ReadyToRun copies.
+      Implementation: string list
       /// (library key, path), one per native library for this machine.
       Native: (string * string) list }
 
@@ -203,7 +205,9 @@ let load (dir: string) : unit =
         |> List.map (fun path -> AssemblyName.GetAssemblyName(path).Name, path)
         |> List.filter (fun (name, _) -> not (specific |> List.exists (fun (n, _) -> n = name)))
         |> fun portable -> portable @ specific
-        |> List.map (fun (name, path) -> name, loaded path)
+
+    let implementation = runtime |> List.map snd
+    let runtime = runtime |> List.map (fun (name, path) -> name, loaded path)
 
     let native =
         assets
@@ -224,6 +228,7 @@ let load (dir: string) : unit =
             { Dir = full
               Compile = compile
               Runtime = runtime
+              Implementation = implementation
               Native = native }
 
 /// The `--nuget` directory, as given.
@@ -237,6 +242,15 @@ let compileReferences () : string list =
 let runtimeAssemblies () : string list =
     match resolved with
     | Some r -> r.Runtime |> List.map snd
+    | None -> []
+
+/// The runtime assemblies' own files: the implementation assemblies, never
+/// a package's reference assemblies, and not the ReadyToRun copies. What
+/// Native AOT compiles: ILCompiler compiles the code it is given, and a
+/// reference assembly has none.
+let implementationAssemblies () : string list =
+    match resolved with
+    | Some r -> r.Implementation
     | None -> []
 
 /// (assembly name, path) for every runtime assembly.

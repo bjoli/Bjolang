@@ -1066,6 +1066,8 @@ let metadata
                     match info.Kind with
                     | TypedAST.ExternGet -> " #:get"
                     | TypedAST.ExternSet -> " #:set"
+                    | TypedAST.ExternEvent true -> " #:event"
+                    | TypedAST.ExternEvent false -> " #:event-remove"
                     | TypedAST.ExternMethod -> ""
 
                 $"(import/extern (%s{info.Alias} (: %s{info.ClrType}.%s{info.MemberName}%s{typeStr}%s{exceptionStr}%s{asyncStr}%s{blockingStr}%s{usesTypeStr}%s{copyStr}%s{uncancellableStr}%s{cancellableStr}%s{accessorStr})))"

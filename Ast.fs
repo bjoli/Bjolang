@@ -588,6 +588,12 @@ type ExternImportSpec =
       IsGet: bool
       /// `#:set`: the target is a property or field, and the alias writes it.
       IsSet: bool
+      /// `#:event`: the target is an event, and the alias adds a handler to
+      /// it, and answers the handler.
+      IsEvent: bool
+      /// `#:event-remove`: the target is an event, and the alias removes a
+      /// handler that a `#:event` alias answered.
+      IsEventRemove: bool
       Range: Range }
 
 /// One clause of `(import/class ...)`: a .NET class, its name, and its

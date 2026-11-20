@@ -2170,6 +2170,37 @@ let hasMember (isStatic: bool) (t: Type) (name: string) : bool =
     let flags = memberFlags isStatic
     not (isNull (findProperty t name flags)) || not (isNull (t.GetField(name, flags)))
 
+/// Does the type have a public event of this name?
+let hasEvent (isStatic: bool) (t: Type) (name: string) : bool =
+    not (isNull (t.GetEvent(name, memberFlags isStatic)))
+
+/// An event, for a `#:event` or `#:event-remove` import: its delegate type,
+/// and the Bjolang function a handler of it is, with the parameters of the
+/// delegate's `Invoke`. A delegate that returns void takes a function that
+/// returns the unit, as a Bjolang function does.
+let resolveEvent (where: string) (declaringType: Type) (name: string) (isStatic: bool) : Type * HMType * int =
+    match declaringType.GetEvent(name, memberFlags isStatic) with
+    | null ->
+        let kind = if isStatic then "static" else "instance"
+
+        failwithf
+            $"Type Error at %s{where}: '%s{declaringType.FullName}' has no public %s{kind} event named '%s{name}'."
+    | ev ->
+        let delegateType = ev.EventHandlerType
+        let invoke = delegateType.GetMethod "Invoke"
+        let parameters = invoke.GetParameters()
+
+        if parameters |> Array.exists (fun p -> p.ParameterType.IsByRef) then
+            failwithf
+                $"Type Error at %s{where}: the event '%s{declaringType.FullName}.%s{name}' has a ref or out parameter, which a Bjolang function cannot take."
+
+        let parameterTypes = parameters |> Array.toList |> List.map (fun p -> mapClrType p.ParameterType)
+
+        let result =
+            if invoke.ReturnType = typeof<System.Void> then unitType else mapClrType invoke.ReturnType
+
+        delegateType, tfun parameterTypes result, parameters.Length
+
 /// Is this type a task of some kind?
 let private isTaskType (t: Type) =
     let name =

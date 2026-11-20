@@ -1138,6 +1138,33 @@ them: ~(.get_Item d k)~ is ~d[k]~ and ~(.set_Item d k v)~ is ~d[k] = v~. An
 indexer that answers a ~ref T~, as ~Span<T>~'s does, answers a copy of the
 value, and ~(.set_Item s i v)~ writes through the reference.
 
+**** ~#:event~ and ~#:event-remove~ — events
+~#:event~ adds a handler to an event, and answers it. ~#:event-remove~
+removes a handler that ~#:event~ answered.
+#+BEGIN_SRC scheme
+(import/extern
+  (on-disposed!  (: System.ComponentModel.Component.Disposed #:event))
+  (off-disposed! (: System.ComponentModel.Component.Disposed #:event-remove)))
+
+(def h (on-disposed! c (fun (sender e) (println "gone"))))   ;; c.Disposed += ...
+(off-disposed! c h)                                          ;; c.Disposed -= h
+#+END_SRC
+
+- The handler is a Bjolang function of the parameters of the event's
+  delegate type: for ~EventHandler~, ~(-> Object EventArgs void)~. A handler
+  of the wrong type is an error at the call.
+- ~#:event~ answers the handler as a delegate of the event's type, such as
+  ~EventHandler~, and that delegate is what ~#:event-remove~ takes. A
+  handler that is never removed is ~(ignore ...)~d.
+- A signature may be declared, and is checked against the event:
+  ~(-> Component (-> Object EventArgs void) EventHandler)~ for ~#:event~,
+  ~(-> Component EventHandler void)~ for ~#:event-remove~. A static event
+  has no receiver.
+- No reflection: the generated C# makes the delegate and writes ~+=~ and
+  ~-=~. A Native AOT build keeps such an event, where one found by its name
+  with ~add-event-handler!~ needs its assembly kept whole.
+- An event of a generic type cannot be named yet.
+
 **** ~(out T)~ — out parameters
 A parameter written ~(out T)~ in the signature is a C# ~out~ parameter, in C#'s position. It is not an argument at the call site: the binding's type is the declared arrow with every ~(out T)~ removed, and the outs come back in the result. The declared result says how, in one of two forms; the compiler checks it against the method and never picks a form itself.
 

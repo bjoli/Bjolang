@@ -79,6 +79,10 @@ type CompilerOptions =
       /// `--aot-cpu <set>`: the instruction sets of the native executable.
       AotCpu: string option
 
+      /// `--aot-keep-packages`: the NuGet packages the program references are
+      /// kept whole instead of trimmed.
+      AotKeepPackages: bool
+
       /// `--build-graph`: build the libraries under the inputs, files or
       /// directories, and everything they import, in parallel. See `BuildGraph`.
       BuildGraph: bool
@@ -118,6 +122,7 @@ let defaultOptions =
       Runtime = []
       Aot = false
       AotCpu = None
+      AotKeepPackages = false
       BuildGraph = false
       Jobs = System.Environment.ProcessorCount
       DryRun = false
@@ -145,6 +150,10 @@ let printUsage () =
     printfn "              level such as x86-64-v3 (AVX2). The default is a baseline"
     printfn "              CPU, so vectors have 128 bits. The executable fails to start"
     printfn "              on a CPU without the instructions."
+    printfn "  --aot-keep-packages"
+    printfn "              Keep the NuGet packages the program references whole in the"
+    printfn "              --aot executable, instead of trimming them. For code that"
+    printfn "              finds a .NET member by name, such as add-event-handler!."
     printfn "  --emit-cs <file>"
     printfn "              Write the generated C# to <file>, in a debug build or not."
     printfn "  --emit-cs-beside"
@@ -292,6 +301,7 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "--aot" :: rest -> parseArgs rest { opts with Aot = true }
     | "--aot-cpu" :: cpu :: rest when not (System.String.IsNullOrWhiteSpace cpu) && not (cpu.StartsWith "-") ->
         parseArgs rest { opts with AotCpu = Some cpu }
+    | "--aot-keep-packages" :: rest -> parseArgs rest { opts with AotKeepPackages = true }
     | "--aot-cpu" :: _ ->
         printfn "Error: --aot-cpu takes the instruction sets to build for: native, or a level such as x86-64-v3."
         exit 1
@@ -388,6 +398,7 @@ let private run (argv: string array) =
           Runtime = options.Runtime
           Aot = options.Aot
           AotCpu = options.AotCpu
+          AotKeepPackages = options.AotKeepPackages
           Debug = options.Debug
           EmitCs = options.EmitCs
           DumpAst = options.DumpAst

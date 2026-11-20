@@ -1,0 +1,48 @@
+;; import/extern with #:event and #:event-remove: a handler added to a .NET
+;; event, and removed again, with no reflection. The generated C# makes the
+;; delegate of the event's type, so a Native AOT build keeps the event.
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (Object     (: System.Object))
+  (EventArgs  (: System.EventArgs))
+  (Component  (: System.ComponentModel.Component (-> Component)))
+  (EventHandler (: System.EventHandler)))
+
+(import/extern
+  ;; The handler's type comes from the event: EventHandler is
+  ;; (-> Object EventArgs void).
+  (on-disposed!  (: System.ComponentModel.Component.Disposed #:event))
+  (off-disposed! (: System.ComponentModel.Component.Disposed #:event-remove))
+  ;; With a declared signature, checked against the event.
+  (on-disposed/typed! (: System.ComponentModel.Component.Disposed
+                         (-> Component (-> Object EventArgs void) EventHandler) #:event))
+  (dispose!      (: System.ComponentModel.Component.Dispose (-> Component void))))
+
+(defun (main)
+  (def/mutable calls '())
+  (def c (Component.))
+  (def h (on-disposed! c (fun (sender e)
+                           (set! calls (cons (if (eq? sender (cast Object c)) "sender" "other") calls)))))
+  (ignore (on-disposed/typed! c (fun (sender e) (set! calls (cons "typed" calls)))))
+  (dispose! c)
+  (expect "both handlers ran, in the order they were added" (list-reverse calls) '("sender" "typed"))
+
+  ;; Removed, the handler does not run again.
+  (def d (Component.))
+  (def/mutable n 0)
+  (def counting (on-disposed! d (fun (s e) (set! n (+ n 1)))))
+  (off-disposed! d counting)
+  (dispose! d)
+  (expect "a removed handler does not run" n 0)
+
+  ;; As values, the aliases are functions.
+  (def add on-disposed!)
+  (def e (Component.))
+  (def/mutable seen #f)
+  (ignore (add e (fun (s a) (set! seen #t))))
+  (dispose! e)
+  (expect "the alias as a value adds the handler" seen #t)
+  (ignore h)
+  (println "extern events ok"))

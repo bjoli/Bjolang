@@ -1764,6 +1764,29 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
           Range = r
           Node = TLambda(paramNames, body) }
 
+    // A `#:event` or `#:event-remove` import as a value: the function of the
+    // receiver, if any, and the handler.
+    | ExternEvent add ->
+        let delegateClr, handlerType, _ =
+            DotNetInterop.resolveEvent where clrType info.MemberName (not info.IsInstance)
+
+        let handlerParamType = if add then handlerType else DotNetInterop.mapClrType delegateClr
+        let handlerName = Gensym.fresh "__foreign"
+        let recvName = Gensym.fresh "__foreign"
+        let receiver = if info.IsInstance then Some(identOf recvName receiverType) else None
+
+        let resultType, body =
+            eventHandlerNode env where info clrType receiverType receiver (identOf handlerName handlerParamType) add r
+
+        let paramNames = (if info.IsInstance then [ recvName ] else []) @ [ handlerName ]
+        let paramTypes = (if info.IsInstance then [ receiverType ] else []) @ [ handlerParamType ]
+        let funType = tfun paramTypes (if add then resultType else lambdaResult TypeConstants.voidType)
+
+        funType,
+        { Type = funType
+          Range = r
+          Node = TLambda(paramNames, body) }
+
     | ExternMethod ->
         // An async import is not a value either, and for a second reason on
         // top of the method-group one: the eta-expansion would be an
@@ -2398,6 +2421,49 @@ and private inferGenericConstruct
 // rejoins as the receiver of a `TDotMethodCall`, which is the same node
 // `(.Method x ...)` produces; the difference is that this one arrived
 // through a clause that could say `#:async`.
+/// A `#:event` (`add`) or `#:event-remove` import, applied to its receiver,
+/// if it has one, and its handler.
+///
+/// Added, the handler is a Bjolang function of the event delegate's
+/// parameters, and the node answers the delegate that calls it. Removed, the
+/// handler is such a delegate, and the node is void.
+and private eventHandlerNode
+    (env: Env)
+    (where: string)
+    (info: ClrExternInfo)
+    (clrType: System.Type)
+    (receiverType: HMType)
+    (receiver: TypedExpr option)
+    (handler: TypedExpr)
+    (add: bool)
+    (r: Range)
+    : HMType * TypedExpr =
+    let delegateClr, handlerType, arity =
+        DotNetInterop.resolveEvent where clrType info.MemberName (not info.IsInstance)
+
+    let delegateType = DotNetInterop.mapClrType delegateClr
+    let wanted = if add then handlerType else delegateType
+
+    try
+        unify env.Registry handler.Type wanted
+    with _ ->
+        let what =
+            if add then
+                "a function of the event's arguments"
+            else
+                "the delegate that its #:event import returned"
+
+        failwithf
+            $"Type Error at %s{where}: the handler of the event '%s{info.ClrType}.%s{info.MemberName}' is to be %s{what}, %s{DotNetInterop.showType (prune env.Registry wanted)}, but it was given %s{DotNetInterop.showType (prune env.Registry handler.Type)}."
+
+    let result = if add then delegateType else TypeConstants.voidType
+    checkDeclaredExtern where env.Registry info receiverType receiver.IsSome [ wanted ] result
+
+    result,
+    { Type = result
+      Range = r
+      Node = TEventHandler(receiver, info.ClrType, info.MemberName, delegateType, arity, handler, add) }
+
 and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
     let info = env.Registry.ClrExterns[name]
     let where, clrType, receiverType = externTarget info r
@@ -2512,6 +2578,26 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
         { Type = TypeConstants.voidType
           Range = r
           Node = node }
+
+    // A handler added to an event, or removed from it.
+    | ExternEvent add ->
+        let typedArgs = args |> List.map (infer env)
+
+        let receiver, rest =
+            if info.IsInstance then
+                let recv, rest = takeReceiver typedArgs
+                Some recv, rest
+            else
+                None, typedArgs
+
+        match rest with
+        | [ (_, handler) ] -> eventHandlerNode env where info clrType receiverType receiver handler add r
+        | _ ->
+            let what = if add then "adds a handler to" else "removes a handler from"
+            let wanted = if info.IsInstance then "the object and the handler" else "the handler"
+
+            failwithf
+                $"Type Error at %s{where}: '%s{name}' %s{what} an event, so it takes %s{wanted}, but was given %d{args.Length} argument(s)."
 
     // A generic method, applied. There is no overload to choose from the
     // arguments here: the import already chose one, against the declared

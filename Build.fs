@@ -163,6 +163,10 @@ type Options =
       /// as `x86-64-v3`. `None` is ILCompiler's baseline CPU. Only `--aot`
       /// reads it.
       AotCpu: string option
+      /// `--aot-keep-packages`: the package assemblies that the program's own
+      /// assemblies reference are TrimmerRootAssembly, kept whole. Off, they
+      /// are trimmed like the rest. Only `--aot` reads it.
+      AotKeepPackages: bool
       /// `--emit-cs`: where the generated C# is written, or nowhere. Unlike
       /// `Debug`, which only changes how the C# is compiled: the C# of an
       /// optimized build is as readable as that of a debug one, so this is for
@@ -192,6 +196,7 @@ let dependencyOptions: Options =
       Runtime = []
       Aot = false
       AotCpu = None
+      AotKeepPackages = false
       EmitCs = None
       DumpAst = None
       EmitCsBeside = false
@@ -248,6 +253,8 @@ let besidePath (inputFilePath: string) = Path.ChangeExtension(Path.GetFullPath i
 ///              executable
 ///     aot-cpu  for an executable built with `--aot` and `--aot-cpu`: the
 ///              instruction sets it was built for
+///     aot-keep-packages  for an executable built with `--aot` and
+///              `--aot-keep-packages`: `yes`
 ///     written  the output's last-write time, in ticks. A record whose output
 ///              has been written since belongs to another build, and the
 ///              compiler does not trust it
@@ -353,7 +360,8 @@ let private writeBuildRecord
                 [ $"aot %s{nativePath (Path.GetFullPath outputFilePath)}"
                   match options.AotCpu with
                   | Some cpu -> $"aot-cpu %s{cpu}"
-                  | None -> () ]
+                  | None -> ()
+                  if options.AotKeepPackages then "aot-keep-packages yes" ]
             else
                 []
 
@@ -1030,10 +1038,13 @@ let compile (options: Options) (inputFilePath: string) : int =
             // `native`, its name, and its path relative to the program, all
             // separated by tabs. When the table is there it is the only place
             // anything is loaded from, so a published program never falls back
-            // on the absolute paths of the tree it was built in.
+            // on the absolute paths of the tree it was built in. A Native AOT
+            // executable has no assembly location; its table is found from
+            // the process path, `main` -> `main.bjolinks`.
             let publishedResolverCode =
                 """    private static bool InstallPublishedResolver() {
         var self = typeof(BjolangEntryPoint).Assembly.Location;
+        if (string.IsNullOrEmpty(self)) self = System.Environment.ProcessPath;
         if (string.IsNullOrEmpty(self)) return false;
         var table = System.IO.Path.ChangeExtension(self, ".bjolinks");
         if (!System.IO.File.Exists(table)) return false;
@@ -1250,12 +1261,10 @@ let compile (options: Options) (inputFilePath: string) : int =
                 |> List.map (fun dllPath -> referenceItem false (assemblyNameOf dllPath) dllPath)
                 |> String.concat "\n"
 
-            let packageReferencesWith (copied: bool) =
+            let packageReferences =
                 packageReferenceFiles
-                |> List.map (fun dllPath -> referenceItem copied (Path.GetFileNameWithoutExtension dllPath) dllPath)
+                |> List.map (fun dllPath -> referenceItem false (Path.GetFileNameWithoutExtension dllPath) dllPath)
                 |> String.concat "\n"
-
-            let packageReferences = packageReferencesWith false
                 
             // MSBuild is told the *framework*, not its files: it then supplies
             // the reference pack and writes a runtimeconfig naming it, which is
@@ -1713,6 +1722,46 @@ let compile (options: Options) (inputFilePath: string) : int =
 
                 let hostOptions = gcOptions @ switches @ [ noFiberTrace ] |> String.concat "\n"
 
+                // The packages' implementation assemblies, not what the C#
+                // compile references: those can be a package's reference
+                // assemblies (Avalonia's `ref/`), whose types lack what is
+                // not public. ILCompiler compiles what it is given, so a call
+                // to such a member, through an interface, finds no code and
+                // the runtime fails fast, with no message.
+                let packageImplementations =
+                    NuGetRefs.implementationAssemblies ()
+                    |> List.map (fun dllPath -> referenceItem true (Path.GetFileNameWithoutExtension dllPath) dllPath)
+                    |> String.concat "\n"
+
+                // With `--aot-keep-packages`, the package assemblies that the
+                // program's own assemblies reference are kept whole, as the
+                // Android build keeps them. Code that finds a .NET member by
+                // name at run time (`add-event-handler!`) needs it: the trimmer
+                // cannot see the member. Packages that only other packages use
+                // are trimmed either way.
+                let referencedNames (dllPath: string) =
+                    try
+                        use stream = File.OpenRead dllPath
+                        use pe = new System.Reflection.PortableExecutable.PEReader(stream)
+                        let md = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader pe
+                        [ for h in md.AssemblyReferences -> md.GetString(md.GetAssemblyReference(h).Name) ]
+                    with _ -> []
+
+                let packageNames =
+                    NuGetRefs.implementationAssemblies ()
+                    |> List.map (fun p -> System.Reflection.AssemblyName.GetAssemblyName(p).Name)
+                    |> Set.ofList
+
+                let keptWhole =
+                    if not options.AotKeepPackages then "" else
+                    (Path.GetFullPath outputFilePath :: linkedAssemblies)
+                    |> List.collect referencedNames
+                    |> List.filter packageNames.Contains
+                    |> List.distinct
+                    |> List.sort
+                    |> List.map (fun name -> $"    <TrimmerRootAssembly Include=\"%s{name}\" />")
+                    |> String.concat "\n"
+
                 // Without it ILCompiler targets a baseline CPU: on x86-64 that
                 // has SSE2 and no AVX, so `Vector<T>` is 128 bits wide.
                 let instructionSet =
@@ -1739,7 +1788,8 @@ let compile (options: Options) (inputFilePath: string) : int =
   <ItemGroup>
 {frameworkReferences}
 {aotReferences}
-{packageReferencesWith true}
+{packageImplementations}
+{keptWhole}
 {hostOptions}
   </ItemGroup>
 </Project>"""

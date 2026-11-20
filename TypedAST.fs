@@ -811,6 +811,9 @@ type ClrExternKind =
     /// `#:set`: a property or field write. Always yields void; the value is the
     /// alias's last argument.
     | ExternSet
+    /// `#:event` (true) and `#:event-remove` (false): a handler added to an
+    /// event, or removed from it. The handler is the alias's last argument.
+    | ExternEvent of add: bool
 
 /// How the out parameters of an `import/extern` come back. The declared result
 /// says which, and the import checks it against the method.
@@ -1276,6 +1279,24 @@ and TExprNode =
     /// A static property or field write, from a `#:set` import: the declaring
     /// type, the member's name, and the value. Always void.
     | TForeignStaticSet of string * string * TypedExpr
+    /// A `#:event` or `#:event-remove` import, applied: the receiver (None for
+    /// a static event, which the declaring type names), the declaring type,
+    /// the event's name, the event's delegate type, its number of
+    /// parameters, the handler, and whether it is added.
+    ///
+    /// Added, the handler is a Bjolang function, and the node makes the
+    /// delegate of the event's type that calls it, adds it, and answers it.
+    /// Removed, the handler is that delegate, and the node is void. No
+    /// reflection: the delegate is made in the generated C#, so a Native AOT
+    /// build keeps the event.
+    | TEventHandler of
+        receiver: TypedExpr option *
+        clrType: string *
+        eventName: string *
+        delegateType: HMType *
+        arity: int *
+        handler: TypedExpr *
+        add: bool
 
 and TLoopMember =
     { LoopName: string

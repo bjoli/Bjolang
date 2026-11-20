@@ -20,6 +20,15 @@
 ;;     <out>/external/...             NuGet packages, as below the NuGet
 ;;                                    cache; anything else below the deepest
 ;;                                    directory it shares with the rest
+;;
+;; A program with a Native AOT executable is published as that executable
+;; alone, with what it loads at run time. See `publish-native`:
+;;
+;;     <out>/<program>                the Native AOT executable
+;;     <out>/<program>.bjolinks       native library -> path
+;;     <out>/<library file>           each native library, beside it
+;;     <out>/lib/...                  with `whole-stdlib` only
+;;     <out>/app/..., packages/...    the declared resources, as above
 
 (export PublishedPackage Publication publish published-marker prepare-output! package-store-path)
 
@@ -290,6 +299,10 @@
       ((Some why) (ret (Err why)))
       (None unit))
 
+    (def native (record-ref p native-program))
+    (when (and (not (= native "")) (file-exists? native))
+      (ret (publish-native p out native)))
+
     (def files (list-append (list-map (fun (link) (match link ((Tuple name path) (Tuple "link" name path))))
                                       (record-ref p links))
                             (list-map (fun (native) (match native ((Tuple key path) (Tuple "native" key path))))
@@ -320,9 +333,6 @@
                                       (clr-change-ext program ".pdb")))
                 (:when (file-exists? companion))
                 (:do (copy-to! out (clr-file-name companion) companion)))
-          (def native (record-ref p native-program))
-          (when (and (not (= native "")) (file-exists? native))
-            (copy-executable! out (clr-file-name native) native))
           (match (record-ref p lib)
             ((Some lib) #:when (record-ref p whole-stdlib)
              (copy-tree! lib (path-combine out "lib") build-record?))
@@ -350,3 +360,43 @@
         #:catch (System.Exception)))
 
     (result-map-err (fun (e) (str "bjo publish: " (error-message e))) copied)))
+
+;; Lays out a program that has a Native AOT executable, and returns how many
+;; files the output holds.
+;;
+;; - The executable has the program's modules, the runtime, the standard
+;;   library and the NuGet packages' code compiled in. No assembly is copied,
+;;   and nothing is precompiled.
+;; - The native libraries go beside it, and `<program>.bjolinks` names them,
+;;   so that the program loads them from there and never from the tree it was
+;;   built in.
+;; - Resources, and with `whole-stdlib` the standard library, go where the
+;;   .NET layout puts them, relative to the executable.
+(: publish-native #:sync (-> Publication string string (Result string int)))
+(defun (publish-native p out native)
+  (def copied
+    (try
+      (let ()
+        (copy-executable! out (clr-file-name native) native)
+        (match (record-ref p lib)
+          ((Some lib) #:when (record-ref p whole-stdlib)
+           (copy-tree! lib (path-combine out "lib") build-record?))
+          (_ unit))
+        (def table
+          (loop (:for (Tuple key path) (record-ref p natives))
+                (:do (copy-to! out (clr-file-name path) path))
+                (:acc lines (listing (str "native\t" key "\t" (clr-file-name path))))
+                => lines))
+        (loop (:for package (record-ref p packages))
+              (:subloop)
+              (:for resource (record-ref package resources))
+              (:do (copy-resource! out
+                                   (path-combine (package-prefix package) resource)
+                                   (path-combine (record-ref package dir) resource))))
+        (file-write-text (path-combine out (clr-change-ext (clr-file-name native) ".bjolinks"))
+                         (str (string-join (list->vec table) "\n") "\n"))
+        (file-write-text (path-combine out published-marker)
+                         "Made by bjo publish. Publishing again replaces this directory.\n")
+        (count-files out))
+      #:catch (System.Exception)))
+  (result-map-err (fun (e) (str "bjo publish: " (error-message e))) copied))

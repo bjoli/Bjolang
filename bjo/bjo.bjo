@@ -221,6 +221,8 @@
                          ;; With `--aot-cpu`: the CPU it was built for. ""
                          ;; otherwise.
                          (: aot-cpu string)
+                         ;; With `--aot-keep-packages`: "yes". "" otherwise.
+                         (: aot-keep-packages string)
                          ;; For a program: what its resolver loads, as the
                          ;; `link` and `native` lines name them. What
                          ;; `bjo publish` copies.
@@ -298,6 +300,7 @@
           (:acc runtime (listing value) #:when (= key "runtime"))
           (:acc aot (folding "" (if (= key "aot") value aot)))
           (:acc aot-cpu (folding "" (if (= key "aot-cpu") value aot-cpu)))
+          (:acc aot-keep-packages (folding "" (if (= key "aot-keep-packages") value aot-keep-packages)))
           ;; `link <name> <path>` and `native <key> <path>`: the value splits
           ;; at its first space the way a line does, and a path may hold more.
           (:acc links (listing (pair-of value)) #:when (= key "link"))
@@ -320,6 +323,7 @@
                                 (runtime (list-sort runtime))
                                 (aot aot)
                                 (aot-cpu aot-cpu)
+                                (aot-keep-packages aot-keep-packages)
                                 (links links)
                                 (natives natives)
                                 (written written)
@@ -357,17 +361,20 @@
 ;;
 ;; `runtime` is the root manifest's runtime settings, as `name=value`, which a
 ;; program is built with, `aot` whether it is built as a Native AOT
-;; executable too, and `aot-cpu` the CPU that executable is for, or "". Empty,
-;; #f and "" outside a project.
+;; executable too, `aot-cpu` the CPU that executable is for, or "", and
+;; `aot-trim` whether it trims the NuGet packages. Empty, #f, "" and #t outside
+;; a project.
 (type (: Against (Record (: roots (Option string))
                          (: frameworks (Option string))
                          (: nuget (Option string))
                          (: runtime (List string))
                          (: aot bool)
-                         (: aot-cpu string))))
+                         (: aot-cpu string)
+                         (: aot-trim bool))))
 
 (: Against)
-(def nothing-against (Against (roots None) (frameworks None) (nuget None) (runtime Nil) (aot #f) (aot-cpu "")))
+(def nothing-against (Against (roots None) (frameworks None) (nuget None) (runtime Nil) (aot #f) (aot-cpu "")
+                             (aot-trim #t)))
 
 (: (-> Prepared Against))
 (defun (prepared-against ready)
@@ -376,7 +383,8 @@
            (nuget (prepared-nuget-dir ready))
            (runtime (prepared-runtime ready))
            (aot (prepared-aot ready))
-           (aot-cpu (prepared-aot-cpu ready))))
+           (aot-cpu (prepared-aot-cpu ready))
+           (aot-trim (prepared-aot-trim ready))))
 
 (: (-> string (Option string) (List string)))
 (defun (flag-for flag path)
@@ -391,12 +399,14 @@
     (Nil Nil)
     ((Cons setting rest) (Cons "--runtime" (Cons setting (runtime-flags rest))))))
 
-;; `--aot`, and `--aot-cpu` with it when the manifest names a CPU.
+;; `--aot`, with `--aot-cpu` when the manifest names a CPU and
+;; `--aot-keep-packages` when it turns trimming off.
 (: (-> Against (List string)))
 (defun (aot-flags a)
-  (cond ((not (record-ref a aot)) Nil)
-        ((= (record-ref a aot-cpu) "") (list "--aot"))
-        (else (list "--aot" "--aot-cpu" (record-ref a aot-cpu)))))
+  (if (not (record-ref a aot))
+      Nil
+      (list-append (if (= (record-ref a aot-cpu) "") '("--aot") (list "--aot" "--aot-cpu" (record-ref a aot-cpu)))
+                   (if (record-ref a aot-trim) '() '("--aot-keep-packages")))))
 
 ;; The compiler records both files as inputs of what it builds, so a build made
 ;; against other packages — or against another set of declarations — is stale by
@@ -497,6 +507,10 @@
       (and (string-ends-with? artefact ".exe")
            (record-ref against aot)
            (not (= (record-ref rec aot-cpu) (record-ref against aot-cpu))))
+      ;; `(aot-trim ...)` changed, the same way.
+      (and (string-ends-with? artefact ".exe")
+           (record-ref against aot)
+           (not (= (= (record-ref rec aot-keep-packages) "yes") (not (record-ref against aot-trim)))))
       (and (record-ref against aot)
            (not (file-exists? (record-ref rec aot))))))
 
@@ -965,17 +979,20 @@
          (def dir (path-absolute out))
          (def (Some name) (path-filename program)
            :default program)
-         ;; The copies of the program's modules, precompiled in place. The
-         ;; builds stay IL, so that a rebuild after an edit runs no crossgen2.
-         (def status (exec "dotnet" (list->vec (list compiler-dll "--precompile-published" dir))))
-         (unless (= status 0)
-           (println #"bjo publish: precompiling the published modules failed (exit code ${(int->string status)}). They are left as IL."))
-         (println #"Published ${program} to ${dir}: ${n} files.")
          (def (Some native) (path-filename (record-ref rec aot))
            :default "")
-         (if (= native "")
-             (println #"Run it with: dotnet ${(path-combine dir name)}")
-             (println #"Run it with: ${(path-combine dir native)}"))
+         (cond
+           ((= native "")
+            ;; The copies of the program's modules, precompiled in place. The
+            ;; builds stay IL, so that a rebuild after an edit runs no crossgen2.
+            (def status (exec "dotnet" (list->vec (list compiler-dll "--precompile-published" dir))))
+            (unless (= status 0)
+              (println #"bjo publish: precompiling the published modules failed (exit code ${(int->string status)}). They are left as IL."))
+            (println #"Published ${program} to ${dir}: ${n} files.")
+            (println #"Run it with: dotnet ${(path-combine dir name)}"))
+           (else
+            (println #"Published the Native AOT executable of ${program} to ${dir}: ${n} files.")
+            (println #"Run it with: ${(path-combine dir native)}")))
          0))))
 
 ;; `bjo publish` in a project: a release build of its entry, then the copy.
@@ -1045,6 +1062,14 @@
     (def (Some id) (record-ref package android-id)
       :leave (None (Err (fail (str what ": the manifest of " (package-name-of project)
                                    " has no (android-id \"org.example.app\"). The id names the app on Android.")))))
+    (def icon (option-map #(path-absolute (path-combine (project-dir project) &))
+                          (record-ref package android-icon)))
+    (match icon
+      ((Some png) #:when (not (string-ends-with? (string-downcase png) ".png"))
+       (ret (Err (fail (str what ": the android-icon " png " is not a PNG. Android needs a PNG.")))))
+      ((Some png) #:when (not (file-exists? png))
+       (ret (Err (fail (str what ": the android-icon " png " is not there.")))))
+      (_ unit))
     (def (Ok ready) (prepare project (record-ref line locked))
       :leave ((Err why) (Err (fail why))))
     (def (Ok (Tuple rec _)) (ensure-built (project-entry project) #f #f (record-ref line force)
@@ -1082,6 +1107,7 @@
                     (dev #f)
                     (permissions (record-ref package android-permissions))
                     (share-target (option-ref-or (record-ref package android-share-target) #f))
+                    (icon icon)
                     (dir (path-combine (project-dot-bjo project) "android"))
                     (out (Some (match (record-ref line output)
                                  ((Some dir) dir)

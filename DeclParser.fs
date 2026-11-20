@@ -69,7 +69,14 @@ type ForeignImportOptions =
       /// two names. A property has no overloads to disambiguate, so nothing is
       /// gained by naming both in one place, and two clauses is what lets a
       /// module import only the read.
-      IsSet: bool }
+      IsSet: bool
+      /// `#:event` — the target names an event, and the alias adds a handler
+      /// to it: `target.Event += handler`. It answers the handler, as a
+      /// delegate of the event's type, which is what removes it again.
+      IsEvent: bool
+      /// `#:event-remove` — the target names an event, and the alias removes
+      /// a handler that a `#:event` alias answered: `target.Event -= handler`.
+      IsEventRemove: bool }
 
 /// One clause of `import/extern` or `import/class`.
 ///
@@ -138,6 +145,8 @@ let parseForeignImportClause
             | SAtom { Token = Keyword "copy" } :: tail -> readOptions { opts with IsCopy = true } tail
             | SAtom { Token = Keyword "get" } :: tail -> readOptions { opts with IsGet = true } tail
             | SAtom { Token = Keyword "set" } :: tail -> readOptions { opts with IsSet = true } tail
+            | SAtom { Token = Keyword "event" } :: tail -> readOptions { opts with IsEvent = true } tail
+            | SAtom { Token = Keyword "event-remove" } :: tail -> readOptions { opts with IsEventRemove = true } tail
             | _ -> malformed ()
 
         let options =
@@ -151,7 +160,9 @@ let parseForeignImportClause
                   UsesType = false
                   IsCopy = false
                   IsGet = false
-                  IsSet = false }
+                  IsSet = false
+                  IsEvent = false
+                  IsEventRemove = false }
                 optionForms
 
         alias, typeParams, clrTarget, options, r
@@ -165,9 +176,27 @@ let parseForeignImportClause
 let private checkAccessorOptions (formName: string) (opts: ForeignImportOptions) (r: Range) : unit =
     let where = Lexer.formatPos r
 
+    let accessors =
+        [ opts.IsGet; opts.IsSet; opts.IsEvent; opts.IsEventRemove ]
+        |> List.filter id
+        |> List.length
+
     if opts.IsGet && opts.IsSet then
         failwithf
             $"Syntax error in %s{formName} at %s{where}: a clause is one accessor. Write the read and the write as two clauses under two names — that is also what lets a module import only the read."
+
+    if accessors > 1 then
+        failwithf
+            $"Syntax error in %s{formName} at %s{where}: a clause is one accessor, and #:get, #:set, #:event and #:event-remove are four. Write each as a clause of its own, under its own name."
+
+    if opts.IsEvent || opts.IsEventRemove then
+        if opts.IsAsync || opts.Cancellable || opts.Uncancellable || opts.IsBlocking then
+            failwithf
+                $"Syntax error in %s{formName} at %s{where}: #:async, #:cancellable, #:uncancellable and #:blocking describe how a *call* is made, and adding or removing an event handler is not one."
+
+        if opts.UsesType || opts.IsCopy || not opts.Exceptions.IsEmpty then
+            failwithf
+                $"Syntax error in %s{formName} at %s{where}: #:uses-type, #:copy and #:exceptions describe a method, and #:event and #:event-remove name an event."
 
     if opts.IsGet || opts.IsSet then
         if opts.IsAsync || opts.Cancellable || opts.Uncancellable then
@@ -560,6 +589,8 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                   IsCopy = opts.IsCopy
                   IsGet = opts.IsGet
                   IsSet = opts.IsSet
+                  IsEvent = opts.IsEvent
+                  IsEventRemove = opts.IsEventRemove
                   Range = cr })
 
         Some(DImportExtern(specs, r))
@@ -600,9 +631,9 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                 // A class is not an accessor. `import/class` declares a type and
                 // its constructor, and a property of that type is imported with
                 // an `import/extern` clause naming it.
-                if opts.IsGet || opts.IsSet then
+                if opts.IsGet || opts.IsSet || opts.IsEvent || opts.IsEventRemove then
                     failwithf
-                        $"Syntax error in import/class at %s{Lexer.formatPos cr}: #:get and #:set name an accessor for a property or field, and this form declares a type and its constructor. Write the accessor as an import/extern clause."
+                        $"Syntax error in import/class at %s{Lexer.formatPos cr}: #:get, #:set, #:event and #:event-remove name an accessor of a member, and this form declares a type and its constructor. Write the accessor as an import/extern clause."
 
                 { Alias = alias
                   TypeParams = typeParams

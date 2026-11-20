@@ -1865,6 +1865,9 @@ let rec isStatementShaped (expr: TypedExpr) : bool =
     // emitted where `set!` is, for the reason `set!` is.
     | TDotPropertySet _
     | TForeignStaticSet _
+    // A `#:event` import: the handler's delegate is made and added in
+    // statements of their own.
+    | TEventHandler _
     | TThrow _
     | TTryFinally _
     // Emitted as a `try`/`catch` statement assigning the `Result` to a local,
@@ -4052,6 +4055,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TTaskEvent _
     | TDotPropertySet _
     | TForeignStaticSet _
+    | TEventHandler _
     | TYield _
     | TYieldFrom _ ->
         // Statement-shaped: `needsHoist` has already routed these away.
@@ -5485,6 +5489,41 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
     | TForeignStaticSet (clrType, memberName, value) ->
         generateBindingValue ctx (Assign $"%s{clrTypeSpelling clrType}.%s{memberName}") value
         dischargeVoid ctx target
+
+    // A `#:event` or `#:event-remove` import, applied. The receiver and the
+    // handler are evaluated in that order, each into a local, and then:
+    //
+    //     EventHandler<RoutedEventArgs> __delegate = (__a0, __a1) => __handler(__a0, __a1);
+    //     __source.Click += __delegate;
+    //
+    // and the value is the delegate, which `-=` takes to remove it. The lambda
+    // takes its parameter types from the delegate type, and a call of a
+    // Bjolang function that returns the unit is a statement, so it fits a
+    // delegate that returns void.
+    | TEventHandler (receiver, clrType, eventName, delegateType, arity, handler, add) ->
+        let owner =
+            match receiver with
+            | Some recv ->
+                let tmp = freshName "__source"
+                generateBindingValue ctx (DeclareAndAssign(typeToString recv.Type, tmp)) recv
+                tmp
+            | None -> clrTypeSpelling clrType
+
+        let handlerName = freshName "__handler"
+        generateBindingValue ctx (DeclareAndAssign(typeToString handler.Type, handlerName)) handler
+
+        if add then
+            let made = freshName "__delegate"
+            let parameters = List.init arity (fun _ -> freshName "__a") |> String.concat ", "
+            indent ctx
+            appendLine ctx $"%s{typeToString delegateType} %s{made} = (%s{parameters}) => %s{handlerName}(%s{parameters});"
+            indent ctx
+            appendLine ctx $"%s{owner}.%s{eventName} += %s{made};"
+            emitTerminal ctx target delegateType (fun c -> append c made)
+        else
+            indent ctx
+            appendLine ctx $"%s{owner}.%s{eventName} -= %s{handlerName};"
+            dischargeVoid ctx target
 
     // A void method with outs: the call is a statement, and the outs it wrote
     // are the value.

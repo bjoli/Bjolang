@@ -1822,9 +1822,10 @@ AOT_MAIN = '''(import (std prelude))
 AOT_CHECKS = "checks n (2147483645 2147483646) (-9223372036854775807 -9223372036854775808) 2412"
 
 
-def aot_manifest(app, aot, runtime="", cpu=""):
+def aot_manifest(app, aot, runtime="", cpu="", trim=True):
     clauses = (("\n  (aot #t)" if aot else "")
                + (f'\n  (aot-cpu "{cpu}")' if cpu else "")
+               + ("" if trim else "\n  (aot-trim #f)")
                + (f"\n  (runtime {runtime})" if runtime else ""))
     write(app / "manifest.bjodat", f'(package\n  (name (aotapp))\n  (version "0.1.0"){clauses})\n')
 
@@ -1857,6 +1858,15 @@ def test_native_aot(work, c):
     c.says("and a build after that has nothing to do", run_bjo(app, "build"), "Up to date")
     c.says("the program built for this CPU runs", run_bjo(app, "run"), "server")
 
+    # Trimming the NuGet packages is the default; (aot-trim #f) keeps them.
+    aot_manifest(app, True, "(gc-server #t)", "native", trim=False)
+    c.says("(aot-trim #f) rebuilds the program", run_bjo(app, "build"), "Built")
+    c.that("whose record says it keeps the packages",
+           record.exists() and "aot-keep-packages yes" in record.read_text(errors="replace").splitlines())
+    c.says("and a build after that has nothing to do", run_bjo(app, "build"), "Up to date")
+    aot_manifest(app, True, "(gc-server #t)", "native")
+    c.says("taking it out rebuilds it again", run_bjo(app, "build"), "Built")
+
     out = work / "out"
     c.worked("publish", run_bjo(app, "publish", "-o", str(out)))
     published = out / native.name
@@ -1864,6 +1874,13 @@ def test_native_aot(work, c):
     if published.exists():
         alone = subprocess.run([str(published)], cwd=str(work), capture_output=True, text=True, timeout=600)
         c.says("and it runs", alone, "server")
+    # The executable has everything compiled in: no assemblies, no runtime.
+    left = sorted(f.name for f in out.iterdir()) if out.exists() else []
+    c.that("and nothing for dotnet is published beside it",
+           not any(n.endswith((".exe", ".dll", ".json")) and n != native.name for n in left)
+           and not any(n in left for n in ("lib", "runtime", "app", "external")), left)
+    c.that("only a table of its native libraries",
+           (out / (native.stem + ".bjolinks")).exists(), left)
 
     aot_manifest(app, False)
     ran = run_bjo(app, "run")
@@ -2173,9 +2190,12 @@ def test_fmt(work, c):
          "(let go ((i 0) (acc Nil)\n(n 1))\n(go i acc n))\n",
          "(let go ((i 0)\n         (acc Nil)\n         (n 1))\n  (go i acc n))\n"),
         ("but bindings on one line stay on it", "(let ((a 1) (b 2))\na)\n", "(let ((a 1) (b 2))\n  a)\n"),
-        ("a tab in a string is written \\t, after a backslash too",
-         '(f "a\tb \\\tc")\n', '(f "a\\tb \\\\\\tc")\n'),
+        ("a tab in a string is written \\t", '(f "a\tb")\n', '(f "a\\tb")\n'),
         ("but not in an interpolation's hole", '(f #"a\t${(g\t1)}")\n', '(f #"a\\t${(g\t1)}")\n'),
+        # The lexer rejects a tab after a backslash; fmt keeps it rather than
+        # make the escape mean something.
+        ("nor one after a backslash",
+         '(f "a\tb \\\tc")\n', '(f "a\\tb \\\tc")\n'),
         ("a tab in a comment becomes spaces", ";\tx\n", ";       x\n"),
         ("a call too long for its line has its arguments a line each, under the first",
          "(defun (f) (some-function-with-a-long-name (another-call (nested alpha) beta gamma) "

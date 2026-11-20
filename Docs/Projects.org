@@ -99,6 +99,8 @@ are in ~bjo/manifest.bjo~, which is the only reader of it.
   Optional, ~#f~ by default. Only the project being built uses it.
 - ~(aot-cpu "native")~ says which CPU that executable is for — see below.
   Optional. Only ~(aot #t)~ reads it.
+- ~(aot-trim #f)~ keeps NuGet packages whole in that executable — see below.
+  Optional, ~#t~ by default. Only ~(aot #t)~ reads it.
 - ~targets~ and ~(registry ...)~ sources are not implemented. A registry source
   is an error that says so.
 
@@ -451,6 +453,9 @@ needs no .NET to run.
 - *Reflection that is resolved at run time may not work.* Native AOT keeps only
   the code that the program can be seen to use. The runtime and the standard
   library use none that fails.
+- *A NuGet package's assemblies are compiled as they run*: the implementation
+  assemblies, never a package's reference assemblies. They are trimmed like
+  the rest of the program — see "Trimming" below.
 - *It has no fiber trace.* The build removes the hooks of
   ~BJO_FIBER_TRACE~, which cost a native executable 5 to 8 % of a channel
   rendezvous. Run the ~.exe~ to get the trace. The report of a deadline
@@ -486,6 +491,27 @@ has.
 
 The compiler takes it as ~--aot-cpu~. The build record says the CPU, so a
 change to ~aot-cpu~ rebuilds the program.
+
+*** Trimming
+
+#+BEGIN_SRC scheme
+  (aot #t)
+  (aot-trim #f)
+#+END_SRC
+
+The native executable holds only the code the program can be seen to use,
+from the NuGet packages too. Code that finds a member by its name at run
+time is not seen, and the member may be gone: ~add-event-handler!~ then
+raises that the type has no such event. Import the event with ~#:event~
+instead (see =Syntax.org=), which the trimmer sees.
+
+~(aot-trim #f)~ keeps whole each package assembly that the program's own
+assemblies reference, as ~bjo publish --android~ does. Packages that only
+other packages use are trimmed either way. The executable is larger: a
+bjogui program is about 57 MB instead of 38 MB.
+
+The compiler takes it as ~--aot-keep-packages~. A change to ~aot-trim~
+rebuilds the program.
 
 ** Sources: where a dependency comes from
 
@@ -728,6 +754,23 @@ program JIT-compiles little when it starts:
   and JIT-compiles the IL, which each file still holds.
 - ~BJOLANG_NO_R2R=1~ turns it off.
 
+*A program built with ~(aot #t)~ is published as its native executable.* It
+has the program's modules, the runtime, the standard library and the
+packages' code compiled in, so nothing for ~dotnet~ is copied and nothing is
+precompiled:
+
+#+BEGIN_SRC text
+publish/
+  main                     the Native AOT executable
+  main.bjolinks            its native libraries, and where
+  libSkiaSharp.so ...      the packages' native libraries, beside it
+  app/..., packages/...    declared resources, laid out as above
+  lib/...                  with --whole-stdlib only
+#+END_SRC
+
+It needs no .NET runtime. It loads its native libraries only from the
+directory, as the table says.
+
 A single file publishes the same way: ~bjo publish -o out tool.bjo~. Inside a
 project it is built against the project's packages and carries their resources;
 outside one it has neither.
@@ -750,7 +793,8 @@ Android.
   (android-label "Things to do")       ; the name under the icon
   (android-abis "arm64" "x64")         ; the CPUs to build for
   (android-aot #t)                     ; Native AOT: it starts faster
-  (android-permissions "INTERNET"))    ; what the app asks Android for
+  (android-permissions "INTERNET")     ; what the app asks Android for
+  (android-icon "icon.png"))           ; the icon on the home screen
 #+END_SRC
 
 #+BEGIN_SRC sh
@@ -770,6 +814,14 @@ adb install -r publish-android/com.example.todoapp.apk
 - *~(android-share-target #t)~ puts the app in the Share menu* for text,
   such as a page shared from a browser. The app gets the text as a host
   message: see [[*The app and its host][The app and its host]].
+- *~android-icon~ is the app's icon*: a square PNG, relative to the
+  project's directory. Without it, the app has Android's default icon.
+  - Fill the whole square, without transparent corners. The launcher cuts
+    the icon to its shape: a circle, a rounded square, and so on. Keep what
+    is important away from the corners, because a circle cuts them off.
+  - From Android 8 the icon is an adaptive icon: the image is its
+    foreground, and white shows where the image is transparent.
+  - A size of 432×432 pixels is sufficient.
 - *The app's version is the package's.* The version code is
   ~major * 10000 + minor * 100 + patch~.
 - *How the program starts.* The app's generated C# calls the program's
@@ -841,6 +893,11 @@ subscriptions and commands.
   ~(android-share-target #t)~ it posts each text shared to the app as the
   subject, a newline and the text. The subject is "" when the sharer gives
   none. Its service ~"share-text"~ shows Android's Share sheet for a text.
+- *Its service ~"open-private"~ opens an address in private browsing*: in
+  Firefox (or its Beta or Nightly) with the extra ~private_browsing_mode~,
+  or in Firefox Focus, which is always private; the first that is
+  installed. It answers ~#f~ when none is. Chrome does not let other apps
+  open an incognito tab.
 - *The activity is ~bjo.MainActivity~, with launch mode ~singleTask~.* A
   share while the app runs goes to the app that runs, not to a second copy.
 - *~main~'s scope stays open on the UI thread* after ~main~ returns. The

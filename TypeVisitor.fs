@@ -154,6 +154,8 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TClrMemberCall(traitName, method, implType, args) ->
             TClrMemberCall(traitName, method, implType, List.map f args)
         | TForeignStaticSet(clrType, name, value) -> TForeignStaticSet(clrType, name, f value)
+        | TEventHandler(receiver, clrType, name, delegateType, arity, handler, add) ->
+            TEventHandler(Option.map f receiver, clrType, name, delegateType, arity, f handler, add)
         | TForeignStaticGet _ as leaf -> leaf
 
     { expr with Node = node }

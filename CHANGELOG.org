@@ -3,6 +3,58 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~#:event~ and ~#:event-remove~ in ~import/extern~
+
+- ~(on-click! (: Avalonia.Controls.Button.Click #:event))~ adds a handler
+  to a .NET event: ~(on-click! b (fun (sender e) ...))~ is ~b.Click +=~ a
+  delegate of the event's type that calls the function. It returns that
+  delegate, and an alias imported ~#:event-remove~ takes it to remove the
+  handler again.
+- The handler's type comes from the event's delegate type, and a declared
+  signature is checked against it. A handler of another type is an error
+  at the call; a name that is no event, at the import.
+- No reflection, unlike ~add-event-handler!~: a Native AOT build keeps the
+  event without keeping its assembly whole.
+- Not yet for an event of a generic type.
+
+* Native AOT with NuGet packages
+
+- ~(aot #t)~ compiles a package's implementation assemblies, from
+  ~runtime.txt~, not what the C# compile references. Those can be reference
+  assemblies (Avalonia's ~ref/~), with no code for what is not public: a
+  call to such a member through an interface found nothing, and the native
+  executable failed fast with no message. Any bjogui program did, at
+  ~run-app~.
+- The package assemblies are trimmed like the rest of the program. A bjogui
+  program is about a third smaller: the bjomarks-gui executable is 38 MB
+  instead of 57 MB.
+- New manifest field: ~(aot-trim #f)~, passed as ~--aot-keep-packages~, keeps
+  the package assemblies that the program's own assemblies reference whole,
+  as ~bjo publish --android~ keeps them. A program that finds a .NET member
+  by name at run time, such as with ~add-event-handler!~, needs it: the
+  trimmer cannot see that member. A change to it rebuilds the program.
+- ~bjo publish~ of a program built with ~(aot #t)~ writes its native
+  executable, its native libraries beside it and the declared resources. It
+  wrote the whole .NET layout as well, precompiled with ReadyToRun, which
+  the executable does not use: bjomarks-gui went from 93 MB in 144 files to
+  51 MB in 7.
+- A published native executable loads its native libraries from its own
+  directory. The resolver found ~<program>.bjolinks~ from the assembly's
+  location, which a Native AOT executable does not have, and so loaded
+  them from the tree it was built in. It now uses the process path.
+
+* The Android app's icon
+
+- New manifest field: ~(android-icon "icon.png")~, a square PNG relative
+  to the project's directory. ~bjo publish --android~ and ~bjo run
+  --android~ make it the app's icon.
+- From Android 8 the icon is adaptive. The image fills the part that the
+  launcher shows, and the launcher's mask gives it its shape. Before
+  Android 8 the image is the icon as it is.
+- A path that is not a ~.png~, or a file that is not there, is an error
+  before the build starts.
+- Without the field the app has Android's default icon, as before.
+
 * A void .NET call where a value is wanted
 
 - A call to a .NET method that returns void can stand where a value is
@@ -37,7 +89,9 @@ What each change guarantees, and what it leaves open.
   the activity again from a saved state.
 - The generated activity has launch mode ~singleTask~, so that a share
   while the app runs goes to that app. It offers the service ~"share-text"~,
-  which shows Android's Share sheet.
+  which shows Android's Share sheet, and the service ~"open-private"~,
+  which opens an address in a private tab of Firefox or in Firefox Focus,
+  when one is installed.
 - Not done: other kinds of shared content, such as images and files.
 
 * ~bjo run --android~

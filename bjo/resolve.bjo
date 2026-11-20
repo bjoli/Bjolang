@@ -30,7 +30,7 @@
 (export
   Prepared prepared-roots-file prepared-frameworks-file prepared-nuget-dir
   prepared-runtime
-  prepared-aot prepared-aot-cpu
+  prepared-aot prepared-aot-cpu prepared-aot-trim
   prepared-roots prepared-dependencies
   prepare)
 
@@ -51,13 +51,15 @@
 ;; packages.
 ;; `runtime` is the root manifest's runtime settings, as `name=value`, and
 ;; `aot` whether it asks for a Native AOT build, and `aot-cpu` the CPU that
-;; build is for, or "" for the baseline.
+;; build is for, or "" for the baseline, and `aot-trim` whether it trims
+;; the NuGet packages.
 (type (: Prepared (Record (: roots-file string)
                           (: frameworks-file (Option string))
                           (: nuget-dir (Option string))
                           (: runtime (List string))
                           (: aot bool)
                           (: aot-cpu string)
+                          (: aot-trim bool)
                           (: roots (List Root)))))
 
 ;; A manifest that has been read and whose dependencies have not been walked.
@@ -135,6 +137,9 @@
 
 (: (-> Prepared string))
 (defun (prepared-aot-cpu p) (record-ref p aot-cpu))
+
+(: (-> Prepared bool))
+(defun (prepared-aot-trim p) (record-ref p aot-trim))
 
 (: (-> Prepared (List Root)))
 (defun (prepared-roots p) (record-ref p roots))
@@ -845,6 +850,9 @@
                 (aot-cpu (match (record-ref (project-package project) aot-cpu)
                            ((Some cpu) cpu)
                            (None "")))
+                (aot-trim (match (record-ref (project-package project) aot-trim)
+                            ((Some trim?) trim?)
+                            (None #t)))
                 (roots roots))))
 
 ;; Writes the lock if it has to, and says what changed.

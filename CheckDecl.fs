@@ -2069,12 +2069,15 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
             let kind =
                 if spec.IsGet then ExternGet
                 elif spec.IsSet then ExternSet
+                elif spec.IsEvent then ExternEvent true
+                elif spec.IsEventRemove then ExternEvent false
                 else ExternMethod
 
             if split <= 0 || split = spec.ClrTarget.Length - 1 then
                 let what =
                     match kind with
                     | ExternMethod -> "a method"
+                    | ExternEvent _ -> "an event"
                     | _ -> "a property or field"
 
                 failwithf
@@ -2097,7 +2100,7 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
 
             if declaresOuts && kind <> ExternMethod then
                 failwithf
-                    $"Syntax error at %s{where}: (out T) marks an out parameter of a method, and #:get and #:set name a property or field."
+                    $"Syntax error at %s{where}: (out T) marks an out parameter of a method, and #:get, #:set, #:event and #:event-remove name another member."
 
             // A generic type is written by its plain name. Its arity comes
             // from the definition that has the member.
@@ -2117,6 +2120,8 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                 | ExternMethod ->
                     DotNetInterop.hasStaticMethod clrType memberName,
                     DotNetInterop.hasInstanceMethod clrType memberName
+                | ExternEvent _ ->
+                    DotNetInterop.hasEvent true clrType memberName, DotNetInterop.hasEvent false clrType memberName
                 | _ ->
                     DotNetInterop.hasMember true clrType memberName,
                     DotNetInterop.hasMember false clrType memberName
@@ -2138,6 +2143,9 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                     | ExternSet ->
                         failwithf
                             $"Type Error at %s{where}: '%s{clrType.FullName}' has no public property or field named '%s{memberName}'."
+                    | ExternEvent _ ->
+                        failwithf
+                            $"Type Error at %s{where}: '%s{clrType.FullName}' has no public event named '%s{memberName}', static or instance."
 
             match kind with
             | ExternGet ->
@@ -2151,6 +2159,12 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                     failwithf
                         $"Syntax error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is imported #:copy, but its type is %s{DotNetInterop.showType memberType}, not a span. #:copy only turns a span into an array. Leave it off."
             | ExternSet -> DotNetInterop.resolveMemberWrite where clrType memberName (not isInstance) |> ignore
+            | ExternEvent _ ->
+                DotNetInterop.resolveEvent where clrType memberName (not isInstance) |> ignore
+
+                if clrType.IsGenericTypeDefinition then
+                    failwithf
+                        $"Type Error at %s{where}: '%s{spec.ClrTarget}' is an event of the generic type '%s{DotNetInterop.csharpTypeName clrType}'. #:event cannot name one yet. Use a C# shim."
             | ExternMethod ->
                 checkExceptionTypes where spec.Exceptions
 
@@ -2384,6 +2398,9 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                 | ExternSet, _ ->
                     failwithf
                         $"Type Error at %s{where}: '%s{spec.Alias}' writes a property of a generic type, so its declared type is a function of the receiver and the value, as (-> (MyType %%a) int void)."
+                | ExternEvent _, _ ->
+                    failwithf
+                        $"Type Error at %s{where}: '%s{spec.ClrTarget}' is an event of a generic type, which #:event cannot name yet."
                 | ExternMethod, TFun(declaredParams, declaredReturn, _) ->
                     let receiver, methodParams =
                         if not isInstance then
