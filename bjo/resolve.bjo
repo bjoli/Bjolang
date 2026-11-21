@@ -304,7 +304,7 @@
 ;; `None` when the package is already placed. A name is one directory in the
 ;; roots file, so the second manifest that asks for it adds a requirement and
 ;; nothing else.
-(: place #:sync (-> Walk Want Given (Result string (Option Task))))
+(: place (-> Walk Want Given (Result string (Option Task))) #:sync)
 (defun (place walk want given)
   (with-return ret
     (def dep (record-ref want dep))
@@ -357,7 +357,7 @@
 ;; The manifest is read out of the bare clone, so a version that is considered
 ;; and then superseded costs a `git show` and nothing else — no checkout, no
 ;; directory, no entry in the lock.
-(: place-git #:sync (-> Walk Want Git (Result string (Option Task))))
+(: place-git (-> Walk Want Git (Result string (Option Task))) #:sync)
 (defun (place-git walk want source)
   (with-return ret
     (def dep (record-ref want dep))
@@ -445,7 +445,7 @@
 ;; different every week, and "whatever is oldest" is one that never gets a
 ;; fix — so the manifest says, and the tags that exist are listed here because
 ;; the answer is one of them.
-(: requirement-of #:sync (-> Walk Dep string string (Result string VersionReq)))
+(: requirement-of (-> Walk Dep string string (Result string VersionReq)) #:sync)
 (defun (requirement-of walk dep asked-by clone)
   (match (record-ref dep version)
     ((Some req) (Ok req))
@@ -478,7 +478,7 @@
 ;; build uses 1.2 unless something else in the graph asks for more. That is the
 ;; whole of minimal version selection, and it is why two builds of the same
 ;; manifests a year apart use the same code.
-(: node-version #:sync (-> Walk string (List Symbol) Version string (Result string Version)))
+(: node-version (-> Walk string (List Symbol) Version string (Result string Version)) #:sync)
 (defun (node-version walk clone name lower asked-by)
   (def (Ok tags) (version-tags (record-ref walk tool) clone) :propagate)
   (match (find #(>= (version-compare & lower) 0) tags)
@@ -498,7 +498,7 @@
 
 ;; Fetches a clone once per run. A resolve asks several questions of one
 ;; repository, and a fetch that answered the first answers the rest.
-(: fetch-once #:sync (-> Walk string (Result string bool)))
+(: fetch-once (-> Walk string (Result string bool)) #:sync)
 (defun (fetch-once walk clone)
   (cond
     ((some? (map-try-ref (box-ref (record-ref walk fetched)) clone)) (Ok #f))
@@ -525,7 +525,7 @@
        " or (source (path (dir \"../" (name->string name) "\"))) for a copy on this disk."))
 
 ;; Places every dependency that can be placed, and answers the tasks they made.
-(: place-all #:sync (-> Walk (List Want) (Result string (List Task))))
+(: place-all (-> Walk (List Want) (Result string (List Task))) #:sync)
 (defun (place-all walk wants)
   (match wants
     (Nil (Ok Nil))
@@ -547,7 +547,7 @@
 ;; `waiting` holds the dependencies with no source yet. When the queue empties,
 ;; the ones that have a source by now are placed and the walk goes on; a pass
 ;; that places none of them ends it, and whatever is still waiting is an error.
-(: walk-graph #:sync (-> Walk (List Task) (List Want) (Result string Unit)))
+(: walk-graph (-> Walk (List Task) (List Want) (Result string Unit)) #:sync)
 (defun (walk-graph walk tasks waiting)
   (match tasks
     ((Cons task rest)
@@ -705,7 +705,7 @@
 ;;
 ;; The check that matters is here: a package whose version has not changed must
 ;; still be the commit the lock names.
-(: lock-entry #:sync (-> Walk Chosen string (Result string Locked)))
+(: lock-entry (-> Walk Chosen string (Result string Locked)) #:sync)
 (defun (lock-entry walk c lock-file)
   (def name (record-ref c chosen-name))
   (def picked (record-ref c chosen-version))
@@ -736,7 +736,7 @@
                   (source (record-ref c chosen-source))
                   (commit commit)))))
 
-(: lock-entries #:sync (-> Walk (List Chosen) string (Result string (List Locked))))
+(: lock-entries (-> Walk (List Chosen) string (Result string (List Locked))) #:sync)
 (defun (lock-entries walk chosen lock-file)
   (match chosen
     (Nil (Ok Nil))
@@ -751,7 +751,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; One directory per chosen version, and its `src/` in the roots file.
-(: materialise-all #:sync (-> Walk (List Chosen) (List Locked) (Result string (List Root))))
+(: materialise-all (-> Walk (List Chosen) (List Locked) (Result string (List Root))) #:sync)
 (defun (materialise-all walk chosen entries)
   (match chosen
     (Nil (Ok Nil))
@@ -785,7 +785,7 @@
 ;; `locked?` is `--locked`: any difference from `bjo.lock` is an error rather
 ;; than an update, which is what a build that must be the one the lock
 ;; describes wants.
-(: prepare #:sync (-> Project bool (Result string Prepared)))
+(: prepare (-> Project bool (Result string Prepared)) #:sync)
 (defun (prepare project locked?)
   (def (Ok own) (root-package-root project) :propagate)
   (def lock-file (project-lock-file project))
@@ -861,7 +861,7 @@
 ;; changed: the same manifests choose the same versions every time. So a line
 ;; printed here is a real change, and `--locked` refusing one is a build that
 ;; would not have been the build the lock describes.
-(: settle-lock #:sync (-> Project bool (List Locked) (List Locked) (Result string Unit)))
+(: settle-lock (-> Project bool (List Locked) (List Locked) (Result string Unit)) #:sync)
 (defun (settle-lock project locked? before after)
   (def changes (lock-changes before after))
   (def lock-file (project-lock-file project))

@@ -1258,8 +1258,8 @@
 
 ;; Inlined, so that a loop over a range has its two ints and no struct (see
 ;; `Simplify`, "A record that is only read").
-(: (-> int int Range))
-(defun (range lo hi) #:inline
+(: (-> int int Range) #:inline)
+(defun (range lo hi)
   (Range (lo lo) (hi hi)))
 
 (impl (Iterable Range)
@@ -1336,8 +1336,8 @@
 ;; An iterable of pairs as a map. Not a method of `Iterable`: its where clause
 ;; says the element is a pair, and a member may not constrain the
 ;; implementor. Copied into the call, so that it fuses with a chain under it.
-(: (-> %s (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))))
-(defun (->map s) #:inline
+(: (-> %s (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))) #:inline)
+(defun (->map s)
   (loop (:for e s)
         (:acc m (mapping e))))
 
@@ -1601,21 +1601,21 @@
   (loop (:for elem xs)
         (:acc lst (listing (f elem)))))
 
-(: (-> (-?-> %a bool) (List %a) (List %a)))
-(defun (list-filter keep? xs) #:inline
+(: (-> (-?-> %a bool) (List %a) (List %a)) #:inline)
+(defun (list-filter keep? xs)
   (loop (:for elem xs)
         (:when (keep? elem))
         (:acc acc (listing elem))))
 
 ;; List foldl.
-(: (-> (-?-> %a %b %b) %b (List %a) %b))
-(defun (list-foldl f init xs) #:inline
+(: (-> (-?-> %a %b %b) %b (List %a) %b) #:inline)
+(defun (list-foldl f init xs)
   (loop (:for elem xs)
         (:acc acc (folding init (f elem acc)))))
 
 ;; List foldr.
-(: (-> (-?-> %a %b %b) %b (List %a) %b))
-(defun (list-foldr f init xs) #:inline
+(: (-> (-?-> %a %b %b) %b (List %a) %b) #:inline)
+(defun (list-foldr f init xs)
   (loop (:for elem (list-reverse xs))
         (:acc acc (folding init (f elem acc)))))
 
@@ -1660,7 +1660,7 @@
   (vec-add-first          (: Bjolang.Runtime.Rrb.RrbFun.Prepend     (-> (Vec %a) %a (Vec %a)))))
 
 ;; Vec map.
-(: (-> (-?-> %a %b) (Vec %a) (Vec %b)))
+(: (-> (-?-> %a %b) (Vec %a) (Vec %b)) #:no-inline)
 ;;
 ;; Not inlined: `clr-vec-map` copies the vec's arrays at their exact size, and
 ;; for the short vecs most programs map that is faster than a loop into a
@@ -1670,7 +1670,7 @@
 ;; in order, and `clr-vec-map-shape` lays them out as `v` is laid out. So the
 ;; halves of a split, mapped in bjoroutines, merge back into a dense vec.
 (defbjouble (vec-map f v)
-  #:no-inline
+  
   (#:sync (clr-vec-map f v))
   (#:bjo
     (def out (make-array (vec-length v)))
@@ -1679,18 +1679,18 @@
           (:do (array-set! out i (f elem))))
     (clr-vec-map-shape v out)))
 
-(: (-> (-?-> %a bool) (Vec %a) (Vec %a)))
+(: (-> (-?-> %a bool) (Vec %a) (Vec %a)) #:inline)
 (defbjouble (vec-filter keep? v)
-  #:inline
+  
   (#:sync (clr-vec-filter keep? v))
   (#:bjo
     (loop (:for elem v)
           (:when (keep? elem))
           (:acc acc (vecing/small elem)))))
 
-(: (-> (-?-> %a %b %b) %b (Vec %a) %b))
+(: (-> (-?-> %a %b %b) %b (Vec %a) %b) #:inline)
 (defbjouble (vec-fold f init v)
-  #:inline
+  
   (#:sync (clr-vec-fold f init v))
   (#:bjo
     (loop (:for elem v)
@@ -1710,9 +1710,9 @@
 ;; The elements from `#:from` up to `#:to`, front to back. Raises
 ;; ArgumentOutOfRangeException, before `f` is first called, unless
 ;; 0 <= from <= to <= length.
-(: (-> (-?-> %a Unit) (Vec %a) (#:from int) (#:to int) Unit))
+(: (-> (-?-> %a Unit) (Vec %a) (#:from int) (#:to int) Unit) #:inline)
 (defbjouble (vec-for-each f v #:from 0 #:to (vec-length v))
-  #:inline
+  
   (#:sync (clr-vec-for-each f v from to))
   (#:bjo
     (ignore (clr-vec-check-range v from to))
@@ -1724,9 +1724,9 @@
             (go (vec-cursor-next c)))))))
 
 ;; Vec iter.
-(: (-> (-?-> %a bool) (Vec %a) bool))
+(: (-> (-?-> %a bool) (Vec %a) bool) #:inline)
 (defbjouble (vec-iter f v)
-  #:inline
+  
   (#:sync (clr-vec-iter f v))
   (#:bjo
     (loop (:for elem v)
@@ -3328,7 +3328,7 @@
 ;;
 ;; Because opening happens inside the sequence, open errors (such as a missing
 ;; file) raise on the first pull rather than when `file-read/seq` is called.
-(: file-read/seq #:sync (-> (-> InputPort %a) string (Seq %a)))
+(: file-read/seq (-> (-> InputPort %a) string (Seq %a)) #:sync)
 (defun (file-read/seq reader path)
   (seq
     (def file (raise-err (open-input-file path)))
@@ -3338,7 +3338,7 @@
           (yield (reader p))
           (loop))))))
 
-(: file-read-lines/seq #:sync (-> string (#:mode LineMode) (Seq string)))
+(: file-read-lines/seq (-> string (#:mode LineMode) (Seq string)) #:sync)
 (defun (file-read-lines/seq path #:mode Any)
   (file-read/seq (fun (p) (read-line p #:mode mode)) path))
 
@@ -3355,7 +3355,7 @@
 ;; - Cycle Prevention: Directory symlinks are never followed.
 ;; - Lazy Traversal: Subdirectories are listed on demand using the ambient `FS`
 ;;   handler, so stopping iteration early avoids unneeded filesystem I/O.
-(: directory-walk #:sync (-> string (#:into? (-> string bool)) (Seq string)))
+(: directory-walk (-> string (#:into? (-> string bool)) (Seq string)) #:sync)
 (defun (directory-walk dir #:into? (fun (d) #t))
   (seq
     (let loop ((todo (sorted-entries dir)))

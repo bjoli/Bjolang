@@ -174,7 +174,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Copies `from` to `rel` under `out`, making the directories on the way.
-(: copy-to! #:sync (-> string string string void))
+(: copy-to! (-> string string string void) #:sync)
 (defun (copy-to! out rel from)
   (def to (path-combine out rel))
   (directory-create (clr-directory-of to))
@@ -182,7 +182,7 @@
 
 ;; Copies a native executable. Through .NET's `File.Copy`, which keeps the file's
 ;; mode on Unix: a copy made by `file-copy` could not be run.
-(: copy-executable! #:sync (-> string string string void))
+(: copy-executable! (-> string string string void) #:sync)
 (defun (copy-executable! out rel from)
   (def to (path-combine out rel))
   (directory-create (clr-directory-of to))
@@ -190,7 +190,7 @@
 
 ;; Copies an assembly, and its `.pdb` when there is one, so that a stack trace
 ;; from the published program still names the source.
-(: copy-assembly! #:sync (-> string string string void))
+(: copy-assembly! (-> string string string void) #:sync)
 (defun (copy-assembly! out rel from)
   (copy-to! out rel from)
   (def pdb (clr-change-ext from ".pdb"))
@@ -199,7 +199,7 @@
 
 ;; Copies a directory and everything in it, leaving out the files `skip?`
 ;; answers true for.
-(: copy-tree! #:sync (-> string string (-> string bool) void))
+(: copy-tree! (-> string string (-> string bool) void) #:sync)
 (defun (copy-tree! from to skip?)
   (directory-create to)
   (loop (:for f (directory-files from))
@@ -218,14 +218,14 @@
 (defun (nothing-skipped f) #f)
 
 ;; Copies a resource, a file or a directory, to `rel` under `out`.
-(: copy-resource! #:sync (-> string string string void))
+(: copy-resource! (-> string string string void) #:sync)
 (defun (copy-resource! out rel from)
   (if (directory-exists? from)
       (copy-tree! from (path-combine out rel) nothing-skipped)
       (copy-to! out rel from)))
 
 ;; How many files are under `dir`, at any depth.
-(: count-files #:sync (-> string int))
+(: count-files (-> string int) #:sync)
 (defun (count-files dir)
   (+ (length (directory-files dir))
      (loop (:for d (directory-subdirectories dir))
@@ -235,7 +235,7 @@
 ;; Empties the output directory, or makes it. A directory that is there and
 ;; holds files is replaced only when an earlier publish made it. Answers why
 ;; it refused, or `None` when the directory is ready.
-(: prepare-output! #:sync (-> string (Option string)))
+(: prepare-output! (-> string (Option string)) #:sync)
 (defun (prepare-output! out)
   (cond
     ((not (directory-exists? out))
@@ -283,7 +283,7 @@
 ;;
 ;; Every resource is checked before anything is written, so that a manifest
 ;; naming one that is not there leaves the output as it was.
-(: publish #:sync (-> Publication (Result string int)))
+(: publish (-> Publication (Result string int)) #:sync)
 (defun (publish p)
   (with-return ret
     (when (empty? (record-ref p links))
@@ -372,7 +372,7 @@
 ;;   built in.
 ;; - Resources, and with `whole-stdlib` the standard library, go where the
 ;;   .NET layout puts them, relative to the executable.
-(: publish-native #:sync (-> Publication string string (Result string int)))
+(: publish-native (-> Publication string string (Result string int)) #:sync)
 (defun (publish-native p out native)
   (def copied
     (try

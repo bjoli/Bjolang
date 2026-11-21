@@ -9,21 +9,21 @@
 (def depth (make-parameter 0))
 
 ;; A binding made inside the callee ends with it.
-(: (-bjo-> int int))
-(defbjo (nested-depth n) #:inline
+(: (-bjo-> int int) #:inline)
+(defbjo (nested-depth n)
   (parameterize ((depth n))
     (sync (timeout (milliseconds 1)))
     (parameter-ref depth)))
 
 ;; A failure inside the callee reaches the caller as the call's failure.
-(: (-bjo-> int int))
-(defbjo (fails-after zero) #:inline
+(: (-bjo-> int int) #:inline)
+(defbjo (fails-after zero)
   (sync (timeout (milliseconds 1)))
   (/ 10 zero))
 
 ;; Parks until its scope is cancelled.
-(: (-bjo-> (Chan int) int))
-(defbjo (waits ch) #:inline
+(: (-bjo-> (Chan int) int) #:inline)
+(defbjo (waits ch)
   (sync (chan-recv ch)))
 
 ;; A caller that parks inside a copy of `waits`.

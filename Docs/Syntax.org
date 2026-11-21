@@ -344,20 +344,22 @@ A definition may grow by inlining to about three times its own size, and at leas
 
 Only a body of at most 50 nodes is inlined this way without being asked.
 
-~#:inline~ straight after the head asks for more: the function is inlined at each plain call, given a function or not, and with no limit on its size. Its copies still take from the definition's room to grow. It is written on the walks of the prelude whose bodies are past the limit, such as ~list-foldl~ and ~vec-filter~. A function that calls itself, or has a rest parameter, is not inlined, and a warning says why. One with keyword parameters is: a keyword the call leaves out gets its default, which is evaluated after the arguments, in the order the parameters were declared, as in a call. One with a ~(where ...)~ over traits that are dictionaries is not inlined itself, since its calls pass dictionaries; the copy specialised at a call's types is. One whose ~(where ...)~ names only .NET interfaces, such as ~Num~ and ~Ordered~, is inlined at a call whose types are all known, as ~(down-from top #:to e)~ in a loop over ints is.
+~#:inline~ at the end of the function's signature asks for more: the function is inlined at each plain call, given a function or not, and with no limit on its size. Its copies still take from the definition's room to grow. It is written on the walks of the prelude whose bodies are past the limit, such as ~list-foldl~ and ~vec-filter~. A function that calls itself, or has a rest parameter, is not inlined, and a warning says why. One with keyword parameters is: a keyword the call leaves out gets its default, which is evaluated after the arguments, in the order the parameters were declared, as in a call. One with a ~(where ...)~ over traits that are dictionaries is not inlined itself, since its calls pass dictionaries; the copy specialised at a call's types is. One whose ~(where ...)~ names only .NET interfaces, such as ~Num~ and ~Ordered~, is inlined at a call whose types are all known, as ~(down-from top #:to e)~ in a loop over ints is.
 
 Across modules a call is copied by the same rules. A body an importer copies, as an exported function's or the method of an exported impl, may call a helper its module does not export: the helper's body is published with it when its own module would inline it, so written ~#:inline~, or within the budget and given a known function, and a helper of that helper in turn. So the step of a library's collector that calls a private ~#:inline~ helper is one loop in the importer, not a call in each step.
 
 A bjoroutine is inlined only when written ~#:inline~, and only at a call where a yield point is allowed, which is a call made in another bjoroutine. Its call is never a spawned one (~(bjo (f x))~ stays a call), and not one given a function. Ask for it with care. The copy saves the frame a suspended call keeps, but it also changes where the caller goes on. A called bjoroutine that finishes wakes its caller through the scheduler's queue, and a copy goes on inline on whatever thread woke it: after a channel receive, on the sender's thread. So a bjoroutine that ends by waiting for a reply from a busy server is better left a call. A sleep, as in ~pace~ in ~bench/service~, is a good case.
 
-~#:no-inline~ in the same place keeps every call of a function a call, in Bjolang and in .NET: its method is marked ~MethodImplOptions.NoInlining~, so the JIT does not copy it into its callers either. Use it where the call is cheaper than the body, as for ~vec-map~, whose .NET version copies the vec's arrays at their exact size, or on a rare path of a hot function, such as moving a text cursor to the next chunk: inlined, it makes the frame of every step larger. A definition is one or the other, not both.
+~#:no-inline~ at the end of the signature keeps every call of a function a call, in Bjolang and in .NET: its method is marked ~MethodImplOptions.NoInlining~, so the JIT does not copy it into its callers either. Use it where the call is cheaper than the body, as for ~vec-map~, whose .NET version copies the vec's arrays at their exact size, or on a rare path of a hot function, such as moving a text cursor to the next chunk: inlined, it makes the frame of every step larger. A function is one or the other, not both.
 #+BEGIN_SRC scheme
-(: apply-once (-> (-> int int) int int))
-(defun (apply-once f x) #:no-inline (f x))
+(: apply-once (-> (-> int int) int int) #:no-inline)
+(defun (apply-once f x) (f x))
 
-(: square (-> int int))
-(defun (square x) #:inline (* x x))
+(: (-> int int) #:inline)        ; a nameless signature, above its definition
+(defun (square x) (* x x))
 #+END_SRC
+
+Markers are part of the signature, and go last in it, after the type and its ~(where ...)~: ~(: name type #:sync #:inline)~. A marker after the name, or after a definition's head, is a syntax error that says where it goes. A ~def~, and a declaration in a body, take no markers.
 
 Both are also accepted on ~defbjo~ and ~defbjouble~. A ~defbjouble~ whose copy the colour around each call chooses is not inlined, with a warning; one that takes a ~-?->~, as ~vec-filter~ does, is.
 
@@ -442,7 +444,7 @@ A lambda applied in place, ~((fun () body))~, is replaced by its body before col
 **** ~#:sync~ — no copy for this one
 `#:sync` stops the compiler generating an async copy for a function.
 #+BEGIN_SRC scheme
-(: show #:sync (-> (Vec Block) void))
+(: show (-> (Vec Block) void) #:sync)
 (defun (show bs) (render (parameter-ref current-output-port) bs))
 #+END_SRC
 It seals the *call graph above it*; it suppresses a copy and nothing else. Refused on a ~defbjo~ and on a ~defbjouble~.
@@ -1548,8 +1550,8 @@ The rules:
 A function's ~(where ...)~ may pin associated types of the traits it names, with the same keywords. It pins those it names and no others:
 
 #+BEGIN_SRC scheme
-(: ->map (-> %s (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))))
-(defun (->map s) #:inline
+(: ->map (-> %s (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))) #:inline)
+(defun (->map s)
   (loop (:for e s)
         (:acc m (mapping e))))
 #+END_SRC

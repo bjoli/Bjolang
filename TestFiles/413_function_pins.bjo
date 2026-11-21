@@ -10,31 +10,31 @@
 (import "inc/pinned.bjo")
 
 ;; The same functions in this module.
-(: (-> %s (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))))
-(defun (to-map s) #:no-inline
+(: (-> %s (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))) #:no-inline)
+(defun (to-map s)
   (loop (:for e s)
         (:acc m (mapping e))))
 
-(: (-> %s (Option %e)) (where (Iterable %s #:elem %e #:cursor %c)))
-(defun (first-of s) #:no-inline
+(: (-> %s (Option %e)) (where (Iterable %s #:elem %e #:cursor %c)) #:no-inline)
+(defun (first-of s)
   (loop (:for e s)
         (:acc got (folding None (Some e)))
         (:finish #t)))
 
 ;; A generic caller: its own pin is what the callee's asks for.
-(: (-> %s (List %k)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))))
-(defun (keys-of s) #:no-inline
+(: (-> %s (List %k)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))) #:no-inline)
+(defun (keys-of s)
   (->list (map-keys (to-map s))))
 
 ;; A pin to a type with no variables in it.
-(: (-> %s int) (where (Iterable %s #:elem int)))
-(defun (sum-ints s) #:no-inline
+(: (-> %s int) (where (Iterable %s #:elem int)) #:no-inline)
+(defun (sum-ints s)
   (loop (:for x s)
         (:acc n (summing x))))
 
 ;; One pin per constraint, on two iterables.
-(: (-> %a %b int) (where (Iterable %a #:elem int) (Iterable %b #:elem int)))
-(defun (zip-sum a b) #:no-inline
+(: (-> %a %b int) (where (Iterable %a #:elem int) (Iterable %b #:elem int)) #:no-inline)
+(defun (zip-sum a b)
   (loop (:for x a)
         (:for y b)
         (:acc n (summing (* x y)))))

@@ -9,8 +9,8 @@
 ;; A collector whose step calls a private helper written #:inline.
 (type (: Tripling (Union tripling)))
 
-(: (-> int int int))
-(defun (add-tripled acc x) #:inline (+ acc (* 3 x)))
+(: (-> int int int) #:inline)
+(defun (add-tripled acc x) (+ acc (* 3 x)))
 
 (impl (Collector Tripling)
   (type %elem int)
@@ -23,22 +23,22 @@
 ;; An exported function written #:inline, whose body calls a private helper
 ;; written #:inline, which calls another, and one that takes a function and
 ;; is given one.
-(: (-> int int))
-(defun (inner-step x) #:inline (* x 7))
+(: (-> int int) #:inline)
+(defun (inner-step x) (* x 7))
 
-(: (-> int int))
-(defun (middle-step x) #:inline (+ (inner-step x) 1))
+(: (-> int int) #:inline)
+(defun (middle-step x) (+ (inner-step x) 1))
 
 (: (-> (-> int int) int int))
 (defun (apply-to f x) (f x))
 
-(: (-> int int))
-(defun (bumped x) #:inline (apply-to (fun (y) (+ y 2)) (middle-step x)))
+(: (-> int int) #:inline)
+(defun (bumped x) (apply-to (fun (y) (+ y 2)) (middle-step x)))
 
 ;; An exported function written #:inline, whose body calls a private helper
 ;; that is not written #:inline and takes no function: it stays a call.
 (: (-> int int))
 (defun (plain-helper x) (- x 5))
 
-(: (-> int int))
-(defun (plain-bumped x) #:inline (plain-helper x))
+(: (-> int int) #:inline)
+(defun (plain-bumped x) (plain-helper x))

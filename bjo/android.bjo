@@ -140,7 +140,7 @@
 ;; The target framework of the SDK, such as `net11.0-android`.
 ;; - The SDK's major version must be at least that of the runtime `bjo` runs
 ;;   on: the Bjolang assemblies are built for that runtime.
-(: android-framework #:sync (-> string (Result string string)))
+(: android-framework (-> string (Result string string)) #:sync)
 (defun (android-framework dotnet)
   (def hint "Set BJO_ANDROID_DOTNET to a .NET SDK with the android workload.")
   (def least (version-major clr-runtime-version))
@@ -583,7 +583,7 @@
 
 ;; Writes `text` to `path`, unless the file has it already. A file that is not
 ;; written keeps its time, so MSBuild does not build again for it.
-(: write-if-changed! #:sync (-> string string void))
+(: write-if-changed! (-> string string void) #:sync)
 (defun (write-if-changed! path text)
   (unless (and (file-exists? path) (= (file-read-text path) text))
     (match (path-directory path)
@@ -618,7 +618,7 @@
 
 ;; Copies `from` to `to`, unless `to` has its bytes already. As for
 ;; `write-if-changed!`, a file that is not written keeps its time.
-(: copy-if-changed! #:sync (-> string string void))
+(: copy-if-changed! (-> string string void) #:sync)
 (defun (copy-if-changed! from to)
   (def bytes (file-read-bytes from))
   (unless (and (file-exists? to) (same-bytes? (file-read-bytes to) bytes))
@@ -634,7 +634,7 @@
 ;; - `mipmap-anydpi-v26/bjo_icon.xml`: the adaptive icon, from Android 8.
 ;; - `drawable-nodpi/bjo_icon_image.png`: the adaptive icon's foreground.
 ;;   `nodpi`: Android does not scale the bitmap when it loads it.
-(: write-icon! #:sync (-> string (Option string) void))
+(: write-icon! (-> string (Option string) void) #:sync)
 (defun (write-icon! dir icon)
   (def res (path-combine dir "Resources"))
   (def legacy (path-combine res "mipmap-xxxhdpi" "bjo_icon.png"))
@@ -652,7 +652,7 @@
 ;; Copies the program and the assemblies it loads to `<dir>/bjolibs`, each
 ;; under its assembly name. NuGet packages' assemblies are left out. Returns
 ;; how many were copied.
-(: stage! #:sync (-> string string (List (Tuple string string)) (Result string int)))
+(: stage! (-> string string (List (Tuple string string)) (Result string int)) #:sync)
 (defun (stage! dir program links)
   (def libs (path-combine dir "bjolibs"))
   (when (directory-exists? libs) (directory-delete-tree libs))
@@ -679,7 +679,7 @@
 ;;   cannot see which events are used. bjogui's `Loaded` is one.
 ;; - `links` gives each assembly's file, below the NuGet cache. Its first
 ;;   directory there is its package.
-(: kept-assemblies #:sync (-> string (List (Tuple string string)) (List (Tuple string string)) (List string)))
+(: kept-assemblies (-> string (List (Tuple string string)) (List (Tuple string string)) (List string)) #:sync)
 (defun (kept-assemblies libs links packages)
   (def referenced
     (loop (:for f (directory-files libs))
@@ -704,7 +704,7 @@
 ;; - `Err` for an ABI that is not one, for a program without Avalonia, for an
 ;;   SDK that cannot build for Android, for an output directory that is not
 ;;   bjo's, and for a build that fails.
-(: publish-android #:sync (-> AndroidJob (Result string string)))
+(: publish-android (-> AndroidJob (Result string string)) #:sync)
 (defun (publish-android job)
   (with-return ret
     (def (Ok rids) (android-rids (record-ref job abis)) :propagate)
@@ -786,7 +786,7 @@
     (_ "adb")))
 
 ;; What `adb args...` writes, trimmed. `Err` when adb cannot run or fails.
-(: adb-output #:sync (-> string (List string) (Result string string)))
+(: adb-output (-> string (List string) (Result string string)) #:sync)
 (defun (adb-output adb args)
   (match (run/output '(,(list->vec (Cons adb args))))
     ((Ok (Tuple 0 out)) (Ok (string-trim out)))
@@ -796,7 +796,7 @@
 ;; The ABI of the connected device, as a manifest names it: "arm64", "x64",
 ;; "arm" or "x86". `Err` when no device is connected, or there are several
 ;; and ANDROID_SERIAL does not choose one.
-(: device-abi #:sync (-> string (Result string string)))
+(: device-abi (-> string (Result string string)) #:sync)
 (defun (device-abi adb)
   (match (adb-output adb (list "shell" "getprop" "ro.product.cpu.abi"))
     ((Ok "arm64-v8a") (Ok "arm64"))
@@ -810,7 +810,7 @@
                "\nStart an emulator or connect a phone. With several, set ANDROID_SERIAL.")))))
 
 ;; The uid of the installed app `id`, from `cmd package list packages -U`.
-(: app-uid #:sync (-> string string (Option string)))
+(: app-uid (-> string string (Option string)) #:sync)
 (defun (app-uid adb id)
   (match (adb-output adb (list "shell" "cmd" "package" "list" "packages" "-U" id))
     ((Ok out)
@@ -829,7 +829,7 @@
 ;; - The start does not wait for the app (`am start` without `-W`): a
 ;;   crash dialog keeps `-W` from returning.
 ;; - Ctrl+C stops the log. The app runs on.
-(: run-on-device #:sync (-> string string string (-> string (Vec string) int) int))
+(: run-on-device (-> string string string (-> string (Vec string) int) int) #:sync)
 (defun (run-on-device adb apk id exec)
   (with-return ret
     (def installed (exec adb ["install" "-r" apk]))

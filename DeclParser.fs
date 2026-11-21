@@ -1059,48 +1059,64 @@ and parseDecl (s: SExpr) : Decl =
 /// other.
 and tryParseDeclGroup (s: SExpr) : Decl list option =
     match stripHeadMark s with
-    // `(defun (name args...) #:no-inline body...)`, and the same on `defbjo`
-    // and `defbjouble`: a marker straight after the head, read as `#:sync` is
-    // on a signature. The definition is parsed with the marker taken out.
-    // First, as the case below takes every `defun`.
-    | SList((SAtom { Token = Symbol("defun" | "defbjo" | "defbjouble") } as definer)
-            :: (SList(SAtom { Token = Symbol name } :: _, _) as head)
-            :: SAtom { Token = Keyword "no-inline" }
-            :: rest,
-            r) ->
-        match rest with
-        | SAtom { Token = Keyword "inline" } :: _ ->
-            failwithf $"Invalid definition of '%s{name}' at %s{Lexer.formatPos r}. A definition is #:inline or #:no-inline, not both."
-        | _ -> ()
+    // A marker in the old place, straight after the head of a definition.
+    // Markers are part of the signature now, at its end.
+    | SList(SAtom { Token = Symbol("defun" | "defbjo" | "defbjouble") }
+            :: SList(SAtom { Token = Symbol name } :: _, _)
+            :: SAtom { Token = Keyword marker; Range = mr }
+            :: _,
+            _) when signatureMarkers.Contains marker ->
+        failwithf
+            $"Syntax error at %s{Lexer.formatPos mr}: #:%s{marker} goes at the end of the signature of '%s{name}', not on its definition: (: %s{name} type #:%s{marker}), or (: type #:%s{marker}) directly above the definition."
 
-        match tryParseDeclGroup (SList(definer :: head :: rest, r)) with
-        | Some decls -> Some(decls @ [ DNoInline(name, r) ])
+    // `(: name type marker...)`: a signature that ends with markers.
+    // - Each marker is its own declaration, as the type checker reads it:
+    //   `#:sync` is `DSyncOnly`, `#:inline` is `DInline`, `#:no-inline` is
+    //   `DNoInline`.
+    // - A marker given twice, or `#:inline` with `#:no-inline`, raises.
+    | SList(SAtom { Token = Colon } :: _, r) as form when not (List.isEmpty (snd (splitSignatureMarkers form))) ->
+        let bare, markers = splitSignatureMarkers form
+
+        let name =
+            match bare with
+            | SList(_ :: SAtom { Token = Symbol n } :: _ :: _, _) -> n
+            | _ ->
+                failwithf
+                    $"Syntax error at %s{Lexer.formatPos r}: a signature with markers is written (: name type marker ...), or (: type marker ...) directly above the definition."
+
+        let names = markers |> List.map fst
+
+        match names |> List.countBy id |> List.tryFind (fun (_, n) -> n > 1) with
+        | Some(m, _) ->
+            failwithf $"Syntax error at %s{Lexer.formatPos r}: the signature of '%s{name}' has #:%s{m} more than one time."
+        | None -> ()
+
+        if List.contains "inline" names && List.contains "no-inline" names then
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos r}: the signature of '%s{name}' has #:inline and #:no-inline. A function is one or the other."
+
+        let markerDecls =
+            markers
+            |> List.map (fun (m, mr) ->
+                match m with
+                | "sync" -> DSyncOnly(name, mr)
+                | "inline" -> DInline(name, mr)
+                | _ -> DNoInline(name, mr))
+
+        match tryParseDecl bare with
+        | Some signature -> Some(signature :: markerDecls)
         | None ->
             failwithf
-                $"Invalid definition of '%s{name}' at %s{Lexer.formatPos r}. #:no-inline goes straight after the head, as in (defun (%s{name} ...) #:no-inline body...)."
-
-    // `(defun (name args...) #:inline body...)`, and the same on `defbjo` and
-    // `defbjouble`: the opposite marker, in the same place. A `defbjouble`
-    // whose copy the colour around a call chooses is refused later, with a
-    // warning, where that is known (`TraitInline.publishBodies`).
-    | SList((SAtom { Token = Symbol("defun" | "defbjo" | "defbjouble") } as definer)
-            :: (SList(SAtom { Token = Symbol name } :: _, _) as head)
-            :: SAtom { Token = Keyword "inline" }
-            :: rest,
-            r) ->
-        match rest with
-        | SAtom { Token = Keyword "no-inline" } :: _ ->
-            failwithf $"Invalid definition of '%s{name}' at %s{Lexer.formatPos r}. A definition is #:inline or #:no-inline, not both."
-        | _ -> ()
-
-        match tryParseDeclGroup (SList(definer :: head :: rest, r)) with
-        | Some decls -> Some(decls @ [ DInline(name, r) ])
-        | None ->
-            failwithf
-                $"Invalid definition of '%s{name}' at %s{Lexer.formatPos r}. #:inline goes straight after the head, as in (defun (%s{name} ...) #:inline body...)."
+                $"Syntax error at %s{Lexer.formatPos r}: a signature with markers is written (: name type marker ...), or (: type marker ...) directly above the definition."
 
     | SList(SAtom { Token = Symbol(("defun" | "defbjo") as definer) } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, _) ->
         Some(parseDefunDecl definer name args rest (getRange s))
+
+    // `(def (: name Type marker) value)`: a def takes no markers.
+    | SList(SAtom { Token = Symbol("def" | "def/mutable" as definer) } :: (SList(SAtom { Token = Colon } :: _, _) as sigForm) :: _, _)
+        when not (List.isEmpty (snd (splitSignatureMarkers sigForm))) ->
+        let m, mr = List.head (snd (splitSignatureMarkers sigForm))
+        failwithf $"Syntax error at %s{Lexer.formatPos mr}: a %s{definer} takes no markers, and #:%s{m} is one. Markers are for the signature of a function."
 
     // `(def (: name Type) value)` is the definition and its signature, which
     // is what gives the value its type, a union literal included.
@@ -1167,18 +1183,10 @@ and tryParseDeclGroup (s: SExpr) : Decl list option =
 
         Some decls
 
-    // `(: name #:sync ...)`, in the slot `#:opaque` uses on a type: a marker on
-    // the declaration rather than any part of the shape.
-    //
-    // The rest is handed back to `tryParseDecl` with the marker taken out, so
-    // every signature form there is — with a `(where ...)` and without — keeps
-    // working here without being spelled a second time.
-    | SList(SAtom { Token = Colon } as colon :: (SAtom { Token = Symbol name } as named) :: SAtom { Token = Keyword "sync" } :: rest, r) ->
-        match tryParseDecl (SList(colon :: named :: rest, r)) with
-        | Some signature -> Some [ signature; DSyncOnly(name, r) ]
-        | None ->
-            failwithf
-                $"Invalid signature for '%s{name}' at %s{Lexer.formatPos r}. #:sync goes straight after the name, as in (: %s{name} #:sync (-> ...))."
+    // A marker in the old place, straight after the name: `(: name #:sync type)`.
+    | SList(SAtom { Token = Colon } :: SAtom { Token = Symbol name } :: SAtom { Token = Keyword marker; Range = mr } :: _, _)
+        when signatureMarkers.Contains marker ->
+        markerAfterNameError name marker mr
 
     | _ -> tryParseDecl s |> Option.map List.singleton
 

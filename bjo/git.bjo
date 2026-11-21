@@ -49,7 +49,7 @@
 ;; it is read only to quote git in a message about a command that failed.
 (type (: Tool (Record (: errors string))))
 
-(: tool-for #:sync (-> string Tool))
+(: tool-for (-> string Tool) #:sync)
 (defun (tool-for tmp)
   (directory-create tmp)
   (Tool (errors (path-combine tmp "git-stderr.txt"))))
@@ -68,13 +68,13 @@
 ;; Runs git, and answers its exit code and its output. A non-zero code is an
 ;; ordinary answer here — "this tag has no manifest" is one — so it is not an
 ;; `Err`. `Err` is git not starting at all.
-(: git-run #:sync (-> Tool (Vec string) (Result string (Tuple int string))))
+(: git-run (-> Tool (Vec string) (Result string (Tuple int string))) #:sync)
 (defun (git-run g arguments)
   (result-map-err (fun (e) (str "bjo: could not run git: " (error-message e)))
                   (run/output '(errors-into-file ,(record-ref g errors) (git ,arguments)))))
 
 ;; A command that has to work, with what git said when it did not.
-(: git-must #:sync (-> Tool (Vec string) string (Result string string)))
+(: git-must (-> Tool (Vec string) string (Result string string)) #:sync)
 (defun (git-must g arguments what)
   (def (Ok (Tuple code out)) (git-run g arguments) :propagate)
   (if (= code 0)
@@ -102,7 +102,7 @@
 ;; The clone for a URL, made the first time it is wanted.
 ;;
 ;; A fresh clone brings every tag with it, so nothing fetches after one.
-(: ensure-clone #:sync (-> Tool string string (List Symbol) (Result string string)))
+(: ensure-clone (-> Tool string string (List Symbol) (Result string string)) #:sync)
 (defun (ensure-clone g dot-bjo url name)
   (def dir (clone-directory dot-bjo url))
   (cond
@@ -118,7 +118,7 @@
      (Ok dir))))
 
 ;; New tags, for when this run needs something the clone has not got.
-(: fetch-tags #:sync (-> Tool string (Result string Unit)))
+(: fetch-tags (-> Tool string (Result string Unit)) #:sync)
 (defun (fetch-tags g dir)
   (def (Ok fetched)
     (git-must g ["--git-dir" dir "fetch" "--tags" "--force" "--quiet"]
@@ -152,7 +152,7 @@
           ((Ok v) (if (= (version->string v) text) (Some v) None))))))
 
 ;; Every version the clone holds, oldest first.
-(: version-tags #:sync (-> Tool string (Result string (List Version))))
+(: version-tags (-> Tool string (Result string (List Version))) #:sync)
 (defun (version-tags g dir)
   (def (Ok out) (git-must g ["--git-dir" dir "tag" "--list"] (str "reading the tags of " dir))
     :propagate)
@@ -182,7 +182,7 @@
 
 ;; The commit a version's tag points at. `^{commit}` unwraps an annotated tag,
 ;; whose own object is not the commit.
-(: tag-commit #:sync (-> Tool string Version (Result string string)))
+(: tag-commit (-> Tool string Version (Result string string)) #:sync)
 (defun (tag-commit g dir v)
   (def (Ok out)
     (git-must g ["--git-dir" dir "rev-parse" (str (version->tag v) "^{commit}")]
@@ -192,7 +192,7 @@
 
 ;; Is a commit in this clone? Asked about a commit the lock names, which a
 ;; clone made after it was written may not have.
-(: commit-present? #:sync (-> Tool string string bool))
+(: commit-present? (-> Tool string string bool) #:sync)
 (defun (commit-present? g dir commit)
   (match (git-run g ["--git-dir" dir "cat-file" "-e" (str commit "^{commit}")])
     ((Err why) #f)
@@ -202,7 +202,7 @@
 ;;
 ;; Nothing is checked out for this: a resolve reads one file per version, and
 ;; most of the versions it reads are not the ones it ends up choosing.
-(: manifest-at #:sync (-> Tool string Version (Result string string)))
+(: manifest-at (-> Tool string Version (Result string string)) #:sync)
 (defun (manifest-at g dir v)
   (def (Ok (Tuple code out))
     (git-run g ["--git-dir" dir "show" (str (version->tag v) ":" manifest-name)])
@@ -243,7 +243,7 @@
 ;; must not leave the old tree under the new version's name. The new tree is
 ;; unpacked beside it and renamed into place, so a build never reads half of a
 ;; checkout.
-(: materialise #:sync (-> Tool string string string string (Result string Unit)))
+(: materialise (-> Tool string string string string (Result string Unit)) #:sync)
 (defun (materialise g clone commit tmp target)
   (with-return ret
     (when (and (directory-exists? target) (= (marked-commit target) commit))

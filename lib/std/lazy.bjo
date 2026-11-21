@@ -73,10 +73,10 @@
          (Record (: cell (FiberLazyCell %a))
                  (: thunk (Option (-bjo-> %a)) #:mutable))))
 
-(: (-> (-bjo-> %a) (FiberLazy %a)))
+(: (-> (-bjo-> %a) (FiberLazy %a)) #:no-inline)
 ;; Not inlined: inlined, an ordinary thunk would be put in the Option, which
 ;; holds a bjoroutine.
-(defun (make-fiber-lazy thunk) #:no-inline
+(defun (make-fiber-lazy thunk)
   (FiberLazy (cell (cell-make)) (thunk (Some thunk))))
 
 (: (-> (FiberLazy %a) bool))
@@ -85,13 +85,13 @@
 ;; The value of `lazy`. Runs the thunk if no force has completed, or waits for
 ;; the run in progress.
 ;; - Inlined, so that a forced value costs a read and no bjoroutine call.
-(: (-bjo-> (FiberLazy %a) %a))
-(defbjo (force/fiber lazy) #:inline
+(: (-bjo-> (FiberLazy %a) %a) #:inline)
+(defbjo (force/fiber lazy)
   (def cell (record-ref lazy cell))
   (if (cell-forced? cell) (cell-value cell) (force/fiber-slow lazy cell)))
 
-(: (-bjo-> (FiberLazy %a) (FiberLazyCell %a) %a))
-(defbjo (force/fiber-slow lazy cell) #:no-inline
+(: (-bjo-> (FiberLazy %a) (FiberLazyCell %a) %a) #:no-inline)
+(defbjo (force/fiber-slow lazy cell)
   (let retry ()
     (cond
       ((cell-forced? cell) (cell-value cell))

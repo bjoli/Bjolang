@@ -105,8 +105,8 @@
 ;; - bits 0-3, Grapheme_Cluster_Break (the gcb- constants);
 ;; - bit 4, Extended_Pictographic;
 ;; - bits 5-6, Indic_Conjunct_Break (the incb- constants).
-(: (-> char int))
-(defun (props-of ch) #:inline
+(: (-> char int) #:inline)
+(defun (props-of ch)
   (def cp (char->int ch))
   (cast int (array-ref stage2 (+ (shift-left (cast int (array-ref stage1 (shift-right cp 8))) 8)
                                  (bitwise-and cp 255)))))
@@ -129,24 +129,24 @@
 (def incb-consonant 2)
 (def incb-extend 3)
 
-(: (-> int int))
-(defun (gcb p) #:inline (bitwise-and p 15))
+(: (-> int int) #:inline)
+(defun (gcb p) (bitwise-and p 15))
 
-(: (-> int bool))
-(defun (pictographic? p) #:inline (not (= (bitwise-and p 16) 0)))
+(: (-> int bool) #:inline)
+(defun (pictographic? p) (not (= (bitwise-and p 16) 0)))
 
-(: (-> int int))
-(defun (incb p) #:inline (bitwise-and (shift-right p 5) 3))
+(: (-> int int) #:inline)
+(defun (incb p) (bitwise-and (shift-right p 5) 3))
 
 ;; Whether a code point is printable ASCII: GCB=Other, and none of the
 ;; other properties.
-(: (-> int bool))
-(defun (printable-ascii? cp) #:inline (and (>= cp 32) (< cp 127)))
+(: (-> int bool) #:inline)
+(defun (printable-ascii? cp) (and (>= cp 32) (< cp 127)))
 
 ;; Whether the rules put a boundary between code points `a` and `b` with no
 ;; context: both are printable ASCII. A front end can test bytes with it.
-(: (-> int int bool))
-(defun (grapheme-plain-break? a b) #:inline (and (printable-ascii? a) (printable-ascii? b)))
+(: (-> int int bool) #:inline)
+(defun (grapheme-plain-break? a b) (and (printable-ascii? a) (printable-ascii? b)))
 
 ;; ---------------------------------------------------------------------------
 ;; The rules
@@ -206,8 +206,8 @@
 (def fwd-linker 1024)
 (def fwd-break 2048)
 
-(: (-> int int bool))
-(defun (has? st bit) #:inline (not (= (bitwise-and st bit) 0)))
+(: (-> int int bool) #:inline)
+(defun (has? st bit) (not (= (bitwise-and st bit) 0)))
 
 ;; The state after a character of properties `p`, from the state `st` before
 ;; it.
@@ -230,8 +230,8 @@
 ;; The state after `ch`, from the state after the character before it.
 ;; - Before printable ASCII, the rules break unless the character before is
 ;;   Prepend (GB9b), and the state after it is that of Other.
-(: (-> int char int))
-(defun (grapheme-step st ch) #:inline
+(: (-> int char int) #:inline)
+(defun (grapheme-step st ch)
   (if (printable-ascii? (char->int ch))
       (if (= (gcb st) gcb-prepend) 0 fwd-break)
       (grapheme-step-table st ch)))
@@ -249,8 +249,8 @@
       (else (not (has? st fwd-odd-ri))))))
 
 ;; Whether there is a boundary before the last character of a state.
-(: (-> int bool))
-(defun (grapheme-break? st) #:inline (has? st fwd-break))
+(: (-> int bool) #:inline)
+(defun (grapheme-break? st) (has? st fwd-break))
 
 ;; ---------------------------------------------------------------------------
 ;; Backward
@@ -283,8 +283,8 @@
 ;; Whether the backward state of a cursor needs the character after it, given
 ;; `b`, the character before it: only when `b` is a regional indicator, as
 ;; the parity of those that end at `b` matters only then.
-(: (-> char bool))
-(defun (grapheme-back-needs-after? b) #:inline
+(: (-> char bool) #:inline)
+(defun (grapheme-back-needs-after? b)
   (and (not (printable-ascii? (char->int b))) (= (gcb (props-of b)) gcb-ri)))
 
 ;; The backward state of a cursor on a cluster boundary, before `ch`.
@@ -300,8 +300,8 @@
 ;;   grapheme-back-wants? is #t.
 ;; - Between two characters of printable ASCII, a break, and no regional
 ;;   indicators end at `a`.
-(: (-> int char char int))
-(defun (grapheme-back-pair w a b) #:inline
+(: (-> int char char int) #:inline)
+(defun (grapheme-back-pair w a b)
   (if (grapheme-plain-break? (char->int a) (char->int b))
       (bitwise-ior back-break back-known)
       (grapheme-back-pair-table w a b)))
@@ -325,8 +325,8 @@
     (else (bitwise-ior back-wants (shift-left r 2)))))
 
 ;; Whether the state needs the character before the last one given.
-(: (-> int bool))
-(defun (grapheme-back-wants? w) #:inline (= (bitwise-and w 3) back-wants))
+(: (-> int bool) #:inline)
+(defun (grapheme-back-wants? w) (= (bitwise-and w 3) back-wants))
 
 ;; The state after `ch`, the character before the last one given.
 (: (-> int char int))
@@ -357,15 +357,15 @@
       (back-answer back-break #t #f)))
 
 ;; Whether the state, once known, is a boundary.
-(: (-> int bool))
-(defun (grapheme-back-break? w) #:inline (= (bitwise-and w 3) back-break))
+(: (-> int bool) #:inline)
+(defun (grapheme-back-break? w) (= (bitwise-and w 3) back-break))
 
 ;; ---------------------------------------------------------------------------
 ;; Strings
 ;; ---------------------------------------------------------------------------
 
-(: (-> string %a))
-(defun (out-of-range why) #:no-inline
+(: (-> string %a) #:no-inline)
+(defun (out-of-range why)
   (raise (cast Exception (ArgumentOutOfRangeException. "c" why))))
 
 ;; The cursor after the cluster that starts at `c`, a cluster boundary of `s`.

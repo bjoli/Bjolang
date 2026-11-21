@@ -783,7 +783,7 @@ type Decl =
     // is spelled `#name`, which no source identifier can be.
     | DHashMacro of string * Range
 
-    /// Records that a name is to be given no suspending copy: `(: name #:sync (-> ...))`.
+    /// Records that a name is to be given no suspending copy: `(: name (-> ...) #:sync)`.
     ///
     /// `#:sync` prevents the generation of an async counterpart for a function.
     /// This is used when an async copy would be forced to park (e.g., when 
@@ -794,7 +794,7 @@ type Decl =
     | DSyncOnly of string * Range
 
     /// Records that a function's body is not published for inlining:
-    /// `(defun (name args...) #:no-inline body...)`. For a function whose call
+    /// `(: name type #:no-inline)`. For a function whose call
     /// is cheaper than its inlined body, such as `vec-map`, whose .NET version
     /// copies the vec's arrays at their exact size, or a rare path that would
     /// make the frame of a hot caller larger. Its C# method is marked
@@ -803,7 +803,7 @@ type Decl =
     /// Carried as its own declaration, as `DSyncOnly` is. It does not survive
     /// type checking.
     | DNoInline of string * Range
-    /// `(defun (name args...) #:inline body...)`, and the same on `defbjo`.
+    /// `(: name type #:inline)`, on a `defun`, `defbjo` or `defbjouble`.
     /// The function is copied at its plain calls, which nothing else is: an
     /// ordinary function is copied by itself only where it is given a known
     /// function, and a bjoroutine not at all. See `TraitInline`.

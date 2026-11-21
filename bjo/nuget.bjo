@@ -170,7 +170,7 @@
        "</Project>\n"))
 
 ;; Writes `path` unless it already says `text`.
-(: write-if-changed #:sync (-> string string void))
+(: write-if-changed (-> string string void) #:sync)
 (defun (write-if-changed path text)
   (unless (and (file-exists? path) (= (file-read-text path) text))
     (file-write-text path text)))
@@ -309,7 +309,7 @@
         => (list-reverse out)))
 
 ;; Builds one glue project, after the restore that resolved its packages.
-(: build-glue #:sync (-> Project Glue (Result string Unit)))
+(: build-glue (-> Project Glue (Result string Unit)) #:sync)
 (defun (build-glue project g)
   (def dir (glue-project-dir project g))
   (def errors (path-combine dir "build-stderr.txt"))
@@ -393,7 +393,7 @@
 ;; refuses a `Version` on a `PackageReference`, and a `Directory.Build.props`
 ;; can change the target framework. `NuGet.config` and `global.json` are still
 ;; found by walking up from the generated project, which reaches the user's.
-(: run-msbuild #:sync (-> string bool (Result string (Tuple int string))))
+(: run-msbuild (-> string bool (Result string (Tuple int string))) #:sync)
 (defun (run-msbuild dir locked?)
   (def errors (path-combine dir "msbuild-stderr.txt"))
   (def arguments
@@ -524,7 +524,7 @@
 
 ;; Fills the cache for the restore in `dir`, unless the last run had the same
 ;; inputs and its copies are all still there.
-(: precompile-packages #:sync (-> string (List NuGetPackage) (List Declaring) (Result string Unit)))
+(: precompile-packages (-> string (List NuGetPackage) (List Declaring) (Result string Unit)) #:sync)
 (defun (precompile-packages dir own deps)
   (with-return ret
     (match (get-environment-variable "BJOLANG_NO_R2R")
@@ -603,7 +603,7 @@
 ;;
 ;; `roots` are every package of the build: a dependency's packages are the
 ;; build's packages too.
-(: restore-packages #:sync (-> Project (List Root) bool (Result string (Option string))))
+(: restore-packages (-> Project (List Root) bool (Result string (Option string))) #:sync)
 (defun (restore-packages project roots locked?)
   (with-return ret
     (def package (project-package project))

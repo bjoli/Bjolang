@@ -559,11 +559,42 @@ let private isConstructorName (sym: string) : bool =
     let afterPrefix = name.Substring(name.LastIndexOfAny([| ':'; '.' |]) + 1)
     afterPrefix.Length > 0 && System.Char.IsUpper afterPrefix[0]
 
-/// Whether `form` is a signature written without a name: `(: type)`, or
-/// `(: type (where ...))`. A named one has a type after its name, and a
-/// `(where ...)` is no type, so the two are told apart by their shape.
-let isNamelessSignature (form: SExpr) : bool =
+/// The markers a signature can end with: `(: name type #:sync)`.
+/// - `#:sync`: the function gets no suspending copy.
+/// - `#:inline`: the function is copied at its plain calls.
+/// - `#:no-inline`: the function's body is not published for inlining.
+let signatureMarkers: Set<string> = set [ "sync"; "inline"; "no-inline" ]
+
+/// A `(: ...)` form without the markers at its end, and those markers in
+/// order. Any other form is returned as it is, with no markers.
+let splitSignatureMarkers (form: SExpr) : SExpr * (string * Range) list =
+    let marker (item: SExpr) =
+        match item with
+        | SAtom { Token = Keyword k; Range = kr } when signatureMarkers.Contains k -> Some(k, kr)
+        | _ -> None
+
     match form with
+    | SList((SAtom { Token = Colon } :: _) as items, r) ->
+        let trailing = items |> List.rev |> List.takeWhile (marker >> Option.isSome)
+
+        if trailing.IsEmpty then
+            form, []
+        else
+            SList(List.take (items.Length - trailing.Length) items, r), trailing |> List.rev |> List.choose marker
+    | _ -> form, []
+
+/// The error for a marker in the old place, straight after the name, as in
+/// `(: name #:sync type)`.
+let markerAfterNameError (name: string) (marker: string) (r: Range) : 'a =
+    failwithf
+        $"Syntax error at %s{Lexer.formatPos r}: #:%s{marker} goes at the end of the signature, after the type: (: %s{name} type #:%s{marker})."
+
+/// Whether `form` is a signature written without a name: `(: type)`, or
+/// `(: type (where ...))`, either one with markers at its end. A named one has
+/// a type after its name, and a `(where ...)` is no type, so the two are told
+/// apart by their shape.
+let isNamelessSignature (form: SExpr) : bool =
+    match fst (splitSignatureMarkers form) with
     | SList([ SAtom { Token = Colon }; _ ], _) -> true
     | SList([ SAtom { Token = Colon }; _; SList(SAtom { Token = Symbol "where" } :: _, _) ], _) -> true
     | _ -> false
@@ -2321,6 +2352,16 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
     // arrow of a `defun` must be `->`.
     let parseDeclaration (form: SExpr) : string * SExpr * Range =
         match form with
+        // Markers are for the functions of a module. A local function is
+        // inlined by the compiler as it chooses, and has one colour.
+        | _ when not (List.isEmpty (snd (splitSignatureMarkers form))) ->
+            let m, mr = List.head (snd (splitSignatureMarkers form))
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos mr}: a declaration in a body takes no markers, and #:%s{m} is one. Markers are for the signatures of a module's functions."
+        | SList(SAtom { Token = Colon } :: SAtom { Token = Symbol name } :: SAtom { Token = Keyword m; Range = mr } :: _, _)
+            when signatureMarkers.Contains m ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos mr}: a declaration in a body takes no markers, and #:%s{m} is one. Markers are for the signatures of a module's functions."
         | _ when isNamelessSignature form -> namelessSignatureError form
         | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name }; tType ], r) -> name, tType, r
         | SList(SAtom { Token = Colon } :: SAtom { Token = Symbol name } :: _ :: SList(SAtom { Token = Symbol "where" } :: _, _) :: _, r) ->

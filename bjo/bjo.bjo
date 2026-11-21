@@ -103,7 +103,7 @@
 ;; No redirection anywhere: the child writes to the terminal `bjo` was started
 ;; from, reads from the same stdin, and is not a pipe stage. `UseShellExecute`
 ;; off is what makes the program name resolve against PATH.
-(: exec #:sync (-> string (Vec string) int))
+(: exec (-> string (Vec string) int) #:sync)
 (defun (exec program arguments)
   (def settings (ProcessStartInfo.))
   (settings-program! settings program)
@@ -544,7 +544,7 @@
              (record-ref rec inputs))))
 
 
-(: compile #:sync (-> string bool bool Against int))
+(: compile (-> string bool bool Against int) #:sync)
 (defun (compile file debug? lib? roots)
   (def flags (list-append (if lib? (Cons "--lib" Nil) Nil)
                           (list-append (if debug? (Cons "-d" Nil) Nil)
@@ -555,7 +555,7 @@
 ;; it imports is built: the compiler's `--build-graph`. With `deps-only?` the
 ;; files themselves are left out, which is what a program's entry needs before
 ;; it is compiled as a program.
-(: compile-graph #:sync (-> (List string) bool Against int))
+(: compile-graph (-> (List string) bool Against int) #:sync)
 (defun (compile-graph files deps-only? roots)
   (def flags (list-append (Cons "--build-graph" (Cons "--quiet" (if deps-only? (Cons "--deps-only" Nil) Nil)))
                           (against-flags roots)))
@@ -566,7 +566,7 @@
 ;; `--if-stale` leaves out what is current, and `--batch` pays the compiler's
 ;; half-second start once rather than once per module. What a debug build of a
 ;; library goes through: a graph build's workers build without `-d`.
-(: compile-batch #:sync (-> (List string) bool Against int))
+(: compile-batch (-> (List string) bool Against int) #:sync)
 (defun (compile-batch files debug? roots)
   (def flags (list-append (Cons "--batch" (Cons "--if-stale" Nil))
                           (list-append (if debug? (Cons "-d" Nil) Nil)
@@ -607,7 +607,7 @@
 ;; `Err` carries an exit code, so a failed compile leaves through here with the
 ;; compiler's own status rather than a made-up one. The `bool` says whether this
 ;; call is what built it.
-(: ensure-built #:sync (-> string bool bool bool Against (Result int (Tuple BuildRecord bool))))
+(: ensure-built (-> string bool bool bool Against (Result int (Tuple BuildRecord bool))) #:sync)
 (defun (ensure-built file debug? lib? force? roots)
   (with-return ret
     (unless (have-compiler?) (ret (Err 1)))
@@ -643,7 +643,7 @@
 
 ;; Starts a built program with `arguments`: its Native AOT executable when the
 ;; record names one that is there, and the `.exe` under `dotnet` otherwise.
-(: run-built #:sync (-> BuildRecord (List string) int))
+(: run-built (-> BuildRecord (List string) int) #:sync)
 (defun (run-built rec arguments)
   (def native (record-ref rec aot))
   (if (and (not (= native "")) (file-exists? native))
@@ -658,7 +658,7 @@
 ;;   that build leaves the record. So a library record that was not just
 ;;   built causes one forced build of the file as a program.
 ;; - Raises "no main" only when that build also makes a library.
-(: cmd-run #:sync (-> string (List string) bool bool Against int))
+(: cmd-run (-> string (List string) bool bool Against int) #:sync)
 (defun (cmd-run file program-args debug? force? roots)
   (match (ensure-built file debug? #f force? roots)
     ((Err status) status)
@@ -671,7 +671,7 @@
     ((Ok (Tuple rec _))
      (run-built rec program-args))))
 
-(: cmd-build #:sync (-> string bool bool bool Against int))
+(: cmd-build (-> string bool bool bool Against int) #:sync)
 (defun (cmd-build file debug? lib? force? roots)
   (match (ensure-built file debug? lib? force? roots)
     ((Err status) status)
@@ -687,7 +687,7 @@
 ;;
 ;; Many files go to one compiler process: a cold one costs about half a second
 ;; before it does anything, and `--batch` pays that once instead of per file.
-(: cmd-check #:sync (-> (List string) Against int))
+(: cmd-check (-> (List string) Against int) #:sync)
 (defun (cmd-check files roots)
   (cond
     ((not (have-compiler?)) 1)
@@ -710,7 +710,7 @@
 ;; `named?` says that the files were named on the command line. A file found
 ;; under tests/ that has no main is a module that the tests import, such as a
 ;; fixture, and is not run. A named file without a main is an error.
-(: cmd-test #:sync (-> (List string) bool (List string) bool bool bool int))
+(: cmd-test (-> (List string) bool (List string) bool bool bool int) #:sync)
 (defun (cmd-test files named? filters debug? force? locked?)
   (defun (destructure-roots file)
     (def (Ok roots) (roots-for-file file locked?)
@@ -739,7 +739,7 @@
 ;; `bjo bench` is `bench.bjo`'s. What it needs from here is lent to it: a
 ;; benchmark file built in Release, whatever `-d` says; a program run on the
 ;; console; and a source file found.
-(: build-bench #:sync (-> string bool bool (Result int BenchProgram)))
+(: build-bench (-> string bool bool (Result int BenchProgram)) #:sync)
 (defun (build-bench file force? locked?)
   (match (roots-for-file file locked?)
     ((Err why) (Err (fail why)))
@@ -759,7 +759,7 @@
 ;; The compiler's REPL edits its own lines at a terminal, with completion and
 ;; history, so it is run as it is. Under a wrapper that edits lines itself,
 ;; such as `rlwrap`, set BJOLANG_REPL_PLAIN to have it read line by line.
-(: cmd-repl #:sync (-> Against int))
+(: cmd-repl (-> Against int) #:sync)
 (defun (cmd-repl roots)
   (def flags (against-flags roots))
   (if (not (have-compiler?))
@@ -798,7 +798,7 @@
     (None (path-absolute file))))
 
 ;; The project a directory is inside, if it is inside one.
-(: project-around #:sync (-> string (Result string (Option Project))))
+(: project-around (-> string (Result string (Option Project))) #:sync)
 (defun (project-around where)
   (match (find-project-dir where)
     (None (Ok None))
@@ -808,7 +808,7 @@
 
 ;; The project a command that named no file was run in. Not finding one is an
 ;; error here, because the command had nothing else to work on.
-(: project-here #:sync (-> string (Result string Project)))
+(: project-here (-> string (Result string Project)) #:sync)
 (defun (project-here command)
   (def (Ok (Some project)) (project-around (current-directory))
     :leave ((Ok None)
@@ -823,7 +823,7 @@
 ;; there were projects. Inside one, the project is resolved and fetched first:
 ;; a file in a project imports the project's packages whether it is reached as
 ;; `src/main.bjo` or as the entry.
-(: roots-near #:sync (-> string bool (Result string Against)))
+(: roots-near (-> string bool (Result string Against)) #:sync)
 (defun (roots-near where locked?)
   (def (Ok (Some project)) (project-around where)
     :leave ((Ok None) (Ok nothing-against))
@@ -831,7 +831,7 @@
   (def (Ok ready) (prepare project locked?) :propagate)
   (Ok (prepared-against ready)))
 
-(: roots-for-file #:sync (-> string bool (Result string Against)))
+(: roots-for-file (-> string bool (Result string Against)) #:sync)
 (defun (roots-for-file file locked?)
   (roots-near (file-directory file) locked?))
 
@@ -843,7 +843,7 @@
 ;;
 ;; `say?` is off for `run`, which has the program's own output to show and
 ;; nothing to add to it.
-(: build-project #:sync (-> Project Cmdline bool (Result int (Option BuildRecord))))
+(: build-project (-> Project Cmdline bool (Result int (Option BuildRecord))) #:sync)
 (defun (build-project project line say?)
   (with-return ret
     (def (Ok ready) (prepare project (record-ref line locked))
@@ -865,7 +865,7 @@
 (defun (package-name-of project)
   (name->string (record-ref (project-package project) name)))
 
-(: build-library #:sync (-> Project Cmdline Against bool (Result int (Option BuildRecord))))
+(: build-library (-> Project Cmdline Against bool (Result int (Option BuildRecord))) #:sync)
 (defun (build-library project line roots say?)
   (with-return ret
     (def sources (sources-under (project-src project)))
@@ -884,14 +884,14 @@
                     " under src/, all current.")))
     (Ok None)))
 
-(: build-and-say #:sync (-> Project Cmdline int))
+(: build-and-say (-> Project Cmdline int) #:sync)
 (defun (build-and-say project line)
   (match (build-project project line #t)
     ((Err status) status)
     ((Ok _) 0)))
 
 ;; `bjo run` on a project: build it, then start the entry's artefact.
-(: run-project #:sync (-> Project Cmdline (List string) int))
+(: run-project (-> Project Cmdline (List string) int) #:sync)
 (defun (run-project project line arguments)
   (with-return ret
     (unless (project-has-entry? project)
@@ -910,7 +910,7 @@
            (run-built rec arguments))))))
 
 ;; `bjo check` with no file, inside a project: everything the project holds.
-(: check-project #:sync (-> Project Cmdline int))
+(: check-project (-> Project Cmdline int) #:sync)
 (defun (check-project project line)
   (with-return ret
     (def (Ok ready) (prepare project (record-ref line locked))
@@ -960,7 +960,7 @@
     => out))
 
 ;; Publishes a program that has been built, and says where to.
-(: publish-built #:sync (-> BuildRecord (List PublishedPackage) Cmdline string int))
+(: publish-built (-> BuildRecord (List PublishedPackage) Cmdline string int) #:sync)
 (defun (publish-built rec packages line out)
   (def program (record-ref rec output))
   (if (string-ends-with? program ".dll")
@@ -996,7 +996,7 @@
          0))))
 
 ;; `bjo publish` in a project: a release build of its entry, then the copy.
-(: publish-project #:sync (-> Project Cmdline int))
+(: publish-project (-> Project Cmdline int) #:sync)
 (defun (publish-project project line)
   (with-return ret
     (unless (project-has-entry? project)
@@ -1017,7 +1017,7 @@
 ;; `bjo publish file.bjo`. A file inside a project is built against the
 ;; project's packages, and carries their resources, as `bjo build` would build
 ;; it; one outside a project has neither.
-(: publish-file #:sync (-> string Cmdline int))
+(: publish-file (-> string Cmdline int) #:sync)
 (defun (publish-file file line)
   (with-return ret
     (def (Ok around) (project-around (file-directory file))
@@ -1052,7 +1052,7 @@
 ;; - The manifest must have `(android-id ...)`.
 ;; - Returns the exit code for `bjo` when the project has no app or its
 ;;   build fails.
-(: android-job-of #:sync (-> Project Cmdline string (Result int AndroidJob)))
+(: android-job-of (-> Project Cmdline string (Result int AndroidJob)) #:sync)
 (defun (android-job-of project line what)
   (with-return ret
     (def package (project-package project))
@@ -1116,7 +1116,7 @@
 
 ;; `bjo publish --android` in a project: an APK of its program, in `-o` or
 ;; in `publish-android/` in the project.
-(: publish-android-project #:sync (-> Project Cmdline int))
+(: publish-android-project (-> Project Cmdline int) #:sync)
 (defun (publish-android-project project line)
   (with-return ret
     (def (Ok job) (android-job-of project line "bjo publish --android")
@@ -1134,7 +1134,7 @@
 ;;   `AndroidJob`), also when the manifest says `(android-aot #t)`.
 ;; - The project is `.bjo/android-dev/`, so that it does not replace the
 ;;   one of `bjo publish --android`.
-(: run-android-project #:sync (-> Project Cmdline int))
+(: run-android-project (-> Project Cmdline int) #:sync)
 (defun (run-android-project project line)
   (with-return ret
     (def adb (adb-program))
@@ -1374,7 +1374,7 @@
               (:acc out (listing file))
           => out))))
 
-(: dispatch #:sync (-> string Cmdline int))
+(: dispatch (-> string Cmdline int) #:sync)
 (defun (dispatch command line)
   (def* (debug? (record-ref line debug))
         (force? (record-ref line force))

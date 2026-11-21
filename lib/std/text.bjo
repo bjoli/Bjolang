@@ -168,8 +168,8 @@
 ;; Chunks
 ;; ---------------------------------------------------------------------------
 
-(: (-> string int))
-(defun (newlines-in s) #:inline (span-count (.AsSpan s) newline))
+(: (-> string int) #:inline)
+(defun (newlines-in s) (span-count (.AsSpan s) newline))
 
 ;; The newlines in bytes `from` to `to` of `s`.
 (: (-> string int int int))
@@ -177,8 +177,8 @@
   (if (= from to) 0 (span-count (ro-span-slice (.AsSpan s) #:from from #:to to) newline)))
 
 ;; The characters of `s`, counted with vectors.
-(: (-> string int))
-(defun (chars-in s) #:inline (if (<= (string-length s) 1) (string-length s) (.Count s)))
+(: (-> string int) #:inline)
+(defun (chars-in s) (if (<= (string-length s) 1) (string-length s) (.Count s)))
 
 ;; The characters in bytes `from` to `to` of `s`, boundaries of `s`.
 ;;
@@ -217,8 +217,8 @@
   (let go ((k k)) (if (boundary? s k) k (go (- k 1)))))
 
 ;; Bytes `from` to `to` of `s`, sharing its array.
-(: (-> string int int string))
-(defun (piece s from to) #:inline (.SliceBytes s from (- to from)))
+(: (-> string int int string) #:inline)
+(defun (piece s from to) (.SliceBytes s from (- to from)))
 
 ;; ---------------------------------------------------------------------------
 ;; Nodes
@@ -245,11 +245,11 @@
     (else (branch-node (copy-branch (as-branch n) o)))))
 
 ;; The bytes before slot `i` of `n`.
-(: (-> TextNode int int))
-(defun (slot-base n i) #:inline (if (= i 0) 0 (slot-end n (- i 1))))
+(: (-> TextNode int int) #:inline)
+(defun (slot-base n i) (if (= i 0) 0 (slot-end n (- i 1))))
 
-(: (-> TextNode int int))
-(defun (slot-bytes n i) #:inline (- (slot-end n i) (slot-base n i)))
+(: (-> TextNode int int) #:inline)
+(defun (slot-bytes n i) (- (slot-end n i) (slot-base n i)))
 
 ;; The slot numbers of 4 lanes from `from`.
 (def lanes-0 (lanes-of 0 1 2 3))
@@ -258,8 +258,8 @@
 (def lanes-12 (lanes-of 12 13 14 15))
 
 ;; Adds `d` to the 4 ends from slot `from` that are of slot `i` or after.
-(: (-> TextNode int (Lanes int) (Lanes int) (Lanes int) void))
-(defun (add-ends4! n from slots i d) #:inline
+(: (-> TextNode int (Lanes int) (Lanes int) (Lanes int) void) #:inline)
+(defun (add-ends4! n from slots i d)
   (set-slot-ends4! n from (lanes-add (slot-ends4 n from) (lanes-and (lanes-ge slots i) d))))
 
 ;; Adds `d` to the ends of slot `i` and every slot after it, including those
@@ -275,8 +275,8 @@
 
 ;; Slot `i` of `n` holds `b` bytes; the slots after it, up to the count, keep
 ;; theirs.
-(: (-> TextNode int int void))
-(defun (set-slot-bytes! n i b) #:inline
+(: (-> TextNode int int void) #:inline)
+(defun (set-slot-bytes! n i b)
   (add-slot-bytes! n i (- b (slot-bytes n i))))
 
 (: (-> TextNode int))
@@ -1034,8 +1034,8 @@
 
 ;; Raises that an offset is inside a character. Not inlined, as
 ;; `cursor-at-edge`.
-(: (-> string void))
-(defun (inside-character who) #:no-inline
+(: (-> string void) #:no-inline)
+(defun (inside-character who)
   (bad-argument (str who ": the offset is in the middle of a character.")))
 
 ;; Merges the chunk at slot `i` of the editable leaves node `n` with a
@@ -1113,8 +1113,8 @@
 
 ;; Raises that `at` is outside a text of `bytes` bytes. Not inlined, as
 ;; `cursor-at-edge`.
-(: (-> string int int void))
-(defun (offset-outside who at bytes) #:no-inline
+(: (-> string int int void) #:no-inline)
+(defun (offset-outside who at bytes)
   (out-of-range #"${who}: the offset ${at} is outside the text, of ${bytes} bytes."))
 
 (: (-> Text TextCursor (Tuple Text Text)))
@@ -1160,8 +1160,8 @@
 
 ;; Raises that a range ends before it starts. Not inlined, as
 ;; `cursor-at-edge`.
-(: (-> string void))
-(defun (backward-range who) #:no-inline
+(: (-> string void) #:no-inline)
+(defun (backward-range who)
   (out-of-range (str who ": the end is before the start.")))
 
 ;; The characters of `r` from cursor `a` to cursor `b`, as a text.
@@ -1372,8 +1372,8 @@
 (defun (char-width b)
   (cond ((< b 128) 1) ((< b 224) 2) ((< b 240) 3) (else 4)))
 
-(: (-> (RoSpan byte) int int))
-(defun (byte-at sp i) #:inline (cast int (ro-span-ref sp i)))
+(: (-> (RoSpan byte) int int) #:inline)
+(defun (byte-at sp i) (cast int (ro-span-ref sp i)))
 
 ;; The character that starts at byte `k` of `c`.
 (: (-> string int char))
@@ -1654,8 +1654,8 @@
 ;; Equality, order and hashing
 ;; ---------------------------------------------------------------------------
 
-(: (-> (RoSpan byte) (RoSpan byte) bool int))
-(defun (compare-spans x y order?) #:inline
+(: (-> (RoSpan byte) (RoSpan byte) bool int) #:inline)
+(defun (compare-spans x y order?)
   (cond (order? (span-compare x y)) ((span-equal? x y) 0) (else 1)))
 
 ;; Compares the bytes of `a` and `b` from 0 to `len`, which both have, part by
@@ -1723,8 +1723,8 @@
 (def hash-p3 (cast ulong 6384245875588680899UL))
 
 ;; The high and low words of a * b, xored.
-(: (-> ulong ulong ulong))
-(defun (fold-mul a b) #:inline
+(: (-> ulong ulong ulong) #:inline)
+(defun (fold-mul a b)
   (def p (big-mul a b))
   (bitwise-xor (cast ulong (shift-right p 64)) (cast ulong p)))
 
@@ -2288,8 +2288,8 @@
 ;;
 ;; - Not inlined: inlined into a loop that starts with it, the descent takes
 ;;   the room .NET would inline the loop's steps with.
-(: (-> Text int TextCursor))
-(defun (cursor-in r at) #:no-inline
+(: (-> Text int TextCursor) #:no-inline)
+(defun (cursor-in r at)
   (def (Tuple c start) (chunk-of r at))
   (TextCursor (text r) (chunk c) (start start) (end (+ start (string-length c))) (at at)))
 
@@ -2314,8 +2314,8 @@
 ;; - Descends by the character counts of the nodes, then steps through one
 ;;   chunk; a chunk with as many characters as bytes is ASCII, and needs no
 ;;   steps.
-(: (-> Text int TextCursor))
-(defun (cursor-of-char r n) #:no-inline
+(: (-> Text int TextCursor) #:no-inline)
+(defun (cursor-of-char r n)
   (cond
     ((>= n (.chars r)) (end-cursor r))
     ((= (.height r) 0)
@@ -2388,13 +2388,13 @@
 
 ;; Raises that the cursor is at the `edge` of the text. Not inlined, so that
 ;; the message is not built in the steps that check.
-(: (-> string string void))
-(defun (cursor-at-edge who edge) #:no-inline
+(: (-> string string void) #:no-inline)
+(defun (cursor-at-edge who edge)
   (out-of-range #"${who}: the cursor is at the ${edge} of the text."))
 
 ;; The character at `c`, which is not at the end.
-(: (-> TextCursor char))
-(defun (char-at c) #:inline (decode-at (.chunk c) (- (.at c) (.start c))))
+(: (-> TextCursor char) #:inline)
+(defun (char-at c) (decode-at (.chunk c) (- (.at c) (.start c))))
 
 ;; The cursor `to`, after the character at `c`.
 (: (-> TextCursor int TextCursor))
@@ -2451,14 +2451,14 @@
   (ref+next c))
 
 ;; Raises that a count is negative. Not inlined, as `cursor-at-edge`.
-(: (-> string int void))
-(defun (negative-count who n) #:no-inline
+(: (-> string int void) #:no-inline)
+(defun (negative-count who n)
   (bad-argument #"${who}: the count ${n} is negative."))
 
 ;; Raises that there are fewer than `n` characters on the `side` of the
 ;; cursor. Not inlined, as `cursor-at-edge`.
-(: (-> string int string void))
-(defun (too-few who n side) #:no-inline
+(: (-> string int string void) #:no-inline)
+(defun (too-few who n side)
   (out-of-range #"${who}: there are fewer than ${n} characters ${side} the cursor."))
 
 ;; The steps a cursor takes one character at a time. A longer move finds its
@@ -2783,13 +2783,13 @@
                  (dirty? #f) (bytes 0) (lines 0) (chars 0) (last 0)))
 
 ;; Copies the bytes of `s` into `buf` from `at`.
-(: (-> string (Array byte) int void))
-(defun (copy-into! s buf at) #:inline
+(: (-> string (Array byte) int void) #:inline)
+(defun (copy-into! s buf at)
   (.CopyTo (.AsSpan s) (span-slice (array->span buf) #:from at)))
 
 ;; Whether byte `k` of `buf` continues a character.
-(: (-> (Array byte) int bool))
-(defun (continues? buf k) #:inline
+(: (-> (Array byte) int bool) #:inline)
+(defun (continues? buf k)
   (= (bitwise-and (cast int (array-ref buf k)) 192) 128))
 
 ;; Makes the chunk with byte `at` hot, when no chunk is: the chunk that ends
@@ -2864,8 +2864,8 @@
 
 ;; Whether an edit at character `n` is near enough the last one to make its
 ;; chunk hot.
-(: (-> TransientText int bool))
-(defun (near? t n) #:inline
+(: (-> TransientText int bool) #:inline)
+(defun (near? t n)
   (<= (abs (- n (.last t))) hot-reach))
 
 ;; The byte in `buf` that `k` characters after byte `b` start at.
@@ -2982,8 +2982,8 @@
 
 ;; Raises that character index `n` is outside a text of `chars` characters.
 ;; Not inlined, as `cursor-at-edge`.
-(: (-> string int int void))
-(defun (index-outside who n chars) #:no-inline
+(: (-> string int int void) #:no-inline)
+(defun (index-outside who n chars)
   (out-of-range #"${who}: the index ${n} is outside the text, of ${chars} characters."))
 
 (: (-> Text int string void))

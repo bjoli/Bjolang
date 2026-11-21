@@ -119,7 +119,7 @@
 ;; cases of the choice that are its own. Otherwise each file is run in turn
 ;; with the arguments, a table each. With `--against REF`, the one file is
 ;; run against itself as it is at `REF`.
-(: cmd-bench #:sync (-> BenchTools (List string) (List string) int))
+(: cmd-bench (-> BenchTools (List string) (List string) int) #:sync)
 (defun (cmd-bench tools files passed)
   (with-return ret
     (when (has-flag? passed "--against")
@@ -220,7 +220,7 @@
     (_ None)))
 
 ;; What a benchmark program has, from its `--serve` `(list)`, asked once.
-(: listed-cases #:sync (-> BenchProgram (List string) (Result string (List Listed))))
+(: listed-cases (-> BenchProgram (List string) (Result string (List Listed))) #:sync)
 (defun (listed-cases p passed)
   (def commands (str (program-exe p) ".serve-input"))
   (file-write-text commands "(list)\n(quit)\n")
@@ -282,7 +282,7 @@
                         (cases (fun () cases)))
                  acc))))))
 
-(: bench-files-menu #:sync (-> BenchTools (List BenchProgram) (List string) int))
+(: bench-files-menu (-> BenchTools (List BenchProgram) (List string) int) #:sync)
 (defun (bench-files-menu tools programs passed)
   (with-return ret
     (def per-file
@@ -391,7 +391,7 @@
       ((Cons a1 more) (go more a (cons a1 rest))))))
 
 ;; Runs git and answers its output, trimmed; the reason when it fails.
-(: git-out #:sync (-> (List string) (Result string string)))
+(: git-out (-> (List string) (Result string string)) #:sync)
 (defun (git-out args)
   (match (run/output '(git [,@(list->vec args)]))
     ((Ok (Tuple 0 out)) (Ok (string-trim out)))
@@ -411,7 +411,7 @@
 (type (: OtherSide (Record (: file string)
                            (: worktree (Option (Tuple string string))))))
 
-(: other-side #:sync (-> string string (Result string OtherSide)))
+(: other-side (-> string string (Result string OtherSide)) #:sync)
 (defun (other-side file ref)
   (cond
     ((and (string-ends-with? ref ".bjo") (file-exists? ref))
@@ -433,7 +433,7 @@
            (Ok (OtherSide (file (path-combine tmp (clr-relative-path top (clr-full-path file))))
                           (worktree (Some (Tuple top tmp))))))))))))
 
-(: remove-worktree #:sync (-> OtherSide void))
+(: remove-worktree (-> OtherSide void) #:sync)
 (defun (remove-worktree side)
   (match (record-ref side worktree)
     ((Some (Tuple top tmp)) (ignore (git-out (list "-C" top "worktree" "remove" "--force" tmp))))
@@ -441,7 +441,7 @@
 
 ;; The other side built: by `bjo`, or by `--against-build CMD` run in its
 ;; file's directory, after which its program is where `bjo` would put it.
-(: build-other #:sync (-> BenchTools Against string (Result int BenchProgram)))
+(: build-other (-> BenchTools Against string (Result int BenchProgram)) #:sync)
 (defun (build-other tools a file)
   (match (record-ref a build)
     (None ((record-ref tools build) file))
@@ -463,7 +463,7 @@
 ;; A benchmark program running with `--serve`: a command written, a reply read.
 (type (: Server (Record (: proc Proc) (: input OutputPort) (: output InputPort) (: what string))))
 
-(: start-server #:sync (-> BenchProgram (List string) string (Result string Server)))
+(: start-server (-> BenchProgram (List string) string (Result string Server)) #:sync)
 (defun (start-server p passed what)
   (match (run '(dotnet [,(program-exe p) "--serve" ,@(list->vec passed)]))
     ((Err e) (Err #"bjo bench: could not start ${what}: ${(error-message e)}"))
@@ -474,7 +474,7 @@
 
 ;; One command and its reply. A reply that is `(error ...)`, or no reply, is
 ;; an `Err`.
-(: ask #:sync (-> Server string (Result string Bjodat)))
+(: ask (-> Server string (Result string Bjodat)) #:sync)
 (defun (ask s command)
   (write-string (record-ref s input) (str command "\n"))
   (flush-port (record-ref s input))
@@ -489,7 +489,7 @@
        ((Ok reply) (Ok reply))
        ((Err why) (Err #"bjo bench: ${(record-ref s what)} answered what is not bjodat: ${line}"))))))
 
-(: stop-server #:sync (-> Server void))
+(: stop-server (-> Server void) #:sync)
 (defun (stop-server s)
   (write-string (record-ref s input) "(quit)\n")
   (flush-port (record-ref s input))
@@ -513,7 +513,7 @@
 
 ;; Prepares case `i` on a server, and answers its batch size and whether it
 ;; got steady while it warmed up.
-(: prepare-on #:sync (-> Server int Against (Result string (Tuple long bool))))
+(: prepare-on (-> Server int Against (Result string (Tuple long bool))) #:sync)
 (defun (prepare-on s i a)
   (match (ask s #"(prepare ${i} :warmup ${(record-ref a warmup-ms)} :sample ${(record-ref a sample-ms)})")
     ((Ok reply)
@@ -522,7 +522,7 @@
     ((Err why) (Err why))))
 
 ;; One sample of `k` calls of case `i`, as nanoseconds per call.
-(: sample-on #:sync (-> Server int long (Result string double)))
+(: sample-on (-> Server int long (Result string double)) #:sync)
 (defun (sample-on s i k)
   (match (ask s #"(sample ${i} :k ${k})")
     ((Ok reply) (Ok (/ (cast System.Double (reply-long reply "ns")) (cast System.Double k))))
@@ -577,9 +577,9 @@
 ;; the smaller batch size, and its rounds taken, the order of the sides
 ;; alternating and the cases shuffled each round. Answers, per shared case,
 ;; A's and B's per-call times in round order.
-(: run-pair #:sync (-> BenchProgram BenchProgram (List Shared) Against int (List string) RandomSource
+(: run-pair (-> BenchProgram BenchProgram (List Shared) Against int (List string) RandomSource
                        (Box (List string))
-                       (Result string (Vec (Tuple (Vec double) (Vec double))))))
+                       (Result string (Vec (Tuple (Vec double) (Vec double))))) #:sync)
 (defun (run-pair pa pb shared a j flags rng unsteady)
   (with-return ret
     (def (Ok sa) (start-server pa flags (str "A (" (record-ref a ref) ")")) :leave ((Err why) (Err why)))
@@ -641,7 +641,7 @@
 (: (-> int (List int)))
 (defun (index-list n) {listing i (:for i (range 0 n))})
 
-(: cmd-against #:sync (-> BenchTools string (List string) int))
+(: cmd-against (-> BenchTools string (List string) int) #:sync)
 (defun (cmd-against tools file passed)
   (with-return ret
     (def (Ok (Tuple a rest)) (against-options passed) :leave ((Err why) (fail why)))
@@ -655,7 +655,7 @@
     (remove-worktree side)
     code))
 
-(: against-with #:sync (-> BenchTools Against BenchOptions (List string) BenchProgram OtherSide int))
+(: against-with (-> BenchTools Against BenchOptions (List string) BenchProgram OtherSide int) #:sync)
 (defun (against-with tools a o rest pb side)
   (with-return ret
     (def ref (record-ref a ref))
