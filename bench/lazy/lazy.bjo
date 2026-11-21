@@ -1,0 +1,55 @@
+;; (std lazy): the cost of a force.
+;;     bjo bench bench/lazy/lazy.bjo --all
+;; - A forced value: force, force/fiber, and the call of a bjoroutine that
+;;   does not suspend, which is the least a force/fiber can cost.
+;; - A first force: make the value and force it.
+;; Each benchmark runs n operations. The bjoroutine ones run in one fiber,
+;; which costs one spawn for each n operations.
+
+(import (std prelude))
+(import (std bench))
+(import (std lazy))
+
+(: int)
+(def n 10000)
+
+(: (-bjo-> int int))
+(defbjo (ready x) x)
+
+(: (Lazy int))
+(def forced (delay 1))
+
+(: (FiberLazy int))
+(def forced-fiber (delay/fiber 1))
+
+(: (-bjo-> int))
+(defbjo (sum-forced-fiber)
+  (loop (:for _i (range 0 n)) (:acc (summing (force/fiber forced-fiber)))))
+
+(: (-bjo-> int))
+(defbjo (sum-ready)
+  (loop (:for i (range 0 n)) (:acc (summing (ready i)))))
+
+(: (-bjo-> int))
+(defbjo (sum-first-fiber)
+  (loop (:for i (range 0 n)) (:acc (summing (force/fiber (delay/fiber i))))))
+
+(: (-bjo-> int))
+(defbjo (sum-nothing) 0)
+
+(def/bench "forced: force" #:group "forced"
+  (ignore (force forced))
+  (loop (:for _i (range 0 n)) (:acc (summing (force forced)))))
+(def/bench "forced: force/fiber" #:group "forced"
+  (promise-join/sync (bjo (sum-forced-fiber))))
+(def/bench "forced: a bjoroutine call that does not suspend" #:group "forced"
+  (promise-join/sync (bjo (sum-ready))))
+(def/bench "forced: the spawn alone" #:group "forced"
+  (promise-join/sync (bjo (sum-nothing))))
+
+(def/bench "first: delay + force" #:group "first"
+  (loop (:for i (range 0 n)) (:acc (summing (force (delay i))))))
+(def/bench "first: delay/fiber + force/fiber" #:group "first"
+  (promise-join/sync (bjo (sum-first-fiber))))
+
+(run-benches)

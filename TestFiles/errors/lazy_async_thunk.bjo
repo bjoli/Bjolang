@@ -1,0 +1,13 @@
+;; The thunk of a lazy value is not async, so a delay whose body suspends does
+;; not compile.
+;; EXPECT-ERROR: calling 'fetch' is a yield point, and a yield point is not allowed here
+(import (std prelude))
+(import (std lazy))
+
+(: (-bjo-> int))
+(defbjo (fetch) 42)
+
+(defbjo (main args)
+  (def p (delay (fetch)))
+  (println (force p))
+  0)

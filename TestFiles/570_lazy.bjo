@@ -1,0 +1,101 @@
+;; (std lazy): the thunk runs at the first force and not again, a ready value,
+;; a thunk that raises runs again at the next force, a thunk that forces its
+;; own value raises, and eight fibers that force one value at the same time.
+;;
+;; TestFiles/errors/lazy_async_thunk.bjo checks that a body that suspends does
+;; not compile.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std atomic))
+(import (std lazy))
+
+(import/extern
+  (thread-sleep (: System.Threading.Thread.Sleep (-> int void))))
+
+(import/class (Boom (: System.InvalidOperationException (-> string Boom))))
+
+(: (-> string %a))
+(defun (boom why) (raise (cast Exception (Boom. why))))
+
+;; Whether `thunk` raises InvalidOperationException.
+(: (-> (-> %a) bool))
+(defun (raises? thunk)
+  (match (try (thunk) #:catch (System.InvalidOperationException))
+    ((Ok _) #f)
+    ((Err _) #t)))
+
+;; Eight fibers that each run `work` at the same time.
+(: (-bjo-> (-> void) void))
+(defbjo (eight work)
+  (with-scope
+    (loop (:for _k (range 0 8))
+          (:do (spawn (work))))))
+
+(defbjo (main args)
+  ;; --- one run ----------------------------------------------------------------
+  (def runs (make-atomic 0))
+  (def p (delay (ignore (atomic-increment! runs)) 42))
+  (expect "delay does not run the body" (atomic-ref runs) 0)
+  (expect-true "a new lazy value is not forced" (not (lazy-forced? p)))
+  (expect "force returns the value" (force p) 42)
+  (expect-true "then it is forced" (lazy-forced? p))
+  (expect "a second force returns the same value" (force p) 42)
+  (expect "and the body ran one time" (atomic-ref runs) 1)
+
+  (def q (make-lazy (fun () "from a thunk")))
+  (expect "make-lazy" (force q) "from a thunk")
+
+  ;; --- ready ------------------------------------------------------------------
+  (def r (lazy-ready (list 1 2)))
+  (expect-true "a ready value is forced" (lazy-forced? r))
+  (expect "and force returns it" (force r) (list 1 2))
+
+  ;; --- a thunk that raises ------------------------------------------------------
+  (def tries (make-atomic 0))
+  (def flaky (delay (if (= (atomic-increment! tries) 1) (boom "first try") "second try")))
+  (expect-true "the first force raises" (raises? (fun () (force flaky))))
+  (expect-true "the value is not kept as an error" (not (lazy-forced? flaky)))
+  (expect "the next force runs the thunk again" (force flaky) "second try")
+  (expect "two runs in all" (atomic-ref tries) 2)
+  (expect "then the value is kept" (force flaky) "second try")
+  (expect "and the thunk does not run again" (atomic-ref tries) 2)
+
+  ;; --- a thunk that forces its own value ---------------------------------------
+  (def (: self-ref (Box (Option (Lazy int)))) (make-box None))
+  (def selfish (delay (match (box-ref self-ref)
+                        ((Some me) (+ 1 (force me)))
+                        (None 0))))
+  (box-set! self-ref (Some selfish))
+  (expect-true "a thunk that forces its own value raises" (raises? (fun () (force selfish))))
+  (expect-true "and the value is not forced" (not (lazy-forced? selfish)))
+  (box-set! self-ref None)
+  (expect "the next force runs the thunk again" (force selfish) 0)
+
+  ;; --- eight fibers -------------------------------------------------------------
+  ;; The thunk sleeps, so the other fibers force the value while it runs.
+  (def slow-runs (make-atomic 0))
+  (def slow (delay (ignore (atomic-increment! slow-runs)) (thread-sleep 50) (list "shared")))
+  (def seen (make-atomic (list)))
+  (eight (fun () (ignore (atomic-update! seen (fun (xs) (Cons (force slow) xs))))))
+  (expect "eight fibers: the thunk ran one time" (atomic-ref slow-runs) 1)
+  (expect "eight fibers: each one has a value" (list-length (atomic-ref seen)) 8)
+  (expect-true "eight fibers: all values are the same object"
+               (all? (fun (x) (eq? x (force slow))) (atomic-ref seen)))
+
+  ;; The first run raises. One fiber gets the exception. Another fiber runs the
+  ;; thunk again, and the others get its value.
+  (def shaky-runs (make-atomic 0))
+  (def shaky (delay (def n (atomic-increment! shaky-runs))
+                    (thread-sleep 30)
+                    (if (= n 1) (boom "first run") n)))
+  (def errors (make-atomic 0))
+  (def values (make-atomic (list)))
+  (eight (fun ()
+           (match (try (force shaky) #:catch (System.InvalidOperationException))
+             ((Ok v) (ignore (atomic-update! values (fun (xs) (Cons v xs)))))
+             ((Err _) (ignore (atomic-increment! errors))))))
+  (expect "a failed run: one fiber gets the exception" (atomic-ref errors) 1)
+  (expect "a failed run: the thunk ran two times" (atomic-ref shaky-runs) 2)
+  (expect "a failed run: the other fibers get the second value" (atomic-ref values) (list 2 2 2 2 2 2 2))
+  0)

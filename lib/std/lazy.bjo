@@ -1,0 +1,135 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/lazy.bjo — values that are computed one time, when first forced.
+;;
+;; - A `(Lazy T)` is a `Bjolang.Runtime.BjoLazy<T>`. See
+;;   BjolangRuntime/BjoLazy.cs.
+;; - Safe for threads: the thunk runs one time at most, unless it raises.
+;; - The thunk of a `Lazy` is not async. A body that suspends is rejected by
+;;   the type of `make-lazy`. Use `delay/fiber` for an async thunk.
+
+(import (std prelude))
+(import (std syntax-match))
+
+(:doc #:file "lazy.bjodoc")
+
+(export
+  Lazy
+  delay make-lazy lazy-ready force lazy-forced?
+  FiberLazy
+  delay/fiber make-fiber-lazy force/fiber fiber-lazy-forced? lazy-evt)
+
+(import/class
+  ((Lazy %a) (: Bjolang.Runtime.BjoLazy)))
+
+(import/extern
+  (make-lazy    (: Bjolang.Runtime.LazyModule.Make     (-> (-> %a) (Lazy %a))))
+  (lazy-ready   (: Bjolang.Runtime.LazyModule.Ready    (-> %a (Lazy %a))))
+  (force        (: Bjolang.Runtime.LazyModule.Force    (-> (Lazy %a) %a)))
+  (lazy-forced? (: Bjolang.Runtime.LazyModule.IsForced (-> (Lazy %a) bool))))
+
+;; `(delay body ...)` is `(make-lazy (fun () body ...))`.
+(def/macro (delay form inject compare)
+  (syntax-match form
+    ((_ first body ...)
+     #'(make-lazy (fun () ,first ,@body)))
+    (bad (syntax-error bad "delay takes a body: (delay expr ...)"))))
+
+;; ---------------------------------------------------------------------------
+;; Async thunks
+;; ---------------------------------------------------------------------------
+
+;; - A `(FiberLazy T)` holds the thunk, and a `FiberLazyCell<T>` with the
+;;   state. See BjolangRuntime/BjoLazy.cs for the protocol.
+;; - `force/fiber` is a yield point. A fiber that waits for another fiber's run
+;;   syncs on the run's gate, so it suspends, and raises when its scope is
+;;   cancelled.
+;; - The thunk is cleared when a run succeeds.
+
+(import/class
+  ((FiberLazyCell %a) (: Bjolang.Runtime.FiberLazyCell)))
+
+(import/extern
+  (cell-make        (: Bjolang.Runtime.FiberLazyModule.Make     (-> (FiberLazyCell %a))))
+  (cell-forced?     (: Bjolang.Runtime.FiberLazyModule.IsForced (-> (FiberLazyCell %a) bool)))
+  (cell-value       (: Bjolang.Runtime.FiberLazyModule.Value    (-> (FiberLazyCell %a) %a)))
+  (cell-try-start!  (: Bjolang.Runtime.FiberLazyModule.TryStart (-> (FiberLazyCell %a) bool)))
+  (cell-gate        (: Bjolang.Runtime.FiberLazyModule.Gate     (-> (FiberLazyCell %a) (Promise Unit))))
+  (cell-succeed!    (: Bjolang.Runtime.FiberLazyModule.Succeed  (-> (FiberLazyCell %a) %a void)))
+  (cell-fail!       (: Bjolang.Runtime.FiberLazyModule.Fail     (-> (FiberLazyCell %a) void)))
+  (cell-done        (: Bjolang.Runtime.FiberLazyModule.Done     (-> (FiberLazyCell %a) (Promise %a)))))
+
+(type (: (FiberLazy %a) #:opaque
+         (Record (: cell (FiberLazyCell %a))
+                 (: thunk (Option (-bjo-> %a)) #:mutable))))
+
+(: (-> (-bjo-> %a) (FiberLazy %a)))
+;; Not inlined: inlined, an ordinary thunk would be put in the Option, which
+;; holds a bjoroutine.
+(defun (make-fiber-lazy thunk) #:no-inline
+  (FiberLazy (cell (cell-make)) (thunk (Some thunk))))
+
+(: (-> (FiberLazy %a) bool))
+(defun (fiber-lazy-forced? lazy) (cell-forced? (record-ref lazy cell)))
+
+;; The value of `lazy`. Runs the thunk if no force has completed, or waits for
+;; the run in progress.
+;; - Inlined, so that a forced value costs a read and no bjoroutine call.
+(: (-bjo-> (FiberLazy %a) %a))
+(defbjo (force/fiber lazy) #:inline
+  (def cell (record-ref lazy cell))
+  (if (cell-forced? cell) (cell-value cell) (force/fiber-slow lazy cell)))
+
+(: (-bjo-> (FiberLazy %a) (FiberLazyCell %a) %a))
+(defbjo (force/fiber-slow lazy cell) #:no-inline
+  (let retry ()
+    (cond
+      ((cell-forced? cell) (cell-value cell))
+      ((cell-try-start! cell) (run-thunk lazy cell))
+      (else
+       (ignore (sync (promise-join (cell-gate cell))))
+       (retry)))))
+
+;; Runs the thunk for the caller that `cell-try-start!` chose.
+;; - Success: stores the value and clears the thunk.
+;; - Failure: ends the run without a value, and raises the exception again.
+(: (-bjo-> (FiberLazy %a) (FiberLazyCell %a) %a))
+(defbjo (run-thunk lazy cell)
+  (match (record-ref lazy thunk)
+    ;; Only after a run succeeded, and then cell-try-start! returns #f.
+    (None (cell-value cell))
+    ((Some f)
+     (match (try (f) #:catch (System.Exception))
+       ((Ok v)
+        (record-set! lazy (thunk None))
+        (cell-succeed! cell v)
+        v)
+       ((Err e)
+        (cell-fail! cell)
+        (raise e))))))
+
+;; The event of a value being computed. It does not start a run.
+(: (-> (FiberLazy %a) (Event %a)))
+(defun (lazy-evt lazy)
+  (wrap (promise-join (cell-done (record-ref lazy cell)))
+        (fun (r)
+          (match r
+            ((Ok v) v)
+            ((Err e) (raise e))))))
+
+;; `(delay/fiber body ...)` is `(make-fiber-lazy (bjoroutine () body ...))`.
+(def/macro (delay/fiber form inject compare)
+  (syntax-match form
+    ((_ first body ...)
+     #'(make-fiber-lazy (bjoroutine () ,first ,@body)))
+    (bad (syntax-error bad "delay/fiber takes a body: (delay/fiber expr ...)"))))

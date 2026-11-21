@@ -1,0 +1,157 @@
+;; Docs for std/lazy.bjo, read through (:doc #:file "lazy.bjodoc"). The texts
+;; are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Values that are computed one time, when they are first forced. Safe for threads.")
+  (see delay force lazy-ready lazy-forced?)
+  (example """
+    (import (std lazy))
+
+    (def table (delay (load-table "big.dat")))   ; nothing is loaded yet
+    (force table)                                ; loads the table
+    (force table)                                ; the same table, not loaded again
+    """)
+  (reference """
+    @strong{One run.} Exactly one thread runs the thunk at a time. A
+    thread that forces the value while another thread runs the thunk waits
+    for it. The wait blocks the thread, not only the fiber.
+
+    @strong{Errors.} If the thunk raises, the exception goes to the force
+    that ran the thunk. The value is not kept as an error: the next force
+    runs the thunk again. A waiting thread also runs it again. Thus a
+    cancelled or failed force does not make the value fail for all callers.
+
+    @strong{A thunk that forces itself.} A force of the value from its own
+    thunk raises @code{InvalidOperationException}. A wait there can not
+    complete.
+
+    @strong{Dynamic environment.} The thunk runs in the dynamic environment
+    of the force that runs it: its ports, parameters and cancellation. To
+    make the value the same for all callers, set the parameters in the
+    thunk with @code{parameterize}.
+
+    @strong{Not async.} The thunk can not suspend. A body that calls a
+    bjoroutine is a type error.
+    """))
+
+(:doc Lazy
+  (summary "A value of type %a that is computed when it is first forced.")
+  (tparam %a "The type of the value.")
+  (see delay force))
+
+(:doc delay
+  (summary "A lazy value that body computes when it is first forced.")
+  (form (delay body ...))
+  (rest body "The expressions to run at the first force. The last one gives the value.")
+  (see force make-lazy)
+  (example """
+    (def p (delay (println "computing") 42))
+    (force p)   ; prints "computing", returns 42
+    (force p)   ; returns 42
+    """)
+  (reference "The same as @code{(make-lazy (fun () body ...))}."))
+
+(:doc make-lazy
+  (summary "A lazy value that a thunk computes when it is first forced.")
+  (arg thunk "A function of no arguments. It is not async.")
+  (returns "A lazy value that is not forced.")
+  (see delay force))
+
+(:doc lazy-ready
+  (summary "A lazy value that is already forced.")
+  (arg value "The value.")
+  (returns "A lazy value. A force of it returns value.")
+  (example """
+    (: (Lazy int))
+    (def answer (if cached? (lazy-ready 42) (delay (compute))))
+    """))
+
+(:doc force
+  (summary "The value of a lazy value. Runs its thunk if no force has completed.")
+  (arg lazy "The lazy value.")
+  (returns "The value. All forces that complete return the same value.")
+  (raises System.InvalidOperationException "When the thunk of lazy forces lazy.")
+  (see delay lazy-forced?)
+  (reference """
+    When the value is forced, a force is one read of a field. If the thunk
+    raises, force raises the same exception, and the value stays not
+    forced.
+    """))
+
+(:doc lazy-forced?
+  (summary "Whether a lazy value has a value.")
+  (arg lazy "The lazy value.")
+  (returns "#t when a force has completed. Does not run the thunk.")
+  (see force))
+
+;; ---------------------------------------------------------------------------
+;; Async thunks
+;; ---------------------------------------------------------------------------
+
+(:doc FiberLazy
+  (summary "A value of type %a that an async thunk computes when it is first forced.")
+  (tparam %a "The type of the value.")
+  (see delay/fiber force/fiber lazy-evt)
+  (reference """
+    The same rules as @code{Lazy} for one run and for errors. The
+    differences:
+
+    @strong{A wait suspends.} A fiber that forces the value while another
+    fiber runs the thunk suspends. It does not block its thread.
+
+    @strong{Cancellation.} The wait is a @code{sync}. When the scope of the
+    waiting fiber is cancelled, @code{force/fiber} raises, as each
+    @code{sync} does. If the scope of the running fiber is cancelled, its
+    run fails, and a waiting fiber runs the thunk again.
+
+    @strong{A thunk that forces itself.} The force waits for its own run,
+    and does not complete. It is not detected.
+    """))
+
+(:doc delay/fiber
+  (summary "A lazy value that an async body computes when it is first forced.")
+  (form (delay/fiber body ...))
+  (rest body "The expressions to run at the first force. They can suspend. The last one gives the value.")
+  (see force/fiber make-fiber-lazy delay)
+  (example """
+    (def config (delay/fiber (parse-config (fetch config-url))))
+    (force/fiber config)   ; fetches one time; other fibers wait for it
+    """)
+  (reference "The same as @code{(make-fiber-lazy (bjoroutine () body ...))}."))
+
+(:doc make-fiber-lazy
+  (summary "A lazy value that an async thunk computes when it is first forced.")
+  (arg thunk "A function of no arguments. It can suspend.")
+  (returns "A lazy value that is not forced.")
+  (see delay/fiber force/fiber))
+
+(:doc force/fiber
+  (summary "The value of an async lazy value. Runs its thunk if no force has completed.")
+  (arg lazy "The lazy value.")
+  (returns "The value. All forces that complete return the same value.")
+  (raises Bjolang.Runtime.Cancelled "When the scope is cancelled while the force waits for another fiber.")
+  (see delay/fiber fiber-lazy-forced? lazy-evt)
+  (reference """
+    A yield point. When the value is forced, it returns without a
+    suspension. If the thunk raises, force/fiber raises the same exception,
+    and the value stays not forced.
+    """))
+
+(:doc fiber-lazy-forced?
+  (summary "Whether an async lazy value has a value.")
+  (arg lazy "The lazy value.")
+  (returns "#t when a force has completed. Does not run the thunk.")
+  (see force/fiber))
+
+(:doc lazy-evt
+  (summary "The event of an async lazy value getting its value.")
+  (arg lazy "The lazy value.")
+  (returns "An event whose value is the value of lazy.")
+  (see force/fiber)
+  (example """
+    (choose (lazy-evt config) (timeout-evt (seconds 5)))
+    """)
+  (reference """
+    The event does not run the thunk. It becomes ready when a force by
+    another fiber completes. A run that fails does not make it ready.
+    """))

@@ -1,0 +1,113 @@
+;; (std lazy), async thunks: delay/fiber and force/fiber.
+;; - The thunk runs at the first force, can suspend, and runs one time.
+;; - Many fibers wait for one run, and a wait does not block a thread.
+;; - A failed run: one fiber gets the exception, and another runs the thunk.
+;; - Cancellation of a waiter, and of the runner.
+;; - lazy-evt.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std atomic))
+(import (std lazy))
+
+(import/class (Boom (: System.InvalidOperationException (-> string Boom))))
+
+(: (-> string %a))
+(defun (boom why) (raise (cast Exception (Boom. why))))
+
+(: (-bjo-> int void))
+(defbjo (pause ms) (sync (timeout (milliseconds (cast long ms)))))
+
+;; `n` fibers that each run `work` at the same time.
+(: (-bjo-> int (-bjo-> void) void))
+(defbjo (fibers n work)
+  (with-scope
+    (loop (:for _k (range 0 n))
+          (:do (spawn (work))))))
+
+(defbjo (main args)
+  ;; --- one run ----------------------------------------------------------------
+  (def runs (make-atomic 0))
+  (def p (delay/fiber (ignore (atomic-increment! runs)) (pause 10) 42))
+  (expect "delay/fiber does not run the body" (atomic-ref runs) 0)
+  (expect-true "a new value is not forced" (not (fiber-lazy-forced? p)))
+  (expect "force/fiber returns the value of a body that suspends" (force/fiber p) 42)
+  (expect-true "then it is forced" (fiber-lazy-forced? p))
+  (expect "a second force returns the same value" (force/fiber p) 42)
+  (expect "and the body ran one time" (atomic-ref runs) 1)
+
+  (def plain (delay/fiber "no suspension"))
+  (expect "a body that does not suspend" (force/fiber plain) "no suspension")
+
+  ;; --- many waiters -------------------------------------------------------------
+  ;; 200 fibers force one value. The run needs the scheduler to resume after its
+  ;; pause, so waits that blocked threads would starve it.
+  (def slow-runs (make-atomic 0))
+  (def slow (delay/fiber (ignore (atomic-increment! slow-runs)) (pause 100) (list "shared")))
+  (def seen (make-atomic (list)))
+  (def t0 (monotonic-ms))
+  (fibers 200 (bjoroutine ()
+                (def v (force/fiber slow))
+                (ignore (atomic-update! seen (fun (xs) (Cons v xs))))))
+  (def took (- (monotonic-ms) t0))
+  (expect "200 fibers: the thunk ran one time" (atomic-ref slow-runs) 1)
+  (expect "200 fibers: each one has a value" (list-length (atomic-ref seen)) 200)
+  (def one (force/fiber slow))
+  (expect-true "200 fibers: all values are the same object"
+               (all? (fun (x) (eq? x one)) (atomic-ref seen)))
+  (expect-true "200 fibers: they wait for one run, not one after another" (< took 3000L))
+
+  ;; --- a failed run -------------------------------------------------------------
+  (def shaky-runs (make-atomic 0))
+  (def shaky (delay/fiber (def n (atomic-increment! shaky-runs))
+                          (pause 30)
+                          (if (= n 1) (boom "first run") n)))
+  (def errors (make-atomic 0))
+  (def values (make-atomic (list)))
+  (fibers 8 (bjoroutine ()
+              (match (try (force/fiber shaky) #:catch (System.InvalidOperationException))
+                ((Ok v) (ignore (atomic-update! values (fun (xs) (Cons v xs)))))
+                ((Err _) (ignore (atomic-increment! errors))))))
+  (expect "a failed run: one fiber gets the exception" (atomic-ref errors) 1)
+  (expect "a failed run: the thunk ran two times" (atomic-ref shaky-runs) 2)
+  (expect "a failed run: the other fibers get the second value" (atomic-ref values) (list 2 2 2 2 2 2 2))
+
+  ;; --- a waiter is cancelled ------------------------------------------------------
+  ;; The runner is in another fiber. The waiter's deadline passes long before
+  ;; the run ends.
+  (def late (delay/fiber (pause 400) "late"))
+  (with-scope
+    (spawn (ignore (force/fiber late)))
+    (pause 20)
+    (def w0 (monotonic-ms))
+    (def waited (try (with-deadline (milliseconds 50L) (force/fiber late)) #:catch (System.Exception)))
+    (def waited-ms (- (monotonic-ms) w0))
+    (expect-true "a waiter whose deadline passes raises" (err? waited))
+    (expect-true "and does not wait for the run" (< waited-ms 300L))
+    (expect-true "the run goes on" (not (fiber-lazy-forced? late))))
+  (expect-true "and completes" (fiber-lazy-forced? late))
+  (expect "with its value" (force/fiber late) "late")
+
+  ;; --- the runner is cancelled ---------------------------------------------------
+  (def tries (make-atomic 0))
+  (def retry (delay/fiber (def n (atomic-increment! tries))
+                          (pause (if (= n 1) 500 10))
+                          n))
+  (def first (try (with-deadline (milliseconds 30L) (force/fiber retry)) #:catch (System.Exception)))
+  (expect-true "a runner whose deadline passes raises" (err? first))
+  (expect-true "and the value is not forced" (not (fiber-lazy-forced? retry)))
+  (expect "the next force runs the thunk again" (force/fiber retry) 2)
+
+  ;; --- lazy-evt -----------------------------------------------------------------
+  (def watched (delay/fiber (pause 20) "watched"))
+  (expect "lazy-evt does not start a run"
+          (sync (choose (lazy-evt watched) (wrap (timeout (milliseconds 50L)) (fun (_) "timed out"))))
+          "timed out")
+  (expect-true "so the value is still not forced" (not (fiber-lazy-forced? watched)))
+  (with-scope
+    (spawn (ignore (force/fiber watched)))
+    (expect "lazy-evt is ready when another fiber's force completes"
+            (sync (choose (lazy-evt watched) (wrap (timeout (milliseconds 2000L)) (fun (_) "timed out"))))
+            "watched"))
+  (expect "lazy-evt of a forced value is ready at once" (sync (lazy-evt watched)) "watched")
+  0)
