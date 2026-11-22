@@ -2618,8 +2618,14 @@ and private checkReExport (env: Env) (sigs: Sigs) (names: string list) (r: Range
             | _ -> true
         | _ -> false
 
+    // An imported (import/extern ...) alias, such as `int-max` from a module
+    // that exports it, arrives as an import of its own and is in
+    // `ClrExterns`, not in `Bindings`. `Exports` publishes a re-exported one
+    // as the import it is.
+    let isExternAlias (name: string) = Map.containsKey name env.Registry.ClrExterns
+
     for name in names do
-        if not (Map.containsKey name env.Bindings) && not (isTraitMethodSpelling name) then
+        if not (Map.containsKey name env.Bindings) && not (isTraitMethodSpelling name) && not (isExternAlias name) then
             let keyed = originalTypeName env.Registry name
 
             if Set.contains keyed env.Registry.LocalTypes then

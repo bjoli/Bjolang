@@ -188,6 +188,18 @@ let tryImported (name: string) : MacroBinding option =
     | true, binding -> Some binding
     | _ -> None
 
+let private tryIn (tbl: Dictionary<string, MacroBinding>) (name: string) =
+    match tbl.TryGetValue name with
+    | true, binding -> Some binding
+    | _ -> None
+
+/// The same, for the other four kinds. A hash macro is asked with its bare
+/// name, `fl` for `#fl`.
+let tryImportedPattern (name: string) = tryIn patternTable name
+let tryImportedHash (name: string) = tryIn hashTable name
+let tryImportedClause (name: string) = tryIn clauseTable name
+let tryImportedAcc (name: string) = tryIn accTable name
+
 let aliasPattern (newName: string) (oldName: string) : bool = aliasIn patternTable newName oldName
 
 let aliasHash (newName: string) (oldName: string) : bool = aliasIn hashTable newName oldName

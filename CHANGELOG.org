@@ -3,6 +3,46 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std prelude core)~
+
+- The prelude is two modules. ~(std prelude core)~ has the part that does
+  not reach the operating system: lists, vecs, maps, arrays and spans,
+  strings, characters and string cursors, ~Iterable~, ~Collection~ and
+  ~Collector~ and the collectors, ~Written~ and ~Displayed~, options,
+  results and boxes, and the macros ~if-let~, ~when-let~, ~some->~,
+  ~try->~, ~let*~, ~parameterize*~ and ~type/derive~. So are the
+  acc-clauses (~oring~, ~grouping~ and the rest), the hash macros (~#fl~,
+  ~#fr~, ~#ch~, ~#map~, ~#set!~), the path macros (~get~, ~try-get~, ~set~,
+  ~update~) and the patterns ~Has~ and ~Has*~.
+- ~(std prelude)~ imports the core and re-exports all of it, so a program
+  sees the same names as before. It adds ports, files, paths, directories
+  and the process environment, the ~Diagnostics~ and ~getenv~ effects, the
+  clock and durations, cancellation scopes, the dynamic environment and
+  ~select~.
+- A module of the standard library that ~(std prelude)~ depends on imports
+  the core in its place. ~(std unicode normalize)~, ~(std unicode casefold)~
+  and ~(std unicode grapheme)~ do, so that the prelude can use their tables. A module that imports the core gets ~Written~
+  implementations for its types, as one that imports the prelude does.
+- The names of the core are qualified with its module: ~core/Summing~ in
+  an error, ~core_Module~ and ~BjoMod.std.prelude.core__Map~ in the C#, and
+  ~(std prelude core)~ where the REPL says where a name is from.
+- ~(re-export ...)~ takes an imported ~import/extern~ alias, such as
+  ~int-max~. It was rejected as not in scope.
+
+* Every kind of macro can be exported again
+
+- ~(export name)~ and ~(re-export name)~ of an imported macro publish it
+  again, for each of the five kinds: ~def/macro~, ~def/pattern~,
+  ~def/hash-extend~, ~def/loop-clause~ and ~def/acc-clause~. Before, only a
+  ~def/macro~ could be. A hash macro is named without its ~#~: ~fl~ for
+  ~#fl~.
+- One name publishes every kind it names. ~map~ is the function and the
+  hash macro ~#map~, and ~(re-export map)~ passes on both.
+- An importer loads the transformer from the module that defined it, and
+  its templates resolve against that module, as for a ~def/macro~.
+- ~TestFiles/574_macro_kinds_reexport.bjo~ takes one macro of each of the
+  four new kinds through two modules.
+
 * ~(std unicode normalize)~
 
 - ~string-nfc~, ~string-nfd~, ~string-nfkc~ and ~string-nfkd~, and

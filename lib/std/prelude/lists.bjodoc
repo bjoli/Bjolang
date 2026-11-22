@@ -1,0 +1,214 @@
+;; Docs of std/prelude/core.bjo, read through (:doc #:file "lists.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc list-append
+  (summary "Lists joined in order: one list followed by the others.")
+  (arg xs "The elements that come first. They are copied.")
+  (arg ys "The elements that come next. Copied if more lists follow, else shared.")
+  (rest more "More lists, in order. The last one is shared, the others are copied.")
+  (returns "A list of xs's elements, then ys's, then those of each list in more.")
+  (see cons list-foldr)
+  (example """
+    (list-append (list 1 2) (list 3))              ; (1 2 3)
+    (list-append (list 1) (list 2) (list 3 4))     ; (1 2 3 4)
+    (apply list-append (list 1) (list 2) parts)    ; with parts a list of lists
+    """)
+  (reference """
+    O(n) in the length of all lists but the last, and independent of the
+    last: the result's last cells are the last list itself. Each list is
+    copied once, as the lists are joined from the right.
+    """))
+
+(:doc list-map
+  (summary "Applies a function to each element of a list.")
+  (arg f "The transformation function. May suspend.")
+  (arg xs "The list to map over.")
+  (returns "A new list of mapped values, in xs's order.")
+  (see list-filter list-for-each list-foldl)
+  (example """
+    (list-map (fun (x) (* x x)) (list 1 2 3))   ; (1 4 9)
+    """)
+  (reference """
+    f is called on the elements in order, from the first.
+    """))
+
+(:doc list-filter
+  (summary "The elements of a list that satisfy a predicate.")
+  (arg keep? "The predicate function, returning #t to keep an element. May suspend.")
+  (arg xs "The list to filter.")
+  (returns "A new list containing elements that satisfied the predicate, in xs's order.")
+  (see list-map)
+  (example """
+    (list-filter (fun (x) (> x 1)) (list 1 2 3))   ; (2 3)
+    """))
+
+(:doc list-foldl
+  (summary "Combines a list's elements into one value, from the first.")
+  (arg f "Accumulator function taking (element, acc) and returning the next value. May suspend.")
+  (arg init "The initial accumulator value.")
+  (arg xs "The list to fold.")
+  (returns "The value returned by f after the last element, or init when xs is empty.")
+  (see list-foldr list-for-each)
+  (example """
+    (list-foldl cons Nil (list 1 2 3))   ; (3 2 1)
+    """)
+  (reference """
+    f takes the element first and the accumulator second, the same order as
+    @code{list-foldr} and @code{fold}.
+    """))
+
+(:doc list-contains?
+  (summary "Whether a list holds an element.")
+  (arg xs "The list.")
+  (arg x "The element to look for.")
+  (returns "#t when some element of xs is = to x.")
+  (see list-filter vec-contains?)
+  (reference """
+    Compares with @code{=}, the @code{Eq} trait, and stops at the first
+    match. O(n).
+    """))
+
+(:doc list-foldr
+  (summary "Combines a list's elements into one value, from the last.")
+  (arg f "Accumulator function taking (element, acc) and returning the next value. May suspend.")
+  (arg init "The initial accumulator value.")
+  (arg xs "The list to fold.")
+  (returns "The value returned by f after the first element, or init when xs is empty.")
+  (see list-foldl list-append)
+  (example """
+    (list-foldr cons Nil (list 1 2 3))   ; (1 2 3)
+    """)
+  (reference """
+    It reverses xs and folds that from the front, so a long list uses no
+    stack, at the cost of one reversed copy.
+    """))
+
+(:doc list-for-each
+  (summary "Calls a function on each element of a list, for its effect.")
+  (arg f "The function. It may suspend.")
+  (arg xs "The list, walked from the first element.")
+  (see list-map list-foldl))
+
+(:doc list-unfold
+  (summary "A list generated from a state.")
+  (arg f "Maps a state to (Some (Tuple x next-state)), the next element and the state after it, or to None to end. May suspend.")
+  (arg state "The first state.")
+  (returns "A list of the elements f produces, in order, until it returns None.")
+  (see seq-unfold list-foldl)
+  (example """
+    (list-unfold (fun (n) (if (< n 5) (Some (Tuple (* n n) (+ n 1))) None)) 0)
+    ; (0 1 4 9 16)
+
+    ;; Pairs from a list, the odd one left over on its own.
+    (list-unfold (fun (xs)
+                   (match xs
+                     ((Cons a (Cons b more)) (Some (Tuple (list a b) more)))
+                     ((Cons a Nil) (Some (Tuple (list a) Nil)))
+                     (Nil None)))
+                 (list 1 2 3 4 5))
+    ; ((1 2) (3 4) (5))
+    """)
+  (reference """
+    Eager: f is called until it returns None, so an f that never does never
+    returns. For an endless or partly read generation, use
+    @code{seq-unfold}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(:doc list->vec
+  (summary "A vec of a list's elements, in the same order.")
+  (arg lst "The list.")
+  (returns "A new vec.")
+  (see list->seq list-ref))
+
+(:doc list->string
+  (summary "A string of a list's characters.")
+  (arg cs "The characters, in order.")
+  (returns "A new string.")
+  (see displayed))
+
+(:doc list->str
+  (summary "Deprecated: use @code{displayed}. A list written out as (1 2 3).")
+  (arg l "The list. Each element is formatted by its own @code{displayed}.")
+  (returns "The elements between parentheses, separated by one space: @code{()} for the empty list.")
+  (see list->string displayed)
+  (example """
+    (displayed (list 1 2 3))             ; "(1 2 3)"
+    (displayed (list (list 1) (list 2)))  ; "((1) (2))"
+    """)
+  (reference """
+    No quote is written in front, and a string element is written as it is,
+    without quotes. It is what @code{displayed} gives for a list.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Walking and collecting
+;; ---------------------------------------------------------------------------
+
+(:doc ListTails
+  (summary "The sequence of list tails returned by @code{over-list}.")
+  (tparam %a "The type of the list's elements.")
+  (field rest "The list the walk starts from.")
+  (see over-list)
+  (reference """
+    Its @code{Iterable} implementation yields the list, then its tail, and
+    so on, stopping before @code{Nil}. Each element is a
+    @code{(List %a)} with a head.
+    """))
+
+(:doc over-list
+  (summary "Returns the successive tails of a list for iteration.")
+  (arg xs "The list.")
+  (returns "A sequence yielding xs, its tail, its tail's tail, and so on. The empty list is not yielded.")
+  (see ListTails list-tail)
+  (example """
+    {listing t (:for t (over-list (list 1 2 3)))}   ; ((1 2 3) (2 3) (3))
+
+    (loop (:for tail (over-list xs))
+          (:when (> (list-length tail) 1))
+          (:acc pairs (listing (Tuple (list-head tail) (list-head (list-tail tail))))))
+    """)
+  (reference """
+    For a walk that has to look at the rest of the list, not only the
+    element it is on. Each tail is the cell of xs itself, not a copy.
+    """))
+
+(:doc Listing
+  (summary "The collector that gathers a loop's values into a list.")
+  (tparam %a "The type of the elements.")
+  (case listing "Written @code{(listing x)} in an @code{:acc} clause, or as the head of a comprehension.")
+  (see listbuilder-empty ListingReverse)
+  (example """
+    (loop (:for x (list 1 2 3))
+          (:acc out (listing (* x 10)))
+          => out)                        ; (10 20 30)
+
+    {listing x :when (> x 2) (:for x (range 0 6))}   ; (3 4 5)
+    """)
+  (reference """
+    The list is in the order the values were added. It is built with a
+    list builder, so each value costs O(1) and nothing is reversed at the
+    end.
+    """))
+
+(:doc ListingReverse
+  (summary "The collector that gathers a loop's values into a list, the last value first.")
+  (tparam %a "The type of the elements.")
+  (case listing/reverse "Written @code{(listing/reverse x)} in an @code{:acc} clause, or as the head of a comprehension.")
+  (see Listing)
+  (example """
+    (loop (:for x (list 1 2 3))
+          (:acc out (listing/reverse (* x 10))))   ; (30 20 10)
+
+    {listing/reverse x (:for x (range 0 4))}       ; (3 2 1 0)
+    """)
+  (reference """
+    Each value is consed onto the list so far: the list is the values in the
+    reverse of the order they were added, as a loop that conses onto an
+    accumulator makes it. A value costs one cons, and the loop ends with the
+    list as it is, where @code{listing} adds to a builder and makes the list
+    from it at the end.
+    """))

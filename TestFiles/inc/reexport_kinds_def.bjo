@@ -1,0 +1,42 @@
+;; Defines one macro of each kind but `def/macro`, for
+;; 574_macro_kinds_reexport.bjo, which reaches them only through
+;; inc/reexport_kinds_facade.bjo and inc/reexport_kinds_chain.bjo. Each
+;; template names `tripled`, a binding of this module.
+;; - `Twins`: a pattern macro.
+;; - `#tri`: a hash macro, and `tri`, a function of the same name.
+;; - `in-pairs`: a loop clause macro.
+;; - `summing-tripled`: a collector macro.
+
+(import (std syntax-match))
+
+(export tripled tri)
+
+(: (-> int int))
+(defun (tripled x) (* 3 x))
+
+;; The function `tri`, beside the hash macro `#tri`.
+(: (-> int int))
+(defun (tri x) (+ x 1))
+
+(def/pattern (Twins form inject compare)
+  (syntax-match form
+    ((_ a b) #'(Cons ,a (Cons ,b Nil)))
+    (bad (syntax-error bad "(Twins a b) matches a two-element list."))))
+
+(def/hash-extend (tri form inject compare)
+  (syntax-match form
+    ((_ x) #'(tripled ,x))
+    (bad (syntax-error bad "#tri takes one argument."))))
+
+(def/loop-clause (in-pairs form inject compare)
+  (syntax-match form
+    ((_ pat (_ seq))
+     #'(begin
+         (:for e ,seq)
+         (:let ,pat (Tuple e (tripled e)))))
+    (bad (syntax-error bad "(:for x (in-pairs seq))"))))
+
+(def/acc-clause (summing-tripled form inject compare)
+  (syntax-match form
+    ((_ name (_ x)) #'(:acc ,name (summing (tripled ,x))))
+    (bad (syntax-error bad "(:acc name (summing-tripled x))"))))

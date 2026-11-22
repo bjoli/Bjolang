@@ -1065,30 +1065,59 @@ let private ownNames (decls: Decl list) : Set<string> =
         | _ -> [])
     |> Set.ofList
 
-/// The imported macros a module's `(export ...)` or `(re-export ...)` names,
-/// and the declarations without them.
-///
-/// - A name counts when it is bound to an imported `def/macro` and `own` does
-///   not define it.
-/// - Each is published under its name here, with the module and transformer
-///   it had where it was defined, so a chain of re-exports names the
-///   original.
-/// - Also returns the bindings their templates may name, as (module, name):
-///   the defining module's exports (`MacroBinding.Exports`).
-let private takeMacroExports (own: Set<string>) (decls: Decl list) =
-    let isReExport (name: string) =
-        not (Set.contains name own) && (Macro.tryImported name).IsSome
-
+/// The names one import edge binds as something other than a macro: its
+/// bindings and foreign aliases under the names `renaming` gives them, and its
+/// types, constructors and trait methods.
+let private plainNamesOf (decls: Decl list) (surface: ImportSurface) (renaming: Map<string, string>) : string list =
     let bindings =
         decls
         |> List.collect (function
-            | DExport(names, _)
-            | DReExport(names, _) -> names |> List.filter isReExport
+            | DExtern(visible, _, _, _, _) -> [ visible ]
+            | DImportExtern(specs, _) -> specs |> List.map (fun s -> s.Alias)
             | _ -> [])
-        |> List.distinct
-        |> List.map (fun name -> name, (Macro.tryImported name).Value)
+        |> List.choose (fun n -> Map.tryFind n renaming)
 
-    let entries =
+    bindings
+    @ (surface.Types |> Map.toList |> List.map fst)
+    @ (surface.Constructors |> List.map fst)
+    @ (surface.TraitMethods |> Map.toList |> List.map fst)
+
+/// The imported macros a module's `(export ...)` or `(re-export ...)` names,
+/// by kind, and the declarations without them.
+///
+/// - A name counts for each kind of macro it is bound to by an import, and
+///   `own` does not define: a `def/macro`, a `def/pattern`, a
+///   `def/hash-extend` (by its bare name, `fl` for `#fl`), a
+///   `def/loop-clause` or a `def/acc-clause`. One name can publish several:
+///   `map` is a binding and `#map`.
+/// - Each is published under its name here, with the module and transformer
+///   it had where it was defined, so a chain of re-exports names the
+///   original.
+/// - The name is taken out of the declaration, which asks each name for a
+///   binding or a type. It stays when `plain` has it: an import binds it as a
+///   binding or a type too.
+/// - Also returns the bindings their templates may name, as (module, name):
+///   the defining module's exports (`MacroBinding.Exports`).
+let private takeMacroExports (own: Set<string>) (plain: Set<string>) (decls: Decl list) =
+    let written =
+        decls
+        |> List.collect (function
+            | DExport(names, _)
+            | DReExport(names, _) -> names
+            | _ -> [])
+        |> List.filter (fun name -> not (Set.contains name own))
+        |> List.distinct
+
+    let ofKind (tryKind: string -> Macro.MacroBinding option) =
+        written |> List.choose (fun name -> tryKind name |> Option.map (fun binding -> name, binding))
+
+    let macros = ofKind Macro.tryImported
+    let patterns = ofKind Macro.tryImportedPattern
+    let hashes = ofKind Macro.tryImportedHash
+    let clauses = ofKind Macro.tryImportedClause
+    let accs = ofKind Macro.tryImportedAcc
+
+    let entriesOf (bindings: (string * Macro.MacroBinding) list) =
         bindings
         |> List.map (fun (name, binding) ->
             ({ Name = name
@@ -1097,21 +1126,27 @@ let private takeMacroExports (own: Set<string>) (decls: Decl list) =
             : ModuleMetadata.MacroEntry))
 
     let scope =
-        bindings
+        macros @ patterns @ hashes @ clauses @ accs
         |> List.collect (fun (_, binding) ->
             binding.Exports
             |> Map.toList
             |> List.map (fun (name, home) -> (if home = "" then binding.ModuleName else home), name))
         |> List.distinct
 
+    let taken =
+        (macros @ patterns @ hashes @ clauses @ accs)
+        |> List.map fst
+        |> List.filter (fun name -> not (Set.contains name plain))
+        |> Set.ofList
+
     let decls =
         decls
         |> List.map (function
-            | DExport(names, r) -> DExport(names |> List.filter (isReExport >> not), r)
-            | DReExport(names, r) -> DReExport(names |> List.filter (isReExport >> not), r)
+            | DExport(names, r) -> DExport(names |> List.filter (fun n -> not (Set.contains n taken)), r)
+            | DReExport(names, r) -> DReExport(names |> List.filter (fun n -> not (Set.contains n taken)), r)
             | d -> d)
 
-    entries, scope, decls
+    (entriesOf macros, entriesOf patterns, entriesOf hashes, entriesOf clauses, entriesOf accs), scope, decls
 
 /// A dependency's declarations as every edge that reaches it sees them.
 ///
@@ -1627,6 +1662,15 @@ let private walking = System.Collections.Generic.HashSet<string>()
 
 /// `(std prelude)`, which every program gets whether it asks or not.
 let private preludePath = ModulePath [ "std"; "prelude" ]
+
+/// `(std prelude core)`, the part of the prelude that the modules below
+/// `(std prelude)` import in its place.
+let private preludeCorePath = ModulePath [ "std"; "prelude"; "core" ]
+
+/// Whether an import path is the prelude or its core. An import of either
+/// gives the module the prelude's traits, so either counts as the prelude.
+let private isPreludePath (path: ImportPath) =
+    path = preludePath || path = preludeCorePath
 
 /// Is this file part of the standard library itself?
 ///
@@ -2908,6 +2952,11 @@ let loadModuleGraph
                     // an `only` or an `except` leaves out.
                     let edgeSurfaces = ResizeArray<string * ImportSurface * ImportModifier list>()
 
+                    // The names the imports bind as something other than a
+                    // macro: a binding, a type, a constructor or a trait
+                    // method. Read by `takeMacroExports`.
+                    let plainImports = System.Collections.Generic.HashSet<string>()
+
                     for (dep, spec, r) in importEdges do
                         load dep
 
@@ -2919,11 +2968,14 @@ let loadModuleGraph
                             surfaceOf m.ModuleName m.ParsedDecls m.Carried m.Macros m.PatternMacros m.HashMacros m.ClauseMacros m.AccMacros
                         let renaming = defRenaming r (Path.GetFileName dep) surface spec.Modifiers
 
-                        if spec.Path <> preludePath then
+                        if not (isPreludePath spec.Path) then
                             for offer in offeredNames m.ModuleName m.ParsedDecls surface renaming spec.Modifiers do
                                 offers.Add offer
 
                         edgeSurfaces.Add((m.ModuleName, surface, spec.Modifiers))
+
+                        for name in plainNamesOf m.ParsedDecls surface renaming do
+                            plainImports.Add name |> ignore
 
                         if not (edges.ContainsKey dep) then
                             edges[dep] <- ResizeArray()
@@ -3035,9 +3087,18 @@ let loadModuleGraph
                     // while the macro table is this module's.
                     let parsed =
                         if absPath = Path.GetFullPath mainFilePath then
-                            let own = Set.union localMacros (ownNames parsed)
-                            let reExported, scope, parsed = takeMacroExports own parsed
-                            ModuleMetadata.reExportedMacros <- reExported
+                            let own =
+                                Set.unionMany
+                                    [ localMacros; localPatternMacros; localHashMacros; localClauseMacros; localAccMacros; ownNames parsed ]
+
+                            let (macros, patterns, hashes, clauses, accs), scope, parsed =
+                                takeMacroExports own (Set.ofSeq plainImports) parsed
+
+                            ModuleMetadata.reExportedMacros <- macros
+                            ModuleMetadata.reExportedPatternMacros <- patterns
+                            ModuleMetadata.reExportedHashMacros <- hashes
+                            ModuleMetadata.reExportedClauseMacros <- clauses
+                            ModuleMetadata.reExportedAccMacros <- accs
                             ModuleMetadata.reExportedMacroScope <- scope
                             parsed
                         else
@@ -3060,12 +3121,16 @@ let loadModuleGraph
                     // Every type is written, where `Written` can be seen: in a
                     // module of the prelude's, and in the prelude itself.
                     let parsed =
+                        let dir = Path.GetDirectoryName absPath
+
                         let isPrelude =
                             isStandardLibrary absPath
-                            && Path.GetFileName absPath = "prelude.bjo"
-                            && Path.GetFileName(Path.GetDirectoryName absPath) = "std"
+                            && ((Path.GetFileName absPath = "prelude.bjo" && Path.GetFileName dir = "std")
+                                || (Path.GetFileName absPath = "core.bjo"
+                                    && Path.GetFileName dir = "prelude"
+                                    && Path.GetFileName(Path.GetDirectoryName dir) = "std"))
 
-                        if isPrelude || importsOf forms |> List.exists (fun (s, _) -> s.Path = preludePath) then
+                        if isPrelude || importsOf forms |> List.exists (fun (s, _) -> isPreludePath s.Path) then
                             TypeSyntax.withWrittenImpls parsed
                         else
                             parsed

@@ -244,6 +244,13 @@ type MacroEntry =
 ///   there.
 let mutable reExportedMacros: MacroEntry list = []
 
+/// The same, for the imported `def/pattern`s, `def/hash-extend`s,
+/// `def/loop-clause`s and `def/acc-clause`s the module exports again.
+let mutable reExportedPatternMacros: MacroEntry list = []
+let mutable reExportedHashMacros: MacroEntry list = []
+let mutable reExportedClauseMacros: MacroEntry list = []
+let mutable reExportedAccMacros: MacroEntry list = []
+
 /// What the templates of `reExportedMacros` may name: each binding of their
 /// modules' exports, as (module, name). `Exports.metadata` publishes the ones
 /// this module can see as implicit exports, so an importer that reaches the

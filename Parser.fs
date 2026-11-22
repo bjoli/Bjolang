@@ -397,7 +397,7 @@ let private desugarOperator
         | Some expansion -> expansion.Resolve Set.empty (parseExprFn expansion.Form)
         | None ->
             failwithf
-                $"'%s{op}' with %d{items.Length} operands at %s{Lexer.formatPos r} is spelled out by the prelude's %s{macro} hash macro, which is not in scope here. Import (std prelude), or nest the binary applications by hand."
+                $"'%s{op}' with %d{items.Length} operands at %s{Lexer.formatPos r} is spelled out by the prelude's %s{macro} hash macro, which is not in scope here. Import (std prelude) or (std prelude core), or nest the binary applications by hand."
 
 /// The `def` shapes that bind a name outright: a name, a name with its type,
 /// and a tuple destructuring. Everything else a `def` may bind is a pattern,
@@ -672,7 +672,7 @@ let rec parseExpr (s: SExpr) : Expr =
             | Some expansion -> expansion.Resolve Set.empty (parseExpr expansion.Form)
             | None ->
                 failwithf
-                    $"Unknown hash macro '%s{sym}' at %s{Lexer.formatPos listRange}. A #name(...) form calls a hash macro, which arrives with the import of the module that (def/hash-extend ...)s it — the prelude's are #fl, #fr, #ch and #map."
+                    $"Unknown hash macro '%s{sym}' at %s{Lexer.formatPos listRange}. A #name(...) form calls a hash macro, which arrives with the import of the module that (def/hash-extend ...)s it — the prelude's are #fl, #fr, #ch, #map and #set!."
 
         | Ident sym -> parseHeadedChecked s r head sym args listRange
 
@@ -1006,7 +1006,7 @@ and private parseHeaded (s: SExpr) (r: Range) (head: SExpr) (sym: string) (args:
                     | Some expansion -> expansion.Resolve Set.empty (parseExpr expansion.Form)
                     | None ->
                         failwithf
-                            $"set! along a path at %s{Lexer.formatPos r} is spelled out by the prelude's #set! hash macro, which is not in scope here. Import (std prelude)."
+                            $"set! along a path at %s{Lexer.formatPos r} is spelled out by the prelude's #set! hash macro, which is not in scope here. Import (std prelude) or (std prelude core)."
                 | _ ->
                     failwithf
                         $"Invalid set! syntax at %s{Lexer.formatPos r}. Expected (set! name value), which writes a variable, or (set! target step ... value), which writes along a path in place."

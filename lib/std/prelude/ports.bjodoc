@@ -1,0 +1,99 @@
+;; Docs of std/prelude/core.bjo, read through (:doc #:file "ports.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+;; ---------------------------------------------------------------------------
+;; The port types
+;; ---------------------------------------------------------------------------
+
+(:doc InputPort
+  (summary "An input port: bytes, and text read from them.")
+  (see in-port OutputPort)
+  (reference """
+    The operations on ports, and the ports of files and strings, are in
+    @code{(std prelude)}.
+
+    One type for every input port, as in Racket: a file, a string, standard
+    input, a socket, a pipe. A port is bytes. @code{read-line},
+    @code{read-char} and @code{read-all} decode UTF-8 from them, and
+    @code{read-some}, @code{read-bytes} and @code{peek-bytes} from
+    @code{(std ports)} take the bytes themselves; the two kinds of read mix
+    freely on one port.
+
+    Decoding is lenient: a byte sequence that is not UTF-8 reads as U+FFFD.
+    A byte order mark is not special, and reads as U+FEFF. Text in another
+    encoding is read through @code{reencode-input-port} from
+    @code{(std ports)}.
+
+    A string port is a port over the string's own UTF-8 bytes. Every port is
+    buffered: @code{port-eof?} usually checks the buffer directly, and a read
+    suspends inside a bjoroutine only when the buffer has to be refilled.
+
+    A read that is cancelled while it waits, by @code{with-deadline} or a
+    cancelled scope, consumes nothing: the part of a line that had arrived
+    stays in the port for the next read. Two fibers may read one port, and
+    each line, character or byte goes to exactly one of them; which of them
+    gets which is theirs to arrange. A failure of the underlying stream is
+    reported to every read after it, once what arrived before it has been
+    read.
+
+    It is also a .NET @code{System.IO.TextReader}, so a .NET API that takes
+    one takes a port.
+    """))
+
+(:doc OutputPort
+  (summary "An output port: bytes, and text written to them as UTF-8.")
+  (see InputPort)
+  (reference """
+    One type for every output port, as in Racket: a file, a string, standard
+    output and error, a socket, a pipe. A port is bytes.
+    @code{write-string}, @code{write-char} and @code{writeln} write UTF-8 to
+    it, a string as the bytes it already is, and @code{write-bytes!} from
+    @code{(std ports)} writes bytes as they are; the two mix freely on one
+    port. No byte order mark is ever written. Text in another encoding is
+    @code{reencode-output-port}'s.
+
+    A port buffers what is written to it, and a write that fills the buffer
+    drains it, which is why writes have a suspending copy as well as flush.
+    Standard output is buffered as Racket's is: a line at a time on a
+    terminal, a block at a time when redirected, and flushed when the program
+    ends, when it panics and before it reads standard input. Standard error
+    is not buffered.
+
+    Many fibers may write to one port at once: each write goes in whole. It
+    is also a @code{System.IO.TextWriter}, so a .NET API that takes one takes
+    a port, and its writes are UTF-8 on the port too.
+    """))
+
+(:doc in-port
+  (summary "A port as something a loop walks, read by a function of your choice.")
+  (arg port "The port.")
+  (arg read "Reader function returning (Some element), or None at end of input.")
+  (returns "A PortReads, which is Iterable.")
+  (see PortReads)
+  (example """
+    (loop (:for line (in-port p (fun (q) (read-line/opt q))))
+          (:do (displayln line)))
+    """)
+  (reference """
+    @code{read-line/opt} and @code{read-char/opt} are the two readers the
+    prelude has; any @code{(-> InputPort (Option %a))} will do.
+
+    The walk reads one ahead, because it has to know it is done before the
+    element is asked for: a loop left by @code{:finish} has consumed the
+    element it did not look at.
+
+    It blocks. @code{Iterable}'s methods are synchronous, so the reader's
+    synchronous copy runs even inside a bjoroutine. A walk that should
+    suspend wants @code{port-fold}.
+    """))
+
+(:doc PortReads
+  (summary "An iterable sequence wrapping a port and reader function, produced by in-port.")
+  (tparam %a "The type of element yielded by the reader.")
+  (field port "The port.")
+  (field read "Reads the next element, returning None at end of input.")
+  (see in-port)
+  (reference """
+    Its @code{Iterable} implementation calls @code{read} until it returns
+    @code{None}.
+    """))

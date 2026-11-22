@@ -1,0 +1,35 @@
+;; Every kind of macro, exported again by a module that imported it.
+;;
+;; inc/reexport_kinds_def.bjo defines a pattern macro, a hash macro, a loop
+;; clause macro and a collector macro. inc/reexport_kinds_facade.bjo
+;; re-exports them, and inc/reexport_kinds_chain.bjo exports them once more.
+;; Only the chain is imported here.
+;; - Each macro expands, and its template reaches `tripled`, a binding of the
+;;   defining module that is not exported to here.
+;; - `tri` is a function and the hash macro `#tri`. One name in the export
+;;   list passes on both.
+
+(import "inc/reexport_kinds_chain.bjo")
+(import (std simpletest))
+
+;; Not the templates' `tripled`: those resolve to the defining module's.
+(: (-> int int))
+(defun (tripled x) x)
+
+(: (-> (List int) string))
+(defun (shape xs)
+  (match xs
+    ((Twins a b) #"twins ${a} ${b}")
+    (_ "other")))
+
+(defun (main args)
+  (expect "a pattern macro" (shape (list 1 2)) "twins 1 2")
+  (expect "a pattern macro that does not match" (shape (list 1 2 3)) "other")
+  (expect "a hash macro" #tri(5) 15)
+  (expect "its template reaches its own module's tripled" #tri((tripled 2)) 6)
+  (expect "the function of the same name" (tri 5) 6)
+  (expect "a loop clause macro"
+          (loop (:for (Tuple a b) (in-pairs [1 2])) (:acc (listing (+ a b))))
+          (list 4 8))
+  (expect "a collector macro" (loop (:for x [1 2 3]) (:acc s (summing-tripled x))) 18)
+  0)

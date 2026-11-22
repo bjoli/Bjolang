@@ -139,12 +139,18 @@ let metadata
 
             let prelude = Naming.moduleKeyOfPath (System.IO.Path.Combine(Paths.libDir, "std", "prelude.bjo"))
 
+            // (std prelude) re-exports all of its core, so every module sees
+            // the core's names too.
+            let preludeCore =
+                Naming.moduleKeyOfPath (System.IO.Path.Combine(Paths.libDir, "std", "prelude", "core.bjo"))
+
             env.Registry.ImportAliases
             |> Map.toList
             |> List.choose (fun (visible, alias) ->
                 if alias.Kind = Bjolang.Ast.AliasDef
                    && alias.OriginModule <> ""
                    && alias.OriginModule <> prelude
+                   && alias.OriginModule <> preludeCore
                    && Set.contains visible written then
                     Some(visible, alias.OriginModule, alias.OriginalName)
                 else
@@ -1259,7 +1265,10 @@ let metadata
             let reExportedTypes =
                 reExports
                 |> List.filter (fun n ->
-                    not (Map.containsKey n env.Bindings) && not (Set.contains n exportedTraitMethods))
+                    not (Map.containsKey n env.Bindings)
+                    && not (Set.contains n exportedTraitMethods)
+                    // An extern alias crosses as its import (`externDecls`).
+                    && not (Set.contains n exportedExternAliases))
                 |> List.distinct
                 |> List.map (fun n ->
                     let key = TypeEnv.originalTypeName env.Registry n
@@ -1717,10 +1726,11 @@ let metadata
 
     let macros =
         publish declaredMacros @ (if isLibrary then ModuleMetadata.reExportedMacros else [])
-    let patternMacros = publish declaredPatternMacros
-    let hashMacros = publish declaredHashMacros
-    let clauseMacros = publish declaredClauseMacros
-    let accMacros = publish declaredAccMacros
+    let reExported (entries: ModuleMetadata.MacroEntry list) = if isLibrary then entries else []
+    let patternMacros = publish declaredPatternMacros @ reExported ModuleMetadata.reExportedPatternMacros
+    let hashMacros = publish declaredHashMacros @ reExported ModuleMetadata.reExportedHashMacros
+    let clauseMacros = publish declaredClauseMacros @ reExported ModuleMetadata.reExportedClauseMacros
+    let accMacros = publish declaredAccMacros @ reExported ModuleMetadata.reExportedAccMacros
 
     if isLibrary && not declaredClauseMacros.IsEmpty then
         Diagnostics.progress (
