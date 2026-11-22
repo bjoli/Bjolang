@@ -9162,8 +9162,15 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 let bodyCtx (f: CodegenContext -> unit) =
                     if detached then withIndent ctx (fun c -> withIndent c f) else withIndent ctx f
 
+                // Each initialiser is a C# block of its own. Its locals, as
+                // those of a `(begin (def out ...) ...)`, are then its own: two
+                // initialisers that each bind `out` do not declare one C# local
+                // twice. The initialisers share only the static fields.
                 bodyCtx (fun c ->
                     for d in valueDefs do
+                        indent c
+                        appendLine c "{"
+                        withIndent c (fun c ->
                         match d with
                         | Choice1Of4(defName, defValue, _)
                         | Choice2Of4(defName, defValue, _) ->
@@ -9216,6 +9223,8 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 
                             indent c
                             appendLine c "}")
+                        indent c
+                        appendLine c "}")
 
                 if detached then
                     hiddenDirective ctx

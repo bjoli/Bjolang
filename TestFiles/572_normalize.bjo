@@ -1,0 +1,137 @@
+;; Unicode normalization: (std unicode normalize) against every case of
+;; NormalizationTest.txt, which gen_normalize.py writes from the same
+;; version of the UCD as the tables.
+;; - The five columns: c2 is the NFC of c1, c2 and c3, c3 their NFD, c4 the
+;;   NFKC of all five, and c5 their NFKD.
+;; - Part 1 lists the code points that normalize to something else, or that
+;;   need checking. Every other code point is its own normal form, in all
+;;   four forms.
+;; - The predicates agree with the functions.
+;; - A string in normal form is returned with no copy.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std unicode normalize))
+
+(include "assets/unicode/normalize-cases.protobjo")
+
+;; The value of a hex number, in upper or lower case.
+(: (-> string int))
+(defun (hex->int s)
+  (loop (:for ch s)
+        (:acc n (folding 0 (+ (* 16 n)
+                              (let ((d (char->int ch)))
+                                (cond ((<= d 57) (- d 48)) ((<= d 70) (- d 55)) (else (- d 87)))))))))
+
+;; The string of the code points written in hex in `field`, separated by '.'.
+(: (-> string string))
+(defun (codes->string field)
+  (def sb (stringbuilder-empty))
+  (loop (:for t (string-split field "."))
+        (:do (stringbuilder-add! sb (int->char (hex->int t)))))
+  (stringbuilder->string sb))
+
+;; The five strings of a case. A field that is a single digit is the field
+;; of that number.
+(: (-> string (Vec string)))
+(defun (columns line)
+  (loop (:for f (string-split line ";"))
+        (:acc out (folding [] (vec-add out (if (= (string-length f) 1)
+                                               (vec-ref out (hex->int f))
+                                               (codes->string f)))))))
+
+(: (-> int string))
+(defun (hex n)
+  (if (< n 16)
+      (char->string (int->char (if (< n 10) (+ 48 n) (+ 55 n))))
+      (string-append (hex (shift-right n 4)) (hex (bitwise-and n 15)))))
+
+;; The code points of `s` in hex, separated by spaces.
+(: (-> string string))
+(defun (shown s)
+  (string-join (vec-map (fun (ch) (hex (char->int ch))) (string->vec s)) " "))
+
+;; What is wrong with one case, or "".
+(: (-> (Vec string) string))
+(defun (case-failure c)
+  (def (c1 c2 c3 c4 c5) (Tuple (vec-ref c 0) (vec-ref c 1) (vec-ref c 2) (vec-ref c 3) (vec-ref c 4)))
+  (cond
+    ((not (and (= (string-nfc c1) c2) (= (string-nfc c2) c2) (= (string-nfc c3) c2)))
+     #"NFC of c1..c3 is not c2")
+    ((not (and (= (string-nfc c4) c4) (= (string-nfc c5) c4))) #"NFC of c4, c5 is not c4")
+    ((not (and (= (string-nfd c1) c3) (= (string-nfd c2) c3) (= (string-nfd c3) c3)))
+     #"NFD of c1..c3 is not c3")
+    ((not (and (= (string-nfd c4) c5) (= (string-nfd c5) c5))) #"NFD of c4, c5 is not c5")
+    ((not (all? (fun (x) (= (string-nfkc x) c4)) c)) #"NFKC of c1..c5 is not c4")
+    ((not (all? (fun (x) (= (string-nfkd x) c5)) c)) #"NFKD of c1..c5 is not c5")
+    ((not (all? (fun (x) (= (string-nfc? x) (= x c2))) [c1 c2 c3]))
+     #"string-nfc? of c1..c3 is not whether it is c2")
+    ((not (all? (fun (x) (= (string-nfd? x) (= x c3))) [c1 c2 c3]))
+     #"string-nfd? of c1..c3 is not whether it is c3")
+    ((not (all? (fun (x) (= (string-nfkc? x) (= x c4))) c)) #"string-nfkc? of c1..c5 is not whether it is c4")
+    ((not (all? (fun (x) (= (string-nfkd? x) (= x c5))) c)) #"string-nfkd? of c1..c5 is not whether it is c5")
+    (else "")))
+
+;; The code points other than those of part 1 and the surrogates that are not
+;; their own normal form, in hex.
+(: (-> (Vec string)))
+(defun (part1-failures)
+  (def listed (: (make-array 0x110000) (Array bool)))
+  (loop (:for t (string-split (string-replace (string-trim normalize-part1) "\n" " ") " "))
+        (:when (not (string-empty? (string-trim t))))
+        (:do (array-set! listed (hex->int (string-trim t)) #t)))
+  (loop (:for cp (range 0 0x110000))
+        (:when (and (not (array-ref listed cp)) (or (< cp 0xD800) (> cp 0xDFFF))))
+        (:acc (vecing (let ((s (char->string (int->char cp))))
+                        (if (and (eq? (string-nfc s) s) (eq? (string-nfd s) s)
+                                 (eq? (string-nfkc s) s) (eq? (string-nfkd s) s)
+                                 (string-nfc? s) (string-nfd? s) (string-nfkc? s) (string-nfkd? s))
+                            ""
+                            (hex cp)))))))
+
+(defun (main args)
+  (expect "the tables are of the cases' version" normalize-unicode-version normalize-cases-version)
+
+  ;; --- NormalizationTest.txt ----------------------------------------------------
+  (def lines (vec-filter (fun (l) (not (string-empty? l))) (vec-map string-trim (string-split normalize-cases "\n"))))
+  (expect "the cases are all there" (vec-length lines) 20171)
+  (def bad
+    (loop (:for line lines)
+          (:acc (vecing (let ((why (case-failure (columns line))))
+                          (if (string-empty? why) "" #"${why}: ${line}"))))))
+  (def failed (vec-filter (fun (f) (not (string-empty? f))) bad))
+  (loop (:for f (vec-take failed (min 20 (vec-length failed)))) (:do (println f)))
+  (expect "every case of NormalizationTest.txt" (vec-length failed) 0)
+
+  ;; --- the code points not in part 1 ---------------------------------------------
+  (def others (vec-filter (fun (f) (not (string-empty? f))) (part1-failures)))
+  (loop (:for f (vec-take others (min 20 (vec-length others)))) (:do (println #"not its own normal form: ${f}")))
+  (expect "every other code point is its own normal form, with no copy" (vec-length others) 0)
+
+  ;; --- examples -------------------------------------------------------------------
+  (expect "é composed" (shown (string-nfc "cafe\u{301}")) "63 61 66 E9")
+  (expect "é decomposed" (shown (string-nfd "caf\u{E9}")) "63 61 66 65 301")
+  (expect "ANGSTROM SIGN is Å" (shown (string-nfc "\u{212B}")) "C5")
+  (expect "a Hangul syllable from L and V" (shown (string-nfc "\u{1100}\u{1161}")) "AC00")
+  (expect "a Hangul syllable from L, V and T" (shown (string-nfc "\u{1100}\u{1161}\u{11A8}")) "AC01")
+  (expect "a Hangul syllable decomposed" (shown (string-nfd "\u{AC01}")) "1100 1161 11A8")
+  (expect "the ligature ﬁ" (string-nfkc "\u{FB01}") "fi")
+  (expect "NFC keeps the ligature" (shown (string-nfc "\u{FB01}")) "FB01")
+  (expect "a superscript" (string-nfkc "x\u{B2}") "x2")
+  (expect "marks in canonical order" (shown (string-nfd "a\u{301}\u{316}")) "61 316 301")
+  (expect "a mark at the start" (shown (string-nfc "\u{301}a")) "301 61")
+  (expect "the empty string" (string-nfc "") "")
+  (def sb (stringbuilder-empty))
+  (loop (:for _ (range 0 10000)) (:do (stringbuilder-add! sb (int->char 0xE9))))
+  (def long-e (stringbuilder->string sb))
+  (expect "a long string" (string-count (string-nfd long-e)) 20000)
+
+  ;; --- no copy --------------------------------------------------------------------
+  (def ascii "plain ASCII, the most common case")
+  (expect-true "ASCII: NFC is the same string" (eq? (string-nfc ascii) ascii))
+  (expect-true "ASCII: NFKD is the same string" (eq? (string-nfkd ascii) ascii))
+  (def nfc "blåbär, smörgåsbord")
+  (expect-true "a string in NFC: the same string" (eq? (string-nfc nfc) nfc))
+  (expect-true "a string in NFD: the same string" (eq? (string-nfd (string-nfd nfc)) (string-nfd nfc)))
+  (expect "only the part from the change is normalized" (string-nfc "abc blåbär e\u{301}") "abc blåbär \u{E9}")
+  0)

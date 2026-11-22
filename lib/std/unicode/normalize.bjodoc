@@ -1,0 +1,130 @@
+;; Docs for std/unicode/normalize.bjo, read through (:doc #:file "normalize.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Unicode normalization: NFC, NFD, NFKC and NFKD.")
+  (see string-nfc string-nfkc string-nfc? normalize-unicode-version)
+  (example """
+    (import (std unicode normalize))
+
+    (def typed "caf\u{E9}")        ; é as one character
+    (def pasted "cafe\u{301}")     ; e and a combining accent
+    (= typed pasted)                        ; #f
+    (= (string-nfc typed) (string-nfc pasted))   ; #t
+
+    (string-nfkc "\u{FB01}le")     ; "file": the ligature ﬁ is two letters
+    (string-nfkc "x\u{B2}")        ; "x2"
+    """)
+  (reference """
+    One text can be written with different code points. @code{é} is one
+    code point, U+00E9, or two: @code{e} and U+0301 COMBINING ACUTE
+    ACCENT. Normalization makes the forms the same, so that strings can be
+    compared, hashed and stored. This is Unicode Standard Annex #15.
+
+    @strong{The four forms.}
+    - @code{string-nfd}: the canonical decomposition. @code{é} becomes
+      @code{e} and U+0301, and marks are put in a fixed order.
+    - @code{string-nfc}: the canonical decomposition, then composed again.
+      @code{é} is one code point. Most text is in NFC already. Use it to
+      store and compare text.
+    - @code{string-nfkd} and @code{string-nfkc}: the same, after the
+      compatibility decompositions too. @code{ﬁ} becomes @code{fi},
+      @code{²} becomes @code{2}, and a full-width @code{Ａ} becomes
+      @code{A}. Some of the meaning is lost. Use them to search, or to
+      compare identifiers, not to store what the user wrote.
+
+    @strong{Canonical equivalence.} Two strings with the same NFD, which
+    is when they have the same NFC, are canonically equivalent: they are
+    the same text, and should look the same.
+
+    @strong{Stability.} Unicode does not change the normal form of a
+    string of assigned characters in a later version. A string normalized
+    with this version stays normalized, so a stored NFC string or a hash of
+    one need not be made again. Only a character that is unassigned here,
+    and is assigned later, can normalize differently in a later version.
+
+    @strong{Tables.} The tables are generated from the Unicode Character
+    Database by @code{gen_normalize.py}, and do not use .NET or ICU. Every
+    platform normalizes the same way. The version is
+    @code{normalize-unicode-version}.
+
+    @strong{Case.} Normalization does not fold case. To compare without
+    case, compare @code{(string-nfd (string-foldcase (string-nfd s)))},
+    with @code{string-foldcase} of @code{(std unicode casefold)}: the
+    canonical caseless match of the Unicode Standard. The fold can undo a
+    normalization, so the normalization comes before and after it.
+    """))
+
+(:doc string-nfc
+  (summary "The NFC of a string: the canonical decomposition, composed again.")
+  (arg s "The string to normalize.")
+  (returns "The NFC of @code{s}. When @code{s} is in NFC, @code{s} itself, with no copy.")
+  (example """
+    (string-nfc "cafe\u{301}")      ; "caf\u{E9}"
+    (string-nfc "\u{212B}")         ; "\u{C5}": ANGSTROM SIGN is Å
+    (string-nfc "\u{1100}\u{1161}") ; "\u{AC00}": the Hangul syllable 가
+    """)
+  (see string-nfd string-nfkc string-nfc?))
+
+(:doc string-nfd
+  (summary "The NFD of a string: the canonical decomposition.")
+  (arg s "The string to normalize.")
+  (returns "The NFD of @code{s}. When @code{s} is in NFD, @code{s} itself, with no copy.")
+  (example """
+    (string-nfd "caf\u{E9}")        ; "cafe\u{301}"
+    (string-nfd "\u{AC00}")         ; "\u{1100}\u{1161}"
+    """)
+  (see string-nfc string-nfkd string-nfd?))
+
+(:doc string-nfkc
+  (summary "The NFKC of a string: the compatibility decomposition, composed again.")
+  (arg s "The string to normalize.")
+  (returns "The NFKC of @code{s}. When @code{s} is in NFKC, @code{s} itself, with no copy.")
+  (example """
+    (string-nfkc "\u{FB01}")        ; "fi"
+    (string-nfkc "\u{FF21}")        ; "A": FULLWIDTH LATIN CAPITAL LETTER A
+    (string-nfkc "\u{2460}")        ; "1": CIRCLED DIGIT ONE
+    """)
+  (see string-nfc string-nfkd string-nfkc?))
+
+(:doc string-nfkd
+  (summary "The NFKD of a string: the compatibility decomposition.")
+  (arg s "The string to normalize.")
+  (returns "The NFKD of @code{s}. When @code{s} is in NFKD, @code{s} itself, with no copy.")
+  (example """
+    (string-nfkd "\u{1E9B}\u{323}") ; "s\u{323}\u{307}"
+    """)
+  (see string-nfd string-nfkc string-nfkd?))
+
+(:doc string-nfc?
+  (summary "Whether a string is in NFC.")
+  (arg s "The string.")
+  (returns "#t when @code{(string-nfc s)} is @code{s}.")
+  (reference """
+    Most strings are decided by the quick check of UAX #15, without a
+    copy. A string with a character that may compose with the one before
+    it is normalized, and compared.
+    """)
+  (see string-nfc))
+
+(:doc string-nfd?
+  (summary "Whether a string is in NFD.")
+  (arg s "The string.")
+  (returns "#t when @code{(string-nfd s)} is @code{s}.")
+  (see string-nfd))
+
+(:doc string-nfkc?
+  (summary "Whether a string is in NFKC.")
+  (arg s "The string.")
+  (returns "#t when @code{(string-nfkc s)} is @code{s}.")
+  (see string-nfkc))
+
+(:doc string-nfkd?
+  (summary "Whether a string is in NFKD.")
+  (arg s "The string.")
+  (returns "#t when @code{(string-nfkd s)} is @code{s}.")
+  (see string-nfkd))
+
+(:doc normalize-unicode-version
+  (summary "The version of the Unicode Character Database the tables are from.")
+  (see string-nfc))

@@ -1,0 +1,35 @@
+;; Module-level initialisers that bind locals of the same name.
+;; - Each `def` is initialised in the module's static constructor. Each
+;;   initialiser is a C# block of its own, so two `(begin (def out ...) ...)`
+;;   do not declare one C# local twice, even when the two `out`s have
+;;   different types.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: (Array int))
+(def numbers
+  (begin
+    (def out (: (make-array 3) (Array int)))
+    (array-set! out 0 7)
+    out))
+
+(: (Array byte))
+(def bytes
+  (begin
+    (def out (: (make-array 2) (Array byte)))
+    (array-set! out 1 (cast byte 9))
+    out))
+
+(: string)
+(def text
+  (begin
+    (def out "third")
+    (def n (array-ref numbers 0))
+    (str out " " (int->string n))))
+
+(defun (main args)
+  (expect "the first out is an int array" (array-ref numbers 0) 7)
+  (expect "the second out is a byte array" (cast int (array-ref bytes 1)) 9)
+  (expect "the third reads the first" text "third 7")
+  0)
