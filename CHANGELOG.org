@@ -3,6 +3,32 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std argparse)~: command-line arguments into a record
+
+- ~(def/cmdline (: Name (Record marker ... field ...)))~ declares the record,
+  an instance of ~Cmdline~, ~cmdline-parse-Name~ and ~cmdline-help-Name~.
+  The type of a field gives its shape: ~bool~ is a flag, ~(Option T)~ can
+  be absent, ~(List T)~ and ~(Vec T)~ can be repeated, ~(Tuple A B)~ takes
+  two words. Field markers: ~#:short~, ~#:long~, ~#:default~, ~#:help~,
+  ~#:value~, ~#:count~, ~#:positional~, ~#:at-least~, ~#:last-wins~,
+  ~#:exclusive~, ~#:group~, ~#:subcommand~, ~#:hidden~. Record markers:
+  ~#:program~, ~#:summary~, ~#:version~, ~#:after~, ~#:options-first~,
+  ~#:require-one~.
+- The syntax is GNU ~getopt_long~'s: clusters, ~--name=value~, ~--~, a lone
+  ~-~, options and arguments mixed, ~--no-~ for a flag. Long names are never
+  abbreviated.
+- A parse returns ~(Result ArgError Name)~ and does not exit. ~ArgError~ is
+  ~HelpWanted~, ~VersionWanted~ or ~BadArgs~ with an ~ArgProblem~;
+  ~arg-error-message~ and ~arg-error-exit-code~ give the text and the code.
+- Values are read with the trait ~ArgValue~: ~string~, ~int~, ~long~,
+  ~double~, ~char~, ~bool~. ~def/cmdline-choices~ declares a union of plain
+  cases with its instance. ~def/cmdline-commands~ declares the union of a
+  ~#:subcommand~ field.
+- The declaration is checked at compile time: duplicate names, a positional
+  list that is not last, a marker on a field it does not fit, a group of
+  one, a type with no ~ArgValue~ instance.
+- Not yet: ~(bjo task)~, and ~bjo~'s own flags through it.
+
 * ~(janitor ...)~ is now ~(bjo ...)~
 
 - ~(janitor docs)~ and ~(janitor modules)~ are ~(bjo docs)~ and ~(bjo

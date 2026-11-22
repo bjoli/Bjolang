@@ -1,0 +1,1226 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/argparse.bjo — command-line arguments into a record.
+;;
+;; - `def/cmdline` declares a record, a table of its options (`CmdInfo`) and an
+;;   instance of `Cmdline`. The macro reads the field types and markers, and
+;;   writes only the table and one conversion per field.
+;; - `cmdline-scan` does the work at run time: it reads the words against the
+;;   table, checks counts, groups and positionals, and returns the words given
+;;   for each field. The generated code converts them with `ArgValue`.
+;; - The help and the usage line are made from the table.
+;; - The syntax is GNU getopt_long's, without abbreviated long names.
+
+(export
+  ;; The forms.
+  def/cmdline def/cmdline-choices def/cmdline-commands
+  ;; Parsing.
+  parse-args ArgError ArgProblem arg-error-message arg-error-exit-code
+  ;; The traits.
+  ArgValue parse-arg-value arg-value-placeholder
+  Cmdline cmdline-parse cmdline-info
+  CmdlineCommands cmdline-dispatch cmdline-commands
+  ;; The table, for code that reads it.
+  CmdInfo OptSpec cmdline-help-text cmdline-usage
+  ;; What generated code calls. Exported because a macro template's names
+  ;; resolve against this module's scope.
+  Scanned cmdline-scan cmdline-spec cmdline-info-make cmdline-program
+  cmdline-placeholder
+  cmdline-flag cmdline-count cmdline-given? cmdline-value cmdline-option
+  cmdline-list cmdline-vec cmdline-subcommand
+  cmdline-word cmdline-words2 cmdline-words3 cmdline-words4
+  cmdline-command-entry)
+
+(import (std prelude))
+(import (std syntax-match))
+
+(import/class (ClrAssembly (: System.Reflection.Assembly)))
+(import/extern
+  (clr-entry-assembly (: System.Reflection.Assembly.GetEntryAssembly (-> ClrAssembly)))
+  (clr-location       (: System.Reflection.Assembly.Location (-> ClrAssembly string) #:get))
+  (clr-process-path   (: System.Environment.ProcessPath (-> string) #:get))
+  (clr-file-stem      (: System.IO.Path.GetFileNameWithoutExtension (-> string string)))
+  (clr-null-or-empty? (: System.String.IsNullOrEmpty (-> string bool))))
+
+(:doc #:file "argparse.bjodoc")
+
+;; ---------------------------------------------------------------------------
+;; Errors
+;; ---------------------------------------------------------------------------
+
+(type (: ArgProblem
+         (Union (: UnknownOption string (Option string))
+                (: MissingValue string)
+                (: BadValue string string string)
+                (: Missing string)
+                (: Repeated string)
+                (: Conflict string string)
+                (: NoneOf (List string))
+                (: TooMany (List string))
+                (: UnknownCommand string (Option string)))))
+
+;; `BadArgs` holds the program name and the usage line of the level the
+;; problem was found at, so a message can name both.
+(type (: ArgError
+         (Union (: HelpWanted string)
+                (: VersionWanted string)
+                (: BadArgs ArgProblem string string))))
+
+(: (-> (Option string) string))
+(defun (did-you-mean nearest)
+  (match nearest
+    ((Some n) #" Did you mean ${n}?")
+    (None "")))
+
+(: (-> ArgProblem string))
+(defun (problem-text p)
+  (match p
+    ((UnknownOption name nearest) #"unknown option ${name}.${(did-you-mean nearest)}")
+    ((MissingValue name) #"${name} needs a value.")
+    ((BadValue name value wanted) #"${name} takes ${wanted}, not '${value}'.")
+    ((Missing name) #"${name} is required.")
+    ((Repeated name) #"${name} is given twice.")
+    ((Conflict a b) #"${a} and ${b} cannot be given together.")
+    ((NoneOf names) #"one of ${(string-join (list->vec names) ", ")} is required.")
+    ((TooMany values) #"unexpected argument '${(list-head values)}'.")
+    ((UnknownCommand name nearest) #"unknown command ${name}.${(did-you-mean nearest)}")))
+
+(: (-> ArgError string))
+(defun (arg-error-message e)
+  (match e
+    ((HelpWanted text) text)
+    ((VersionWanted text) text)
+    ((BadArgs p program usage)
+     #"${program}: ${(problem-text p)}\n${usage}\nTry '${program} --help' for more.")))
+
+;; 0 for help and the version, 2 (a wrong command line) for the rest.
+(: (-> ArgError int))
+(defun (arg-error-exit-code e)
+  (match e
+    ((HelpWanted _) 0)
+    ((VersionWanted _) 0)
+    ((BadArgs _ _ _) 2)))
+
+;; ---------------------------------------------------------------------------
+;; Values
+;; ---------------------------------------------------------------------------
+
+;; - `parse-arg-value` reads one word. `(Err wanted)` completes the sentence
+;;   "--name takes ...": "an int".
+;; - `arg-value-placeholder` is the placeholder in the help. "" means that the
+;;   type's name in capitals is used. The argument is only for dispatch.
+(def/trait (ArgValue %a)
+  (: parse-arg-value (-> string (Result string %a)))
+  (: arg-value-placeholder (-> (Option %a) string))
+  (defun (arg-value-placeholder _) ""))
+
+(impl (ArgValue string)
+  (defun (parse-arg-value w) (Ok w)))
+
+;; An optional sign and digits only: no spaces, no group separators.
+(: (-> string bool))
+(defun (integer-word? w)
+  (def cs (string->list w))
+  (def digits (match cs
+                ((Cons c rest) (if (or (= c #\-) (= c #\+)) rest cs))
+                (Nil Nil)))
+  (and (not (list-empty? digits))
+       (list-foldl (fun (c ok) (and ok (char-numeric? c))) #t digits)))
+
+(impl (ArgValue int)
+  (defun (parse-arg-value w)
+    (if (integer-word? w)
+        (match (try (string->int w) #:catch (System.Exception))
+          ((Ok n) (Ok n))
+          (_ (Err "an int")))
+        (Err "an int"))))
+
+(impl (ArgValue long)
+  (defun (parse-arg-value w)
+    (if (integer-word? w)
+        (match (try (string->long w) #:catch (System.Exception))
+          ((Ok n) (Ok n))
+          (_ (Err "a long")))
+        (Err "a long"))))
+
+;; The parse is culture-invariant: 0.5, never 0,5.
+(impl (ArgValue double)
+  (defun (parse-arg-value w)
+    (match (try (string->double w) #:catch (System.Exception))
+      ((Ok d) (Ok d))
+      (_ (Err "a number")))))
+
+(impl (ArgValue char)
+  (defun (parse-arg-value w)
+    (match (string->list w)
+      ((Cons c Nil) (Ok c))
+      (_ (Err "one character")))))
+
+(impl (ArgValue bool)
+  (defun (parse-arg-value w)
+    (cond
+      ((or (= w "true") (= w "yes") (= w "1")) (Ok #t))
+      ((or (= w "false") (= w "no") (= w "0")) (Ok #f))
+      (else (Err "true or false"))))
+  (defun (arg-value-placeholder _) "BOOL"))
+
+;; ---------------------------------------------------------------------------
+;; The table
+;; ---------------------------------------------------------------------------
+
+;; One field. `kind` is 0 flag, 1 counter, 2 option with a value,
+;; 3 positional, 4 subcommand.
+(type (: OptSpec (Record (: long string)
+                         (: short string)
+                         (: kind int)
+                         (: words int)
+                         (: multi bool)
+                         (: required bool)
+                         (: last-wins bool)
+                         (: at-least int)
+                         (: exclusive string)
+                         (: help string)
+                         (: placeholder string)
+                         (: default-text string)
+                         (: group string)
+                         (: hidden bool))))
+
+(type (: CmdInfo (Record (: program string)
+                         (: summary string)
+                         (: version string)
+                         (: after string)
+                         (: options-first bool)
+                         (: require-one (List string))
+                         (: specs (Vec OptSpec))
+                         (: commands (List (Tuple string string))))))
+
+(: (-> string string int int bool bool bool int string string string string string bool OptSpec))
+(defun (cmdline-spec long short kind words multi required last-wins at-least
+                     exclusive help placeholder default-text group hidden)
+  (OptSpec (long long) (short short) (kind kind) (words words) (multi multi)
+           (required required) (last-wins last-wins) (at-least at-least)
+           (exclusive exclusive) (help help) (placeholder placeholder)
+           (default-text default-text) (group group) (hidden hidden)))
+
+(: (-> string string string string bool (List string) (List OptSpec) (List (Tuple string string)) CmdInfo))
+(defun (cmdline-info-make program summary version after options-first require-one specs commands)
+  (CmdInfo (program program) (summary summary) (version version) (after after)
+           (options-first options-first) (require-one require-one)
+           (specs (list->vec specs)) (commands commands)))
+
+;; The explicit `#:value`, else what each word's type gives, else the type's
+;; name in capitals. One entry per word.
+(: (-> string (List string) (List string) string))
+(defun (cmdline-placeholder explicit given fallback)
+  (if (not (= explicit ""))
+      explicit
+      (string-join (list->vec (let go ((gs given) (fs fallback))
+                                (match (Tuple gs fs)
+                                  ((Tuple (Cons g gm) (Cons f fm)) (Cons (if (= g "") f g) (go gm fm)))
+                                  (_ Nil))))
+                   " ")))
+
+;; The name the program was started by, without its directory or extension.
+(: (-> string))
+(defun (cmdline-program)
+  (def loc (match (try (clr-location (clr-entry-assembly)) #:catch (System.Exception))
+             ((Ok l) l)
+             (_ "")))
+  (cond
+    ((not (clr-null-or-empty? loc)) (clr-file-stem loc))
+    ((not (clr-null-or-empty? clr-process-path)) (clr-file-stem clr-process-path))
+    (else "program")))
+
+;; ---------------------------------------------------------------------------
+;; Names
+;; ---------------------------------------------------------------------------
+
+;; How messages name a field: --long for an option, its placeholder for an
+;; argument.
+(: (-> OptSpec string))
+(defun (spec-name s)
+  (cond
+    ((>= (.kind s) 3) (.placeholder s))
+    (else #"--${(.long s)}")))
+
+(: (-> CmdInfo (-> OptSpec bool) int))
+(defun (find-spec info pred)
+  (def specs (.specs info))
+  (let go ((i 0))
+    (cond
+      ((>= i (vec-length specs)) -1)
+      ((pred (vec-ref specs i)) i)
+      (else (go (+ i 1))))))
+
+(: (-> CmdInfo string bool))
+(defun (long-taken? info name)
+  (>= (find-spec info (fun (s) (and (< (.kind s) 3) (= (.long s) name)))) 0))
+
+(: (-> CmdInfo string bool))
+(defun (short-taken? info c)
+  (>= (find-spec info (fun (s) (= (.short s) c))) 0))
+
+;; Levenshtein distance, over characters.
+(: (-> string string int))
+(defun (edit-distance a b)
+  (def xs (string->vec a))
+  (def ys (string->vec b))
+  (def m (vec-length ys))
+  (def prev (: (make-array (+ m 1) #:fill 0) (Array int)))
+  (def cur (: (make-array (+ m 1) #:fill 0) (Array int)))
+  (let init ((j 0))
+    (when (<= j m)
+      (array-set! prev j j)
+      (init (+ j 1))))
+  (loop (:for (Tuple i x) (enumerate xs))
+        (:do
+         (array-set! cur 0 (+ i 1))
+         (let row ((j 0))
+           (when (< j m)
+             (def cost (if (= x (vec-ref ys j)) 0 1))
+             (array-set! cur (+ j 1)
+                         (min (min (+ (array-ref prev (+ j 1)) 1)
+                                   (+ (array-ref cur j) 1))
+                              (+ (array-ref prev j) cost)))
+             (row (+ j 1))))
+         (let copy ((j 0))
+           (when (<= j m)
+             (array-set! prev j (array-ref cur j))
+             (copy (+ j 1))))))
+  (array-ref prev m))
+
+;; The candidate nearest to `word`, when it is near enough to be a typing
+;; error: at most 2 edits, and at most half the word.
+(: (-> string (List string) (Option string)))
+(defun (nearest-name word candidates)
+  (def best
+    (list-foldl (fun (c acc)
+                  (def d (edit-distance word c))
+                  (match acc
+                    ((Some (Tuple _ bd)) (if (< d bd) (Some (Tuple c d)) acc))
+                    (None (Some (Tuple c d)))))
+                None
+                candidates))
+  (match best
+    ((Some (Tuple c d)) #:when (and (<= d 2) (<= (* 2 d) (string-length word))) (Some c))
+    (_ None)))
+
+(: (-> CmdInfo (List string)))
+(defun (long-names info)
+  (def own (loop (:for s (vec->list (.specs info)))
+                 (:when (and (< (.kind s) 3) (not (.hidden s))))
+                 (:acc out (listing #"--${(.long s)}"))
+                 => out))
+  (list-append own (list-append (if (long-taken? info "help") Nil (list "--help"))
+                                (if (or (= (.version info) "") (long-taken? info "version"))
+                                    Nil
+                                    (list "--version")))))
+
+;; ---------------------------------------------------------------------------
+;; Help
+;; ---------------------------------------------------------------------------
+
+(: (-> OptSpec string))
+(defun (positional-label s)
+  (def base (.placeholder s))
+  (cond
+    ((= (.kind s) 4) "COMMAND")
+    ((.multi s) (if (> (.at-least s) 0) #"${base}..." #"[${base}...]"))
+    ((.required s) base)
+    (else #"[${base}]")))
+
+(: (-> CmdInfo string string))
+(defun (cmdline-usage info program)
+  (def args (loop (:for s (vec->list (.specs info)))
+                  (:when (>= (.kind s) 3))
+                  (:acc out (listing (positional-label s)))
+                  => out))
+  (string-join (list->vec (Cons #"Usage: ${program} [OPTIONS]" args)) " "))
+
+(: (-> int string))
+(defun (spaces n) (string-pad-right "" n))
+
+;; Help text starts in this column.
+(: int)
+(def help-column 24)
+
+(: (-> string string string))
+(defun (help-row left text)
+  (cond
+    ((= text "") left)
+    ((<= (string-length left) (- help-column 2))
+     (str (string-pad-right left help-column) text))
+    (else (str left "\n" (spaces help-column) text))))
+
+;; The other options of `s`'s exclusive group, shown after its help.
+(: (-> CmdInfo OptSpec string))
+(defun (exclusive-note info s)
+  (def members (loop (:for o (vec->list (.specs info)))
+                     (:when (and (not (= (.exclusive s) "")) (= (.exclusive o) (.exclusive s))))
+                     (:acc out (listing (spec-name o)))
+                     => out))
+  (if (list-empty? members)
+      ""
+      #" (one of ${(string-join (list->vec members) ", ")})"))
+
+(: (-> CmdInfo OptSpec string))
+(defun (option-row info s)
+  (def names (if (= (.short s) "")
+                 #"    --${(.long s)}"
+                 #"-${(.short s)}, --${(.long s)}"))
+  (def value (if (= (.kind s) 2) #" ${(.placeholder s)}" ""))
+  (def default (if (= (.default-text s) "") "" #" [default: ${(.default-text s)}]"))
+  (help-row #"  ${names}${value}" (string-trim-left (str (.help s) default (exclusive-note info s)))))
+
+(: (-> OptSpec string))
+(defun (argument-row s)
+  (def label (if (.multi s) #"${(.placeholder s)}..." (.placeholder s)))
+  (def default (if (= (.default-text s) "") "" #" [default: ${(.default-text s)}]"))
+  (help-row #"  ${label}" (string-trim-left (str (.help s) default))))
+
+(: (-> string (List string) (List string)))
+(defun (section title rows)
+  (if (list-empty? rows) Nil (list (string-join (list->vec (Cons #"${title}:" rows)) "\n"))))
+
+;; The groups in the order their first field is declared.
+(: (-> (List OptSpec) (List string)))
+(defun (group-names specs)
+  (list-reverse
+   (list-foldl (fun (s acc)
+                 (if (or (= (.group s) "") (list-contains? acc (.group s))) acc (Cons (.group s) acc)))
+               Nil
+               specs)))
+
+(: (-> CmdInfo string string))
+(defun (cmdline-help-text info program)
+  (def specs (loop (:for s (vec->list (.specs info)))
+                   (:when (not (.hidden s)))
+                   (:acc out (listing s))
+                   => out))
+  (def options (list-filter (fun (s) (< (.kind s) 3)) specs))
+  (def builtin (list-append
+                (if (long-taken? info "help")
+                    Nil
+                    (list (help-row (if (short-taken? info "h") "      --help" "  -h, --help") "Print this help.")))
+                (if (or (= (.version info) "") (long-taken? info "version"))
+                    Nil
+                    (list (help-row "      --version" "Print the version.")))))
+  (def arguments (section "Arguments"
+                          (list-map argument-row
+                                    (list-filter (fun (s) (= (.kind s) 3)) specs))))
+  (def ungrouped (section "Options"
+                          (list-append (list-map (fun (s) (option-row info s))
+                                                 (list-filter (fun (s) (= (.group s) "")) options))
+                                       builtin)))
+  (def grouped (loop (:for g (group-names options))
+                     (:acc out (listing (section g (list-map (fun (s) (option-row info s))
+                                                             (list-filter (fun (s) (= (.group s) g)) options)))))
+                     => out))
+  (def commands (section "Commands"
+                         (list-map (fun (c) (match c ((Tuple name summary) (help-row #"  ${name}" summary))))
+                                   (.commands info))))
+  (def blocks (list-append
+               (if (= (.summary info) "") Nil (list (.summary info)))
+               (list-append
+                (list (cmdline-usage info program))
+                (list-append arguments
+                             (list-append ungrouped
+                                          (list-append (list-foldr (fun (a b) (list-append a b)) Nil grouped)
+                                                       (list-append commands
+                                                                    (if (= (.after info) "") Nil (list (.after info))))))))))
+  (string-join (list->vec blocks) "\n\n"))
+
+;; ---------------------------------------------------------------------------
+;; Scanning
+;; ---------------------------------------------------------------------------
+
+;; - `occs`: per field, the words of each time it was given, the latest first.
+;;   A flag's words are ("1"), or ("0") for --no-name.
+;; - `command`: the subcommand's name and the words after it.
+(type (: Scanned (Record (: info CmdInfo)
+                         (: program string)
+                         (: occs (Array (List (List string))))
+                         (: command (Option (Tuple string (List string)))))))
+
+(: (-> CmdInfo string ArgProblem ArgError))
+(defun (bad info program p)
+  (BadArgs p program (cmdline-usage info program)))
+
+;; Splits `--name=value` into the name and the value.
+(: (-> string (Tuple string (Option string))))
+(defun (split-long word)
+  (def body (string-drop word 2))
+  (match (string-split-once body "=")
+    ((Some (Tuple n v)) (Tuple n (Some v)))
+    (None (Tuple body None))))
+
+;; Takes `n` words from `ws`: the words and the rest, or None if there are
+;; fewer.
+(: (-> int (List string) (Option (Tuple (List string) (List string)))))
+(defun (take-words n ws)
+  (if (= n 0)
+      (Some (Tuple Nil ws))
+      (match ws
+        ((Cons w more)
+         (match (take-words (- n 1) more)
+           ((Some (Tuple got rest)) (Some (Tuple (Cons w got) rest)))
+           (None None)))
+        (Nil None))))
+
+(: (-> (Array (List (List string))) int (List string) void))
+(defun (record! occs i words)
+  (array-set! occs i (Cons words (array-ref occs i))))
+
+;; The checks after the words are read: repeats, groups, required options and
+;; the positional arguments. Returns the first problem.
+(: (-> CmdInfo (Array (List (List string))) (List string) (Result ArgProblem void)))
+(defun (settle info occs positional)
+  (def specs (vec->list (.specs info)))
+  (def indexed (loop (:for (Tuple i s) (enumerate specs)) (:acc out (listing (Tuple i s))) => out))
+  (defun (given i) (not (list-empty? (array-ref occs i))))
+  (def repeated
+    (loop (:for (Tuple i s) indexed)
+          (:when (and (= (.kind s) 2) (not (.multi s)) (not (.last-wins s))
+                      (> (list-length (array-ref occs i)) 1)))
+          (:acc found (finding (Repeated (spec-name s))))
+          => found))
+  (def conflict
+    (loop (:for (Tuple i s) indexed)
+          (:when (and (not (= (.exclusive s) "")) (given i)))
+          (:for (Tuple j o) indexed)
+          (:when (and (> j i) (= (.exclusive o) (.exclusive s)) (given j)))
+          (:acc found (finding (Conflict (spec-name s) (spec-name o))))
+          => found))
+  (def none-of
+    (loop (:for g (.require-one info))
+          (:let members (list-filter (fun (p) (match p ((Tuple _ s) (= (.exclusive s) g)))) indexed))
+          (:when (not (list-foldl (fun (p any) (or any (match p ((Tuple i _) (given i)))))
+                                  #f members)))
+          (:acc found (finding (NoneOf (list-map (fun (p) (match p ((Tuple _ s) (spec-name s)))) members))))
+          => found))
+  (def missing
+    (loop (:for (Tuple i s) indexed)
+          (:when (and (= (.kind s) 2) (.required s) (not (given i))))
+          (:acc found (finding (Missing (spec-name s))))
+          => found))
+  ;; Positional arguments, in the order they are declared.
+  (: (-> (List (Tuple int OptSpec)) (List string) (Result ArgProblem void)))
+  (defun (place fields ws)
+    (match fields
+      (Nil (if (list-empty? ws) (Ok unit) (Err (TooMany ws))))
+      ((Cons (Tuple i s) more)
+       (cond
+         ((not (= (.kind s) 3)) (place more ws))
+         ((.multi s)
+          (if (< (list-length ws) (.at-least s))
+              (Err (Missing (spec-name s)))
+              (begin
+                (list-for-each (fun (w) (record! occs i (list w))) ws)
+                (place more Nil))))
+         (else
+          (match ws
+            ((Cons w rest) (record! occs i (list w)) (place more rest))
+            (Nil (if (.required s) (Err (Missing (spec-name s))) (place more Nil)))))))))
+  (match (option-or repeated (option-or conflict (option-or none-of missing)))
+    ((Some p) (Err p))
+    (None (place indexed positional))))
+
+;; Reads `words` against `info`.
+;;
+;; - Options and arguments may be mixed, unless `#:options-first`.
+;; - `--` ends the options. A lone `-` is an argument.
+;; - `-h`/`--help` and `--version` return `HelpWanted`/`VersionWanted` at once,
+;;   unless a field takes the name.
+;; - With a subcommand, the first argument is its name, and the scan stops.
+(: (-> CmdInfo string (List string) (Result ArgError Scanned)))
+(defun (cmdline-scan info program words)
+  (def specs (.specs info))
+  (def occs (: (make-array (vec-length specs) #:fill Nil) (Array (List (List string)))))
+  (def sub (find-spec info (fun (s) (= (.kind s) 4))))
+  (defun (fail p) (Err (bad info program p)))
+  (defun (help) (Err (HelpWanted (cmdline-help-text info program))))
+  (defun (version) (Err (VersionWanted #"${program} ${(.version info)}")))
+  (defun (done positional command)
+    (match (settle info occs positional)
+      ((Err p) (fail p))
+      ((Ok _)
+       (if (and (>= sub 0) (none? command))
+           (fail (Missing "COMMAND"))
+           (Ok (Scanned (info info) (program program) (occs occs) (command command)))))))
+  ;; `pos` holds the arguments so far, the latest first.
+  (let go ((ws words) (pos Nil) (options-done #f))
+    (match ws
+      (Nil (done (list-reverse pos) None))
+      ((Cons w more)
+       (cond
+         ((and (not options-done) (= w "--")) (go more pos #t))
+         ((or options-done (= w "-") (not (string-starts-with? w "-")))
+          (if (>= sub 0)
+              (done (list-reverse pos) (Some (Tuple w more)))
+              (go more (Cons w pos) (or options-done (.options-first info)))))
+         ((string-starts-with? w "--")
+          (match (split-long w)
+            ((Tuple name inline)
+             (def i (find-spec info (fun (s) (and (< (.kind s) 3) (= (.long s) name)))))
+             (def negated (if (and (< i 0) (string-starts-with? name "no-"))
+                              (find-spec info (fun (s) (and (= (.kind s) 0) (= (.long s) (string-drop name 3)))))
+                              -1))
+             (cond
+               ((>= negated 0)
+                (if (some? inline)
+                    (fail (BadValue #"--${name}" (option-ref-or inline "") "no value"))
+                    (begin (record! occs negated (list "0")) (go more pos options-done))))
+               ((and (< i 0) (= name "help")) (help))
+               ((and (< i 0) (= name "version") (not (= (.version info) ""))) (version))
+               ((< i 0) (fail (UnknownOption #"--${name}" (nearest-name #"--${name}" (long-names info)))))
+               (else
+                (def s (vec-ref specs i))
+                (case (.kind s)
+                  (2 (match inline
+                       ((Some v)
+                        (if (= (.words s) 1)
+                            (begin (record! occs i (list v)) (go more pos options-done))
+                            (fail (BadValue (spec-name s) v #"${(int->string (.words s))} separate words"))))
+                       (None
+                        (match (take-words (.words s) more)
+                          ((Some (Tuple got rest)) (record! occs i got) (go rest pos options-done))
+                          (None (fail (MissingValue (spec-name s))))))))
+                  (else (if (some? inline)
+                         (fail (BadValue (spec-name s) (option-ref-or inline "") "no value"))
+                         (begin (record! occs i (list "1")) (go more pos options-done))))))))))
+         (else
+          ;; A cluster of short options: -vn, -oout, -o out.
+          (let short ((cs (string->list (string-drop w 1))) (rest more))
+            (match cs
+              (Nil (go rest pos options-done))
+              ((Cons c after)
+               (def name (char->string c))
+               (def i (find-spec info (fun (s) (and (< (.kind s) 3) (= (.short s) name)))))
+               (cond
+                 ((and (< i 0) (= name "h")) (help))
+                 ((< i 0) (fail (UnknownOption #"-${name}" None)))
+                 (else
+                  (def s (vec-ref specs i))
+                  (if (= (.kind s) 2)
+                      (if (list-empty? after)
+                          (match (take-words (.words s) rest)
+                            ((Some (Tuple got rest2)) (record! occs i got) (go rest2 pos options-done))
+                            (None (fail (MissingValue (spec-name s)))))
+                          (if (= (.words s) 1)
+                              (begin (record! occs i (list (list->string after))) (go rest pos options-done))
+                              (fail (BadValue (spec-name s) (list->string after)
+                                              #"${(int->string (.words s))} separate words"))))
+                      (begin (record! occs i (list "1")) (short after rest))))))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Conversion, as generated code calls it
+;; ---------------------------------------------------------------------------
+
+(: (-> Scanned int bool bool))
+(defun (cmdline-flag sc i fallback)
+  (match (array-ref (.occs sc) i)
+    ((Cons (Cons w _) _) (= w "1"))
+    (_ fallback)))
+
+(: (-> Scanned int int))
+(defun (cmdline-count sc i)
+  (list-length (array-ref (.occs sc) i)))
+
+(: (-> Scanned int bool))
+(defun (cmdline-given? sc i)
+  (not (list-empty? (array-ref (.occs sc) i))))
+
+(: (-> Scanned int (List string) (-> (List string) (Result string %a)) (Result ArgError %a)))
+(defun (convert sc i words conv)
+  (match (conv words)
+    ((Ok x) (Ok x))
+    ((Err wanted)
+     (def info (.info sc))
+     (Err (bad info (.program sc)
+               (BadValue (spec-name (vec-ref (.specs info) i))
+                         (string-join (list->vec words) " ")
+                         wanted))))))
+
+;; The latest value given. The scan has checked that there is one.
+(: (-> Scanned int (-> (List string) (Result string %a)) (Result ArgError %a)))
+(defun (cmdline-value sc i conv)
+  (convert sc i (list-head (array-ref (.occs sc) i)) conv))
+
+(: (-> Scanned int (-> (List string) (Result string %a)) (Result ArgError (Option %a))))
+(defun (cmdline-option sc i conv)
+  (match (array-ref (.occs sc) i)
+    (Nil (Ok None))
+    ((Cons words _) (result-map (fun (x) (Some x)) (convert sc i words conv)))))
+
+;; Every value, in the order given.
+(: (-> Scanned int (-> (List string) (Result string %a)) (Result ArgError (List %a))))
+(defun (cmdline-list sc i conv)
+  (list-foldl (fun (words acc)
+                (def (Ok xs) acc :propagate)
+                (def (Ok x) (convert sc i words conv) :propagate)
+                (Ok (Cons x xs)))
+              (Ok Nil)
+              (array-ref (.occs sc) i)))
+
+(: (-> Scanned int (-> (List string) (Result string %a)) (Result ArgError (Vec %a))))
+(defun (cmdline-vec sc i conv)
+  (result-map list->vec (cmdline-list sc i conv)))
+
+;; - `dispatch` parses the subcommand's words, or returns None for a name no
+;;   case has.
+(: (-> Scanned (-> string (List string) string (Option (Result ArgError %a))) (Result ArgError %a)))
+(defun (cmdline-subcommand sc dispatch)
+  (def info (.info sc))
+  (match (.command sc)
+    (None (Err (bad info (.program sc) (Missing "COMMAND"))))
+    ((Some (Tuple name rest))
+     (match (dispatch name rest #"${(.program sc)} ${name}")
+       ((Some r) r)
+       (None
+        (def names (list-map (fun (c) (match c ((Tuple n _) n))) (.commands info)))
+        (Err (bad info (.program sc) (UnknownCommand name (nearest-name name names)))))))))
+
+(: (-> (List string) (Result string %a)) (where (ArgValue %a)))
+(defun (cmdline-word ws)
+  (parse-arg-value (list-head ws)))
+
+(: (-> (List string) (Result string (Tuple %a %b))) (where (ArgValue %a) (ArgValue %b)))
+(defun (cmdline-words2 ws)
+  (match ws
+    ((Cons a (Cons b _))
+     (def (Ok x) (parse-arg-value a) :propagate)
+     (def (Ok y) (parse-arg-value b) :propagate)
+     (Ok (Tuple x y)))
+    (_ (Err "2 values"))))
+
+(: (-> (List string) (Result string (Tuple %a %b %c))) (where (ArgValue %a) (ArgValue %b) (ArgValue %c)))
+(defun (cmdline-words3 ws)
+  (match ws
+    ((Cons a (Cons b (Cons c _)))
+     (def (Ok x) (parse-arg-value a) :propagate)
+     (def (Ok y) (parse-arg-value b) :propagate)
+     (def (Ok z) (parse-arg-value c) :propagate)
+     (Ok (Tuple x y z)))
+    (_ (Err "3 values"))))
+
+(: (-> (List string) (Result string (Tuple %a %b %c %d)))
+   (where (ArgValue %a) (ArgValue %b) (ArgValue %c) (ArgValue %d)))
+(defun (cmdline-words4 ws)
+  (match ws
+    ((Cons a (Cons b (Cons c (Cons d _))))
+     (def (Ok x) (parse-arg-value a) :propagate)
+     (def (Ok y) (parse-arg-value b) :propagate)
+     (def (Ok z) (parse-arg-value c) :propagate)
+     (def (Ok w) (parse-arg-value d) :propagate)
+     (Ok (Tuple x y z w)))
+    (_ (Err "4 values"))))
+
+;; ---------------------------------------------------------------------------
+;; The traits a declaration implements
+;; ---------------------------------------------------------------------------
+
+;; - `cmdline-parse` reads the words. `program` is the name for the usage
+;;   line; "" means the record's `#:program`, or the name the program was
+;;   started by.
+;; - `cmdline-info` returns the table. The argument is only for dispatch.
+(def/trait (Cmdline %a)
+  (: cmdline-parse (-> (List string) string (Result ArgError %a)))
+  (: cmdline-info (-> (Option %a) CmdInfo)))
+
+;; - `cmdline-dispatch` parses the words after a subcommand's name, or returns
+;;   None when no case has the name.
+;; - `cmdline-commands` returns each case's name and summary.
+(def/trait (CmdlineCommands %a)
+  (: cmdline-dispatch (-> string (List string) string (Option (Result ArgError %a))))
+  (: cmdline-commands (-> (Option %a) (List (Tuple string string)))))
+
+(: (-> (Vec string) (Result ArgError %a)) (where (Cmdline %a)))
+(defun (parse-args args)
+  (cmdline-parse (vec->list args) ""))
+
+;; One row of `cmdline-commands`: a case's name and its record's summary.
+(: (-> string CmdInfo (Tuple string string)))
+(defun (cmdline-command-entry name info)
+  (Tuple name (.summary info)))
+
+;; ---------------------------------------------------------------------------
+;; The forms
+;; ---------------------------------------------------------------------------
+;; Runtime macros. A field's type is read only for its shape: bool, Option,
+;; List, Vec and Tuple. What a value converts as is left to instance
+;; resolution of `ArgValue`.
+
+(: (-> string Syntax))
+(defun (cl-sym name) (SSym (string->symbol name)))
+
+(: (-> Syntax string bool))
+(defun (cl-is? s name) (= (syntax->string s) name))
+
+(: (-> Syntax bool))
+(defun (cl-marker? s)
+  (match s
+    ((SList _) #f)
+    (_ (string-starts-with? (syntax->string s) "#:"))))
+
+;; The text of a string literal, or of any other form as written.
+(: (-> Syntax string))
+(defun (cl-text s)
+  (match s
+    ((SStr t) t)
+    ((SChar c) (char->string c))
+    (_ (syntax->string s))))
+
+;; `VeryFast` is `very-fast`.
+(: (-> string string))
+(defun (cl-kebab name)
+  (def parts (loop (:for (Tuple i c) (enumerate (string->list name)))
+                   (:let lower (string-downcase (char->string c)))
+                   (:acc out (listing (if (and (> i 0) (not (= lower (char->string c))))
+                                          (str "-" lower)
+                                          lower)))
+                   => out))
+  (string-join (list->vec parts) ""))
+
+;; One field of a declaration, read at expansion time.
+;;
+;; - `shape`: "flag", "count", "one", "option", "list", "vec" or "subcommand".
+;; - `elem`: the type one value converts to; a Tuple for several words.
+(type (: CField (Record (: form Syntax)
+                        (: name Syntax)
+                        (: ty Syntax)
+                        (: markers (List Syntax))
+                        (: shape string)
+                        (: elem Syntax)
+                        (: words int)
+                        (: long string)
+                        (: short string)
+                        (: default (Option Syntax))
+                        (: help string)
+                        (: value string)
+                        (: positional bool)
+                        (: at-least int)
+                        (: last-wins bool)
+                        (: exclusive string)
+                        (: group string)
+                        (: hidden bool))))
+
+;; The markers that take a value, and the ones that stand alone.
+(: (List string))
+(def cl-valued (list "#:short" "#:long" "#:default" "#:help" "#:value" "#:at-least" "#:exclusive" "#:group"))
+(: (List string))
+(def cl-bare (list "#:count" "#:positional" "#:last-wins" "#:hidden" "#:subcommand"))
+
+(: (-> (List Syntax) string (Option Syntax)))
+(defun (cl-marker-value ms name)
+  (match ms
+    ((Cons m (Cons v more)) (if (cl-is? m name) (Some v) (cl-marker-value (Cons v more) name)))
+    (_ None)))
+
+(: (-> (List Syntax) string bool))
+(defun (cl-has? ms name)
+  (list-foldl (fun (m found) (or found (cl-is? m name))) #f ms))
+
+;; What the record declaration keeps: the markers that are not ours.
+(: (-> (List Syntax) (List Syntax)))
+(defun (cl-keep ms)
+  (match ms
+    (Nil Nil)
+    ((Cons m more)
+     (cond
+       ((list-contains? cl-valued (syntax->string m))
+        (cl-keep (match more ((Cons _ after) after) (Nil Nil))))
+       ((list-contains? cl-bare (syntax->string m)) (cl-keep more))
+       (else (Cons m (cl-keep more)))))))
+
+;; `(Head arg ...)`: the head's name and the arguments, or None.
+(: (-> Syntax (Option (Tuple string (List Syntax)))))
+(defun (cl-type-app ty)
+  (match ty
+    ((SList (Cons head args)) (Some (Tuple (syntax->string head) args)))
+    (_ None)))
+
+(: (-> Syntax int))
+(defun (cl-words elem)
+  (match (cl-type-app elem)
+    ((Some (Tuple "Tuple" args)) (list-length args))
+    (_ 1)))
+
+(: string)
+(def cl-field-shape
+  "a field is written (: name type marker ...). See (:doc def/cmdline) for the markers.")
+
+(: (-> Syntax (Result (Tuple Syntax string) CField)))
+(defun (cl-read-field f)
+  (match f
+    ((SList (Cons colon (Cons name (Cons ty ms))))
+     #:when (= (syntax->string colon) ":")
+     (def subcommand (cl-has? ms "#:subcommand"))
+     (def positional (cl-has? ms "#:positional"))
+     (def app (cl-type-app ty))
+     (def shape+elem
+       (match app
+         ((Some (Tuple "Option" (Cons x Nil))) (Tuple "option" x))
+         ((Some (Tuple "List" (Cons x Nil))) (Tuple "list" x))
+         ((Some (Tuple "Vec" (Cons x Nil))) (Tuple "vec" x))
+         (_ (cond
+              (subcommand (Tuple "subcommand" ty))
+              ((cl-has? ms "#:count") (Tuple "count" ty))
+              ((and (cl-is? ty "bool") (not positional)) (Tuple "flag" ty))
+              (else (Tuple "one" ty))))))
+     (match shape+elem
+       ((Tuple shape elem)
+        (def at-least (match (cl-marker-value ms "#:at-least")
+                        ((Some v) (match (try (string->int (syntax->string v)) #:catch (System.Exception))
+                                    ((Ok n) n)
+                                    (_ -1)))
+                        (None 0)))
+        (def default (cl-marker-value ms "#:default"))
+        (def text-of (fun (m) (match (cl-marker-value ms m) ((Some v) (cl-text v)) (None ""))))
+        (def field (CField (form f) (name name) (ty ty) (markers ms) (shape shape) (elem elem)
+                           (words (cl-words elem))
+                           (long (match (cl-marker-value ms "#:long")
+                                   ((Some v) (cl-text v))
+                                   (None (syntax->string name))))
+                           (short (text-of "#:short"))
+                           (default default)
+                           (help (text-of "#:help"))
+                           (value (text-of "#:value"))
+                           (positional positional)
+                           (at-least at-least)
+                           (last-wins (cl-has? ms "#:last-wins"))
+                           (exclusive (text-of "#:exclusive"))
+                           (group (text-of "#:group"))
+                           (hidden (cl-has? ms "#:hidden"))))
+        (cond
+          ((and (cl-has? ms "#:count") (not (cl-is? ty "int")))
+           (Err (Tuple f "#:count is for a field of type int.")))
+          ((< at-least 0) (Err (Tuple f "#:at-least takes a whole number.")))
+          ((and (> at-least 0) (not (or (= shape "list") (= shape "vec"))))
+           (Err (Tuple f "#:at-least is for a List or Vec field.")))
+          ((and (.last-wins field) (not (= shape "one")))
+           (Err (Tuple f "#:last-wins is for an option that takes a value; a flag, a counter and a list have no use for it.")))
+          ((and (some? default) (not (or (= shape "one") (= shape "flag"))))
+           (Err (Tuple f "#:default is for a field that is not an Option, a List or a Vec: those are empty when absent.")))
+          ((and (= shape "flag") (some? default) (not (cl-is? (option-ref-or default ty) "#t"))
+                (not (cl-is? (option-ref-or default ty) "#f")))
+           (Err (Tuple f "a bool flag's #:default is #t or #f.")))
+          ((> (.words field) 4) (Err (Tuple f "a Tuple field takes at most 4 words.")))
+          ((and (not (= (.short field) "")) (not (= (string-length (.short field)) 1)))
+           (Err (Tuple f "#:short takes one character: #:short #\\v.")))
+          ((and subcommand positional) (Err (Tuple f "a field is #:subcommand or #:positional, not both.")))
+          ((and subcommand (some? app)) (Err (Tuple f "a #:subcommand field's type is a union declared with def/cmdline-commands.")))
+          (else (Ok field))))))
+    (_ (Err (Tuple f cl-field-shape)))))
+
+(: (-> CField bool))
+(defun (cl-option? c)
+  (not (or (.positional c) (= (.shape c) "subcommand"))))
+
+;; Whether `c` is in the exclusive group `g`.
+(: (-> CField string bool))
+(defun (cl-in-group? c g) (= (.exclusive c) g))
+
+;; The checks across fields. Returns the form to blame and why.
+(: (-> (List CField) (List string) (Option (Tuple Syntax string))))
+(defun (cl-check fields require-one)
+  (def options (list-filter cl-option? fields))
+  (def positionals (list-filter (fun (c) (.positional c)) fields))
+  (def subcommands (list-filter (fun (c) (= (.shape c) "subcommand")) fields))
+  (defun (dup key cs)
+    (match cs
+      (Nil None)
+      ((Cons c more)
+       (def k (key c))
+       (if (and (not (= k "")) (list-foldl (fun (o found) (or found (= (key o) k))) #f more))
+           (Some c)
+           (dup key more)))))
+  (def groups (list-filter (fun (g) (not (= g ""))) (list-map (fun (c) (.exclusive c)) fields)))
+  (cond
+    (:def long-dup (dup (fun (c) (.long c)) options))
+    ((some? long-dup)
+     (def c (option-ref-or long-dup (list-head fields)))
+     (Some (Tuple (.form c) #"two options are named --${(.long c)}.")))
+    (:def short-dup (dup (fun (c) (.short c)) options))
+    ((some? short-dup)
+     (def c (option-ref-or short-dup (list-head fields)))
+     (Some (Tuple (.form c) #"two options are named -${(.short c)}.")))
+    (:def early-list
+      (let go ((ps positionals))
+        (match ps
+          ((Cons p (Cons q more))
+           (if (or (= (.shape p) "list") (= (.shape p) "vec")) (Some p) (go (Cons q more))))
+          (_ None))))
+    ((some? early-list)
+     (Some (Tuple (.form (option-ref-or early-list (list-head fields)))
+                  "a positional List or Vec takes the rest of the arguments, so it is the last positional field.")))
+    ((> (list-length subcommands) 1)
+     (Some (Tuple (.form (list-head (list-tail subcommands))) "a record has at most one #:subcommand field.")))
+    ((and (not (list-empty? subcommands)) (not (list-empty? positionals)))
+     (Some (Tuple (.form (list-head positionals))
+                  "a record with a #:subcommand field has no positional fields: the words after the command's name are the command's.")))
+    (:def lonely (find (fun (g) (= (list-length (list-filter (fun (o) (= o g)) groups)) 1)) groups))
+    ((some? lonely)
+     (def g (option-ref-or lonely ""))
+     (Some (Tuple (.form (option-ref-or (find (fun (c) (cl-in-group? c g)) fields) (list-head fields)))
+                  #"the exclusive group \"${g}\" has one field; a group needs two.")))
+    (:def unknown (find (fun (g) (not (list-contains? groups g))) require-one))
+    ((some? unknown)
+     (Some (Tuple (.form (list-head fields))
+                  #"#:require-one names \"${(option-ref-or unknown "")}\", and no field has #:exclusive \"${(option-ref-or unknown "")}\".")))
+    (else None)))
+
+;; The placeholder of an option, as an expression: `#:value`, else each word's
+;; `arg-value-placeholder`, else its type's name in capitals.
+(: (-> CField Syntax))
+(defun (cl-placeholder c)
+  (cond
+    ((not (= (.value c) "")) (SStr (.value c)))
+    ((.positional c) (SStr (string-upcase (syntax->string (.name c)))))
+    ((not (or (= (.shape c) "one") (= (.shape c) "option") (= (.shape c) "list") (= (.shape c) "vec")))
+     (SStr ""))
+    (else
+     (def parts (match (cl-type-app (.elem c))
+                  ((Some (Tuple "Tuple" args)) args)
+                  (_ (list (.elem c)))))
+     #'(cmdline-placeholder ""
+                            (list ,@(list-map (fun (t) #'(arg-value-placeholder (: None (Option ,t)))) parts))
+                            (list ,@(list-map (fun (t) (SStr (string-upcase (cl-text t)))) parts))))))
+
+;; A default as the help shows it.
+(: (-> CField string))
+(defun (cl-default-text c)
+  (match (.default c)
+    (None "")
+    ((Some d)
+     (cond
+       ((= (.shape c) "flag") (if (cl-is? d "#t") "on" ""))
+       (:def t (cl-text d))
+       ((match d ((SSym _) #t) (_ #f))
+        (if (char-alphabetic? (list-head (string->list t)))
+            (if (= (string-downcase t) t) t (cl-kebab t))
+            t))
+       (else t)))))
+
+(: (-> CField Syntax))
+(defun (cl-spec c)
+  (def kind (cond
+              ((= (.shape c) "flag") 0)
+              ((= (.shape c) "count") 1)
+              ((= (.shape c) "subcommand") 4)
+              ((.positional c) 3)
+              (else 2)))
+  (def multi (or (= (.shape c) "list") (= (.shape c) "vec")))
+  (def required (and (= (.shape c) "one") (none? (.default c))))
+  (def at-least (if (and multi (.positional c) (= (.at-least c) 0)) 0 (.at-least c)))
+  #'(cmdline-spec ,(SStr (if (cl-option? c) (.long c) ""))
+                  ,(SStr (.short c))
+                  ,(SInt (int->string kind))
+                  ,(SInt (int->string (.words c)))
+                  ,(if multi #'#t #'#f)
+                  ,(if required #'#t #'#f)
+                  ,(if (.last-wins c) #'#t #'#f)
+                  ,(SInt (int->string at-least))
+                  ,(SStr (.exclusive c))
+                  ,(SStr (.help c))
+                  ,(cl-placeholder c)
+                  ,(SStr (cl-default-text c))
+                  ,(SStr (.group c))
+                  ,(if (.hidden c) #'#t #'#f)))
+
+;; The conversion of one occurrence's words.
+(: (-> CField Syntax))
+(defun (cl-conv c)
+  (def ws (cl-sym "__cl-ws"))
+  (def call (case (.words c)
+              (2 'cmdline-words2)
+              (3 'cmdline-words3)
+              (4 'cmdline-words4)
+              (else 'cmdline-word)))
+  #'(fun (,ws) (: (,(SSym call) ,ws) (Result string ,(.elem c)))))
+
+;; The field's value, as a `(Result ArgError T)` expression over the scan.
+(: (-> CField int Syntax Syntax))
+(defun (cl-value c i sc)
+  (def idx (SInt (int->string i)))
+  (def shape (.shape c))
+  (cond
+    ((= shape "flag") #'(Ok (cmdline-flag ,sc ,idx ,(option-ref-or (.default c) #'#f))))
+    ((= shape "count") #'(Ok (cmdline-count ,sc ,idx)))
+    ((= shape "option") #'(cmdline-option ,sc ,idx ,(cl-conv c)))
+    ((= shape "list") #'(cmdline-list ,sc ,idx ,(cl-conv c)))
+    ((= shape "vec") #'(cmdline-vec ,sc ,idx ,(cl-conv c)))
+    ((= shape "subcommand")
+     (def n (cl-sym "__cl-n"))
+     (def r (cl-sym "__cl-r"))
+     (def p (cl-sym "__cl-p"))
+     #'(cmdline-subcommand ,sc (fun (,n ,r ,p) (: (cmdline-dispatch ,n ,r ,p) (Option (Result ArgError ,(.ty c)))))))
+    (else
+     (match (.default c)
+       (None #'(cmdline-value ,sc ,idx ,(cl-conv c)))
+       ((Some d) #'(if (cmdline-given? ,sc ,idx) (cmdline-value ,sc ,idx ,(cl-conv c)) (Ok ,d)))))))
+
+(: (-> CField Syntax))
+(defun (cl-strip c)
+  #'(: ,(.name c) ,(.ty c) ,@(cl-keep (.markers c))))
+
+(: (-> int Syntax))
+(defun (cl-var i) (cl-sym (str "__cl-v" (int->string i))))
+
+;; The record markers: each `#:name value`, or a bare `#:options-first`.
+(: (-> (List Syntax) (Tuple (List Syntax) (List Syntax))))
+(defun (cl-split-body body)
+  (let go ((bs body) (markers Nil) (fields Nil))
+    (match bs
+      (Nil (Tuple (list-reverse markers) (list-reverse fields)))
+      ((Cons b more)
+       (cond
+         ((cl-is? b "#:options-first") (go more (Cons b markers) fields))
+         ((cl-marker? b)
+          (match more
+            ((Cons v after) (go after (Cons v (Cons b markers)) fields))
+            (Nil (go more (Cons b markers) fields))))
+         (else (go more markers (Cons b fields))))))))
+
+;; The values of every `#:require-one`.
+(: (-> (List Syntax) (List string)))
+(defun (cl-require-one ms)
+  (match ms
+    ((Cons m (Cons v more))
+     (if (cl-is? m "#:require-one")
+         (Cons (cl-text v) (cl-require-one more))
+         (cl-require-one (Cons v more))))
+    (_ Nil)))
+
+(: (-> (-> Symbol Syntax) Syntax Syntax (List Syntax) Syntax))
+(defun (cl-expand inject colon head body)
+  (match (cl-split-body body)
+    ((Tuple markers field-forms)
+     (def read (list-map cl-read-field field-forms))
+     (match (find (fun (r) (match r ((Err _) #t) (_ #f))) read)
+       ((Some (Err (Tuple form why))) (syntax-error form why))
+       (_
+        (def fields (loop (:for r read) (:when-let (Ok c) r) (:acc out (listing c)) => out))
+        (def require-one (cl-require-one markers))
+        (def known (list "#:program" "#:summary" "#:version" "#:after" "#:options-first" "#:require-one"))
+        (def unknown-marker (find (fun (m) (and (cl-marker? m) (not (list-contains? known (syntax->string m))))) markers))
+        (match (Tuple unknown-marker (cl-check fields require-one))
+          ((Tuple (Some m) _) (syntax-error m #"def/cmdline takes the record markers ${(string-join (list->vec known) ", ")}."))
+          ((Tuple None (Some (Tuple form why))) (syntax-error form why))
+          ((Tuple None None)
+           (def name (syntax->string head))
+           (def text-marker (fun (m) (SStr (match (cl-marker-value markers m) ((Some v) (cl-text v)) (None "")))))
+           (def program-default (match (cl-marker-value markers "#:program")
+                                  ((Some v) (SStr (cl-text v)))
+                                  (None #'(cmdline-program))))
+           (def sub (find (fun (c) (= (.shape c) "subcommand")) fields))
+           (def commands (match sub
+                           ((Some c) #'(cmdline-commands (: None (Option ,(.ty c)))))
+                           (None #'Nil)))
+           (def info-name (cl-sym (str "__cmdline-info-" name)))
+           (def sc (cl-sym "__cl-sc"))
+           (def e (cl-sym "__cl-e"))
+           (def words (cl-sym "__cl-words"))
+           (def program (cl-sym "__cl-program"))
+           (def indexed (loop (:for (Tuple i c) (enumerate fields)) (:acc out (listing (Tuple i c))) => out))
+           (def binds (list-map (fun (p) (match p ((Tuple i c) #'(def (Ok ,(cl-var i)) ,(cl-value c i sc) :propagate))))
+                                indexed))
+           (def ctor #'(Ok (,head ,@(list-map (fun (p) (match p ((Tuple i c) #'(,(.name c) ,(cl-var i))))) indexed))))
+           (def parse-name (inject (string->symbol (str "cmdline-parse-" name))))
+           (def help-name (inject (string->symbol (str "cmdline-help-" name))))
+           #'(begin
+               (type (,colon ,head (Record ,@(list-map cl-strip fields))))
+               (def ,info-name
+                 (cmdline-info-make ,(text-marker "#:program") ,(text-marker "#:summary")
+                                    ,(text-marker "#:version") ,(text-marker "#:after")
+                                    ,(if (cl-has? markers "#:options-first") #'#t #'#f)
+                                    (list ,@(list-map (fun (g) (SStr g)) require-one))
+                                    (list ,@(list-map cl-spec fields))
+                                    ,commands))
+               (impl (Cmdline ,head)
+                 (defun (cmdline-parse ,words ,program)
+                   (match (cmdline-scan ,info-name (if (= ,program "") ,program-default ,program) ,words)
+                     ((Err ,e) (Err ,e))
+                     ((Ok ,sc) ,@binds ,ctor)))
+                 (defun (cmdline-info _) ,info-name))
+               (: ,parse-name (-> (Vec string) (Result ArgError ,head)))
+               (defun (,parse-name args) (parse-args args))
+               (: ,help-name (-> string))
+               (defun (,help-name) (cmdline-help-text ,info-name ,program-default))))))))))
+
+(def/macro (def/cmdline form inject compare)
+  (syntax-match form
+    ((_ typedef)
+     (syntax-match typedef
+       ((colon head ('Record field ...)) (cl-expand inject colon head field))
+       (bad (syntax-error bad "def/cmdline takes a record: (def/cmdline (: Name (Record (: field type marker ...) ...)))"))))
+    (bad (syntax-error bad "def/cmdline takes exactly one record declaration."))))
+
+;; The name of a union case: `Fast`, or the `Build` of `(: Build BuildOptions)`.
+(: (-> Syntax Syntax))
+(defun (cl-case-name c)
+  (match c
+    ((SList (Cons _ (Cons name _))) name)
+    (_ c)))
+
+(def/macro (def/cmdline-choices form inject compare)
+  (syntax-match form
+    ((_ (colon head ('Union case ...)))
+     (def bad-case (find (fun (c) (match c ((SList _) #t) (_ #f))) case))
+     (match bad-case
+       ((Some c) (syntax-error c "def/cmdline-choices takes cases that carry nothing: (Union Fast Safe)."))
+       (None
+        (def names (list-map (fun (c) (cl-kebab (syntax->string c))) case))
+        (def w (cl-sym "__cl-w"))
+        (def wanted (str "one of " (string-join (list->vec names) ", ")))
+        #'(begin
+            (type (,colon ,head (Union ,@case)))
+            (impl (ArgValue ,head)
+              (defun (parse-arg-value ,w)
+                (cond
+                  ,@(list-map (fun (c) #'((= ,w ,(SStr (cl-kebab (syntax->string c)))) (Ok ,c))) case)
+                  (else (Err ,(SStr wanted)))))
+              (defun (arg-value-placeholder _) ,(SStr (string-join (list->vec names) "|"))))))))
+    (bad (syntax-error bad "def/cmdline-choices takes a union of plain cases: (def/cmdline-choices (: Level (Union Fast Safe)))"))))
+
+(def/macro (def/cmdline-commands form inject compare)
+  (syntax-match form
+    ((_ (colon head ('Union case ...)))
+     (def bad-case (find (fun (c) (match c ((SList (Cons _ (Cons _ (Cons _ Nil)))) #f) (_ #t))) case))
+     (match bad-case
+       ((Some c) (syntax-error c "def/cmdline-commands takes cases that each hold one def/cmdline record: (: Build BuildOptions)."))
+       (None
+        (def n (cl-sym "__cl-n"))
+        (def ws (cl-sym "__cl-ws"))
+        (def p (cl-sym "__cl-p"))
+        (def o (cl-sym "__cl-o"))
+        (def e (cl-sym "__cl-e"))
+        (defun (record-of c) (match c ((SList (Cons _ (Cons _ (Cons r _)))) r) (_ c)))
+        #'(begin
+            (type (,colon ,head (Union ,@case)))
+            (impl (CmdlineCommands ,head)
+              (defun (cmdline-dispatch ,n ,ws ,p)
+                (cond
+                  ,@(list-map (fun (c)
+                                #'((= ,n ,(SStr (cl-kebab (syntax->string (cl-case-name c)))))
+                                   (Some (match (: (cmdline-parse ,ws ,p) (Result ArgError ,(record-of c)))
+                                           ((Ok ,o) (Ok (,(cl-case-name c) ,o)))
+                                           ((Err ,e) (Err ,e))))))
+                              case)
+                  (else None)))
+              (defun (cmdline-commands _)
+                (list ,@(list-map (fun (c)
+                                    #'(cmdline-command-entry
+                                       ,(SStr (cl-kebab (syntax->string (cl-case-name c))))
+                                       (cmdline-info (: None (Option ,(record-of c))))))
+                                  case))))))))
+    (bad (syntax-error bad "def/cmdline-commands takes a union: (def/cmdline-commands (: Command (Union (: Build BuildOptions) ...)))"))))

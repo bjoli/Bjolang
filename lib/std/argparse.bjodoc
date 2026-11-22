@@ -1,0 +1,489 @@
+;; Docs for std/argparse.bjo, read through (:doc #:file "argparse.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Command-line arguments into a record: declare the record, and get its parser and its help.")
+  (see def/cmdline parse-args ArgError ArgValue)
+  (example """
+    (import (std argparse))
+
+    (def/cmdline-choices (: Level (Union Fast Safe Paranoid)))
+
+    (def/cmdline
+      (: Options (Record #:program "copy" #:summary "Copies files into a directory."
+                   (: verbose int #:count #:short #\v #:help "Say more.")
+                   (: dry-run bool #:short #\n #:help "Change nothing.")
+                   (: output string #:short #\o #:default "." #:value "DIR")
+                   (: level Level #:default Safe)
+                   (: exclude (List string) #:short #\x #:value "GLOB")
+                   (: files (List string) #:positional #:at-least 1 #:value "FILE"))))
+
+    (defun (main args)
+      (def (Ok opts) (cmdline-parse-Options args)
+        :leave ((Err e) (panic! (arg-error-message e) #:exit-code (arg-error-exit-code e))))
+      ...)
+    """)
+  (reference """
+    @strong{The type of a field gives its shape on the command line.}
+
+    @read-table{
+    | @code{bool}                  | a flag. @code{--dry-run} sets it, @code{--no-dry-run} clears it. Absent is @code{#f} |
+    | @code{int} with @code{#:count} | a counter: each @code{-v} adds one                                              |
+    | @code{T}                     | an option with a value. Required, unless it has @code{#:default}                     |
+    | @code{(Option T)}            | an option that can be absent                                                         |
+    | @code{(List T)}, @code{(Vec T)} | an option that can be repeated. Each one adds a value                             |
+    | @code{(Tuple A B ...)}       | an option that takes that many words: @code{--size 800 600}. At most 4              |
+    }
+
+    A @code{Tuple} can be inside an @code{Option}, a @code{List} or a
+    @code{Vec}. With @code{#:positional}, a field is an argument, not an
+    option. Positional fields take the arguments in the order they are
+    declared. A positional @code{List} or @code{Vec} takes the rest, so it
+    is the last positional field. The type is read by its name, so an alias
+    of @code{Option} or @code{List} is a plain value.
+
+    @strong{The command line} follows GNU @code{getopt_long}:
+
+    @itemlist[
+    @item{@code{-vn} is @code{-v -n}. A short option with a value takes the rest of its word or the next word: @code{-oout}, @code{-o out}.}
+    @item{@code{--output out} and @code{--output=out}. The @code{=} form is for an option of one word.}
+    @item{A long name is never abbreviated. Otherwise a new option could change what an old command line means.}
+    @item{Options and arguments can be mixed, unless the record has @code{#:options-first}: then the first argument ends the options.}
+    @item{@code{--} ends the options. A lone @code{-} is an argument.}
+    @item{A value can start with @code{-}: in @code{--jobs -1}, @code{-1} is the value.}
+    @item{@code{-h} and @code{--help} are added, unless a field has the name. @code{--version} is added when the record has @code{#:version}.}
+    ]
+
+    @strong{Given twice.} For a flag, the last one counts, so a command line
+    can override an alias. An option with one value given twice is an error,
+    unless it has @code{#:last-wins}. A list takes each one. A counter counts
+    each one.
+
+    @strong{Subcommands.} A field marked @code{#:subcommand} has a union type
+    declared with @code{def/cmdline-commands}. Each case holds a
+    @code{def/cmdline} record. The options before the command's name are the
+    outer record's, and the words after it are the command's. Each level has
+    its own help; the outer help lists the commands with their summaries.
+
+    @codeblock[#:lang "bjolang"]|{
+    (def/cmdline (: BuildOptions (Record #:summary "Builds the project." (: release bool #:short #\r))))
+    (def/cmdline (: TestOptions (Record #:summary "Runs the tests." (: filter (List string) #:positional))))
+    (def/cmdline-commands (: Command (Union (: Build BuildOptions) (: Test TestOptions))))
+    (def/cmdline (: Bjo (Record #:program "bjo" (: debug bool #:short #\d) (: command Command #:subcommand))))
+
+    ;; bjo -d test parse  →  (Bjo (debug #t) (command (Test (TestOptions (filter ("parse"))))))
+    }|
+
+    @strong{Ending the program.} There is no function that exits. Match the
+    @code{Err}: @code{arg-error-message} gives the text, and
+    @code{arg-error-exit-code} gives 0 for help and the version, and 2 for a
+    wrong command line. @code{panic!} writes to standard error. To write the
+    help to standard output, match @code{HelpWanted} first:
+
+    @codeblock[#:lang "bjolang"]|{
+    (match (cmdline-parse-Options args)
+      ((Ok opts) (run opts))
+      ((Err (HelpWanted text)) (println text) 0)
+      ((Err e) (panic! (arg-error-message e) #:exit-code (arg-error-exit-code e))))
+    }|
+
+    The help is not wrapped: it is the same in a terminal, in a pipe and in
+    a test.
+    """))
+
+(:doc def/cmdline
+  (summary "Declares a record of command-line options, with its parser and its help.")
+  (form (def/cmdline declaration))
+  (arg declaration """
+    @code{(: Name (Record marker ... field ...))}. A field is
+    @code{(: name type marker ...)}.
+
+    Record markers:
+
+    @read-table{
+    | @code{#:program "name"}     | the name in the usage line. By default, the name the program was started by |
+    | @code{#:summary "text"}     | the first line of the help, and the command's line in a list of commands |
+    | @code{#:version "1.2.3"}    | adds @code{--version}                                     |
+    | @code{#:after "text"}       | a paragraph after the options                             |
+    | @code{#:options-first}      | the first argument ends the options                       |
+    | @code{#:require-one "name"} | exactly one field of the exclusive group is given         |
+    }
+
+    Field markers:
+
+    @read-table{
+    | @code{#:short #\x}         | also @code{-x}                                                        |
+    | @code{#:long "name"}       | the long name. By default the field's name                            |
+    | @code{#:default expr}      | the value when absent. Shown in the help                              |
+    | @code{#:help "text"}       | the field's line in the help                                          |
+    | @code{#:value "NAME"}      | the placeholder in the help                                           |
+    | @code{#:count}             | an @code{int} that counts                                             |
+    | @code{#:positional}        | an argument, not an option                                            |
+    | @code{#:at-least n}        | a list takes at least n values                                        |
+    | @code{#:last-wins}         | given twice, the last counts; otherwise twice is an error             |
+    | @code{#:exclusive "name"}  | at most one field of the group is given                               |
+    | @code{#:group "Heading"}   | the field is listed under that heading in the help                    |
+    | @code{#:subcommand}        | a union from @code{def/cmdline-commands}, which takes the rest of the words |
+    | @code{#:hidden}            | parsed, but not in the help                                           |
+    }
+    """)
+  (see parse-args def/cmdline-choices def/cmdline-commands ArgValue)
+  (example """
+    (def/cmdline
+      (: Source (Record #:program "src" #:require-one "input"
+                  (: file (Option string) #:exclusive "input" #:help "Read a file.")
+                  (: stdin bool #:exclusive "input" #:help "Read standard input.")
+                  (: size (Option (Tuple int int)) #:value "W H")
+                  (: name string #:last-wins #:default "x"))))
+    """)
+  (reference """
+    The form declares:
+
+    @itemlist[
+    @item{the record, with the markers taken off its fields;}
+    @item{an instance of @code{(Cmdline Name)}, which @code{parse-args} uses;}
+    @item{@code{cmdline-parse-Name}, of type @code{(-> (Vec string) (Result ArgError Name))};}
+    @item{@code{cmdline-help-Name}, of type @code{(-> string)}.}
+    ]
+
+    These are compile errors: two options with one long or short name; a
+    positional list that is not the last positional field; @code{#:count} on
+    a field that is not an @code{int}; @code{#:last-wins} on a flag, a counter
+    or a list; @code{#:default} on an @code{Option}, a @code{List} or a
+    @code{Vec}; an exclusive group of one field; @code{#:require-one} with no
+    such group; a @code{#:subcommand} field beside positional fields; and a
+    type with no @code{ArgValue} instance.
+
+    The placeholder of an option is @code{#:value}, else what the type's
+    @code{arg-value-placeholder} gives, else the type's name in capitals:
+    @code{INT}. For an argument, it is the field's name in capitals.
+    """))
+
+(:doc def/cmdline-choices
+  (summary "Declares a union of plain cases, and its ArgValue instance.")
+  (form (def/cmdline-choices declaration))
+  (arg declaration "@code{(: Name (Union Case ...))}. The cases carry nothing.")
+  (see def/cmdline ArgValue)
+  (example """
+    (def/cmdline-choices (: Level (Union Fast Safe VeryCareful)))
+    ;; --level fast, --level very-careful
+    """)
+  (reference """
+    A value is the case's name in lower case, with words joined by @code{-}:
+    @code{VeryCareful} is @code{very-careful}. A wrong value is the error
+    @code{--level takes one of fast, safe, very-careful, not 'quick'}. The
+    help shows the choices as the placeholder: @code{fast|safe|very-careful}.
+    """))
+
+(:doc def/cmdline-commands
+  (summary "Declares the union of a record's subcommands.")
+  (form (def/cmdline-commands declaration))
+  (arg declaration """
+    @code{(: Name (Union (: Case Record) ...))}. Each record is declared
+    with @code{def/cmdline}.
+    """)
+  (see def/cmdline)
+  (example """
+    (def/cmdline-commands (: Command (Union (: Build BuildOptions) (: Test TestOptions))))
+    (def/cmdline (: Bjo (Record (: debug bool) (: command Command #:subcommand))))
+    """)
+  (reference """
+    The name of a command is the case's name in kebab case: @code{Build} is
+    @code{build}. The form declares the union and an instance of
+    @code{CmdlineCommands}.
+    """))
+
+(:doc parse-args
+  (summary "Parses the command line as a record declared with def/cmdline.")
+  (tparam %a "The record. The type the result is used as selects it.")
+  (arg args "The arguments, as main gets them.")
+  (returns "The record, or why the words do not make one.")
+  (see cmdline-parse ArgError)
+  (example """
+    (def (: r (Result ArgError Options)) (parse-args args))
+    """)
+  (reference """
+    @code{cmdline-parse-Name}, which @code{def/cmdline} declares, is the same
+    function at one type, and needs no annotation.
+    """))
+
+(:doc ArgError
+  (summary "Why a parse did not give a record.")
+  (case HelpWanted "@code{-h} or @code{--help}. Holds the help of the level it was given at.")
+  (case VersionWanted "@code{--version}. Holds the program's name and version.")
+  (case BadArgs "A wrong command line. Holds the problem, the program's name, and the usage line of the level it was found at.")
+  (see arg-error-message arg-error-exit-code ArgProblem))
+
+(:doc ArgProblem
+  (summary "What is wrong with a command line.")
+  (case UnknownOption "An option no field has, and the nearest known name, when one is near.")
+  (case MissingValue "An option whose words are missing at the end of the line.")
+  (case BadValue "The option, the value, and what the option takes.")
+  (case Missing "A required option, argument or command is absent.")
+  (case Repeated "An option with one value is given twice, without @code{#:last-wins}.")
+  (case Conflict "Two fields of one exclusive group.")
+  (case NoneOf "The fields of a @code{#:require-one} group, of which none is given.")
+  (case TooMany "The arguments that are left over.")
+  (case UnknownCommand "A command no case has, and the nearest name, when one is near.")
+  (see ArgError))
+
+(:doc arg-error-message
+  (summary "The text to show for an ArgError.")
+  (arg e "The error.")
+  (returns """
+    The help or the version, as they are. For a wrong command line, three
+    lines: what is wrong, the usage line, and @code{Try 'prog --help' for more.}
+    """)
+  (see arg-error-exit-code))
+
+(:doc arg-error-exit-code
+  (summary "The exit code for an ArgError.")
+  (arg e "The error.")
+  (returns "0 for help and the version. 2, the usual code for a wrong command line, for the rest.")
+  (see arg-error-message))
+
+(:doc ArgValue
+  (summary "A type that can be the value of an option.")
+  (tparam %a "The type.")
+  (see def/cmdline-choices)
+  (example """
+    (impl (ArgValue Size)
+      (defun (parse-arg-value word)
+        (match (parse-size word)
+          ((Some s) (Ok s))
+          (None (Err "a size such as 512, 10k or 3M")))))
+    """)
+  (reference """
+    Instances: @code{string}, @code{int}, @code{long}, @code{double},
+    @code{char}, and @code{bool}, which takes @code{true}/@code{false},
+    @code{yes}/@code{no} and @code{1}/@code{0}. An integer is an optional
+    sign and digits, with no spaces. Numbers are read the same on each
+    machine: @code{0.5}, never @code{0,5}.
+    """))
+
+(:doc parse-arg-value
+  (summary "Reads one word as a value.")
+  (arg word "The word.")
+  (returns """
+    The value, or what the type takes, to complete the sentence
+    "--name takes ...": @code{"an int"}.
+    """)
+  (see ArgValue))
+
+(:doc arg-value-placeholder
+  (summary "The placeholder of the type in the help.")
+  (arg type "None, at the type. Only its type is used.")
+  (returns "The placeholder, or \"\" for the type's name in capitals, which is the default.")
+  (see ArgValue))
+
+(:doc Cmdline
+  (summary "A record that def/cmdline declares.")
+  (tparam %a "The record.")
+  (see def/cmdline parse-args))
+
+(:doc cmdline-parse
+  (summary "Parses words as the record.")
+  (arg words "The words.")
+  (arg program "The name for the usage line, or \"\" for the record's own.")
+  (returns "The record, or why not.")
+  (see parse-args))
+
+(:doc cmdline-info
+  (summary "The table of the record's options.")
+  (arg type "None, at the record. Only its type is used.")
+  (returns "The table.")
+  (see CmdInfo cmdline-help-text))
+
+(:doc CmdlineCommands
+  (summary "A union of subcommands that def/cmdline-commands declares.")
+  (tparam %a "The union.")
+  (see def/cmdline-commands))
+
+(:doc cmdline-dispatch
+  (summary "Parses the words after a command's name.")
+  (arg name "The command's name.")
+  (arg words "The words after it.")
+  (arg program "The name for the usage line: the program and the command.")
+  (returns "None when no case has the name, else the parse.")
+  (see CmdlineCommands))
+
+(:doc cmdline-commands
+  (summary "Each command's name and summary.")
+  (arg type "None, at the union. Only its type is used.")
+  (returns "The commands, in the order of the cases.")
+  (see CmdlineCommands))
+
+(:doc CmdInfo
+  (summary "The table def/cmdline makes for a record.")
+  (field program "@code{#:program}, or \"\".")
+  (field summary "@code{#:summary}, or \"\".")
+  (field version "@code{#:version}, or \"\".")
+  (field after "@code{#:after}, or \"\".")
+  (field options-first "Whether the record has @code{#:options-first}.")
+  (field require-one "The groups of @code{#:require-one}.")
+  (field specs "One entry per field, in the order they are declared.")
+  (field commands "The name and summary of each subcommand.")
+  (see OptSpec))
+
+(:doc OptSpec
+  (summary "One field of a CmdInfo.")
+  (field long "The long name, without --, or \"\" for an argument.")
+  (field short "The short name, or \"\".")
+  (field kind "0 a flag, 1 a counter, 2 an option with a value, 3 an argument, 4 a subcommand.")
+  (field words "How many words a value is.")
+  (field multi "Whether it takes each one given.")
+  (field required "Whether it must be given.")
+  (field last-wins "Whether, given twice, the last counts.")
+  (field at-least "How many values a list needs.")
+  (field exclusive "The exclusive group, or \"\".")
+  (field help "The help line.")
+  (field placeholder "The placeholder, or the argument's name.")
+  (field default-text "The default as the help shows it, or \"\".")
+  (field group "The heading in the help, or \"\".")
+  (field hidden "Whether the help leaves it out.")
+  (see CmdInfo))
+
+(:doc cmdline-help-text
+  (summary "The help of a record.")
+  (arg info "The record's table.")
+  (arg program "The program's name, for the usage line.")
+  (returns "The help, without a newline at the end.")
+  (see cmdline-usage))
+
+(:doc cmdline-usage
+  (summary "The usage line of a record: Usage: prog [OPTIONS] FILE...")
+  (arg info "The record's table.")
+  (arg program "The program's name.")
+  (returns "The line.")
+  (see cmdline-help-text))
+
+;; ---------------------------------------------------------------------------
+;; What generated code calls
+;; ---------------------------------------------------------------------------
+
+(:doc Scanned
+  (summary "The words given for each field. Generated code reads it; not an API for people.")
+  (field info "The table.")
+  (field program "The program's name.")
+  (field occs "Per field, the words of each time it was given, the latest first.")
+  (field command "The subcommand's name and the words after it.")
+  (see cmdline-scan))
+
+(:doc cmdline-scan
+  (summary "Reads words against a table, and checks them. Generated code calls it; not an API for people.")
+  (arg info "The table.")
+  (arg program "The program's name.")
+  (arg words "The words.")
+  (returns "The words given for each field, or the first problem.")
+  (see Scanned))
+
+(:doc cmdline-spec
+  (summary "Makes an OptSpec. Generated code calls it; not an API for people.")
+  (arg long "See OptSpec.") (arg short "See OptSpec.") (arg kind "See OptSpec.")
+  (arg words "See OptSpec.") (arg multi "See OptSpec.") (arg required "See OptSpec.")
+  (arg last-wins "See OptSpec.") (arg at-least "See OptSpec.") (arg exclusive "See OptSpec.")
+  (arg help "See OptSpec.") (arg placeholder "See OptSpec.") (arg default-text "See OptSpec.")
+  (arg group "See OptSpec.") (arg hidden "See OptSpec.")
+  (returns "The spec.")
+  (see OptSpec))
+
+(:doc cmdline-info-make
+  (summary "Makes a CmdInfo. Generated code calls it; not an API for people.")
+  (arg program "See CmdInfo.") (arg summary "See CmdInfo.") (arg version "See CmdInfo.")
+  (arg after "See CmdInfo.") (arg options-first "See CmdInfo.") (arg require-one "See CmdInfo.")
+  (arg specs "See CmdInfo.") (arg commands "See CmdInfo.")
+  (returns "The table.")
+  (see CmdInfo))
+
+(:doc cmdline-program
+  (summary "The name the program was started by, without its directory or extension.")
+  (returns "The name of the entry assembly, else of the process, else \"program\".")
+  (see def/cmdline))
+
+(:doc cmdline-placeholder
+  (summary "An option's placeholder. Generated code calls it; not an API for people.")
+  (arg explicit "@code{#:value}, or \"\".")
+  (arg given "Per word, what @code{arg-value-placeholder} gives.")
+  (arg fallback "Per word, the type's name in capitals.")
+  (returns "The placeholder.")
+  (see arg-value-placeholder))
+
+(:doc cmdline-flag
+  (summary "A flag's value. Generated code calls it; not an API for people.")
+  (arg sc "The scan.") (arg i "The field.") (arg fallback "The value when absent.")
+  (returns "The value of the last one given, else fallback.")
+  (see Scanned))
+
+(:doc cmdline-count
+  (summary "A counter's value. Generated code calls it; not an API for people.")
+  (arg sc "The scan.") (arg i "The field.")
+  (returns "How many times it was given.")
+  (see Scanned))
+
+(:doc cmdline-given?
+  (summary "Whether a field was given. Generated code calls it; not an API for people.")
+  (arg sc "The scan.") (arg i "The field.")
+  (returns "#t when it was given.")
+  (see Scanned))
+
+(:doc cmdline-value
+  (summary "An option's value. Generated code calls it; not an API for people.")
+  (arg sc "The scan.") (arg i "The field.") (arg conv "Converts the words.")
+  (returns "The last value given, converted.")
+  (see Scanned))
+
+(:doc cmdline-option
+  (summary "An Option field's value. Generated code calls it; not an API for people.")
+  (arg sc "The scan.") (arg i "The field.") (arg conv "Converts the words.")
+  (returns "None when absent, else the value, converted.")
+  (see Scanned))
+
+(:doc cmdline-list
+  (summary "A List field's values. Generated code calls it; not an API for people.")
+  (arg sc "The scan.") (arg i "The field.") (arg conv "Converts the words.")
+  (returns "Each value, in the order given, converted.")
+  (see Scanned))
+
+(:doc cmdline-vec
+  (summary "A Vec field's values. Generated code calls it; not an API for people.")
+  (arg sc "The scan.") (arg i "The field.") (arg conv "Converts the words.")
+  (returns "Each value, in the order given, converted.")
+  (see Scanned))
+
+(:doc cmdline-subcommand
+  (summary "A subcommand's value. Generated code calls it; not an API for people.")
+  (arg sc "The scan.")
+  (arg dispatch "Parses the words after the command's name.")
+  (returns "The command's record in its case, or why not.")
+  (see CmdlineCommands))
+
+(:doc cmdline-word
+  (summary "Converts one word. Generated code calls it; not an API for people.")
+  (arg ws "The words of one value.")
+  (returns "The value.")
+  (see ArgValue))
+
+(:doc cmdline-words2
+  (summary "Converts two words to a Tuple. Generated code calls it; not an API for people.")
+  (arg ws "The words of one value.")
+  (returns "The value.")
+  (see ArgValue))
+
+(:doc cmdline-words3
+  (summary "Converts three words to a Tuple. Generated code calls it; not an API for people.")
+  (arg ws "The words of one value.")
+  (returns "The value.")
+  (see ArgValue))
+
+(:doc cmdline-words4
+  (summary "Converts four words to a Tuple. Generated code calls it; not an API for people.")
+  (arg ws "The words of one value.")
+  (returns "The value.")
+  (see ArgValue))
+
+(:doc cmdline-command-entry
+  (summary "A command's line in the outer help. Generated code calls it; not an API for people.")
+  (arg name "The command's name.")
+  (arg info "The table of the command's record.")
+  (returns "The name and the summary.")
+  (see cmdline-commands))

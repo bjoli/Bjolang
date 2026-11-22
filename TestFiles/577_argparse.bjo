@@ -1,0 +1,194 @@
+;; (std argparse): def/cmdline and its parse, help and errors.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std argparse))
+
+(def/cmdline-choices (: Level (Union Fast Safe VeryCareful)))
+
+(def/cmdline
+  (: Options (Record #:program "copy" #:summary "Copies files into a directory."
+               (: verbose int #:count #:short #\v #:help "Say more. Repeat for more still.")
+               (: dry-run bool #:short #\n #:help "Print what would be done, and change nothing.")
+               (: output string #:short #\o #:default "." #:value "DIR" #:group "Output"
+                  #:help "The directory to copy into.")
+               (: size (Option (Tuple int int)) #:value "W H" #:group "Output"
+                  #:help "Scale images to W by H.")
+               (: level Level #:default Safe #:help "How careful to be.")
+               (: jobs int #:short #\j #:default 1 #:help "How many files to copy at once.")
+               (: ratio double #:default 0.5 #:hidden)
+               (: exclude (List string) #:short #\x #:value "GLOB" #:help "Skip what matches. May be repeated.")
+               (: files (List string) #:positional #:at-least 1 #:value "FILE" #:help "The files to copy."))))
+
+(def/cmdline
+  (: BuildOptions (Record #:summary "Builds the project."
+                    (: release bool #:short #\r #:help "Build with optimization.")
+                    (: target (Option string) #:positional #:help "One module only."))))
+
+(def/cmdline
+  (: TestOptions (Record #:summary "Runs the tests."
+                   (: filter (List string) #:positional
+                      #:help "Only tests whose name contains one of these."))))
+
+(def/cmdline-commands (: Command (Union (: Build BuildOptions) (: Test TestOptions))))
+
+(def/cmdline
+  (: Bjo (Record #:program "bjo" #:version "0.9.0"
+           (: debug bool #:short #\d #:help "Build in Debug.")
+           (: command Command #:subcommand))))
+
+(def/cmdline
+  (: Source (Record #:program "src" #:require-one "input"
+              (: file (Option string) #:exclusive "input" #:help "Read a file.")
+              (: stdin bool #:exclusive "input" #:help "Read standard input.")
+              (: color bool #:default #t #:help "Colour the output.")
+              (: name string #:last-wins #:default "x")
+              (: vals (Vec int) #:short #\i))))
+
+(def/cmdline
+  (: Run (Record #:program "run" #:options-first #:after "The words after PROGRAM go to it."
+           (: verbose bool #:short #\v)
+           (: program string #:positional #:value "PROGRAM")
+           (: rest (List string) #:positional #:value "ARG"))))
+
+;; Takes -h and --help itself, so neither is added.
+(def/cmdline
+  (: Host (Record #:program "host"
+            (: host string #:short #\h #:long "help" #:default "localhost"))))
+
+(: (-> (Result ArgError %a) string))
+(defun (shown r)
+  (match r
+    ((Ok o) (written o))
+    ((Err (HelpWanted t)) (str "HELP\n" t))
+    ((Err (VersionWanted t)) (str "VERSION " t))
+    ((Err (BadArgs p _ _)) (str "BAD " (written p)))))
+
+(: (-> (Vec string) string))
+(defun (copy args) (shown (cmdline-parse-Options args)))
+
+(: string)
+(def copy-help
+  """
+  Copies files into a directory.
+
+  Usage: copy [OPTIONS] FILE...
+
+  Arguments:
+    FILE...               The files to copy.
+
+  Options:
+    -v, --verbose         Say more. Repeat for more still.
+    -n, --dry-run         Print what would be done, and change nothing.
+        --level fast|safe|very-careful
+                          How careful to be. [default: safe]
+    -j, --jobs INT        How many files to copy at once. [default: 1]
+    -x, --exclude GLOB    Skip what matches. May be repeated.
+    -h, --help            Print this help.
+
+  Output:
+    -o, --output DIR      The directory to copy into. [default: .]
+        --size W H        Scale images to W by H.
+  """)
+
+(defun (main args)
+  ;; --- The command line -----------------------------------------------------
+  (expect "short options cluster, and arguments keep their order"
+          (copy ["-vvn" "-o" "out" "a.txt" "b.txt"])
+          "(Options (verbose 2) (dry-run #t) (output \"out\") (size None) (level Safe) (jobs 1) (ratio 0.5) (exclude ()) (files (\"a.txt\" \"b.txt\")))")
+  (expect "--name=value, a repeated list, a Tuple of two words, mixed order"
+          (copy ["a" "--jobs=4" "--exclude" "*.tmp" "-x*.bak" "--size" "800" "600" "b"])
+          "(Options (verbose 0) (dry-run #f) (output \".\") (size (Some (Tuple 800 600))) (level Safe) (jobs 4) (ratio 0.5) (exclude (\"*.tmp\" \"*.bak\")) (files (\"a\" \"b\")))")
+  (expect "a value may start with -"
+          (copy ["--jobs" "-1" "--ratio" "-2.5" "a"])
+          "(Options (verbose 0) (dry-run #f) (output \".\") (size None) (level Safe) (jobs -1) (ratio -2.5) (exclude ()) (files (\"a\")))")
+  (expect "-- ends the options, and a lone - is an argument"
+          (copy ["--" "-x" "-"])
+          "(Options (verbose 0) (dry-run #f) (output \".\") (size None) (level Safe) (jobs 1) (ratio 0.5) (exclude ()) (files (\"-x\" \"-\")))")
+  (expect "choices are kebab case"
+          (copy ["--level" "very-careful" "a"])
+          "(Options (verbose 0) (dry-run #f) (output \".\") (size None) (level VeryCareful) (jobs 1) (ratio 0.5) (exclude ()) (files (\"a\")))")
+
+  ;; --- Errors ---------------------------------------------------------------
+  (expect "a bad int" (copy ["--jobs" "four" "a"]) "BAD (BadValue \"--jobs\" \"four\" \"an int\")")
+  (expect "an int with a space" (copy ["--jobs" " 4" "a"]) "BAD (BadValue \"--jobs\" \" 4\" \"an int\")")
+  (expect "a bad choice" (copy ["--level" "quick" "a"])
+          "BAD (BadValue \"--level\" \"quick\" \"one of fast, safe, very-careful\")")
+  (expect "a bad word of a Tuple" (copy ["--size" "800" "x" "a"]) "BAD (BadValue \"--size\" \"800 x\" \"an int\")")
+  (expect "a Tuple with =" (copy ["--size=800" "600" "a"]) "BAD (BadValue \"--size\" \"800\" \"2 separate words\")")
+  (expect "a misspelt option" (copy ["--ouput" "x" "a"]) "BAD (UnknownOption \"--ouput\" (Some \"--output\"))")
+  (expect "no abbreviation" (copy ["--out" "x" "a"]) "BAD (UnknownOption \"--out\" None)")
+  (expect "an unknown short option" (copy ["-q" "a"]) "BAD (UnknownOption \"-q\" None)")
+  (expect "a value missing at the end" (copy ["a" "--output"]) "BAD (MissingValue \"--output\")")
+  (expect "a Tuple short of a word" (copy ["a" "--size" "1"]) "BAD (MissingValue \"--size\")")
+  (expect "a required positional" (copy []) "BAD (Missing \"FILE\")")
+  (expect "a single option twice" (copy ["-o" "a" "-o" "b" "f"]) "BAD (Repeated \"--output\")")
+  (expect "a flag with a value" (copy ["--dry-run=yes" "f"]) "BAD (BadValue \"--dry-run\" \"yes\" \"no value\")")
+
+  (expect "the message"
+          (match (cmdline-parse-Options ["--jobs" "four" "a"])
+            ((Err e) (arg-error-message e))
+            ((Ok _) ""))
+          "copy: --jobs takes an int, not 'four'.\nUsage: copy [OPTIONS] FILE...\nTry 'copy --help' for more.")
+  (expect "exit codes"
+          (list (match (cmdline-parse-Options ["--help"]) ((Err e) (arg-error-exit-code e)) (_ -1))
+                (match (cmdline-parse-Options []) ((Err e) (arg-error-exit-code e)) (_ -1)))
+          (list 0 2))
+
+  ;; --- Help -----------------------------------------------------------------
+  (expect "the help" (copy ["-h"]) (str "HELP\n" copy-help))
+  (expect "--help wins over errors after it" (copy ["--help" "--bogus"]) (str "HELP\n" copy-help))
+  (expect "cmdline-help-Name" (cmdline-help-Options) copy-help)
+  (expect "a field can take -h and --help"
+          (list (shown (cmdline-parse-Host ["-h" "example.org"])) (shown (cmdline-parse-Host [])))
+          (list "(Host (host \"example.org\"))" "(Host (host \"localhost\"))"))
+
+  ;; --- Subcommands ----------------------------------------------------------
+  (expect "options before the command are the outer record's"
+          (shown (cmdline-parse-Bjo ["-d" "test" "parse" "lex"]))
+          "(Bjo (debug #t) (command (Test (TestOptions (filter (\"parse\" \"lex\"))))))")
+  (expect "options after it are the command's"
+          (shown (cmdline-parse-Bjo ["build" "-r" "core"]))
+          "(Bjo (debug #f) (command (Build (BuildOptions (release #t) (target (Some \"core\"))))))")
+  (expect "a misspelt command" (shown (cmdline-parse-Bjo ["bulid"])) "BAD (UnknownCommand \"bulid\" (Some \"build\"))")
+  (expect "no command" (shown (cmdline-parse-Bjo [])) "BAD (Missing \"COMMAND\")")
+  (expect "--version" (shown (cmdline-parse-Bjo ["--version"])) "VERSION bjo 0.9.0")
+  (expect "an error in a command names it"
+          (match (cmdline-parse-Bjo ["build" "--bogus"]) ((Err e) (arg-error-message e)) (_ ""))
+          "bjo build: unknown option --bogus.\nUsage: bjo build [OPTIONS] [TARGET]\nTry 'bjo build --help' for more.")
+  (expect "the outer help lists the commands"
+          (shown (cmdline-parse-Bjo ["--help"]))
+          "HELP\nUsage: bjo [OPTIONS] COMMAND\n\nOptions:\n  -d, --debug           Build in Debug.\n  -h, --help            Print this help.\n      --version         Print the version.\n\nCommands:\n  build                 Builds the project.\n  test                  Runs the tests.")
+  (expect "a command's help"
+          (shown (cmdline-parse-Bjo ["build" "--help"]))
+          "HELP\nBuilds the project.\n\nUsage: bjo build [OPTIONS] [TARGET]\n\nArguments:\n  TARGET                One module only.\n\nOptions:\n  -r, --release         Build with optimization.\n  -h, --help            Print this help.")
+
+  ;; --- Groups, repeats, --no- -----------------------------------------------
+  (expect "two of an exclusive group" (shown (cmdline-parse-Source ["--file" "a" "--stdin"]))
+          "BAD (Conflict \"--file\" \"--stdin\")")
+  (expect "none of a #:require-one group" (shown (cmdline-parse-Source []))
+          "BAD (NoneOf (\"--file\" \"--stdin\"))")
+  (expect "--no-, #:last-wins and a Vec"
+          (shown (cmdline-parse-Source ["--stdin" "--no-color" "--name" "a" "--name=b" "-i1" "-i" "2"]))
+          "(Source (file None) (stdin #t) (color #f) (name \"b\") (vals [1 2]))")
+  (expect "a flag's last one counts"
+          (shown (cmdline-parse-Source ["--stdin" "--no-color" "--color"]))
+          "(Source (file None) (stdin #t) (color #t) (name \"x\") (vals []))")
+  (expect "an argument too many" (shown (cmdline-parse-Source ["--stdin" "extra"])) "BAD (TooMany (\"extra\"))")
+  (expect "the help of a group and a default flag"
+          (shown (cmdline-parse-Source ["--help"]))
+          "HELP\nUsage: src [OPTIONS]\n\nOptions:\n      --file STRING     Read a file. (one of --file, --stdin)\n      --stdin           Read standard input. (one of --file, --stdin)\n      --color           Colour the output. [default: on]\n      --name STRING     [default: x]\n  -i, --vals INT\n  -h, --help            Print this help.")
+
+  ;; --- #:options-first ------------------------------------------------------
+  (expect "the first argument ends the options"
+          (shown (cmdline-parse-Run ["-v" "prog" "-x" "--y" "z"]))
+          "(Run (verbose #t) (program \"prog\") (rest (\"-x\" \"--y\" \"z\")))")
+  (expect "#:after"
+          (cmdline-help-Run)
+          "Usage: run [OPTIONS] PROGRAM [ARG...]\n\nArguments:\n  PROGRAM\n  ARG...\n\nOptions:\n  -v, --verbose\n  -h, --help            Print this help.\n\nThe words after PROGRAM go to it.")
+
+  ;; --- parse-args, by the type it is used as --------------------------------
+  (def (: parsed (Result ArgError Run)) (parse-args ["p"]))
+  (def (Ok o) parsed :leave ((Err e) (panic! (arg-error-message e) #:exit-code (arg-error-exit-code e))))
+  (expect "parse-args" (.program o) "p")
+  0)
