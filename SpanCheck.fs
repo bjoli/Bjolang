@@ -33,7 +33,8 @@
 ///   * in scope across a yield point of a bjoroutine, or across a `yield` of a
 ///     `(seq ...)`. Their locals are kept in a heap object while they wait.
 ///   * a parameter or result of a bjoroutine, a value handed to `(bjo ...)`,
-///     or a module-level definition, which is a static field.
+///     or a module-level definition, which is a static field. The one
+///     exception is `(def x (include-bytes ...))`, which is a property.
 ///
 /// The pass runs after `LoopLowering`, beside `ColourCheck`, for the reason
 /// that one does: only then is it known which loops stay local functions.
@@ -132,6 +133,10 @@ type private Ctx =
     { /// Names bound inside the innermost member: the closure, or the function
       /// body. A span with one of these names is the member's own.
       Own: Set<string>
+      /// Names bound by the members around this one. A name in neither set is
+      /// module-level: a span by that name is an `(include-bytes ...)`
+      /// property, which a closure can read.
+      Outer: Set<string>
       /// The member, when it is a closure inside another one, for the message.
       Closure: string option
       /// The member is a bjoroutine, so its locals wait in a heap object across
@@ -142,6 +147,7 @@ type private Ctx =
 
 let private bodyOf (owned: string list) (isAsync: bool) : Ctx =
     { Own = Set.ofList owned
+      Outer = Set.empty
       Closure = None
       Async = isAsync
       Iterator = false }
@@ -231,6 +237,7 @@ let rec private check (registry: TraitRegistry) (ctx: Ctx) (exempt: bool) (expr:
     let closure (label: string) (owned: string list) (isAsync: bool) (iterator: bool) (body: TypedExpr) =
         walkIn
             { Own = Set.ofList owned
+              Outer = Set.union ctx.Outer ctx.Own
               Closure = Some label
               Async = isAsync
               Iterator = iterator }
@@ -269,7 +276,7 @@ let rec private check (registry: TraitRegistry) (ctx: Ctx) (exempt: bool) (expr:
         | None -> ()
 
         match ctx.Closure with
-        | Some label when isRefStruct t && not (ctx.Own.Contains name) ->
+        | Some label when isRefStruct t && not (ctx.Own.Contains name) && ctx.Outer.Contains name ->
             refuse
                 expr.Range
                 $"'%s{name}' is a %s{show (prune t)} bound outside %s{label}, and a span cannot be captured. That is emitted as a member of its own, which can run after the span is gone."
@@ -435,7 +442,7 @@ let rec private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
             refuse
                 r
                 $"'%s{name}' is a module-level definition of type %s{show (prune t)}. A module-level value is a static field, and a span cannot be one."
-                "Make the span in the function that uses it."
+                "Make the span in the function that uses it. Only (def x (include-bytes ...)) can be a module-level span."
 
     // A module-level initializer runs in the static constructor, an ordinary
     // member.
@@ -444,6 +451,12 @@ let rec private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
     match decl with
     | TModule(_, inner, _) -> inner |> List.iter (checkDecl registry)
     | TImpl(_, _, _, _, _, _, methods, _) -> methods |> List.iter (checkDecl registry)
+    // `(def x (include-bytes ...))` is a property of a view of the assembly's
+    // data (see `Ast.includeBytesNames`), not a field.
+    | TDef(_, { Node = TApply({ Node = TIdent(builtin, _) }, [ { Node = TString _ } ], []) }, _, _) when
+        Ast.isIncludeBytesName builtin
+        ->
+        ()
     | TDef(name, value, t, r)
     | TDefMutable(name, value, t, r) ->
         moduleValue name t r

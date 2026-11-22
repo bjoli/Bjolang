@@ -1,0 +1,21 @@
+;; What (include-bytes ...) compiles to: the data as a property of the
+;; literal class, `new T[] { ... }` behind a ReadOnlySpan, which C# compiles to
+;; a view of the assembly's data. A module-level def of it is a property that
+;; reads that one, with no field and no assignment in a static constructor.
+;;
+;; EXPECT-CS: public static System\.ReadOnlySpan<byte> Bytes_byte => new byte\[\] \{
+;; EXPECT-CS: public static System\.ReadOnlySpan<int> Bytes_int => new int\[\] \{
+;; EXPECT-CS: ^ *7,-1,2147483647,-2147483648,$
+;; EXPECT-CS: public static System\.ReadOnlySpan<byte> bytes => __Literals\.Bytes_byte;
+;; EXPECT-NO-CS: static readonly System\.ReadOnlySpan
+;; EXPECT-NO-CS: static include_bytes_Module\(\)
+
+(export bytes ints)
+
+(import (std prelude))
+
+(: (RoSpan byte))
+(def bytes (include-bytes "../assets/include-bytes/bytes.bin"))
+
+(: (RoSpan int))
+(def ints (include-bytes "../assets/include-bytes/ints.bin" #:of int))

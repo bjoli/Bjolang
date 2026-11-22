@@ -1474,6 +1474,22 @@ def run_staleness():
     else:
         stale_check("an import in an included file builds", "2\n", "it did not compile")
 
+    # The file of an (include-bytes ...) is a source of the module that
+    # reads it, so a change to the data rebuilds that module.
+    (STALE_DIR / "data.bin").write_bytes(bytes([7]))
+    (STALE_DIR / "binlib.bjo").write_text("(export data)\n(import (std prelude))\n(: (RoSpan byte))\n(def data (include-bytes \"data.bin\"))\n")
+    (STALE_DIR / "binapp.bjo").write_text("(import (std prelude))\n(import \"binlib.bjo\")\n(defun (main args) (println (->str (cast int (ro-span-ref data 0)))) 0)\n")
+
+    def build_binapp():
+        built = subprocess.run(["dotnet", COMPILER_DLL, str(STALE_DIR / "binapp.bjo")], capture_output=True, text=True)
+        if built.returncode != 0:
+            return "it did not compile"
+        return subprocess.run(["dotnet", str(STALE_DIR / "binapp.exe")], capture_output=True, text=True).stdout
+
+    stale_check("a module of include-bytes builds", "7\n", build_binapp())
+    (STALE_DIR / "data.bin").write_bytes(bytes([42]))
+    stale_check("a change to an include-bytes file reaches the program", "42\n", build_binapp())
+
     # A module edited while a REPL session uses it: the session reloads, so
     # an earlier entry's function calls the new code, and a name the edit
     # added to the export list is bound.

@@ -1,0 +1,45 @@
+;; (include-bytes "path" #:of t): a file's data compiled into the assembly,
+;; as a (RoSpan t).
+;; - Bytes, and ints and longs read little-endian.
+;; - A module-level def, a local, an empty file, and a def another module
+;;   exports.
+;; - A module-level span is a property, so a (fun ...) can read it.
+;; - ro-span->array copies the data into an array.
+
+(import (std simpletest))
+(import "inc/include_bytes_table.bjo")
+
+(: (RoSpan byte))
+(def bytes (include-bytes "assets/include-bytes/bytes.bin"))
+
+(: (RoSpan int))
+(def ints (include-bytes "assets/include-bytes/ints.bin" #:of int))
+
+(: (-> (RoSpan byte) (Vec int)))
+(defun (byte-list s)
+  (loop (:for i (range 0 (ro-span-length s)))
+        (:acc (vecing (cast int (ro-span-ref s i))))))
+
+(: (-> (RoSpan int) (Vec int)))
+(defun (int-list s)
+  (loop (:for i (range 0 (ro-span-length s)))
+        (:acc (vecing (ro-span-ref s i)))))
+
+(: (-> (Vec long)))
+(defun (long-list)
+  (def s (include-bytes "assets/include-bytes/longs.bin" #:of long))
+  (loop (:for i (range 0 (ro-span-length s)))
+        (:acc (vecing (ro-span-ref s i)))))
+
+(defun (main args)
+  (expect "the bytes" (byte-list bytes) [0 1 127 128 255])
+  (expect "the ints" (int-list ints) [7 -1 2147483647 -2147483648])
+  (expect "the longs" (long-list) [1099511627776L -5L])
+  (expect "an empty file" (ro-span-length (include-bytes "assets/include-bytes/empty.bin")) 0)
+  (expect "an imported def" (byte-list table) [0 1 127 128 255])
+  (def at (fun (i) (cast int (ro-span-ref bytes i))))
+  (expect "a closure reads a module-level span" (at 4) 255)
+  (def arr (ro-span->array (include-bytes "assets/include-bytes/bytes.bin")))
+  (array-set! arr 0 9)
+  (expect "an array is a copy" (Tuple (cast int (array-ref arr 0)) (cast int (ro-span-ref bytes 0))) (Tuple 9 0))
+  0)

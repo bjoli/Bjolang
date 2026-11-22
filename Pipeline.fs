@@ -244,6 +244,76 @@ let rec private readIn (opener: LexedToken option) (tokens: LexedToken list) : S
 /// the pair apart.
 let read (tokens: LexedToken list) : SExpr list * LexedToken list = readIn None tokens
 
+/// The element types `(include-bytes "path" #:of t)` takes, and their size in
+/// bytes. `byte` is the default.
+let includeBytesElements = [ "byte", 1; "int", 4; "long", 8 ]
+
+/// Replaces each `(include-bytes "path")` and `(include-bytes "path" #:of t)`
+/// in `form`, at any depth, with `(%include-bytes-t "<base64>")`.
+///
+/// - The path resolves relative to the directory of `filePath`, as an
+///   `include` does, and is under the same `Paths.importRefusal` rule.
+/// - The data is carried in the form, so a published inline body or a macro
+///   that moves the form keeps it.
+/// - Returns the rewritten form and the files it read. They are sources of the
+///   module: a change to one rebuilds it.
+/// - Raises when the file is missing, or its length is not a whole number of
+///   elements.
+let private expandIncludeBytes (filePath: string) (form: SExpr) : SExpr * Set<string> =
+    let mutable read = Set.empty
+
+    let rec go (s: SExpr) =
+        match s with
+        | SList(SAtom { Token = Lexer.Symbol "include-bytes"; Range = hr } :: args, r) ->
+            let where = Lexer.formatPos r
+
+            let rel, elem =
+                match args with
+                | [ SAtom { Token = Lexer.StringLit p } ] -> p, "byte"
+                | [ SAtom { Token = Lexer.StringLit p }; SAtom { Token = Lexer.Keyword "of" }; SAtom { Token = Lexer.Symbol t } ] -> p, t
+                | _ ->
+                    failwithf
+                        "Syntax error in include-bytes at %s: expected (include-bytes \"path\") or (include-bytes \"path\" #:of type), the path a string literal."
+                        where
+
+            let size =
+                match List.tryFind (fun (n, _) -> n = elem) includeBytesElements with
+                | Some(_, size) -> size
+                | None ->
+                    let known = includeBytesElements |> List.map fst |> String.concat ", "
+                    failwithf "Syntax error in include-bytes at %s: #:of %s is not one of %s." where elem known
+
+            let target = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(filePath: string), rel))
+
+            if not (File.Exists target) then
+                failwithf "Include Error: cannot find '%s' of include-bytes at %s (looked for %s)" rel where target
+
+            if not TypeEnv.compilingReplEntry then
+                match Paths.importRefusal filePath target with
+                | Some why -> failwithf $"Include Error at %s{where}: %s{why}"
+                | None -> ()
+
+            let bytes = File.ReadAllBytes target
+
+            if bytes.Length % size <> 0 then
+                failwithf
+                    "Include Error: '%s' of include-bytes at %s is %d bytes, which is not a whole number of %s elements of %d bytes."
+                    rel
+                    where
+                    bytes.Length
+                    elem
+                    size
+
+            read <- Set.add target read
+            let marker = SAtom { Token = Lexer.QuotedSymbol $"include-bytes-%s{elem}"; Range = hr }
+            let data = SAtom { Token = Lexer.StringLit(Convert.ToBase64String bytes); Range = r }
+            SList([ marker; data ], r)
+        | SList(items, r) -> SList(List.map go items, r)
+        | SAtom _ -> s
+
+    let out = go form
+    out, read
+
 /// Splices the top-level forms of other files in at the position of each
 /// `(include "path")`.
 ///
@@ -339,7 +409,10 @@ let rec private expandIncludes
                 visited <- Set.add target visited
                 innerForms
 
-            | other -> [ other ])
+            | other ->
+                let form, read = expandIncludeBytes filePath other
+                visited <- Set.union visited read
+                [ form ])
 
     expanded, visited
 

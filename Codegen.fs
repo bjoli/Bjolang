@@ -623,6 +623,64 @@ let private literalFieldBase (kind: string) (name: string) =
     // an empty one: `Vec`, `Vec_2`, `Vec_3` by the counter below.
     if sb.Length = 0 then kind else $"%s{kind}_%s{sb.ToString()}"
 
+/// The C# element type, and the size in bytes, of each `Ast.includeBytesNames`.
+let private includeBytesElement (name: string) : string * int =
+    match name with
+    | "%include-bytes-byte" -> "byte", 1
+    | "%include-bytes-int" -> "int", 4
+    | "%include-bytes-long" -> "long", 8
+    | _ -> failwithf $"Internal error: '%s{name}' is not an include-bytes builtin."
+
+/// The data of an `(include-bytes ...)` as a property of the literal class,
+/// and how a use site names it.
+///
+/// - The property is `static ReadOnlySpan<T> P => new T[] { ... };`. C#
+///   compiles that to a view of the assembly's data, so a read allocates and
+///   copies nothing, and nothing runs when the class is initialized.
+/// - `data` is the base64 of the file; an element of more than one byte is
+///   read little-endian. The same data shares one property.
+let private hoistIncludeBytes (ctx: CodegenContext) (name: string) (data: string) : string =
+    let elem, size = includeBytesElement name
+    let table = ctx.Literals
+    let key = $"%s{elem}:%s{data}"
+
+    match table.Fields.TryGetValue key with
+    | true, existing -> $"%s{literalHolderClass}.%s{existing}"
+    | _ ->
+        let wanted = literalFieldBase "Bytes" elem
+        let mutable field = wanted
+        let mutable n = 2
+
+        while not (table.Taken.Add field) do
+            field <- $"%s{wanted}_%d{n}"
+            n <- n + 1
+
+        table.Fields[key] <- field
+        let bytes = Convert.FromBase64String data
+        let count = bytes.Length / size
+        let sb = StringBuilder()
+        sb.Append($"public static System.ReadOnlySpan<%s{elem}> %s{field} => new %s{elem}[] {{") |> ignore
+
+        for i in 0 .. count - 1 do
+            if i % 32 = 0 then sb.Append("\n    ") |> ignore
+            let at = i * size
+
+            match size with
+            | 1 -> sb.Append($"0x%02x{bytes[at]},") |> ignore
+            | 4 -> sb.Append(System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(ReadOnlySpan(bytes, at, 4))).Append(',') |> ignore
+            | _ -> sb.Append(System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(ReadOnlySpan(bytes, at, 8))).Append("L,") |> ignore
+
+        sb.Append("\n};") |> ignore
+        table.Decls.Add(sb.ToString())
+        $"%s{literalHolderClass}.%s{field}"
+
+/// The builtin and the data of an `(include-bytes ...)` call, as `Pipeline`
+/// writes it.
+let private (|IncludeBytes|_|) (expr: TypedExpr) : (string * string) option =
+    match expr.Node with
+    | TApply({ Node = TIdent(name, _) }, [ { Node = TString data } ], []) when Ast.isIncludeBytesName name -> Some(name, data)
+    | _ -> None
+
 /// The literal types that are structs. A literal of one of these is held in a
 /// `StrongBox`, because the JIT does not inline a method of another assembly
 /// that reads a static field of a struct type. A string literal in a function
@@ -3359,6 +3417,11 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     let voidValue = isVoidType expr.Type && not ownStatement
 
     match ctx.Prelude with
+    // A constant: a property of the literal class, with no statement.
+    | _ when (match expr with IncludeBytes _ -> true | _ -> false) ->
+        match expr with
+        | IncludeBytes(name, data) -> append ctx (hoistIncludeBytes ctx name data)
+        | _ -> ()
     | _ when voidValue && isVoidName expr -> append ctx unitValue
     | Some prelude when isStatementShaped expr || voidValue -> append ctx (hoistToTemp ctx prelude expr)
     | None when isStatementShaped expr || voidValue || operandsHoist expr ->
@@ -9115,6 +9178,11 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 
             for d in valueDefs do
                 match d with
+                // A def of `(include-bytes ...)` is a property: a span cannot
+                // be a field, and the data needs no initializer.
+                | Choice1Of4(defName, (IncludeBytes(builtin, data)), defType) ->
+                    indent ctx
+                    appendLine ctx $"public static %s{typeToString defType} %s{Prelude.moduleMemberName defName} => %s{hoistIncludeBytes ctx builtin data};"
                 | Choice1Of4(defName, _, defType) ->
                     indent ctx
                     appendLine ctx $"public static readonly %s{typeToString defType} %s{Prelude.moduleMemberName defName};"
@@ -9140,7 +9208,13 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 | TDefPattern _ -> ()
                 | _ -> generateDecl ctx d
 
-            if not valueDefs.IsEmpty then
+            let initialized =
+                valueDefs
+                |> List.filter (function
+                    | Choice1Of4(_, IncludeBytes _, _) -> false
+                    | _ -> true)
+
+            if not initialized.IsEmpty then
                 indent ctx
                 appendLine ctx $"static %s{className}() {{"
 
@@ -9167,7 +9241,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 // initialisers that each bind `out` do not declare one C# local
                 // twice. The initialisers share only the static fields.
                 bodyCtx (fun c ->
-                    for d in valueDefs do
+                    for d in initialized do
                         indent c
                         appendLine c "{"
                         withIndent c (fun c ->

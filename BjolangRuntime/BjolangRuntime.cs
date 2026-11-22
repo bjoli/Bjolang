@@ -281,34 +281,6 @@ public static partial class BjolangRuntime {
         && r.IsBmp
         && char.IsUpper((char)r.Value);
 
-    // The bytes of a text of hex digits, two digits to a byte. White space
-    // between the digits is skipped. Raises FormatException on any other
-    // character or an odd number of digits. Used by the generated Unicode
-    // tables of (std unicode chars). A plain loop: Convert.FromHexString's
-    // UTF-8 path takes about a millisecond to JIT on its first call.
-    public static byte[] hexBytes(Utf8String s)
-    {
-        var src = s.AsSpan();
-        var dst = new byte[src.Length / 2];
-        int n = 0, hi = -1;
-        foreach (var b in src)
-        {
-            int v = b switch
-            {
-                >= (byte)'0' and <= (byte)'9' => b - '0',
-                >= (byte)'a' and <= (byte)'f' => b - 'a' + 10,
-                >= (byte)'A' and <= (byte)'F' => b - 'A' + 10,
-                (byte)' ' or (byte)'\n' or (byte)'\r' or (byte)'\t' => -1,
-                _ => throw new FormatException($"hexBytes: not a hex digit: {(char)b}"),
-            };
-            if (v < 0) continue;
-            if (hi < 0) hi = v;
-            else { dst[n++] = (byte)((hi << 4) | v); hi = -1; }
-        }
-        if (hi >= 0) throw new FormatException("hexBytes: an odd number of hex digits");
-        return n == dst.Length ? dst : dst.AsSpan(0, n).ToArray();
-    }
-
     // --- String cursors ---
     //
     // Thin forwarders onto `BjoString.StringCursor`, where the decoding lives.

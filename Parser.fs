@@ -691,6 +691,13 @@ let rec parseExpr (s: SExpr) : Expr =
         // body. See `Ast.defPanicName`.
         | SAtom { Token = QuotedSymbol marker } when "%" + marker = defPanicName || "%" + marker = defPanicWithName ->
             EApp(EResolved("%" + marker, listRange), List.map parseExpr args, listRange)
+        // `(include-bytes ...)`, as `Pipeline` rewrites it: the data in
+        // base64. See `Ast.includeBytesNames`.
+        | SAtom { Token = QuotedSymbol marker } when List.contains ("%" + marker) includeBytesNames ->
+            match args with
+            | [ SAtom { Token = StringLit data; Range = dr } ] ->
+                EApp(EResolved("%" + marker, listRange), [ EString(data, dr) ], listRange)
+            | _ -> failwithf $"Invalid %%%s{marker} at %s{Lexer.formatPos listRange}: expected the data as a string."
         | SAtom { Token = QuotedSymbol marker } when "%" + marker = callErrorMarker ->
             match args with
             | [ SAtom { Token = StringLit message; Range = mr } ] ->

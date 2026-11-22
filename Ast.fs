@@ -1250,6 +1250,16 @@ let callErrorMarker = "%call-error"
 let defPanicName = "%def-panic"
 let defPanicWithName = "%def-panic-with"
 
+/// The builtins an `(include-bytes "path" #:of t)` becomes (see
+/// `Pipeline.expandIncludeBytes`): `(%include-bytes-t "<base64>")`, of type
+/// `(RoSpan t)`. `Codegen` emits the data as a property of the literal class,
+/// which .NET maps from the assembly. A module-level `def` of one is a
+/// property too, the only module-level span `SpanCheck` takes.
+let includeBytesNames = [ "%include-bytes-byte"; "%include-bytes-int"; "%include-bytes-long" ]
+
+/// Whether `name` is one of `includeBytesNames`.
+let isIncludeBytesName (name: string) = List.contains name includeBytesNames
+
 /// How `Codegen` writes a `PFieldOr` into a published body:
 /// `(%field-or (label p) other)`, and `(%pattern-error "message")` in the
 /// place of an `other` that could not be read.

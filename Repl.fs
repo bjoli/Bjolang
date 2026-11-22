@@ -595,7 +595,13 @@ let private readBinding (context: Generation) (dllPath: string) (moduleName: str
         failwithf $"The entry compiled, but '%s{className}' is not in the assembly it produced."
 
     match clrType.GetField(Prelude.moduleClrMemberName memberName) with
-    | null -> failwithf $"The entry compiled, but '%s{className}' has no '%s{memberName}'."
+    | null ->
+        // A def of `(include-bytes ...)` is a property of a span, which
+        // reflection cannot read.
+        match clrType.GetProperty(Prelude.moduleClrMemberName memberName) with
+        | null -> failwithf $"The entry compiled, but '%s{className}' has no '%s{memberName}'."
+        | p when p.PropertyType.IsByRefLike -> box $"a %s{p.PropertyType.Name}, which the REPL cannot show"
+        | p -> p.GetValue null
     | field -> field.GetValue null
 
 /// Runs an entry's initializers without reading anything out of it.

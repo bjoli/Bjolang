@@ -859,6 +859,11 @@ let prelude : Env =
         // which is how a published body spells them.
         "%def-panic", {Scheme = Scheme(["v"; "a"], [], makeFunType [stringType; TVar "v"] (TVar "a")); IsMutable = false }
         "%def-panic-with", {Scheme = Scheme(["a"], [], makeFunType [stringType] (TVar "a")); IsMutable = false }
+        // `(include-bytes ...)`, as `Pipeline` rewrites it: the data in
+        // base64 (see `Ast.includeBytesNames`). `Codegen` emits the data.
+        "%include-bytes-byte", {Scheme = Scheme([], [], makeFunType [stringType] (TCon("System.ReadOnlySpan", [byteType]))); IsMutable = false }
+        "%include-bytes-int", {Scheme = Scheme([], [], makeFunType [stringType] (TCon("System.ReadOnlySpan", [intType]))); IsMutable = false }
+        "%include-bytes-long", {Scheme = Scheme([], [], makeFunType [stringType] (TCon("System.ReadOnlySpan", [longType]))); IsMutable = false }
 
         // The two halves of `parameterize`, which the parser desugars to. Not
         // surface API: called by hand they pair a push with a restore that no
