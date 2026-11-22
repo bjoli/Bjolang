@@ -269,124 +269,45 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Utf8String charsubgtstring(Bjolang.Runtime.BjoChar c) => Utf8String.FromRune(c.ToRune());
 
-    // --- Character classification and case ---
+    // --- Constructor names ---
     //
-    // R6RS §11.11, and all of it here for the same reason `char->string` is: a
-    // `BjoChar` is not a type interop can resolve a method on, so none of this
-    // can be a `.NET` call written in `std/prelude`.
-    //
-    // Every one goes through `Rune`, so the classification is by *codepoint*
-    // and an astral character gets a real answer rather than whatever its high
-    // surrogate would have said. `char.IsLetter((char)c)` would be both wrong
-    // and silently wrong above the BMP.
-    //
-    // The case operations are invariant-culture on purpose. R6RS specifies the
-    // locale-independent Unicode mappings, and a `char-upcase` that answered
-    // differently in Turkey would make a program's meaning depend on the
-    // machine it runs on.
+    // Whether a name is spelled as a constructor: its first UTF-16 unit is an
+    // uppercase letter by .NET's tables. The same rule the compiler applies to
+    // a symbol in a pattern (`System.Char.IsUpper name[0]`), so that
+    // (std syntax-match) reads a pattern variable as the compiler does. The
+    // Unicode properties of a char are (std unicode chars).
+    public static bool nameIsConstructor(Utf8String s) =>
+        Rune.DecodeFromUtf8(s.AsSpan(), out var r, out _) == System.Buffers.OperationStatus.Done
+        && r.IsBmp
+        && char.IsUpper((char)r.Value);
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Rune AsRune(Bjolang.Runtime.BjoChar c) => new Rune(c.Value);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Bjolang.Runtime.BjoChar OfRune(Rune r) => new Bjolang.Runtime.BjoChar((uint)r.Value);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.BjoChar charsubupcase(Bjolang.Runtime.BjoChar c) =>
-        OfRune(Rune.ToUpperInvariant(AsRune(c)));
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.BjoChar charsubdowncase(Bjolang.Runtime.BjoChar c) =>
-        OfRune(Rune.ToLowerInvariant(AsRune(c)));
-
-    // Unicode gives a handful of characters a titlecase form distinct from
-    // their uppercase one — the Latin digraphs, ǅ against Ǆ. .NET exposes that
-    // mapping only through `TextInfo.ToTitleCase` on a string, so this pays a
-    // small allocation to reach it; `char-upcase` is the one to use unless the
-    // digraphs are the point.
-    public static Bjolang.Runtime.BjoChar charsubtitlecase(Bjolang.Runtime.BjoChar c) {
-        var titled = System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(c.ToString());
-        Rune.DecodeFromUtf16(titled, out Rune r, out _);
-        return OfRune(r);
-    }
-
-    // Simple case folding, for comparing without regard to case. Lowercasing is
-    // .NET's nearest offer: it agrees with Unicode's simple fold everywhere
-    // except a few characters — ﬁ and ß stay put, where a full fold would
-    // expand them — and a full fold cannot be a char-to-char function anyway,
-    // which is why R6RS's own `char-foldcase` is specified as the simple one.
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.BjoChar charsubfoldcase(Bjolang.Runtime.BjoChar c) =>
-        OfRune(Rune.ToLowerInvariant(AsRune(c)));
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool charsubalphabetic_QMARK(Bjolang.Runtime.BjoChar c) => Rune.IsLetter(AsRune(c));
-
-    // R6RS reads "numeric" as the Nd/Nl/No categories, which is `Rune.IsNumber`
-    // — not `IsDigit`, which is Nd alone and would answer false for ½ or Ⅶ.
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool charsubnumeric_QMARK(Bjolang.Runtime.BjoChar c) => Rune.IsNumber(AsRune(c));
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool charsubwhitespace_QMARK(Bjolang.Runtime.BjoChar c) => Rune.IsWhiteSpace(AsRune(c));
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool charsubuppersubcase_QMARK(Bjolang.Runtime.BjoChar c) => Rune.IsUpper(AsRune(c));
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool charsublowersubcase_QMARK(Bjolang.Runtime.BjoChar c) => Rune.IsLower(AsRune(c));
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool charsubtitlesubcase_QMARK(Bjolang.Runtime.BjoChar c) =>
-        Rune.GetUnicodeCategory(AsRune(c)) == System.Globalization.UnicodeCategory.TitlecaseLetter;
-
-    // The digit's value, or `None` for a character that is not a decimal digit.
-    // Narrower than `char-numeric?` deliberately: ½ is numeric and has no digit
-    // value, so the two questions get two answers.
-    public static Option<int> digitsubvalue(Bjolang.Runtime.BjoChar c) {
-        var r = AsRune(c);
-        if (Rune.GetUnicodeCategory(r) != System.Globalization.UnicodeCategory.DecimalDigitNumber) {
-            return None<int>();
+    // The bytes of a text of hex digits, two digits to a byte. White space
+    // between the digits is skipped. Raises FormatException on any other
+    // character or an odd number of digits. Used by the generated Unicode
+    // tables of (std unicode chars). A plain loop: Convert.FromHexString's
+    // UTF-8 path takes about a millisecond to JIT on its first call.
+    public static byte[] hexBytes(Utf8String s)
+    {
+        var src = s.AsSpan();
+        var dst = new byte[src.Length / 2];
+        int n = 0, hi = -1;
+        foreach (var b in src)
+        {
+            int v = b switch
+            {
+                >= (byte)'0' and <= (byte)'9' => b - '0',
+                >= (byte)'a' and <= (byte)'f' => b - 'a' + 10,
+                >= (byte)'A' and <= (byte)'F' => b - 'A' + 10,
+                (byte)' ' or (byte)'\n' or (byte)'\r' or (byte)'\t' => -1,
+                _ => throw new FormatException($"hexBytes: not a hex digit: {(char)b}"),
+            };
+            if (v < 0) continue;
+            if (hi < 0) hi = v;
+            else { dst[n++] = (byte)((hi << 4) | v); hi = -1; }
         }
-        return Some((int)Rune.GetNumericValue(r));
+        if (hi >= 0) throw new FormatException("hexBytes: an odd number of hex digits");
+        return n == dst.Length ? dst : dst.AsSpan(0, n).ToArray();
     }
-
-    // The Unicode general category, as the two-letter symbol R6RS names: `Lu`,
-    // `Nd`, `Zs` and the rest. A symbol rather than a string because it is a
-    // fixed enumeration meant to be compared, which is what symbols are for.
-    public static Symbol charsubgeneralsubcategory(Bjolang.Runtime.BjoChar c) =>
-        Symbol.Intern(Rune.GetUnicodeCategory(AsRune(c)) switch {
-            System.Globalization.UnicodeCategory.UppercaseLetter        => "Lu",
-            System.Globalization.UnicodeCategory.LowercaseLetter        => "Ll",
-            System.Globalization.UnicodeCategory.TitlecaseLetter        => "Lt",
-            System.Globalization.UnicodeCategory.ModifierLetter         => "Lm",
-            System.Globalization.UnicodeCategory.OtherLetter            => "Lo",
-            System.Globalization.UnicodeCategory.NonSpacingMark         => "Mn",
-            System.Globalization.UnicodeCategory.SpacingCombiningMark   => "Mc",
-            System.Globalization.UnicodeCategory.EnclosingMark          => "Me",
-            System.Globalization.UnicodeCategory.DecimalDigitNumber     => "Nd",
-            System.Globalization.UnicodeCategory.LetterNumber           => "Nl",
-            System.Globalization.UnicodeCategory.OtherNumber            => "No",
-            System.Globalization.UnicodeCategory.ConnectorPunctuation   => "Pc",
-            System.Globalization.UnicodeCategory.DashPunctuation        => "Pd",
-            System.Globalization.UnicodeCategory.OpenPunctuation        => "Ps",
-            System.Globalization.UnicodeCategory.ClosePunctuation       => "Pe",
-            System.Globalization.UnicodeCategory.InitialQuotePunctuation=> "Pi",
-            System.Globalization.UnicodeCategory.FinalQuotePunctuation  => "Pf",
-            System.Globalization.UnicodeCategory.OtherPunctuation       => "Po",
-            System.Globalization.UnicodeCategory.MathSymbol             => "Sm",
-            System.Globalization.UnicodeCategory.CurrencySymbol         => "Sc",
-            System.Globalization.UnicodeCategory.ModifierSymbol         => "Sk",
-            System.Globalization.UnicodeCategory.OtherSymbol            => "So",
-            System.Globalization.UnicodeCategory.SpaceSeparator         => "Zs",
-            System.Globalization.UnicodeCategory.LineSeparator          => "Zl",
-            System.Globalization.UnicodeCategory.ParagraphSeparator     => "Zp",
-            System.Globalization.UnicodeCategory.Control                => "Cc",
-            System.Globalization.UnicodeCategory.Format                 => "Cf",
-            System.Globalization.UnicodeCategory.Surrogate              => "Cs",
-            System.Globalization.UnicodeCategory.PrivateUse             => "Co",
-            _                                                           => "Cn",
-        });
 
     // --- String cursors ---
     //

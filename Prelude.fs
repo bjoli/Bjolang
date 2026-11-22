@@ -916,29 +916,9 @@ let prelude : Env =
         "int->char", {Scheme = Scheme([], [], makeFunType [intType] charType); IsMutable = false }
         "char->string", {Scheme = Scheme([], [], makeFunType [charType] stringType); IsMutable = false }
 
-        // Classification and case, R6RS §11.11. Builtins rather than
-        // `std/prelude` calls for the same reason `char->string` is: interop
-        // cannot resolve a method on a `BjoChar`, which is not a type Bjolang
-        // can name.
-        //
-        // The *comparisons* are deliberately absent. `BjoChar` has C#
-        // comparison operators, and `<` is typed `(-> %a %a bool)` and emitted
-        // as the operator, so `char<?` is an ordinary alias in the library and
-        // chains n-arily with no help from here.
-        "char-upcase", {Scheme = Scheme([], [], makeFunType [charType] charType); IsMutable = false }
-        "char-downcase", {Scheme = Scheme([], [], makeFunType [charType] charType); IsMutable = false }
-        "char-titlecase", {Scheme = Scheme([], [], makeFunType [charType] charType); IsMutable = false }
-        "char-foldcase", {Scheme = Scheme([], [], makeFunType [charType] charType); IsMutable = false }
-        "char-alphabetic?", {Scheme = Scheme([], [], makeFunType [charType] boolType); IsMutable = false }
-        "char-numeric?", {Scheme = Scheme([], [], makeFunType [charType] boolType); IsMutable = false }
-        "char-whitespace?", {Scheme = Scheme([], [], makeFunType [charType] boolType); IsMutable = false }
-        "char-upper-case?", {Scheme = Scheme([], [], makeFunType [charType] boolType); IsMutable = false }
-        "char-lower-case?", {Scheme = Scheme([], [], makeFunType [charType] boolType); IsMutable = false }
-        "char-title-case?", {Scheme = Scheme([], [], makeFunType [charType] boolType); IsMutable = false }
-        // `Option` rather than a sentinel: "not a digit" is a real answer, and
-        // -1 would be one the type does not mention.
-        "digit-value", {Scheme = Scheme([], [], makeFunType [charType] (makeOptionType intType)); IsMutable = false }
-        "char-general-category", {Scheme = Scheme([], [], makeFunType [charType] symbolType); IsMutable = false }
+        // Classification and case are (std unicode chars), which (std prelude)
+        // re-exports: tables generated from the UCD, of the same Unicode version
+        // as the rest of (std unicode ...).
 
         // --- String cursors ---
         //

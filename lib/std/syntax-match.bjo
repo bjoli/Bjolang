@@ -142,14 +142,15 @@
     (Nil #f)
     ((Cons other rest) (if (same-name? var other) #t (bound-already? var rest)))))
 
+;; Whether a name is spelled as a constructor, by the rule the compiler
+;; reads a pattern with: its first UTF-16 unit is an uppercase letter.
+(import/extern
+  (name-constructor? (: BjolangRuntime.nameIsConstructor (-> string bool))))
+
 (: (-> Syntax bool))
 (defun (uppercase-name? var)
   (match var
-    ((SSym name)
-     (def text (symbol->string name))
-     (if (string-empty? text)
-         #f
-         (char-upper-case? (string-cursor-ref text (string-cursor-start text)))))
+    ((SSym name) (name-constructor? (symbol->string name)))
     (_ #f)))
 
 ;; Checked bound variables.

@@ -1,0 +1,112 @@
+;; The properties and case mappings of (std unicode chars), against the
+;; counts that gen_chars.py writes from the same version of the UCD.
+;; - For each property: the number of chars that have it, and the sum of
+;;   their code points. For each mapping: the number of chars it changes,
+;;   and the sum of what they map to. A wrong entry in a table changes a
+;;   count or a sum.
+;; - The examples are the characters where .NET's tables, which the prelude
+;;   used before, give another answer.
+
+(import (std simpletest))
+(import (std unicode casefold))
+
+(include "assets/unicode/chars-cases.protobjo")
+
+;; Every char: the code points outside the surrogates.
+(: (-> (Vec char)))
+(defun (all-chars)
+  (loop (:for cp (range 0 0x110000))
+        (:when (or (< cp 0xD800) (> cp 0xDFFF)))
+        (:acc (vecing (int->char cp)))))
+
+;; The number of chars that `pred` holds for, and the sum of their code
+;; points, as "n;sum".
+(: (-> (Vec char) (-> char bool) string))
+(defun (count-sum chars pred)
+  (def (n s)
+    (loop (:for c chars)
+          (:when (pred c))
+          (:acc n (summing 1))
+          (:acc s (summing (cast long (char->int c))))
+          => (Tuple n s)))
+  #"${n};${s}")
+
+;; The number of chars `f` changes, and the sum of what they map to.
+(: (-> (Vec char) (-> char char) string))
+(defun (mapped chars f)
+  (def (n s)
+    (loop (:for c chars)
+          (:let m (f c))
+          (:when (not (= m c)))
+          (:acc n (summing 1))
+          (:acc s (summing (cast long (char->int m))))
+          => (Tuple n s)))
+  #"${n};${s}")
+
+;; What the module gives for the row `name`.
+(: (-> (Vec char) string string))
+(defun (actual chars name)
+  (cond
+    ((string-starts-with? name "category ")
+     (def g (string->symbol (string-drop name 9)))
+     (count-sum chars (fun (c) (= (char-general-category c) g))))
+    ((string-starts-with? name "digit ")
+     (def d (string->int (string-drop name 6)))
+     (count-sum chars (fun (c) (= (digit-value c) (Some d)))))
+    ((= name "alphabetic") (count-sum chars char-alphabetic?))
+    ((= name "white-space") (count-sum chars char-whitespace?))
+    ((= name "uppercase") (count-sum chars char-upper-case?))
+    ((= name "lowercase") (count-sum chars char-lower-case?))
+    ((= name "title-case") (count-sum chars char-title-case?))
+    ((= name "numeric") (count-sum chars char-numeric?))
+    ((= name "upcase") (mapped chars char-upcase))
+    ((= name "downcase") (mapped chars char-downcase))
+    ((= name "titlecase") (mapped chars char-titlecase))
+    ((= name "foldcase") (mapped chars char-foldcase))
+    (else "no such row")))
+
+(defun (main args)
+  (expect "the tables are of the cases' version" chars-unicode-version chars-cases-version)
+  (expect "the same version as casefold" chars-unicode-version casefold-unicode-version)
+
+  ;; --- the counts and sums --------------------------------------------------------
+  (def chars (all-chars))
+  (def rows (vec-filter (fun (l) (not (string-empty? l))) (vec-map string-trim (string-split chars-cases "\n"))))
+  (expect "the rows are all there" (vec-length rows) 50)
+  (loop (:for row rows)
+        (:do (match (string-split-once row ";")
+               ((Some (Tuple name expected)) (expect name (actual chars name) expected))
+               (None (expect "a row has a name" row "")))))
+
+  ;; --- where .NET's tables differ ------------------------------------------------
+  (expect "the long s folds to s" (char-foldcase #\ſ) #\s)
+  (expect "the final sigma folds to sigma" (char-foldcase #\ς) #\σ)
+  (expect "the micro sign folds to mu" (char-foldcase (int->char 0xB5)) (int->char 0x3BC))
+  (expect-true "the sigmas are the same without case" (char-ci=? #\ς #\Σ))
+  (expect-true "a Roman numeral is alphabetic" (char-alphabetic? (int->char 0x2160)))
+  (expect-true "a combining mark can be alphabetic" (char-alphabetic? (int->char 0x345)))
+  (expect-true "a circled letter is uppercase" (char-upper-case? (int->char 0x24B6)))
+  (expect-true "the feminine ordinal is lowercase" (char-lower-case? (int->char 0xAA)))
+  (expect "the long s and string-foldcase agree"
+          (char->string (char-foldcase #\ſ)) (string-foldcase "ſ"))
+
+  ;; --- examples --------------------------------------------------------------------
+  (expect "upcase" (char-upcase #\ä) #\Ä)
+  (expect "downcase" (char-downcase #\Ä) #\ä)
+  (expect "ß upcases to itself" (char-upcase #\ß) #\ß)
+  (expect "a digraph's titlecase" (char-titlecase #\ǆ) #\ǅ)
+  (expect "a digraph's uppercase" (char-upcase #\ǆ) #\Ǆ)
+  (expect-true "a digraph's titlecase is title-case" (char-title-case? #\ǅ))
+  (expect "and not uppercase" (char-upper-case? #\ǅ) #f)
+  (expect "an astral letter upcases" (char-upcase (int->char 0x10428)) (int->char 0x10400))
+  (expect "a digit" (digit-value #\7) (Some 7))
+  (expect "an Arabic-Indic digit" (digit-value (int->char 0x663)) (Some 3))
+  (expect "a fraction has no digit value" (digit-value #\½) None)
+  (expect-true "a fraction is numeric" (char-numeric? #\½))
+  (expect "a category" (char-general-category #\a) 'Ll)
+  (expect "a space" (char-general-category #\space) 'Zs)
+  (expect "an unassigned code point" (char-general-category (int->char 0x378)) 'Cn)
+  (expect-true "a no-break space is white space" (char-whitespace? (int->char 0xA0)))
+  (expect "a zero width space is not" (char-whitespace? (int->char 0x200B)) #f)
+  (expect-true "char-ci<?" (char-ci<? #\a #\B))
+  0)
