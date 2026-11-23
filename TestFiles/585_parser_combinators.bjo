@@ -1,0 +1,237 @@
+;; The combinators of (text parser-combinators), one by one, and a calculator
+;; built out of them. The import is a module boundary, so the checks also say
+;; that the export list is complete.
+;;
+;; The checks are (std test) tests: silent when they pass, and each failure
+;; shown with the values it saw.
+
+(import (text parser-combinators))
+(import (std test))
+
+;; ---------------------------------------------------------------------------
+;; Running a parser in a test
+;; ---------------------------------------------------------------------------
+
+;; What a parser answers for an input: its value, or the error as a string.
+;; A `Result` of plain values, so that `check` can compare and show it.
+(: parse (-> (Parser %a) string (Result string %a)))
+(defun (parse p input) (run-parser/message p input))
+
+;; The error message for an input, or "" when the parser succeeds.
+(: message (-> (Parser %a) string string))
+(defun (message p input)
+  (match (run-parser/message p input)
+    ((Ok v) "")
+    ((Err e) e)))
+
+;; ---------------------------------------------------------------------------
+;; Primitives
+;; ---------------------------------------------------------------------------
+
+(deftest "primitives"
+  (check (= (parse (preturn 42) "") (Ok 42)))
+  (check (= (parse (pbind (pchar #\a) (fun (c) (preturn (char->string c)))) "a") (Ok "a")))
+  (check (= (parse (pmap char->int (pchar #\a)) "a") (Ok 97)))
+  (check (= (parse (pright (pchar #\a) (pchar #\b)) "ab") (Ok #\b)))
+  (check (= (parse (pleft (pchar #\a) (pchar #\b)) "ab") (Ok #\a)))
+  (check (= (parse (pmap (fun (t) (match t ((Tuple a b) (list->string (list a b)))))
+                         (pboth (pchar #\a) (pchar #\b)))
+                   "ab")
+            (Ok "ab")))
+  (check (= (parse (ppipe2 pint (pright (pchar #\,) pint) (fun (a b) (+ a b))) "2,3") (Ok 5)))
+  (check (= (parse (ppipe3 pint (pright (pchar #\,) pint) (pright (pchar #\,) pint)
+                           (fun (a b c) (+ a b c)))
+                   "1,2,3")
+            (Ok 6)))
+  (check (= (parse (pmap list->string (psequence (list (pchar #\a) (pchar #\b)))) "ab") (Ok "ab")))
+  (check (= (parse (between (pchar #\() (pchar #\)) pint) "(42)") (Ok 42)))
+  (check (= (parse (choice (list (pchar #\a) (pchar #\b))) "b") (Ok #\b)))
+  (check-match (parse (choice (list (pchar #\a) (pchar #\b))) "c") (Err _))
+  (check (string-contains? (message (pfail "nope") "x") "nope"))
+  (check-match (parse pzero "x") (Err _)))
+
+;; ---------------------------------------------------------------------------
+;; Choice, backtracking and errors
+;; ---------------------------------------------------------------------------
+
+(deftest "backtracking"
+  (check-match (parse (por (pright (pchar #\a) (pchar #\b)) (pchar #\a)) "ac") (Err _))
+  (check-match (parse (por (attempt (pright (pchar #\a) (pchar #\b))) (pchar #\a)) "ac") (Ok _))
+  (check-match (parse (por (pstring "hello") (pstring "help")) "help") (Ok _))
+  (check (string-contains? (message (por (pstring "hello") (pstring "world")) "xyz")
+                           "'hello' or 'world'"))
+  (check (= (parse (pmap list->string
+                         (ppipe2 (look-ahead (pchar #\a)) (many any-char) (fun (c cs) (Cons c cs))))
+                   "ab")
+            (Ok "aab")))
+  (check-match (parse (pleft (pchar #\a) (followed-by (pchar #\b) "'b'")) "ab") (Ok _))
+  (check-match (parse (pleft (pchar #\a) (followed-by (pchar #\b) "'b'")) "ac") (Err _))
+  (check-match (parse (pleft (pchar #\a) (not-followed-by (pchar #\b) "'b'")) "ac") (Ok _))
+  (check (string-contains? (message (plabel (pchar #\a) "a greeting") "z") "a greeting"))
+  (check (= (parse (pmap (fun (p) (struct-ref p column)) (pright (pstring "ab") pposition)) "abc")
+            (Ok 3))))
+
+(deftest "errors"
+  (def text "ab\ncd")
+  (def broken (pright (pstring "ab\nc") (pchar #\z)))
+  (check (string-contains? (message broken text) "line 2"))
+  (check (string-contains? (message broken text) "column 2"))
+  (check (string-contains? (message (pright (pstring "åäö") (pchar #\z)) "åäöx") "column 4"))
+  (check (string-contains? (message broken text) "\ncd\n"))
+  (check (string-contains? (message broken text) "^"))
+  (check (string-contains? (message broken text) "Unexpected: 'd'"))
+  (check (string-contains? (message (choice (list (pstring "aa") (pstring "bb") (pstring "cc"))) "zz")
+                           "'aa', 'bb' or 'cc'"))
+  (check (string-contains? (message (choice (list (pchar #\a) (pchar #\a) (pchar #\b))) "z")
+                           "'a' or 'b'"))
+  (check (= (struct-ref (state-position (make-state "hi")) column) 1))
+  (check (= (parse (pmap (fun (p) (struct-ref p line)) (pright (pstring "ab\nc") pposition)) "ab\ncd")
+            (Ok 2)))
+  ;; A ParseError prints itself.
+  (match (run-parser (pchar #\a) "b")
+    ((Ok v) (check-fail "a 'b' is not an 'a'"))
+    ((Err e) (check (string-contains? #"${e}" "Expecting")))))
+
+;; ---------------------------------------------------------------------------
+;; Characters and strings
+;; ---------------------------------------------------------------------------
+
+(deftest "characters"
+  (check (= (parse (satisfy char-upper-case? "an upper-case letter") "Abc") (Ok #\A)))
+  (check (= (parse any-char "abc") (Ok #\a)))
+  (check (= (parse (pchar #\a) "abc") (Ok #\a)))
+  (check (= (parse (pchar/ci #\a) "Abc") (Ok #\A)))
+  (check (= (parse (any-of "xyz") "y") (Ok #\y)))
+  (check (= (parse (none-of "xyz") "a") (Ok #\a)))
+  (check (= (parse digit "7") (Ok #\7)))
+  (check (= (parse (pright (pstring "a") pnewline) "a\r\nb") (Ok #\newline))))
+
+(deftest "strings"
+  (check (= (parse (pstring "ab") "abc") (Ok "ab")))
+  (check (= (parse (pstring/ci "ab") "ABc") (Ok "AB")))
+  (check (= (parse (many-satisfy char-alphabetic?) "abc1") (Ok "abc")))
+  (check (= (parse (many-satisfy char-alphabetic?) "1") (Ok "")))
+  (check (= (parse (many-satisfy1 char-alphabetic? "a word") "abc1") (Ok "abc")))
+  (check-match (parse (many-satisfy1 char-alphabetic? "a word") "1") (Err _))
+  (check (= (parse (many-satisfy/slice char-alphabetic?) "abc1") (Ok "abc")))
+  (check (= (parse (many-satisfy/slice char-alphabetic?) "1") (Ok "")))
+  (check (= (parse (many-satisfy1/slice char-alphabetic? "a word") "åäö!") (Ok "åäö")))
+  (check-match (parse (many-satisfy1/slice char-alphabetic? "a word") "1") (Err _))
+  (check (= (parse (many-chars letter) "abc1") (Ok "abc")))
+  (check (= (parse (many-chars1 alphanumeric) "a1!") (Ok "a1")))
+  (check (= (parse (pright spaces (pchar #\a)) "   a") (Ok #\a)))
+  (check (= (parse (pright spaces1 (pchar #\a)) " a") (Ok #\a)))
+  (check-match (parse (pright spaces1 (pchar #\a)) "a") (Err _))
+  (check-match (parse (pleft (pstring "a") eof) "a") (Ok _))
+  (check-match (parse (pleft (pstring "a") eof) "ab") (Err _)))
+
+;; ---------------------------------------------------------------------------
+;; Repetition
+;; ---------------------------------------------------------------------------
+
+(: minus-op (Parser (-> int int int)))
+(def minus-op (pright (pchar #\-) (preturn (fun (a b) (- a b)))))
+
+(deftest "repetition"
+  (check (= (parse (pmap list->string (many (pchar #\a))) "aaab") (Ok "aaa")))
+  (check (= (parse (pmap list->string (many (pchar #\a))) "b") (Ok "")))
+  (check-match (parse (many (pright (pchar #\a) (pchar #\b))) "abac") (Err _))
+  (check (= (parse (pmap list->string (many1 (pchar #\a))) "aa") (Ok "aa")))
+  (check-match (parse (many1 (pchar #\a)) "b") (Err _))
+  (check (= (parse (pright (skip-many (pchar #\a)) (pchar #\b)) "aaab") (Ok #\b)))
+  (check (= (parse (pright (skip-many1 (pchar #\a)) (pchar #\b)) "ab") (Ok #\b)))
+  (check-match (parse (skip-many1 (pchar #\a)) "b") (Err _))
+  (check (= (parse (many-fold (fun (c acc) (+ acc 1)) 0 (pchar #\a)) "aaa") (Ok 3)))
+  (check (= (parse (pmap list->string (many-till any-char (pchar #\!))) "abc!") (Ok "abc")))
+  (check (= (parse (pmap list->string (prepeat 2 any-char)) "abc") (Ok "ab")))
+  (check-match (parse (prepeat 4 any-char) "abc") (Err _))
+  (check (= (parse (pmap list->string (sep-by letter (pchar #\,))) "a,b,c") (Ok "abc")))
+  (check (= (parse (pmap list->string (sep-by letter (pchar #\,))) "!") (Ok "")))
+  (check-match (parse (pleft (sep-by letter (pchar #\,)) eof) "a,b,") (Err _))
+  (check-match (parse (sep-by1 letter (pchar #\,)) "!") (Err _))
+  (check (= (parse (pmap list->string (pleft (sep-end-by letter (pchar #\,)) eof)) "a,b,") (Ok "ab")))
+  (check (= (parse (pmap list->string (pleft (sep-end-by1 letter (pchar #\,)) eof)) "a,") (Ok "a")))
+  (check (= (parse (pmap (fun (o) (option-ref-or o #\z)) (opt (pchar #\a))) "b") (Ok #\z)))
+  (check (= (parse (opt-or (pchar #\a) #\z) "b") (Ok #\z)))
+  (check-match (parse (pleft (optional (pchar #\a)) eof) "") (Ok _))
+  (check (= (parse (chainl1 pint minus-op) "8-4-2") (Ok 2)))
+  (check (= (parse (chainr1 pint minus-op) "8-4-2") (Ok 6))))
+
+;; ---------------------------------------------------------------------------
+;; Numbers
+;; ---------------------------------------------------------------------------
+
+(deftest "numbers"
+  (check (= (parse pint "42x") (Ok 42)))
+  (check (= (parse pint "-42") (Ok -42)))
+  (check-match (parse pint "-x") (Err _))
+  (check (= (parse pdouble "3.5e2") (Ok 350.0)))
+  (check (= (parse (pleft pdouble (pstring "..")) "1..2") (Ok 1.0)))
+  (check (= (parse (plazy (fun () (pchar #\a))) "a") (Ok #\a))))
+
+;; ---------------------------------------------------------------------------
+;; A calculator
+;; ---------------------------------------------------------------------------
+
+(: token (-> (Parser %a) (Parser %a)))
+(defun (token p) (pleft p spaces))
+
+(: sym (-> char (Parser char)))
+(defun (sym c) (token (pchar c)))
+
+(: number (Parser double))
+(def number (token (plabel pdouble "a number")))
+
+(: expr-ref (ParserRef double))
+(def expr-ref (pforward))
+
+(: expr (Parser double))
+(def expr (pforwarded expr-ref))
+
+(: factor (Parser double))
+(def factor (por number (between (sym #\() (sym #\)) expr)))
+
+(: mul-op (Parser (-> double double double)))
+(def mul-op
+  (por (pright (sym #\*) (preturn (fun (a b) (* a b))))
+       (pright (sym #\/) (preturn (fun (a b) (/ a b))))))
+
+(: add-op (Parser (-> double double double)))
+(def add-op
+  (por (pright (sym #\+) (preturn (fun (a b) (+ a b))))
+       (pright (sym #\-) (preturn (fun (a b) (- a b))))))
+
+(: term (Parser double))
+(def term (chainl1 factor mul-op))
+
+(: sum (Parser double))
+(def sum (chainl1 term add-op))
+
+(: calculator (Parser double))
+(def calculator (pright spaces (pleft sum eof)))
+
+(deftest "a calculator"
+  (pforward-set! expr-ref sum)
+  (check (= (parse calculator "1 + 2 * 3") (Ok 7.0)))
+  (check (= (parse calculator "(1 + 2) * 3") (Ok 9.0)))
+  (check (= (parse calculator "6 / 3 / 2") (Ok 1.0)))
+  (check (= (parse calculator "-2 * 3") (Ok -6.0)))
+  (check-match (parse calculator "2 * (3 + 4") (Err _))
+  (check (= (parse calculator "1 + 2 * (3 - 0.5)") (Ok 6.0)))
+  (check (string-contains? (message calculator "2 * (3 + 4") "Expecting")))
+
+;; ---------------------------------------------------------------------------
+;; A list of words, and what a failure looks like
+;; ---------------------------------------------------------------------------
+
+(: hello-world (Parser (List string)))
+(def hello-world
+  (pleft (sep-by (por (pstring "hello") (pstring "world"))
+                 (pchar #\,))
+         eof))
+
+(deftest "a list of words"
+  (check (= (parse hello-world "hello,world,hello") (Ok (list "hello" "world" "hello"))))
+  (check (string-contains? (message hello-world "hello,world,invalid") "'hello' or 'world'")))
+
+(run-tests)

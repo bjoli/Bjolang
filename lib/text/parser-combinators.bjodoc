@@ -1,0 +1,812 @@
+;; Docs for text/parser-combinators.bjo, read through
+;; (:doc #:file "parser-combinators.bjodoc"). The texts are samizdat markup:
+;; code in prose is @code{...}. Every example is checked by
+;; TestFiles/586_parser_combinators_docs.bjo.
+
+(:doc #:module
+  (summary "Parser combinators after FParsec: small parsers, combined into grammars, with errors that say where and what.")
+  (see run-parser por attempt Parser)
+  (example """
+    (import (text parser-combinators))
+
+    ;; A list of integers: [1, 2, 3]
+    (: ints (Parser (List int)))
+    (def ints
+      (between (pchar #\[) (pchar #\])
+               (sep-by (pleft pint spaces) (pleft (pchar #\,) spaces))))
+
+    (run-parser ints "[1, 2, 3]")   ; (Ok '(1 2 3))
+    (println (run-parser ints "[1, x]"))
+    ;; Parse error at line 1, column 5:
+    ;; [1, x]
+    ;;     ^
+    ;; Expecting: an integer
+    ;; Unexpected: 'x'
+    """)
+  (reference """
+    A @code{(Parser %a)} reads from the front of some text and answers an
+    @code{%a}, or fails. Small parsers that read one thing — a character
+    (@code{pchar}), a literal (@code{pstring}), a number (@code{pint}) — are
+    combined into bigger ones: in sequence (@code{pright}, @code{ppipe2}),
+    as alternatives (@code{por}, @code{choice}), repeated (@code{many},
+    @code{sep-by}), with operators (@code{chainl1}). A grammar is a
+    parser like any other, and @code{run-parser} runs one on a string.
+
+    @strong{Consuming.} A parser moves through the text as it reads, and
+    one that fails may already have moved. Whether it did is what everything
+    here turns on. @code{por} tries its second parser only when the first
+    failed @em{without} reading anything: once a parser has read part of
+    something, its error is the one worth reporting, not the next
+    alternative's complaint that it does not fit either. When a grammar
+    does need to back up and try again, it says so with @code{attempt}.
+    @code{pstring}, @code{pint} and @code{pdouble} back up by themselves,
+    so a choice between literals needs no @code{attempt}.
+
+    @strong{Errors.} A failure records where it happened and what was
+    expected there. Two failures at the same place combine, so a choice
+    reports every alternative it tried: @code{Expecting: 'yes' or 'no'}.
+    @code{plabel} names what a parser expects in the reader's words,
+    @code{pfail} says something else entirely, and the error printed by
+    @code{run-parser/message} shows the line with a caret under the column.
+    Columns count characters, not bytes.
+
+    @strong{The end.} @code{run-parser} stops where the grammar stops and
+    does not mind text after it. To insist on all of it, end the grammar
+    with @code{eof}.
+
+    @strong{Recursive grammars.} A grammar of @code{defun}s may call itself
+    freely. One built of @code{def}s needs a parser to refer to before it is
+    defined: @code{pforward} makes the reference, @code{pforwarded} uses it,
+    and @code{pforward-set!} fills it in. @code{plazy} is the other way.
+
+    @strong{Copies and slices.} Text a parser answers is copied out of the
+    input, except from @code{many-satisfy/slice} and
+    @code{many-satisfy1/slice}, which answer slices of it: faster for long
+    runs, but each one keeps the whole input alive while it is held.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Types
+;; ---------------------------------------------------------------------------
+
+(:doc Parser
+  (summary "A parser: reads from a State and answers a value or a Failure.")
+  (tparam %a "What it answers.")
+  (see run-parser make-state)
+  (reference """
+    A parser is a function, so a parser written by hand is a
+    @code{(fun (st) ...)} that reads @code{st} and answers @code{(Ok v)} or
+    @code{(Err f)}. Most grammars never write one: the combinators here
+    build them.
+    """))
+
+(:doc State
+  (summary "Where a parser is in its input. Made by make-state; run-parser makes one for you.")
+  (field text "The input.")
+  (field pos "The cursor: where the next character is read.")
+  (field line "The line pos is on, from 1.")
+  (field line-start "Where that line begins, for the column.")
+  (see make-state state-position))
+
+(:doc Position
+  (summary "A line and a column, both from 1. The column counts characters.")
+  (field line "The line, from 1.")
+  (field column "The column, from 1, in characters.")
+  (see pposition parse-error-position))
+
+(:doc Failure
+  (summary "How a parser failed: where, and what was expected there. run-parser turns it into a ParseError.")
+  (see ParseError run-parser))
+
+(:doc ParseError
+  (summary "A failed parse: the input, where it failed, and what was expected.")
+  (field source "The input.")
+  (field err-pos "Where the parse failed.")
+  (field err-line "The line of err-pos, from 1.")
+  (field err-line-start "Where that line begins.")
+  (field items "What was expected and found there; read it through error->string.")
+  (see error->string parse-error-position)
+  (reference """
+    @code{displayed} of a @code{ParseError} is @code{error->string}, so
+    @code{println} shows the whole message.
+    """))
+
+(:doc ErrorItem
+  (summary "One thing an error says.")
+  (case Expected "Something that would have been accepted: 'x', an integer.")
+  (case Unexpected "Something found that should not be there.")
+  (case ErrorMessage "A sentence of its own, from pfail."))
+
+(:doc ErrorItems
+  (summary "What an error says, gathered from every parser that failed at its position.")
+  (see error->string))
+
+(:doc ParserRef
+  (summary "A parser to be filled in later, for a grammar of defs that refers to itself.")
+  (tparam %a "What the parser answers.")
+  (field target "The parser, once pforward-set! has set it.")
+  (see pforward pforwarded pforward-set!))
+
+;; ---------------------------------------------------------------------------
+;; Running a parser
+;; ---------------------------------------------------------------------------
+
+(:doc run-parser
+  (summary "Runs a parser on a string.")
+  (arg p "The parser.")
+  (arg text "The input.")
+  (returns "What p answers, or where and why it failed.")
+  (see run-parser/message eof)
+  (example """
+    (run-parser pint "42")     ; (Ok 42)
+    (run-parser pint "42abc")  ; (Ok 42): the rest is not looked at
+    (run-parser (pleft pint eof) "42abc")
+    ;; (Err ...): Expecting: end of input
+    """))
+
+(:doc run-parser/message
+  (summary "Runs a parser on a string, with a failure as the message error->string writes.")
+  (arg p "The parser.")
+  (arg text "The input.")
+  (returns "What p answers, or the error as text.")
+  (see run-parser)
+  (example """
+    (run-parser/message (pstring "yes") "no")
+    ;; (Err "Parse error at line 1, column 1:\nno\n^\nExpecting: 'yes'\nUnexpected: 'n'")
+    """))
+
+(:doc error->string
+  (summary "An error as a message: where, the line with a caret under the column, and what was expected and found.")
+  (arg e "The error.")
+  (returns "The message, several lines long.")
+  (see run-parser/message parse-error-position)
+  (example """
+    (match (run-parser (por (pstring "yes") (pstring "no")) "maybe")
+      ((Err e) (println (error->string e)))
+      ((Ok _) unit))
+    ;; Parse error at line 1, column 1:
+    ;; maybe
+    ;; ^
+    ;; Expecting: 'yes' or 'no'
+    ;; Unexpected: 'm'
+    """))
+
+(:doc parse-error-position
+  (summary "Where an error is.")
+  (arg e "The error.")
+  (returns "Its line and column.")
+  (example """
+    (match (run-parser (pright (pstring "ab\n") pint) "ab\nx")
+      ((Err e) (println (parse-error-position e)))   ; line 2, column 1
+      ((Ok _) unit))
+    """))
+
+(:doc make-state
+  (summary "A State at the start of a string, for calling a parser by hand.")
+  (arg text "The input.")
+  (returns "The state.")
+  (see run-parser state-position)
+  (example """
+    (def st (make-state "12 34"))
+    (pint st)                ; (Ok 12)
+    (state-position st)      ; line 1, column 3
+    """))
+
+(:doc state-position
+  (summary "Where a state is.")
+  (arg st "The state.")
+  (returns "Its line and column.")
+  (see pposition make-state))
+
+;; ---------------------------------------------------------------------------
+;; Building blocks
+;; ---------------------------------------------------------------------------
+
+(:doc preturn
+  (summary "Succeeds with a value, reading nothing.")
+  (arg v "The value.")
+  (returns "A parser answering v.")
+  (example """
+    (run-parser (preturn 7) "anything")   ; (Ok 7)
+    """))
+
+(:doc pzero
+  (summary "Fails, reading nothing and expecting nothing.")
+  (arg st "The state: pzero is a parser, used as one rather than called.")
+  (returns "A failure with nothing to say.")
+  (see pfail choice))
+
+(:doc pfail
+  (summary "Fails with a message of its own.")
+  (arg msg "What the error says.")
+  (returns "A parser that always fails.")
+  (see plabel)
+  (example """
+    (pbind pint (fun (n) (if (< n 256) (preturn n) (pfail "a byte is at most 255"))))
+    """))
+
+(:doc pbind
+  (summary "Runs p, and then the parser f makes from what p answered.")
+  (arg p "The first parser.")
+  (arg f "Makes the second parser from p's value.")
+  (returns "The second parser's value.")
+  (see pmap ppipe2)
+  (example """
+    ;; A count, then that many letters: "3abc"
+    (pbind pint (fun (n) (prepeat n letter)))
+    """))
+
+(:doc pmap
+  (summary "Changes what a parser answers.")
+  (arg f "Applied to the value.")
+  (arg p "The parser.")
+  (returns "f of p's value.")
+  (example """
+    (run-parser (pmap string-length (many-satisfy char-alphabetic?)) "hello!")   ; (Ok 5)
+    """))
+
+(:doc pright
+  (summary "p, then q, answering q's value.")
+  (arg p "Read and dropped.")
+  (arg q "Answers.")
+  (returns "q's value.")
+  (see pleft between)
+  (example """
+    (run-parser (pright (pchar #\$) pint) "$42")   ; (Ok 42)
+    """))
+
+(:doc pleft
+  (summary "p, then q, answering p's value.")
+  (arg p "Answers.")
+  (arg q "Read and dropped.")
+  (returns "p's value.")
+  (see pright)
+  (example """
+    (run-parser (pleft pint (pchar #\%)) "42%")   ; (Ok 42)
+    """))
+
+(:doc pboth
+  (summary "p, then q, answering both.")
+  (arg p "The first.")
+  (arg q "The second.")
+  (returns "Both values, as a tuple.")
+  (see ppipe2)
+  (example """
+    (run-parser (pboth letter digit) "a1")   ; (Ok (Tuple #\a #\1))
+    """))
+
+(:doc ppipe2
+  (summary "p, then q, combined by f.")
+  (arg p "The first.")
+  (arg q "The second.")
+  (arg f "Makes the result from both values.")
+  (returns "f of both values.")
+  (see ppipe3 pboth)
+  (example """
+    (run-parser (ppipe2 pint (pright (pchar #\x) pint) *) "6x7")   ; (Ok 42)
+    """))
+
+(:doc ppipe3
+  (summary "p, q and r, combined by f.")
+  (arg p "The first.")
+  (arg q "The second.")
+  (arg r "The third.")
+  (arg f "Makes the result from the three values.")
+  (returns "f of the three values.")
+  (example """
+    ;; 2026-10-05
+    (ppipe3 pint (pright (pchar #\-) pint) (pright (pchar #\-) pint)
+            (fun (y m d) (Tuple y m d)))
+    """))
+
+(:doc psequence
+  (summary "Each parser in turn, answering all their values.")
+  (arg ps "The parsers, in order.")
+  (returns "Their values, in order.")
+  (example """
+    (run-parser (psequence (list digit letter digit)) "1a2")   ; (Ok '(#\1 #\a #\2))
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Choice and backtracking
+;; ---------------------------------------------------------------------------
+
+(:doc por
+  (summary "p, or q when p failed without reading anything.")
+  (arg p "Tried first.")
+  (arg q "Tried when p failed where it began.")
+  (returns "The value of whichever succeeded.")
+  (see choice attempt)
+  (example """
+    (def answer (por (pstring "yes") (pstring "no")))
+    (run-parser answer "no")      ; (Ok "no")
+    (run-parser answer "maybe")   ; (Err ...): Expecting: 'yes' or 'no'
+    """)
+  (reference """
+    Two failures at the same position become one error expecting what
+    either expected. When @code{p} read something before it failed,
+    @code{q} is not tried; see @code{attempt}.
+    """))
+
+(:doc choice
+  (summary "The first of several parsers that succeeds, under por's rule.")
+  (arg ps "The alternatives, in order.")
+  (returns "The value of the first that succeeds.")
+  (see por)
+  (example """
+    (choice (list (pstring "red") (pstring "green") (pstring "blue")))
+    ;; on "pink": Expecting: 'red', 'green' or 'blue'
+    """))
+
+(:doc attempt
+  (summary "Runs p, and on failure moves back to where p began.")
+  (arg p "The parser.")
+  (returns "p's value.")
+  (see por look-ahead)
+  (example """
+    (def a-then-b (pright (pchar #\a) (pstring "b")))
+    (run-parser (por a-then-b (pstring "ac")) "ac")
+    ;; (Err ...): Expecting: 'b'. a-then-b read the a, so "ac" is not tried.
+    (run-parser (por (attempt a-then-b) (pstring "ac")) "ac")   ; (Ok "ac")
+    """)
+  (reference """
+    This is what lets @code{por} try another alternative after one that
+    read part of its input. Use it around the alternative that may read
+    and then fail, and no wider: an error found inside an @code{attempt}
+    is reported at its start.
+    """))
+
+(:doc look-ahead
+  (summary "Runs p and moves back to where it began, whether p succeeded or not.")
+  (arg p "The parser.")
+  (returns "p's value, with nothing read.")
+  (see followed-by attempt)
+  (example """
+    (run-parser (pboth (look-ahead letter) (many-satisfy char-alphabetic?)) "abc")
+    ;; (Ok (Tuple #\a "abc"))
+    """))
+
+(:doc followed-by
+  (summary "Succeeds, reading nothing, when p would succeed here.")
+  (arg p "The parser to test with.")
+  (arg what "What the error says was expected.")
+  (returns "A parser answering nothing.")
+  (see not-followed-by look-ahead)
+  (example """
+    (pleft pint (followed-by (pchar #\;) "';'"))   ; 42 only when a ; comes next
+    """))
+
+(:doc not-followed-by
+  (summary "Succeeds, reading nothing, when p would fail here.")
+  (arg p "The parser to test with.")
+  (arg what "What the error says was found.")
+  (returns "A parser answering nothing.")
+  (see followed-by)
+  (example """
+    ;; The keyword "if", but not the start of "iffy".
+    (pleft (pstring "if") (not-followed-by alphanumeric "a longer name"))
+    """))
+
+(:doc plabel
+  (summary "Names what p expects, in the words an error should use.")
+  (arg p "The parser.")
+  (arg what "What to call it.")
+  (returns "p, with its expectation renamed.")
+  (see pfail)
+  (example """
+    (plabel (many-satisfy1 char-alphabetic? "a letter") "a name")
+    ;; on "42": Expecting: a name
+    """)
+  (reference """
+    Only a failure where @code{p} began is renamed: once @code{p} has read
+    something, its own error says more than the label.
+    """))
+
+(:doc pposition
+  (summary "Where the parser is, reading nothing.")
+  (see Position state-position)
+  (example """
+    ;; Each word with where it starts.
+    (many (pleft (pboth pposition (many-satisfy1 char-alphabetic? "a word")) spaces))
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Characters and strings
+;; ---------------------------------------------------------------------------
+
+(:doc satisfy
+  (summary "One character that pred accepts.")
+  (arg pred "Accepts or refuses a character.")
+  (arg what "What an error calls it.")
+  (returns "The character.")
+  (see many-satisfy any-of)
+  (example """
+    (run-parser (satisfy char-upper-case? "a capital") "Bob")   ; (Ok #\B)
+    """))
+
+(:doc any-char
+  (summary "Any one character. Fails only at the end of the input.")
+  (see satisfy many-till))
+
+(:doc pchar
+  (summary "One particular character.")
+  (arg c "The character.")
+  (returns "c.")
+  (see pchar/ci any-of)
+  (example """
+    (run-parser (pchar #\x) "xyz")   ; (Ok #\x)
+    """))
+
+(:doc pchar/ci
+  (summary "One particular character, in either case.")
+  (arg c "The character.")
+  (returns "The character as the input has it.")
+  (example """
+    (run-parser (pchar/ci #\x) "XYZ")   ; (Ok #\X)
+    """))
+
+(:doc any-of
+  (summary "One character of those in a string.")
+  (arg s "The characters accepted.")
+  (returns "The character.")
+  (see none-of satisfy)
+  (example """
+    (run-parser (any-of "+-*/") "*2")   ; (Ok #\*)
+    """))
+
+(:doc none-of
+  (summary "One character that is not in a string.")
+  (arg s "The characters refused.")
+  (returns "The character.")
+  (example """
+    ;; A string literal's body: anything but a quote.
+    (between (pchar #\") (pchar #\") (many-chars (none-of "\"")))
+    """))
+
+(:doc pstring
+  (summary "A literal, all of it or nothing: a partial match reads nothing.")
+  (arg s "The literal.")
+  (returns "s.")
+  (see pstring/ci por)
+  (example """
+    (run-parser (por (pstring "foo") (pstring "far")) "far")   ; (Ok "far")
+    ;; "foo" read the f before it failed, and gave it back.
+    """))
+
+(:doc pstring/ci
+  (summary "A literal in any case, all of it or nothing.")
+  (arg s "The literal.")
+  (returns "The text as the input has it.")
+  (example """
+    (run-parser (pstring/ci "select") "SELECT *")   ; (Ok "SELECT")
+    """))
+
+(:doc many-satisfy
+  (summary "The characters pred accepts, as many as come. Never fails.")
+  (arg pred "Accepts or refuses a character.")
+  (returns "The run, which may be empty.")
+  (see many-satisfy1 many-satisfy/slice)
+  (example """
+    (run-parser (many-satisfy char-numeric?) "2026-10")   ; (Ok "2026")
+    """))
+
+(:doc many-satisfy1
+  (summary "The characters pred accepts, at least one.")
+  (arg pred "Accepts or refuses a character.")
+  (arg what "What an error calls one.")
+  (returns "The run.")
+  (see many-satisfy many-satisfy1/slice)
+  (example """
+    (def identifier (many-satisfy1 char-alphabetic? "a letter"))
+    """))
+
+(:doc many-satisfy/slice
+  (summary "many-satisfy, answering a slice of the input instead of a copy.")
+  (arg pred "Accepts or refuses a character.")
+  (returns "The run, sharing the input's bytes.")
+  (see many-satisfy many-satisfy1/slice)
+  (example """
+    ;; Lines, looked at and dropped: no line is copied.
+    (many (pleft (many-satisfy/slice #(not (char=? &1 #\newline))) pnewline))
+    """)
+  (reference """
+    Faster than @code{many-satisfy} for a run of more than a few bytes,
+    and it allocates less. A slice keeps the whole input alive for as long
+    as it is held, so keep one with @code{string-copy}.
+    """))
+
+(:doc many-satisfy1/slice
+  (summary "many-satisfy1, answering a slice of the input instead of a copy.")
+  (arg pred "Accepts or refuses a character.")
+  (arg what "What an error calls one.")
+  (returns "The run, sharing the input's bytes.")
+  (see many-satisfy1 many-satisfy/slice))
+
+(:doc many-chars
+  (summary "The characters a parser reads, as many as it reads, as a string.")
+  (arg p "Reads one character.")
+  (returns "The characters, which may be none.")
+  (see many-satisfy many-chars1)
+  (example """
+    ;; Escapes as well as plain characters, which many-satisfy cannot do.
+    (many-chars (por (pright (pchar #\\) any-char) (none-of "\"\\")))
+    """))
+
+(:doc many-chars1
+  (summary "many-chars, at least one character.")
+  (arg p "Reads one character.")
+  (returns "The characters.")
+  (see many-chars))
+
+(:doc spaces
+  (summary "Spaces, tabs and line breaks, as many as come. Never fails.")
+  (see spaces1)
+  (example """
+    (pleft pint spaces)   ; a number and whatever space follows it
+    """))
+
+(:doc spaces1
+  (summary "At least one whitespace character.")
+  (see spaces))
+
+(:doc pnewline
+  (summary "A line break: \"\\n\", \"\\r\\n\" or \"\\r\". Answers #\\newline whichever it was.")
+  (see spaces))
+
+(:doc letter
+  (summary "One letter, by char-alphabetic?.")
+  (see digit alphanumeric))
+
+(:doc digit
+  (summary "One ASCII digit, 0 to 9.")
+  (see pint letter))
+
+(:doc alphanumeric
+  (summary "One letter or ASCII digit.")
+  (see letter digit))
+
+(:doc eof
+  (summary "Succeeds only at the end of the input.")
+  (see run-parser)
+  (example """
+    (run-parser (pleft pint eof) "42")    ; (Ok 42)
+    (run-parser (pleft pint eof) "42x")   ; (Err ...): Expecting: end of input
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Repetition
+;; ---------------------------------------------------------------------------
+
+(:doc many
+  (summary "p, as many times as it succeeds.")
+  (arg p "The parser repeated. It has to read something each time.")
+  (returns "Every value, which may be none.")
+  (see many1 sep-by many-fold)
+  (example """
+    (run-parser (many (pleft pint spaces)) "1 2 3")   ; (Ok '(1 2 3))
+    """)
+  (reference """
+    The repetition ends when @code{p} fails where it began. A failure
+    after @code{p} read something fails the whole @code{many}. A @code{p}
+    that succeeds without reading would repeat forever, and panics.
+    """))
+
+(:doc many1
+  (summary "p, at least once and as many times as it succeeds.")
+  (arg p "The parser repeated.")
+  (returns "Every value.")
+  (see many))
+
+(:doc skip-many
+  (summary "p, as many times as it succeeds, keeping nothing.")
+  (arg p "The parser repeated.")
+  (returns "Nothing.")
+  (see many skip-many1))
+
+(:doc skip-many1
+  (summary "p, at least once, keeping nothing.")
+  (arg p "The parser repeated.")
+  (returns "Nothing.")
+  (see skip-many))
+
+(:doc many-fold
+  (summary "p, as many times as it succeeds, folding the values as they come.")
+  (arg f "Combines a value with what was folded so far.")
+  (arg init "Where the fold starts.")
+  (arg p "The parser repeated.")
+  (returns "The fold.")
+  (see many)
+  (example """
+    (run-parser (many-fold + 0 (pleft pint spaces)) "1 2 3")   ; (Ok 6)
+    """))
+
+(:doc many-till
+  (summary "p, until end succeeds. end is tried first.")
+  (arg p "The parser repeated.")
+  (arg end "What ends it; its value is dropped.")
+  (returns "p's values.")
+  (example """
+    ;; A comment: everything up to */
+    (pright (pstring "/*") (many-till any-char (pstring "*/")))
+    """))
+
+(:doc prepeat
+  (summary "p exactly n times.")
+  (arg n "How many.")
+  (arg p "The parser repeated.")
+  (returns "The n values.")
+  (example """
+    (run-parser (prepeat 3 digit) "12345")   ; (Ok '(#\1 #\2 #\3))
+    """))
+
+(:doc sep-by
+  (summary "p, separated by sep, zero or more times.")
+  (arg p "The item.")
+  (arg sep "The separator; its value is dropped.")
+  (returns "The items.")
+  (see sep-by1 sep-end-by)
+  (example """
+    (run-parser (sep-by pint (pchar #\,)) "1,2,3")   ; (Ok '(1 2 3))
+    (run-parser (sep-by pint (pchar #\,)) "")        ; (Ok '())
+    """))
+
+(:doc sep-by1
+  (summary "p, separated by sep, at least once.")
+  (arg p "The item.")
+  (arg sep "The separator.")
+  (returns "The items.")
+  (see sep-by))
+
+(:doc sep-end-by
+  (summary "sep-by, also accepting a separator after the last item.")
+  (arg p "The item.")
+  (arg sep "The separator.")
+  (returns "The items.")
+  (see sep-by)
+  (example """
+    (run-parser (sep-end-by pint (pchar #\;)) "1;2;")   ; (Ok '(1 2))
+    """))
+
+(:doc sep-end-by1
+  (summary "sep-end-by, at least one item.")
+  (arg p "The item.")
+  (arg sep "The separator.")
+  (returns "The items.")
+  (see sep-end-by))
+
+(:doc between
+  (summary "p, between an opening and a closing parser.")
+  (arg popen "Read first and dropped.")
+  (arg pclose "Read last and dropped.")
+  (arg p "Answers.")
+  (returns "p's value.")
+  (example """
+    (run-parser (between (pchar #\() (pchar #\)) pint) "(42)")   ; (Ok 42)
+    """))
+
+(:doc opt
+  (summary "p if it is there.")
+  (arg p "The parser.")
+  (returns "(Some value), or None when p failed where it began.")
+  (see opt-or optional)
+  (example """
+    (run-parser (opt (pchar #\-)) "5")   ; (Ok None)
+    """))
+
+(:doc opt-or
+  (summary "p if it is there, and otherwise a fallback.")
+  (arg p "The parser.")
+  (arg fallback "The value when p is not there.")
+  (returns "p's value or the fallback.")
+  (example """
+    (run-parser (opt-or pint 1) "x")   ; (Ok 1)
+    """))
+
+(:doc optional
+  (summary "p if it is there, keeping nothing.")
+  (arg p "The parser.")
+  (returns "Nothing.")
+  (see opt))
+
+(:doc chainl1
+  (summary "One or more p, joined by operators, grouped from the left.")
+  (arg p "An operand.")
+  (arg op "An operator, answering how to combine two operands.")
+  (returns "The operands, combined.")
+  (see chainr1)
+  (example """
+    (def minus (pright (pchar #\-) (preturn -)))
+    (run-parser (chainl1 pint minus) "10-3-2")   ; (Ok 5): (10-3)-2
+    """)
+  (reference """
+    Precedence is one @code{chainl1} per level, the tighter inside the
+    looser: a sum is a @code{chainl1} of products, and a product a
+    @code{chainl1} of factors.
+    """))
+
+(:doc chainr1
+  (summary "One or more p, joined by operators, grouped from the right.")
+  (arg p "An operand.")
+  (arg op "An operator, answering how to combine two operands.")
+  (returns "The operands, combined.")
+  (see chainl1)
+  (example """
+    (def minus (pright (pchar #\-) (preturn -)))
+    (run-parser (chainr1 pint minus) "10-3-2")   ; (Ok 9): 10-(3-2)
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Numbers
+;; ---------------------------------------------------------------------------
+
+(:doc pint
+  (summary "An integer: an optional sign and ASCII digits.")
+  (see pdouble digit)
+  (example """
+    (run-parser pint "-17 apples")   ; (Ok -17)
+    """)
+  (reference """
+    A sign with no digits after it reads nothing, so @code{pint} needs no
+    @code{attempt} in a choice. A number too large for an @code{int}
+    throws, as @code{string->int} does: it is not a parse error.
+    """))
+
+(:doc pdouble
+  (summary "A number with an optional fraction and exponent: 3, -0.5, 6.02e23.")
+  (see pint)
+  (example """
+    (run-parser pdouble "6.02e23")   ; (Ok 6.02e23)
+    (run-parser pdouble "1.x")       ; (Ok 1.0), and ".x" is left
+    """)
+  (reference """
+    It needs a digit before any point, so @code{.5} is not a number here,
+    and a point or an exponent with no digit after it is left for what
+    comes next.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Recursive grammars
+;; ---------------------------------------------------------------------------
+
+(:doc pforward
+  (summary "A parser to refer to before it is defined.")
+  (returns "An empty reference, to fill in with pforward-set!.")
+  (see pforwarded pforward-set! plazy)
+  (example """
+    ;; Nested lists of integers: [1, [2, 3]]
+    (type (: Nested (Union (: Num int) (: Nest (List Nested)))))
+
+    (: value-ref (ParserRef Nested))
+    (def value-ref (pforward))
+    (def value (pforwarded value-ref))
+    (def nested
+      (pmap Nest (between (pchar #\[) (pchar #\]) (sep-by value (pleft (pchar #\,) spaces)))))
+    (pforward-set! value-ref (por (pmap Num pint) nested))
+    """))
+
+(:doc pforwarded
+  (summary "The parser a reference holds, whenever it is run.")
+  (arg r "The reference.")
+  (returns "A parser that runs what r holds at the time.")
+  (see pforward))
+
+(:doc pforward-set!
+  (summary "Fills in a reference.")
+  (arg r "The reference.")
+  (arg p "The parser it stands for.")
+  (see pforward))
+
+(:doc plazy
+  (summary "A parser made the first time it is needed, by a function.")
+  (arg thunk "Makes the parser. Called once.")
+  (returns "The parser it makes.")
+  (see pforward)
+  (example """
+    ;; A grammar of functions. Building (expr) would build (expr) again,
+    ;; forever; plazy builds the inner one when it is first run.
+    (: expr (-> (Parser int)))
+    (defun (expr)
+      (por pint (plazy (fun () (between (pchar #\() (pchar #\)) (expr))))))
+
+    (run-parser (expr) "((7))")   ; (Ok 7)
+    """))

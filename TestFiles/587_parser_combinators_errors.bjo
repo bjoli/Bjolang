@@ -1,0 +1,202 @@
+;; The exact error->string text for a spread of failing parsers, and a few
+;; success values, compared with the texts in `expected`. Those were recorded
+;; from bjorsec, whose positions and expectations agreed with FParsec's for
+;; the same cases. A change in any message is a FAILURE that names the case.
+
+(import (text parser-combinators))
+
+;; ---------------------------------------------------------------------------
+;; The calculator grammar
+;; ---------------------------------------------------------------------------
+
+(: token (-> (Parser %a) (Parser %a)))
+(defun (token p) (pleft p spaces))
+
+(: sym (-> char (Parser char)))
+(defun (sym c) (token (pchar c)))
+
+(: number (Parser double))
+(def number (token (plabel pdouble "a number")))
+
+(: expr-ref (ParserRef double))
+(def expr-ref (pforward))
+
+(: expr (Parser double))
+(def expr (pforwarded expr-ref))
+
+(: factor (Parser double))
+(def factor (por number (between (sym #\() (sym #\)) expr)))
+
+(: mul-op (Parser (-> double double double)))
+(def mul-op
+  (por (pright (sym #\*) (preturn (fun (a b) (* a b))))
+       (pright (sym #\/) (preturn (fun (a b) (/ a b))))))
+
+(: add-op (Parser (-> double double double)))
+(def add-op
+  (por (pright (sym #\+) (preturn (fun (a b) (+ a b))))
+       (pright (sym #\-) (preturn (fun (a b) (- a b))))))
+
+(: term (Parser double))
+(def term (chainl1 factor mul-op))
+
+(: sum (Parser double))
+(def sum (chainl1 term add-op))
+
+(: calculator (Parser double))
+(def calculator (pright spaces (pleft sum eof)))
+
+(: minus-op (Parser (-> int int int)))
+(def minus-op (pright (pchar #\-) (preturn (fun (a b) (- a b)))))
+
+;; ---------------------------------------------------------------------------
+;; Helpers
+;; ---------------------------------------------------------------------------
+
+(: err (-> (Parser %a) string string))
+(defun (err p text)
+  (match (run-parser/message p text)
+    ((Ok v) "OK (no error)")
+    ((Err e) e)))
+
+(: okv (-> (Parser %a) string string) (where (Displayed %a)))
+(defun (okv p text)
+  (match (run-parser p text)
+    ((Ok v) (str "OK " (displayed v)))
+    ((Err e) (str "ERR " (error->string e)))))
+
+;; The text each case gave when FParsec was compared: its label, then the text.
+(: expected (Vec (Tuple string string)))
+(def expected
+  [(Tuple "calc: 1 +"
+          "Parse error at line 1, column 4:\n1 +\n   ^\nExpecting: a number or '('\nUnexpected: end of input")
+   (Tuple "calc: 1 + * 2"
+          "Parse error at line 1, column 5:\n1 + * 2\n    ^\nExpecting: a number or '('\nUnexpected: '*'")
+   (Tuple "calc: (1 + 2"
+          "Parse error at line 1, column 7:\n(1 + 2\n      ^\nExpecting: ')'\nUnexpected: end of input")
+   (Tuple "calc: empty"
+          "Parse error at line 1, column 1:\n\n^\nExpecting: a number or '('\nUnexpected: end of input")
+   (Tuple "calc: line 3"
+          "Parse error at line 3, column 1:\n* 3\n^\nExpecting: a number or '('\nUnexpected: '*'")
+   (Tuple "por strings on help"
+          "Parse error at line 1, column 1:\nhelp\n^\nExpecting: 'hello' or 'world'\nUnexpected: 'h'")
+   (Tuple "choice pchar on z"
+          "Parse error at line 1, column 1:\nz\n^\nExpecting: 'a', 'b' or 'c'\nUnexpected: 'z'")
+   (Tuple "choice pchar on eof"
+          "Parse error at line 1, column 1:\n\n^\nExpecting: 'a', 'b' or 'c'\nUnexpected: end of input")
+   (Tuple "plabel"
+          "Parse error at line 1, column 1:\nz\n^\nExpecting: a greeting\nUnexpected: 'z'")
+   (Tuple "pfail"
+          "Parse error at line 1, column 1:\nx\n^\nnope")
+   (Tuple "followed-by"
+          "Parse error at line 1, column 2:\nac\n ^\nExpecting: 'b'\nUnexpected: 'c'")
+   (Tuple "not-followed-by"
+          "OK (no error)")
+   (Tuple "many-till"
+          "Parse error at line 1, column 4:\nabc\n   ^\nExpecting: '!' or any character\nUnexpected: end of input")
+   (Tuple "eof"
+          "Parse error at line 1, column 1:\nab\n^\nExpecting: end of input\nUnexpected: 'a'")
+   (Tuple "pint"
+          "Parse error at line 1, column 1:\nx\n^\nExpecting: an integer\nUnexpected: 'x'")
+   (Tuple "pdouble"
+          "Parse error at line 1, column 1:\nx\n^\nExpecting: a number\nUnexpected: 'x'")
+   (Tuple "unexpected emoji"
+          "Parse error at line 1, column 1:\n😀\n^\nExpecting: 'a'\nUnexpected: '😀'")
+   (Tuple "unexpected tab"
+          "Parse error at line 1, column 1:\n\n^\nExpecting: 'a'\nUnexpected: a tab")
+   (Tuple "unexpected newline"
+          "Parse error at line 1, column 1:\n\n^\nExpecting: 'a'\nUnexpected: a newline")
+   (Tuple "attempt backtracks in por"
+          "OK a")
+   (Tuple "choice stops after a moving failure"
+          "Parse error at line 1, column 2:\nax\n ^\nExpecting: 'b'\nUnexpected: 'x'")
+   (Tuple "choice merges earlier then stops"
+          "Parse error at line 1, column 2:\nax\n ^\nExpecting: 'b'\nUnexpected: 'x'")
+   (Tuple "plazy thunk runs once"
+          "1")
+   (Tuple "ok: calc 1 + 2 * 3"
+          "OK 7")
+   (Tuple "ok: calc -2 * 3"
+          "OK -6")
+   (Tuple "ok: por hello"
+          "OK hello")
+   (Tuple "ok: pint -42"
+          "OK -42")
+   (Tuple "ok: pdouble 3.5e2"
+          "OK 350")
+   (Tuple "ok: chainr1 100000 terms"
+          "OK 0")])
+
+(: shown (Box int))
+(def shown (make-box 0))
+
+;; Compares the text of the next case with `expected`.
+(: show (-> string string void))
+(defun (show label out)
+  (def i (box-ref shown))
+  (box-set! shown (+ i 1))
+  (def (Tuple wanted-label wanted) (vec-ref expected i))
+  (cond
+    ((not (= label wanted-label))
+     (println #"FAILURE: case ${i} is ${(written label)}, and expected has ${(written wanted-label)}"))
+    ((not (= out wanted))
+     (println #"FAILURE: ${label} gave ${(written out)} but wanted ${(written wanted)}"))
+    (else unit)))
+
+(defun (main args)
+  (pforward-set! expr-ref sum)
+
+  (show "calc: 1 +" (err calculator "1 +"))
+  (show "calc: 1 + * 2" (err calculator "1 + * 2"))
+  (show "calc: (1 + 2" (err calculator "(1 + 2"))
+  (show "calc: empty" (err calculator ""))
+  (show "calc: line 3" (err calculator "1 +\n2 +\n* 3"))
+
+  (show "por strings on help" (err (por (pstring "hello") (pstring "world")) "help"))
+  (show "choice pchar on z" (err (choice (list (pchar #\a) (pchar #\b) (pchar #\c))) "z"))
+  (show "choice pchar on eof" (err (choice (list (pchar #\a) (pchar #\b) (pchar #\c))) ""))
+
+  (show "plabel" (err (plabel (pchar #\a) "a greeting") "z"))
+  (show "pfail" (err (pfail "nope") "x"))
+  (show "followed-by" (err (pleft (pchar #\a) (followed-by (pchar #\b) "'b'")) "ac"))
+  (show "not-followed-by" (err (not-followed-by (pchar #\b) "'b'") "a"))
+  (show "many-till" (err (many-till any-char (pchar #\!)) "abc"))
+  (show "eof" (err eof "ab"))
+  (show "pint" (err pint "x"))
+  (show "pdouble" (err pdouble "x"))
+
+  (show "unexpected emoji" (err (pchar #\a) "😀"))
+  (show "unexpected tab" (err (pchar #\a) "\t"))
+  (show "unexpected newline" (err (pchar #\a) "\n"))
+
+  (show "attempt backtracks in por"
+        (okv (por (attempt (pright (pchar #\a) (pchar #\b))) (pchar #\a)) "ac"))
+
+  (show "choice stops after a moving failure"
+        (err (choice (list (pright (pchar #\a) (pchar #\b)) (pchar #\a))) "ax"))
+  (show "choice merges earlier then stops"
+        (err (choice (list (pchar #\q) (pright (pchar #\a) (pchar #\b)) (pchar #\a))) "ax"))
+
+  (def/mutable thunk-runs 0)
+  (def lazy-a (plazy (fun () (set! thunk-runs (+ thunk-runs 1)) (pchar #\a))))
+  (ignore (run-parser lazy-a "a"))
+  (ignore (run-parser lazy-a "a"))
+  (ignore (run-parser lazy-a "a"))
+  (show "plazy thunk runs once" (displayed thunk-runs))
+
+  (show "ok: calc 1 + 2 * 3" (okv calculator "1 + 2 * 3"))  (show "ok: calc -2 * 3" (okv calculator "-2 * 3"))
+  (show "ok: por hello" (okv (por (pstring "hello") (pstring "world")) "hello"))
+  (show "ok: pint -42" (okv pint "-42"))
+  (show "ok: pdouble 3.5e2" (okv pdouble "3.5e2"))
+
+  (def big-n 100000)
+  (def big-input
+    (let loop ((i 0) (acc Nil))
+      (if (= i big-n)
+          (string-join (list->vec acc) "-")
+          (loop (+ i 1) (Cons "1" acc)))))
+  (show "ok: chainr1 100000 terms" (okv (chainr1 pint minus-op) big-input))
+  (unless (= (box-ref shown) (vec-length expected))
+    (println #"FAILURE: ${(box-ref shown)} cases ran, and expected has ${(vec-length expected)}"))
+  (println "parser-combinators errors ok")
+  0)
