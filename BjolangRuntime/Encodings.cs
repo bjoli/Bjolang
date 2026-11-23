@@ -235,6 +235,34 @@ public static class Encodings {
     }
 
     /// <summary>
+    /// `bytes->string`: the bytes from <paramref name="start"/> to
+    /// <paramref name="end"/>, decoded strictly, in one pass.
+    /// - Decoded: <see cref="DecodeOutcome.Failed"/> is false and
+    ///   <see cref="DecodeOutcome.Text"/> is the text.
+    /// - Not: <see cref="DecodeOutcome.Offset"/> is the absolute offset of the
+    ///   first bytes that do not decode, and <see cref="DecodeOutcome.Unknown"/>
+    ///   is those bytes.
+    /// - Raises ArgumentOutOfRangeException for a range outside the array,
+    ///   which is a mistake of the caller, not of the bytes.
+    /// </summary>
+    public static DecodeOutcome TryDecode(byte[] bytes, int start, int end, Encoding encoding) {
+        ArgumentNullException.ThrowIfNull(encoding);
+        var span = Range(bytes, start, end);
+        if (encoding.CodePage == Utf8CodePage) {
+            if (Utf8String.TryFromUtf8(span, out var s)) return DecodeOutcome.Decoded(s);
+            var (at, length) = FirstInvalidUtf8(span);
+            return DecodeOutcome.Undecodable(start + at, span.Slice(at, length).ToArray());
+        }
+        try {
+            return DecodeOutcome.Decoded(FromChars(Strict(encoding), span));
+        } catch (DecoderFallbackException e) {
+            int at = FailureOffset(Strict(encoding), span);
+            var unknown = e.BytesUnknown is { Length: > 0 } b ? b : span.Slice(at, Math.Min(1, span.Length - at)).ToArray();
+            return DecodeOutcome.Undecodable(start + at, unknown);
+        }
+    }
+
+    /// <summary>
     /// Where the bytes that fail to decode begin: just past the last byte that
     /// came out as characters. The exception's own index cannot be trusted
     /// for this: for a lone UTF-16 surrogate it points at the character after.
@@ -932,4 +960,38 @@ public static class Encodings {
     private static Encoding? s_cp65001;
     /// <summary><c>utf-8</c>.</summary>
     public static Encoding Cp65001 => s_cp65001 ??= OfCodePageOrThrow(65001);
+}
+
+/// <summary>
+/// What <see cref="Encodings.TryDecode"/> returns: the text, or where the
+/// bytes stopped decoding. A struct, so a decode that succeeds allocates
+/// nothing for it. `bytes->string` turns it into a `Result`.
+/// </summary>
+[NonUserCode]
+public readonly struct DecodeOutcome {
+    private readonly Utf8String _text;
+    private readonly int _offset;
+    private readonly byte[]? _unknown;
+
+    private DecodeOutcome(Utf8String text, int offset, byte[]? unknown) {
+        _text = text;
+        _offset = offset;
+        _unknown = unknown;
+    }
+
+    internal static DecodeOutcome Decoded(Utf8String text) => new(text, -1, null);
+
+    internal static DecodeOutcome Undecodable(int offset, byte[] unknown) => new(default, offset, unknown);
+
+    /// <summary>Whether some bytes did not decode.</summary>
+    public bool Failed => _unknown is not null;
+
+    /// <summary>The text. Empty when <see cref="Failed"/>.</summary>
+    public Utf8String Text => _text;
+
+    /// <summary>The absolute offset of the first bytes that did not decode, or -1.</summary>
+    public int Offset => _offset;
+
+    /// <summary>The bytes that did not decode. Empty unless <see cref="Failed"/>.</summary>
+    public byte[] Unknown => _unknown ?? [];
 }

@@ -551,33 +551,67 @@
     named as .NET names it in lower case (@code{utf-8}, @code{utf-16be},
     @code{windows-1252}, @code{dos-862}), and finds one by name with
     @code{encoding-named}. What happens to bytes that do not decode is up to
-    the operation, not the encoding: @code{bytes->string} is strict, a port
-    is lenient.
+    the operation, not the encoding: @code{bytes->string} returns an error,
+    @code{bytes->string/lossy} and a port put U+FFFD in their place.
     """))
 
 (:doc bytes->string
-  (summary "The text some bytes encode.")
+  (summary "The text some bytes encode, or why they do not.")
   (arg bytes "The bytes.")
   (key #:encoding "What they are in: utf-8, the default, or any value from (text encodings).")
   (key #:start "The first byte to decode: 0 by default.")
   (key #:end "One past the last byte to decode: the end of the array by default.")
-  (key #:replace "None, the default, to fail on bytes that do not decode; (Some c) to put c in their place, once per invalid sequence.")
-  (returns "The text of the bytes from start to end.")
-  (see string->bytes Encoding)
+  (returns "(Ok text) of the bytes from start to end, or (Err e) with a DecodeError for the first bytes that do not decode.")
+  (raises System.ArgumentOutOfRangeException "When the range is not inside the array, or start is after end.")
+  (see bytes->string/lossy DecodeError string->bytes Encoding)
   (example """
-    (bytes->string (string->bytes "blåbär"))              ; "blåbär"
+    (bytes->string (string->bytes "blåbär"))              ; (Ok "blåbär")
+    (bytes->string #[104 255 105])                        ; (Err (DecodeError (offset 1) ...))
     (bytes->string bs #:encoding windows-1252)            ; with (text encodings)
-    (bytes->string bs #:start 4 #:end 8)
-    (bytes->string bs #:replace (Some #\\xFFFD))           ; never fails
+    (def (Ok text) (bytes->string bs) :leave ((Err e) (panic! (decode-error-message e))))
     """)
   (reference """
-    Strict, as Racket's @code{bytes->string/utf-8} is: bytes that do not
-    decode throw an @code{ArgumentException} naming their offset and the
-    bytes themselves. A string is UTF-8, so from UTF-8 this checks the bytes
-    and copies them; the string never shares the array. A byte order mark is
-    not skipped: it is the character U+FEFF. A range outside the array
-    throws.
+    Strict, as Racket's @code{bytes->string/utf-8} is. Bytes from a file, a
+    socket or another program are not known to decode, so the result is a
+    @code{Result}: the caller says what a failure means. Use
+    @code{bytes->string/lossy} where a replacement character is the right
+    answer.
+
+    A string is UTF-8, so from UTF-8 this checks the bytes and copies them;
+    the string never shares the array. A byte order mark is not skipped: it
+    is the character U+FEFF. A range outside the array raises, because that
+    is a mistake of the caller, not of the bytes.
     """))
+
+(:doc bytes->string/lossy
+  (summary "The text some bytes encode, with a replacement for each sequence that does not decode.")
+  (arg bytes "The bytes.")
+  (key #:encoding "What they are in: utf-8, the default, or any value from (text encodings).")
+  (key #:start "The first byte to decode: 0 by default.")
+  (key #:end "One past the last byte to decode: the end of the array by default.")
+  (key #:replace "What goes in place of each sequence that does not decode: U+FFFD by default.")
+  (returns "The text. It never fails on the bytes.")
+  (raises System.ArgumentOutOfRangeException "When the range is not inside the array, or start is after end.")
+  (raises System.ArgumentException "When the encoding has no way to show the replacement.")
+  (see bytes->string)
+  (example """
+    (bytes->string/lossy #[104 255 105])                  ; "h\u{FFFD}i"
+    (bytes->string/lossy #[104 255 105] #:replace #\?)    ; "h?i"
+    """)
+  (reference "From UTF-8, a sequence that does not decode is the longest start of a valid one, or one byte, by the rule of Unicode chapter 3."))
+
+(:doc DecodeError
+  (summary "Why bytes did not decode: what bytes->string returns in an Err.")
+  (field offset "The offset of the first bytes that do not decode, in the array that was given, not from start.")
+  (field bytes "Those bytes: the invalid sequence, or what the decoder could not use.")
+  (field encoding "The name of the encoding, as (text encodings) names it: \"utf-8\".")
+  (see bytes->string decode-error-message))
+
+(:doc decode-error-message
+  (summary "A DecodeError as a sentence.")
+  (arg e "The error.")
+  (returns "Text such as \"the bytes at offset 1 (0xFF) are not valid utf-8\".")
+  (see DecodeError))
 
 (:doc bytes-utf-8?
   (summary "Whether a range of bytes is UTF-8.")

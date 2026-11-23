@@ -160,7 +160,8 @@
   string->int string->long string->double
   decimal->string string->decimal bigint->string string->bigint
   int128->string string->int128 uint128->string string->uint128
-  bytes->string string->bytes bytes-utf-8?
+  bytes->string bytes->string/lossy string->bytes bytes-utf-8?
+  DecodeError decode-error-message
   Utf8Chunk bytes->utf8-chunk utf8-chunk-length utf8-chunk-valid-end utf8-chunk-substring
   ;; Math.
   sqrt
@@ -2770,16 +2771,31 @@
 ;; value for each encoding .NET knows, and finds them by name; UTF-8 is the
 ;; default here and needs no import.
 ;;
-;; Both directions are strict, as Racket's `bytes->string/utf-8` is: what
-;; does not decode, or has no bytes in the encoding, is an error naming its
-;; offset. `#:replace (Some c)` puts `c` there instead. A port is the
-;; lenient one: it reads what does not decode as U+FFFD.
+;; Both directions are strict, as Racket's `bytes->string/utf-8` is:
+;; - `bytes->string` returns `(Err DecodeError)` for bytes that do not
+;;   decode, with their offset. Decoded bytes usually come from outside, so
+;;   the caller handles the failure.
+;; - `bytes->string/lossy` puts a replacement character there instead.
+;; - `string->bytes` raises for a character the encoding has no bytes for.
+;;   `#:replace (Some c)` encodes `c` there instead.
+;; - A port is lenient: it reads what does not decode as U+FFFD.
 
 (type (: Encoding System.Text.Encoding))
+(type (: DecodeOutcome Bjolang.Runtime.DecodeOutcome))
+
+;; Why bytes did not decode: the offset of the first bytes that did not, in
+;; the array that was given, those bytes, and the name of the encoding.
+(type (: DecodeError (Record (: offset int) (: bytes (Vec byte)) (: encoding string))))
 
 (import/extern
   (clr-utf-8          (: Bjolang.Runtime.Encodings.Cp65001 #:get))
-  (clr-decode         (: Bjolang.Runtime.Encodings.Decode (-> (Array byte) int int Encoding string)))
+  (clr-try-decode     (: Bjolang.Runtime.Encodings.TryDecode (-> (Array byte) int int Encoding DecodeOutcome)))
+  (clr-encoding-name  (: Bjolang.Runtime.Encodings.NameOf (-> Encoding string)))
+  (clr-hex            (: System.Convert.ToHexString (-> (Array byte) string)))
+  (clr-outcome-failed? (: Bjolang.Runtime.DecodeOutcome.Failed (-> DecodeOutcome bool) #:get))
+  (clr-outcome-text   (: Bjolang.Runtime.DecodeOutcome.Text (-> DecodeOutcome string) #:get))
+  (clr-outcome-offset (: Bjolang.Runtime.DecodeOutcome.Offset (-> DecodeOutcome int) #:get))
+  (clr-outcome-unknown (: Bjolang.Runtime.DecodeOutcome.Unknown (-> DecodeOutcome (Array byte)) #:get))
   (clr-decode/replace (: Bjolang.Runtime.Encodings.Decode (-> (Array byte) int int Encoding char string)))
   (clr-encode         (: Bjolang.Runtime.Encodings.Encode (-> string Encoding (Array byte))))
   (clr-encode/replace (: Bjolang.Runtime.Encodings.Encode (-> string Encoding char (Array byte))))
@@ -2788,14 +2804,37 @@
   ;; bytes checks a run with it in one call.
   (bytes-utf-8?       (: Bjolang.Runtime.Encodings.IsUtf8 (-> (Array byte) int int bool))))
 
-;; The text of the bytes from `#:start` to `#:end`, in `#:encoding`. A string
-;; is UTF-8, so from UTF-8 this checks the bytes and copies them. A byte order
-;; mark is a character like any other.
-(: (-> (Array byte) (#:encoding Encoding) (#:start int) (#:end int) (#:replace (Option char)) string))
-(defun (bytes->string bytes #:encoding clr-utf-8 #:start 0 #:end (array-length bytes) #:replace None)
-  (match replace
-    (None (clr-decode bytes start end encoding))
-    ((Some c) (clr-decode/replace bytes start end encoding c))))
+;; Two hex digits in upper case: "C3".
+(: (-> byte string))
+(defun (byte-hex b)
+  (def (: one (Array byte)) (make-array 1))
+  (array-set! one 0 b)
+  (clr-hex one))
+
+;; "the bytes at offset 10 (0xC3) are not valid utf-8"
+(: (-> DecodeError string))
+(defun (decode-error-message e)
+  (def hex (string-join (vec-map (fun (b) (str "0x" (byte-hex b))) (record-ref e bytes)) " "))
+  #"the bytes at offset ${(record-ref e offset)} (${hex}) are not valid ${(record-ref e encoding)}")
+
+;; The text of the bytes from `#:start` to `#:end`, in `#:encoding`, or why
+;; they do not decode. A string is UTF-8, so from UTF-8 this checks the bytes
+;; and copies them. A byte order mark is a character like any other. A range
+;; outside the array raises: that is a mistake of the caller, not of the bytes.
+(: (-> (Array byte) (#:encoding Encoding) (#:start int) (#:end int) (Result DecodeError string)))
+(defun (bytes->string bytes #:encoding clr-utf-8 #:start 0 #:end (array-length bytes))
+  (def outcome (clr-try-decode bytes start end encoding))
+  (if (clr-outcome-failed? outcome)
+      (Err (DecodeError (offset (clr-outcome-offset outcome))
+                        (bytes (array->vec (clr-outcome-unknown outcome)))
+                        (encoding (clr-encoding-name encoding))))
+      (Ok (clr-outcome-text outcome))))
+
+;; As `bytes->string`, with `replace` for each sequence that does not
+;; decode, so it never fails.
+(: (-> (Array byte) (#:encoding Encoding) (#:start int) (#:end int) (#:replace char) string))
+(defun (bytes->string/lossy bytes #:encoding clr-utf-8 #:start 0 #:end (array-length bytes) #:replace #\xFFFD)
+  (clr-decode/replace bytes start end encoding replace))
 
 ;; The string's bytes in `#:encoding`, without a byte order mark. To UTF-8
 ;; this is a copy of the string's own bytes.

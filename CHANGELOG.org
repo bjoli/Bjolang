@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~bytes->string~ returns a ~Result~
+
+- ~(bytes->string bytes #:encoding #:start #:end)~ returns
+  ~(Result DecodeError string)~. Decoded bytes usually come from outside the
+  program, so the caller decides what a failure means. It raised an
+  ~ArgumentException~ before.
+- ~DecodeError~ is a record: ~offset~ (in the array given, not from
+  ~#:start~), ~bytes~ (those that did not decode) and ~encoding~ (its name).
+  ~decode-error-message~ gives "the bytes at offset 1 (0xFF) are not valid
+  utf-8".
+- ~bytes->string/lossy~ takes the place of ~#:replace~: it puts ~#:replace~,
+  U+FFFD by default, for each sequence that does not decode, and returns a
+  string.
+- A range outside the array still raises: that is a mistake of the caller,
+  not of the bytes.
+- To change: ~(bytes->string b #:replace (Some c))~ is
+  ~(bytes->string/lossy b #:replace c)~. ~(try (bytes->string b) ...)~ is a
+  ~match~ on the result.
+- ~string->bytes~ is unchanged: it still raises for a character the encoding
+  has no bytes for.
+
 * Local functions that call constrained functions
 
 - A local function whose body calls a constrained function, such as one

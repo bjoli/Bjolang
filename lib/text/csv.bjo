@@ -306,8 +306,10 @@
   (cond
     ((= start end) (Some ""))
     ((<= end (utf8-chunk-valid-end c)) (Some (utf8-chunk-substring c start end)))
-    ((bytes-utf-8? b start end) (Some (bytes->string b #:start start #:end end)))
-    (else None)))
+    (else
+     (match (bytes->string b #:start start #:end end)
+       ((Ok s) (Some s))
+       ((Err _) None)))))
 
 (: (-> CsvReader int (Array byte) int int (Result CsvError string)))
 (defun (field-string rd field b start end)
