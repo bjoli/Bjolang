@@ -396,9 +396,9 @@
     (def path (fake-path (path->string/lossy raw)))
     (match (fake-kind fs path)
       ((Some FsDirectory) (access-denied path))
-      ((Some FsFile) (match (fake-bytes-at fs path)
-                       ((Some bytes) (Ok (cast ClrStream (fake-memory-stream bytes))))
-                       (None (not-found path))))
+      ((Some _) (match (fake-bytes-at fs path)
+                  ((Some bytes) (Ok (cast ClrStream (fake-memory-stream bytes))))
+                  (None (not-found path))))
       (None (if (fake-dir? fs (fake-parent path)) (not-found path) (no-directory path))))))
 
 ;; `Append` starts the new stream with what the path held.
@@ -427,8 +427,8 @@
 (defun (fake-fs-info fs)
   (fun (raw) (fake-info fs (fake-path (path->string/lossy raw)))))
 
-;; Whole paths, as `Directory.GetFileSystemEntries` gives them, sorted.
-(: (-> FakeFs (-> Path (Result Exception (Vec Path)))))
+;; The entries, with whole paths, sorted. The fake has no links.
+(: (-> FakeFs (-> Path (Result Exception (Vec FsEntry)))))
 (defun (fake-fs-list fs)
   (fun (raw)
     (def path (fake-path (path->string/lossy raw)))
@@ -441,12 +441,16 @@
                                                (child (match (string-search rest "/")
                                                         ((Some at) (substring rest (string-cursor-start rest) at))
                                                         (None rest))))
-                                          (map-set found (str prefix child) #t))
+                                          (map-set found (str prefix child) child))
                                         found))
                                   (map-empty)
                                   (fake-entries fs))))
-          (Ok (list->vec (list-sort (loop (:for child (map-keys children))
-                                          (:acc (listing (as-path child)))))))))))
+          (Ok (list->vec (loop (:for whole (list-sort (seq->list (map-keys children))))
+                               (:acc (listing (FsEntry (entry-path (as-path whole))
+                                                       (entry-name (string->bytestring (map-ref children whole)))
+                                                       (entry-kind (match (fake-kind fs whole)
+                                                                     ((Some k) k)
+                                                                     (None FsFile)))))))))))))
 
 ;; Every missing directory along the path, as `Directory.CreateDirectory`.
 (: (-> FakeFs (-> Path (Result Exception Unit))))
@@ -454,8 +458,8 @@
   (fun (raw)
     (def path (fake-path (path->string/lossy raw)))
     (match (fake-kind fs path)
-      ((Some FsFile) (io-error #"the fake filesystem has a file at ${path}"))
       ((Some FsDirectory) (Ok unit))
+      ((Some _) (io-error #"the fake filesystem has a file at ${path}"))
       (None (fake-update! fs (map-set (fake-with-ancestors (fake-entries fs) path) path FakeDir))
             (fake-stamp! fs path)
             (Ok unit)))))
@@ -467,9 +471,9 @@
     (def path (fake-path (path->string/lossy raw)))
     (match (fake-kind fs path)
       ((Some FsDirectory) (access-denied path))
-      ((Some FsFile) (fake-update! fs (map-remove (fake-entries fs) path))
-                     (fake-forget-time! fs path)
-                     (Ok unit))
+      ((Some _) (fake-update! fs (map-remove (fake-entries fs) path))
+                (fake-forget-time! fs path)
+                (Ok unit))
       (None (Ok unit)))))
 
 (: (-> FakeFs (-> Path (Result Exception Unit))))
@@ -478,7 +482,6 @@
     (def path (fake-path (path->string/lossy raw)))
     (def prefix (fake-prefix path))
     (match (fake-kind fs path)
-      ((Some FsFile) (io-error #"the fake filesystem has a file, not a directory, at ${path}"))
       (None (no-directory path))
       ((Some FsDirectory)
        (cond
@@ -487,7 +490,8 @@
           (io-error #"the fake directory ${path} is not empty"))
          (else (fake-update! fs (map-remove (fake-entries fs) path))
                (fake-forget-time! fs path)
-               (Ok unit)))))))
+               (Ok unit))))
+      ((Some _) (io-error #"the fake filesystem has a file, not a directory, at ${path}")))))
 
 ;; `m` with `from`, and everything below it, renamed to `to`. Generic, because
 ;; the entries and their times move by the same renaming.

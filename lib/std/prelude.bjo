@@ -30,7 +30,7 @@
   current-directory set-current-directory! open-input-file open-input-string
   open-output-file open-output-string close-input-port close-output-port
   flush-port open-input-file/raw open-output-file/raw WriteMode
-  call-with-input-file call-with-output-file FsKind FsInfo MoveMode
+  call-with-input-file call-with-output-file FsKind FsInfo FsEntry MoveMode
   open-read-stream op/open-read-stream open-read-stream/raw open-write-stream
   op/open-write-stream open-write-stream/raw fs-info op/fs-info fs-info/raw
   fs-list op/fs-list fs-list/raw fs-create-directory op/fs-create-directory
@@ -179,7 +179,21 @@
 (type (: WriteMode (Union Truncate Append CreateNew)))
 
 ;; What a path names, when it names anything.
-(type (: FsKind (Union FsFile FsDirectory)))
+;;
+;; - `FsFile`, `FsDirectory`: a file, a directory.
+;; - `FsLink`: a symbolic link, not followed. Only a listing reports one:
+;;   `fs-info` follows the link, and says `link?`.
+;; - `FsOther`: a FIFO, a socket or a device. Only a listing reports one:
+;;   `fs-info` reports it as `FsFile`, as .NET does.
+(type (: FsKind (Union FsFile FsDirectory FsLink FsOther)))
+
+;; One entry of a directory, as `fs-list` returns it.
+;;
+;; - `entry-path`: the directory joined with `entry-name`.
+;; - `entry-name`: the bytes the OS gave.
+;; - `entry-kind`: the entry's own kind, as the listing reported it. A symbolic
+;;   link is `FsLink`, so a caller that follows links asks `fs-info`.
+(type (: FsEntry (Record (: entry-path Path) (: entry-name ByteString) (: entry-kind FsKind))))
 
 ;; What a move does when something is already at the target.
 ;;
@@ -320,30 +334,35 @@
       (directory-delete path)
       (let ()
         (loop (:for entry (raise-err (fs-list path)))
-              (:do (match (fs-info entry)
-                     ((Some info)
-                      (match (record-ref info kind)
-                        (FsDirectory (delete-tree entry))
-                        (FsFile (file-delete entry))))
-                     ;; A link to nothing, which `file-delete` removes.
-                     (None (file-delete entry)))))
+              (:do (match (record-ref entry entry-kind)
+                     (FsDirectory (delete-tree (record-ref entry entry-path)))
+                     ;; A link is removed, and what it leads to is kept.
+                     (_ (file-delete (record-ref entry entry-path))))))
         (directory-delete path))))
 
 (: (-> Path bool))
 (defun (directory-link? path)
   (match (fs-info path)
-    ((Some info) (and (record-ref info link?)
-                      (match (record-ref info kind) (FsDirectory #t) (FsFile #f))))
+    ((Some info) (and (record-ref info link?) (= (record-ref info kind) FsDirectory)))
     (None #f)))
 
+;; The kind of an entry, with a symbolic link followed: `fs-info` is asked
+;; for a link only. A link to nothing is a file, as `fs-info` says. An entry
+;; gone since the listing is `None`.
+(: (-> FsEntry (Option FsKind)))
+(defun (followed-kind entry)
+  (match (record-ref entry entry-kind)
+    (FsLink (kind-of (record-ref entry entry-path)))
+    (FsOther (Some FsFile))
+    (k (Some k))))
+
+;; The entries of `path` that are files, or directories, with links
+;; followed.
 (: (-> Path FsKind (Vec Path)))
 (defun (entries-of-kind path kind)
   (loop (:for entry (raise-err (fs-list path)))
-        (:when (match (Tuple (kind-of entry) kind)
-                 ((Tuple (Some FsFile) FsFile) #t)
-                 ((Tuple (Some FsDirectory) FsDirectory) #t)
-                 (_ #f)))
-        (:acc found (vecing entry))))
+        (:when (= (followed-kind entry) (Some kind)))
+        (:acc found (vecing (record-ref entry entry-path)))))
 
 (: (-> %p (Vec Path)) (where (AsPath %p)))
 (defun (directory-files path) (entries-of-kind (as-path path) FsFile))
@@ -489,15 +508,19 @@
 ;; - Effect operations return `(Result Exception %a)` values, whereas higher-level
 ;;   prelude wrappers unwrap them and raise exceptions on error.
 
+(type (: FsListed Bjolang.Runtime.FsListed))
+
 (import/class
   (DirectoryInfo (: System.IO.DirectoryInfo (-> string DirectoryInfo)))
   (FileInfo (: System.IO.FileInfo (-> string FileInfo))))
 
 (import/extern
-  (clr-file-exists (: System.IO.File.Exists (-> string bool)))
   (clr-dir-exists  (: System.IO.Directory.Exists (-> string bool)))
-  (clr-dir-entries (: System.IO.Directory.GetFileSystemEntries (-> string (Array string))
+  (clr-list        (: Bjolang.Runtime.FsListing.List (-> (Array byte) (Array FsListed))
                       #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
+  (clr-listed-name (: Bjolang.Runtime.FsListed.Name (-> FsListed (Array byte)) #:get))
+  (clr-listed-kind (: Bjolang.Runtime.FsListed.Kind (-> FsListed int) #:get))
+  (clr-classify    (: Bjolang.Runtime.FsListing.Classify (-> FileInfo int)))
   (clr-dir-create  (: System.IO.Directory.CreateDirectory (-> string DirectoryInfo)
                       #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
   (clr-file-delete (: System.IO.File.Delete (-> string void)
@@ -567,11 +590,6 @@
   (def q (/ d 10000L))
   (if (< (% d 10000L) 0L) (- q 1L) q))
 
-;; `File.Exists` and `Directory.Exists` first, because they never throw: a
-;; path that is no path at all, "" say, is `None` rather than an
-;; `ArgumentException` out of the `FileInfo` constructor. The info object then
-;; reads the path once, on its first property, so size and time agree with
-;; each other; a file deleted in between is `None`.
 ;; Where a chain of symbolic links ends: `path` itself when it is no link. A
 ;; link's target is relative to the directory the link is in. At most 40
 ;; steps, as Linux allows, so that a loop of links ends. Read step by step
@@ -588,54 +606,67 @@
                 (None target))
               (+ steps 1)))))
 
-;; A link's size and time are those of the file it leads to, which is what
-;; reading it reads; `link?` is what says it is one. A link to nothing keeps
-;; its own.
-(: (-> string (Option FsInfo)))
-(defun (file-info/raw path)
-  (def own (FileInfo. path))
-  (def link (not (clr-empty? (.-LinkTarget own))))
-  (def end (if link (FileInfo. (link-end path)) own))
-  (def f (if (.-Exists end) end own))
-  (if (.-Exists own)
-      (Some (FsInfo (kind FsFile)
-                    (size (.-Length f))
-                    (modified-ms (ticks->unix-ms (.-Ticks (.-LastWriteTimeUtc f))))
-                    (link? link)))
-      None))
-
-(: (-> string (Option FsInfo)))
-(defun (directory-info/raw path)
-  (def own (DirectoryInfo. path))
-  (def link (not (clr-empty? (.-LinkTarget own))))
-  (def end (if link (DirectoryInfo. (link-end path)) own))
-  (def d (if (.-Exists end) end own))
-  (if (.-Exists own)
-      (Some (FsInfo (kind FsDirectory)
-                    (size 0L)
-                    (modified-ms (ticks->unix-ms (.-Ticks (.-LastWriteTimeUtc d))))
-                    (link? link)))
-      None))
-
+;; What `path` names, following symbolic links.
+;;
+;; - One `FileInfo` reads the path once, on its first property: an `lstat`,
+;;   and a `stat` more for a link. Size and time come from the same read,
+;;   so they agree with each other.
+;; - A link's size and time are those of the end of its chain of links,
+;;   which is what reading it reads. `link?` says that it is one. A link to
+;;   nothing is a file, and keeps its own size and time.
+;; - The empty path is `None`: the `FileInfo` constructor raises for it.
 (: (-> string (Option FsInfo)))
 (defun (os-info path)
-  (if (clr-file-exists path)
-      (file-info/raw path)
-      (if (clr-dir-exists path) (directory-info/raw path) None)))
+  (if (string-empty? path)
+      None
+      (let ((own (FileInfo. path)))
+        (def class (clr-classify own))
+        (cond
+          ((< class 0) None)
+          ((>= class 4)
+           (let ((end (FileInfo. (link-end path))))
+             (def end-class (clr-classify end))
+             (if (or (< end-class 0) (>= end-class 4))
+                 (info-of own 0 #t)
+                 (info-of end end-class #t))))
+          (else (info-of own class #f))))))
+
+;; The info of `f`, whose kind `clr-classify` gave as `class`, 0 or 1.
+(: (-> FileInfo int bool (Option FsInfo)))
+(defun (info-of f class link)
+  (def directory (= class 1))
+  (Some (FsInfo (kind (if directory FsDirectory FsFile))
+                (size (if directory 0L (.-Length f)))
+                (modified-ms (ticks->unix-ms (.-Ticks (.-LastWriteTimeUtc f))))
+                (link? link))))
 
 ;; Raises the `ArgumentException` of `os-path` for a path that is not UTF-8,
 ;; because `None` would say that nothing is there.
 (: (-> Path (Option FsInfo)))
 (defun (fs-info/raw path) (os-info (raise-err (os-path path))))
 
-;; Whole paths, files and directories both, in the order the OS gives them.
-;; .NET decodes each name from UTF-8, with U+FFFD for bytes that are not.
-(: (-> Path (Result Exception (Vec Path))))
+;; The entries of a directory, in the order the OS gives them, with the
+;; kinds the listing reports. On Linux, the path and the names are bytes,
+;; so a name that is not UTF-8 is listed as it is, and no entry is asked
+;; about. See `Bjolang.Runtime.FsListing`.
+(: (-> Path (Result Exception (Vec FsEntry))))
 (defun (fs-list/raw path)
-  (with-os-path path (fun (name)
-                      (match (clr-dir-entries name)
-                        ((Ok names) (Ok (loop (:for name names) (:acc found (vecing (as-path name))))))
-                        ((Err e) (Err e))))))
+  (match (clr-list (bytestring->bytes (path->bytestring path)))
+    ((Ok listed)
+     (Ok (loop (:for l listed)
+               (:let name (bytes->bytestring (clr-listed-name l)))
+               (:acc found (vecing (FsEntry (entry-path (path-join path name))
+                                            (entry-name name)
+                                            (entry-kind (listed-kind (clr-listed-kind l)))))))))
+    ((Err e) (Err e))))
+
+(: (-> int FsKind))
+(defun (listed-kind k)
+  (cond
+    ((= k 0) FsFile)
+    ((= k 1) FsDirectory)
+    ((= k 2) FsLink)
+    (else FsOther)))
 
 ;; Creates every missing directory along the path. One that is already there is
 ;; not an error.
@@ -679,7 +710,7 @@
   (open-read-stream    (-> Path (Result Exception ClrStream)))
   (open-write-stream   (-> Path WriteMode (Result Exception ClrStream)))
   (fs-info             (-> Path (Option FsInfo)))
-  (fs-list             (-> Path (Result Exception (Vec Path))))
+  (fs-list             (-> Path (Result Exception (Vec FsEntry))))
   (fs-create-directory (-> Path (Result Exception Unit)))
   (fs-delete-file      (-> Path (Result Exception Unit)))
   (fs-delete-directory (-> Path (Result Exception Unit)))
@@ -936,8 +967,10 @@
 (defun (file-read-lines/seq path #:mode Any)
   (file-read/seq (fun (p) (read-line p #:mode mode)) path))
 
-(: (-> Path (List Path)))
-(defun (sorted-entries dir) (list-sort (vec->list (raise-err (fs-list dir)))))
+(: (-> Path (List FsEntry)))
+(defun (sorted-entries dir)
+  (vec->list (vec-sort-by (fun (a b) (compare (record-ref a entry-name) (record-ref b entry-name)))
+                          (raise-err (fs-list dir)))))
 
 ;; Lazily yields all files under `dir` in depth-first order.
 ;;
@@ -955,18 +988,20 @@
     (let loop ((todo (sorted-entries (as-path dir))))
       (unless (list-empty? todo)
         (def entry (list-head todo))
+        (def p (record-ref entry entry-path))
         (def rest (list-tail todo))
-        (match (fs-info entry)
-          ((Some info)
-           (match (record-ref info kind)
-             (FsFile (yield entry)
-                     (loop rest))
-             (FsDirectory
-              (if (and (not (record-ref info link?)) (into? entry))
-                  (loop (list-append (sorted-entries entry) rest))
-                  (loop rest)))))
-          ;; Gone since it was listed.
-          (None (loop rest)))))))
+        (match (record-ref entry entry-kind)
+          (FsDirectory
+           (if (into? p)
+               (loop (list-append (sorted-entries p) rest))
+               (loop rest)))
+          ;; A link is followed to a file, and never into a directory.
+          (FsLink
+           (match (kind-of p)
+             ((Some FsFile) (yield p) (loop rest))
+             (_ (loop rest))))
+          (_ (yield p)
+             (loop rest)))))))
 
 ;; Flush.
 (import/extern

@@ -385,7 +385,29 @@
   (summary "What a path names, when it names anything.")
   (case FsFile "A file.")
   (case FsDirectory "A directory.")
-  (see FsInfo file-info))
+  (case FsLink "A symbolic link, not followed. Only a listing reports one.")
+  (case FsOther "A FIFO, a socket or a device. Only a listing reports one.")
+  (see FsInfo FsEntry file-info fs-list)
+  (reference """
+    @code{fs-info} follows a symbolic link, so its @code{kind} is
+    @code{FsFile} or @code{FsDirectory}, and @code{link?} says whether the
+    path is a link. It reports a FIFO, a socket or a device as
+    @code{FsFile}, as .NET does.
+    """))
+
+(:doc FsEntry
+  (summary "One entry of a directory, as fs-list returns it.")
+  (field entry-path "The directory joined with the name.")
+  (field entry-name "The name, as the bytes the OS gave.")
+  (field entry-kind "The entry's own kind. A symbolic link is FsLink, and is not followed.")
+  (see fs-list FsKind)
+  (reference """
+    The kind comes with the listing, so that a caller that only needs to
+    know which entries are directories does not ask about each one. Ask
+    @code{fs-info} for a link, to follow it, or for the size and the time.
+    The fields have the @code{entry-} prefix because the prelude's field
+    names are visible everywhere.
+    """))
 
 (:doc FsInfo
   (summary "Metadata returned by fs-info describing an existing path.")
@@ -464,13 +486,16 @@
 (:doc fs-list
   (summary "The FS operation that lists a directory.")
   (arg dir "The directory to list.")
-  (returns "Whole paths, files and directories both, or the error listing it.")
-  (see directory-files directory-walk op/fs-list fs-list/raw)
+  (returns "The entries, files and directories and links, each with its kind, or the error listing it.")
+  (see FsEntry directory-files directory-walk op/fs-list fs-list/raw)
   (reference """
     An operation of the @code{FS} effect: it calls the handler installed for
     it, @code{fs-list/raw} when none is. @code{directory-files},
-    @code{directory-subdirectories}, @code{directory-walk} and
-    @code{directory-delete-tree} list through it.
+    @code{directory-subdirectories}, @code{directory-walk},
+    @code{directory-delete-tree} and @code{(std glob)} list through it.
+
+    A handler reports the kind of each entry, as a listing of the OS does,
+    so these functions ask @code{fs-info} only about links.
     """))
 
 (:doc op/fs-list
@@ -484,8 +509,15 @@
 (:doc fs-list/raw
   (summary "The entries of a directory on the real file system, bypassing any FS handler.")
   (arg path "The directory to list.")
-  (returns "Whole paths, in the order the OS gives them, or the exception .NET raised. .NET decodes each name from UTF-8, with U+FFFD for bytes that are not.")
-  (see fs-list))
+  (returns "The entries, in the order the OS gives them, or the exception: DirectoryNotFoundException, UnauthorizedAccessException or IOException.")
+  (see fs-list FsEntry)
+  (reference """
+    On Linux and Android it reads the directory with @code{readdir}: the
+    path and the names are bytes, so a name that is not UTF-8 is listed as
+    it is, and the kinds come from the listing, with no @code{stat} for an
+    entry. Elsewhere it uses .NET, with one @code{stat} for each entry, and
+    a name is what .NET decodes.
+    """))
 
 (:doc fs-create-directory
   (summary "The FS operation that creates a directory and every missing one along its path.")

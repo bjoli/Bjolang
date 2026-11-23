@@ -1,0 +1,535 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/glob.bjo — glob patterns: matching paths, and finding the paths on
+;; the file system that match.
+;;
+;; - Syntax: `*`, `?`, `[abc]`, `[a-z]`, `[!a]` and `[^a]` in a name, `**`
+;;   as a whole part for zero or more directories, `{a,b}` for
+;;   alternatives, and `\` before a character to match it as it is.
+;; - `{a,b}` is expanded first, as in a shell, so an alternative can hold
+;;   a `/`. Each expansion is a list of parts, split on `/`. Empty parts and
+;;   `.` are dropped, as `path-parts` drops them.
+;; - A name is matched as UTF-8 characters. A part of a name that is not
+;;   UTF-8 is one unit: `?` and `*` match it, and nothing else does.
+;; - A wildcard does not match a name that starts with `.`, unless the
+;;   part starts with `.` too, or the pattern was made with `#:dot? #t`.
+;;   `**` does not enter such a directory either.
+;; - `glob` reads the file system through the `FS` effect of the prelude.
+;;   It lists only the directories that a pattern can still match below,
+;;   and a part with no wildcard is looked up, not listed.
+;;
+;; Performance, and what can still be done:
+;;
+;; - Measured on the Bjolang tree, 548 directories and 10383 entries:
+;;   `(glob "**/*.bjo")` takes 34 ms. Of that, `fs-list` takes 7 ms, and
+;;   `find` takes 12 ms for the same walk. The rest is in this module.
+;; - The walk. `visit` builds its work list with `list-append` for each
+;;   name, which is quadratic in the size of a directory. `work-for` makes
+;;   the child path for each name, also for one that neither matches nor is
+;;   entered. `candidates` sorts tuples with a closure, and finds each
+;;   literal name in the listing with `any?`. Build the list in reverse
+;;   once, make a path only when it is emitted or entered, and sort the
+;;   names alone.
+;; - The states. A set of states is a `Vec` of tuples: each `step`
+;;   allocates, `closure` follows each `**` again, and `part-at` does two
+;;   record reads for each state. Number the parts of all alternatives in
+;;   one array, keep a set of states as the bits of a `long`, and compute
+;;   the closure of each position once, when the pattern is parsed. Then a
+;;   step allocates nothing. Keep the `Vec` for a pattern of more than 64
+;;   parts.
+;; - The names. `units-of` decodes each name to a `Vec` of characters
+;;   before it is matched: 3 ms for the tree. UTF-8 is self-synchronizing,
+;;   so a literal run of characters can be compared as bytes: it matches
+;;   only at a character boundary, and never inside a part that is not
+;;   UTF-8. Only `?` and a class have to decode, one character where they
+;;   are. Compile each part to its shape: a literal is byte equality, `*`
+;;   matches every name, `*.ext` is `bytestring-ends-with?`, `prefix*` is
+;;   `bytestring-starts-with?`, and only the other parts need the general
+;;   matcher.
+;; - Expected after all three: about 10 to 12 ms, most of it the listing.
+
+(export
+  Glob GlobError AsGlob as-glob
+  glob-pattern glob-parse glob-error-message glob->string
+  glob-match? glob)
+
+(import (std prelude))
+
+(:doc #:file "glob.bjodoc")
+
+(import/class
+  (Exception (: System.Exception))
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+;; ---------------------------------------------------------------------------
+;; Types
+;; ---------------------------------------------------------------------------
+
+;; One element of a part with wildcards. `Class` holds whether it is
+;; negated, and its ranges, a single character being a range of one.
+(type (: Tok (Union (: One-char char)
+                    Any-char
+                    Any-run
+                    (: Class bool (Vec (Tuple char char))))))
+
+;; - `Literal`: a part with no wildcard, as bytes.
+;; - `Wild`: the elements, and whether the part starts with a literal `.`.
+;; - `Deep`: `**`.
+(type (: Part (Union (: Literal ByteString)
+                     (: Wild (Vec Tok) bool)
+                     Deep)))
+
+;; One expansion of the braces of a pattern.
+(type (: Alternative (Record (: absolute? bool) (: parts (Vec Part)))))
+
+(type (: Glob #:opaque (Record (: text string)
+                               (: alternatives (Vec Alternative))
+                               (: dot? bool))))
+
+(type (: GlobError (Record (: pattern string) (: reason string))))
+
+;; A position in an alternative: its index, and the index of the next part
+;; to match.
+(type (: State (Tuple int int)))
+
+;; ---------------------------------------------------------------------------
+;; Parsing
+;; ---------------------------------------------------------------------------
+
+(: (-> (Vec char) int int string))
+(defun (chars->string cs from to)
+  (list->string (vec->list (vec-take (vec-drop cs from) (- to from)))))
+
+;; The index of the `}` that closes the `{` at `open`, skipping escaped
+;; characters and nested braces.
+(: (-> (Vec char) int (Option int)))
+(defun (closing-brace cs open)
+  (def n (vec-length cs))
+  (let go ((i (+ open 1)) (depth 0))
+    (cond
+      ((>= i n) None)
+      ((= (vec-ref cs i) #\\) (go (+ i 2) depth))
+      ((= (vec-ref cs i) #\{) (go (+ i 1) (+ depth 1)))
+      ((= (vec-ref cs i) #\})
+       (if (= depth 0) (Some i) (go (+ i 1) (- depth 1))))
+      (else (go (+ i 1) depth)))))
+
+;; The first `{` that is not escaped.
+(: (-> (Vec char) (Option int)))
+(defun (first-brace cs)
+  (def n (vec-length cs))
+  (let go ((i 0))
+    (cond
+      ((>= i n) None)
+      ((= (vec-ref cs i) #\\) (go (+ i 2)))
+      ((= (vec-ref cs i) #\{) (Some i))
+      (else (go (+ i 1))))))
+
+;; The pieces of `cs` from `from` to `to`, split at each comma that is not
+;; escaped or inside nested braces.
+(: (-> (Vec char) int int (List string)))
+(defun (split-commas cs from to)
+  (let go ((i from) (start from) (depth 0) (out Nil))
+    (cond
+      ((>= i to) (list-reverse (Cons (chars->string cs start to) out)))
+      ((= (vec-ref cs i) #\\) (go (+ i 2) start depth out))
+      ((= (vec-ref cs i) #\{) (go (+ i 1) start (+ depth 1) out))
+      ((= (vec-ref cs i) #\}) (go (+ i 1) start (- depth 1) out))
+      ((and (= (vec-ref cs i) #\,) (= depth 0))
+       (go (+ i 1) (+ i 1) depth (Cons (chars->string cs start i) out)))
+      (else (go (+ i 1) start depth out)))))
+
+;; Every expansion of the braces of `s`, in order. Escapes are kept, for
+;; the parts to read.
+(: (-> string (Result string (List string))))
+(defun (expand-braces s)
+  (def cs (string->vec s))
+  (match (first-brace cs)
+    (None (Ok (list s)))
+    ((Some open)
+     (match (closing-brace cs open)
+       (None (Err "a { has no }"))
+       ((Some close)
+        (def prefix (chars->string cs 0 open))
+        (def suffix (chars->string cs (+ close 1) (vec-length cs)))
+        (match (expand-braces suffix)
+          ((Err e) (Err e))
+          ((Ok rests)
+           (let go ((pieces (split-commas cs (+ open 1) close)) (out Nil))
+             (match pieces
+               (Nil (Ok (list-reverse out)))
+               ((Cons piece more)
+                (match (expand-braces piece)
+                  ((Err e) (Err e))
+                  ((Ok middles)
+                   (go more
+                       (list-foldl (fun (m acc)
+                                     (list-foldl (fun (r acc2) (Cons (str prefix m r) acc2)) acc rests))
+                                   out
+                                   middles))))))))))))))
+
+;; The parts of one expansion, split at each `/` that is not escaped.
+(: (-> string (List string)))
+(defun (split-parts s)
+  (def cs (string->vec s))
+  (def n (vec-length cs))
+  (let go ((i 0) (start 0) (out Nil))
+    (cond
+      ((>= i n) (list-reverse (Cons (chars->string cs start n) out)))
+      ((= (vec-ref cs i) #\\) (go (+ i 2) start out))
+      ((= (vec-ref cs i) #\/) (go (+ i 1) (+ i 1) (Cons (chars->string cs start i) out)))
+      (else (go (+ i 1) start out)))))
+
+;; A `[...]` that starts at `open`: the class, and the index after its `]`.
+;; A `]` first in the class, after any `!` or `^`, is a member.
+(: (-> (Vec char) int (Result string (Tuple Tok int))))
+(defun (parse-class cs open)
+  (def n (vec-length cs))
+  (def negated (and (< (+ open 1) n)
+                    (or (= (vec-ref cs (+ open 1)) #\!) (= (vec-ref cs (+ open 1)) #\^))))
+  (def first (if negated (+ open 2) (+ open 1)))
+  ;; The member at `i`, and the index after it.
+  (defun (member-at i)
+    (if (and (= (vec-ref cs i) #\\) (< (+ i 1) n))
+        (Tuple (vec-ref cs (+ i 1)) (+ i 2))
+        (Tuple (vec-ref cs i) (+ i 1))))
+  (let go ((i first) (ranges []))
+    (cond
+      ((>= i n) (Err "a [ has no ]"))
+      ((and (= (vec-ref cs i) #\]) (> i first))
+       (Ok (Tuple (Class negated ranges) (+ i 1))))
+      (else
+       (match (member-at i)
+         ((Tuple lo after)
+          (if (and (< (+ after 1) n) (= (vec-ref cs after) #\-) (not (= (vec-ref cs (+ after 1)) #\])))
+              (match (member-at (+ after 1))
+                ((Tuple hi end)
+                 (if (char<? hi lo)
+                     (Err #"the range ${(list->string (list lo #\- hi))} is empty")
+                     (go end (vec-add ranges (Tuple lo hi))))))
+              (go after (vec-add ranges (Tuple lo lo))))))))))
+
+;; The elements of a part. Two `*` in a row are one.
+(: (-> string (Result string (Vec Tok))))
+(defun (parse-toks s)
+  (def cs (string->vec s))
+  (def n (vec-length cs))
+  (let go ((i 0) (toks []))
+    (cond
+      ((>= i n) (Ok toks))
+      (else
+       (def c (vec-ref cs i))
+       (cond
+         ((= c #\\)
+          (if (< (+ i 1) n)
+              (go (+ i 2) (vec-add toks (One-char (vec-ref cs (+ i 1)))))
+              (Err "the pattern ends in \\")))
+         ((= c #\*)
+          (if (and (not (vec-empty? toks))
+                   (match (vec-ref toks (- (vec-length toks) 1)) (Any-run #t) (_ #f)))
+              (go (+ i 1) toks)
+              (go (+ i 1) (vec-add toks Any-run))))
+         ((= c #\?) (go (+ i 1) (vec-add toks Any-char)))
+         ((= c #\[)
+          (match (parse-class cs i)
+            ((Ok (Tuple tok next)) (go next (vec-add toks tok)))
+            ((Err e) (Err e))))
+         ((= c #\}) (Err "a } has no {"))
+         (else (go (+ i 1) (vec-add toks (One-char c)))))))))
+
+;; A part as `split-parts` gives it, or `None` for one that is dropped.
+(: (-> string (Result string (Option Part))))
+(defun (parse-part s)
+  (cond
+    ((or (string-empty? s) (= s ".")) (Ok None))
+    ((= s "**") (Ok (Some Deep)))
+    (else
+     (match (parse-toks s)
+       ((Err e) (Err e))
+       ((Ok toks)
+        (if (all? (fun (t) (match t ((One-char _) #t) (_ #f))) toks)
+            (Ok (Some (Literal (string->bytestring
+                                (list->string (loop (:for t toks)
+                                                    (:acc (listing (match t ((One-char c) c) (_ #\?))))))))))
+            (Ok (Some (Wild toks (match (vec-ref toks 0) ((One-char c) (= c #\.)) (_ #f)))))))))))
+
+(: (-> string (Result string Alternative)))
+(defun (parse-alternative s)
+  (let go ((raw (split-parts s)) (parts []))
+    (match raw
+      (Nil (Ok (Alternative (absolute? (string-starts-with? s "/")) (parts parts))))
+      ((Cons p more)
+       (match (parse-part p)
+         ((Err e) (Err e))
+         ((Ok None) (go more parts))
+         ((Ok (Some part)) (go more (vec-add parts part))))))))
+
+(: (-> string (#:dot? bool) (Result GlobError Glob)))
+(defun (glob-parse text #:dot? #f)
+  (defun (fail reason) (Err (GlobError (pattern text) (reason reason))))
+  (match (expand-braces text)
+    ((Err e) (fail e))
+    ((Ok expansions)
+     (let go ((xs expansions) (alts []))
+       (match xs
+         (Nil (Ok (Glob (text text) (alternatives alts) (dot? dot?))))
+         ((Cons x more)
+          (match (parse-alternative x)
+            ((Err e) (fail e))
+            ((Ok alt) (go more (vec-add alts alt))))))))))
+
+(: (-> GlobError string))
+(defun (glob-error-message e)
+  #"the glob pattern ${(written (record-ref e pattern))} is not valid: ${(record-ref e reason)}")
+
+(: (-> string (#:dot? bool) Glob))
+(defun (glob-pattern text #:dot? #f)
+  (match (glob-parse text #:dot? dot?)
+    ((Ok g) g)
+    ((Err e) (raise (cast Exception (ArgumentException. (glob-error-message e)))))))
+
+(: (-> Glob string))
+(defun (glob->string g) (record-ref g text))
+
+(def/trait (AsGlob %g)
+  (: as-glob (-> %g Glob)))
+
+(impl (AsGlob Glob) (defun (as-glob g) g))
+(impl (AsGlob string) (defun (as-glob s) (glob-pattern s)))
+
+;; ---------------------------------------------------------------------------
+;; Matching one name
+;; ---------------------------------------------------------------------------
+
+(: (-> Tok (Option char) bool))
+(defun (tok-matches? tok unit)
+  (match tok
+    ((One-char c) (= unit (Some c)))
+    (Any-char #t)
+    (Any-run #t)
+    ((Class negated ranges)
+     (match unit
+       ((Some c)
+        (def inside (any? (fun (r) (and (char<=? (fst r) c) (char<=? c (snd r)))) ranges))
+        (if negated (not inside) inside))
+       (None #f)))))
+
+(: (-> Tok bool))
+(defun (run? tok) (match tok (Any-run #t) (_ #f)))
+
+;; Whether `toks` match all of `units`. A `*` takes as few units as it can,
+;; and one more each time the rest fails, from the last `*` passed.
+(: (-> (Vec Tok) (Vec (Option char)) bool))
+(defun (toks-match? toks units)
+  (def n (vec-length toks))
+  (def m (vec-length units))
+  (let go ((t 0) (u 0) (star -1) (mark 0))
+    (cond
+      ((< u m)
+       (cond
+         ((and (< t n) (run? (vec-ref toks t))) (go (+ t 1) u t u))
+         ((and (< t n) (tok-matches? (vec-ref toks t) (vec-ref units u))) (go (+ t 1) (+ u 1) star mark))
+         ((>= star 0) (go (+ star 1) (+ mark 1) star (+ mark 1)))
+         (else #f)))
+      ((< t n) (and (run? (vec-ref toks t)) (go (+ t 1) u star mark)))
+      (else #t))))
+
+(: (-> ByteString (Vec (Option char))))
+(defun (units-of name)
+  (loop (:for (Tuple _ unit) (in-bytestring-utf-8 name))
+        (:acc (vecing unit))))
+
+(: (-> ByteString bool))
+(defun (dot-name? name)
+  (and (not (bytestring-empty? name)) (= (bytestring-ref name 0) 46uy)))
+
+;; ---------------------------------------------------------------------------
+;; States
+;; ---------------------------------------------------------------------------
+
+(: (-> Glob State (Option Part)))
+(defun (part-at g s)
+  (def parts (record-ref (vec-ref (record-ref g alternatives) (fst s)) parts))
+  (if (< (snd s) (vec-length parts)) (Some (vec-ref parts (snd s))) None))
+
+(: (-> (Vec State) State (Vec State)))
+(defun (add-state states s)
+  (if (vec-contains? states s) states (vec-add states s)))
+
+;; `states` with, for each `**`, the state after it: `**` matches no
+;; directories too.
+(: (-> Glob (Vec State) (Vec State)))
+(defun (closure g states)
+  (loop (:for s states)
+        (:acc out (folding []
+                           (let go ((acc out) (s s))
+                             (def acc2 (add-state acc s))
+                             (match (part-at g s)
+                               ((Some Deep) (go acc2 (Tuple (fst s) (+ (snd s) 1))))
+                               (_ acc2)))))))
+
+;; The states after the name `name`. `**` stays where it is, to match more
+;; names, unless `through-deep?` is #f.
+(: (-> Glob (Vec State) ByteString bool (Vec State)))
+(defun (step g states name through-deep?)
+  (def hidden (and (dot-name? name) (not (record-ref g dot?))))
+  (def units (units-of name))
+  (closure g
+           (loop (:for s states)
+                 (:acc out (folding []
+                                    (match (part-at g s)
+                                      ((Some Deep)
+                                       (if (and through-deep? (not hidden)) (add-state out s) out))
+                                      ((Some (Literal b))
+                                       (if (= b name) (add-state out (Tuple (fst s) (+ (snd s) 1))) out))
+                                      ((Some (Wild toks starts-with-dot))
+                                       (if (and (or starts-with-dot (not hidden)) (toks-match? toks units))
+                                           (add-state out (Tuple (fst s) (+ (snd s) 1)))
+                                           out))
+                                      (None out)))))))
+
+(: (-> Glob (Vec State) bool))
+(defun (complete? g states) (any? (fun (s) (none? (part-at g s))) states))
+
+(: (-> Glob (Vec State) bool))
+(defun (live? g states) (any? (fun (s) (some? (part-at g s))) states))
+
+;; The states of the alternatives that are absolute, or relative.
+(: (-> Glob bool (Vec State)))
+(defun (start-states g absolute)
+  (closure g
+           (loop (:for (Tuple i alt) (enumerate (record-ref g alternatives)))
+                 (:when (= (record-ref alt absolute?) absolute))
+                 (:acc (vecing (Tuple i 0))))))
+
+;; ---------------------------------------------------------------------------
+;; Matching a path
+;; ---------------------------------------------------------------------------
+
+(: (-> %g %p bool) (where (AsGlob %g) (AsPath %p)))
+(defun (glob-match? pattern x)
+  (def g (as-glob pattern))
+  (def p (as-path x))
+  (def absolute (path-absolute? p))
+  (def names (loop (:for part (path-parts p))
+                   (:when (not (= part (path "/"))))
+                   (:acc (vecing (path->bytestring part)))))
+  (complete? g (loop (:for name names)
+                     (:acc states (folding (start-states g absolute) (step g states name #t))))))
+
+;; ---------------------------------------------------------------------------
+;; Finding the paths
+;; ---------------------------------------------------------------------------
+
+(type (: Work (Union (: Emit Path)
+                     (: Visit (Option Path) (Vec State)))))
+
+(: (-> (Option Path) ByteString Path))
+(defun (child-of base name)
+  (match base
+    ((Some b) (path-join b name))
+    (None (as-path name))))
+
+;; The names in `base`, each with the kind the listing reported. A
+;; directory that cannot be listed has none.
+(: (-> (Option Path) (Vec (Tuple ByteString (Option FsKind)))))
+(defun (listed-names base)
+  (match (fs-list (match base ((Some b) b) (None (path "."))))
+    ((Ok entries)
+     (loop (:for e entries)
+           (:acc (vecing (Tuple (record-ref e entry-name) (Some (record-ref e entry-kind)))))))
+    ((Err _) [])))
+
+;; The names that a literal part of a state asks for.
+(: (-> Glob (Vec State) (Vec ByteString)))
+(defun (literal-names g states)
+  (loop (:for s states)
+        (:when-let (Some (Literal b)) (part-at g s))
+        (:acc out (folding [] (if (vec-contains? out b) out (vec-add out b))))))
+
+;; Whether every state that is not complete is at a literal part, so that
+;; the names can be looked up rather than listed.
+(: (-> Glob (Vec State) bool))
+(defun (only-literals? g states)
+  (all? (fun (s) (match (part-at g s) ((Some (Literal _)) #t) (None #t) (_ #f))) states))
+
+;; The names to try in `base`, sorted by name, each with the kind a listing
+;; reported for it, or `None` when no listing gave it.
+;;
+;; - The names of the listing, and each literal name that is not in it,
+;;   such as `..`.
+;; - Only the literal names when every state is at a literal part, and then
+;;   `base` is not listed.
+(: (-> Glob (Option Path) (Vec State) (Vec (Tuple ByteString (Option FsKind)))))
+(defun (candidates g base states)
+  (def literals (literal-names g states))
+  (def listed (if (only-literals? g states) [] (listed-names base)))
+  (def all-names
+    (loop (:for b literals)
+          (:acc out (folding listed
+                             (if (any? (fun (l) (= (fst l) b)) listed) out (vec-add out (Tuple b None)))))))
+  (vec-sort-by (fun (x y) (compare (fst x) (fst y))) all-names))
+
+;; The work for one name in `base`: the path, if it matches, then the
+;; directory below it, if a state can still match there.
+;;
+;; - A listed entry needs no lookup, unless it is a symbolic link that a
+;;   state can match below: then `fs-info` says where it leads.
+;; - A name that no listing gave is looked up, and is no work when it is
+;;   not there.
+;; - `**` does not go through a link: below one, only the states of the
+;;   parts that name it are kept.
+(: (-> Glob (Option Path) (Vec State) ByteString (Option FsKind) (List Work)))
+(defun (work-for g base states name listed)
+  (def child (child-of base name))
+  (def next (step g states name #t))
+  (def info (match listed
+              ((Some FsLink) (if (live? g next) (fs-info child) None))
+              ((Some _) None)
+              (None (fs-info child))))
+  (def exists (or (some? listed) (some? info)))
+  (def emit (if (and exists (complete? g next)) (list (Emit child)) Nil))
+  (def states-below
+    (match (Tuple listed info)
+      ((Tuple (Some FsDirectory) _) (Some next))
+      ((Tuple _ (Some i))
+       (if (= (record-ref i kind) FsDirectory)
+           (Some (if (record-ref i link?) (step g states name #f) next))
+           None))
+      (_ None)))
+  (def below
+    (match states-below
+      ((Some sb) (if (live? g sb) (list (Visit (Some child) sb)) Nil))
+      (None Nil)))
+  (list-append emit below))
+
+(: (-> Glob (Option Path) (Vec State) (List Work)))
+(defun (visit g base states)
+  (loop (:for (Tuple name listed) (candidates g base states))
+        (:acc out (folding Nil (list-append out (work-for g base states name listed))))))
+
+(: glob (-> %g (Seq Path)) (where (AsGlob %g)) #:sync)
+(defun (glob pattern)
+  (def g (as-glob pattern))
+  (seq
+    (let go ((todo (list (Visit None (start-states g #f))
+                         (Visit (Some (path "/")) (start-states g #t)))))
+      (match todo
+        (Nil unit)
+        ((Cons (Emit p) rest)
+         (yield p)
+         (go rest))
+        ((Cons (Visit base states) rest)
+         (if (live? g states)
+             (go (list-append (visit g base states) rest))
+             (go rest)))))))

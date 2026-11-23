@@ -1,0 +1,95 @@
+;; The kinds a listing reports, and a name that is not UTF-8, on the disk:
+;; fs-list, the listing functions, directory-walk and glob.
+;;
+;; The links, the FIFO and the name that is not UTF-8 are made with `ln`,
+;; `mkfifo` and `sh`, so the checks that need them run where those exist.
+
+(import (std simpletest))
+(import (std run))
+(import (std glob))
+
+(: string)
+(def dir "583_probe_dir")
+
+(: (-> string string))
+(defun (in-dir name) (path->string/lossy (path-join dir name)))
+
+;; The kind of each entry of `dir`, by name, sorted.
+(: (-> (List string)))
+(defun (kinds)
+  (list-sort
+   (loop (:for e (result-ref-or (fs-list (path dir)) []))
+         (:acc (listing (str (bytestring->string/lossy (record-ref e entry-name))
+                             " "
+                             (match (record-ref e entry-kind)
+                               (FsFile "file") (FsDirectory "dir") (FsLink "link") (FsOther "other"))))))))
+
+(: (-> (Vec Path) (List string)))
+(defun (names ps)
+  (list-sort (vec->list (vec-map (fun (p) (option-ref-or (option-map bytestring->string/lossy (path-name p)) "")) ps))))
+
+(: (-> (Result Exception %a) bool))
+(defun (ran? r) (match r ((Ok _) #t) ((Err _) #f)))
+
+(defun (main)
+  (when (directory-exists? dir) (ignore (run/status '(rm -rf ,dir))))
+  (directory-create (path-join dir "sub"))
+  (file-write-text (in-dir "f.txt") "f")
+  (file-write-text (in-dir "sub/g.txt") "g")
+  (def made
+    (and (ran? (run/status '(ln -s f.txt ,(in-dir "to-file"))))
+         (ran? (run/status '(ln -s sub ,(in-dir "to-dir"))))
+         (ran? (run/status '(ln -s nothing ,(in-dir "dangling"))))
+         (ran? (run/status '(mkfifo ,(in-dir "fifo"))))))
+  (if (not made)
+      (println "ok: ln or mkfifo is not here, so the kinds are not checked")
+      (let ()
+        (expect "each entry with its own kind"
+                (kinds)
+                (list "dangling link" "f.txt file" "fifo other" "sub dir" "to-dir link" "to-file link"))
+        (expect "the files, with links followed; a link to nothing is a file"
+                (names (directory-files dir))
+                (list "dangling" "f.txt" "fifo" "to-file"))
+        (expect "the directories, with links followed"
+                (names (directory-subdirectories dir))
+                (list "sub" "to-dir"))
+        (expect "a walk follows a link to a file, and not one to a directory"
+                (list-map path->string/lossy (->list (directory-walk dir)))
+                (list "583_probe_dir/dangling" "583_probe_dir/f.txt" "583_probe_dir/fifo"
+                      "583_probe_dir/sub/g.txt" "583_probe_dir/to-file"))
+        (expect "fs-info follows a link" (option-map (fun (i) (record-ref i kind)) (fs-info (path (in-dir "to-dir"))))
+                (Some FsDirectory))
+        (expect "and says it is one" (option-map (fun (i) (record-ref i link?)) (fs-info (path (in-dir "to-dir"))))
+                (Some #t))
+        (expect "a link to nothing is a file that is a link"
+                (option-map (fun (i) (Tuple (record-ref i kind) (record-ref i link?))) (fs-info (path (in-dir "dangling"))))
+                (Some (Tuple FsFile #t)))
+        (expect "a FIFO is a file to fs-info" (option-map (fun (i) (record-ref i kind)) (fs-info (path (in-dir "fifo"))))
+                (Some FsFile))
+        (expect "glob names a link to nothing" (list-map path->string/lossy (->list (glob "583_probe_dir/dang*")))
+                (list "583_probe_dir/dangling"))
+        (expect "glob enters a link it names" (list-map path->string/lossy (->list (glob "583_probe_dir/to-dir/*")))
+                (list "583_probe_dir/to-dir/g.txt"))
+        (expect "and ** does not"
+                (list-map path->string/lossy (->list (glob "583_probe_dir/**/g.txt")))
+                (list "583_probe_dir/sub/g.txt"))))
+
+  ;; A name that is not UTF-8: "caf" 0xE9 ".txt"
+  (def raw (bytes->bytestring (vec->array [99uy 97uy 102uy 233uy 46uy 116uy 120uy 116uy])))
+  (if (not (ran? (run/status '(sh -c ,(str "touch \"" dir "/$(printf 'caf\\351.txt')\"")))))
+      (println "ok: sh is not here, so a name that is not UTF-8 is not checked")
+      (let ()
+        (expect "the listing gives the bytes"
+                (any? (fun (e) (= (record-ref e entry-name) raw)) (result-ref-or (fs-list (path dir)) []))
+                #t)
+        (expect "and the listing functions"
+                (any? (fun (p) (= (path-name p) (Some raw))) (directory-files dir))
+                #t)
+        (expect "glob finds it" (vec-length (->vec (glob "583_probe_dir/caf*.txt"))) 1)
+        (expect "a .NET operation on it raises"
+                (match (try (file-read-text (path-join dir raw)) #:catch (System.ArgumentException))
+                  ((Ok _) #f) ((Err _) #t))
+                #t)))
+
+  (ignore (run/status '(rm -rf ,dir)))
+  (expect "cleaned up" (directory-exists? dir) #f))

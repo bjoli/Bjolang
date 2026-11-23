@@ -3,6 +3,52 @@
 
 What each change guarantees, and what it leaves open.
 
+* A directory listing reports the kind of each entry
+
+- The ~fs-list~ operation returns ~(Vec FsEntry)~: ~entry-path~,
+  ~entry-name~ (the bytes the OS gave) and ~entry-kind~. The kind comes with
+  the listing, so ~directory-files~, ~directory-subdirectories~,
+  ~directory-walk~, ~directory-delete-tree~ and ~glob~ ask ~fs-info~ only
+  about symbolic links. On the Bjolang tree, ~directory-walk~ takes 49 ms
+  where it took 320, and ~(glob "**/*.bjo")~ 34 ms where it took 140.
+- ~FsKind~ has two more cases. ~FsLink~ is a symbolic link, not followed,
+  and ~FsOther~ is a FIFO, a socket or a device. Only a listing reports
+  them: ~fs-info~ follows links and reports a FIFO as ~FsFile~, as before.
+  A ~match~ on an ~FsKind~ needs a clause for them.
+- On Linux and Android, ~fs-list/raw~ reads the directory with ~readdir~:
+  the path and the names are bytes, so a name that is not UTF-8 is listed
+  as it is. Elsewhere it uses .NET, with one ~stat~ for each entry.
+- ~fs-info/raw~ reads a path with one ~lstat~, and one ~stat~ more for a
+  link, where it made three or four calls.
+- To change an ~fs-list~ handler: return an ~FsEntry~ for each entry. The
+  fake file system of ~(std simpletest)~ does.
+- Fixed: a record type that more than one imported interface names was
+  counted as two owners of each of its fields, so ~record-ref~ on a value of
+  unknown type said the field was ambiguous.
+
+* ~(std glob)~: glob patterns
+
+- ~(glob "src/**/*.bjo")~ returns the matching paths on the file system, as
+  a lazy ~(Seq Path)~: files and directories, depth first, each directory's
+  names in byte order. ~(glob-match? pattern path)~ matches one path and
+  reads nothing.
+- The syntax: ~*~, ~?~, ~[abc]~, ~[a-z]~, ~[!a]~ / ~[^a]~, ~**~ as a whole
+  part for zero or more directories, ~{a,b}~ (nested, and expanded first,
+  so an alternative can hold a ~/~), and ~\~ to escape. Not supported:
+  extglob (~@(a|b)~), ~[[:alpha:]]~, and negated patterns.
+- A wildcard does not match a name that starts with ~.~, and ~**~ does not
+  enter such a directory, unless the part starts with ~.~ or the pattern is
+  made with ~#:dot? #t~. Matching is case sensitive.
+- A name is matched as UTF-8 characters; a part that is not UTF-8 is one
+  unit, which ~*~ and ~?~ match.
+- ~glob-parse~ returns ~(Result GlobError Glob)~, for a pattern from outside
+  the program. ~glob-pattern~ raises an ~ArgumentException~. ~glob~ and
+  ~glob-match?~ take a string or a ~Glob~ (~AsGlob~).
+- Only the directories a pattern can still match below are listed, and a
+  part with no wildcard is looked up. A path is given once, also when two
+  alternatives match it. ~**~ does not enter a directory that is a symbolic
+  link. A directory that cannot be listed matches nothing.
+
 * ~Path~ and ~ByteString~ are in the prelude, and the file functions take paths
 
 - ~(std bytestring)~ is now ~(std prelude bytestring)~, and the prelude

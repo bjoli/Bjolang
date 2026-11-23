@@ -392,13 +392,17 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                 finalRegistry <-
                     { finalRegistry with
                         MutableRecordFields = Map.add td.Name mutableNames finalRegistry.MutableRecordFields }
+            // A type is registered once for each module whose interface
+            // names it, so it can already be an owner. It is one owner, not
+            // two: two would make the field look ambiguous.
             for (fName, _) in resolvedFields do
                 let owners =
                     Map.tryFind fName finalRegistry.RecordFields |> Option.defaultValue []
 
-                finalRegistry <-
-                    { finalRegistry with
-                        RecordFields = Map.add fName (owners @ [ td.Name ]) finalRegistry.RecordFields }
+                if not (List.contains td.Name owners) then
+                    finalRegistry <-
+                        { finalRegistry with
+                            RecordFields = Map.add fName (owners @ [ td.Name ]) finalRegistry.RecordFields }
         | Union cases ->
             // The cases with their payloads, which code generation and the
             // exhaustiveness check read: the constructor bindings give each

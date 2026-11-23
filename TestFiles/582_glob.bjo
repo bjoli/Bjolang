@@ -1,0 +1,133 @@
+;; (std glob): parsing, matching one path, and finding paths on a fake and
+;; on a real file system.
+
+(import (std simpletest))
+(import (std effect))
+(import (std glob))
+
+(: (-> string string bool))
+(defun (m pattern p) (glob-match? pattern p))
+
+(: (-> (Seq Path) (List string)))
+(defun (shown ps) (list-map path->string/lossy (->list ps)))
+
+(: (-> (Result GlobError Glob) string))
+(defun (reason r)
+  (match r
+    ((Ok _) "ok")
+    ((Err e) (record-ref e reason))))
+
+(defun (main)
+  ;; Parsing
+  (expect "a valid pattern" (reason (glob-parse "src/**/*.{bjo,bjodoc}")) "ok")
+  (expect "an open [" (reason (glob-parse "a[b")) "a [ has no ]")
+  (expect "an open {" (reason (glob-parse "a{b,c")) "a { has no }")
+  (expect "a stray }" (reason (glob-parse "a}b")) "a } has no {")
+  (expect "an empty range" (reason (glob-parse "[z-a]")) "the range z-a is empty")
+  (expect "a \\ at the end" (reason (glob-parse "a\\")) "the pattern ends in \\")
+  (expect "the message"
+          (match (glob-parse "a[b") ((Err e) (glob-error-message e)) ((Ok _) ""))
+          "the glob pattern \"a[b\" is not valid: a [ has no ]")
+  (expect "a string pattern that is not valid raises"
+          (match (try (glob-match? "a[" "a") #:catch (System.ArgumentException)) ((Ok _) #f) ((Err _) #t))
+          #t)
+  (expect "the text is kept" (glob->string (glob-pattern "*.c")) "*.c")
+
+  ;; Wildcards in a name
+  (expect "*" (m "*.txt" "notes.txt") #t)
+  (expect "* matches nothing too" (m "a*b" "ab") #t)
+  (expect "* does not match a /" (m "*.txt" "a/notes.txt") #f)
+  (expect "two stars" (m "*a*b*" "xxaxxbxx") #t)
+  (expect "backtracking" (m "*ab" "aab") #t)
+  (expect "no match" (m "*.txt" "notes.md") #f)
+  (expect "?" (m "?.c" "a.c") #t)
+  (expect "? is one character" (m "?.c" "ab.c") #f)
+  (expect "? is one character, not one byte" (m "caf?" "café") #t)
+  (expect "a class" (m "[abc].c" "b.c") #t)
+  (expect "a range" (m "[a-z][0-9]" "q7") #t)
+  (expect "outside the range" (m "[a-z]" "Q") #f)
+  (expect "negated with !" (m "[!a]" "b") #t)
+  (expect "negated with ^" (m "[^a]" "a") #f)
+  (expect "] first is a member" (m "[]]" "]") #t)
+  (expect "an escape" (m "\\*" "*") #t)
+  (expect "an escaped * is not a wildcard" (m "\\*" "a") #f)
+  (expect "case sensitive" (m "*.TXT" "a.txt") #f)
+
+  ;; Parts
+  (expect "parts" (m "src/*/x.c" "src/a/x.c") #t)
+  (expect "a part per name" (m "src/*" "src/a/x.c") #f)
+  (expect "** matches no directories" (m "src/**/x.c" "src/x.c") #t)
+  (expect "** matches many" (m "src/**/x.c" "src/a/b/c/x.c") #t)
+  (expect "a trailing ** matches the directory" (m "src/**" "src") #t)
+  (expect "and all below it" (m "src/**" "src/a/b") #t)
+  (expect "** inside a name is *" (m "a**b" "axxb") #t)
+  (expect "empty parts and . are dropped" (m "./src//*.c" "src/a.c") #t)
+  (expect "the path is compared by parts" (m "src/*.c" "./src//a.c") #t)
+  (expect "absolute" (m "/etc/*.conf" "/etc/x.conf") #t)
+  (expect "absolute does not match relative" (m "/etc/*" "etc/x") #f)
+  (expect "relative does not match absolute" (m "etc/*" "/etc/x") #f)
+
+  ;; Braces
+  (expect "an alternative" (m "*.{c,h}" "a.h") #t)
+  (expect "nested" (m "{a,b{c,d}}" "bd") #t)
+  (expect "with a /" (m "{src/*,lib}" "src/a") #t)
+  (expect "an empty alternative" (m "a{,b}" "a") #t)
+
+  ;; Dot names
+  (expect "* skips a dot name" (m "*" ".git") #f)
+  (expect "? skips a dot name" (m "?git" ".git") #f)
+  (expect "a part with a dot matches one" (m ".*" ".git") #t)
+  (expect "#:dot? #t" (glob-match? (glob-pattern "*" #:dot? #t) ".git") #t)
+  (expect "** does not go through a dot directory" (m "**/x" ".git/x") #f)
+  (expect "a literal dot name" (m ".git/*" ".git/HEAD") #t)
+
+  ;; A name that is not UTF-8
+  (def raw (path (bytes->bytestring (vec->array [97uy 233uy 98uy]))))
+  (expect "* matches a bad byte" (glob-match? "a*b" raw) #t)
+  (expect "? matches a bad byte" (glob-match? "a?b" raw) #t)
+  (expect "a class does not" (glob-match? "a[!x]b" raw) #f)
+
+  ;; On a fake file system
+  (def fs (fake-fs (list-map (fun (p) (Tuple p ""))
+                             (list "src/a.bjo" "src/b.txt" "src/sub/c.bjo" "src/.hidden/d.bjo"
+                                   "lib/e.bjo" "readme.md"))))
+  (with-fake-fs-of fs
+    (expect "one directory" (shown (glob "src/*.bjo")) (list "src/a.bjo"))
+    (expect "files and directories" (shown (glob "src/*")) (list "src/a.bjo" "src/b.txt" "src/sub"))
+    (expect "recursive, in order" (shown (glob "**/*.bjo")) (list "lib/e.bjo" "src/a.bjo" "src/sub/c.bjo"))
+    (expect "with dot names" (shown (glob (glob-pattern "**/*.bjo" #:dot? #t)))
+            (list "lib/e.bjo" "src/.hidden/d.bjo" "src/a.bjo" "src/sub/c.bjo"))
+    (expect "braces, each path once" (shown (glob "{src,src/sub}/*.bjo")) (list "src/a.bjo" "src/sub/c.bjo"))
+    (expect "the same path from two alternatives, once" (shown (glob "{src/a.bjo,src/*.bjo}")) (list "src/a.bjo"))
+    (expect "a trailing **" (shown (glob "src/sub/**")) (list "src/sub" "src/sub/c.bjo"))
+    (expect "a literal path" (shown (glob "src/sub/c.bjo")) (list "src/sub/c.bjo"))
+    (expect "a literal path that is not there" (shown (glob "src/nothing.bjo")) Nil)
+    (expect "no match" (shown (glob "*.zip")) Nil)
+
+    ;; Literal parts are looked up, and only what can match is listed.
+    (def lists (make-box 0))
+    (with-handler ((fs-list (fun (p)
+                              (ignore (box-set! lists (+ (box-ref lists) 1)))
+                              ((fake-fs-list fs) p))))
+      (ignore (->list (glob "src/sub/*.bjo")))
+      (expect "only src/sub is listed" (box-ref lists) 1)
+      (box-set! lists 0)
+      (def walk (glob "src/*.bjo"))
+      (expect "nothing is listed until the sequence is pulled" (box-ref lists) 0)
+      (ignore (->list walk))
+      (expect "then src" (box-ref lists) 1)))
+
+  ;; On the real file system
+  (def dir "582_probe_dir")
+  (when (directory-exists? dir) (directory-delete-tree dir))
+  (directory-create (path-join dir "a/b"))
+  (file-write-text (path-join dir "a/x.c") "")
+  (file-write-text (path-join dir "a/b/y.c") "")
+  (file-write-text (path-join dir "z.h") "")
+  (expect "a real directory" (shown (glob "582_probe_dir/**/*.c"))
+          (list "582_probe_dir/a/b/y.c" "582_probe_dir/a/x.c"))
+  (expect "..: looked up, not listed" (shown (glob "582_probe_dir/a/../*.h")) (list "582_probe_dir/a/../z.h"))
+  (expect "an absolute pattern"
+          (shown (glob (str (path->string/lossy (path-normalize (path-join (current-directory) dir))) "/*.h")))
+          (list (str (path->string/lossy (path-normalize (path-join (current-directory) dir))) "/z.h")))
+  (directory-delete-tree dir))

@@ -1,0 +1,157 @@
+;; Docs for std/glob.bjo, read through (:doc #:file "glob.bjodoc").
+
+(:doc #:module
+  (summary "Glob patterns: whether a path matches one, and the paths on the file system that do.")
+  (see glob glob-match? glob-pattern)
+  (example """
+    (import (std glob))
+
+    (->list (glob "src/**/*.bjo"))              ; every .bjo file under src
+    (->list (glob "{lib,tests}/*.{bjo,bjodoc}"))
+    (glob-match? "*.txt" "notes.txt")           ; #t
+    (glob-match? "src/**" "src/a/b.c")          ; #t
+    """)
+  (reference """
+    @itemlist[
+    @item{@code{*} matches any characters in a name, and @code{?} one
+          character.}
+    @item{@code{[abc]} matches one of the characters, @code{[a-z]} one in
+          the range, and @code{[!a]} or @code{[^a]} one that is not. A
+          @code{]} first in the class is a member.}
+    @item{@code{**} as a whole part, as in @code{src/**/x}, matches zero or
+          more directories. Elsewhere it is the same as @code{*}.}
+    @item{@code{{a,b}} matches either alternative. The braces are expanded
+          first, as in a shell, so an alternative can hold a @code{/}, and
+          braces can be nested.}
+    @item{@code{\\} before a character matches that character, so
+          @code{\\*} matches a @code{*}.}
+    ]
+
+    A pattern is split into parts on @code{/}, and each part matches one
+    name. Empty parts and @code{.} are dropped, as @code{path-parts} drops
+    them, so @code{src//a} and @code{./src/a} are @code{src/a}. A pattern
+    that starts with @code{/} matches absolute paths only.
+
+    A wildcard does not match a name that starts with @code{.}, and
+    @code{**} does not enter a directory whose name does, unless the part
+    starts with @code{.} as well, as in @code{.*}, or the pattern was made
+    with @code{#:dot? #t}. Matching is case sensitive.
+
+    A name is matched as UTF-8 characters. A part of a name that is not
+    UTF-8 is one unit: @code{*} and @code{?} match it, and nothing else
+    does.
+
+    Not supported: the extended patterns of bash and ksh, such as
+    @code{@(a|b)} and @code{!(a)}, the classes @code{[[:alpha:]]}, and the
+    negation of a whole pattern, as in a @code{.gitignore}.
+    """))
+
+(:doc Glob
+  (summary "A parsed glob pattern.")
+  (see glob-pattern glob-parse AsGlob)
+  (reference """
+    Opaque: make one with @code{glob-pattern} or @code{glob-parse}. Parse a
+    pattern once to use it many times; a string is parsed at each call.
+    """))
+
+(:doc GlobError
+  (summary "Why a glob pattern is not valid.")
+  (field pattern "The pattern as given.")
+  (field reason "What is wrong with it, such as \"a [ has no ]\".")
+  (see glob-parse glob-error-message))
+
+(:doc AsGlob
+  (summary "What a glob can be made from: a string or a Glob.")
+  (see as-glob glob-pattern)
+  (reference """
+    @code{glob} and @code{glob-match?} take any of them. A string is
+    parsed with @code{glob-pattern}, so a pattern that is not valid raises.
+    """))
+
+(:doc as-glob
+  (summary "The method of AsGlob: the value as a Glob.")
+  (arg x "A string or a Glob.")
+  (returns "The glob. A Glob is returned as it is.")
+  (see glob-pattern))
+
+(:doc glob-parse
+  (summary "A glob pattern, or why it is not valid.")
+  (arg text "The pattern.")
+  (key #:dot? "Whether wildcards match names that start with a dot. #f by default.")
+  (returns "(Ok glob), or (Err e) with a GlobError.")
+  (see glob-pattern glob-error-message)
+  (example """
+    (glob-parse "*.[ch]")    ; (Ok ...)
+    (glob-parse "a[b")       ; (Err (GlobError (pattern "a[b") (reason "a [ has no ]")))
+    """)
+  (reference """
+    Use it for a pattern from outside the program, such as an argument.
+    The errors are a @code{[} or a @code{{} with no end, a @code{}} with no
+    start, an empty range such as @code{[z-a]}, and a @code{\\} at the end.
+    """))
+
+(:doc glob-pattern
+  (summary "A glob pattern, for a pattern known to be valid.")
+  (arg text "The pattern.")
+  (key #:dot? "Whether wildcards match names that start with a dot. #f by default.")
+  (returns "The glob. A pattern that is not valid raises an ArgumentException.")
+  (see glob-parse))
+
+(:doc glob-error-message
+  (summary "A GlobError as a sentence.")
+  (arg e "The error.")
+  (returns "Such as: the glob pattern \"a[b\" is not valid: a [ has no ]")
+  (see glob-parse))
+
+(:doc glob->string
+  (summary "The pattern a glob was made from.")
+  (arg g "The glob.")
+  (returns "The text, as it was given."))
+
+(:doc glob-match?
+  (summary "Whether a path matches a glob pattern.")
+  (arg pattern "A string or a Glob.")
+  (arg x "The path: a string, a ByteString or a Path.")
+  (returns "#t when the parts of the path match the parts of the pattern.")
+  (see glob)
+  (example """
+    (glob-match? "*.txt" "a/notes.txt")     ; #f: * does not match a /
+    (glob-match? "**/*.txt" "a/notes.txt")  ; #t
+    (glob-match? "*" ".hidden")             ; #f
+    """)
+  (reference """
+    Reads nothing from the file system. The path is compared by its
+    parts, so @code{a//b} and @code{./a/b} match as @code{a/b} does.
+    """))
+
+(:doc glob
+  (summary "The paths on the file system that match a glob pattern.")
+  (arg pattern "A string or a Glob.")
+  (returns "A lazy sequence of the paths: files and directories, depth first, each directory's names in byte order.")
+  (see glob-match? directory-walk)
+  (example """
+    (for-each println (glob "src/**/*.bjo"))
+    (->list (glob "/etc/*.conf"))
+    (find #(file-exists? &) (glob "**/README*"))   ; stops at the first
+    """)
+  (reference """
+    A relative pattern matches against the current directory, and the paths
+    are relative: @code{src/a.bjo}, not @code{./src/a.bjo}. An absolute
+    pattern matches from the root. A pattern with both, through braces,
+    gives the relative paths first.
+
+    @itemlist[
+    @item{Only the directories that a part of the pattern can still match
+          below are listed. A part with no wildcard is looked up, not
+          listed, so @code{/home/me/src/*.c} lists only @code{/home/me/src}.}
+    @item{A path is given once, also when more than one alternative of the
+          braces matches it.}
+    @item{@code{**} does not enter a directory that is a symbolic link, so a
+          link back up the tree cannot loop. A part that names the link,
+          or a wildcard that matches it, enters it.}
+    @item{A directory that cannot be listed matches nothing below it, as in
+          a shell. It is not an error.}
+    @item{Nothing is read until the sequence is pulled, and the reads go
+          through the @code{FS} effect, so a fake file system answers them.}
+    ]
+    """))
