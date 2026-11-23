@@ -1,8 +1,8 @@
 ;; Docs for bjo/task.bjo, read through (:doc #:file "task.bjodoc").
 
 (:doc #:module
-  (summary "What a project's tasks.bjo imports: once, for a task that several others call.")
-  (see once)
+  (summary "What a project's tasks.bjo imports: once, and running a program on the terminal.")
+  (see once task-run task-run!)
   (example """
     ;; tasks.bjo
     (export build test)
@@ -66,3 +66,37 @@
   (arg key "The key.")
   (arg body "What to run, the first time.")
   (see once))
+
+(:doc task-run
+  (summary "Runs a program on the terminal and waits for it.")
+  (arg argv "The program, then its arguments, one word each.")
+  (returns "The exit code, or @code{Err} when the program cannot be started.")
+  (see task-run! once)
+  (example """
+    (match (task-run ["git" "diff" "--quiet"])
+      ((Ok 0) (println "no changes"))
+      ((Ok _) (println "changes"))
+      ((Err e) (raise e)))
+    """)
+  (reference """
+    The program has the standard input, output and error of @code{bjo task},
+    so what it writes is shown when it is written. The program is looked up
+    on @code{PATH}. Each word is one argument: no shell splits or expands it.
+    What the task has printed is flushed before the program starts, so the
+    two outputs come in order. An empty @code{argv} panics.
+    """))
+
+(:doc task-run!
+  (summary "Runs a program on the terminal, and ends the task when it fails.")
+  (arg argv "The program, then its arguments, one word each.")
+  (see task-run)
+  (example """
+    (task-run! ["./build_std.sh"])
+    (task-run! ["./run_tests.py"])
+    """)
+  (reference """
+    It runs the program as @code{task-run} does. When the program exits with
+    a code other than 0, the task ends with that code, and a line on standard
+    error names the command. When the program cannot be started, the task
+    ends with 127.
+    """))

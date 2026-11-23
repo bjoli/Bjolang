@@ -13,11 +13,31 @@
 ;; bjo/task.bjo — what a project's tasks.bjo imports.
 ;;
 ;; - `once`: a task that several others call runs one time per `bjo task`.
+;; - `task-run` and `task-run!`: run a program on the terminal, with its
+;;   output shown as it is written.
 
-(export once task-once!)
+(export once task-once! task-run task-run!)
 
 (import (std prelude))
 (import (std syntax-match))
+
+(import/class
+  (Process (: System.Diagnostics.Process))
+  (ProcessStartInfo (: System.Diagnostics.ProcessStartInfo (-> ProcessStartInfo))))
+
+(import/extern
+  (info-program!   (: System.Diagnostics.ProcessStartInfo.FileName
+                      (-> ProcessStartInfo string void) #:set))
+  (info-use-shell! (: System.Diagnostics.ProcessStartInfo.UseShellExecute
+                      (-> ProcessStartInfo bool void) #:set))
+  (info-argument   (: BjoProc.AddArgument (-> ProcessStartInfo string ProcessStartInfo)))
+  (process-start   (: System.Diagnostics.Process.Start
+                      (-> ProcessStartInfo Process)
+                      #:exceptions (System.ComponentModel.Win32Exception
+                                    System.InvalidOperationException)))
+  (process-wait    (: System.Diagnostics.Process.WaitForExit (-> Process void)))
+  (process-code    (: System.Diagnostics.Process.ExitCode (-> Process int) #:get))
+  (error-message   (: System.Exception.Message (-> Exception string) #:get)))
 
 (:doc #:file "task.bjodoc")
 
@@ -37,3 +57,39 @@
   (syntax-match form
     ((_ key body ...) #'(task-once! ,key (fun () ,@body)))
     (bad (syntax-error bad "once takes a key and a body: (once 'build (run/status '(make)))"))))
+
+;; Runs `argv` with this process's standard input, output and error, and
+;; waits for it.
+;;
+;; - The first word is the program, looked up on PATH. Each other word is one
+;;   argument, as it is.
+;; - What this program has printed is flushed first, so the outputs come in
+;;   order.
+;; - Returns the exit code, or `Err` when the program cannot be started.
+;;   Panics on an empty `argv`.
+(: (-> (Vec string) (Result Exception int)))
+(defun (task-run argv)
+  (when (vec-empty? argv) (panic! "task-run: the command is empty"))
+  (flush-port (parameter-ref current-output-port))
+  (def info (ProcessStartInfo.))
+  (info-program! info (vec-ref argv 0))
+  (info-use-shell! info #f)
+  (loop (:for i (range 1 (vec-length argv)))
+        (:do (ignore (info-argument info (vec-ref argv i)))))
+  (def (Ok child) (process-start info) :propagate)
+  (process-wait child)
+  (Ok (process-code child)))
+
+;; Runs `argv` as `task-run` does, and ends the task when it fails.
+;;
+;; - A program that exits with a code other than 0 ends the task with that
+;;   code, and a message on standard error that names the command.
+;; - A program that cannot be started ends the task with 127.
+(: (-> (Vec string) void))
+(defun (task-run! argv)
+  (def shown (string-join argv " "))
+  (match (task-run argv)
+    ((Ok 0) unit)
+    ((Ok code) (panic! #"bjo task: ${shown} exited with ${code}" #:exit-code code))
+    ((Err e) (panic! #"bjo task: ${shown} could not be started: ${(error-message e)}"
+                     #:exit-code 127))))

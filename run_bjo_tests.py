@@ -2458,6 +2458,31 @@ def test_task(work, c):
 """)
     c.says("an edit to tasks.bjo adds a task", run_bjo(loose, "task", "hello"), "hello")
 
+    # task-run gives the program the terminal; task-run! ends the task when
+    # the program fails.
+    write(loose / "tasks.bjo", """(export shell shell-or-stop)
+(import (std prelude))
+(import (bjo task))
+(:doc shell (summary "Runs sh.") (arg script "The script.") (returns "Its exit code."))
+(: (-> string int))
+(defun (shell script)
+  (println "before")
+  (match (task-run ["sh" "-c" script]) ((Ok code) code) ((Err e) (raise e))))
+(:doc shell-or-stop (summary "Runs sh, and stops when it fails.") (arg script "The script."))
+(: (-> string void))
+(defun (shell-or-stop script)
+  (task-run! ["sh" "-c" script])
+  (println "after"))
+""")
+    shell = run_bjo(loose, "task", "shell", "echo from-sh; exit 3")
+    c.that("task-run gives the exit code", shell.returncode == 3, said(shell))
+    c.that("and the output is in order", "before\nfrom-sh\n" in shell.stdout, shell.stdout)
+    stopped = run_bjo(loose, "task", "shell-or-stop", "exit 4")
+    c.that("task-run! ends the task with the code", stopped.returncode == 4, said(stopped))
+    c.says("and names the command", stopped, "bjo task: sh -c exit 4 exited with 4")
+    c.that("and the task does not go on", "after" not in stopped.stdout, stopped.stdout)
+    c.says("task-run! goes on when it works", run_bjo(loose, "task", "shell-or-stop", "true"), "after")
+
     # Every export has docs, and is a task or a type.
     write(loose / "tasks.bjo", "(export bare)\n(import (std prelude))\n(: (-> void))\n(defun (bare) (println 1))\n")
     bare = run_bjo(loose, "task")
