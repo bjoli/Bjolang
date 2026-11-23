@@ -60,6 +60,7 @@
 (import "bench.bjo")
 (import "format.bjo")
 (import "diff.bjo")
+(import "task.bjo")
 
 ;; ---------------------------------------------------------------------------
 ;; Interop
@@ -736,6 +737,39 @@
                  #"bjo test: ${failed} of ${(length statuses)} files failed.")))
   (if (= failed 0) 0 1))
 
+;; `bjo task`: the tasks of tasks.bjo, in the project's root, or here outside
+;; a project. See `task.bjo`.
+;;
+;; - tasks.bjo is built as a library, against the project's roots, and its
+;;   published docs give the tasks.
+;; - With no words, or only -h or --help, the tasks are listed, and nothing
+;;   else is built.
+;; - Otherwise the entry point is written to .bjo/tasks/main.bjo, when it
+;;   changed, built, and run with the words as they are.
+(: cmd-task (-> (List string) bool bool bool int) #:sync)
+(defun (cmd-task words debug? force? locked?)
+  (with-return ret
+    (def dir (match (find-project-dir (current-directory))
+               ((Some d) d)
+               (None (current-directory))))
+    (def file (path-combine dir tasks-file-name))
+    (unless (file-exists? file)
+      (ret (fail #"bjo task: there is no ${tasks-file-name} in ${dir}. Write one: each function it exports is a task.")))
+    (def (Ok roots) (roots-near dir locked?) :leave ((Err why) (fail why)))
+    (def (Ok (Tuple built _)) (ensure-built file debug? #t force? roots) :leave ((Err status) status))
+    (def (Ok tasks) (read-tasks file (record-ref built output))
+      :leave ((Err why) (fail #"bjo task: ${why}")))
+    (cond
+      ((or (empty? words) (= words (list "-h")) (= words (list "--help")))
+       (println (task-list-text tasks))
+       0)
+      ((empty? tasks) (fail #"bjo task: ${tasks-file-name} exports no tasks."))
+      (else
+       (def entry (path-combine dir ".bjo" "tasks" "main.bjo"))
+       (write-if-changed! entry (task-entry-source tasks "../../tasks.bjo"))
+       (def (Ok (Tuple rec _)) (ensure-built entry debug? #f force? roots) :leave ((Err status) status))
+       (run-built rec words)))))
+
 ;; `bjo bench` is `bench.bjo`'s. What it needs from here is lent to it: a
 ;; benchmark file built in Release, whatever `-d` says; a program run on the
 ;; console; and a source file found.
@@ -1323,6 +1357,9 @@
   (println "                                          --check writes nothing and names what is not")
   (println "                                          laid out; --diff writes nothing and prints the")
   (println "                                          changes as a diff. bjo fmt - reads standard input.")
+  (println "  bjo task [-d] [-c] [task] [args...]    Run a task of this project's tasks.bjo, with")
+  (println "                                          its arguments. With no task, list them.")
+  (println "                                          'bjo task NAME --help' shows a task's help.")
   (println "  bjo repl                                Start a REPL.")
   (println "  bjo rebjo                               Rebuild the compiler and bjo itself.")
   (println "  bjo help                                Show this message.")
@@ -1563,6 +1600,13 @@
        (def (Ok files) (fmt-targets named) :leave ((Err why) (fail why)))
        (cmd-fmt files check? diff?)))
 
+    ;; Everything after the task's name is the task's: bjo's own flags come
+    ;; before it, and parse-flags stopped there.
+    ("task"
+     (with-return ret
+       (when lib? (ret (fail "bjo task: runs a task, so it takes no --lib.")))
+       (cmd-task rest debug? force? locked?)))
+
     (("help" "-h" "--help") (usage) 0)
 
     (else (fail #"bjo: '${command}' is not a command. Try 'bjo help'."))))
@@ -1578,7 +1622,7 @@
   ;; are what follows it.
   (def (Cons command rest) (vec->list args)
     :leave (Nil (usage) 1))
-  (match (parse-flags rest (or (= command "test") (= command "bench") (= command "fmt")))
+  (match (parse-flags rest (or (= command "test") (= command "bench") (= command "fmt") (= command "task")))
     ((Err message) (fail message))
     ((Ok line) #:when (and (some? (record-ref line output)) (not (= command "publish")))
      (fail #"bjo ${command}: -o is for publish, which writes a directory; ${command} does not."))

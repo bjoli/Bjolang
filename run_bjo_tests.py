@@ -2364,6 +2364,134 @@ def test_fmt(work, c):
                f"first difference at line {first + 1 if first is not None else '?'}")
 
 
+# --- bjo task ----------------------------------------------------------------
+
+TASKS_BJO = """(export build deploy count status Level)
+(import (std prelude))
+(import (std argparse))
+(import (bjo task))
+
+(:doc Level (summary "How careful to be."))
+(def/cmdline-choices (: Level (Union Fast Safe)))
+
+(:doc build (summary "Builds it."))
+(: (-> void))
+(defun (build)
+  (once 'build (println "building")))
+
+(:doc deploy
+  (summary "Publishes.")
+  (arg host "The server.")
+  (key #:dry-run "Change nothing.")
+  (key #:jobs "How many at once.")
+  (key #:level "How careful."))
+(: (-> string (#:dry-run bool) (#:jobs int) (#:level Level) void))
+(defun (deploy host #:dry-run #f #:jobs 4 #:level Safe)
+  (build)
+  (build)
+  (println #"deploy ${host} dry-run=${dry-run} jobs=${jobs} level=${(written level)}"))
+
+(:doc count
+  (summary "Counts its arguments.")
+  (arg words "What to count."))
+(: (-> (List string) void))
+(defun (count words)
+  (println #"${(list-length words)} words"))
+
+(:doc status
+  (summary "Exits with a code.")
+  (arg code "The code.")
+  (returns "The code."))
+(: (-> int int))
+(defun (status code) code)
+"""
+
+
+@test("task")
+def test_task(work, c):
+    loose = work / "loose"
+    loose.mkdir(parents=True)
+
+    none = run_bjo(loose, "task")
+    c.failed("bjo task with no tasks.bjo is refused", none)
+    c.says("and it says there is none", none, "there is no tasks.bjo")
+
+    write(loose / "tasks.bjo", TASKS_BJO)
+    listed = run_bjo(loose, "task")
+    c.worked("bjo task lists the tasks", listed)
+    c.says("with their summaries", listed, "  deploy                Publishes.")
+    c.that("and builds no entry point", not (loose / ".bjo" / "tasks" / "main.exe").exists())
+    c.that("and lists no type", "Level" not in listed.stdout, listed.stdout)
+
+    ran = run_bjo(loose, "task", "deploy", "prod", "--dry-run", "--jobs", "8", "--level", "fast")
+    c.worked("bjo task runs a task with typed arguments", ran)
+    c.says("and gives it the values", ran, "deploy prod dry-run=#t jobs=8 level=Fast")
+    c.that("once runs build one time", ran.stdout.count("building") == 1, ran.stdout)
+
+    defaults = run_bjo(loose, "task", "deploy", "prod")
+    c.says("an absent keyword takes its default", defaults, "deploy prod dry-run=#f jobs=4 level=Safe")
+
+    wrong = run_bjo(loose, "task", "deploy", "--jobs", "four", "prod")
+    c.that("a wrong argument exits with 2", wrong.returncode == 2, said(wrong))
+    c.says("and names the option", wrong, "bjo task deploy: --jobs takes an int, not 'four'.")
+    c.that("and the task does not run", "deploy prod" not in wrong.stdout, wrong.stdout)
+
+    helped = run_bjo(loose, "task", "deploy", "--help")
+    c.worked("bjo task NAME --help", helped)
+    c.says("shows the usage", helped, "Usage: bjo task deploy [OPTIONS] HOST")
+    c.says("and the docs of the arguments", helped, "--jobs INT        How many at once. [default: 4]")
+    c.says("and the choices", helped, "--level fast|safe")
+
+    unknown = run_bjo(loose, "task", "dploy")
+    c.that("an unknown task exits with 2", unknown.returncode == 2, said(unknown))
+    c.says("and suggests one", unknown, "Did you mean deploy?")
+
+    counted = run_bjo(loose, "task", "count", "a", "b", "--", "--c")
+    c.says("a List parameter takes the rest", counted, "3 words")
+    c.that("an int task gives the exit code", run_bjo(loose, "task", "status", "7").returncode == 7)
+
+    # An edit adds a task, and the entry point is written again.
+    write(loose / "tasks.bjo", TASKS_BJO.replace("(export build", "(export hello build") + """
+(:doc hello (summary "Says hello."))
+(: (-> void))
+(defun (hello) (println "hello"))
+""")
+    c.says("an edit to tasks.bjo adds a task", run_bjo(loose, "task", "hello"), "hello")
+
+    # Every export has docs, and is a task or a type.
+    write(loose / "tasks.bjo", "(export bare)\n(import (std prelude))\n(: (-> void))\n(defun (bare) (println 1))\n")
+    bare = run_bjo(loose, "task")
+    c.failed("an export without docs is refused", bare)
+    c.says("and it names the export", bare, "bare is exported and has no (:doc bare ...)")
+    write(loose / "tasks.bjo", '(export answer)\n(import (std prelude))\n'
+                               '(:doc answer (summary "A value."))\n(: string)\n(def answer "x")\n')
+    value = run_bjo(loose, "task")
+    c.failed("an exported value is refused", value)
+    c.says("and it says what tasks.bjo exports", value, "answer is exported and is not a task")
+    write(loose / "tasks.bjo", '(export name)\n(import (std prelude))\n'
+                               '(:doc name (summary "A string.") (returns "It."))\n(: (-> string))\n'
+                               '(defun (name) "x")\n')
+    returns = run_bjo(loose, "task")
+    c.failed("a function that returns a string is refused", returns)
+    c.says("and it says what a task returns", returns, "A task returns void, or an int")
+
+    # In a project: tasks.bjo in the root, found from below it, with a
+    # package that only the tasks depend on.
+    helper = make_package(work / "helper", "helper", "0.1.0")
+    project = work / "proj"
+    write(project / "manifest.bjodat",
+          '(package\n  (name (proj))\n  (version "0.1.0")\n'
+          '  (task-depends (package (name (helper)) (source (path (dir "../helper"))))))\n')
+    write(project / "src" / "core.bjo", '(import (std prelude))\n(export one)\n(: one (-> int))\n(defun (one) 1)\n')
+    write(project / "tasks.bjo", '(export greet)\n(import (std prelude))\n(import (helper core))\n'
+                                 '(:doc greet (summary "Greets."))\n(: (-> void))\n'
+                                 '(defun (greet) (println (hello)))\n')
+    (project / "src" / "deep").mkdir(parents=True)
+    greeted = run_bjo(project / "src" / "deep", "task", "greet")
+    c.worked("bjo task in a project, from a directory below its root", greeted)
+    c.says("with a package from task-depends", greeted, "helper 0.1.0")
+
+
 def run_test(name, fn):
     """One test in its own work directory. Returns its checks and seconds."""
     work = WORK / name.replace(" ", "_")

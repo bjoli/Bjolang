@@ -1,0 +1,39 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; bjo/task.bjo — what a project's tasks.bjo imports.
+;;
+;; - `once`: a task that several others call runs one time per `bjo task`.
+
+(export once task-once!)
+
+(import (std prelude))
+(import (std syntax-match))
+
+(:doc #:file "task.bjodoc")
+
+;; The keys whose body has run, or is running, in this process.
+(: (Box (List Symbol)))
+(def done-keys (make-box Nil))
+
+(: (-> Symbol (-> void) void))
+(defun (task-once! key body)
+  (unless (list-contains? (box-ref done-keys) key)
+    ;; The key is stored before the body runs, so a body that reaches its
+    ;; own `once` again does not run a second time.
+    (box-set! done-keys (Cons key (box-ref done-keys)))
+    (body)))
+
+(def/macro (once form inject compare)
+  (syntax-match form
+    ((_ key body ...) #'(task-once! ,key (fun () ,@body)))
+    (bad (syntax-error bad "once takes a key and a body: (once 'build (run/status '(make)))"))))

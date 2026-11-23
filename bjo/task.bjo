@@ -1,0 +1,396 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; bjo/task.bjo — `bjo task`: the tasks of a project's tasks.bjo.
+;;
+;; - `read-task-defs` reads the tasks from tasks.bjo's `(export ...)` and from
+;;   the docs its dll publishes. Each export has a `(:doc ...)`, and each
+;;   function export is a task that returns `void` or `int`.
+;; - `task-entry-source` writes the program that runs them: a `def/cmdline`
+;;   record per task, a `def/cmdline-commands` union of them, and a `main`
+;;   that parses the words and calls the task.
+;; - `task-list-text` is what `bjo task` prints with no task named.
+;;
+;; The builds are `bjo.bjo`'s. Nothing here compiles or runs anything.
+
+(export TaskParam TaskDef tasks-file-name
+        read-task-defs read-tasks task-entry-source task-list-text write-if-changed!)
+
+(import (std prelude))
+(import (bjo docs))
+
+(import/extern
+  (clr-directory-name (: System.IO.Path.GetDirectoryName (-> string string))))
+
+(: string)
+(def tasks-file-name "tasks.bjo")
+
+;; ---------------------------------------------------------------------------
+;; Reading source text
+;; ---------------------------------------------------------------------------
+;; Enough of the reader for a signature, a defun's head and the export form:
+;; lists, strings, characters and atoms. Each datum keeps its source text, so
+;; a type or a default is written into the entry point as it was written.
+
+(type (: Sexp (Union (: Atom string)
+                     (: Node (List Sexp) string))))
+
+(: (-> Sexp string))
+(defun (sexp-text s)
+  (match s
+    ((Atom t) t)
+    ((Node _ t) t)))
+
+(: (-> char bool))
+(defun (delimiter? c)
+  (or (char-whitespace? c) (= c #\() (= c #\)) (= c #\") (= c #\;)))
+
+;; The position after whitespace and comments.
+(: (-> (Vec char) int int))
+(defun (skip-blank cs i)
+  (cond
+    ((>= i (vec-length cs)) i)
+    ((char-whitespace? (vec-ref cs i)) (skip-blank cs (+ i 1)))
+    ((= (vec-ref cs i) #\;)
+     (let line ((j i))
+       (cond
+         ((>= j (vec-length cs)) j)
+         ((= (vec-ref cs j) #\newline) (skip-blank cs (+ j 1)))
+         (else (line (+ j 1))))))
+    (else i)))
+
+(: (-> (Vec char) int int string))
+(defun (text-of cs from to)
+  (list->string (vec->list (vec-slice cs from (- to from)))))
+
+;; One datum at `i`: the datum and the position after it.
+(: (-> (Vec char) int (Result string (Tuple Sexp int))))
+(defun (read-datum cs i)
+  (def n (vec-length cs))
+  (def start (skip-blank cs i))
+  (cond
+    ((>= start n) (Err "the text ends inside a form"))
+    (:def c (vec-ref cs start))
+    ((= c #\()
+     (let items ((j (+ start 1)) (acc Nil))
+       (def k (skip-blank cs j))
+       (cond
+         ((>= k n) (Err "a ( has no )"))
+         ((= (vec-ref cs k) #\))
+          (Ok (Tuple (Node (list-reverse acc) (text-of cs start (+ k 1))) (+ k 1))))
+         (else
+          (match (read-datum cs k)
+            ((Err why) (Err why))
+            ((Ok (Tuple d after)) (items after (Cons d acc))))))))
+    ((= c #\)) (Err "a ) has no ("))
+    ((= c #\")
+     (let str-end ((j (+ start 1)))
+       (cond
+         ((>= j n) (Err "a string has no end"))
+         ((= (vec-ref cs j) #\\) (str-end (+ j 2)))
+         ((= (vec-ref cs j) #\") (Ok (Tuple (Atom (text-of cs start (+ j 1))) (+ j 1))))
+         (else (str-end (+ j 1))))))
+    ((= c #\')
+     (match (read-datum cs (+ start 1))
+       ((Err why) (Err why))
+       ((Ok (Tuple (Atom _) after)) (Ok (Tuple (Atom (text-of cs start after)) after)))
+       ((Ok (Tuple (Node items _) after)) (Ok (Tuple (Node items (text-of cs start after)) after)))))
+    (else
+     ;; `#\(` is a character: the one after `#\` is taken whatever it is.
+     (def first-end (if (and (= c #\#) (< (+ start 2) n) (= (vec-ref cs (+ start 1)) #\\))
+                        (+ start 3)
+                        (+ start 1)))
+     (let atom-end ((j first-end))
+       (if (or (>= j n) (delimiter? (vec-ref cs j)))
+           (Ok (Tuple (Atom (text-of cs start j)) j))
+           (atom-end (+ j 1)))))))
+
+(: (-> string (Result string Sexp)))
+(defun (read-one text)
+  (match (read-datum (string->vec text) 0)
+    ((Ok (Tuple d _)) (Ok d))
+    ((Err why) (Err why))))
+
+;; The names in the top-level `(export ...)` form. The forms before it are
+;; read and passed over. A file has its export form first, before anything
+;; this reader does not know.
+(: (-> string (Result string (List string))))
+(defun (export-names source)
+  (def cs (string->vec source))
+  (let go ((i 0))
+    (def k (skip-blank cs i))
+    (if (>= k (vec-length cs))
+        (Err "it has no (export ...) form")
+        (match (read-datum cs k)
+          ((Err why) (Err why))
+          ((Ok (Tuple (Node (Cons (Atom "export") names) _) _))
+           (Ok (loop (:for d names)
+                     (:when-let (Atom name) d)
+                     (:acc out (listing name))
+                     => out)))
+          ((Ok (Tuple _ after)) (go after))))))
+
+;; ---------------------------------------------------------------------------
+;; The tasks
+;; ---------------------------------------------------------------------------
+
+;; - `type` is the type as written.
+;; - `default` is a keyword's default as written.
+(type (: TaskParam (Record (: name string)
+                           (: type string)
+                           (: keyword bool)
+                           (: default (Option string))
+                           (: help string))))
+
+(type (: TaskDef (Record (: name string)
+                         (: summary string)
+                         (: params (List TaskParam))
+                         (: returns-int bool))))
+
+;; `build-std`: lower-case letters and digits, words joined by `-`.
+(: (-> string bool))
+(defun (task-name? name)
+  (def cs (string->list name))
+  (and (not (list-empty? cs))
+       (char-alphabetic? (list-head cs))
+       (= (string-downcase name) name)
+       (list-foldl (fun (c ok) (and ok (or (char-alphabetic? c) (char-numeric? c) (= c #\-)))) #t cs)
+       (not (string-ends-with? name "-"))
+       (not (string-contains? name "--"))))
+
+(: (-> Doc string string))
+(defun (param-help doc name)
+  (let go ((cs (record-ref doc clauses)))
+    (match cs
+      (Nil "")
+      ((Cons c more)
+       (match c
+         ((DocArg n text) #:when (= (symbol->string n) name) text)
+         ((DocRest n text) #:when (= (symbol->string n) name) text)
+         ((DocKey n text) #:when (= (symbol->string n) name) text)
+         (_ (go more)))))))
+
+(: (-> string (Option string)))
+(defun (keyword-name text)
+  (if (string-starts-with? text "#:") (Some (string-drop text 2)) None))
+
+;; The keyword parameters of a defun's head: each name and its default.
+(: (-> (List Sexp) (List (Tuple string string))))
+(defun (keyword-defaults items)
+  (match items
+    ((Cons (Atom k) (Cons d more))
+     (match (keyword-name k)
+       ((Some name) (Cons (Tuple name (sexp-text d)) (keyword-defaults more)))
+       (None (keyword-defaults (Cons d more)))))
+    ((Cons _ more) (keyword-defaults more))
+    (Nil Nil)))
+
+(: (-> string Doc (Result string TaskDef)))
+(defun (task-of name doc)
+  (def where #"${tasks-file-name}: the task ${name}")
+  (def* ((Some sig-text) (record-ref doc signature)
+         :leave-with (Err #"${where} has no signature. Write (: (-> ... void)) above its defun."))
+        ((Some head-text) (record-ref doc definition)
+         :leave-with (Err #"${where} is not a defun."))
+        ((Ok sig) (read-one sig-text) :leave ((Err why) (Err #"${where}: its signature does not read: ${why}")))
+        ((Ok head) (read-one head-text) :leave ((Err why) (Err #"${where}: its head does not read: ${why}")))
+        ((Node (Cons (Atom "->") types) _) sig
+         :leave-with (Err #"${where} has the type ${sig-text}. A task is a function: (-> ... void)."))
+        ((Node (Cons _ head-items) _) head
+         :leave-with (Err #"${where}: its head does not read: ${head-text}")))
+  (def returns (sexp-text (list-head (list-reverse types))))
+  (def param-types (list-reverse (list-tail (list-reverse types))))
+  (def positional-types (list-filter (fun (t) (match t ((Node (Cons (Atom k) _) _) (none? (keyword-name k))) (_ #t)))
+                                     param-types))
+  (def keyword-types (loop (:for t param-types)
+                           (:when-let (Node (Cons (Atom k) (Cons ty Nil)) _) t)
+                           (:when-let (Some kname) (keyword-name k))
+                           (:acc out (listing (Tuple kname (sexp-text ty))))
+                           => out))
+  (def positional-names (loop (:for d head-items)
+                              (:finish (match d ((Atom t) (some? (keyword-name t))) (_ #f)))
+                              (:when-let (Atom pname) d)
+                              (:acc out (listing pname))
+                              => out))
+  (def defaults (keyword-defaults head-items))
+  (cond
+    ((not (task-name? name))
+     (Err #"${where}: a task's name is lower-case words joined by -, such as build-std."))
+    ((= name "main") (Err #"${where}: main is the entry point's own name, so no task has it."))
+    ((not (or (= returns "void") (= returns "int")))
+     (Err #"${where} returns ${returns}. A task returns void, or an int that is the exit code."))
+    ((not (= (list-length positional-names) (list-length positional-types)))
+     (Err #"${where}: its head ${head-text} and its signature ${sig-text} do not agree."))
+    (else
+     (def positional
+       (loop (:for (Tuple pname ty) (zip positional-names positional-types))
+             (:acc out (listing (TaskParam (name pname) (type (sexp-text ty)) (keyword #f)
+                                           (default None) (help (param-help doc pname)))))
+             => out))
+     (def keywords
+       (loop (:for (Tuple kname ty) keyword-types)
+             (:acc out (listing (TaskParam (name kname) (type ty) (keyword #t)
+                                           (default (loop (:for (Tuple dn dv) defaults)
+                                                          (:when (= dn kname))
+                                                          (:acc found (finding dv))
+                                                          => found))
+                                           (help (param-help doc kname)))))
+             => out))
+     (Ok (TaskDef (name name) (summary (doc-summary doc))
+                  (params (list-append positional keywords))
+                  (returns-int (= returns "int")))))))
+
+;; The tasks of tasks.bjo, in the order it exports them.
+;;
+;; - `source` is the text of tasks.bjo, for its `(export ...)` form.
+;; - `docs` are the docs its dll publishes.
+;; - Raises an export without a doc, and an export that is neither a task
+;;   nor a type.
+(: (-> string (Vec Doc) (Result string (List TaskDef))))
+(defun (read-task-defs source docs)
+  (def (Ok names) (export-names source)
+    :leave ((Err why) (Err #"${tasks-file-name}: ${why}. Export the tasks: (export build test).")))
+  (list-foldr
+   (fun (name acc)
+     (def (Ok more) acc :propagate)
+     (match (doc-named docs name)
+       (None (Err #"${tasks-file-name}: ${name} is exported and has no (:doc ${name} ...). Every task has docs."))
+       ((Some doc)
+        (match (record-ref doc kind)
+          (KindFunction
+           (def (Ok t) (task-of name doc) :propagate)
+           (Ok (Cons t more)))
+          (KindRecord (Ok more))
+          (KindUnion (Ok more))
+          (KindAlias (Ok more))
+          (_ (Err #"${tasks-file-name}: ${name} is exported and is not a task. tasks.bjo exports tasks, and the types their arguments have. Put helpers in another module."))))))
+   (Ok Nil)
+   names))
+
+;; ---------------------------------------------------------------------------
+;; The entry point
+;; ---------------------------------------------------------------------------
+
+;; `build-std` is `BuildStd`, which def/cmdline-commands names `build-std`.
+(: (-> string string))
+(defun (camel name)
+  (string-join (list->vec (list-map (fun (w) (if (string-empty? w)
+                                                 w
+                                                 (str (string-upcase (string-take w 1)) (string-drop w 1))))
+                                    (vec->list (string-split name "-"))))
+               ""))
+
+;; A string literal of `text`.
+(: (-> string string))
+(defun (literal text)
+  (str "\"" (string-replace (string-replace (string-replace text "\\" "\\\\") "\"" "\\\"") "\n" "\\n") "\""))
+
+(: (-> string string))
+(defun (record-of name) (str "Task" (camel name)))
+
+(: (-> string bool))
+(defun (collection-type? ty)
+  (or (string-starts-with? ty "(Option ") (string-starts-with? ty "(List ") (string-starts-with? ty "(Vec ")))
+
+(: (-> TaskParam string))
+(defun (field-of p)
+  (def help (if (= (record-ref p help) "") "" (str " #:help " (literal (record-ref p help)))))
+  (def default (match (record-ref p default)
+                 ((Some d) #:when (not (collection-type? (record-ref p type))) (str " #:default " d))
+                 (_ "")))
+  (if (record-ref p keyword)
+      (str "    (: " (record-ref p name) " " (record-ref p type) default help ")")
+      (str "    (: " (record-ref p name) " " (record-ref p type) " #:positional" help ")")))
+
+(: (-> TaskDef string))
+(defun (record-decl t)
+  (string-join
+   (list->vec
+    (list-append (list (str "(def/cmdline")
+                       (str "  (: " (record-of (record-ref t name)) " (Record #:summary " (literal (record-ref t summary))))
+                 (list-map field-of (record-ref t params))))
+   "\n"))
+
+(: (-> TaskDef string))
+(defun (call-of t)
+  (def args (list-map (fun (p)
+                        (def get (str "(record-ref o " (record-ref p name) ")"))
+                        (if (record-ref p keyword) (str "#:" (record-ref p name) " " get) get))
+                      (record-ref t params)))
+  (def call (str "(" (string-join (list->vec (Cons (record-ref t name) args)) " ") ")"))
+  (str "      ((" (camel (record-ref t name)) " o) "
+       (if (record-ref t returns-int) call (str call " 0"))
+       ")"))
+
+;; The program that parses the words after `bjo task` and calls the task.
+;; `import` is how it names tasks.bjo: a path relative to the entry point.
+(: (-> (List TaskDef) string string))
+(defun (task-entry-source tasks import)
+  (def records (list-map (fun (t) (str (record-decl t) ")))")) tasks))
+  (def cases (list-map (fun (t) (str "(: " (camel (record-ref t name)) " " (record-of (record-ref t name)) ")")) tasks))
+  (string-join
+   (list->vec
+    (list-append
+     (list ";; Written by bjo task from tasks.bjo. Do not edit: it is written again."
+           ""
+           "(import (std prelude))"
+           "(import (std argparse))"
+           (str "(import " (literal import) ")")
+           "")
+     (list-append
+      (list-map (fun (r) (str r "\n")) records)
+      (list (str "(def/cmdline-commands (: TaskCommand (Union " (string-join (list->vec cases) " ") ")))")
+            ""
+            "(def/cmdline (: TaskLine (Record #:program \"bjo task\" (: command TaskCommand #:subcommand #:value \"TASK\"))))"
+            ""
+            "(defun (main args)"
+            "  (match (cmdline-parse-TaskLine args)"
+            "    ((Err (HelpWanted text)) (println text) 0)"
+            "    ((Err e) (panic! (arg-error-message e) #:exit-code (arg-error-exit-code e)))"
+            "    ((Ok line)"
+            "     (match (record-ref line command)"
+            (str (string-join (list->vec (list-map call-of tasks)) "\n") "))))")
+            ""))))
+   "\n"))
+
+;; What `bjo task` prints with no task named.
+(: (-> (List TaskDef) string))
+(defun (task-list-text tasks)
+  (def rows (list-map (fun (t)
+                        (def left (str "  " (record-ref t name)))
+                        (cond
+                          ((= (record-ref t summary) "") left)
+                          ((<= (string-length left) 22) (str (string-pad-right left 24) (record-ref t summary)))
+                          (else (str left "\n" (string-pad-right "" 24) (record-ref t summary)))))
+                      tasks))
+  (if (list-empty? tasks)
+      #"${tasks-file-name} exports no tasks."
+      (string-join (list->vec (list-append (list #"Tasks in ${tasks-file-name}:") rows)) "\n")))
+
+;; ---------------------------------------------------------------------------
+;; Files
+;; ---------------------------------------------------------------------------
+
+;; The tasks of `source`, a tasks.bjo, from the docs of `dll`, its build.
+(: (-> string string (Result string (List TaskDef))))
+(defun (read-tasks source dll)
+  (def (Ok docs) (assembly-docs dll) :propagate)
+  (read-task-defs (file-read-text source) docs))
+
+;; Writes `text` to `path` only when the file holds something else, so that a
+;; build that reads it is stale only when it changed. Makes the directory.
+(: (-> string string void))
+(defun (write-if-changed! path text)
+  (unless (and (file-exists? path) (= (file-read-text path) text))
+    (def dir (clr-directory-name (path-absolute path)))
+    (unless (directory-exists? dir) (directory-create dir))
+    (file-write-text path text)))

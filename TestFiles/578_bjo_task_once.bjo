@@ -1,0 +1,33 @@
+;; (bjo task): once runs its body the first time its key is reached.
+
+(import (std prelude))
+(import (std simpletest))
+(import (bjo task))
+
+(: (Box int))
+(def builds (make-box 0))
+
+(: (-> void))
+(defun (build)
+  (once 'build (box-set! builds (+ (box-ref builds) 1))))
+
+(: (Box int))
+(def nested (make-box 0))
+
+;; A body that reaches its own key again does not run a second time.
+(: (-> void))
+(defun (recurse)
+  (once 'recurse
+    (box-set! nested (+ (box-ref nested) 1))
+    (recurse)))
+
+(defun (main)
+  (build)
+  (build)
+  (build)
+  (expect "a key runs once" (box-ref builds) 1)
+  (once 'other (box-set! builds 10))
+  (expect "another key runs too" (box-ref builds) 10)
+  (recurse)
+  (expect "a body that reaches its own key" (box-ref nested) 1)
+  0)

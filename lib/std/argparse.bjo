@@ -330,11 +330,20 @@
 ;; Help
 ;; ---------------------------------------------------------------------------
 
+
+(: (-> OptSpec bool))
+(defun (subcommand-spec? s) (= (.kind s) 4))
+
+;; A subcommand's placeholder: its `#:value`, else COMMAND.
+(: (-> OptSpec string))
+(defun (command-label s)
+  (if (= (.placeholder s) "") "COMMAND" (.placeholder s)))
+
 (: (-> OptSpec string))
 (defun (positional-label s)
   (def base (.placeholder s))
   (cond
-    ((= (.kind s) 4) "COMMAND")
+    ((= (.kind s) 4) (command-label s))
     ((.multi s) (if (> (.at-least s) 0) #"${base}..." #"[${base}...]"))
     ((.required s) base)
     (else #"[${base}]")))
@@ -555,7 +564,7 @@
       ((Err p) (fail p))
       ((Ok _)
        (if (and (>= sub 0) (none? command))
-           (fail (Missing "COMMAND"))
+           (fail (Missing (command-label (vec-ref specs sub))))
            (Ok (Scanned (info info) (program program) (occs occs) (command command)))))))
   ;; `pos` holds the arguments so far, the latest first.
   (let go ((ws words) (pos Nil) (options-done #f))
@@ -682,7 +691,10 @@
 (defun (cmdline-subcommand sc dispatch)
   (def info (.info sc))
   (match (.command sc)
-    (None (Err (bad info (.program sc) (Missing "COMMAND"))))
+    (None (Err (bad info (.program sc)
+                    (Missing (match (find subcommand-spec? (vec->list (.specs info)))
+                               ((Some s) (command-label s))
+                               (None "COMMAND"))))))
     ((Some (Tuple name rest))
      (match (dispatch name rest #"${(.program sc)} ${name}")
        ((Some r) r)

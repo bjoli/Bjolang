@@ -1,0 +1,68 @@
+;; Docs for bjo/task.bjo, read through (:doc #:file "task.bjodoc").
+
+(:doc #:module
+  (summary "What a project's tasks.bjo imports: once, for a task that several others call.")
+  (see once)
+  (example """
+    ;; tasks.bjo
+    (export build test)
+    (import (std prelude))
+    (import (bjo task))
+
+    (:doc build (summary "Builds the library."))
+    (: (-> void))
+    (defun (build)
+      (once 'build (println "building")))
+
+    (:doc test (summary "Builds, then runs the tests."))
+    (: (-> void))
+    (defun (test)
+      (build)
+      (println "testing"))
+    """)
+  (reference """
+    @code{bjo task} runs the exported functions of a project's
+    @code{tasks.bjo}. Each one has a @code{(:doc ...)}, which is its help,
+    and its parameters are its command-line arguments: a required parameter
+    is a positional argument, and @code{#:dry-run #f} of type @code{bool} is
+    the flag @code{--dry-run}. A task returns @code{void}, which exits with 0,
+    or @code{int}, which is the exit code. A task calls another as a function.
+
+    @itemlist[
+    @item{@code{bjo task} lists the tasks, with their summaries.}
+    @item{@code{bjo task NAME ARG ...} runs one.}
+    @item{@code{bjo task NAME --help} shows its help.}
+    ]
+
+    The arguments are parsed by @code{(std argparse)}, so a wrong argument is
+    an error before the task runs. Each type in a task's signature has an
+    @code{ArgValue} instance, and is in scope through @code{tasks.bjo}: from
+    @code{(std prelude)}, or a type that @code{tasks.bjo} declares or
+    re-exports. A keyword's default is copied into the generated entry point
+    as it is written, so it is a literal, or a name that @code{tasks.bjo}
+    exports. A keyword of type @code{(Option T)}, @code{(List T)} or
+    @code{(Vec T)} is @code{None} or empty when absent.
+
+    @code{tasks.bjo} exports only tasks and the types their arguments have,
+    each with a @code{(:doc ...)}. Helpers go in another module. A package
+    that only the tasks need goes in the manifest's @code{(task-depends ...)}.
+    """))
+
+(:doc once
+  (summary "Runs a body the first time the key is reached in this run of bjo task.")
+  (form (once key body ...))
+  (arg key "A Symbol: @code{'build}.")
+  (rest body "What to run.")
+  (see task-once!)
+  (reference """
+    Later, with the same key, the body does not run. The key is stored before
+    the body runs, so a body that reaches its own @code{once} does not run
+    again, and a body that panics ends the run. The value is @code{void}: a
+    task does its work for its effect.
+    """))
+
+(:doc task-once!
+  (summary "The function once expands to.")
+  (arg key "The key.")
+  (arg body "What to run, the first time.")
+  (see once))

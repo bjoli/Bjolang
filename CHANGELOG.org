@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~bjo task~: project tasks written in Bjolang
+
+- A project's tasks are the exported functions of ~tasks.bjo~ in its root,
+  or in the working directory outside a project. ~bjo task~ lists them,
+  ~bjo task NAME ARG ...~ runs one, and ~bjo task NAME --help~ shows its
+  help.
+- A task returns ~void~ (exit 0) or ~int~ (the exit code). Its parameters
+  are its arguments, parsed by ~(std argparse)~ from its signature, and its
+  ~(:doc ...)~ is its help. A wrong argument is an error before the task
+  runs.
+- Every export of ~tasks.bjo~ has a ~(:doc ...)~, and is a task or a type.
+  Anything else is an error that names it.
+- ~bjo~ builds ~tasks.bjo~ as a library, reads its published docs, and
+  writes and builds an entry point in ~.bjo/tasks/main.bjo~. The entry point
+  is written again only when it changes.
+- ~(bjo task)~ has ~(once key body ...)~: the body runs the first time the
+  key is reached in a run.
+- The manifest takes ~(task-depends ...)~, resolved and locked as
+  ~dev-depends~ are, for what only the tasks need.
+- ~(std argparse)~: ~#:value~ on a ~#:subcommand~ field names it in the usage
+  line, where ~COMMAND~ was the only name.
+- Not yet: short names for a task's options, a ~tasks/~ directory, file
+  staleness, globbing, parallel steps.
+
 * ~(std argparse)~: command-line arguments into a record
 
 - ~(def/cmdline (: Name (Record marker ... field ...)))~ declares the record,

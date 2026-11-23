@@ -273,7 +273,8 @@
     (def from (record-ref task from))
     (def clauses (if (record-ref task dev?)
                      (list-append (record-ref package depends)
-                                  (record-ref package dev-depends))
+                                  (list-append (record-ref package dev-depends)
+                                               (record-ref package task-depends)))
                      (record-ref package depends)))
     (Ok (loop (:for dep clauses)
               (:do
@@ -806,9 +807,10 @@
                   (dot-bjo (project-dot-bjo project))
                   (was-locked was-locked)))
 
-  ;; The root task is the only one whose `dev-depends` count — a dependency's
-  ;; are what its author needs in order to test it, and building it here runs
-  ;; no tests — and the only one allowed to say `(path ...)`, which its own
+  ;; The root task is the only one whose `dev-depends` and `task-depends`
+  ;; count — a dependency's are what its author needs in order to test it or
+  ;; run its tasks, and building it here does neither — and the only one
+  ;; allowed to say `(path ...)`, which its own
   ;; path dependencies inherit: a directory beside yours is as much yours as
   ;; your own.
   (def first-task (Task (package (project-package project))

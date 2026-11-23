@@ -87,6 +87,9 @@ are in ~bjo/manifest.bjo~, which is the only reader of it.
 - ~depends~ are dependencies; ~dev-depends~ are resolved as well, but *only for
   the project you are building*. A dependency's ~dev-depends~ are what its
   author needs in order to test it, and building it here runs no tests.
+- ~task-depends~ are what the project's ~tasks.bjo~ needs and the package does
+  not, such as a library to deploy with. They are resolved and locked as
+  ~dev-depends~ are, only for the project you are building. See [[*Tasks][Tasks]].
 - ~frameworks~ names the .NET *shared frameworks* this package's modules may
   name types from — see below. Optional, allowed in any package.
 - ~packages~ names the *NuGet packages* the package uses — see below. Optional,
@@ -951,6 +954,7 @@ logcat -s bjo~ shows them for any app, also one installed from
 | ~bjo publish [-o dir]~  | A release build, and a directory that runs from anywhere      |
 | ~bjo publish --android [-o dir]~ | A release build, and an Android app (an APK) of it. See [[*Android][Android]] |
 | ~bjo repl~              | The REPL, with the project's packages importable              |
+| ~bjo task [name args...]~ | Run a task of the project's ~tasks.bjo~, or list them. See [[*Tasks][Tasks]] |
 
 ~bjo run .~ is the way to pass arguments to your own program: everything after
 a file belongs to the program, and ~.~ is the file when the project is what you
@@ -959,6 +963,60 @@ mean.
 A file named inside a project — ~bjo run src/tool.bjo~, ~bjo check src/x.bjo~ —
 is compiled against the project's packages, fetching first if it has to.
 Outside a project, every command behaves exactly as it always has.
+
+** Tasks
+
+A project's tasks are the exported functions of ~tasks.bjo~, in the project's
+root. Outside a project, ~bjo task~ reads ~tasks.bjo~ in the directory it is
+run in.
+
+#+BEGIN_SRC scheme
+(export build deploy)
+(import (std prelude))
+(import (bjo task))
+
+(:doc build (summary "Builds the library."))
+(: (-> void))
+(defun (build)
+  (once 'build (println "building")))
+
+(:doc deploy
+  (summary "Builds, and copies the result to a host.")
+  (arg host "The server.")
+  (key #:dry-run "Print what would be done, and change nothing.")
+  (key #:jobs "How many files to copy at once."))
+(: (-> string (#:dry-run bool) (#:jobs int) void))
+(defun (deploy host #:dry-run #f #:jobs 4)
+  (build)
+  ...)
+#+END_SRC
+
+#+BEGIN_EXAMPLE
+$ bjo task                          lists the tasks, with their summaries
+$ bjo task deploy prod --jobs 8     runs one
+$ bjo task deploy --help            shows its help
+#+END_EXAMPLE
+
+- *A task is an exported function that returns ~void~ or ~int~.* ~void~ exits
+  with 0; an ~int~ is the exit code. A task calls another as a function.
+- *Its parameters are its arguments,* parsed by ~(std argparse)~: a required
+  parameter is a positional argument, an ~(Option T)~ one can be absent, a
+  last ~(List T)~ one takes the rest, a ~bool~ keyword is a flag with ~--no-~,
+  and another keyword is an option with its default. A wrong argument is an
+  error before the task runs, and names the argument.
+- *Every export has a ~(:doc ...)~.* Its ~summary~, ~arg~ and ~key~ clauses
+  are the help. ~tasks.bjo~ exports tasks, and the types their arguments
+  have; an export that is neither is an error. Put helpers in another module.
+- *A type in a signature* has an ~ArgValue~ instance and is in scope through
+  ~tasks.bjo~. *A keyword's default* is copied into the generated entry point
+  as it is written, so it is a literal or a name that ~tasks.bjo~ exports.
+- ~(once key body ...)~, from ~(bjo task)~, runs its body the first time the
+  key is reached in a run, so a task that several others call runs once.
+- ~bjo~'s own flags (~-d~, ~-c~, ~--locked~) come before the task's name.
+  Everything after it is the task's.
+- ~bjo task~ builds ~tasks.bjo~ as a library, and writes and builds an entry
+  point in ~.bjo/tasks/main.bjo~. Neither is built again until something
+  changes.
 
 ** Turning a library you already have into a package
 
