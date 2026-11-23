@@ -1,14 +1,13 @@
-;; EXPECT-ERROR: at a type variable its signature does not mention
+;; EXPECT-ERROR: 'outer' needs (Num %a), which its signature does not declare
 ;;
-;; `inner` is generalized on a variable of its own, and `+` puts `Num` on *that*
-;; one. Hung on `outer`'s scheme it became a C# `where` clause naming a type
-;; parameter the method does not declare — CS0699, in generated code — and a
-;; published signature `(-> 'a 'a) (where (Num 't__1))` constraining a variable
-;; it never mentions.
+;; `+` in `inner` puts `Num` on `inner`'s parameter. A local function cannot
+;; take a `where` clause, so `inner` is not generalized in that variable, and
+;; the call `(inner x)` makes it `outer`'s `%a`. The constraint is then
+;; `outer`'s, and its signature has to declare it.
 ;;
-;; Annotating the local — `(defun (inner (: y %a)) ...)` — lands the constraint
-;; on `%a`, where the signature can carry it. So does mentioning `x` in the
-;; body, which unifies the two.
+;; Generalized, `inner` carried `Num` on a variable of its own. Hung on
+;; `outer`'s scheme it became a C# `where` clause naming a type parameter the
+;; method does not declare — CS0699, in generated code.
 (import (std prelude))
 
 (: (-> %a %a))

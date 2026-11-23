@@ -128,7 +128,25 @@ do
                   heldProjections ()
                   heldOpenCases ()
                   Holes.heldMetaIds () ]
-do Unification.heldLocalMetaIds <- heldWanteds InterfaceTrait
+/// The metavariables of the call obligations still queued: the constraint of
+/// a constrained function at a type its call has not settled yet, as the
+/// `(AsPath ?p)` of `(exists? p)` in a local helper, or the `(Num ?a)` of a
+/// call to a function with `(where (Num %a))`.
+///
+/// Held back for local bindings only, for the reason `heldWanteds` gives for
+/// `InterfaceTrait`: a local function cannot take a dictionary or a `where`
+/// clause. Generalized, the constraint landed on the local's own type
+/// variable, and the enclosing function was rejected for carrying it. Held
+/// back, the local is monomorphic in that variable, and its use site settles
+/// the type.
+let private heldCallObligations () : Set<int> =
+    Seq.append obligations clrObligations
+    |> Seq.collect (fun (_, t, _, _) -> metaIdsOf t)
+    |> Set.ofSeq
+
+do
+    Unification.heldLocalMetaIds <-
+        fun () -> Set.union (heldWanteds InterfaceTrait ()) (heldCallObligations ())
 
 /// The unsolved unit cells in a type, without a registry, as `metaIdsOf`.
 let rec private unitIdsOf (t: HMType) : int list =

@@ -1,0 +1,44 @@
+;; A local function that calls a constrained function is monomorphic in the
+;; constrained variable, so its use site settles the type. It stays generic in
+;; its other variables.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Name (Newtype string)))
+
+(def/trait (AsName %p)
+  (: as-name (-> %p Name)))
+
+(impl (AsName string) (defun (as-name s) (Name s)))
+(impl (AsName Name) (defun (as-name n) n))
+
+(: name-length (-> %p int) (where (AsName %p)))
+(defun (name-length p) (match (as-name p) ((Name s) (string-length s))))
+
+(: twice (-> %a %a) (where (Num %a)))
+(defun (twice x) (+ x x))
+
+;; In a generic function: the local uses the enclosing function's variable.
+(: total (-> %p %q int) (where (AsName %p) (AsName %q)))
+(defun (total a b)
+  (defun (len x) (name-length x))
+  (+ (len a) (name-length b)))
+
+(defun (main)
+  (defun (len p) (name-length p))
+  (expect "a local at string" (len "abc") 3)
+
+  (defun (len-name p) (name-length p))
+  (expect "a local at a newtype" (len-name (Name "ab")) 2)
+
+  (defun (pair tag p) (Tuple tag (name-length p)))
+  (expect "generic in another variable, at int" (pair 1 "x") (Tuple 1 1))
+  (expect "generic in another variable, at string" (pair "t" "xy") (Tuple "t" 2))
+
+  (defun (quad y) (twice (twice y)))
+  (expect "a .NET interface constraint" (quad 3) 12)
+
+  (expect "inside a generic function" (total "ab" (Name "cde")) 5)
+
+  (expect "a lambda" (list-map (fun (p) (name-length p)) (list "a" "bb")) (list 1 2)))

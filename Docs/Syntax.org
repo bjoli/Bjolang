@@ -579,6 +579,17 @@ A local function's colour is read off its body, with or without a declaration. I
 
 ~%a~ in a local declaration means what it means in a parameter annotation, and is not a promise that the function works for every type, as it is at the top level.
 
+A local function is not generic in a type that a constraint needs. When its body calls a trait method, or a constrained function such as one with ~(where (Num %a))~, at a type that is not known yet, that type stays open, and the calls of the local function decide it. The function stays generic in its other types:
+#+BEGIN_SRC scheme
+(defun (main)
+  (defun (dbl y) (+ y y))                 ;; y is decided by the call: int
+  (defun (pair tag p) (Tuple tag (dbl p)))
+  (println (dbl 3))                       ;; 6
+  (println (pair "a" 1))                  ;; tag is a string here
+  (println (pair 'b 2)))                  ;; and a Symbol here
+#+END_SRC
+So a call of ~dbl~ at ~int~ and another at ~double~ is a type error. For a helper that is used at more than one such type, write a top-level function with a ~(where ...)~.
+
 *** A type written on a value
 ~(: value Type)~ anywhere else is the value, with the type written: where a binding would be needed only to say a type.
 #+BEGIN_SRC scheme

@@ -1,0 +1,22 @@
+;; A local function that calls a constrained function is monomorphic in the
+;; constrained variable, so it cannot be used at two types.
+;;
+;; EXPECT-ERROR: the 1st argument to 'len' has the wrong type
+
+(import (std prelude))
+
+(type (: Name (Newtype string)))
+
+(def/trait (AsName %p)
+  (: as-name (-> %p Name)))
+
+(impl (AsName string) (defun (as-name s) (Name s)))
+(impl (AsName Name) (defun (as-name n) n))
+
+(: name-length (-> %p int) (where (AsName %p)))
+(defun (name-length p) (match (as-name p) ((Name s) (string-length s))))
+
+(defun (main)
+  (defun (len p) (name-length p))
+  (println (len "abc"))
+  (println (len (Name "ab"))))
