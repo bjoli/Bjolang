@@ -313,3 +313,241 @@
     (bytestring-split (string->bytestring "/usr//lib") 47uy)
     ; [#b"" #b"usr" #b"" #b"lib"]
     """))
+
+;; ---------------------------------------------------------------------------
+;; Building
+;; ---------------------------------------------------------------------------
+
+(:doc ByteOrder
+  (summary "The order in which the bytes of a number are written.")
+  (case LittleEndian "The least significant byte first, as x86, ARM and most file formats use.")
+  (case BigEndian "The most significant byte first, as network protocols and some file formats use.")
+  (see bytestringbuilder-empty))
+
+(:doc ByteStringBuilder
+  (summary "A mutable buffer of bytes, which bytestringbuilder->bytestring makes a ByteString of.")
+  (see bytestringbuilder-empty bytestringbuilder-add-int! bytestringbuilder->bytestring)
+  (example """
+    ;; A table of little-endian ints, as (include-bytes ...) reads them.
+    (def b (bytestringbuilder-empty))
+    (loop (:for n [1 2 3]) (:do (bytestringbuilder-add-int! b n)))
+    (file-write-bytes "table.bin" (bytestringbuilder->bytes b))
+
+    ;; A format that is big-endian, with one little-endian field.
+    (def h (bytestringbuilder-empty #:order BigEndian))
+    (bytestringbuilder-add-uint! h 3405691582U)
+    (bytestringbuilder-add-ushort-le! h 7us)
+    """)
+  (reference """
+    A builder has a byte order, which @code{bytestringbuilder-empty} sets
+    and nothing changes. A function that adds a number and has no suffix,
+    such as @code{bytestringbuilder-add-int!}, writes in that order. One
+    ending in @code{-le} or @code{-be} writes little-endian or big-endian,
+    whatever the builder's order is. So a format in one order sets it once,
+    a format that mixes the two writes the exceptions with a suffix, and a
+    format whose order is read from the file at run time, such as TIFF,
+    makes the builder with that order.
+
+    Adding is amortised O(1): the buffer doubles when it is full. Making a
+    @code{ByteString} or an array copies the bytes, so the builder can be
+    added to after it.
+    """))
+
+(:doc bytestringbuilder-empty
+  (summary "A new, empty byte string builder.")
+  (key #:order "The order of the numbers it writes without a suffix. LittleEndian when not given.")
+  (returns "The builder.")
+  (see ByteStringBuilder bytestringbuilder-order))
+
+(:doc bytestringbuilder-order
+  (summary "The byte order of a builder.")
+  (arg b "The builder.")
+  (returns "The order it was made with.")
+  (see bytestringbuilder-empty))
+
+(:doc bytestringbuilder-length
+  (summary "The number of bytes in a builder.")
+  (arg b "The builder.")
+  (returns "How many bytes have been added since it was made or cleared."))
+
+(:doc bytestringbuilder-clear!
+  (summary "Removes every byte from a builder, in place.")
+  (arg b "The builder.")
+  (see bytestringbuilder-length)
+  (reference """
+    The order is kept, and so is the buffer, for the bytes added next.
+    """))
+
+(:doc bytestringbuilder-add-byte!
+  (summary "Adds one byte to the end of a builder, in place.")
+  (arg b "The builder.")
+  (arg n "The byte.")
+  (see bytestringbuilder-add-bytes! bytestringbuilder-add-bytestring!))
+
+(:doc bytestringbuilder-add-bytes!
+  (summary "Adds the bytes of an array to the end of a builder, in place.")
+  (arg b "The builder.")
+  (arg a "The bytes, which are copied.")
+  (see bytestringbuilder-add-bytestring!))
+
+(:doc bytestringbuilder-add-bytestring!
+  (summary "Adds the bytes of a byte string to the end of a builder, in place.")
+  (arg b "The builder.")
+  (arg s "The bytes.")
+  (see bytestringbuilder-add-bytes!))
+
+(:doc bytestringbuilder->bytestring
+  (summary "The bytes of a builder, as a byte string.")
+  (arg b "The builder.")
+  (returns "A copy of its bytes. Adding to the builder after this does not change it.")
+  (see bytestringbuilder->bytes))
+
+(:doc bytestringbuilder->bytes
+  (summary "The bytes of a builder, as an array.")
+  (arg b "The builder.")
+  (returns "A new array with a copy of its bytes.")
+  (see bytestringbuilder->bytestring))
+
+(:doc bytestringbuilder-add-short!
+  (summary "Adds a short to the end of a builder, as 2 bytes in the builder's order.")
+  (arg b "The builder.")
+  (arg n "The number, 16-bit signed.")
+  (see bytestringbuilder-add-short-le! bytestringbuilder-add-short-be! bytestringbuilder-order))
+
+(:doc bytestringbuilder-add-short-le!
+  (summary "Adds a short to the end of a builder, as 2 bytes, little-endian.")
+  (arg b "The builder.")
+  (arg n "The number, 16-bit signed.")
+  (see bytestringbuilder-add-short! bytestringbuilder-add-short-be!))
+
+(:doc bytestringbuilder-add-short-be!
+  (summary "Adds a short to the end of a builder, as 2 bytes, big-endian.")
+  (arg b "The builder.")
+  (arg n "The number, 16-bit signed.")
+  (see bytestringbuilder-add-short! bytestringbuilder-add-short-le!))
+
+(:doc bytestringbuilder-add-ushort!
+  (summary "Adds a ushort to the end of a builder, as 2 bytes in the builder's order.")
+  (arg b "The builder.")
+  (arg n "The number, 16-bit unsigned.")
+  (see bytestringbuilder-add-ushort-le! bytestringbuilder-add-ushort-be! bytestringbuilder-order))
+
+(:doc bytestringbuilder-add-ushort-le!
+  (summary "Adds a ushort to the end of a builder, as 2 bytes, little-endian.")
+  (arg b "The builder.")
+  (arg n "The number, 16-bit unsigned.")
+  (see bytestringbuilder-add-ushort! bytestringbuilder-add-ushort-be!))
+
+(:doc bytestringbuilder-add-ushort-be!
+  (summary "Adds a ushort to the end of a builder, as 2 bytes, big-endian.")
+  (arg b "The builder.")
+  (arg n "The number, 16-bit unsigned.")
+  (see bytestringbuilder-add-ushort! bytestringbuilder-add-ushort-le!))
+
+(:doc bytestringbuilder-add-int!
+  (summary "Adds a int to the end of a builder, as 4 bytes in the builder's order.")
+  (arg b "The builder.")
+  (arg n "The number, 32-bit signed.")
+  (see bytestringbuilder-add-int-le! bytestringbuilder-add-int-be! bytestringbuilder-order))
+
+(:doc bytestringbuilder-add-int-le!
+  (summary "Adds a int to the end of a builder, as 4 bytes, little-endian.")
+  (arg b "The builder.")
+  (arg n "The number, 32-bit signed.")
+  (see bytestringbuilder-add-int! bytestringbuilder-add-int-be!))
+
+(:doc bytestringbuilder-add-int-be!
+  (summary "Adds a int to the end of a builder, as 4 bytes, big-endian.")
+  (arg b "The builder.")
+  (arg n "The number, 32-bit signed.")
+  (see bytestringbuilder-add-int! bytestringbuilder-add-int-le!))
+
+(:doc bytestringbuilder-add-uint!
+  (summary "Adds a uint to the end of a builder, as 4 bytes in the builder's order.")
+  (arg b "The builder.")
+  (arg n "The number, 32-bit unsigned.")
+  (see bytestringbuilder-add-uint-le! bytestringbuilder-add-uint-be! bytestringbuilder-order))
+
+(:doc bytestringbuilder-add-uint-le!
+  (summary "Adds a uint to the end of a builder, as 4 bytes, little-endian.")
+  (arg b "The builder.")
+  (arg n "The number, 32-bit unsigned.")
+  (see bytestringbuilder-add-uint! bytestringbuilder-add-uint-be!))
+
+(:doc bytestringbuilder-add-uint-be!
+  (summary "Adds a uint to the end of a builder, as 4 bytes, big-endian.")
+  (arg b "The builder.")
+  (arg n "The number, 32-bit unsigned.")
+  (see bytestringbuilder-add-uint! bytestringbuilder-add-uint-le!))
+
+(:doc bytestringbuilder-add-long!
+  (summary "Adds a long to the end of a builder, as 8 bytes in the builder's order.")
+  (arg b "The builder.")
+  (arg n "The number, 64-bit signed.")
+  (see bytestringbuilder-add-long-le! bytestringbuilder-add-long-be! bytestringbuilder-order))
+
+(:doc bytestringbuilder-add-long-le!
+  (summary "Adds a long to the end of a builder, as 8 bytes, little-endian.")
+  (arg b "The builder.")
+  (arg n "The number, 64-bit signed.")
+  (see bytestringbuilder-add-long! bytestringbuilder-add-long-be!))
+
+(:doc bytestringbuilder-add-long-be!
+  (summary "Adds a long to the end of a builder, as 8 bytes, big-endian.")
+  (arg b "The builder.")
+  (arg n "The number, 64-bit signed.")
+  (see bytestringbuilder-add-long! bytestringbuilder-add-long-le!))
+
+(:doc bytestringbuilder-add-ulong!
+  (summary "Adds a ulong to the end of a builder, as 8 bytes in the builder's order.")
+  (arg b "The builder.")
+  (arg n "The number, 64-bit unsigned.")
+  (see bytestringbuilder-add-ulong-le! bytestringbuilder-add-ulong-be! bytestringbuilder-order))
+
+(:doc bytestringbuilder-add-ulong-le!
+  (summary "Adds a ulong to the end of a builder, as 8 bytes, little-endian.")
+  (arg b "The builder.")
+  (arg n "The number, 64-bit unsigned.")
+  (see bytestringbuilder-add-ulong! bytestringbuilder-add-ulong-be!))
+
+(:doc bytestringbuilder-add-ulong-be!
+  (summary "Adds a ulong to the end of a builder, as 8 bytes, big-endian.")
+  (arg b "The builder.")
+  (arg n "The number, 64-bit unsigned.")
+  (see bytestringbuilder-add-ulong! bytestringbuilder-add-ulong-le!))
+
+(:doc bytestringbuilder-add-float!
+  (summary "Adds a float to the end of a builder, as 4 bytes in the builder's order.")
+  (arg b "The builder.")
+  (arg n "The number, IEEE 754 binary32.")
+  (see bytestringbuilder-add-float-le! bytestringbuilder-add-float-be! bytestringbuilder-order))
+
+(:doc bytestringbuilder-add-float-le!
+  (summary "Adds a float to the end of a builder, as 4 bytes, little-endian.")
+  (arg b "The builder.")
+  (arg n "The number, IEEE 754 binary32.")
+  (see bytestringbuilder-add-float! bytestringbuilder-add-float-be!))
+
+(:doc bytestringbuilder-add-float-be!
+  (summary "Adds a float to the end of a builder, as 4 bytes, big-endian.")
+  (arg b "The builder.")
+  (arg n "The number, IEEE 754 binary32.")
+  (see bytestringbuilder-add-float! bytestringbuilder-add-float-le!))
+
+(:doc bytestringbuilder-add-double!
+  (summary "Adds a double to the end of a builder, as 8 bytes in the builder's order.")
+  (arg b "The builder.")
+  (arg n "The number, IEEE 754 binary64.")
+  (see bytestringbuilder-add-double-le! bytestringbuilder-add-double-be! bytestringbuilder-order))
+
+(:doc bytestringbuilder-add-double-le!
+  (summary "Adds a double to the end of a builder, as 8 bytes, little-endian.")
+  (arg b "The builder.")
+  (arg n "The number, IEEE 754 binary64.")
+  (see bytestringbuilder-add-double! bytestringbuilder-add-double-be!))
+
+(:doc bytestringbuilder-add-double-be!
+  (summary "Adds a double to the end of a builder, as 8 bytes, big-endian.")
+  (arg b "The builder.")
+  (arg n "The number, IEEE 754 binary64.")
+  (see bytestringbuilder-add-double! bytestringbuilder-add-double-le!))

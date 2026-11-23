@@ -20,20 +20,44 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc int->string
-  (summary "The decimal text of an int, the same on every machine.")
+  (summary "The text of an int, in decimal or another base, the same on every machine.")
   (arg n "The number.")
+  (key #:radix "The base, from 2 to 36. 10 when not given.")
+  (key #:upper "Write the letter digits in upper case.")
   (returns "Its digits, with an ASCII minus when negative.")
+  (raises System.ArgumentOutOfRangeException "When the radix is not from 2 to 36.")
   (see string->int long->string displayed)
+  (example """
+    (int->string 255)                         ; "255"
+    (int->string 255 #:radix 16)              ; "ff"
+    (int->string 255 #:radix 16 #:upper #t)   ; "FF"
+    (int->string -5 #:radix 2)                ; "-101"
+    (string-pad-left (int->string 233 #:radix 16 #:upper #t) 4 #:with #\0)   ; "00E9"
+    """)
   (reference """
     Does not use the c# culture, where minus can come back with U+2212 MINUS SIGN.
-    The result is guaranteed to round-trip through string->int. 
+    The result is guaranteed to round-trip through @code{string->int} with
+    the same radix.
+
+    Digits past 9 are letters: a is 10 and z is 35. A negative number is a
+    minus and the digits of its magnitude, not its two's complement. No
+    prefix such as @code{0x} is written.
     """))
 
 (:doc long->string
-  (summary "The decimal text of a long, the same on every machine.")
+  (summary "The text of a long, in decimal or another base, the same on every machine.")
   (arg n "The number.")
+  (key #:radix "The base, from 2 to 36. 10 when not given.")
+  (key #:upper "Write the letter digits in upper case.")
   (returns "Its digits, with an ASCII minus when negative.")
-  (see int->string displayed))
+  (raises System.ArgumentOutOfRangeException "When the radix is not from 2 to 36.")
+  (see int->string string->long displayed)
+  (example """
+    (long->string 1099511627776L #:radix 16)   ; "10000000000"
+    """)
+  (reference """
+    As @code{int->string}, for 64 bits.
+    """))
 
 (:doc decimal->string
   (summary "The text of a decimal, the same on every machine.")

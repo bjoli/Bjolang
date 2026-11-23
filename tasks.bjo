@@ -17,12 +17,16 @@
 (import (std run))
 (import (std glob))
 (import (bjo task))
+(import "tools/unicode/casefold.bjo")
+(import "tools/unicode/chars.bjo")
+(import "tools/unicode/grapheme.bjo")
+(import "tools/unicode/normalize.bjo")
 
 ;; ---------------------------------------------------------------------------
 ;; unicode-tables
 ;; ---------------------------------------------------------------------------
 
-;; The UCD files that the four generators in lib/std/unicode read, relative
+;; The UCD files that the four generators in tools/unicode read, relative
 ;; to the `ucd` directory of a Unicode version.
 (: (Vec string))
 (def ucd-files
@@ -30,9 +34,6 @@
    "CompositionExclusions.txt" "DerivedNormalizationProps.txt" "NormalizationTest.txt"
    "auxiliary/GraphemeBreakProperty.txt" "auxiliary/GraphemeBreakTest.txt"
    "emoji/emoji-data.txt"])
-
-(: (Vec string))
-(def generators ["gen_casefold.py" "gen_chars.py" "gen_grapheme.py" "gen_normalize.py"])
 
 ;; The URL of the `ucd` directory of `version`: "latest", or a number such
 ;; as "17.0.0".
@@ -66,9 +67,10 @@
              (None (let ((d (make-temp-directory #:prefix "bjolang-ucd-")))
                      (download-ucd version d)
                      d))))
-  (loop (:for g generators)
-        (:do (println #"Running ${g}")
-             (task-run! ["python3" (str "lib/std/unicode/" g) dir])))
+  (casefold-tables dir)
+  (chars-tables dir)
+  (grapheme-tables dir)
+  (normalize-tables dir)
   (when (none? ucd) (directory-delete-tree dir))
   (when build (task-run! ["./build_std.sh"]))
   (println "The tables are written. Run ./run_tests.py, then look at git diff."))

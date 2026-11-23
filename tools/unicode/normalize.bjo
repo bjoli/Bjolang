@@ -1,0 +1,286 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; The normalization tables of (std unicode normalize), from UnicodeData.txt,
+;; CompositionExclusions.txt and DerivedNormalizationProps.txt, and its test
+;; cases, from NormalizationTest.txt.
+;;
+;; - The property of a code point is 14 bits:
+;;   - bits 0-7: Canonical_Combining_Class;
+;;   - bit 8: NFD_Quick_Check is No: it has a canonical decomposition;
+;;   - bit 9: NFKD_Quick_Check is No: it has a decomposition of either kind;
+;;   - bits 10-11: NFC_Quick_Check: 0 Yes, 1 Maybe, 2 No;
+;;   - bits 12-13: NFKC_Quick_Check: 0 Yes, 1 Maybe, 2 No.
+;; - The property table has two stages (see `two-stage`), a byte an entry:
+;;   the index of the property in the properties that occur.
+;; - The decompositions are full: applied again until nothing decomposes.
+;;   There are two tables, canonical and compatibility, each laid out as
+;;   `mapping-ints` does. Hangul syllables are not in them: they decompose
+;;   by arithmetic.
+;; - The compositions are the primary composites: the canonical
+;;   decompositions of two code points that are not in
+;;   Full_Composition_Exclusion, ordered by the first and then the second.
+;; - Numbers are little-endian. The module reads the .bin files with
+;;   (include-bytes ...).
+;;
+;; Writes:
+;;   lib/std/unicode/normalize-table.protobjo          the version and the counts
+;;   lib/std/unicode/normalize-stage1.bin              stage 1, a byte a block
+;;   lib/std/unicode/normalize-stage2.bin              stage 2, a byte a code point
+;;   lib/std/unicode/normalize-kinds.bin               the properties that occur, int32
+;;   lib/std/unicode/normalize-canonical.bin           int32
+;;   lib/std/unicode/normalize-compatibility.bin       int32
+;;   lib/std/unicode/normalize-composition-keys.bin    first * 0x110000 + second, int64
+;;   lib/std/unicode/normalize-composites.bin          the composite of each, int32
+;;   TestFiles/assets/unicode/normalize-cases.protobjo  the conformance cases
+
+(export normalize-tables)
+
+(import (std prelude))
+(import "ucd.bjo")
+
+;; Hangul syllables, as in the Unicode Standard, section 3.12.
+(: int)
+(def hangul-first 0xAC00)
+
+(: int)
+(def hangul-count 11172)
+
+(: (-> int bool))
+(defun (hangul? c) (and (<= hangul-first c) (< c (+ hangul-first hangul-count))))
+
+;; The decomposition of a code point in UnicodeData.txt: whether it is a
+;; compatibility one, and the code points.
+(type (: Decomposition (Record (: compat? bool) (: parts (Vec int)))))
+
+;; The combining class of each code point, and the decompositions, by code
+;; point. A range of <..., First> and <..., Last> lines is class 0 with no
+;; decompositions, so both lines are passed over.
+(: (-> string (Tuple (Array int) (Vec (Tuple int Decomposition)))))
+(defun (unicode-data file)
+  (: (Array int))
+  (def ccc (make-array code-point-count))
+  (def decompositions (vecbuilder-empty))
+  (loop (:for line (file-read-lines file))
+        (:let fields (string-split line ";"))
+        (:let cp (hex (vec-ref fields 0)))
+        (:let name (vec-ref fields 1))
+        (:when (not (or (string-ends-with? name ", First>") (string-ends-with? name ", Last>"))))
+        (:do (array-set! ccc cp (string->int (vec-ref fields 3)))
+             (def d (vec-ref fields 5))
+             (unless (= d "")
+               (vecbuilder-add! decompositions (Tuple cp (decomposition d))))))
+  (Tuple ccc (vecbuilder->vec decompositions)))
+
+;; A decomposition field of UnicodeData.txt: code points in hex, after a tag
+;; such as <compat> for a compatibility decomposition.
+(: (-> string Decomposition))
+(defun (decomposition field)
+  (def compat? (string-starts-with? field "<"))
+  (def cps (if compat?
+               (match (string-split-once field ">") ((Some (Tuple _ after)) after) (None field))
+               field))
+  (Decomposition (compat? compat?) (parts (vec-map hex (words cps)))))
+
+;; The words of `s` between spaces.
+(: (-> string (Vec string)))
+(defun (words s) (vec-filter (fun (w) (not (= w ""))) (string-split s " ")))
+
+;; The full decomposition of `c`, Hangul syllables left out: canonical
+;; only, or compatibility too.
+(: (-> (TransientMap int Decomposition) bool int (Vec int)))
+(defun (full table compat? c)
+  (match (transientmap-try-ref table c)
+    (None [c])
+    ((Some d)
+     (if (and (record-ref d compat?) (not compat?))
+         [c]
+         {vecing x (:for p (record-ref d parts)) (:subloop) (:for x (full table compat? p))}))))
+
+;; The value of a quick check: Y, M or N.
+(: (-> string int))
+(defun (quick-check value)
+  (match value
+    ("Y" 0)
+    ("M" 1)
+    ("N" 2)
+    (_ (panic! #"unicode-tables: a quick check has the value ${value}"))))
+
+;; The bit a quick-check property starts at, and whether only No is set.
+(: (-> string (Option (Tuple int bool))))
+(defun (quick-check-bits name)
+  (match name
+    ("NFD_QC" (Some (Tuple 8 #t)))
+    ("NFKD_QC" (Some (Tuple 9 #t)))
+    ("NFC_QC" (Some (Tuple 10 #f)))
+    ("NFKC_QC" (Some (Tuple 12 #f)))
+    (_ None)))
+
+;; A mapping as `mapping-ints` takes it: the decompositions that change a
+;; code point, in order.
+(: (-> (TransientMap int Decomposition) (Vec int) bool (Vec (Tuple int (Vec int)))))
+(defun (decomposing table cps compat?)
+  {vecing (Tuple c d)
+          (:for c cps)
+          (:let d (full table compat? c))
+          (:when (not (= d [c])))})
+
+;; The fields of a conformance case: one that equals an earlier field of its
+;; line is that field's number, and the others are code points joined by '.'.
+(: (-> (Vec string) string))
+(defun (case-line fields)
+  (string-join
+   {vecing (match {finding k :when (= (vec-ref fields k) x) (:for k (range 0 i))}
+             ((Some k) (int->string k))
+             (None (string-join (words x) ".")))
+           (:for (Tuple i x) (enumerate fields))}
+   ";"))
+
+;; Writes the tables and the test cases from the UCD in `ucd`.
+(: (-> string void))
+(defun (normalize-tables ucd)
+  (def data-file (ucd-file ucd "UnicodeData.txt"))
+  (def exclusions-file (ucd-file ucd "CompositionExclusions.txt"))
+  (def props-file (ucd-file ucd "DerivedNormalizationProps.txt"))
+  (def tests (ucd-file ucd "NormalizationTest.txt"))
+  (def version (ucd-version props-file))
+  (ucd-same-version version [exclusions-file tests])
+
+  (def (Tuple ccc decompositions) (unicode-data data-file))
+  (def table (transientmap-empty))
+  (loop (:for (Tuple c d) decompositions) (:do (transientmap-set! table c d)))
+
+  ;; The properties: the combining class, then the quick checks.
+  (: (Array int))
+  (def props (make-array code-point-count))
+  (: (Array bool))
+  (def excluded (make-array code-point-count))
+  (loop (:for c (range 0 code-point-count)) (:do (array-set! props c (array-ref ccc c))))
+  (loop (:for r (ucd-ranges props-file))
+        (:let name (vec-ref (record-ref r values) 0))
+        (:do
+         (when (= name "Full_Composition_Exclusion")
+           (loop (:for c (range (record-ref r lo) (+ (record-ref r hi) 1))) (:do (array-set! excluded c #t))))
+         (match (quick-check-bits name)
+           (None unit)
+           ((Some (Tuple shift no-only?))
+            (def value (quick-check (vec-ref (record-ref r values) 1)))
+            (when (and no-only? (not (= value 2)))
+              (panic! #"unicode-tables: ${name} has a value other than N"))
+            (def bits (shift-left (if no-only? 1 value) shift))
+            (loop (:for c (range (record-ref r lo) (+ (record-ref r hi) 1)))
+                  (:do (array-set! props c (bitwise-ior (array-ref props c) bits))))))))
+
+  ;; The tables must agree with the quick checks, which the module trusts: a
+  ;; code point is looked up in a table only when its quick check says No.
+  (def cps (vec-sort (vec-map fst decompositions)))
+  (def canonical (decomposing table cps #f))
+  (def compatibility (decomposing table cps #t))
+  (def canonical? (transientmap-empty))
+  (loop (:for (Tuple c _) canonical) (:do (transientmap-set! canonical? c #t)))
+  (def compatibility? (transientmap-empty))
+  (loop (:for (Tuple c _) compatibility) (:do (transientmap-set! compatibility? c #t)))
+  (loop (:for c (range 0 code-point-count))
+        (:do (def p (array-ref props c))
+             (unless (= (= (bitwise-and (shift-right p 8) 1) 1)
+                        (or (transientmap-contains? canonical? c) (hangul? c)))
+               (panic! #"unicode-tables: NFD_QC of ${(int->string c #:radix 16)} does not match its decomposition"))
+             (unless (= (= (bitwise-and (shift-right p 9) 1) 1)
+                        (or (transientmap-contains? compatibility? c) (hangul? c)))
+               (panic! #"unicode-tables: NFKD_QC of ${(int->string c #:radix 16)} does not match its decomposition"))))
+  (unless {anding (<= (vec-length d) 255) (:for (Tuple _ d) compatibility)}
+    (panic! "unicode-tables: a compatibility decomposition is longer than 255"))
+
+  ;; The second code point of a pair is NFC_QC Maybe, which is what lets the
+  ;; module skip the search for every other code point.
+  (def compositions
+    (vec-sort
+     {vecing (Tuple (vec-ref parts 0) (vec-ref parts 1) c)
+             (:for (Tuple c d) decompositions)
+             (:let parts (record-ref d parts))
+             (:when (and (not (record-ref d compat?)) (= (vec-length parts) 2) (not (array-ref excluded c))))}))
+  (loop (:for (Tuple _ b _) compositions)
+        (:do (unless (= (bitwise-and (shift-right (array-ref props b) 10) 3) 1)
+               (panic! #"unicode-tables: ${(int->string b #:radix 16)} is the second of a composition and not NFC_QC Maybe"))))
+
+  (def kinds (sorted-distinct (array->vec props)))
+  (when (> (vec-length kinds) 78)
+    (panic! #"unicode-tables: ${(vec-length kinds)} properties, and the module has room for 78"))
+  (def kind-of (transientmap-empty))
+  (loop (:for (Tuple i k) (enumerate kinds)) (:do (transientmap-set! kind-of k i)))
+  (: (Array int))
+  (def kind-index (make-array code-point-count))
+  (loop (:for c (range 0 code-point-count))
+        (:do (array-set! kind-index c (transientmap-ref-or kind-of (array-ref props c) 0))))
+  (def stages (two-stage kind-index))
+  (when (> (record-ref stages blocks) 256)
+    (panic! #"unicode-tables: ${(record-ref stages blocks)} blocks do not fit in a byte"))
+
+  (write-bytes (table-path "normalize-stage1.bin") (record-ref stages stage1))
+  (write-bytes (table-path "normalize-stage2.bin") (record-ref stages stage2))
+  (write-ints (table-path "normalize-kinds.bin") kinds)
+  (write-ints (table-path "normalize-canonical.bin") (mapping-ints canonical))
+  (write-ints (table-path "normalize-compatibility.bin") (mapping-ints compatibility))
+  (write-longs (table-path "normalize-composition-keys.bin")
+               {vecing (+ (* (cast long a) (cast long code-point-count)) (cast long b))
+                       (:for (Tuple a b _) compositions)})
+  (write-ints (table-path "normalize-composites.bin") {vecing c (:for (Tuple _ _ c) compositions)})
+  (write-text (table-path "normalize-table.protobjo")
+              (str (header "normalize" version
+                           "UnicodeData.txt, CompositionExclusions.txt and DerivedNormalizationProps.txt")
+                   "\n"
+                   ";; The Unicode version the tables are of.\n"
+                   #"(def unicode-version \"${version}\")\n"
+                   "\n"
+                   ";; The number of code points with a full canonical decomposition, Hangul\n"
+                   ";; syllables left out.\n"
+                   #"(def canonical-count ${(vec-length canonical)})\n"
+                   "\n"
+                   ";; The number of code points with a full compatibility decomposition, Hangul\n"
+                   ";; syllables left out.\n"
+                   #"(def compatibility-count ${(vec-length compatibility)})\n"
+                   "\n"
+                   ";; The number of primary composites.\n"
+                   #"(def composition-count ${(vec-length compositions)})\n"))
+
+  ;; The conformance cases, and the code points of part 1.
+  (def cases (vecbuilder-empty))
+  (def part1 (vecbuilder-empty))
+  (loop (:for line (file-read-lines tests))
+        (:with part "" (if (string-starts-with? line "@Part")
+                           (vec-ref (string-split line " ") 0)
+                           part))
+        (:let data (string-trim (match (string-split-once line "#")
+                                  ((Some (Tuple before _)) before)
+                                  (None line))))
+        (:when (not (string-starts-with? line "@Part")))
+        (:when (not (= data "")))
+        (:do (def fields (vec-take (string-split data ";") 5))
+             (vecbuilder-add! cases (case-line fields))
+             (when (= part "@Part1")
+               (vecbuilder-add! part1 (hex (vec-ref fields 0))))))
+  (def case-lines (vecbuilder->vec cases))
+  (def part1-sorted (vec-sort (vecbuilder->vec part1)))
+  (def part1-lines
+    {vecing (str "    " (string-join (vec-map (fun (c) (int->string c #:radix 16))
+                                              (vec-take (vec-drop part1-sorted at) 16))
+                                     " "))
+            (:for at (range-by 0 (vec-length part1-sorted) 16))})
+  (write-text (case-path "normalize-cases.protobjo")
+              (str (header "normalize" version "NormalizationTest.txt")
+                   "\n"
+                   ";; NormalizationTest.txt, one case a line: c1 to c5 separated by ';'. A\n"
+                   ";; field that is the same as an earlier one of its line is that field's\n"
+                   ";; number, from 0. The others are code points in hex, separated by '.'.\n"
+                   #"(def normalize-cases-version \"${version}\")\n"
+                   "(def normalize-cases \"\"\"\n"
+                   (string-join (vec-map (fun (c) (str "    " c)) case-lines) "\n") "\n"
+                   "    \"\"\")\n"
+                   "\n"
+                   ";; The code points of part 1, in hex, in order. Every other code point is\n"
+                   ";; its own NFC, NFD, NFKC and NFKD.\n"
+                   "(def normalize-part1 \"\"\"\n"
+                   (string-join part1-lines "\n") "\n"
+                   "    \"\"\")\n"))
+  (println #"Unicode ${version}: ${(vec-length kinds)} properties in ${(record-ref stages blocks)} blocks, ${(vec-length canonical)} canonical and ${(vec-length compatibility)} compatibility decompositions, ${(vec-length compositions)} compositions, ${(vec-length case-lines)} test cases"))

@@ -2012,9 +2012,32 @@ and private inferTraitMethodCall (env: Env) (methodKey: string) (args: Expr list
     // `(= k #:foo)` is, now that `Keyword` has an `Eq` implementation. A
     // call written as though it took keyword arguments fails on arity
     // instead, which is what it is.
-    let typedArgs = args |> List.map (infer env)
+    //
+    // An argument that names a function with keyword parameters is read at
+    // its parameter's type, as at an ordinary call: `(fmap xs int->string)`.
+    // That needs the method's type before the arguments. Otherwise the
+    // arguments come first, which is the order the trait constraints are
+    // solved and reported in.
+    let namesKeywordFunction (arg: Expr) =
+        match arg with
+        | EIdent(name, _) ->
+            match Map.tryFind name env.FunMetas with
+            | Some meta -> not meta.KeywordParams.IsEmpty
+            | None -> false
+        | _ -> false
 
-    let methodType, tref = traitCallType env traitName methodName r
+    let typedArgs, (methodType, tref) =
+        if List.exists namesKeywordFunction args then
+            let methodType, tref = traitCallType env traitName methodName r
+
+            match prune env.Registry methodType with
+            | TFun(paramTys, _, _) when paramTys.Length = args.Length ->
+                List.map2 (inferAtParam env) paramTys args, (methodType, tref)
+            | _ -> args |> List.map (infer env), (methodType, tref)
+        else
+            let typedArgs = args |> List.map (infer env)
+            typedArgs, traitCallType env traitName methodName r
+
     let retType = freshMeta ()
 
     // The effect is the method's own, copied rather than chosen — the same
@@ -2617,7 +2640,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
             failwithf
                 $"Type Error at %s{where}: '%s{name}' takes %s{what}, but was given %d{args.Length}."
 
-        let typedArgs = args |> List.map (infer env)
+        let typedArgs = List.map2 (inferAtParam env) paramTypes args
 
         // Unified rather than scored. A declared signature is not a
         // candidate to be ranked against others — it is what the alias
@@ -4386,6 +4409,18 @@ and private functionResult (env: Env) (bodyType: HMType) (expected: HMType optio
 /// with the suspending copy of `read-line`, as a bare name would.
 ///
 /// `None` when the rule does not apply, and the name is inferred as before.
+/// An argument at a parameter of type `paramTy`. A bare name of a function
+/// with keyword parameters, where a function of its mandatory ones is
+/// expected, is that function: see `keywordFreeReference`. Anything else is
+/// inferred on its own.
+and private inferAtParam (env: Env) (paramTy: HMType) (arg: Expr) : HMType * TypedExpr =
+    match arg with
+    | EIdent(name, r) ->
+        match keywordFreeReference env paramTy name r with
+        | Some typed -> typed
+        | None -> infer env arg
+    | _ -> infer env arg
+
 and private keywordFreeReference (env: Env) (expected: HMType) (name: string) (r: Range) : (HMType * TypedExpr) option =
     match Map.tryFind name env.FunMetas, prune env.Registry expected with
     | Some meta, TFun(expectedParams, _, _) when

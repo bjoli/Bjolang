@@ -1,0 +1,253 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; The character tables of (std unicode chars), from UnicodeData.txt,
+;; DerivedCoreProperties.txt, PropList.txt and CaseFolding.txt.
+;;
+;; - Each code point has a kind. A kind is:
+;;   - its properties, 13 bits:
+;;     - bits 0-4: General_Category, as the index in `categories`;
+;;     - bit 5: Alphabetic; bit 6: White_Space; bit 7: Uppercase;
+;;       bit 8: Lowercase;
+;;     - bits 9-12: the decimal digit value (Numeric_Type Decimal), or 15;
+;;   - four deltas: the simple uppercase, lowercase and titlecase mappings
+;;     and the simple case fold (status C and S), each as the mapped code
+;;     point minus the code point. 0 is no mapping.
+;; - The kind of each code point is in a two-stage table (see `two-stage`),
+;;   a byte an entry: there are fewer than 256 kinds and 256 blocks.
+;; - chars-kinds.bin is five rows of one int32 a kind: the properties, then
+;;   the upper, lower, title and fold deltas. The module reads the .bin files
+;;   with (include-bytes ...).
+;;
+;; Writes:
+;;   lib/std/unicode/chars-table.protobjo           the version, the kind count
+;;                                                  and the category names
+;;   lib/std/unicode/chars-stage1.bin               stage 1, a byte an entry
+;;   lib/std/unicode/chars-stage2.bin               stage 2, a byte an entry
+;;   lib/std/unicode/chars-kinds.bin                the kinds, little-endian int32
+;;   TestFiles/assets/unicode/chars-cases.protobjo  counts and sums, for the test
+
+(export chars-tables)
+
+(import (std prelude))
+(import (std array))
+(import "ucd.bjo")
+
+;; The values of General_Category, in the order of their indexes.
+(: (Vec string))
+(def categories
+  ["Lu" "Ll" "Lt" "Lm" "Lo" "Mn" "Mc" "Me" "Nd" "Nl" "No" "Pc" "Pd" "Ps" "Pe"
+   "Pi" "Pf" "Po" "Sm" "Sc" "Sk" "So" "Zs" "Zl" "Zp" "Cc" "Cf" "Cs" "Co" "Cn"])
+
+;; The digit value of a code point that has none.
+(: int)
+(def no-digit 15)
+
+(: (-> string int))
+(defun (category-index name)
+  (match {finding i :when (= (vec-ref categories i) name) (:for i (range 0 (vec-length categories)))}
+    ((Some i) i)
+    (None (panic! #"unicode-tables: the general category ${name} is not known to chars.bjo"))))
+
+;; What UnicodeData.txt gives of each code point.
+(type (: Data (Record (: category (Array int))
+                      (: digit (Array int))
+                      (: upper (Array int))
+                      (: lower (Array int))
+                      (: title (Array int)))))
+
+;; Reads UnicodeData.txt.
+;;
+;; - A range is two lines, <..., First> and <..., Last>, and each code point
+;;   in it has what the Last line gives.
+;; - A code point that is not listed is Cn, with no digit and no mappings.
+;; - An empty titlecase mapping is the uppercase one.
+(: (-> string Data))
+(defun (unicode-data file)
+  (: (Array int))
+  (def category (make-array code-point-count))
+  (: (Array int))
+  (def digit (make-array code-point-count))
+  (: (Array int))
+  (def upper (make-array code-point-count))
+  (: (Array int))
+  (def lower (make-array code-point-count))
+  (: (Array int))
+  (def title (make-array code-point-count))
+  (array-fill! category (category-index "Cn"))
+  (array-fill! digit no-digit)
+  (def first (make-box -1))
+  (loop (:for line (file-read-lines file))
+        (:let fields (string-split line ";"))
+        (:let cp (hex (vec-ref fields 0)))
+        (:let name (vec-ref fields 1))
+        (:do
+         (if (string-ends-with? name ", First>")
+             (box-set! first cp)
+             (let ((lo (if (string-ends-with? name ", Last>") (box-ref first) cp)))
+               (box-set! first -1)
+               (loop (:for c (range lo (+ cp 1)))
+                     (:do
+                      (def delta (fun (i) (if (= (vec-ref fields i) "") 0 (- (hex (vec-ref fields i)) c))))
+                      (array-set! category c (category-index (vec-ref fields 2)))
+                      (unless (= (vec-ref fields 6) "") (array-set! digit c (string->int (vec-ref fields 6))))
+                      (array-set! upper c (delta 12))
+                      (array-set! lower c (delta 13))
+                      (array-set! title c (if (= (vec-ref fields 14) "") (delta 12) (delta 14)))))))))
+  (Data (category category) (digit digit) (upper upper) (lower lower) (title title)))
+
+;; The simple case fold of each code point as a delta: the lines of status C
+;; and S of CaseFolding.txt.
+(: (-> string (Array int)))
+(defun (simple-folds file)
+  (: (Array int))
+  (def fold (make-array code-point-count))
+  (loop (:for f (ucd-fields file))
+        (:when (or (= (vec-ref f 1) "C") (= (vec-ref f 1) "S")))
+        (:do (def cp (hex (vec-ref f 0)))
+             (array-set! fold cp (- (hex (vec-ref f 2)) cp))))
+  fold)
+
+;; Whether each code point has the binary property `name` of a property file.
+(: (-> string string (Array bool)))
+(defun (has-property file name)
+  (: (Array bool))
+  (def has (make-array code-point-count))
+  (loop (:for r (ucd-ranges file))
+        (:when (= (vec-ref (record-ref r values) 0) name))
+        (:do (loop (:for c (range (record-ref r lo) (+ (record-ref r hi) 1)))
+                   (:do (array-set! has c #t)))))
+  has)
+
+(: (-> bool int int))
+(defun (bit-if b shift) (if b (shift-left 1 shift) 0))
+
+;; A line of the test cases: a name, the number of chars and a sum.
+(: (-> string (Tuple int long) string))
+(defun (case-line name counted)
+  (def (Tuple n sum) counted)
+  #"    ${name};${n};${sum}")
+
+;; Writes the tables and the test cases from the UCD in `ucd`.
+(: (-> string void))
+(defun (chars-tables ucd)
+  (def data-file (ucd-file ucd "UnicodeData.txt"))
+  (def core (ucd-file ucd "DerivedCoreProperties.txt"))
+  (def props-file (ucd-file ucd "PropList.txt"))
+  (def folding (ucd-file ucd "CaseFolding.txt"))
+  (def version (ucd-version core))
+  (ucd-same-version version [props-file folding])
+
+  (def data (unicode-data data-file))
+  (def category (record-ref data category))
+  (def digit (record-ref data digit))
+  (def upper (record-ref data upper))
+  (def lower (record-ref data lower))
+  (def title (record-ref data title))
+  (def fold (simple-folds folding))
+  (def alphabetic (has-property core "Alphabetic"))
+  (def uppercase (has-property core "Uppercase"))
+  (def lowercase (has-property core "Lowercase"))
+  (def white (has-property props-file "White_Space"))
+
+  ;; The module trusts that a code point has a digit value exactly when it
+  ;; is Nd.
+  (def nd (category-index "Nd"))
+  (loop (:for c (range 0 code-point-count))
+        (:do (unless (= (= (array-ref digit c) no-digit) (not (= (array-ref category c) nd)))
+               (panic! #"unicode-tables: ${(int->string c #:radix 16)} has a digit value and is not Nd, or is Nd with none"))))
+
+  ;; The kind of each code point, as (Tuple properties (Tuple upper lower
+  ;; title fold)), which orders as the five numbers in turn.
+  (def kind-of
+    {vecing (Tuple (bitwise-ior (array-ref category c)
+                                (bit-if (array-ref alphabetic c) 5)
+                                (bit-if (array-ref white c) 6)
+                                (bit-if (array-ref uppercase c) 7)
+                                (bit-if (array-ref lowercase c) 8)
+                                (shift-left (array-ref digit c) 9))
+                   (Tuple (array-ref upper c) (array-ref lower c) (array-ref title c) (array-ref fold c)))
+            (:for c (range 0 code-point-count))})
+  (def kinds (sorted-distinct kind-of))
+  (when (> (vec-length kinds) 256)
+    (panic! #"unicode-tables: ${(vec-length kinds)} kinds do not fit in a byte"))
+  (def index (transientmap-empty))
+  (loop (:for (Tuple i k) (enumerate kinds)) (:do (transientmap-set! index k i)))
+  (: (Array int))
+  (def kind-index (make-array code-point-count))
+  (loop (:for (Tuple c k) (enumerate kind-of))
+        (:do (array-set! kind-index c (transientmap-ref-or index k 0))))
+  (def table (two-stage kind-index))
+  (when (> (record-ref table blocks) 256)
+    (panic! #"unicode-tables: ${(record-ref table blocks)} blocks do not fit in a byte"))
+
+  (write-bytes (table-path "chars-stage1.bin") (record-ref table stage1))
+  (write-bytes (table-path "chars-stage2.bin") (record-ref table stage2))
+  (def rows
+    (vec-append (vec-map (fun (k) (fst k)) kinds)
+                (vec-map (fun (k) (match (snd k) ((Tuple u _ _ _) u))) kinds)
+                (vec-map (fun (k) (match (snd k) ((Tuple _ l _ _) l))) kinds)
+                (vec-map (fun (k) (match (snd k) ((Tuple _ _ t _) t))) kinds)
+                (vec-map (fun (k) (match (snd k) ((Tuple _ _ _ f) f))) kinds)))
+  (write-ints (table-path "chars-kinds.bin") rows)
+
+  (def last (- (vec-length categories) 1))
+  (write-text (table-path "chars-table.protobjo")
+              (str (header "chars" version
+                           "UnicodeData.txt, DerivedCoreProperties.txt, PropList.txt and CaseFolding.txt")
+                   "\n"
+                   ";; The Unicode version the tables are of.\n"
+                   #"(def unicode-version \"${version}\")\n"
+                   "\n"
+                   ";; The number of kinds: the length of each row of chars-kinds.bin.\n"
+                   #"(def kind-count ${(vec-length kinds)})\n"
+                   "\n"
+                   ";; The general category of an index in bits 0-4 of a kind. A match and not\n"
+                   ";; an array of symbols, so that initializing the module calls nothing.\n"
+                   "(: (-> int Symbol))\n"
+                   "(defun (category-symbol i)\n"
+                   "  (match i\n"
+                   (string-join {vecing #"    (${i} '${(vec-ref categories i)})" (:for i (range 0 last))} "\n")
+                   "\n"
+                   #"    (_ '${(vec-ref categories last)})))\n"))
+
+  ;; The test checks the module against these: for each property, the
+  ;; number of chars that have it and the sum of their code points; for each
+  ;; mapping, the number of chars it changes and the sum of what they map
+  ;; to. Surrogates are left out: they are not chars.
+  (def scalars {vecing c :when (not (and (<= 0xD800 c) (<= c 0xDFFF))) (:for c (range 0 code-point-count))})
+  (def count-sum
+    (fun (has?)
+      (Tuple {counting c :when (has? c) (:for c scalars)}
+             {summing (cast long c) :when (has? c) (:for c scalars)})))
+  (def mapped
+    (fun (deltas)
+      (Tuple {counting c :when (not (= (array-ref deltas c) 0)) (:for c scalars)}
+             {summing (cast long (+ c (array-ref deltas c))) :when (not (= (array-ref deltas c) 0)) (:for c scalars)})))
+  (def category-is (fun (g) (let ((i (category-index g))) (fun (c) (= (array-ref category c) i)))))
+  (def lines
+    (vec-append
+     {vecing (case-line (str "category " g) (count-sum (category-is g))) (:for g categories)}
+     [(case-line "alphabetic" (count-sum (fun (c) (array-ref alphabetic c))))
+      (case-line "white-space" (count-sum (fun (c) (array-ref white c))))
+      (case-line "uppercase" (count-sum (fun (c) (array-ref uppercase c))))
+      (case-line "lowercase" (count-sum (fun (c) (array-ref lowercase c))))
+      (case-line "title-case" (count-sum (category-is "Lt")))
+      (case-line "numeric" (count-sum (fun (c) (or ((category-is "Nd") c) ((category-is "Nl") c) ((category-is "No") c)))))]
+     {vecing (case-line #"digit ${d}" (count-sum (fun (c) (= (array-ref digit c) d)))) (:for d (range 0 10))}
+     [(case-line "upcase" (mapped upper))
+      (case-line "downcase" (mapped lower))
+      (case-line "titlecase" (mapped title))
+      (case-line "foldcase" (mapped fold))]))
+  (write-text (case-path "chars-cases.protobjo")
+              (str (header "chars" version "the same files as chars-table.protobjo")
+                   "\n"
+                   ";; One line a property: its name, the number of chars that have it and the\n"
+                   ";; sum of their code points, separated by ';'. For a mapping: the number of\n"
+                   ";; chars it changes, and the sum of what they map to.\n"
+                   #"(def chars-cases-version \"${version}\")\n"
+                   "(def chars-cases \"\"\"\n"
+                   (string-join lines "\n") "\n"
+                   "    \"\"\")\n"))
+  (println #"Unicode ${version}: ${(vec-length kinds)} kinds in ${(record-ref table blocks)} blocks"))

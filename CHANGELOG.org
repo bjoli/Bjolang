@@ -3,12 +3,38 @@
 
 What each change guarantees, and what it leaves open.
 
+* Numbers in other bases, ~ByteStringBuilder~, and the Unicode generators in Bjolang
+
+- ~int->string~ and ~long->string~ take ~#:radix~, 2 to 36, and ~#:upper~.
+  ~string->int~ and ~string->long~ take ~#:radix~. A negative number is a
+  minus and its magnitude. A prefix such as ~0x~ is not read. A radix
+  outside 2 to 36 raises ~ArgumentOutOfRangeException~; text that is not a
+  number in the radix raises ~FormatException~, as in base 10, and a number
+  that does not fit raises ~OverflowException~.
+- ~ByteStringBuilder~, in ~(std prelude bytestring)~ and re-exported by
+  ~(std prelude)~: bytes, and ~short~, ~ushort~, ~int~, ~uint~, ~long~,
+  ~ulong~, ~float~ and ~double~ in a byte order, appended to a buffer.
+  ~(bytestringbuilder-empty #:order BigEndian)~ sets the order of the
+  functions without a suffix, ~LittleEndian~ when not given. Those that end
+  in ~-le~ or ~-be~ write in the order they name. ~ByteOrder~ is the type of
+  the order.
+- A function with keyword parameters, passed where a function of its
+  mandatory parameters is expected, is that function also at a generic
+  extern and at a trait method: ~(iarray-map int->string xs)~ and
+  ~(fmap xs int->string)~. Before, only a parameter of a Bjolang function
+  took it so, and the two calls were type errors.
+- The four generators of the ~(std unicode)~ tables are Bjolang modules in
+  ~tools/unicode/~, which ~bjo task unicode-tables~ calls. The Python
+  scripts ~lib/std/unicode/gen_*.py~ are gone. From the UCD 18.0.0 the
+  tables are the same bytes; only the comment at the top of each generated
+  file changed. The four take 1.4 s together.
+
 * Tasks for this repository, and ~task-run~
 
 - ~tasks.bjo~ at the root of the repository has three tasks:
   - ~bjo task unicode-tables~ downloads the UCD files of a Unicode version
     (~--version~, ~latest~ when not given) with ~curl~, runs the four
-    generators in ~lib/std/unicode/~, and runs ~build_std.sh~. ~--ucd DIR~
+    generators, and runs ~build_std.sh~. ~--ucd DIR~
     uses files that are already downloaded.
   - ~bjo task bench SUITE~ runs ~bench/run.sh~ (~cml~),
     ~bench/collections/run.sh~, ~bench/clbg/run.py~ or

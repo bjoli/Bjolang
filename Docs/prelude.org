@@ -312,15 +312,27 @@ Use one — or a ~(:acc out (stringing c))~ clause — rather than ~string-appen
 
 Use a builder to construct strings instead of writing to ~(open-output-string)~: writing to a port carries an effect (colour) and would force the function to become asynchronous. See "A string is built with a builder, not with a port" in =Docs/Syntax.org=.
 
+** Byte String Builders
+Bytes, and numbers in a byte order, appended to a buffer that ~bytestringbuilder->bytestring~ makes a ~ByteString~ of. For binary files and protocols.
+- ~(bytestringbuilder-empty #:order LittleEndian)~ : Creates an empty builder. ~#:order~ is a ~ByteOrder~, ~LittleEndian~ or ~BigEndian~, and is fixed for the builder's life.
+- ~(bytestringbuilder-add-byte! b n)~, ~(bytestringbuilder-add-bytes! b array)~, ~(bytestringbuilder-add-bytestring! b s)~ : Appends bytes.
+- ~(bytestringbuilder-add-int! b n)~ : Appends an ~int~ as 4 bytes in the builder's order. ~-add-int-le!~ and ~-add-int-be!~ write little-endian and big-endian, whatever the builder's order is. The same three are there for ~short~, ~ushort~, ~uint~, ~long~, ~ulong~, ~float~ and ~double~.
+- ~(bytestringbuilder-length b)~, ~(bytestringbuilder-order b)~, ~(bytestringbuilder-clear! b)~
+- ~(bytestringbuilder->bytestring b)~ / ~(bytestringbuilder->bytes b)~ : Copies of the bytes, so the builder can be added to after.
+
+A format in one byte order sets it once and uses the names without a suffix. A format that mixes the two writes the exceptions with ~-le~ or ~-be~. A format whose order is read from the file, such as TIFF, makes the builder with that order.
+
 ** Conversions
 The numeric ones are =(std prelude)=; the keyword and symbol ones are builtin, since ~Keyword~, ~Symbol~ and ~char~ are not .NET types Bjolang can name.
 - ~(byte->string b)~
-- ~(int->string i)~ (also ~number->string~)
-- ~(long->string l)~
+- ~(int->string i #:radix 10 #:upper #f)~ (also ~number->string~, which takes no keywords)
+- ~(long->string l #:radix 10 #:upper #f)~
 - ~(double->string d)~
-- ~(string->int s)~
-- ~(string->long s)~
+- ~(string->int s #:radix 10)~
+- ~(string->long s #:radix 10)~
 - ~(string->double s)~
+
+~#:radix~ is 2 to 36: ~(int->string 255 #:radix 16)~ is ~"ff"~, and ~(string->int "1F600" #:radix 16)~ is 128512. Digits past 9 are letters, in either case when read, and upper case when written with ~#:upper #t~. A negative number is a minus and its magnitude, not its two's complement. A prefix such as ~0x~ is neither written nor read.
 
 All seven are *invariant*, for the reason the string comparisons are ordinal: they round-trip, so a number written by one machine reads on the next. .NET's own take the ambient culture, under which ~1.5~ writes as ~1,5~, ~(string->double "1.5")~ throws, and ~-100~ comes back with a U+2212 MINUS SIGN. ~written~ and ~displayed~ are invariant for the same reason. A program that wants a number in the reader's own culture sets ~CultureInfo.CurrentCulture~ and formats through .NET; see ~Todo.org~.
 - ~(keyword->string kw)~ : Returns the string name of a keyword.

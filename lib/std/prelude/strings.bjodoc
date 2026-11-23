@@ -448,24 +448,33 @@
   (reference "By character, not by byte, so a character of several bytes comes back whole."))
 
 (:doc string->int
-  (summary "Parses a string into an int.")
-  (arg s "Decimal digits, with an optional sign.")
+  (summary "Parses a string into an int, in decimal or another base.")
+  (arg s "Digits, with an optional sign.")
+  (key #:radix "The base, from 2 to 36. 10 when not given.")
   (returns "The parsed integer value.")
+  (raises System.FormatException "When s is not a number in the radix.")
+  (raises System.OverflowException "When the number does not fit in an int.")
+  (raises System.ArgumentOutOfRangeException "When the radix is not from 2 to 36.")
   (see string->long string->double int->string)
   (example """
-    (string->int "-42")   ; -42
+    (string->int "-42")                 ; -42
+    (string->int "1F600" #:radix 16)    ; 128512
+    (string->int "-101" #:radix 2)      ; -5
     """)
   (reference """
     Invariant culture, so it reads what @code{int->string} writes on any
     machine. Whitespace at either end is allowed. Text that is not such a
-    number throws, as .NET's @code{int.Parse} does: a
-    @code{FormatException}, or an @code{OverflowException} when the number
-    does not fit.
+    number throws, as .NET's @code{int.Parse} does.
+
+    In another base, the digits past 9 are letters in either case: a is 10
+    and z is 35. A sign is allowed. A prefix such as @code{0x} is not: it is
+    text that is not a number.
     """))
 
 (:doc string->long
-  (summary "Parses a string into a long.")
-  (arg s "Decimal digits, with an optional sign.")
+  (summary "Parses a string into a long, in decimal or another base.")
+  (arg s "Digits, with an optional sign.")
+  (key #:radix "The base, from 2 to 36. 10 when not given. See @code{string->int}.")
   (returns "The parsed integer value.")
   (see string->int long->string)
   (example """

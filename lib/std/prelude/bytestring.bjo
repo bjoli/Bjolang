@@ -46,7 +46,20 @@
   bytestring-search-byte bytestring-search-byte-backward
   bytestring-contains? bytestring-starts-with? bytestring-ends-with?
   ;; Joining and splitting
-  bytestring-append bytestring-concat bytestring-join bytestring-split)
+  bytestring-append bytestring-concat bytestring-join bytestring-split
+  ;; Building
+  ByteOrder ByteStringBuilder bytestringbuilder-empty bytestringbuilder-order
+  bytestringbuilder-length bytestringbuilder-clear!
+  bytestringbuilder-add-byte! bytestringbuilder-add-bytes! bytestringbuilder-add-bytestring!
+  bytestringbuilder->bytestring bytestringbuilder->bytes
+  bytestringbuilder-add-short! bytestringbuilder-add-short-le! bytestringbuilder-add-short-be!
+  bytestringbuilder-add-ushort! bytestringbuilder-add-ushort-le! bytestringbuilder-add-ushort-be!
+  bytestringbuilder-add-int! bytestringbuilder-add-int-le! bytestringbuilder-add-int-be!
+  bytestringbuilder-add-uint! bytestringbuilder-add-uint-le! bytestringbuilder-add-uint-be!
+  bytestringbuilder-add-long! bytestringbuilder-add-long-le! bytestringbuilder-add-long-be!
+  bytestringbuilder-add-ulong! bytestringbuilder-add-ulong-le! bytestringbuilder-add-ulong-be!
+  bytestringbuilder-add-float! bytestringbuilder-add-float-le! bytestringbuilder-add-float-be!
+  bytestringbuilder-add-double! bytestringbuilder-add-double-le! bytestringbuilder-add-double-be!)
 
 (import (std prelude core))
 (import (std core-macros))
@@ -72,6 +85,31 @@
   (clr-count        (: System.MemoryExtensions.Count (-> (RoSpan byte) byte int))))
 
 (type (: ByteString #:opaque (Struct (: bytes (Array byte)) (: start int) (: end int))))
+
+;; The order in which a ByteStringBuilder writes the bytes of a number.
+(type (: ByteOrder (Union LittleEndian BigEndian)))
+
+;; Bytes appended at the end, and numbers appended in a byte order. See
+;; BjolangRuntime/ByteStringBuilder.cs. The constructor takes whether the
+;; order is big-endian.
+(import/class
+  (ByteStringBuilder (: Bjolang.Runtime.ByteStringBuilder (-> bool ByteStringBuilder))))
+
+(import/extern
+  (clr-builder-big?    (: Bjolang.Runtime.ByteStringBuilder.BigEndian (-> ByteStringBuilder bool) #:get))
+  (clr-builder-length  (: Bjolang.Runtime.ByteStringBuilder.Length (-> ByteStringBuilder int) #:get))
+  (clr-builder-array   (: Bjolang.Runtime.ByteStringBuilder.ToArray (-> ByteStringBuilder (Array byte))))
+  (clr-builder-clear   (: Bjolang.Runtime.ByteStringBuilder.Clear (-> ByteStringBuilder void)))
+  (clr-builder-add-byte (: Bjolang.Runtime.ByteStringBuilder.AddByte (-> ByteStringBuilder byte void)))
+  (clr-builder-add-span (: Bjolang.Runtime.ByteStringBuilder.AddBytes (-> ByteStringBuilder (RoSpan byte) void)))
+  (clr-builder-add-short (: Bjolang.Runtime.ByteStringBuilder.AddShort (-> ByteStringBuilder short bool void)))
+  (clr-builder-add-ushort (: Bjolang.Runtime.ByteStringBuilder.AddUShort (-> ByteStringBuilder ushort bool void)))
+  (clr-builder-add-int (: Bjolang.Runtime.ByteStringBuilder.AddInt (-> ByteStringBuilder int bool void)))
+  (clr-builder-add-uint (: Bjolang.Runtime.ByteStringBuilder.AddUInt (-> ByteStringBuilder uint bool void)))
+  (clr-builder-add-long (: Bjolang.Runtime.ByteStringBuilder.AddLong (-> ByteStringBuilder long bool void)))
+  (clr-builder-add-ulong (: Bjolang.Runtime.ByteStringBuilder.AddULong (-> ByteStringBuilder ulong bool void)))
+  (clr-builder-add-float (: Bjolang.Runtime.ByteStringBuilder.AddFloat (-> ByteStringBuilder float bool void)))
+  (clr-builder-add-double (: Bjolang.Runtime.ByteStringBuilder.AddDouble (-> ByteStringBuilder double bool void))))
 
 ;; ---------------------------------------------------------------------------
 ;; Inside
@@ -511,3 +549,115 @@
        (go (+ k 1) (+ at 1)))
       (None (array-set! fields k (bytestring-slice b from n)))))
   (array->vec fields))
+
+
+;; ---------------------------------------------------------------------------
+;; Building
+;; ---------------------------------------------------------------------------
+;;
+;; - The builder's order is fixed when it is made. A number function without
+;;   a suffix writes in that order; one ending in -le or -be writes in the
+;;   order it names.
+;; - bytestringbuilder->bytestring and ->bytes copy, so the builder can be
+;;   added to after them.
+
+(: (-> (#:order ByteOrder) ByteStringBuilder))
+(defun (bytestringbuilder-empty #:order LittleEndian)
+  (ByteStringBuilder. (match order (LittleEndian #f) (BigEndian #t))))
+
+(: (-> ByteStringBuilder ByteOrder))
+(defun (bytestringbuilder-order b)
+  (if (clr-builder-big? b) BigEndian LittleEndian))
+
+(: (-> ByteStringBuilder int))
+(defun (bytestringbuilder-length b) (clr-builder-length b))
+
+(: (-> ByteStringBuilder void))
+(defun (bytestringbuilder-clear! b) (clr-builder-clear b))
+
+(: (-> ByteStringBuilder byte void))
+(defun (bytestringbuilder-add-byte! b n) (clr-builder-add-byte b n))
+
+(: (-> ByteStringBuilder (Array byte) void))
+(defun (bytestringbuilder-add-bytes! b a) (clr-builder-add-span b (array->ro-span a)))
+
+(: (-> ByteStringBuilder ByteString void))
+(defun (bytestringbuilder-add-bytestring! b s) (clr-builder-add-span b (span-of s)))
+
+(: (-> ByteStringBuilder ByteString))
+(defun (bytestringbuilder->bytestring b) (adopt (clr-builder-array b)))
+
+(: (-> ByteStringBuilder (Array byte)))
+(defun (bytestringbuilder->bytes b) (clr-builder-array b))
+
+(: (-> ByteStringBuilder short void))
+(defun (bytestringbuilder-add-short! b n) (clr-builder-add-short b n (clr-builder-big? b)))
+
+(: (-> ByteStringBuilder short void))
+(defun (bytestringbuilder-add-short-le! b n) (clr-builder-add-short b n #f))
+
+(: (-> ByteStringBuilder short void))
+(defun (bytestringbuilder-add-short-be! b n) (clr-builder-add-short b n #t))
+
+(: (-> ByteStringBuilder ushort void))
+(defun (bytestringbuilder-add-ushort! b n) (clr-builder-add-ushort b n (clr-builder-big? b)))
+
+(: (-> ByteStringBuilder ushort void))
+(defun (bytestringbuilder-add-ushort-le! b n) (clr-builder-add-ushort b n #f))
+
+(: (-> ByteStringBuilder ushort void))
+(defun (bytestringbuilder-add-ushort-be! b n) (clr-builder-add-ushort b n #t))
+
+(: (-> ByteStringBuilder int void))
+(defun (bytestringbuilder-add-int! b n) (clr-builder-add-int b n (clr-builder-big? b)))
+
+(: (-> ByteStringBuilder int void))
+(defun (bytestringbuilder-add-int-le! b n) (clr-builder-add-int b n #f))
+
+(: (-> ByteStringBuilder int void))
+(defun (bytestringbuilder-add-int-be! b n) (clr-builder-add-int b n #t))
+
+(: (-> ByteStringBuilder uint void))
+(defun (bytestringbuilder-add-uint! b n) (clr-builder-add-uint b n (clr-builder-big? b)))
+
+(: (-> ByteStringBuilder uint void))
+(defun (bytestringbuilder-add-uint-le! b n) (clr-builder-add-uint b n #f))
+
+(: (-> ByteStringBuilder uint void))
+(defun (bytestringbuilder-add-uint-be! b n) (clr-builder-add-uint b n #t))
+
+(: (-> ByteStringBuilder long void))
+(defun (bytestringbuilder-add-long! b n) (clr-builder-add-long b n (clr-builder-big? b)))
+
+(: (-> ByteStringBuilder long void))
+(defun (bytestringbuilder-add-long-le! b n) (clr-builder-add-long b n #f))
+
+(: (-> ByteStringBuilder long void))
+(defun (bytestringbuilder-add-long-be! b n) (clr-builder-add-long b n #t))
+
+(: (-> ByteStringBuilder ulong void))
+(defun (bytestringbuilder-add-ulong! b n) (clr-builder-add-ulong b n (clr-builder-big? b)))
+
+(: (-> ByteStringBuilder ulong void))
+(defun (bytestringbuilder-add-ulong-le! b n) (clr-builder-add-ulong b n #f))
+
+(: (-> ByteStringBuilder ulong void))
+(defun (bytestringbuilder-add-ulong-be! b n) (clr-builder-add-ulong b n #t))
+
+(: (-> ByteStringBuilder float void))
+(defun (bytestringbuilder-add-float! b n) (clr-builder-add-float b n (clr-builder-big? b)))
+
+(: (-> ByteStringBuilder float void))
+(defun (bytestringbuilder-add-float-le! b n) (clr-builder-add-float b n #f))
+
+(: (-> ByteStringBuilder float void))
+(defun (bytestringbuilder-add-float-be! b n) (clr-builder-add-float b n #t))
+
+(: (-> ByteStringBuilder double void))
+(defun (bytestringbuilder-add-double! b n) (clr-builder-add-double b n (clr-builder-big? b)))
+
+(: (-> ByteStringBuilder double void))
+(defun (bytestringbuilder-add-double-le! b n) (clr-builder-add-double b n #f))
+
+(: (-> ByteStringBuilder double void))
+(defun (bytestringbuilder-add-double-be! b n) (clr-builder-add-double b n #t))

@@ -1,0 +1,72 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; The case folding table of (std unicode casefold), from CaseFolding.txt.
+;;
+;; - The table is the full case folding: the lines of status C and F. The
+;;   lines of status S (the simple alternatives to F) and T (the Turkic
+;;   mappings of I and İ) are left out.
+;; - casefold-table.bin is the mappings as `mapping-ints` lays them out, in
+;;   little-endian int32. The module reads it with (include-bytes ...).
+;;
+;; Writes:
+;;   lib/std/unicode/casefold-table.protobjo           the version and the count
+;;   lib/std/unicode/casefold-table.bin                the mappings
+;;   TestFiles/assets/unicode/casefold-cases.protobjo  the same mappings, for the test
+
+(export casefold-tables)
+
+(import (std prelude))
+(import "ucd.bjo")
+
+;; The mappings of status C and F, by code point.
+(: (-> string (Vec (Tuple int (Vec int)))))
+(defun (full-folds file)
+  (def folds
+    (vec-sort-by
+     (fun (a b) (compare (fst a) (fst b)))
+     {vecing (Tuple (hex (vec-ref f 0)) (vec-map hex (string-split (vec-ref f 2) " ")))
+             (:for f (ucd-fields file))
+             (:when (or (= (vec-ref f 1) "C") (= (vec-ref f 1) "F")))}))
+  (loop (:for (Tuple i fold) (enumerate folds))
+        (:let (Tuple k v) fold)
+        (:do (when (and (> i 0) (= k (fst (vec-ref folds (- i 1)))))
+               (panic! #"unicode-tables: ${(hex4 k)} has both a C and an F line"))
+             (unless (and (<= 1 (vec-length v)) (<= (vec-length v) 9))
+               (panic! "unicode-tables: a fold is longer than 9 code points"))))
+  folds)
+
+;; A code point as the test cases write it: upper-case hex, at least 4 digits.
+(: (-> int string))
+(defun (hex4 c) (string-pad-left (int->string c #:radix 16 #:upper #t) 4 #:with #\0))
+
+;; Writes the tables and the test cases from the UCD in `ucd`.
+(: (-> string void))
+(defun (casefold-tables ucd)
+  (def file (ucd-file ucd "CaseFolding.txt"))
+  (def version (ucd-version file))
+  (def folds (full-folds file))
+  (def top (header "casefold" version "CaseFolding.txt"))
+  (write-ints (table-path "casefold-table.bin") (mapping-ints folds))
+  (write-text (table-path "casefold-table.protobjo")
+              (str top "\n"
+                   ";; The Unicode version the table is of.\n"
+                   #"(def unicode-version \"${version}\")\n"
+                   "\n"
+                   ";; The number of mappings.\n"
+                   #"(def fold-count ${(vec-length folds)})\n"))
+  (def cases
+    (string-join {vecing (str "    " (hex4 k) "; " (string-join (vec-map hex4 v) " "))
+                         (:for (Tuple k v) folds)}
+                 "\n"))
+  (write-text (case-path "casefold-cases.protobjo")
+              (str top "\n"
+                   ";; The mappings of the table, one a line: a code point and what it folds\n"
+                   ";; to, in hex.\n"
+                   #"(def casefold-cases-version \"${version}\")\n"
+                   "(def casefold-cases \"\"\"\n"
+                   cases "\n"
+                   "    \"\"\")\n"))
+  (def multi {counting v :when (> (vec-length v) 1) (:for (Tuple _ v) folds)})
+  (println #"Unicode ${version}: ${(vec-length folds)} mappings, ${multi} of them to more than one code point"))

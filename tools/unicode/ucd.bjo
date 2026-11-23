@@ -1,0 +1,221 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; What the four generators of the (std unicode) tables share: reading the
+;; files of the Unicode Character Database (UCD), building two-stage tables,
+;; and writing the tables and the test cases.
+;;
+;; - Paths of output files are relative to the repository root: `bjo task
+;;   unicode-tables` runs there.
+;; - A file that is missing or of another Unicode version ends the task with
+;;   a message, through `panic!`.
+
+(export
+  code-point-count block-size
+  Range ucd-file ucd-version ucd-same-version ucd-fields ucd-ranges hex
+  TwoStage two-stage sorted-distinct mapping-ints
+  header table-path case-path write-bytes write-ints write-longs write-text)
+
+(import (std prelude))
+
+;; Code points are 0 to 0x10FFFF.
+(: int)
+(def code-point-count 0x110000)
+
+;; The number of code points in a block of a two-stage table.
+(: int)
+(def block-size 256)
+
+;; ---------------------------------------------------------------------------
+;; Reading the UCD
+;; ---------------------------------------------------------------------------
+
+;; The path of the UCD file `name` in `dir`, or in its subdirectory `sub`
+;; when it is there. Ends the task when it is in neither.
+(: (-> string string (#:sub string) string))
+(defun (ucd-file dir name #:sub "")
+  (def nested (path->string/lossy (path-join (path-join dir sub) name)))
+  (def flat (path->string/lossy (path-join dir name)))
+  (cond
+    ((and (not (= sub "")) (file-exists? nested)) nested)
+    ((file-exists? flat) flat)
+    (else (panic! #"unicode-tables: there is no ${name} in ${dir}"))))
+
+;; The Unicode version of a UCD file, from its first line:
+;; "# CaseFolding-18.0.0.txt" is "18.0.0".
+(: (-> string string))
+(defun (ucd-version file)
+  (def first (vec-ref (file-read-lines file) 0))
+  (def parts (string-split first "-"))
+  (string-trim (string-replace (vec-ref parts (- (vec-length parts) 1)) ".txt" "")))
+
+;; Ends the task unless each of `files` is of `version`.
+(: (-> string (Vec string) void))
+(defun (ucd-same-version version files)
+  (loop (:for f files)
+        (:do (def v (ucd-version f))
+             (unless (= v version)
+               (panic! #"unicode-tables: ${f} is version ${v}, not ${version}")))))
+
+;; The fields of each data line of a UCD file: the text before a #, split
+;; at ;, each field trimmed. Lines with no data are left out.
+(: (-> string (Vec (Vec string))))
+(defun (ucd-fields file)
+  {vecing (vec-map string-trim (string-split data ";"))
+          (:for line (file-read-lines file))
+          (:let data (string-trim (match (string-split-once line "#")
+                                    ((Some (Tuple before _)) before)
+                                    (None line))))
+          (:when (not (= data "")))})
+
+;; A line of a UCD property file: the code points `lo` to `hi`, both
+;; included, and the fields after the first.
+(type (: Range (Record (: lo int) (: hi int) (: values (Vec string)))))
+
+;; The lines of a UCD property file, whose first field is a code point or
+;; a range such as 0041..005A.
+(: (-> string (Vec Range)))
+(defun (ucd-ranges file)
+  (vec-map (fun (fields)
+             (def (Tuple lo hi)
+               (match (string-split-once (vec-ref fields 0) "..")
+                 ((Some (Tuple a b)) (Tuple (hex a) (hex b)))
+                 (None (let ((c (hex (vec-ref fields 0)))) (Tuple c c)))))
+             (Range (lo lo) (hi hi) (values (vec-drop fields 1))))
+           (ucd-fields file)))
+
+;; A number in hexadecimal, as the UCD writes code points.
+(: (-> string int))
+(defun (hex s) (string->int s #:radix 16))
+
+;; ---------------------------------------------------------------------------
+;; Building tables
+;; ---------------------------------------------------------------------------
+
+;; A table of one small value a code point, in two stages.
+;;
+;; - `stage1` has one entry a block of `block-size` code points: the number
+;;   of the block of stage 2 that holds its values.
+;; - `stage2` is the distinct blocks, in the order they are first seen.
+(type (: TwoStage (Record (: stage1 (Vec int)) (: stage2 (Vec int)) (: blocks int))))
+
+;; The two-stage table of `values`, one a code point.
+(: (-> (Array int) TwoStage))
+(defun (two-stage values)
+  (def ids (transientmap-empty))
+  (def stage2 (vecbuilder-empty))
+  (def stage1
+    {vecing (let ((key (block-key values start)))
+              (match (transientmap-try-ref ids key)
+                ((Some id) id)
+                (None
+                 (def id (transientmap-length ids))
+                 (transientmap-set! ids key id)
+                 (loop (:for i (range start (+ start block-size)))
+                       (:do (vecbuilder-add! stage2 (array-ref values i))))
+                 id)))
+            (:for start (range-by 0 code-point-count block-size))})
+  (TwoStage (stage1 stage1) (stage2 (vecbuilder->vec stage2)) (blocks (transientmap-length ids))))
+
+;; The values of the block that starts at `start`, as a string, which is
+;; what two-stage tells blocks apart by.
+(: (-> (Array int) int string))
+(defun (block-key values start)
+  (def b (stringbuilder-empty))
+  (loop (:for i (range start (+ start block-size)))
+        (:do (stringbuilder-add-string! b (int->string (array-ref values i)))
+             (stringbuilder-add-string! b ",")))
+  (stringbuilder->string b))
+
+;; The distinct items of `items`, in order.
+(: (-> (Vec %a) (Vec %a)) (where (Ord %a)))
+(defun (sorted-distinct items)
+  (def sorted (vec-sort items))
+  {vecing x
+          (:for (Tuple i x) (enumerate sorted))
+          (:when (or (= i 0) (not (= x (vec-ref sorted (- i 1))))))})
+
+;; A mapping from code points to sequences of code points as ints in three
+;; parts: the code points, in order; the start of each one's sequence in
+;; the third part, and one more for the end; and the sequences.
+(: (-> (Vec (Tuple int (Vec int))) (Vec int)))
+(defun (mapping-ints entries)
+  (def keys {vecing k (:for (Tuple k _) entries)})
+  (def targets (vecbuilder-empty))
+  (def starts
+    {vecing (let ((at (vecbuilder-length targets)))
+              (loop (:for c v) (:do (vecbuilder-add! targets c)))
+              at)
+            (:for (Tuple _ v) entries)})
+  (def all-targets (vecbuilder->vec targets))
+  (vec-append keys (vec-add starts (vec-length all-targets)) all-targets))
+
+;; ---------------------------------------------------------------------------
+;; Writing
+;; ---------------------------------------------------------------------------
+
+;; The comment at the top of a generated file. `generator` is the module's
+;; name in tools/unicode, and `sources` says which UCD files it is from.
+(: (-> string string string string))
+(defun (header generator version sources)
+  (def words (string-split #"Generated by tools/unicode/${generator}.bjo from the Unicode Character Database ${version}: ${sources}. Do not edit; run bjo task unicode-tables instead." " "))
+  (str (wrapped-comment words 76)
+       ";;\n"
+       ";; The data is © Unicode, Inc., under the Unicode License v3:\n"
+       ";; https://www.unicode.org/license.txt\n"))
+
+;; `words` as comment lines of at most `width` characters after ";; ".
+(: (-> (Vec string) int string))
+(defun (wrapped-comment words width)
+  (def b (stringbuilder-empty))
+  (let go ((rest (vec->list words)) (line ""))
+    (match rest
+      (Nil (stringbuilder-add-string! b #";; ${line}\n"))
+      ((Cons w more)
+       (cond
+         ((= line "") (go more w))
+         ((> (+ (string-length line) 1 (string-length w)) width)
+          (stringbuilder-add-string! b #";; ${line}\n")
+          (go more w))
+         (else (go more (str line " " w)))))))
+  (stringbuilder->string b))
+
+;; The path of a table of (std unicode), and of a file of test cases.
+(: (-> string string))
+(defun (table-path name) (str "lib/std/unicode/" name))
+
+(: (-> string string))
+(defun (case-path name) (str "TestFiles/assets/unicode/" name))
+
+;; Writes `values` as one byte each. Panics on a value outside 0 to 255.
+(: (-> string (Vec int) void))
+(defun (write-bytes file values)
+  (def b (bytestringbuilder-empty))
+  (loop (:for v values)
+        (:do (unless (and (<= 0 v) (<= v 255)) (panic! #"unicode-tables: ${v} does not fit in a byte in ${file}"))
+             (bytestringbuilder-add-byte! b (cast byte v))))
+  (file-write-bytes file (bytestringbuilder->bytes b)))
+
+;; Writes `values` as little-endian int32.
+(: (-> string (Vec int) void))
+(defun (write-ints file values)
+  (def b (bytestringbuilder-empty))
+  (loop (:for v values) (:do (bytestringbuilder-add-int! b v)))
+  (file-write-bytes file (bytestringbuilder->bytes b)))
+
+;; Writes `values` as little-endian int64.
+(: (-> string (Vec long) void))
+(defun (write-longs file values)
+  (def b (bytestringbuilder-empty))
+  (loop (:for v values) (:do (bytestringbuilder-add-long! b v)))
+  (file-write-bytes file (bytestringbuilder->bytes b)))
+
+;; Writes `text`, making the directory when it is missing.
+(: (-> string string void))
+(defun (write-text file text)
+  (def dir (path-parent (path file)))
+  (match dir
+    ((Some d) (unless (directory-exists? d) (directory-create d)))
+    (None unit))
+  (file-write-text file text))

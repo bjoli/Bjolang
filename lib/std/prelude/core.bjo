@@ -2493,7 +2493,11 @@
   (clr-parse-bigint  (: Bjolang.Runtime.BjoNum.ParseInteger (-> string bigint)))
   (clr-parse-int128  (: Bjolang.Runtime.BjoNum.ParseInteger (-> string int128)))
   (clr-parse-uint128 (: Bjolang.Runtime.BjoNum.ParseInteger (-> string uint128)))
-  (clr-format-number (: Bjolang.Runtime.BjoNum.FormatNumber (-> %a string))))
+  (clr-format-number (: Bjolang.Runtime.BjoNum.FormatNumber (-> %a string)))
+  (clr-int-radix     (: Bjolang.Runtime.BjoNum.FormatRadix (-> int int bool string)))
+  (clr-long-radix    (: Bjolang.Runtime.BjoNum.FormatRadix (-> long int bool string)))
+  (clr-parse-int-radix  (: Bjolang.Runtime.BjoNum.ParseRadixInt (-> string int int)))
+  (clr-parse-long-radix (: Bjolang.Runtime.BjoNum.ParseRadixLong (-> string int long))))
 
 (: (-> string string string))
 (defun (string-append a b) (clr-concat a b))
@@ -2712,12 +2716,18 @@
 ;; --- Conversions ---
 ;; ToString wrappers. Each is invariant, so each round-trips through the
 ;; matching reader on any machine. See the externs above.
+;;
+;; `#:radix` is 2 to 36. Base 10 goes to .NET's formatter and parser, and
+;; another base to BjoNum, which writes a negative number as a minus and its
+;; magnitude. `#:upper` gives the letter digits in upper case.
 
-(: (-> int string))
-(defun (int->string n) (clr-int-string n))
+(: (-> int (#:radix int) (#:upper bool) string))
+(defun (int->string n #:radix 10 #:upper #f)
+  (if (= radix 10) (clr-int-string n) (clr-int-radix n radix upper)))
 
-(: (-> long string))
-(defun (long->string n) (clr-long-string n))
+(: (-> long (#:radix int) (#:upper bool) string))
+(defun (long->string n #:radix 10 #:upper #f)
+  (if (= radix 10) (clr-long-string n) (clr-long-radix n radix upper)))
 
 (: (-> double string))
 (defun (double->string n) (clr-double-string n))
@@ -2729,11 +2739,13 @@
 (: (-> int string))
 (defun (number->string n) (int->string n))
 
-(: (-> string int))
-(defun (string->int s) (clr-parse-int s))
+(: (-> string (#:radix int) int))
+(defun (string->int s #:radix 10)
+  (if (= radix 10) (clr-parse-int s) (clr-parse-int-radix s radix)))
 
-(: (-> string long))
-(defun (string->long s) (clr-parse-long s))
+(: (-> string (#:radix int) long))
+(defun (string->long s #:radix 10)
+  (if (= radix 10) (clr-parse-long s) (clr-parse-long-radix s radix)))
 
 (: (-> string double))
 (defun (string->double s) (clr-parse-double s))

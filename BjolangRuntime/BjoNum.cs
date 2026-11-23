@@ -118,6 +118,81 @@ public static class BjoNum {
     public static long ParseLong(Utf8String s) =>
         long.Parse(s.AsSpan(), NumberStyles.Integer, CultureInfo.InvariantCulture);
 
+    /// The text of `n` in base `radix`: `int->string` and `long->string` with
+    /// `#:radix`.
+    ///
+    /// - Digits are 0-9, then a-z, or A-Z when `upper` is true.
+    /// - A negative number has an ASCII minus and the digits of its magnitude,
+    ///   not the two's complement: -255 in base 16 is "-ff".
+    /// - Raises `ArgumentOutOfRangeException` when `radix` is not 2 to 36.
+    public static Utf8String FormatRadix(long n, int radix, bool upper) {
+        CheckRadix(radix);
+        Span<byte> digits = stackalloc byte[65];
+        int at = digits.Length;
+        // The magnitude as a ulong, which holds that of long.MinValue too.
+        ulong magnitude = n < 0 ? (ulong)(-(n + 1)) + 1 : (ulong)n;
+        byte letter = upper ? (byte)'A' : (byte)'a';
+        do {
+            int d = (int)(magnitude % (ulong)radix);
+            magnitude /= (ulong)radix;
+            digits[--at] = d < 10 ? (byte)('0' + d) : (byte)(letter + d - 10);
+        } while (magnitude != 0);
+        if (n < 0) digits[--at] = (byte)'-';
+        return Utf8String.FromUtf8(digits[at..]);
+    }
+
+    /// The number that `s` writes in base `radix`: `string->long` with
+    /// `#:radix`.
+    ///
+    /// - White space at either end, as `string->long` takes. Then an optional
+    ///   `+` or `-`, then one or more digits, 0-9 and letters in either case.
+    ///   A prefix such as `0x` is not read.
+    /// - Raises `FormatException` for other text, `OverflowException` when
+    ///   the number is outside `min` to `max`, and
+    ///   `ArgumentOutOfRangeException` when `radix` is not 2 to 36.
+    public static long ParseRadix(Utf8String s, int radix, long min, long max) {
+        CheckRadix(radix);
+        var text = s.AsSpan().Trim(" \t\n\v\f\r"u8);
+        bool negative = false;
+        if (text.Length > 0 && (text[0] == (byte)'-' || text[0] == (byte)'+')) {
+            negative = text[0] == (byte)'-';
+            text = text[1..];
+        }
+        if (text.Length == 0)
+            throw new FormatException($"\"{s}\" is not a number in base {radix}");
+        // Digits accumulate as a negative number, whose range includes the
+        // magnitude of `min`.
+        long limit = negative ? min : -max;
+        long value = 0;
+        foreach (byte c in text) {
+            int d = c >= '0' && c <= '9' ? c - '0'
+                  : c >= 'a' && c <= 'z' ? c - 'a' + 10
+                  : c >= 'A' && c <= 'Z' ? c - 'A' + 10
+                  : 99;
+            if (d >= radix)
+                throw new FormatException($"\"{s}\" is not a number in base {radix}");
+            if (value < (limit + d) / radix)
+                throw new OverflowException($"\"{s}\" in base {radix} is too large");
+            value = value * radix - d;
+            if (value < limit)
+                throw new OverflowException($"\"{s}\" in base {radix} is too large");
+        }
+        return negative ? value : -value;
+    }
+
+    public static Utf8String FormatRadix(int n, int radix, bool upper) => FormatRadix((long)n, radix, upper);
+
+    public static int ParseRadixInt(Utf8String s, int radix) =>
+        (int)ParseRadix(s, radix, int.MinValue, int.MaxValue);
+
+    public static long ParseRadixLong(Utf8String s, int radix) =>
+        ParseRadix(s, radix, long.MinValue, long.MaxValue);
+
+    static void CheckRadix(int radix) {
+        if (radix < 2 || radix > 36)
+            throw new ArgumentOutOfRangeException(nameof(radix), radix, "a radix is from 2 to 36");
+    }
+
     // `decimal`, `bigint`, `int128` and `uint128`, which have no reader in
     // Utf8Number. Through .NET's own parsers, in the invariant culture. An
     // integer takes a sign and digits; a decimal also takes a point and an

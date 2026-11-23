@@ -1,0 +1,100 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; The grapheme tables of (std unicode grapheme), from
+;; GraphemeBreakProperty.txt, emoji-data.txt and DerivedCoreProperties.txt.
+;;
+;; - The property of a code point is one byte:
+;;   - bits 0-3: Grapheme_Cluster_Break, numbered as in `break-classes`;
+;;   - bit 4: Extended_Pictographic;
+;;   - bits 5-6: Indic_Conjunct_Break: 0 None, 1 Linker, 2 Consonant, 3 Extend.
+;; - The table has two stages (see `two-stage`), each a byte an entry. The
+;;   module reads the .bin files with (include-bytes ...).
+;;
+;; Writes:
+;;   lib/std/unicode/grapheme-table.protobjo           the Unicode version
+;;   lib/std/unicode/grapheme-stage1.bin               stage 1, a byte a block
+;;   lib/std/unicode/grapheme-stage2.bin               stage 2, the property of each code point
+;;   TestFiles/assets/unicode/grapheme-cases.protobjo  the conformance cases
+
+(export grapheme-tables)
+
+(import (std prelude))
+(import "ucd.bjo")
+
+;; The values of Grapheme_Cluster_Break, in the order of their numbers.
+(: (Vec string))
+(def break-classes
+  ["Other" "CR" "LF" "Control" "Extend" "ZWJ" "Regional_Indicator"
+   "Prepend" "SpacingMark" "L" "V" "T" "LV" "LVT"])
+
+;; The number of a value of Indic_Conjunct_Break.
+(: (-> string int))
+(defun (conjunct-break value)
+  (match value
+    ("Linker" 1)
+    ("Consonant" 2)
+    ("Extend" 3)
+    (_ (panic! #"unicode-tables: InCB has the value ${value}, which grapheme.bjo does not know"))))
+
+(: (-> string int))
+(defun (break-class value)
+  (match {finding i :when (= (vec-ref break-classes i) value) (:for i (range 0 (vec-length break-classes)))}
+    ((Some i) i)
+    (None (panic! #"unicode-tables: Grapheme_Cluster_Break has the value ${value}, which grapheme.bjo does not know"))))
+
+;; Sets `bits` in the property of each code point of `r`.
+(: (-> (Array int) Range int void))
+(defun (add-bits! props r bits)
+  (loop (:for c (range (record-ref r lo) (+ (record-ref r hi) 1)))
+        (:do (array-set! props c (bitwise-ior (array-ref props c) bits)))))
+
+;; Writes the tables and the test cases from the UCD in `ucd`.
+(: (-> string void))
+(defun (grapheme-tables ucd)
+  (def breaks (ucd-file ucd "GraphemeBreakProperty.txt" #:sub "auxiliary"))
+  (def tests (ucd-file ucd "GraphemeBreakTest.txt" #:sub "auxiliary"))
+  (def emoji (ucd-file ucd "emoji-data.txt" #:sub "emoji"))
+  (def core (ucd-file ucd "DerivedCoreProperties.txt"))
+  (def version (ucd-version breaks))
+  (ucd-same-version version [tests core])
+
+  (: (Array int))
+  (def props (make-array code-point-count))
+  (loop (:for r (ucd-ranges breaks))
+        (:do (add-bits! props r (break-class (vec-ref (record-ref r values) 0)))))
+  (loop (:for r (ucd-ranges emoji))
+        (:when (= (vec-ref (record-ref r values) 0) "Extended_Pictographic"))
+        (:do (add-bits! props r (shift-left 1 4))))
+  (loop (:for r (ucd-ranges core))
+        (:when (= (vec-ref (record-ref r values) 0) "InCB"))
+        (:do (add-bits! props r (shift-left (conjunct-break (vec-ref (record-ref r values) 1)) 5))))
+
+  (def kinds (sorted-distinct (array->vec props)))
+  (def table (two-stage props))
+  (when (> (record-ref table blocks) 256)
+    (panic! #"unicode-tables: ${(record-ref table blocks)} blocks do not fit in a byte"))
+
+  (write-text (table-path "grapheme-table.protobjo")
+              (str (header "grapheme" version
+                           "GraphemeBreakProperty.txt, emoji-data.txt and DerivedCoreProperties.txt")
+                   "\n"
+                   ";; The Unicode version the table is of.\n"
+                   #"(def unicode-version \"${version}\")\n"))
+  (write-bytes (table-path "grapheme-stage1.bin") (record-ref table stage1))
+  (write-bytes (table-path "grapheme-stage2.bin") (record-ref table stage2))
+
+  (def cases
+    {vecing (string-replace (string-replace (vec-ref f 0) "÷" "/") "×" "x")
+            (:for f (ucd-fields tests))})
+  (write-text (case-path "grapheme-cases.protobjo")
+              (str (header "grapheme" version "GraphemeBreakTest.txt")
+                   "\n"
+                   ";; The cases of GraphemeBreakTest.txt, one a line: code points in hex, with\n"
+                   ";; \"/\" where a cluster boundary is and \"x\" where there is none.\n"
+                   #"(def grapheme-cases-version \"${version}\")\n"
+                   "(def grapheme-cases \"\"\"\n"
+                   (string-join (vec-map (fun (c) (str "    " c)) cases) "\n") "\n"
+                   "    \"\"\")\n"))
+  (println #"Unicode ${version}: ${(vec-length kinds)} property bytes, ${(record-ref table blocks)} blocks, ${(vec-length cases)} cases"))

@@ -41,6 +41,13 @@
 (defun (lines-seq text)
   (->list (port->seq read-line (open-input-string text))))
 
+;; A trait method's parameter expects a function too.
+(def/trait (Mappable %c)
+  (: map-over (-> %c (-> string string) %c)))
+
+(impl (Mappable (List string))
+  (defun (map-over xs f) (list-map f xs)))
+
 ;; An annotation gives the expected type too.
 (: (-> string string))
 (defun (first-line text)
@@ -53,6 +60,8 @@
            (check "port->seq" (displayed (lines-seq input)) "(a b c)")
            (check "an annotated def" (first-line input) "a")
            (check "a keyword of your own" (displayed (list-map greet (list "Ada" "Bo"))) "(hej, Ada hej, Bo)")
+           (check "at a generic extern" (displayed (iarray->vec (iarray-map greet (vec->iarray ["Ada"])))) "[hej, Ada]")
+           (check "at a trait method" (displayed (map-over (list "Ada") greet)) "(hej, Ada)")
            (check "with the keyword positional" (shout "Ada") "HEJ, Ada")
            (check "in a bjoroutine" (displayed (lines-async input)) "(a b c)"))
       0
