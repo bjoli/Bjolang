@@ -1,0 +1,315 @@
+;; Docs for std/bytestring.bjo, read through (:doc #:file "bytestring.bjodoc").
+
+(:doc #:module
+  (summary "Immutable byte strings with no encoding: file names, arguments, environment values, data from a socket.")
+  (see ByteString bytestring->string/lossy in-bytestring-utf-8)
+  (example """
+    (import (std bytestring))
+
+    (def name (bytes->bytestring raw))          ; any bytes, copied
+    (bytestring-utf-8? name)                    ; #f for caf\xE9.txt
+    (displayed name)                            ; "caf\u{FFFD}.txt"
+    (written name)                              ; "#b\"caf\\xE9.txt\""
+    (bytestring-split name 47uy)                ; the fields between the / bytes
+    """)
+  (reference """
+    A @code{string} is always UTF-8. A @code{ByteString} is any bytes, so
+    use it for data that does not have to be UTF-8, such as a file name on
+    Unix. Convert it to a string with @code{bytestring->string}, which returns a
+    @code{DecodeError} for bytes that do not decode, or with
+    @code{bytestring->string/lossy}, which puts U+FFFD in their place.
+
+    @itemlist[
+    @item{An offset is an @code{int} from 0 to the length. Every offset is a
+          valid position, so there is no cursor type, as there is for a
+          string.}
+    @item{A slice shares the bytes of the byte string it is taken from. Use
+          @code{bytestring-copy} to keep a small slice of a large buffer
+          without the buffer.}
+    @item{Two byte strings are equal when their bytes are. The order is the
+          order of the bytes, as unsigned numbers.}
+    @item{The UTF-8 functions take the bytes in parts. A part is one
+          character, or bytes that are not UTF-8: the longest start of a valid
+          sequence, or one byte. This is the rule of Unicode chapter 3 that
+          .NET follows for U+FFFD, so the step functions, the iterators and
+          the lossy conversion give the same parts.}
+    @item{Other encodings decode a whole byte string, with
+          @code{bytestring->string #:encoding}. There are no steps for them:
+          in an encoding with shift states, or one where a byte can start a
+          character or be inside one, a character at an offset is not known
+          without the bytes before it.}
+    ]
+    """))
+
+(:doc ByteString
+  (summary "An immutable sequence of bytes.")
+  (see bytes->bytestring string->bytestring bytestring-slice)
+  (reference """
+    Opaque: only the functions of this module make one, and nothing writes to
+    its bytes after it is made. A value of the type that no function made,
+    as @code{make-array} fills an array with, is the empty byte string.
+
+    It implements @code{Eq}, @code{Ord}, @code{Written}, @code{Displayed} and
+    @code{Iterable}, whose elements are the bytes. @code{written} gives
+    @code{#b"..."}: characters as they are, @code{\\"}, @code{\\\\},
+    @code{\\n}, @code{\\t} and @code{\\r}, other control characters as
+    @code{\\u{H}}, and each byte that is not UTF-8 as @code{\\xHH}. The reader
+    does not read this form yet. @code{displayed} gives the lossy string.
+    """))
+
+(:doc bytestring-empty
+  (summary "The byte string with no bytes.")
+  (see bytestring-empty?))
+
+(:doc bytestring
+  (summary "A byte string of the given bytes.")
+  (rest bs "The bytes, in order.")
+  (returns "A byte string with a copy of them.")
+  (see bytes->bytestring)
+  (example """
+    (bytestring 104uy 105uy)    ; #b"hi"
+    """))
+
+(:doc bytes->bytestring
+  (summary "A byte string with a copy of the bytes of an array.")
+  (arg a "The array.")
+  (key #:start "The first byte to copy: 0 by default.")
+  (key #:end "One past the last byte to copy: the end of the array by default.")
+  (returns "The byte string. A change to the array later does not change it.")
+  (raises System.ArgumentOutOfRangeException "When the range is not inside the array, or start is after end.")
+  (see bytestring->bytes string->bytestring))
+
+(:doc string->bytestring
+  (summary "The bytes that encode a string.")
+  (arg s "The string.")
+  (key #:encoding "What to encode it in: utf-8, the default, or any value from (text encodings).")
+  (key #:replace "None, the default, to fail on a character the encoding lacks; (Some c) to encode c in its place.")
+  (returns "The byte string, without a byte order mark.")
+  (raises System.ArgumentException "When the encoding has no bytes for a character and replace is None.")
+  (see bytestring->string))
+
+(:doc bytestring->bytes
+  (summary "A new array with the bytes of a byte string.")
+  (arg b "The byte string.")
+  (returns "An array of its own, which the caller may change.")
+  (see bytes->bytestring))
+
+(:doc bytestring->string
+  (summary "The text the bytes encode, or why they do not.")
+  (arg b "The byte string.")
+  (key #:encoding "What the bytes are in: utf-8, the default, or any value from (text encodings).")
+  (returns "(Ok text), or (Err e) with a DecodeError for the first bytes that do not decode. Its offset counts from the start of b.")
+  (see bytestring->string/lossy bytestring-utf-8-valid-end DecodeError)
+  (example """
+    (bytestring->string (string->bytestring "blåbär"))     ; (Ok "blåbär")
+    (bytestring->string name)                              ; (Err (DecodeError (offset 3) ...)) for caf\xE9.txt
+    """))
+
+(:doc bytestring->string/lossy
+  (summary "The text the bytes encode, with a replacement for each part that does not decode.")
+  (arg b "The byte string.")
+  (key #:encoding "What the bytes are in: utf-8, the default, or any value from (text encodings).")
+  (key #:replace "What goes in place of each part that does not decode: U+FFFD by default.")
+  (returns "The string. It never fails on the bytes.")
+  (raises System.ArgumentException "When the encoding has no way to show the replacement.")
+  (see bytestring->string in-bytestring-chars)
+  (example """
+    (bytestring->string/lossy (bytestring 99uy 97uy 102uy 233uy))   ; "caf\u{FFFD}"
+    """))
+
+(:doc bytestring-utf-8?
+  (summary "Whether all the bytes are UTF-8.")
+  (arg b "The byte string.")
+  (returns "#t when they are whole characters, with no overlong form, no surrogate and nothing past U+10FFFF.")
+  (see bytestring-utf-8-valid-end))
+
+(:doc bytestring-utf-8-valid-end
+  (summary "Where the valid UTF-8 at the start of a byte string ends.")
+  (arg b "The byte string.")
+  (returns "Its length when all of it is UTF-8. Else the offset of the first part that is not.")
+  (see bytestring-utf-8? bytestring-slice))
+
+(:doc bytestring-length
+  (summary "How many bytes a byte string has.")
+  (arg b "The byte string.")
+  (returns "The number of bytes."))
+
+(:doc bytestring-empty?
+  (summary "Whether a byte string has no bytes.")
+  (arg b "The byte string.")
+  (returns "#t when its length is 0."))
+
+(:doc bytestring-ref
+  (summary "The byte at an offset.")
+  (arg b "The byte string.")
+  (arg i "The offset, from 0 to one less than the length.")
+  (returns "The byte.")
+  (raises System.ArgumentOutOfRangeException "When i is not inside the byte string."))
+
+(:doc bytestring-slice
+  (summary "The bytes between two offsets, sharing the bytes of the byte string.")
+  (arg b "The byte string.")
+  (arg from "The offset of the first byte.")
+  (arg to "The offset after the last byte, not before from.")
+  (returns "A byte string with no copy. Its offsets count from from.")
+  (raises System.ArgumentOutOfRangeException "When the range is not inside the byte string, or from is after to.")
+  (see bytestring-copy)
+  (reference "The slice keeps all the bytes of b alive. Copy a small slice of a large buffer with @code{bytestring-copy}."))
+
+(:doc bytestring-copy
+  (summary "The same bytes, in an array of their own.")
+  (arg b "The byte string.")
+  (returns "An equal byte string that shares nothing.")
+  (see bytestring-slice))
+
+(:doc bytestring-utf-8-ref
+  (summary "The character that starts at an offset.")
+  (arg b "The byte string.")
+  (arg i "The offset, from 0 to one less than the length.")
+  (returns "(Some c) when a whole UTF-8 character starts at i. None when the part at i is not UTF-8, as when i is inside a character.")
+  (raises System.ArgumentOutOfRangeException "When i is not inside the byte string.")
+  (see bytestring-utf-8-next in-bytestring-utf-8))
+
+(:doc bytestring-utf-8-next
+  (summary "The offset after the part that starts at an offset.")
+  (arg b "The byte string.")
+  (arg i "The offset, from 0 to one less than the length.")
+  (returns "i plus the size of the part: of the character at i, or of the bytes at i that are not UTF-8.")
+  (raises System.ArgumentOutOfRangeException "When i is not inside the byte string.")
+  (see bytestring-utf-8-prev bytestring-utf-8-ref)
+  (example """
+    (bytestring-utf-8-next (string->bytestring "é!") 0)    ; 2
+    """))
+
+(:doc bytestring-utf-8-prev
+  (summary "The offset of the part before an offset.")
+  (arg b "The byte string.")
+  (arg i "The offset, from 1 to the length.")
+  (returns "Where the part that holds the byte before i starts. From the end, the offsets are those that bytestring-utf-8-next reaches from 0.")
+  (raises System.ArgumentOutOfRangeException "When i is 0, negative or past the end.")
+  (see bytestring-utf-8-next)
+  (reference "It looks at most 4 bytes back, and then takes parts forward to i. A byte that is not a continuation byte always starts a part, so the result does not depend on the bytes before them."))
+
+(:doc ByteStringChars
+  (summary "The characters of a byte string, as in-bytestring-chars gives them.")
+  (see in-bytestring-chars))
+
+(:doc in-bytestring-chars
+  (summary "The characters of UTF-8 bytes, with U+FFFD for each part that is not UTF-8.")
+  (arg b "The byte string.")
+  (returns "An iterable of char, for loop and for. It allocates nothing.")
+  (see in-bytestring-utf-8 bytestring->string/lossy)
+  (example """
+    (->list (in-bytestring-chars (bytestring 104uy 233uy)))   ; (#\h #\xFFFD)
+    """))
+
+(:doc ByteStringUtf8
+  (summary "The UTF-8 parts of a byte string, as in-bytestring-utf-8 gives them.")
+  (see in-bytestring-utf-8))
+
+(:doc ByteStringPart
+  (summary "The cursor of in-bytestring-chars and in-bytestring-utf-8: one part, decoded once.")
+  (see in-bytestring-chars in-bytestring-utf-8))
+
+(:doc in-bytestring-utf-8
+  (summary "The parts of UTF-8 bytes, each with its offset.")
+  (arg b "The byte string.")
+  (returns "An iterable of (Tuple offset (Option char)): (Some c) for a character, None for a part that is not UTF-8.")
+  (see in-bytestring-chars bytestring-utf-8-next)
+  (example """
+    (->list (in-bytestring-utf-8 (bytestring 104uy 233uy)))
+    ; ((Tuple 0 (Some #\h)) (Tuple 1 None))
+    """)
+  (reference "For code that must keep the bytes that are not UTF-8, as a glob that matches file names does: the offset and the next offset give the bytes of each part."))
+
+(:doc bytestring-search
+  (summary "Where a byte string first occurs in another.")
+  (arg b "The byte string to search.")
+  (arg needle "What to look for. An empty one is found at from.")
+  (key #:from "The offset to search from: 0 by default.")
+  (returns "(Some offset) of the first occurrence at or after from, or None.")
+  (raises System.ArgumentOutOfRangeException "When from is not from 0 to the length.")
+  (see bytestring-search-backward bytestring-search-byte bytestring-contains?))
+
+(:doc bytestring-search-backward
+  (summary "Where a byte string last occurs in another.")
+  (arg b "The byte string to search.")
+  (arg needle "What to look for.")
+  (key #:before "Where the occurrence must end by: the length by default.")
+  (returns "(Some offset) of the last occurrence that ends at or before before, or None.")
+  (raises System.ArgumentOutOfRangeException "When before is not from 0 to the length.")
+  (see bytestring-search))
+
+(:doc bytestring-search-byte
+  (summary "Where a byte first occurs.")
+  (arg b "The byte string to search.")
+  (arg x "The byte.")
+  (key #:from "The offset to search from: 0 by default.")
+  (returns "(Some offset) of the first x at or after from, or None.")
+  (raises System.ArgumentOutOfRangeException "When from is not from 0 to the length.")
+  (see bytestring-search bytestring-split))
+
+(:doc bytestring-search-byte-backward
+  (summary "Where a byte last occurs.")
+  (arg b "The byte string to search.")
+  (arg x "The byte.")
+  (key #:before "The offset to search before: the length by default.")
+  (returns "(Some offset) of the last x before before, or None.")
+  (raises System.ArgumentOutOfRangeException "When before is not from 0 to the length.")
+  (see bytestring-search-byte))
+
+(:doc bytestring-contains?
+  (summary "Whether a byte string contains another.")
+  (arg b "The byte string to search.")
+  (arg needle "What to look for. An empty one is always found.")
+  (returns "#t when needle occurs in b.")
+  (see bytestring-search))
+
+(:doc bytestring-starts-with?
+  (summary "Whether a byte string starts with another.")
+  (arg b "The byte string.")
+  (arg prefix "What it may start with.")
+  (returns "#t when b begins with prefix. Every byte string starts with the empty one.")
+  (see bytestring-ends-with?))
+
+(:doc bytestring-ends-with?
+  (summary "Whether a byte string ends with another.")
+  (arg b "The byte string.")
+  (arg suffix "What it may end with.")
+  (returns "#t when b ends with suffix. Every byte string ends with the empty one.")
+  (see bytestring-starts-with?))
+
+(:doc bytestring-append
+  (summary "Two byte strings, one after the other.")
+  (arg a "The first.")
+  (arg b "The second.")
+  (returns "A new byte string with the bytes of a and then those of b.")
+  (see bytestring-concat))
+
+(:doc bytestring-concat
+  (summary "Byte strings, one after another.")
+  (arg parts "The byte strings, in order.")
+  (returns "A new byte string with all their bytes. No parts is the empty byte string.")
+  (see bytestring-append bytestring-join)
+  (reference "One array of the total length, so it costs the length of the result."))
+
+(:doc bytestring-join
+  (summary "Byte strings joined with a separator between them.")
+  (arg parts "The byte strings, in order.")
+  (arg sep "What goes between two of them.")
+  (returns "The parts with sep between each two. No parts is the empty byte string.")
+  (see bytestring-split bytestring-concat)
+  (example """
+    (bytestring-join (bytestring-split p 47uy) (string->bytestring "/"))   ; p again
+    """))
+
+(:doc bytestring-split
+  (summary "The fields between occurrences of a byte.")
+  (arg b "The byte string to split.")
+  (arg sep "The separator byte, such as 47uy for /.")
+  (returns "The fields in order, empty ones kept, each sharing the bytes of b. One more than the number of separators in b.")
+  (see bytestring-join bytestring-search-byte)
+  (example """
+    (bytestring-split (string->bytestring "/usr//lib") 47uy)
+    ; [#b"" #b"usr" #b"" #b"lib"]
+    """))

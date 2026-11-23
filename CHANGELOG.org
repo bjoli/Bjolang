@@ -24,6 +24,32 @@ What each change guarantees, and what it leaves open.
 - ~string->bytes~ is unchanged: it still raises for a character the encoding
   has no bytes for.
 
+* ~(std bytestring)~: immutable byte strings with no encoding
+
+- ~ByteString~ is any bytes: for file names, arguments and data that do not
+  have to be UTF-8. It is opaque, and each function that takes an array
+  copies it, so nothing changes its bytes.
+- A slice shares the bytes. ~bytestring-copy~ makes a byte string that
+  shares nothing. A value that no function made is the empty byte string.
+- Offsets are ~int~ from 0 to the length. There is no cursor type.
+- Equality, order and hash are by bytes. The order is unsigned byte order.
+- ~bytestring->string~ returns ~(Result DecodeError string)~, as
+  ~bytes->string~ does, with the offset counted from the start of the byte
+  string. ~bytestring->string/lossy~ puts U+FFFD, or ~#:replace~, for each
+  part that does not decode.
+- UTF-8 steps: ~bytestring-utf-8-ref~, ~-next~ and ~-prev~, and the
+  iterables ~in-bytestring-chars~ and ~in-bytestring-utf-8~. They take the
+  parts that are not UTF-8 by the maximal-subpart rule, as .NET does for
+  U+FFFD, and a test checks the two against each other on random bytes.
+- A byte string is an iterable of its bytes.
+- Search, ~bytestring-split~ on a byte (its fields share the bytes),
+  ~-join~, ~-append~ and ~-concat~.
+- ~written~ gives ~#b"caf\xE9.txt"~. The reader does not read that form
+  yet.
+- Not yet: a literal syntax, a builder, ~Path~, and file functions that take
+  or return byte strings. Character iteration takes about 6 ns a character,
+  where a string takes under 1 ns.
+
 * Local functions that call constrained functions
 
 - A local function whose body calls a constrained function, such as one
