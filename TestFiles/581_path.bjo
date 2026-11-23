@@ -1,0 +1,141 @@
+;; Path, from the prelude: parts, equality by parts, parent and name, join,
+;; normalize, prefixes, names that are not UTF-8, and the file functions,
+;; which take a string, a ByteString or a Path.
+
+(import (std simpletest))
+(import (std effect))
+
+(: (-> (Option Path) (Option string)))
+(defun (shown p) (option-map path->string/lossy p))
+
+(: (-> (Option ByteString) (Option string)))
+(defun (text b) (option-map bytestring->string/lossy b))
+
+(defun (main)
+  ;; Parts
+  (expect "parts of an absolute path" (vec-map path->string/lossy (path-parts "/usr//lib/./x/"))
+          ["/" "usr" "lib" "x"])
+  (expect ".. is a part" (vec-map path->string/lossy (path-parts "a/../b")) ["a" ".." "b"])
+  (expect "the empty path has no parts" (vec-length (path-parts "")) 0)
+  (expect ". has no parts" (vec-length (path-parts "./.")) 0)
+  (expect "absolute" (path-absolute? "/a") #t)
+  (expect "relative" (path-relative? "a/b") #t)
+
+  ;; The bytes are kept
+  (expect "kept as given" (path->bytestring (path "a//b/")) (string->bytestring "a//b/"))
+
+  ;; Equality, order, hash
+  (expect "equal by parts" (= (path "a//b/") (path "a/./b")) #t)
+  (expect "same hash" (= (eq-hash (path "a//b/")) (eq-hash (path "a/b"))) #t)
+  (expect "absolute and relative differ" (= (path "/a") (path "a")) #f)
+  (expect ". and the empty path" (= (path ".") (path "")) #t)
+  (expect "order by parts" (compare (path "a/b") (path "a-b")) -1)
+  (expect "a prefix comes first" (compare (path "a") (path "a/b")) -1)
+  (expect "sorted" (vec-map path->string/lossy (vec-sort (vec-map path ["b" "a/b" "a-b" "a"])))
+          ["a" "a/b" "a-b" "b"])
+
+  ;; Parent and name
+  (expect "parent" (shown (path-parent "/a/b")) (Some "/a"))
+  (expect "parent of a top name" (shown (path-parent "/a")) (Some "/"))
+  (expect "the root has none" (shown (path-parent "/")) None)
+  (expect "parent of a relative name" (shown (path-parent "a")) (Some "."))
+  (expect "the empty path has none" (shown (path-parent "")) None)
+  (expect "lexical parent" (shown (path-parent "a/..")) (Some "a"))
+  (expect "name" (text (path-name "/a/b.txt")) (Some "b.txt"))
+  (expect "name before a slash" (text (path-name "a/b/")) (Some "b"))
+  (expect "the root has no name" (text (path-name "/")) None)
+  (expect ".. is not a name" (text (path-name "a/..")) None)
+
+  ;; Stem and extension
+  (expect "extension" (text (path-extension "x.tar.gz")) (Some "gz"))
+  (expect "stem" (text (path-stem "x.tar.gz")) (Some "x.tar"))
+  (expect "a dot file has no extension" (text (path-extension ".bashrc")) None)
+  (expect "a dot file's stem" (text (path-stem ".bashrc")) (Some ".bashrc"))
+  (expect "a last dot" (text (path-extension "a.")) (Some ""))
+  (expect "no name, no extension" (text (path-extension "/")) None)
+
+  ;; Join
+  (expect "join" (path->string/lossy (path-join "a" "b")) "a/b")
+  (expect "join after a slash" (path->string/lossy (path-join "a/" "b")) "a/b")
+  (expect "join an absolute path" (path->string/lossy (path-join "a" "/b")) "/b")
+  (expect "join to the empty path" (path->string/lossy (path-join "" "b")) "b")
+  (expect "join a Path, a string and a ByteString"
+          (path->string/lossy (path-join (path-join (path "/usr") "lib") (string->bytestring "x")))
+          "/usr/lib/x")
+  (expect "join all" (path->string/lossy (path-join-all (vec-map path ["/srv" "www" "index.html"])))
+          "/srv/www/index.html")
+
+  ;; With name and extension
+  (expect "with name" (path->string/lossy (path-with-name "/a/b.txt" (string->bytestring "c"))) "/a/c")
+  (expect "with name of a top name" (path-with-name "a" (string->bytestring "c")) (path "c"))
+  (expect "with name of the root" (path->string/lossy (path-with-name "/" (string->bytestring "c"))) "/c")
+  (expect "with extension" (path->string/lossy (path-with-extension "a/b.txt" (string->bytestring "md"))) "a/b.md")
+  (expect "add an extension" (path->string/lossy (path-with-extension "a/b" (string->bytestring "md"))) "a/b.md")
+  (expect "remove an extension" (path->string/lossy (path-with-extension "a/b.txt" bytestring-empty)) "a/b")
+
+  ;; Normalize
+  (expect "normalize" (path->string/lossy (path-normalize "a/./b/../c")) "a/c")
+  (expect "a leading .. stays" (path->string/lossy (path-normalize "../a/..")) "..")
+  (expect ".. after .. stays" (path->string/lossy (path-normalize "../../a")) "../../a")
+  (expect "the parent of / is /" (path->string/lossy (path-normalize "/../a")) "/a")
+  (expect "nothing left is ." (path->string/lossy (path-normalize "a/..")) ".")
+  (expect "the root" (path->string/lossy (path-normalize "//")) "/")
+
+  ;; Prefixes
+  (expect "starts with" (path-starts-with? "/usr/lib" "/usr") #t)
+  (expect "by parts, not bytes" (path-starts-with? "/usr/lib" "/us") #f)
+  (expect "relative and absolute" (path-starts-with? "usr/lib" "/usr") #f)
+  (expect "strip a prefix" (shown (path-strip-prefix "/usr/lib/x" "/usr")) (Some "lib/x"))
+  (expect "strip all of it" (shown (path-strip-prefix "/usr" "/usr/")) (Some "."))
+  (expect "not a prefix" (shown (path-strip-prefix "/usr" "/var")) None)
+
+  ;; Names that are not UTF-8
+  (def raw (path (bytes->bytestring (vec->array [99uy 97uy 102uy 233uy 46uy 116uy 120uy 116uy]))))
+  (expect "not a string" (path->string raw) (Err (DecodeError (offset 3) (bytes [233uy]) (encoding "utf-8"))))
+  (expect "lossy" (path->string/lossy raw) "caf\u{FFFD}.txt")
+  (expect "written" (written raw) "#p\"caf\\xE9.txt\"")
+  (expect "displayed" (displayed raw) "caf\u{FFFD}.txt")
+  (expect "its extension" (text (path-extension raw)) (Some "txt"))
+  (expect "the name keeps the byte" (option-map bytestring-length (path-name (path-join "/tmp" raw))) (Some 8))
+
+  ;; A local helper used at one type
+  (defun (in-tmp p) (path-join "/tmp" p))
+  (expect "a local helper" (path->string/lossy (in-tmp "x")) "/tmp/x")
+
+  ;; The file functions take a string, a ByteString or a Path
+  (def dir (path "581_probe_dir"))
+  (when (directory-exists? dir) (directory-delete-tree dir))
+  (directory-create dir)
+  (def file (path-join dir "a.txt"))
+  (file-write-text file "one")
+  (expect "a Path to write and read" (file-read-text file) "one")
+  (expect "the same file as a string" (file-read-text "581_probe_dir/a.txt") "one")
+  (expect "the same file as a ByteString"
+          (file-read-text (string->bytestring "581_probe_dir/a.txt")) "one")
+  (expect "exists" (file-exists? file) #t)
+  (expect "a directory" (directory-exists? dir) #t)
+  (file-copy file (path-join dir "b.txt"))
+  (file-move (path-join dir "b.txt") (path-join dir "c.txt"))
+  (expect "copied and moved" (vec-sort (directory-files dir))
+          (vec-map path ["581_probe_dir/a.txt" "581_probe_dir/c.txt"]))
+  (expect "a copy onto itself" (threw? (try (file-copy file (path "581_probe_dir/./a.txt") #:mode Truncate)
+                                            #:catch (System.Exception)))
+          #t)
+
+  ;; .NET takes UTF-8 names only, and a name that is not is not changed
+  (def bad (path-join dir raw))
+  (expect "a name that is not UTF-8 is not written"
+          (threw? (try (file-write-text bad "x") #:catch (System.ArgumentException)))
+          #t)
+  (expect "nor asked about" (threw? (try (file-exists? bad) #:catch (System.ArgumentException))) #t)
+  (expect "the other file is still there" (vec-length (directory-files dir)) 2)
+  (directory-delete-tree dir)
+  (expect "deleted" (directory-exists? dir) #f)
+
+  ;; A handler gets the Path, with the bytes it was given
+  (with-fake-fs (("x/y.txt" "fake"))
+    (expect "the fake file system takes a Path" (file-read-text (path-join "x" "y.txt")) "fake")))
+
+(: (-> (Result System.Exception %a) bool))
+(defun (threw? r)
+  (match r ((Ok _) #f) ((Err _) #t)))

@@ -199,33 +199,40 @@
 
 ;; Copies a directory and everything in it, leaving out the files `skip?`
 ;; answers true for.
-(: copy-tree! (-> string string (-> string bool) void) #:sync)
+(: copy-tree! (-> Path Path (-> Path bool) void) #:sync)
 (defun (copy-tree! from to skip?)
   (directory-create to)
   (loop (:for f (directory-files from))
         (:when (not (skip? f)))
-        (:do (file-copy f (path-combine to (clr-file-name f)) #:mode Truncate)))
+        (:do (file-copy f (same-name-under to f) #:mode Truncate)))
   (loop (:for d (directory-subdirectories from))
-        (:do (copy-tree! d (path-combine to (clr-file-name d)) skip?))))
+        (:do (copy-tree! d (same-name-under to d) skip?))))
+
+;; `dir` joined with the name of `entry`, an entry of a listing, which has one.
+(: (-> Path Path Path))
+(defun (same-name-under dir entry)
+  (match (path-name entry)
+    ((Some name) (path-join dir name))
+    (None dir)))
 
 ;; The standard library is copied with its sources and documentation, but not
 ;; its build records, which name this machine's paths and which nothing reads
 ;; in a published program.
-(: (-> string bool))
-(defun (build-record? f) (string-ends-with? f ".bjobuild"))
+(: (-> Path bool))
+(defun (build-record? f) (path-has-extension? f "bjobuild"))
 
-(: (-> string bool))
+(: (-> Path bool))
 (defun (nothing-skipped f) #f)
 
 ;; Copies a resource, a file or a directory, to `rel` under `out`.
 (: copy-resource! (-> string string string void) #:sync)
 (defun (copy-resource! out rel from)
   (if (directory-exists? from)
-      (copy-tree! from (path-combine out rel) nothing-skipped)
+      (copy-tree! (path from) (path-join out rel) nothing-skipped)
       (copy-to! out rel from)))
 
 ;; How many files are under `dir`, at any depth.
-(: count-files (-> string int) #:sync)
+(: count-files (-> Path int) #:sync)
 (defun (count-files dir)
   (+ (length (directory-files dir))
      (loop (:for d (directory-subdirectories dir))
@@ -335,7 +342,7 @@
                 (:do (copy-to! out (clr-file-name companion) companion)))
           (match (record-ref p lib)
             ((Some lib) #:when (record-ref p whole-stdlib)
-             (copy-tree! lib (path-combine out "lib") build-record?))
+             (copy-tree! (path lib) (path-join out "lib") build-record?))
             (_ unit))
           (loop (:for (Tuple _ _ path) files)
                 (:do (copy-assembly! out (destination path) path)))
@@ -356,7 +363,7 @@
                            (str (string-join (list->vec table) "\n") "\n"))
           (file-write-text (path-combine out published-marker)
                            "Made by bjo publish. Publishing again replaces this directory.\n")
-          (count-files out))
+          (count-files (path out)))
         #:catch (System.Exception)))
 
     (result-map-err (fun (e) (str "bjo publish: " (error-message e))) copied)))
@@ -380,7 +387,7 @@
         (copy-executable! out (clr-file-name native) native)
         (match (record-ref p lib)
           ((Some lib) #:when (record-ref p whole-stdlib)
-           (copy-tree! lib (path-combine out "lib") build-record?))
+           (copy-tree! (path lib) (path-join out "lib") build-record?))
           (_ unit))
         (def table
           (loop (:for (Tuple key path) (record-ref p natives))
@@ -397,6 +404,6 @@
                          (str (string-join (list->vec table) "\n") "\n"))
         (file-write-text (path-combine out published-marker)
                          "Made by bjo publish. Publishing again replaces this directory.\n")
-        (count-files out))
+        (count-files (path out)))
       #:catch (System.Exception)))
   (result-map-err (fun (e) (str "bjo publish: " (error-message e))) copied))

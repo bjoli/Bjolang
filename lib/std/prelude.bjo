@@ -13,6 +13,7 @@
 ;; std/prelude.bjo, the module (std prelude): what every program gets without
 ;; an import.
 ;; - All of (std prelude core), re-exported.
+;; - (std prelude bytestring) and (std prelude path), re-exported.
 ;; - Ports, files, paths, directories and the process environment.
 ;; - The Diagnostics and getenv effects, the clock and durations.
 ;; - Cancellation scopes, the dynamic environment and select.
@@ -48,6 +49,8 @@
 (import (std eq))
 (import (std core-macros))
 (import (std syntax-match))
+(import (std prelude bytestring))
+(import (std prelude path))
 
 (re-export
   Exception Map MapBuilder TransientMap MapCursor TransientVec Range RangeBy ArraySlice
@@ -128,7 +131,21 @@
   chars-unicode-version char-upcase char-downcase char-titlecase char-foldcase
   char-alphabetic? char-numeric? char-whitespace? char-upper-case?
   char-lower-case? char-title-case? digit-value char-general-category
-  char-ci=? char-ci<? char-ci>? char-ci<=? char-ci>=?)
+  char-ci=? char-ci<? char-ci>? char-ci<=? char-ci>=?
+  ByteString bytestring-empty bytestring bytes->bytestring string->bytestring
+  bytestring->bytes bytestring->string bytestring->string/lossy
+  bytestring-utf-8? bytestring-utf-8-valid-end bytestring-length
+  bytestring-empty? bytestring-ref bytestring-slice bytestring-copy
+  bytestring-utf-8-ref bytestring-utf-8-next bytestring-utf-8-prev
+  ByteStringChars ByteStringUtf8 ByteStringPart in-bytestring-chars
+  in-bytestring-utf-8 bytestring-search bytestring-search-backward
+  bytestring-search-byte bytestring-search-byte-backward bytestring-contains?
+  bytestring-starts-with? bytestring-ends-with? bytestring-append
+  bytestring-concat bytestring-join bytestring-split Path as-path path
+  path->bytestring path->string path->string/lossy path-parts path-absolute?
+  path-relative? path-parent path-name path-stem path-extension path-join
+  path-join-all path-with-name path-with-extension path-normalize
+  path-starts-with? path-strip-prefix path-has-name? path-has-extension?)
 
 ;; The docs: the definitions of this file and the builtins, by area. The
 ;; builtins are documented here because every program gets them with the
@@ -197,7 +214,7 @@
     ((Err e) (raise e))))
 
 ;; Read all text.
-(: (-> string string))
+(: (-> %p string) (where (AsPath %p)))
 (defun (file-read-text path)
   (match (open-input-file path)
     ((Ok opened) (with-open ((p opened)) (read-all p)))
@@ -205,7 +222,7 @@
 
 ;; The flush is explicit so that the suspending copy awaits it. Closing would
 ;; flush too, but synchronously, on whatever thread runs the close.
-(: (-> string string WriteMode void))
+(: (-> Path string WriteMode void))
 (defun (write-whole-file path contents mode)
   (match (open-output-file path #:mode mode)
     ((Ok opened) (with-open ((p opened))
@@ -214,34 +231,34 @@
     ((Err e) (raise e))))
 
 ;; Write text.
-(: (-> string string void))
-(defun (file-write-text path contents) (write-whole-file path contents Truncate))
+(: (-> %p string void) (where (AsPath %p)))
+(defun (file-write-text path contents) (write-whole-file (as-path path) contents Truncate))
 
-(: (-> string string void))
-(defun (file-append-text path contents) (write-whole-file path contents Append))
+(: (-> %p string void) (where (AsPath %p)))
+(defun (file-append-text path contents) (write-whole-file (as-path path) contents Append))
 
-(: (-> string (Option FsInfo)))
-(defun (file-info path) (fs-info path))
+(: (-> %p (Option FsInfo)) (where (AsPath %p)))
+(defun (file-info path) (fs-info (as-path path)))
 
 ;; What a path names, for the functions below that only ask that.
-(: (-> string (Option FsKind)))
+(: (-> Path (Option FsKind)))
 (defun (kind-of path)
   (option-map (fun (info) (record-ref info kind)) (fs-info path)))
 
-(: (-> string bool))
+(: (-> %p bool) (where (AsPath %p)))
 (defun (file-exists? path)
-  (match (kind-of path)
+  (match (kind-of (as-path path))
     ((Some FsFile) #t)
     (_ #f)))
 
 ;; A missing file is not an error, as with `File.Delete`.
-(: (-> string void))
-(defun (file-delete path) (raise-err (fs-delete-file path)))
+(: (-> %p void) (where (AsPath %p)))
+(defun (file-delete path) (raise-err (fs-delete-file (as-path path))))
 
 ;; Moves or renames a file or a directory. Fails if `to` exists, unless
 ;; `#:mode MoveReplace` says to replace a file there.
-(: (-> string string (#:mode MoveMode) void))
-(defun (file-move from to #:mode MoveNew) (raise-err (fs-move from to mode)))
+(: (-> %p %q (#:mode MoveMode) void) (where (AsPath %p) (AsPath %q)))
+(defun (file-move from to #:mode MoveNew) (raise-err (fs-move (as-path from) (as-path to) mode)))
 
 ;; --- Paths ---
 ;; Path strings.
@@ -252,8 +269,8 @@
   (clr-file-name      (: System.IO.Path.GetFileName))
   (clr-file-extension (: System.IO.Path.GetExtension)))
 
-(: (-> string string))
-(defun (path-absolute path) (clr-full-path path))
+(: (-> %p string) (where (AsPath %p)))
+(defun (path-absolute path) (clr-full-path (raise-err (os-path (as-path path)))))
 
 ;; Path combine.
 (: (-> #:rest string string))
@@ -273,19 +290,19 @@
 
 ;; --- Directories ---
 
-(: (-> string bool))
+(: (-> %p bool) (where (AsPath %p)))
 (defun (directory-exists? path)
-  (match (kind-of path)
+  (match (kind-of (as-path path))
     ((Some FsDirectory) #t)
     (_ #f)))
 
 ;; Create directory.
-(: (-> string void))
-(defun (directory-create path) (raise-err (fs-create-directory path)))
+(: (-> %p void) (where (AsPath %p)))
+(defun (directory-create path) (raise-err (fs-create-directory (as-path path))))
 
 ;; Delete directory.
-(: (-> string void))
-(defun (directory-delete path) (raise-err (fs-delete-directory path)))
+(: (-> %p void) (where (AsPath %p)))
+(defun (directory-delete path) (raise-err (fs-delete-directory (as-path path))))
 
 ;; Built from the operations rather than handed to `Directory.Delete` with its
 ;; recursive flag, so that a handler sees every deletion.
@@ -294,8 +311,11 @@
 ;; that includes `path` itself. Entering one would delete what it points at: a
 ;; link to the home directory inside a build directory would empty the home
 ;; directory, and a link back up the tree would never end.
-(: (-> string void))
-(defun (directory-delete-tree path)
+(: (-> %p void) (where (AsPath %p)))
+(defun (directory-delete-tree path) (delete-tree (as-path path)))
+
+(: (-> Path void))
+(defun (delete-tree path)
   (if (directory-link? path)
       (directory-delete path)
       (let ()
@@ -303,20 +323,20 @@
               (:do (match (fs-info entry)
                      ((Some info)
                       (match (record-ref info kind)
-                        (FsDirectory (directory-delete-tree entry))
+                        (FsDirectory (delete-tree entry))
                         (FsFile (file-delete entry))))
                      ;; A link to nothing, which `file-delete` removes.
                      (None (file-delete entry)))))
         (directory-delete path))))
 
-(: (-> string bool))
+(: (-> Path bool))
 (defun (directory-link? path)
   (match (fs-info path)
     ((Some info) (and (record-ref info link?)
                       (match (record-ref info kind) (FsDirectory #t) (FsFile #f))))
     (None #f)))
 
-(: (-> string FsKind (Vec string)))
+(: (-> Path FsKind (Vec Path)))
 (defun (entries-of-kind path kind)
   (loop (:for entry (raise-err (fs-list path)))
         (:when (match (Tuple (kind-of entry) kind)
@@ -325,12 +345,11 @@
                  (_ #f)))
         (:acc found (vecing entry))))
 
-;; Directory files.
-(: (-> string (Vec string)))
-(defun (directory-files path) (entries-of-kind path FsFile))
+(: (-> %p (Vec Path)) (where (AsPath %p)))
+(defun (directory-files path) (entries-of-kind (as-path path) FsFile))
 
-(: (-> string (Vec string)))
-(defun (directory-subdirectories path) (entries-of-kind path FsDirectory))
+(: (-> %p (Vec Path)) (where (AsPath %p)))
+(defun (directory-subdirectories path) (entries-of-kind (as-path path) FsDirectory))
 
 ;; --- The environment ---
 
@@ -355,8 +374,8 @@
 (: (-> string))
 (defun (current-directory) clr-cwd)
 
-(: (-> string void))
-(defun (set-current-directory! path) (clr-set-cwd path))
+(: (-> %p void) (where (AsPath %p)))
+(defun (set-current-directory! path) (clr-set-cwd (raise-err (os-path (as-path path)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Ports
@@ -490,13 +509,36 @@
   (clr-dir-move    (: System.IO.Directory.Move (-> string string void)
                       #:exceptions (System.IO.IOException System.UnauthorizedAccessException))))
 
+(import/class
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+;; The name of a path as the .NET file functions take it.
+;;
+;; - .NET file names are UTF-16 strings. On Unix, .NET encodes them as UTF-8.
+;; - A path that is not UTF-8 has no such string, so the result is an
+;;   `ArgumentException`. The name is not changed to a different one.
+(: (-> Path (Result Exception string)))
+(defun (os-path p)
+  (match (path->string p)
+    ((Ok s) (Ok s))
+    ((Err e) (Err (cast Exception (ArgumentException.
+                                   #"the path ${(path->string/lossy p)} cannot be given to .NET: ${(decode-error-message e)}"))))))
+
+;; `(f name)` with the .NET name of `p`, or the error of `os-path`.
+(: (-> Path (-> string (Result Exception %a)) (Result Exception %a)))
+(defun (with-os-path p f)
+  (match (os-path p)
+    ((Ok name) (f name))
+    ((Err e) (Err e))))
+
 ;; Read-only, and other readers allowed alongside, as `StreamReader`'s own
 ;; path constructor opens.
-(: (-> string (Result Exception ClrStream)))
+(: (-> Path (Result Exception ClrStream)))
 (defun (open-read-stream/raw path)
-  (match (FileStream. path FileMode.Open FileAccess.Read FileShare.Read)
-    ((Ok s) (Ok (cast ClrStream s)))
-    ((Err e) (Err e))))
+  (with-os-path path (fun (name)
+                      (match (FileStream. name FileMode.Open FileAccess.Read FileShare.Read)
+                        ((Ok s) (Ok (cast ClrStream s)))
+                        ((Err e) (Err e))))))
 
 (: (-> WriteMode FileMode))
 (defun (write-mode->file-mode mode)
@@ -507,11 +549,12 @@
 
 ;; Write-only, readers allowed alongside, as `StreamWriter`'s path constructor
 ;; opens.
-(: (-> string WriteMode (Result Exception ClrStream)))
+(: (-> Path WriteMode (Result Exception ClrStream)))
 (defun (open-write-stream/raw path mode)
-  (match (FileStream. path (write-mode->file-mode mode) FileAccess.Write FileShare.Read)
-    ((Ok s) (Ok (cast ClrStream s)))
-    ((Err e) (Err e))))
+  (with-os-path path (fun (name)
+                      (match (FileStream. name (write-mode->file-mode mode) FileAccess.Write FileShare.Read)
+                        ((Ok s) (Ok (cast ClrStream s)))
+                        ((Err e) (Err e))))))
 
 ;; .NET ticks at 1970-01-01T00:00Z, and per millisecond.
 (: long)
@@ -575,25 +618,33 @@
       None))
 
 (: (-> string (Option FsInfo)))
-(defun (fs-info/raw path)
+(defun (os-info path)
   (if (clr-file-exists path)
       (file-info/raw path)
       (if (clr-dir-exists path) (directory-info/raw path) None)))
 
+;; Raises the `ArgumentException` of `os-path` for a path that is not UTF-8,
+;; because `None` would say that nothing is there.
+(: (-> Path (Option FsInfo)))
+(defun (fs-info/raw path) (os-info (raise-err (os-path path))))
+
 ;; Whole paths, files and directories both, in the order the OS gives them.
-(: (-> string (Result Exception (Vec string))))
+;; .NET decodes each name from UTF-8, with U+FFFD for bytes that are not.
+(: (-> Path (Result Exception (Vec Path))))
 (defun (fs-list/raw path)
-  (match (clr-dir-entries path)
-    ((Ok names) (Ok (loop (:for name names) (:acc found (vecing name)))))
-    ((Err e) (Err e))))
+  (with-os-path path (fun (name)
+                      (match (clr-dir-entries name)
+                        ((Ok names) (Ok (loop (:for name names) (:acc found (vecing (as-path name))))))
+                        ((Err e) (Err e))))))
 
 ;; Creates every missing directory along the path. One that is already there is
 ;; not an error.
-(: (-> string (Result Exception Unit)))
+(: (-> Path (Result Exception Unit)))
 (defun (fs-create-directory/raw path)
-  (match (clr-dir-create path)
-    ((Ok _) (Ok unit))
-    ((Err e) (Err e))))
+  (with-os-path path (fun (name)
+                      (match (clr-dir-create name)
+                        ((Ok _) (Ok unit))
+                        ((Err e) (Err e))))))
 
 ;; What a guarded `void` call answers, as the `Unit` an operation declares.
 (: (-> (Result Exception %a) (Result Exception Unit)))
@@ -603,30 +654,36 @@
     ((Err e) (Err e))))
 
 ;; A missing file is not an error.
-(: (-> string (Result Exception Unit)))
-(defun (fs-delete-file/raw path) (unit-result (clr-file-delete path)))
+(: (-> Path (Result Exception Unit)))
+(defun (fs-delete-file/raw path)
+  (with-os-path path (fun (name) (unit-result (clr-file-delete name)))))
 
 ;; An empty directory. A missing or non-empty one is an `IOException`.
-(: (-> string (Result Exception Unit)))
-(defun (fs-delete-directory/raw path) (unit-result (clr-dir-delete path)))
+(: (-> Path (Result Exception Unit)))
+(defun (fs-delete-directory/raw path)
+  (with-os-path path (fun (name) (unit-result (clr-dir-delete name)))))
 
 ;; A file or a directory. Fails if `to` exists, unless `MoveReplace` asks to
 ;; replace a file there. `Directory.Move` never replaces, which is the rule.
-(: (-> string string MoveMode (Result Exception Unit)))
+(: (-> Path Path MoveMode (Result Exception Unit)))
 (defun (fs-move/raw from to mode)
-  (unit-result (if (clr-dir-exists from)
-                   (clr-dir-move from to)
-                   (clr-file-move from to (match mode (MoveNew #f) (MoveReplace #t))))))
+  (with-os-path from
+    (fun (from-name)
+      (with-os-path to
+        (fun (to-name)
+          (unit-result (if (clr-dir-exists from-name)
+                           (clr-dir-move from-name to-name)
+                           (clr-file-move from-name to-name (match mode (MoveNew #f) (MoveReplace #t))))))))))
 
 (defeffect FS
-  (open-read-stream    (-> string (Result Exception ClrStream)))
-  (open-write-stream   (-> string WriteMode (Result Exception ClrStream)))
-  (fs-info             (-> string (Option FsInfo)))
-  (fs-list             (-> string (Result Exception (Vec string))))
-  (fs-create-directory (-> string (Result Exception Unit)))
-  (fs-delete-file      (-> string (Result Exception Unit)))
-  (fs-delete-directory (-> string (Result Exception Unit)))
-  (fs-move             (-> string string MoveMode (Result Exception Unit)))
+  (open-read-stream    (-> Path (Result Exception ClrStream)))
+  (open-write-stream   (-> Path WriteMode (Result Exception ClrStream)))
+  (fs-info             (-> Path (Option FsInfo)))
+  (fs-list             (-> Path (Result Exception (Vec Path))))
+  (fs-create-directory (-> Path (Result Exception Unit)))
+  (fs-delete-file      (-> Path (Result Exception Unit)))
+  (fs-delete-directory (-> Path (Result Exception Unit)))
+  (fs-move             (-> Path Path MoveMode (Result Exception Unit)))
   #:default ((open-read-stream open-read-stream/raw)
              (open-write-stream open-write-stream/raw)
              (fs-info fs-info/raw)
@@ -643,28 +700,28 @@
 ;; The scope is read before the perform, so a program with nowhere to put the
 ;; port fails without having opened anything.
 
-(: (-> string (Result Exception InputPort)))
+(: (-> %p (Result Exception InputPort)) (where (AsPath %p)))
 (defun (open-input-file path)
   (ignore (current-scope))
-  (stream->input-port (open-read-stream path)))
+  (stream->input-port (open-read-stream (as-path path))))
 
 ;; `(open-output-file path)` truncates; `#:mode Append` or `#:mode CreateNew`
 ;; says otherwise.
-(: (-> string (#:mode WriteMode) (Result Exception OutputPort)))
+(: (-> %p (#:mode WriteMode) (Result Exception OutputPort)) (where (AsPath %p)))
 (defun (open-output-file path #:mode Truncate)
   (ignore (current-scope))
-  (stream->output-port (open-write-stream path mode)))
+  (stream->output-port (open-write-stream (as-path path) mode)))
 
 ;; The same, past whatever handler is installed. The `/raw` says so.
-(: (-> string (Result Exception InputPort)))
+(: (-> %p (Result Exception InputPort)) (where (AsPath %p)))
 (defun (open-input-file/raw path)
   (ignore (current-scope))
-  (stream->input-port (open-read-stream/raw path)))
+  (stream->input-port (open-read-stream/raw (as-path path))))
 
-(: (-> string WriteMode (Result Exception OutputPort)))
+(: (-> %p WriteMode (Result Exception OutputPort)) (where (AsPath %p)))
 (defun (open-output-file/raw path mode)
   (ignore (current-scope))
-  (stream->output-port (open-write-stream/raw path mode)))
+  (stream->output-port (open-write-stream/raw (as-path path) mode)))
 
 ;; Opens a file, passes the open port to `proc`, and guarantees port closure
 ;; on normal return or exception via `with-open`.
@@ -674,13 +731,13 @@
 ;;
 ;; `proc` is suspension-polymorphic (`-?->`): both synchronous and async/suspending
 ;; variants are compiled, ensuring suspending bodies receive identical cleanup.
-(: (-> string (-?-> InputPort %a) (Result Exception %a)))
+(: (-> %p (-?-> InputPort %a) (Result Exception %a)) (where (AsPath %p)))
 (defun (call-with-input-file path proc)
   (match (open-input-file path)
     ((Ok p) (with-open ((it p)) (Ok (proc it))))
     ((Err e) (Err e))))
 
-(: (-> string (-?-> OutputPort %a) (#:mode WriteMode) (Result Exception %a)))
+(: (-> %p (-?-> OutputPort %a) (#:mode WriteMode) (Result Exception %a)) (where (AsPath %p)))
 (defun (call-with-output-file path proc #:mode Truncate)
   (match (open-output-file path #:mode mode)
     ((Ok p) (with-open ((it p)) (Ok (proc it))))
@@ -776,15 +833,24 @@
 ;;     (replacing any symlink rather than writing through it).
 ;;   * `Append` copies only the source's initial byte length, preventing an
 ;;     infinite loop when appending a file to itself.
-(: (-> string string (#:mode WriteMode) void))
-(defun (file-copy from to #:mode CreateNew)
-  (when (= (path-absolute from) (path-absolute to))
-    (raise (cast Exception (IOException. (string-append "cannot copy a file onto itself: " from)))))
+(: (-> %p %q (#:mode WriteMode) void) (where (AsPath %p) (AsPath %q)))
+(defun (file-copy from to #:mode CreateNew) (copy-file (as-path from) (as-path to) mode))
+
+;; `p` from the root, without `.` and `..`, as `Path.GetFullPath` gives it.
+(: (-> Path Path))
+(defun (full-path p) (path-normalize (path-join (current-directory) p)))
+
+(: (-> Path Path WriteMode void))
+(defun (copy-file from to mode)
+  (when (= (full-path from) (full-path to))
+    (raise (cast Exception (IOException. (string-append "cannot copy a file onto itself: "
+                                                        (path->string/lossy from))))))
   (with-open ((in (raise-err (open-read-stream from))))
     (def count (clr-stream-length in))
     (match mode
       (Truncate
-       (def fresh (str to ".copy-" (clr-guid-text (clr-new-guid) "N")))
+       (def fresh (as-path (bytestring-append (path->bytestring to)
+                                              (string->bytestring (str ".copy-" (clr-guid-text (clr-new-guid) "N"))))))
        (match (try (begin
                      (with-open ((out (raise-err (open-write-stream fresh CreateNew))))
                        (stream-copy-count! in out count)
@@ -800,29 +866,29 @@
          (stream-copy-count! in out count)
          (stream-flush! out))))))
 
-(: (-> string (Array byte)))
+(: (-> %p (Array byte)) (where (AsPath %p)))
 (defun (file-read-bytes path)
-  (with-open ((in (raise-err (open-read-stream path))))
+  (with-open ((in (raise-err (open-read-stream (as-path path)))))
     (def buffer (MemoryStream.))
     (stream-copy! in (cast ClrStream buffer))
     (.ToArray buffer)))
 
-(: (-> string (Array byte) WriteMode void))
+(: (-> Path (Array byte) WriteMode void))
 (defun (write-whole-bytes path bytes mode)
   (with-open ((out (raise-err (open-write-stream path mode))))
     (stream-write! out bytes)
     (stream-flush! out)))
 
-(: (-> string (Array byte) void))
-(defun (file-write-bytes path bytes) (write-whole-bytes path bytes Truncate))
+(: (-> %p (Array byte) void) (where (AsPath %p)))
+(defun (file-write-bytes path bytes) (write-whole-bytes (as-path path) bytes Truncate))
 
-(: (-> string (Array byte) void))
-(defun (file-append-bytes path bytes) (write-whole-bytes path bytes Append))
+(: (-> %p (Array byte) void) (where (AsPath %p)))
+(defun (file-append-bytes path bytes) (write-whole-bytes (as-path path) bytes Append))
 
 ;; The lines, without their line ends. What ends a line is `#:mode`'s to say;
 ;; by default "\n", "\r" and "\r\n" all do. A last line needs no end, and a
 ;; final line end makes no empty line after it.
-(: (-> string (#:mode LineMode) (Vec string)))
+(: (-> %p (#:mode LineMode) (Vec string)) (where (AsPath %p)))
 (defun (file-read-lines path #:mode Any)
   (match (open-input-file path)
     ((Ok opened) (with-open ((p opened))
@@ -837,7 +903,7 @@
 ;; Each line followed by "\n", the last one too, on every OS: the same lines
 ;; make the same bytes wherever they are written, and `file-read-lines` gives
 ;; them back as long as none holds a line end of its own.
-(: (-> string (Vec string) void))
+(: (-> %p (Vec string) void) (where (AsPath %p)))
 (defun (file-write-lines path lines)
   (match (open-output-file path)
     ((Ok opened) (with-open ((p opened))
@@ -856,7 +922,7 @@
 ;;
 ;; Because opening happens inside the sequence, open errors (such as a missing
 ;; file) raise on the first pull rather than when `file-read/seq` is called.
-(: file-read/seq (-> (-> InputPort %a) string (Seq %a)) #:sync)
+(: file-read/seq (-> (-> InputPort %a) %p (Seq %a)) (where (AsPath %p)) #:sync)
 (defun (file-read/seq reader path)
   (seq
     (def file (raise-err (open-input-file path)))
@@ -866,27 +932,27 @@
           (yield (reader p))
           (loop))))))
 
-(: file-read-lines/seq (-> string (#:mode LineMode) (Seq string)) #:sync)
+(: file-read-lines/seq (-> %p (#:mode LineMode) (Seq string)) (where (AsPath %p)) #:sync)
 (defun (file-read-lines/seq path #:mode Any)
   (file-read/seq (fun (p) (read-line p #:mode mode)) path))
 
-(: (-> string (List string)))
+(: (-> Path (List Path)))
 (defun (sorted-entries dir) (list-sort (vec->list (raise-err (fs-list dir)))))
 
 ;; Lazily yields all files under `dir` in depth-first order.
 ;;
 ;; Behavior & Guarantees:
-;; - Deterministic: Directory entries are sorted ordinally, guaranteeing identical
+;; - Deterministic: Directory entries are sorted by name, byte by byte, guaranteeing identical
 ;;   traversal order across all operating systems and virtual filesystems.
 ;; - Filtering (`#:into?`): Called on each directory before entering; return `#f`
 ;;   to skip a subtree (e.g. `.git`).
 ;; - Cycle Prevention: Directory symlinks are never followed.
 ;; - Lazy Traversal: Subdirectories are listed on demand using the ambient `FS`
 ;;   handler, so stopping iteration early avoids unneeded filesystem I/O.
-(: directory-walk (-> string (#:into? (-> string bool)) (Seq string)) #:sync)
+(: directory-walk (-> %p (#:into? (-> Path bool)) (Seq Path)) (where (AsPath %p)) #:sync)
 (defun (directory-walk dir #:into? (fun (d) #t))
   (seq
-    (let loop ((todo (sorted-entries dir)))
+    (let loop ((todo (sorted-entries (as-path dir))))
       (unless (list-empty? todo)
         (def entry (list-head todo))
         (def rest (list-tail todo))

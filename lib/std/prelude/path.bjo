@@ -1,0 +1,291 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/prelude/path.bjo, the module (std prelude path) — file system paths as bytes, and the operations that only
+;; look at a path.
+;;
+;; - A `Path` is a `ByteString`: on Unix, the exact bytes of the name, which
+;;   need not be UTF-8. Nothing here reads the file system.
+;; - The separator is `/`. Windows separators and prefixes (`\`, `C:`,
+;;   `\\server\share`) are not handled yet.
+;; - A path is a sequence of parts: the root `/` when it is absolute, then
+;;   its names. Empty names (`a//b`) and `.` are not parts; `..` is.
+;;   Equality, order and hash are by parts, so `a/b`, `a//b`, `a/./b` and
+;;   `a/b/` are one path. The bytes are kept as they were given.
+;; - `AsPath` converts a `string`, a `ByteString` or a `Path`, so a function
+;;   that takes `(where (AsPath %p))` takes any of them.
+
+(export
+  Path AsPath as-path path
+  ;; Converting
+  path->bytestring path->string path->string/lossy
+  ;; Parts
+  path-parts path-absolute? path-relative? path-parent path-name
+  path-stem path-extension path-has-name? path-has-extension?
+  ;; Making new paths
+  path-join path-join-all path-with-name path-with-extension path-normalize
+  ;; Comparing
+  path-starts-with? path-strip-prefix)
+
+(import (std prelude core))
+(import (std core-macros))
+(import (std eq))
+(import (std prelude bytestring))
+
+(:doc #:file "path.bjodoc")
+
+(type (: Path #:opaque (Newtype ByteString)))
+
+;; ---------------------------------------------------------------------------
+;; Converting
+;; ---------------------------------------------------------------------------
+
+(def/trait (AsPath %p)
+  (: as-path (-> %p Path)))
+
+(impl (AsPath Path) (defun (as-path p) p))
+(impl (AsPath ByteString) (defun (as-path b) (Path b)))
+(impl (AsPath string) (defun (as-path s) (Path (string->bytestring s))))
+
+(: (-> %p Path) (where (AsPath %p)))
+(defun (path x) (as-path x))
+
+(: (-> Path ByteString))
+(defun (path->bytestring p) (match p ((Path b) b)))
+
+(: (-> Path (Result DecodeError string)))
+(defun (path->string p) (bytestring->string (path->bytestring p)))
+
+(: (-> Path string))
+(defun (path->string/lossy p) (bytestring->string/lossy (path->bytestring p)))
+
+;; ---------------------------------------------------------------------------
+;; Parts
+;; ---------------------------------------------------------------------------
+
+(: byte)
+(def slash 47uy)
+
+(: ByteString)
+(def root-part (bytestring slash))
+
+(: ByteString)
+(def dot (string->bytestring "."))
+
+(: ByteString)
+(def dot-dot (string->bytestring ".."))
+
+(: (-> ByteString bool))
+(defun (absolute-bytes? b)
+  (and (not (bytestring-empty? b)) (= (bytestring-ref b 0) slash)))
+
+;; The root, if any, and then each name that is not empty or `.`.
+(: (-> Path (Vec ByteString)))
+(defun (parts-of p)
+  (def b (path->bytestring p))
+  (def names
+    (loop (:for name (bytestring-split b slash))
+          (:when (not (or (bytestring-empty? name) (= name dot))))
+          (:acc v (vecing name))))
+  (if (absolute-bytes? b) (vec-add-first names root-part) names))
+
+;; A path of parts as `parts-of` gives them. No parts is `.`.
+(: (-> (Vec ByteString) Path))
+(defun (path-of-parts parts)
+  (cond
+    ((vec-empty? parts) (Path dot))
+    ((= (vec-ref parts 0) root-part)
+     (Path (bytestring-append root-part (bytestring-join (vec-drop parts 1) root-part))))
+    (else (Path (bytestring-join parts root-part)))))
+
+(: (-> %p (Vec Path)) (where (AsPath %p)))
+(defun (path-parts x) (vec-map Path (parts-of (as-path x))))
+
+(: (-> %p bool) (where (AsPath %p)))
+(defun (path-absolute? x) (absolute-bytes? (path->bytestring (as-path x))))
+
+(: (-> %p bool) (where (AsPath %p)))
+(defun (path-relative? x) (not (path-absolute? x)))
+
+;; The last part, when it is a name: not the root and not `..`.
+(: (-> (Vec ByteString) (Option ByteString)))
+(defun (last-name parts)
+  (if (vec-empty? parts)
+      None
+      (let ((last (vec-ref parts (- (vec-length parts) 1))))
+        (if (or (= last root-part) (= last dot-dot)) None (Some last)))))
+
+(: (-> %p (Option Path)) (where (AsPath %p)))
+(defun (path-parent x)
+  (def parts (parts-of (as-path x)))
+  (def n (vec-length parts))
+  (cond
+    ((= n 0) None)
+    ((and (= n 1) (= (vec-ref parts 0) root-part)) None)
+    (else (Some (path-of-parts (vec-take parts (- n 1)))))))
+
+(: (-> %p (Option ByteString)) (where (AsPath %p)))
+(defun (path-name x) (last-name (parts-of (as-path x))))
+
+;; Where the extension of a name starts: after its last `.`, when that dot
+;; is not the first byte. `.bashrc` has none.
+(: (-> ByteString (Option int)))
+(defun (extension-dot name)
+  (match (bytestring-search-byte-backward name 46uy)
+    ((Some at) (if (> at 0) (Some at) None))
+    (None None)))
+
+(: (-> %p (Option ByteString)) (where (AsPath %p)))
+(defun (path-extension x)
+  (match (path-name x)
+    ((Some name)
+     (match (extension-dot name)
+       ((Some at) (Some (bytestring-slice name (+ at 1) (bytestring-length name))))
+       (None None)))
+    (None None)))
+
+(: (-> %p (Option ByteString)) (where (AsPath %p)))
+(defun (path-stem x)
+  (match (path-name x)
+    ((Some name)
+     (match (extension-dot name)
+       ((Some at) (Some (bytestring-slice name 0 at)))
+       (None (Some name))))
+    (None None)))
+
+;; Whether the name of `x` is the UTF-8 bytes of `name`.
+(: (-> %p string bool) (where (AsPath %p)))
+(defun (path-has-name? x name)
+  (match (path-name x)
+    ((Some n) (= n (string->bytestring name)))
+    (None #f)))
+
+;; Whether the extension of `x` is the UTF-8 bytes of `ext`, which is given
+;; without the dot.
+(: (-> %p string bool) (where (AsPath %p)))
+(defun (path-has-extension? x ext)
+  (match (path-extension x)
+    ((Some e) (= e (string->bytestring ext)))
+    (None #f)))
+
+;; ---------------------------------------------------------------------------
+;; Making new paths
+;; ---------------------------------------------------------------------------
+
+;; `b` after `a`, with one `/` between. An absolute `b` is `b`.
+(: (-> %a %b Path) (where (AsPath %a) (AsPath %b)))
+(defun (path-join x y)
+  (def a (path->bytestring (as-path x)))
+  (def b (path->bytestring (as-path y)))
+  (cond
+    ((absolute-bytes? b) (Path b))
+    ((bytestring-empty? a) (Path b))
+    ((bytestring-ends-with? a root-part) (Path (bytestring-append a b)))
+    (else (Path (bytestring-concat [a root-part b])))))
+
+(: (-> (Vec Path) Path))
+(defun (path-join-all ps)
+  (loop (:for p ps)
+        (:acc out (folding (Path bytestring-empty) (path-join out p)))))
+
+(: (-> %p ByteString Path) (where (AsPath %p)))
+(defun (path-with-name x name)
+  (def p (as-path x))
+  (match (path-parent p)
+    ((Some parent) (if (some? (path-name p)) (path-join parent (Path name)) (path-join p (Path name))))
+    (None (path-join p (Path name)))))
+
+;; An empty extension removes the one there is.
+(: (-> %p ByteString Path) (where (AsPath %p)))
+(defun (path-with-extension x ext)
+  (def p (as-path x))
+  (match (path-stem p)
+    ((Some stem)
+     (path-with-name p (if (bytestring-empty? ext)
+                           stem
+                           (bytestring-concat [stem (string->bytestring ".") ext]))))
+    (None p)))
+
+;; `.` and empty names removed, and each `..` removed with the name before
+;; it. A `..` with no name before it stays in a relative path and goes in
+;; an absolute one, as the parent of `/` is `/`.
+;;
+;; Lexical: it does not read the file system, so where `a` is a symbolic
+;; link, `a/..` is not always the directory it normalizes to.
+(: (-> %p Path) (where (AsPath %p)))
+(defun (path-normalize x)
+  (def parts (parts-of (as-path x)))
+  (def absolute (and (not (vec-empty? parts)) (= (vec-ref parts 0) root-part)))
+  (def names (if absolute (vec-drop parts 1) parts))
+  (def kept
+    (loop (:for name names)
+          (:acc stack (folding []
+                               (cond
+                                 ((not (= name dot-dot)) (vec-add stack name))
+                                 ((and (not (vec-empty? stack))
+                                       (not (= (vec-ref stack (- (vec-length stack) 1)) dot-dot)))
+                                  (vec-take stack (- (vec-length stack) 1)))
+                                 (absolute stack)
+                                 (else (vec-add stack name)))))))
+  (path-of-parts (if absolute (vec-add-first kept root-part) kept)))
+
+;; ---------------------------------------------------------------------------
+;; Comparing
+;; ---------------------------------------------------------------------------
+
+;; Whether the parts of `prefix` are the first parts of `p`. By parts, so
+;; `/usr/lib` starts with `/usr` and not with `/us`.
+(: (-> %a %b bool) (where (AsPath %a) (AsPath %b)))
+(defun (path-starts-with? x prefix)
+  (def ps (parts-of (as-path x)))
+  (def qs (parts-of (as-path prefix)))
+  (and (<= (vec-length qs) (vec-length ps))
+       (loop (:for i (range 0 (vec-length qs)))
+             (:acc ok (folding #t (and ok (= (vec-ref ps i) (vec-ref qs i))))))))
+
+;; The rest of `p` after `prefix`, as a relative path. `.` when they are
+;; equal.
+(: (-> %a %b (Option Path)) (where (AsPath %a) (AsPath %b)))
+(defun (path-strip-prefix x prefix)
+  (if (path-starts-with? x prefix)
+      (let ((ps (parts-of (as-path x))))
+        (Some (path-of-parts (vec-drop ps (vec-length (parts-of (as-path prefix)))))))
+      None))
+
+(: (-> (Vec ByteString) (Vec ByteString) int))
+(defun (compare-parts ps qs)
+  (def n (min (vec-length ps) (vec-length qs)))
+  (let go ((i 0))
+    (cond
+      ((= i n) (compare (vec-length ps) (vec-length qs)))
+      (else
+       (def c (compare (vec-ref ps i) (vec-ref qs i)))
+       (if (= c 0) (go (+ i 1)) c)))))
+
+(impl (Eq Path)
+  (defun (= a b) (= (parts-of a) (parts-of b)))
+  (defun (eq-hash p)
+    (loop (:for part (parts-of p))
+          (:acc h (folding 17 (+ (* h 31) (eq-hash part)))))))
+
+(impl (Ord Path)
+  (defun (compare a b) (compare-parts (parts-of a) (parts-of b))))
+
+;; `#p"..."`, with the escapes of a written ByteString.
+(impl (Written Path)
+  (defun (write-into p sb)
+    (stringbuilder-add-string! sb "#p")
+    (stringbuilder-add-string! sb (string-drop (written (path->bytestring p)) 2))))
+
+;; As text, with U+FFFD for each part that is not UTF-8.
+(impl (Displayed Path)
+  (defun (display-into p sb) (stringbuilder-add-string! sb (path->string/lossy p))))

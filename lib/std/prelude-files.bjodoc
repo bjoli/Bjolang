@@ -227,7 +227,7 @@
 (:doc path-absolute
   (summary "A path made absolute, against the current directory.")
   (arg path "The path, relative or absolute.")
-  (returns "The full path.")
+  (returns "The full path, as a string. A path that is not UTF-8 raises an ArgumentException.")
   (see current-directory path-combine)
   (reference """
     .NET's @code{Path.GetFullPath}. Like the other path functions it works on
@@ -335,9 +335,9 @@
   (summary "The files directly in a directory.")
   (arg path "The directory to list.")
   (returns "Whole paths, in the order the OS lists them.")
-  (see directory-subdirectories directory-walk)
+  (see directory-subdirectories directory-walk Path)
   (example """
-    (vec-filter #(string-ends-with? &1 ".bjo") (directory-files dir))
+    (vec-filter #(path-has-extension? &1 "bjo") (directory-files dir))
     """)
   (reference """
     Directory listing does not accept a pattern glob; filter the returned
@@ -356,15 +356,16 @@
   (arg dir "The directory to walk.")
   (key #:into? "Asked about each directory below dir before the walk enters it. By default every one is entered.")
   (returns "A sequence of whole paths to files; directories themselves are not in it.")
-  (see directory-files directory-delete-tree)
+  (see directory-files directory-delete-tree Path)
   (example """
-    (filter #(string-ends-with? & ".bjo")
-            (directory-walk "." #:into? (fun (d) (not (= (path-filename d) (Some ".git"))))))
+    (filter #(path-has-extension? & "bjo")
+            (directory-walk "." #:into? (fun (d) (not (path-has-name? d ".git")))))
 
-    (find #(string-ends-with? & ".bjo") (directory-walk "."))   ; stops at the first
+    (find #(path-has-extension? & "bjo") (directory-walk "."))   ; stops at the first
     """)
   (reference """
-    Each directory's entries come in ordinal order, so a walk is the same on
+    Each directory's entries come in the order of their names, byte by
+    byte, so a walk is the same on
     every OS and on a fake filesystem. A directory that is a symbolic link is
     never entered, so a link back up the tree cannot loop the walk. An entry
     gone between listing and visiting is skipped.
@@ -426,6 +427,10 @@
     @code{(with-handler ((fs-info (fun (path) ...))) body ...)}, which needs
     @code{(import (std effect))}. @code{file-info}, @code{file-exists?},
     @code{directory-exists?} and the directory functions ask through it.
+
+    Every operation of the @code{FS} effect takes a @code{Path}, and a
+    handler gets the bytes of the path it was given. The functions that call
+    the operations take any value of @code{AsPath} and convert it.
     """))
 
 (:doc op/fs-info
@@ -449,6 +454,11 @@
     fall through to the disk calls. A symbolic link's size and time are those
     of the end of its chain of links, followed for at most 40 steps; a link to
     nothing keeps its own.
+
+    The @code{/raw} operations give a path to .NET as a string, which
+    must be UTF-8. For a path that is not UTF-8, they return an
+    @code{ArgumentException}, and this one raises it, because
+    @code{None} would say that nothing is there.
     """))
 
 (:doc fs-list
@@ -474,7 +484,7 @@
 (:doc fs-list/raw
   (summary "The entries of a directory on the real file system, bypassing any FS handler.")
   (arg path "The directory to list.")
-  (returns "Whole paths, in the order the OS gives them, or the exception .NET raised.")
+  (returns "Whole paths, in the order the OS gives them, or the exception .NET raised. .NET decodes each name from UTF-8, with U+FFFD for bytes that are not.")
   (see fs-list))
 
 (:doc fs-create-directory

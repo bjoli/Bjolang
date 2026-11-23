@@ -281,10 +281,10 @@
   (def sources
     (loop (:for dir (glue-source-dirs g))
           (:when (directory-exists? dir))
-          (:for file (directory-walk dir #:into? (fun (d) (not (any? #(= (path-filename d) (Some &))
+          (:for file (directory-walk dir #:into? (fun (d) (not (any? #(path-has-name? d &)
                                                                       (list "bin" "obj"))))))
-          (:when (string-ends-with? file ".cs"))
-          (:acc out (listing (str file "\n" (file-read-text file))))
+          (:when (path-has-extension? file "cs"))
+          (:acc out (listing (str (path->string/lossy file) "\n" (file-read-text file))))
           => (list-sort out)))
   (def runtime
     (list-map #(str & " " (match (file-info &)

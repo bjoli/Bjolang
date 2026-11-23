@@ -1,0 +1,248 @@
+;; Docs for std/prelude/path.bjo, read through (:doc #:file "path.bjodoc").
+
+(:doc #:module
+  (summary "File system paths as bytes, and the operations that only look at a path.")
+  (see Path AsPath path-join path-parts)
+  (example """
+    (def p (path-join "/srv/www" "index.html"))   ; #p"/srv/www/index.html"
+    (path-name p)                                 ; (Some #b"index.html")
+    (path-extension p)                            ; (Some #b"html")
+    (path-parent p)                               ; (Some #p"/srv/www")
+    (path-normalize "a/./b/../c")                 ; #p"a/c"
+    (= (path "a//b/") (path "a/b"))               ; #t
+    """)
+  (reference """
+    A file name on Unix is bytes, and they do not have to be UTF-8. A
+    @code{Path} keeps those bytes, so a name that is not UTF-8 is not lost or
+    changed. Convert a path to text with @code{path->string}, which returns a
+    @code{DecodeError} for a name that is not UTF-8, or with
+    @code{path->string/lossy}.
+
+    @itemlist[
+    @item{A path is a sequence of parts: the root @code{/} when it is
+          absolute, then its names. Empty names, as in @code{a//b}, and
+          @code{.} are not parts. @code{..} is a part.}
+    @item{Equality, order and hash are by parts. @code{a/b}, @code{a//b},
+          @code{a/./b} and @code{a/b/} are one path, and paths sort part by
+          part, so @code{a/b} comes before @code{a-b}. The bytes are kept as
+          they were given: @code{path->bytestring} returns them.}
+    @item{Nothing here reads the file system. @code{path-normalize} and
+          @code{path-parent} are lexical: where @code{a} is a symbolic link,
+          @code{a/..} is not always the directory they give.}
+    @item{A function that takes a path takes any value of @code{AsPath}: a
+          @code{string}, a @code{ByteString} or a @code{Path}. The file
+          functions of the prelude do too.}
+    ]
+
+    The prelude re-exports this module, so a program does not import it.
+
+    The separator is @code{/}. Windows separators and prefixes
+    (@code{\\}, @code{C:}, @code{\\\\server\\share}) are not handled yet.
+    """))
+
+(:doc Path
+  (summary "A file system path: bytes, compared by parts.")
+  (see path AsPath path->bytestring)
+  (reference """
+    Opaque: make one with @code{path} or a function of this module. It
+    implements @code{Eq}, @code{Ord} and @code{Written}, which gives
+    @code{#p"..."} with the escapes of a written @code{ByteString}, and
+    @code{Displayed}, which gives the lossy text.
+    """))
+
+(:doc AsPath
+  (summary "What a path can be made from: a string, a ByteString or a Path.")
+  (see path as-path)
+  (reference """
+    A function that takes @code{%p} with @code{(where (AsPath %p))} takes
+    any of them, as the functions of this module do. A string is its UTF-8
+    bytes, and a byte string is the bytes it has.
+    """))
+
+(:doc as-path
+  (summary "The method of AsPath: the value as a Path.")
+  (arg x "A string, a ByteString or a Path.")
+  (returns "The path. A Path is returned as it is.")
+  (see path))
+
+(:doc path
+  (summary "A Path of a string, a ByteString or a Path.")
+  (arg x "The value.")
+  (returns "The path, with the same bytes.")
+  (see AsPath)
+  (example """
+    (path "/etc/hosts")                ; #p"/etc/hosts"
+    (path (bytes->bytestring raw))     ; any bytes
+    """))
+
+(:doc path->bytestring
+  (summary "The bytes of a path, as they were given.")
+  (arg p "The path.")
+  (returns "The bytes. path-normalize first for a canonical form.")
+  (see path))
+
+(:doc path->string
+  (summary "A path as text, or why it is not UTF-8.")
+  (arg p "The path.")
+  (returns "(Ok text), or (Err e) with a DecodeError whose offset counts from the start of the path.")
+  (see path->string/lossy))
+
+(:doc path->string/lossy
+  (summary "A path as text, with U+FFFD for each part that is not UTF-8.")
+  (arg p "The path.")
+  (returns "The text. It never fails.")
+  (see path->string))
+
+(:doc path-parts
+  (summary "The parts of a path: the root, if it is absolute, then its names.")
+  (arg x "The path.")
+  (returns "A vec of paths: #p\"/\" first when x is absolute, then each name that is not empty or `.`. The empty path and `.` have no parts.")
+  (see path-name path-parent)
+  (example """
+    (path-parts "/usr//lib/./x/")    ; [#p"/" #p"usr" #p"lib" #p"x"]
+    (path-parts "a/../b")            ; [#p"a" #p".." #p"b"]
+    """))
+
+(:doc path-absolute?
+  (summary "Whether a path starts at the root.")
+  (arg x "The path.")
+  (returns "#t when its first byte is /.")
+  (see path-relative?))
+
+(:doc path-relative?
+  (summary "Whether a path does not start at the root.")
+  (arg x "The path.")
+  (returns "#t when its first byte is not /, or it is empty.")
+  (see path-absolute?))
+
+(:doc path-parent
+  (summary "A path without its last part.")
+  (arg x "The path.")
+  (returns "(Some parent), or None for the root and for a path with no parts. The parent of a relative path of one part is `.`.")
+  (see path-name path-parts)
+  (example """
+    (path-parent "/a/b")    ; (Some #p"/a")
+    (path-parent "/a")      ; (Some #p"/")
+    (path-parent "a")       ; (Some #p".")
+    (path-parent "/")       ; None
+    """)
+  (reference "Lexical: the parent of @code{a/..} is @code{a}."))
+
+(:doc path-name
+  (summary "The last part of a path, when it is a name.")
+  (arg x "The path.")
+  (returns "(Some name) as bytes, or None when the path has no parts, or ends in the root or `..`.")
+  (see path-stem path-extension path-with-name)
+  (example """
+    (path-name "/a/b.txt")    ; (Some #b"b.txt")
+    (path-name "a/b/")        ; (Some #b"b")
+    (path-name "/")           ; None
+    """))
+
+(:doc path-stem
+  (summary "The name of a path without its extension.")
+  (arg x "The path.")
+  (returns "(Some stem): the name up to its last dot, or all of it when it has no extension. None when the path has no name.")
+  (see path-extension path-name)
+  (example """
+    (path-stem "x.tar.gz")    ; (Some #b"x.tar")
+    (path-stem ".bashrc")     ; (Some #b".bashrc")
+    """))
+
+(:doc path-extension
+  (summary "What follows the last dot of the name of a path.")
+  (arg x "The path.")
+  (returns "(Some extension), without the dot. None when the name has no dot after its first byte, or the path has no name.")
+  (see path-stem path-with-extension)
+  (example """
+    (path-extension "x.tar.gz")    ; (Some #b"gz")
+    (path-extension ".bashrc")     ; None
+    (path-extension "a.")          ; (Some #b"")
+    """))
+
+(:doc path-has-name?
+  (summary "Whether the name of a path is a given string.")
+  (arg x "The path.")
+  (arg name "The name, as text.")
+  (returns "#t when the path has a name and its bytes are the UTF-8 bytes of name.")
+  (see path-name path-has-extension?)
+  (example """
+    (path-has-name? "src/.git" ".git")    ; #t
+    (path-has-name? "/" "")               ; #f: the root has no name
+    """))
+
+(:doc path-has-extension?
+  (summary "Whether the extension of a path is a given string.")
+  (arg x "The path.")
+  (arg ext "The extension, as text, without the dot.")
+  (returns "#t when the path has an extension and its bytes are the UTF-8 bytes of ext.")
+  (see path-extension path-has-name?)
+  (example """
+    (path-has-extension? "src/main.bjo" "bjo")    ; #t
+    (path-has-extension? ".bashrc" "bashrc")      ; #f: a dot file has no extension
+    """))
+
+(:doc path-join
+  (summary "One path after another.")
+  (arg x "The first path.")
+  (arg y "The second path.")
+  (returns "y when it is absolute or x is empty. Else x, a / when x does not end with one, and y.")
+  (see path-join-all)
+  (example """
+    (path-join "/usr" "lib")     ; #p"/usr/lib"
+    (path-join "a/" "b")         ; #p"a/b"
+    (path-join "a" "/b")         ; #p"/b"
+    """))
+
+(:doc path-join-all
+  (summary "Paths joined in order, as path-join joins two.")
+  (arg ps "The paths.")
+  (returns "The joined path. No paths is the empty path.")
+  (see path-join))
+
+(:doc path-with-name
+  (summary "A path with its name replaced.")
+  (arg x "The path.")
+  (arg name "The new name, as bytes.")
+  (returns "The parent of x joined with name. When x has no name, as the root, name joined to x.")
+  (see path-name path-with-extension))
+
+(:doc path-with-extension
+  (summary "A path with its extension replaced, added or removed.")
+  (arg x "The path.")
+  (arg ext "The new extension, without the dot. An empty one removes the extension.")
+  (returns "The path with stem.ext as its name. x itself when it has no name.")
+  (see path-extension path-with-name)
+  (example """
+    (path-with-extension "a/b.txt" (string->bytestring "md"))    ; #p"a/b.md"
+    (path-with-extension "a/b.txt" bytestring-empty)            ; #p"a/b"
+    """))
+
+(:doc path-normalize
+  (summary "A path without `.`, empty names, and each `..` that has a name before it.")
+  (arg x "The path.")
+  (returns "The path. A `..` with no name before it stays in a relative path and goes in an absolute one. Nothing left is `.`.")
+  (see path-parent)
+  (example """
+    (path-normalize "a/./b/../c")    ; #p"a/c"
+    (path-normalize "../a/..")       ; #p".."
+    (path-normalize "/../a")         ; #p"/a"
+    """)
+  (reference "Lexical: it does not read the file system. Where @code{a} is a symbolic link, @code{a/..} is not always the directory it gives."))
+
+(:doc path-starts-with?
+  (summary "Whether the parts of one path are the first parts of another.")
+  (arg x "The path.")
+  (arg prefix "The parts it may start with.")
+  (returns "#t when they are. By parts, so /usr/lib starts with /usr and not with /us.")
+  (see path-strip-prefix))
+
+(:doc path-strip-prefix
+  (summary "The rest of a path after a prefix.")
+  (arg x "The path.")
+  (arg prefix "The parts to remove.")
+  (returns "(Some rest) as a relative path, `.` when they are equal, or None when x does not start with prefix.")
+  (see path-starts-with?)
+  (example """
+    (path-strip-prefix "/usr/lib/x" "/usr")    ; (Some #p"lib/x")
+    """))

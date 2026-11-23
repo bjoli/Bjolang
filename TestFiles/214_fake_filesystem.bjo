@@ -80,7 +80,7 @@
       (file-append-text "new.txt" "made")
       (expect "file-append-text creates a missing file" (file-read-text "new.txt") "made")
       (expect-true "the fake says it exists" (file-exists? "new.txt"))
-      (expect-true "and the disk says it does not" (none? (fs-info/raw "new.txt")))))
+      (expect-true "and the disk says it does not" (none? (fs-info/raw (path "new.txt"))))))
 
   (with-fake-fs (("taken.txt" "x"))
     (expect-true "CreateNew on a fake path that exists is an IOException"
@@ -117,7 +117,7 @@
   (file-write-text (path-combine "214_probe_dir" "a" "b" "deep.txt") "deep")
   (expect "a real listing"
           (list-sort (vec->list (directory-files "214_probe_dir")))
-          (list (path-combine "214_probe_dir" "moved.txt")))
+          (list (path (path-combine "214_probe_dir" "moved.txt"))))
   (directory-delete-tree "214_probe_dir")
   (expect-true "a real tree delete, built from the operations"
                (not (directory-exists? "214_probe_dir")))
@@ -194,15 +194,15 @@
       (expect-true "and its parents'" (directory-exists? "src/lib"))
       (expect-true "a file is not a directory" (not (directory-exists? "readme.txt")))
       (expect-true "a directory is not a file" (not (file-exists? "src")))
-      (expect "the root lists its files" (vec->list (directory-files ".")) (list "readme.txt"))
-      (expect "and its directories" (vec->list (directory-subdirectories "")) (list "src"))
-      (expect "a directory lists whole paths" (vec->list (directory-files "src")) (list "src/main.bjo"))
-      (expect "a trailing slash is the same directory" (vec->list (directory-subdirectories "src/")) (list "src/lib"))
+      (expect "the root lists its files" (vec->list (directory-files ".")) (list (path "readme.txt")))
+      (expect "and its directories" (vec->list (directory-subdirectories "")) (list (path "src")))
+      (expect "a directory lists whole paths" (vec->list (directory-files "src")) (list (path "src/main.bjo")))
+      (expect "a trailing slash is the same directory" (vec->list (directory-subdirectories "src/")) (list (path "src/lib")))
 
       (directory-create "build/out")
       (expect-true "create makes the parents" (directory-exists? "build"))
       (expect-true "and the directory" (directory-exists? "build/out"))
-      (expect-true "none of it on the disk" (none? (fs-info/raw "build")))
+      (expect-true "none of it on the disk" (none? (fs-info/raw (path "build"))))
       (file-write-text "build/out/a.txt" "a")
       (expect "a write lands in a created directory" (file-read-text "build/out/a.txt") "a")
       (expect-true "a write into a missing directory is the real error type"

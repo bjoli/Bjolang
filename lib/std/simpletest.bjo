@@ -390,10 +390,10 @@
 
 ;; --- The handlers --------------------------------------------------------------
 
-(: (-> FakeFs (-> string (Result Exception ClrStream))))
+(: (-> FakeFs (-> Path (Result Exception ClrStream))))
 (defun (fake-fs-reader fs)
   (fun (raw)
-    (def path (fake-path raw))
+    (def path (fake-path (path->string/lossy raw)))
     (match (fake-kind fs path)
       ((Some FsDirectory) (access-denied path))
       ((Some FsFile) (match (fake-bytes-at fs path)
@@ -402,10 +402,10 @@
       (None (if (fake-dir? fs (fake-parent path)) (not-found path) (no-directory path))))))
 
 ;; `Append` starts the new stream with what the path held.
-(: (-> FakeFs (-> string WriteMode (Result Exception ClrStream))))
+(: (-> FakeFs (-> Path WriteMode (Result Exception ClrStream))))
 (defun (fake-fs-writer fs)
   (fun (raw mode)
-    (def path (fake-path raw))
+    (def path (fake-path (path->string/lossy raw)))
     (def kind (fake-kind fs path))
     (cond
       ((not (fake-dir? fs (fake-parent path))) (no-directory path))
@@ -423,15 +423,15 @@
           (fake-stamp! fs path)
           (Ok (cast ClrStream s))))))))
 
-(: (-> FakeFs (-> string (Option FsInfo))))
+(: (-> FakeFs (-> Path (Option FsInfo))))
 (defun (fake-fs-info fs)
-  (fun (raw) (fake-info fs (fake-path raw))))
+  (fun (raw) (fake-info fs (fake-path (path->string/lossy raw)))))
 
 ;; Whole paths, as `Directory.GetFileSystemEntries` gives them, sorted.
-(: (-> FakeFs (-> string (Result Exception (Vec string)))))
+(: (-> FakeFs (-> Path (Result Exception (Vec Path)))))
 (defun (fake-fs-list fs)
   (fun (raw)
-    (def path (fake-path raw))
+    (def path (fake-path (path->string/lossy raw)))
     (def prefix (fake-prefix path))
     (if (not (fake-dir? fs path))
         (no-directory path)
@@ -446,13 +446,13 @@
                                   (map-empty)
                                   (fake-entries fs))))
           (Ok (list->vec (list-sort (loop (:for child (map-keys children))
-                                          (:acc (listing child))))))))))
+                                          (:acc (listing (as-path child)))))))))))
 
 ;; Every missing directory along the path, as `Directory.CreateDirectory`.
-(: (-> FakeFs (-> string (Result Exception Unit))))
+(: (-> FakeFs (-> Path (Result Exception Unit))))
 (defun (fake-fs-create-directory fs)
   (fun (raw)
-    (def path (fake-path raw))
+    (def path (fake-path (path->string/lossy raw)))
     (match (fake-kind fs path)
       ((Some FsFile) (io-error #"the fake filesystem has a file at ${path}"))
       ((Some FsDirectory) (Ok unit))
@@ -461,10 +461,10 @@
             (Ok unit)))))
 
 ;; A missing file is not an error, as with `File.Delete`.
-(: (-> FakeFs (-> string (Result Exception Unit))))
+(: (-> FakeFs (-> Path (Result Exception Unit))))
 (defun (fake-fs-delete-file fs)
   (fun (raw)
-    (def path (fake-path raw))
+    (def path (fake-path (path->string/lossy raw)))
     (match (fake-kind fs path)
       ((Some FsDirectory) (access-denied path))
       ((Some FsFile) (fake-update! fs (map-remove (fake-entries fs) path))
@@ -472,10 +472,10 @@
                      (Ok unit))
       (None (Ok unit)))))
 
-(: (-> FakeFs (-> string (Result Exception Unit))))
+(: (-> FakeFs (-> Path (Result Exception Unit))))
 (defun (fake-fs-delete-directory fs)
   (fun (raw)
-    (def path (fake-path raw))
+    (def path (fake-path (path->string/lossy raw)))
     (def prefix (fake-prefix path))
     (match (fake-kind fs path)
       ((Some FsFile) (io-error #"the fake filesystem has a file, not a directory, at ${path}"))
@@ -506,11 +506,11 @@
 ;; A file, or a directory and everything below it. Fails if `to` exists,
 ;; unless `MoveReplace` asks to replace a file there with a file. The source is
 ;; checked first, as `File.Move` does.
-(: (-> FakeFs (-> string string MoveMode (Result Exception Unit))))
+(: (-> FakeFs (-> Path Path MoveMode (Result Exception Unit))))
 (defun (fake-fs-move fs)
   (fun (raw-from raw-to mode)
-    (def from (fake-path raw-from))
-    (def to (fake-path raw-to))
+    (def from (fake-path (path->string/lossy raw-from)))
+    (def to (fake-path (path->string/lossy raw-to)))
     (def from-kind (fake-kind fs from))
     (def to-kind (fake-kind fs to))
     (def replacing (match (Tuple mode from-kind to-kind)

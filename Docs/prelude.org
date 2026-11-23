@@ -367,18 +367,18 @@ They throw as the whole-file operations do; wrap a call in ~try~ for a ~Result~.
 - ~(directory-create path)~ : Creates every missing directory along the path, and does nothing if it is already there — so it needs no guard.
 - ~(directory-delete path)~ : An *empty* directory.
 - ~(directory-delete-tree path)~ : Spelled differently because it is not a mistake anything can undo. Deletes one entry at a time through the ~FS~ operations, so a handler sees every deletion. A symbolic link to a directory is removed as a link and never entered, the path given included, so nothing a link points at is deleted.
-- ~(directory-files path)~ / ~(directory-subdirectories path)~ : Whole paths, directly in ~path~, as a ~(Vec string)~, in the order the OS lists them.
-- ~(directory-walk dir #:into? pred)~ : The files under ~dir~, depth first, as a lazy ~Seq~. Each directory's entries come in ordinal order, so a walk is the same on every OS and on a fake. ~#:into?~ is asked about each directory before the walk enters it. A directory that is a symbolic link is not entered, so a link back up the tree cannot loop the walk. Nothing is listed until the sequence is walked, and a walk that stops early lists nothing more.
+- ~(directory-files path)~ / ~(directory-subdirectories path)~ : Whole paths, directly in ~path~, as a ~(Vec Path)~, in the order the OS lists them.
+- ~(directory-walk dir #:into? pred)~ : The files under ~dir~, depth first, as a lazy ~(Seq Path)~. Each directory's entries come in the order of their names, byte by byte, so a walk is the same on every OS and on a fake. ~#:into?~ is asked about each directory before the walk enters it. A directory that is a symbolic link is not entered, so a link back up the tree cannot loop the walk. Nothing is listed until the sequence is walked, and a walk that stops early lists nothing more.
 
 Listing takes no pattern argument. The language asks the same question:
 
 #+BEGIN_SRC scheme
-(vec-filter #(string-ends-with? &1 ".bjo") (directory-files dir))
+(vec-filter #(path-has-extension? &1 "bjo") (directory-files dir))
 
-(filter #(string-ends-with? & ".bjo")
-        (directory-walk "." #:into? (fun (d) (not (= (path-filename d) (Some ".git"))))))
+(filter #(path-has-extension? & "bjo")
+        (directory-walk "." #:into? (fun (d) (not (path-has-name? d ".git")))))
 
-(find #(string-ends-with? & ".bjo") (directory-walk "."))   ;; stops at the first
+(find #(path-has-extension? & "bjo") (directory-walk "."))   ;; stops at the first
 #+END_SRC
 
 ** The environment =(std prelude)=

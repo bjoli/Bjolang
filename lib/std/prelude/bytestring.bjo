@@ -10,7 +10,7 @@
 ;; in such object code or executable form without complying with the source code
 ;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
 
-;; std/bytestring.bjo — immutable byte strings with no encoding.
+;; std/prelude/bytestring.bjo, the module (std prelude bytestring) — immutable byte strings with no encoding.
 ;;
 ;; - A `ByteString` is a part of an array: the bytes from `start` to `end`.
 ;;   A slice shares the array. Nothing writes to the array after it is made:
@@ -48,8 +48,9 @@
   ;; Joining and splitting
   bytestring-append bytestring-concat bytestring-join bytestring-split)
 
-(import (std prelude))
-(import (only (text encodings) utf-8))
+(import (std prelude core))
+(import (std core-macros))
+(import (std eq))
 
 (:doc #:file "bytestring.bjodoc")
 
@@ -58,6 +59,7 @@
   (ArgumentOutOfRangeException (: System.ArgumentOutOfRangeException)))
 
 (import/extern
+  (clr-utf-8        (: Bjolang.Runtime.Encodings.Cp65001 #:get))
   (clr-equal?       (: System.MemoryExtensions.SequenceEqual (-> (RoSpan byte) (RoSpan byte) bool)))
   (clr-compare      (: System.MemoryExtensions.SequenceCompareTo (-> (RoSpan byte) (RoSpan byte) int)))
   (clr-index-of     (: System.MemoryExtensions.IndexOf (-> (RoSpan byte) (RoSpan byte) int)))
@@ -123,7 +125,7 @@
 
 ;; `string->bytes` returns a new array, so it is not copied again.
 (: (-> string (#:encoding Encoding) (#:replace (Option char)) ByteString))
-(defun (string->bytestring s #:encoding utf-8 #:replace None)
+(defun (string->bytestring s #:encoding clr-utf-8 #:replace None)
   (adopt (string->bytes s #:encoding encoding #:replace replace)))
 
 ;; ---------------------------------------------------------------------------
@@ -136,7 +138,7 @@
 ;; An empty byte string can have no array, and `bytes->string` needs one.
 ;; The offset of an error counts from the start of the byte string.
 (: (-> ByteString (#:encoding Encoding) (Result DecodeError string)))
-(defun (bytestring->string b #:encoding utf-8)
+(defun (bytestring->string b #:encoding clr-utf-8)
   (if (bytestring-empty? b)
       (Ok "")
       (match (bytes->string (struct-ref b bytes) #:start (struct-ref b start) #:end (struct-ref b end)
@@ -145,7 +147,7 @@
         ((Err e) (Err (record-set e (offset (- (record-ref e offset) (struct-ref b start)))))))))
 
 (: (-> ByteString (#:encoding Encoding) (#:replace char) string))
-(defun (bytestring->string/lossy b #:encoding utf-8 #:replace #\xFFFD)
+(defun (bytestring->string/lossy b #:encoding clr-utf-8 #:replace #\xFFFD)
   (if (bytestring-empty? b)
       ""
       (bytes->string/lossy (struct-ref b bytes) #:start (struct-ref b start) #:end (struct-ref b end)

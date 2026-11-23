@@ -7,6 +7,11 @@
 (def/cmdline-choices (: Level (Union Fast Safe VeryCareful)))
 
 (def/cmdline
+  (: Move (Record #:program "mv"
+            (: from Path #:positional)
+            (: into Path #:short #\t #:default (path ".")))))
+
+(def/cmdline
   (: Options (Record #:program "copy" #:summary "Copies files into a directory."
                (: verbose int #:count #:short #\v #:help "Say more. Repeat for more still.")
                (: dry-run bool #:short #\n #:help "Print what would be done, and change nothing.")
@@ -191,4 +196,12 @@
   (def (: parsed (Result ArgError Run)) (parse-args ["p"]))
   (def (Ok o) parsed :leave ((Err e) (panic! (arg-error-message e) #:exit-code (arg-error-exit-code e))))
   (expect "parse-args" (.program o) "p")
+
+  ;; --- Path -----------------------------------------------------------------
+  (match (cmdline-parse-Move ["a/b" "-t" "/tmp"])
+    ((Ok m)
+     (expect "a positional Path" (.from m) (path "a/b"))
+     (expect "an option Path" (.into m) (path "/tmp")))
+    ((Err e) (fail (arg-error-message e))))
+  (expect "a Path's placeholder" (string-contains? (cmdline-help-Move) "-t, --into PATH") #t)
   0)

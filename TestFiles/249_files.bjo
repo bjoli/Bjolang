@@ -299,20 +299,20 @@
   ;; "." sorts before "a", so `.git` comes first.
   (expect #"${where}: every file, depth first, each directory in order"
           (->list (directory-walk dir))
-          (list (path-combine dir ".git" "HEAD")
-                (path-combine dir "a" "m" "k.txt")
-                (path-combine dir "a" "z.txt")
-                (path-combine dir "b.txt")
-                (path-combine dir "c.bjo")))
+          (list-map path (list (path-combine dir ".git" "HEAD")
+                               (path-combine dir "a" "m" "k.txt")
+                               (path-combine dir "a" "z.txt")
+                               (path-combine dir "b.txt")
+                               (path-combine dir "c.bjo"))))
   (expect #"${where}: into? leaves a directory out"
-          (->list (directory-walk dir #:into? (fun (d) (not (= (path-filename d) (Some ".git"))))))
-          (list (path-combine dir "a" "m" "k.txt")
-                (path-combine dir "a" "z.txt")
-                (path-combine dir "b.txt")
-                (path-combine dir "c.bjo")))
+          (->list (directory-walk dir #:into? (fun (d) (not (path-has-name? d ".git")))))
+          (list-map path (list (path-combine dir "a" "m" "k.txt")
+                               (path-combine dir "a" "z.txt")
+                               (path-combine dir "b.txt")
+                               (path-combine dir "c.bjo"))))
   (expect #"${where}: filter asks what a glob would"
-          (->list (filter #(string-ends-with? & ".bjo") (directory-walk dir)))
-          (list (path-combine dir "c.bjo")))
+          (->list (filter #(path-has-extension? & "bjo") (directory-walk dir)))
+          (list (path (path-combine dir "c.bjo"))))
   (expect #"${where}: an empty directory has no files"
           (list-length (->list (directory-walk (path-combine dir "empty"))))
           0))
@@ -331,8 +331,8 @@
       (expect "making a walk lists nothing" (box-ref listed) 0)
       ;; The first `.txt` is under `a/m`: the root, `.git`, `a` and `a/m` are
       ;; listed on the way, and `empty` is not.
-      (expect "a walk stopped early" (find #(string-ends-with? & ".txt") walk)
-              (Some (path-combine "lazy" "a" "m" "k.txt")))
+      (expect "a walk stopped early" (find #(path-has-extension? & "txt") walk)
+              (Some (path (path-combine "lazy" "a" "m" "k.txt"))))
       (expect "lists only what it passed" (box-ref listed) 4)
       (ignore (->list walk))
       (expect "and a whole walk lists every directory once more" (box-ref listed) 9)))
@@ -341,7 +341,7 @@
   (def elsewhere (directory-walk "249_nowhere"))
   (with-fake-fs (("249_nowhere/x.txt" "x"))
     (expect "the handler at the walk answers" (->list elsewhere)
-            (list (path-combine "249_nowhere" "x.txt")))))
+            (list (path (path-combine "249_nowhere" "x.txt"))))))
 
 ;; On the disk only: a link to a directory is never entered, by a walk or by
 ;; a delete. Entering one to delete would delete what it points at. Some

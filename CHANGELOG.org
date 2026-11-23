@@ -3,6 +3,49 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~Path~ and ~ByteString~ are in the prelude, and the file functions take paths
+
+- ~(std bytestring)~ is now ~(std prelude bytestring)~, and the prelude
+  re-exports it. Remove ~(import (std bytestring))~.
+- ~Path~ is new, in ~(std prelude path)~, which the prelude re-exports. A
+  ~Path~ is a ~ByteString~: the exact bytes of a name, which need not be
+  UTF-8. Nothing in the module reads the file system.
+- ~AsPath~ converts a ~string~, a ~ByteString~ or a ~Path~, and every
+  function that takes a path takes any of them: ~(path-join "/srv" name)~.
+- A path is a sequence of parts: the root ~/~ when it is absolute, then its
+  names. Empty names and ~.~ are not parts; ~..~ is. Equality, order and
+  hash are by parts, so ~a/b~, ~a//b~, ~a/./b~ and ~a/b/~ are one path, and
+  ~a/b~ sorts before ~a-b~. ~path->bytestring~ returns the bytes as given.
+- ~path-parts~, ~-absolute?~, ~-relative?~, ~-parent~, ~-name~, ~-stem~,
+  ~-extension~, ~-has-name?~, ~-has-extension?~, ~-join~, ~-join-all~,
+  ~-with-name~, ~-with-extension~, ~-normalize~ (lexical), ~-starts-with?~
+  and ~-strip-prefix~ (by parts).
+- ~path->string~ returns ~(Result DecodeError string)~;
+  ~path->string/lossy~ never fails. ~written~ gives ~#p"..."~.
+- The file and directory functions of the prelude (~file-read-text~,
+  ~file-exists?~, ~open-input-file~, ~file-copy~, ~directory-walk~ and the
+  rest) take any value of ~AsPath~. A call with a string is unchanged.
+- The operations of the ~FS~ effect take a ~Path~, and ~fs-list~ returns
+  ~(Vec Path)~. A handler gets the bytes it was given. To change a handler:
+  its parameter is a ~Path~, and ~path->string/lossy~ gives the old string.
+  A direct call to an operation or a ~/raw~ function with a string is
+  ~(fs-info/raw (path "x"))~.
+- The ~/raw~ operations give a path to .NET as a string, which must be
+  UTF-8. For a path that is not UTF-8 they return an ~ArgumentException~;
+  ~fs-info/raw~ raises it. The name is not changed to a different one.
+- ~(std argparse)~ has an ~ArgValue~ instance for ~Path~, with the
+  placeholder ~PATH~.
+- ~directory-files~ and ~directory-subdirectories~ return ~(Vec Path)~, and
+  ~directory-walk~ returns ~(Seq Path)~; its ~#:into?~ gets a ~Path~. A walk
+  orders the entries of a directory by their names, byte by byte. To change
+  a caller: ~(string-ends-with? f ".bjo")~ is ~(path-has-extension? f "bjo")~,
+  ~(= (path-filename d) (Some ".git"))~ is ~(path-has-name? d ".git")~, and
+  ~path->string/lossy~ gives the old string.
+- ~path-absolute~ takes any value of ~AsPath~, and still returns a string.
+- Not yet: the string path functions (~path-combine~, ~path-filename~,
+  ~path-file-extension~) are still there, names that are not UTF-8 need a
+  native Unix layer, and Windows separators and prefixes are not handled.
+
 * ~bytes->string~ returns a ~Result~
 
 - ~(bytes->string bytes #:encoding #:start #:end)~ returns

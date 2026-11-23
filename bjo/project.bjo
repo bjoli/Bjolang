@@ -269,10 +269,7 @@
        (None #f)
        ((Some lib)
         (def head (symbol->string first))
-        (any? #(match (path-filename &)
-                 ((Some dir-name) (= dir-name head))
-                 (None #f))
-              (directory-subdirectories lib)))))))
+        (any? #(path-has-name? & head) (directory-subdirectories lib)))))))
 
 ;; The characters a name segment may be written with.
 ;;
@@ -461,14 +458,14 @@
 ;; twice; the compiler builds imports on demand and does not need the order.
 (: (-> string (List string)))
 (defun (sources-under dir)
-  (list-sort (collect-sources dir)))
+  (list-sort (collect-sources (path dir))))
 
-(: (-> string (List string)))
+(: (-> Path (List string)))
 (defun (collect-sources dir)
   (if (not (directory-exists? dir))
       Nil
       (let ((here (loop (:for file (directory-files dir))
-                        (:acc out (listing file) #:when (string-ends-with? file ".bjo"))
+                        (:acc out (listing (path->string/lossy file)) #:when (path-has-extension? file "bjo"))
                         => out)))
         (list-append here
                      (loop (:for sub (directory-subdirectories dir))
