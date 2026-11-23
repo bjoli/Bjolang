@@ -30,6 +30,8 @@
                       (-> ProcessStartInfo string void) #:set))
   (info-use-shell! (: System.Diagnostics.ProcessStartInfo.UseShellExecute
                       (-> ProcessStartInfo bool void) #:set))
+  (info-directory! (: System.Diagnostics.ProcessStartInfo.WorkingDirectory
+                      (-> ProcessStartInfo string void) #:set))
   (info-argument   (: BjoProc.AddArgument (-> ProcessStartInfo string ProcessStartInfo)))
   (process-start   (: System.Diagnostics.Process.Start
                       (-> ProcessStartInfo Process)
@@ -65,15 +67,20 @@
 ;;   argument, as it is.
 ;; - What this program has printed is flushed first, so the outputs come in
 ;;   order.
+;; - `#:directory` is the working directory of the program. The default is
+;;   the working directory of this process.
 ;; - Returns the exit code, or `Err` when the program cannot be started.
 ;;   Panics on an empty `argv`.
-(: (-> (Vec string) (Result Exception int)))
-(defun (task-run argv)
+(: (-> (Vec string) (#:directory (Option string)) (Result Exception int)))
+(defun (task-run argv #:directory None)
   (when (vec-empty? argv) (panic! "task-run: the command is empty"))
   (flush-port (parameter-ref current-output-port))
   (def info (ProcessStartInfo.))
   (info-program! info (vec-ref argv 0))
   (info-use-shell! info #f)
+  (match directory
+    ((Some dir) (info-directory! info dir))
+    (None unit))
   (loop (:for i (range 1 (vec-length argv)))
         (:do (ignore (info-argument info (vec-ref argv i)))))
   (def (Ok child) (process-start info) :propagate)
@@ -85,10 +92,10 @@
 ;; - A program that exits with a code other than 0 ends the task with that
 ;;   code, and a message on standard error that names the command.
 ;; - A program that cannot be started ends the task with 127.
-(: (-> (Vec string) void))
-(defun (task-run! argv)
+(: (-> (Vec string) (#:directory (Option string)) void))
+(defun (task-run! argv #:directory None)
   (def shown (string-join argv " "))
-  (match (task-run argv)
+  (match (task-run argv #:directory directory)
     ((Ok 0) unit)
     ((Ok code) (panic! #"bjo task: ${shown} exited with ${code}" #:exit-code code))
     ((Err e) (panic! #"bjo task: ${shown} could not be started: ${(error-message e)}"

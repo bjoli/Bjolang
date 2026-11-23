@@ -530,6 +530,9 @@
 ;; everything newer than it is a linked module whose interface is the one it was
 ;; built against, or a source such a module was built from. The compiler decides
 ;; a library this way; this is the same for the entry it is never asked about.
+;;
+;; - Never current for a Native AOT build: its executable has the code of the
+;;   linked modules compiled in, so a changed body is a changed executable.
 (: (-> string string Against bool))
 (defun (current-by-interface? file wanted against)
   (def* ((Some rec) (read-record file) :leave-with #f)
@@ -538,7 +541,8 @@
     (loop (:for entry (record-ref rec interface-of))
           (:acc out (folding Nil (list-append (interface-kept entry) out)))
       => out))
-  (and (not (built-otherwise? rec wanted against file))
+  (and (not (record-ref against aot))
+       (not (built-otherwise? rec wanted against file))
        (file-exists? artefact)
        (= (record-ref rec written) (mtime artefact))
        (all? (fun (input) (or (not (newer? input artefact)) (any? #(= & input) excused)))
@@ -745,7 +749,8 @@
 ;; - With no words, or only -h or --help, the tasks are listed, and nothing
 ;;   else is built.
 ;; - Otherwise the entry point is written to .bjo/tasks/main.bjo, when it
-;;   changed, built, and run with the words as they are.
+;;   changed, built, and run with the words as they are, in the directory of
+;;   tasks.bjo.
 (: cmd-task (-> (List string) bool bool bool int) #:sync)
 (defun (cmd-task words debug? force? locked?)
   (with-return ret
@@ -768,6 +773,9 @@
        (def entry (path-combine dir ".bjo" "tasks" "main.bjo"))
        (write-if-changed! entry (task-entry-source tasks "../../tasks.bjo"))
        (def (Ok (Tuple rec _)) (ensure-built entry debug? #f force? roots) :leave ((Err status) status))
+       ;; A task runs in the directory of tasks.bjo, wherever bjo task is
+       ;; run from, so its relative paths are the project's.
+       (set-current-directory! dir)
        (run-built rec words)))))
 
 ;; `bjo bench` is `bench.bjo`'s. What it needs from here is lent to it: a

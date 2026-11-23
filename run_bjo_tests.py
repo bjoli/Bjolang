@@ -1882,6 +1882,21 @@ def test_native_aot(work, c):
     c.that("only a table of its native libraries",
            (out / (native.stem + ".bjolinks")).exists(), left)
 
+    # A module whose body changes and whose interface does not: the
+    # executable has its code compiled in, so it is built again.
+    cutoff = work / "cutoff"
+    aot_manifest(cutoff, True)
+    write(cutoff / "src" / "main.bjo", '(import (std prelude))\n(import (aotapp word))\n'
+                                       '(defun (main) (println (word)))\n')
+    write(cutoff / "src" / "word.bjo", '(export word)\n(import (std prelude))\n'
+                                       '(: (-> string))\n(defun (word) "first")\n')
+    c.says("an AOT program that imports a module runs", run_bjo(cutoff, "run"), "first")
+    time.sleep(1.1)
+    write(cutoff / "src" / "word.bjo", '(export word)\n(import (std prelude))\n'
+                                       '(: (-> string))\n(defun (word) "second")\n')
+    c.says("a changed body in that module is in the native executable",
+           run_bjo(cutoff, "run"), "second")
+
     aot_manifest(app, False)
     ran = run_bjo(app, "run")
     c.that("taking (aot #t) out rebuilds the program", "Built" in said(ran) or "Successfully" in said(ran),
@@ -2460,7 +2475,7 @@ def test_task(work, c):
 
     # task-run gives the program the terminal; task-run! ends the task when
     # the program fails.
-    write(loose / "tasks.bjo", """(export shell shell-or-stop)
+    write(loose / "tasks.bjo", """(export shell shell-or-stop shell-in)
 (import (std prelude))
 (import (bjo task))
 (:doc shell (summary "Runs sh.") (arg script "The script.") (returns "Its exit code."))
@@ -2473,6 +2488,10 @@ def test_task(work, c):
 (defun (shell-or-stop script)
   (task-run! ["sh" "-c" script])
   (println "after"))
+(:doc shell-in (summary "Runs sh in a directory.") (arg dir "The directory.") (arg script "The script."))
+(: (-> string string void))
+(defun (shell-in dir script)
+  (task-run! ["sh" "-c" script] #:directory (Some dir)))
 """)
     shell = run_bjo(loose, "task", "shell", "echo from-sh; exit 3")
     c.that("task-run gives the exit code", shell.returncode == 3, said(shell))
@@ -2482,6 +2501,9 @@ def test_task(work, c):
     c.says("and names the command", stopped, "bjo task: sh -c exit 4 exited with 4")
     c.that("and the task does not go on", "after" not in stopped.stdout, stopped.stdout)
     c.says("task-run! goes on when it works", run_bjo(loose, "task", "shell-or-stop", "true"), "after")
+    (loose / "sub").mkdir(exist_ok=True)
+    c.says("#:directory sets the working directory",
+           run_bjo(loose, "task", "shell-in", "sub", "basename $(pwd)"), "sub")
 
     # Every export has docs, and is a task or a type.
     write(loose / "tasks.bjo", "(export bare)\n(import (std prelude))\n(: (-> void))\n(defun (bare) (println 1))\n")
@@ -2510,11 +2532,12 @@ def test_task(work, c):
     write(project / "src" / "core.bjo", '(import (std prelude))\n(export one)\n(: one (-> int))\n(defun (one) 1)\n')
     write(project / "tasks.bjo", '(export greet)\n(import (std prelude))\n(import (helper core))\n'
                                  '(:doc greet (summary "Greets."))\n(: (-> void))\n'
-                                 '(defun (greet) (println (hello)))\n')
+                                 '(defun (greet) (println (hello)) (println (current-directory)))\n')
     (project / "src" / "deep").mkdir(parents=True)
     greeted = run_bjo(project / "src" / "deep", "task", "greet")
     c.worked("bjo task in a project, from a directory below its root", greeted)
     c.says("with a package from task-depends", greeted, "helper 0.1.0")
+    c.says("and it runs in the project's root", greeted, "/proj\n")
 
 
 def run_test(name, fn):
