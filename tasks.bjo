@@ -120,22 +120,40 @@
 (def output-files
   (glob-pattern "**/*.{exe,dll,pdb,bjobuild,deps.json,runtimeconfig.json}" #:dot? #t))
 
+;; The directories that hold a file git does not ignore: a tracked file, or
+;; an untracked one that no ignore rule matches. Each ends in /.
+(: (-> (Vec string) (TransientMap string bool)))
+(defun (directories-of paths)
+  (def dirs (transientmap-empty))
+  (loop (:for p paths)
+        (:let parts (string-split p "/"))
+        (:for i (range 0 (- (vec-length parts) 1)))
+        (:subloop)
+        (:do (transientmap-set! dirs (str (string-join (vec-take parts (+ i 1)) "/") "/") #t)))
+  dirs)
+
 ;; What clean deletes for the ignored file `p`, a path relative to the
 ;; repository root with / between names:
 ;; - None, when it is kept, or is not build output;
 ;; - a directory that holds it, ending in /, when the whole directory goes:
 ;;   one of `deleted-directories`, a `bin` or `obj` of dotnet, or a
-;;   `__pycache__`;
+;;   `__pycache__`. A directory in `protected` never goes whole, since it
+;;   holds a file that git does not ignore;
 ;; - else `p`, when it is an output file, or the stamp of the test fixtures.
-(: (-> bool string (Option string)))
-(defun (target-of lib? p)
+(: (-> bool (TransientMap string bool) string (Option string)))
+(defun (target-of lib? protected p)
   (def parts (string-split p "/"))
   (def whole
-    {finding (str (string-join (vec-take parts (+ i 1)) "/") "/")
-             :when (let ((name (vec-ref parts i)))
-                     (or (= name "bin") (= name "obj") (= name "__pycache__")))
-             (:for i (range 0 (- (vec-length parts) 1)))})
-  (def deleted {finding d :when (string-starts-with? p d) (:for d deleted-directories)})
+    {finding dir
+             :when (and (let ((name (vec-ref parts i)))
+                          (or (= name "bin") (= name "obj") (= name "__pycache__")))
+                        (not (transientmap-contains? protected dir)))
+             (:for i (range 0 (- (vec-length parts) 1)))
+             (:let dir (str (string-join (vec-take parts (+ i 1)) "/") "/"))})
+  (def deleted {finding d
+                        :when (and (string-starts-with? p d)
+                                   (not (transientmap-contains? protected d)))
+                        (:for d deleted-directories)})
   (cond
     ((any? (fun (k) (string-starts-with? p k)) kept-prefixes) None)
     ((and (not lib?) (string-starts-with? p "lib/")) None)
@@ -147,9 +165,9 @@
 
 ;; The targets of `paths`, each once. `paths` is in git's order, so the
 ;; files of one directory are next to each other, and so are their targets.
-(: (-> bool (Vec string) (List string)))
-(defun (targets-of lib? paths)
-  (def found {listing t (:for p paths) (:when-let (Some t) (target-of lib? p))})
+(: (-> bool (TransientMap string bool) (Vec string) (List string)))
+(defun (targets-of lib? protected paths)
+  (def found {listing t (:for p paths) (:when-let (Some t) (target-of lib? protected p))})
   (let go ((ts found) (last "") (acc Nil))
     (match ts
       (Nil (list-reverse acc))
@@ -211,33 +229,56 @@
   (when (> count 0)
     (println #"${(size-column bytes)}  ${count} under ${top}")))
 
+;; The paths that a `git ls-files -z` command prints, or a message when git
+;; cannot be run or fails.
+(: (-> Form (Result string (Vec string))))
+(defun (git-files form)
+  (match (run/output form)
+    ((Err e) (Err #"clean: could not run git: ${(written e)}"))
+    ((Ok (Tuple 0 listed))
+     (Ok (vec-filter (fun (p) (not (= p ""))) (string-split listed "\u{0}"))))
+    ((Ok _) (Err "clean: git ls-files failed"))))
+
+;; Ok when the working directory is the top of the git repository. The paths
+;; that git prints are relative to the working directory, and the rules of
+;; `target-of` are relative to the top, so clean runs only there.
+(: (-> (Result string void)))
+(defun (at-repository-top)
+  (match (run/output '(git rev-parse --show-prefix))
+    ((Err e) (Err #"clean: could not run git: ${(written e)}"))
+    ((Ok (Tuple 0 prefix))
+     (if (string-empty? (string-trim prefix))
+         (Ok unit)
+         (Err #"clean: tasks.bjo is in ${(string-trim prefix)} of its git repository. clean runs only at the top.")))
+    ((Ok _) (Err "clean: git rev-parse failed. Is this a git repository?"))))
+
 (:doc clean
   (summary "Lists, or deletes, the build output that git ignores.")
   (key #:delete "Delete what is listed. Without it, nothing is deleted.")
   (key #:lib "Also the build output under lib/. Run build_std.sh afterwards.")
   (key #:verbose "List each file and directory, not only a line for each top directory.")
-  (returns "0, or 1 when git cannot list the ignored files."))
+  (returns "0, or 1 when git cannot list the files, or tasks.bjo is not at the top of its git repository."))
 (: (-> (#:delete bool) (#:lib bool) (#:verbose bool) int))
 (defun (clean #:delete #f #:lib #f #:verbose #f)
-  (def err (parameter-ref current-error-port))
-  (match (run/output '(git ls-files -z --others --ignored --exclude-standard))
-    ((Err e) (writeln err #"clean: could not run git: ${(written e)}") 1)
-    ((Ok (Tuple code listed))
-     (if (not (= code 0))
-         (let () (writeln err "clean: git ls-files failed") 1)
-         (let ()
-           (def paths (vec-filter (fun (p) (not (= p ""))) (string-split listed "\u{0}")))
-           (def sized (list-map (fun (t) (Tuple t (size-of t))) (targets-of lib paths)))
-           (if verbose
-               (loop (:for (Tuple t n) sized) (:do (println #"${(size-column n)}  ${t}")))
-               (print-summary sized))
-           (def total {summing n (:for (Tuple _ n) sized)})
-           (cond
-             ((list-empty? sized) (println "Nothing to clean."))
-             (delete
-              (loop (:for (Tuple t _) sized)
-                    (:do (if (string-ends-with? t "/") (directory-delete-tree t) (file-delete t))))
-              (println #"Deleted ${(list-length sized)}, ${(size-text total)}."))
-             (else
-              (println #"${(list-length sized)} to delete, ${(size-text total)}. Run with --delete to delete them.")))
-           0)))))
+  (def (Ok _) (at-repository-top)
+    :leave ((Err why) (writeln (parameter-ref current-error-port) why) 1))
+  (match (Tuple (git-files '(git ls-files -z --others --ignored --exclude-standard))
+                (git-files '(git ls-files -z --cached --others --exclude-standard)))
+    ((Tuple (Err why) _) (writeln (parameter-ref current-error-port) why) 1)
+    ((Tuple _ (Err why)) (writeln (parameter-ref current-error-port) why) 1)
+    ((Tuple (Ok paths) (Ok not-ignored))
+     (def protected (directories-of not-ignored))
+     (def sized (list-map (fun (t) (Tuple t (size-of t))) (targets-of lib protected paths)))
+     (if verbose
+         (loop (:for (Tuple t n) sized) (:do (println #"${(size-column n)}  ${t}")))
+         (print-summary sized))
+     (def total {summing n (:for (Tuple _ n) sized)})
+     (cond
+       ((list-empty? sized) (println "Nothing to clean."))
+       (delete
+        (loop (:for (Tuple t _) sized)
+              (:do (if (string-ends-with? t "/") (directory-delete-tree t) (file-delete t))))
+        (println #"Deleted ${(list-length sized)}, ${(size-text total)}."))
+       (else
+        (println #"${(list-length sized)} to delete, ${(size-text total)}. Run with --delete to delete them.")))
+     0)))
