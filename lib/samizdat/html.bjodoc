@@ -1,0 +1,222 @@
+;; Docs for samizdat/html.bjo, read through (:doc #:file "html.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}, and a literal
+;; at sign is @"@".
+
+(:doc #:module
+  (summary "A samizdat Document as HTML: (text xml) nodes, and an HTML writer for them.")
+  (see document->html html-page html-options document->nodes nodes->html)
+  (example """
+    (import (samizdat expand))
+    (import (samizdat commands))
+    (import (samizdat html))
+
+    (match (read-document-file "posts/cookies.sz" standard-commands)
+      ((Ok doc) (file-write-text "cookies.html" (html-page doc)))
+      ((Err e) (println e)))
+    """)
+  (reference """
+    The converter makes the document into @code{(text xml)} nodes, and the
+    writer makes the nodes into HTML text. A template can put the nodes of
+    a document in a page of its own nodes, and write the result with
+    @code{nodes->html}.
+
+    @read-table{
+    | @code{document->nodes}, @code{document->html} | the blocks, then the footnotes |
+    | @code{html-page}                              | a whole page around the document |
+    | @code{blocks->nodes}, @code{inlines->nodes}   | part of a document, for a hook |
+    | @code{nodes->html}                            | any nodes, as HTML text |
+    | @code{html-element}, @code{raw-html}, @code{raw-html-block} | nodes for a hook |
+    }
+
+    The module re-exports @code{Node} and @code{xml-text} of
+    @code{(text xml)}. A hook or a template does not need to import
+    @code{(text xml)}, whose @code{Document} is not the @code{Document} of
+    samizdat.
+
+    @strong{What the converter makes.}
+
+    @itemlist{
+    @item{A heading is @code{<h2 id="...">} for a section, with the default heading offset.}
+    @item{A code block is @code{<pre><code class="language-scheme">}. highlight.js and Prism use this class. A highlighter can replace the @code{<pre>}.}
+    @item{A @code{Span} or a @code{Div} is a @code{<span>} or a @code{<div>} with the class as its @code{class}.}
+    @item{A footnote reference is @code{<sup class="note-ref">} with a link. The notes are a @code{<section class="notes">} at the end. Each note has a link back.}
+    @item{Struck text is @code{<del>}. A checkbox is a disabled @code{<input type="checkbox">}.}
+    @item{A table has its caption, a @code{<thead>}, and a @code{<tbody>} for each group. An aligned column has @code{style="text-align: ..."} on its cells.}
+    @item{A list item that is one paragraph, perhaps with lists after it, has no @code{<p>}. A definition is written the same way.}
+    @item{Raw text for the format @code{"html"} is written as it is. Raw text for any other format is left out.}
+    }
+
+    @strong{The writer} writes HTML, not XML:
+
+    @itemlist{
+    @item{A void element has no end tag: @code{<br>}, not @code{<br />}.}
+    @item{An empty element that is not void has an end tag: @code{<td></td>}.}
+    @item{A boolean attribute whose value is empty or its own name is written bare: @code{(Tuple "open" "open")} is @code{open}.}
+    @item{An element with block elements among its children puts each block on a line of its own. The writer does not change text, and does not change anything inside a @code{<pre>}.}
+    @item{The text of a @code{<script>} or a @code{<style>} is not escaped.}
+    @item{A comment is written. A processing instruction is left out.}
+    }
+    """))
+
+(:doc Html
+  (summary "The options of the HTML converter, which html-options makes.")
+  (see html-options default-html)
+  (reference """
+    A hook gets an @code{Html} as its first argument. Give it to
+    @code{blocks->nodes} or @code{inlines->nodes} to convert what is inside
+    the block or the inline with the same options.
+    """))
+
+(:doc html-options
+  (summary "Makes the options of the HTML converter.")
+  (key #:heading-offset "Added to the level of each heading. With 1, a section is an @code{<h2>}, below the @code{<h1>} of the page. The level is kept between 1 and 6.")
+  (key #:id-prefix "Put in front of each id that the converter writes, and in front of each link to an id. Use it for two documents on one page, whose ids are otherwise the same.")
+  (key #:block-hook "Called on each block before the converter. It returns @code{None} for a block that the converter writes, or the nodes for the block.")
+  (key #:inline-hook "Called on each inline before the converter. It returns @code{None} for an inline that the converter writes, or the nodes for the inline.")
+  (key #:url-hook "Changes the target of each link and image. A link whose target starts with @code{#} does not go through it.")
+  (key #:highlighter "A function of the language and the text of a code block. It returns the node to write, usually a @code{<pre>}, or @code{None} for the plain code block.")
+  (returns "The options.")
+  (see Html default-html document->html)
+  (example """
+    (defun (asides h b)
+      (match b
+        ((Div "aside" bs) (Some (list (html-element "aside" Nil (blocks->nodes h bs)))))
+        (_ None)))
+
+    (document->html doc #:with (html-options #:block-hook asides #:id-prefix "post-1-"))
+    """)
+  (reference """
+    A hook is called first for each block or inline, also inside other
+    blocks and inlines. When it returns nodes, the converter does not
+    convert the contents. The hook converts them with @code{blocks->nodes}
+    or @code{inlines->nodes}, if it needs them.
+
+    samizdat has no highlighter. The package textmate-bjolang has one:
+
+    @codeblock[#:lang "bjolang"]|{
+    (def code-colours (highlighter #:theme 'light-plus))
+    (html-options #:highlighter
+      (Some (fun (lang code) (Some (code->node code-colours lang code #:style 'classes)))))
+    }|
+    """))
+
+(:doc default-html
+  (summary "The options of the HTML converter with each option at its default: (html-options).")
+  (see html-options))
+
+(:doc document->nodes
+  (summary "A document as nodes: its blocks, then its footnotes.")
+  (arg doc "The document.")
+  (key #:with "The options.")
+  (returns "The nodes for the @code{<body>} of a page. When the document has notes, the last node is a @code{<section class=\"notes\">}.")
+  (see document->html html-page nodes->html)
+  (example """
+    (document->nodes doc)
+    ;; ((h2 (@ (id "the-defaults")) "The defaults")
+    ;;  (p "Setting a cookie is one header, but getting it " (em "right") " is the hard part."
+    ;;     (sup (@ (class "note-ref")) (a (@ (id "note-ref-1") (href "#note-1")) "1")))
+    ;;  ...)
+    """))
+
+(:doc blocks->nodes
+  (summary "Blocks as nodes, for a hook or a template.")
+  (arg h "The options.")
+  (arg bs "The blocks.")
+  (returns "The nodes, in the order of the blocks.")
+  (see inlines->nodes blocks->html html-options))
+
+(:doc inlines->nodes
+  (summary "Inlines as nodes, for a hook or a template.")
+  (arg h "The options.")
+  (arg xs "The inlines.")
+  (returns "The nodes, in the order of the inlines.")
+  (see blocks->nodes inlines->html html-options))
+
+(:doc document->html
+  (summary "A document as HTML text, without the page around it.")
+  (arg doc "The document.")
+  (key #:with "The options.")
+  (returns "The HTML of the blocks, then of the footnotes. It has no newline at the end.")
+  (see document->nodes html-page))
+
+(:doc blocks->html
+  (summary "Blocks as HTML text.")
+  (arg h "The options.")
+  (arg bs "The blocks.")
+  (returns "The HTML.")
+  (see blocks->nodes inlines->html))
+
+(:doc inlines->html
+  (summary "Inlines as HTML text.")
+  (arg h "The options.")
+  (arg xs "The inlines.")
+  (returns "The HTML.")
+  (see inlines->nodes blocks->html))
+
+(:doc html-page
+  (summary "A whole HTML page with a document as its body.")
+  (arg doc "The document.")
+  (key #:with "The options.")
+  (key #:title "The text of the @code{<title>}. When it is empty, the page uses the @code{(title ...)} of the meta form, if there is one.")
+  (key #:head "HTML that is put in the @code{<head>} as it is, after the @code{<title>}: a stylesheet link, for example.")
+  (key #:lang "The @code{lang} attribute of @code{<html>}.")
+  (returns "The page. It starts with @code{<!DOCTYPE html>} and ends with a newline.")
+  (see document->html document->nodes)
+  (example """
+    (html-page doc #:head "<link rel=\"stylesheet\" href=\"/style.css\">")
+    """)
+  (reference """
+    The @code{<head>} has a @code{<meta charset="utf-8">}, a viewport
+    @code{<meta>}, the @code{<title>}, and then @code{#:head}. The page
+    does not add the title as a heading in the @code{<body>}.
+    """))
+
+(:doc nodes->html
+  (summary "Nodes as HTML text.")
+  (arg nodes "The nodes.")
+  (returns "The HTML, without a newline at the end.")
+  (see document->nodes html-element raw-html)
+  (reference """
+    The writer writes HTML, not XML. See the module's doc for its rules.
+    An element that is in no namespace is written by its local name.
+    """))
+
+(:doc html-element
+  (summary "An element, with its name and its attributes as strings.")
+  (arg name "The name of the element.")
+  (arg attrs "The attributes, as pairs of a name and a value. For a boolean attribute, give its name as its value: @code{(Tuple \"open\" \"open\")}.")
+  (arg children "The children.")
+  (returns "The element.")
+  (raises System.ArgumentException "When the name of the element or of an attribute is not a valid XML local name, such as \"a:b\" or \"\".")
+  (see raw-html blocks->nodes inlines->nodes)
+  (example """
+    (html-element "a" (list (Tuple "href" "/")) (list (xml-text "Home")))
+    """))
+
+(:doc raw-html
+  (summary "HTML markup that the writer writes as it is, among text.")
+  (arg markup "The markup. Nothing checks it.")
+  (returns "A node that holds the markup.")
+  (see raw-html-block nodes->html)
+  (reference """
+    The node is an element in a namespace that only this writer knows. A
+    function that iterates over the nodes cannot see the markup as elements.
+    """))
+
+(:doc raw-html-block
+  (summary "HTML markup that the writer writes as it is, as a block on a line of its own.")
+  (arg markup "The markup. Nothing checks it.")
+  (returns "A node that holds the markup.")
+  (see raw-html nodes->html))
+
+(:doc escape-html
+  (summary "Text, with &, < and > escaped as HTML entities.")
+  (arg s "The text.")
+  (returns "The escaped text.")
+  (see escape-attribute))
+
+(:doc escape-attribute
+  (summary "Text, escaped for an attribute value in double quotes.")
+  (arg s "The text.")
+  (returns "The text with &, <, > and \" escaped as HTML entities.")
+  (see escape-html))

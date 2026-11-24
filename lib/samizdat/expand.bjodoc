@@ -1,0 +1,602 @@
+;; Docs for samizdat/expand.bjo, read through (:doc #:file "expand.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}. A command name
+;; in code is written @code|{@name}|, so that it is not run.
+
+(:doc #:module
+  (summary "Runs the commands of a document, and gives the functions that a command is written with.")
+  (see read-document read-document-file expand Command Ctx refuse inline block)
+  (example """
+    (import (samizdat read))
+    (import (samizdat doc))
+    (import (samizdat expand))
+    (import (samizdat commands))
+
+    ;; @aside{...}: paragraphs set apart.
+    (: aside Command)
+    (defun (aside cx c)
+      (check-keywords! cx c (vec-empty))
+      (block (Div "aside" (expand-blocks cx c))))
+
+    ;; @version["1.2"], or @version["1.2" #:prefix "r"]
+    (: version Command)
+    (defun (version cx c)
+      (check-keywords! cx c ["prefix"])
+      (inline (Code (str (kw-string-or cx c "prefix" "v") (arg-string cx c 0)))))
+
+    (def commands
+      (map-merge standard-commands
+                 #map(("aside" aside)
+                      ("version" version)
+                      ("bjolang" (text-command "Bjolang")))))
+
+    (match (read-document-file "post.sz" commands)
+      ((Ok doc) ...)
+      ((Err why) (println why)))   ; "post.sz:14:3: @version: needs 1 argument in its [...]"
+    """)
+  (reference """
+    A command is a function of type @code{Command}. It gets the state of
+    the document, a @code{Ctx}, and the call as the reader read it. The
+    arguments and the body are not expanded. The command decides what to
+    do with them. It returns pieces: inlines and blocks, in any number.
+
+    A table of commands is a @code{(Map string Command)}. The key is the
+    name of the command, without the @code|{@}|. @code{map-merge} with
+    @code{standard-commands} of @code{(samizdat commands)} adds commands of
+    your own. The second map wins, so a command of yours replaces a
+    standard command with the same name.
+
+    @strong{Paragraphs.} Text between blocks is collected into paragraphs.
+    A blank line ends a paragraph, and so does a block. Whitespace at the
+    start and the end of a paragraph is removed.
+
+    @strong{Errors.} A command that cannot use its call calls
+    @code{refuse}. Then the expansion stops, and @code{expand} returns
+    @code{Err} with a message that starts with the file, the line and the
+    column of the call. Many functions here call @code{refuse} for a call
+    that is not correct. An exception of another kind from a command is not
+    caught: it is raised from @code{expand}.
+
+    Commands can call commands to a depth of 200. A call deeper than that
+    is rejected.
+
+    @strong{Typography.} After the commands ran, @code{smarten} changes
+    dashes, ellipses and quotes in the text. @code{#:typography #f} stops
+    this.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Types
+;; ---------------------------------------------------------------------------
+
+(:doc Piece
+  (summary "What a command makes: an inline or a block.")
+  (case PInline "An inline. Adjacent inlines are collected into paragraphs.")
+  (case PBlock "A block. It ends the paragraph before it.")
+  (see inline block nothing Command))
+
+(:doc Command
+  (summary "A command: a function of the state of the document and a call, which returns pieces.")
+  (see Ctx Piece text-command expand)
+  (example """
+    (: kbd Command)
+    (defun (kbd cx c) (inline (Span "kbd" [(Str (body-text cx c))])))
+    """))
+
+(:doc Ctx
+  (summary "The state of a document while its commands run.")
+  (see Command ctx-source state-ref state-set! add-note! unique-id!)
+  (reference """
+    It holds the table of commands, the file that is expanded, the
+    footnotes, the heading ids, the deferred commands, the source files and
+    the state that commands keep. A command changes it only through the
+    functions of this module. One @code{Ctx} is used for the whole
+    expansion, included files too.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Running a document
+;; ---------------------------------------------------------------------------
+
+(:doc expand
+  (summary "Runs the commands of a document that the reader read, and returns the Document.")
+  (arg src "The document, from @code{read-source}.")
+  (arg commands "The table of commands.")
+  (key #:name "The name of the document in an error message. Paths in the document are relative to its directory.")
+  (key #:typography "When @code{#f}, dashes, ellipses and quotes stay as they were typed.")
+  (returns "The document, or @code{Err} with the message of the first @code{refuse}.")
+  (see read-document read-document-file refuse smarten)
+  (reference """
+    The steps are:
+
+    @itemlist{
+    @item{Each command runs, in document order. Text is collected into paragraphs.}
+    @item{When a command called @code{number-headings!}, the headings are numbered.}
+    @item{Each deferred function runs with the document, and its result replaces its placeholder.}
+    @item{@code{smarten} changes the text of the blocks and of the footnotes, unless @code{#:typography} is @code{#f}.}
+    }
+
+    An exception that is not from @code{refuse} is raised, not returned.
+    """))
+
+(:doc read-document
+  (summary "Reads the text of a document and runs its commands.")
+  (arg text "The text of the document.")
+  (arg commands "The table of commands.")
+  (key #:name "The name of the document in an error message. Paths in the document are relative to its directory.")
+  (key #:typography "When @code{#f}, dashes, ellipses and quotes stay as they were typed.")
+  (returns "The document, or @code{Err} with a message when the text cannot be read or a command rejects its call.")
+  (see read-document-file expand)
+  (example """
+    (read-document "Some @em{text}." standard-commands #:name "note.sz")
+    """)
+  (reference """
+    It is @code{read-source}, then @code{expand}. With the default name, the
+    paths in the document are relative to the current directory.
+    """))
+
+(:doc read-document-file
+  (summary "Reads a document from a file and runs its commands.")
+  (arg path "The path of the file. Error messages use it, and paths in the document are relative to its directory.")
+  (arg commands "The table of commands.")
+  (key #:typography "When @code{#f}, dashes, ellipses and quotes stay as they were typed.")
+  (returns "The document, or @code{Err} with a message when the text cannot be read or a command rejects its call. The @code{sources} of the document start with @code{path}.")
+  (raises System.IO.IOException "When the file cannot be opened, for example when it does not exist.")
+  (see read-document expand)
+  (example """
+    (match (read-document-file "posts/cookies.sz" standard-commands)
+      ((Ok doc) (file-write-text "cookies.html" (html-page doc)))
+      ((Err e) (println e)))
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Returning
+;; ---------------------------------------------------------------------------
+
+(:doc inline
+  (summary "The result of a command that makes one inline.")
+  (arg x "The inline.")
+  (returns "A vec of one @code{PInline}.")
+  (see block nothing Piece)
+  (example """
+    (inline (Code "x"))
+    """))
+
+(:doc block
+  (summary "The result of a command that makes one block.")
+  (arg x "The block.")
+  (returns "A vec of one @code{PBlock}.")
+  (see inline nothing Piece)
+  (example """
+    (block (Div "aside" (expand-blocks cx c)))
+    """))
+
+(:doc nothing
+  (summary "The result of a command that makes nothing.")
+  (see inline block)
+  (reference """
+    Text before and after a command that makes nothing is one run of text.
+    So a blank line is found also when the command is in it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The body
+;; ---------------------------------------------------------------------------
+
+(:doc has-body?
+  (summary "Whether the call was written with a body, also an empty one.")
+  (arg c "The call.")
+  (returns "@code{#t} for @code|{@name{}}| and @code|<{@name|{}|}>|, and @code{#f} for @code|{@name}| and @code|{@name[...]}|.")
+  (see body-items))
+
+(:doc body-items
+  (summary "The body of a call as the reader read it.")
+  (arg c "The call.")
+  (returns "The items of the body. It is empty when the call has no body.")
+  (see has-body? items->blocks items->inlines at-lines)
+  (reference """
+    Use it for a command that reads the structure of its body. For
+    example, @code|{@itemlist}| iterates over the items and expands each
+    @code|{@item}|.
+    """))
+
+(:doc body-text
+  (summary "The body of a call as text, as it was written.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (returns "The text of the body. A command in the body runs, and the text of its inlines is put in its place. It is @code{\"\"} when the call has no body.")
+  (see expand-inlines inlines->text)
+  (reference """
+    @code|{@code}| and @code|{@codeblock}| use it. A command in the body that
+    makes a block is rejected with @code{refuse}.
+    """))
+
+(:doc expand-inlines
+  (summary "The body of a call, expanded as inlines.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (returns "The inlines. Adjacent text is joined. It is empty when the call has no body.")
+  (see expand-blocks items->inlines body-text)
+  (reference """
+    A block in the body is rejected with @code{refuse}. Use it for a body
+    that is text, such as the body of @code|{@em}|.
+    """))
+
+(:doc expand-blocks
+  (summary "The body of a call, expanded as paragraphs and blocks.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (returns "The blocks. Text is collected into paragraphs. It is empty when the call has no body.")
+  (see expand-inlines items->blocks)
+  (reference """
+    Use it for a body that can hold paragraphs, such as the body of
+    @code|{@note}| or @code|{@blockquote}|.
+    """))
+
+(:doc expand-items
+  (summary "Items expanded into pieces, without paragraphs.")
+  (arg cx "The state of the document.")
+  (arg items "The items.")
+  (returns "The pieces, in order. Text is a @code{PInline} of a @code{Str}, and each command gives its pieces.")
+  (see items->blocks items->inlines))
+
+(:doc items->blocks
+  (summary "Items expanded as paragraphs and blocks.")
+  (arg cx "The state of the document.")
+  (arg items "The items, such as a part of a body that a command took apart.")
+  (returns "The blocks. Text is collected into paragraphs.")
+  (see expand-blocks items->inlines body-items))
+
+(:doc items->inlines
+  (summary "Items expanded as inlines.")
+  (arg cx "The state of the document.")
+  (arg c "The call that an error message names.")
+  (arg items "The items, such as a part of a body that a command took apart.")
+  (returns "The inlines. Adjacent text is joined.")
+  (see expand-inlines items->blocks)
+  (reference "A block among the items is rejected with @code{refuse}, for the call @code{c}."))
+
+;; ---------------------------------------------------------------------------
+;; The finished document
+;; ---------------------------------------------------------------------------
+
+(:doc defer-blocks
+  (summary "The result of a command whose blocks are made from the finished document.")
+  (arg cx "The state of the document.")
+  (arg make "The function that makes the blocks.")
+  (returns "A placeholder block. After every command ran, it is replaced by what @code{make} returns.")
+  (see defer-inlines document-headings)
+  (example """
+    ;; A list of the headings, also those after the command.
+    (defer-blocks cx (fun (doc)
+                       [(ItemList #f 1 (vec-map (fun (h) (match h ((Tuple level id xs) [(Para xs)])))
+                                                (document-headings doc)))]))
+    """)
+  (reference """
+    Use it for a command that needs what comes after it, or what is in
+    included files. @code|{@toc}| is an example.
+
+    @itemlist{
+    @item{@code{make} is called once, after every command ran and the headings were numbered.}
+    @item{The document that @code{make} gets has the other placeholders in it, not their content.}
+    @item{What @code{make} returns can hold placeholders too. They are replaced in turn. A placeholder in its own result is removed.}
+    @item{A @code{refuse} in @code{make} names the file that the command was written in.}
+    }
+    """))
+
+(:doc defer-inlines
+  (summary "The result of a command whose inlines are made from the finished document.")
+  (arg cx "The state of the document.")
+  (arg make "The function that makes the inlines.")
+  (returns "A placeholder inline. After every command ran, it is replaced by what @code{make} returns.")
+  (see defer-blocks)
+  (reference """
+    It is @code{defer-blocks} for text. @code|{@ref}| is an example: the
+    heading that it links to can come after it.
+    """))
+
+(:doc number-headings!
+  (summary "Asks for the headings of the document to be numbered after every command ran.")
+  (arg cx "The state of the document.")
+  (arg c "The call, which an error message names.")
+  (arg depth "The deepest level to number.")
+  (see number-headings defer-blocks)
+  (reference """
+    The numbering is done with @code{number-headings} of
+    @code{(samizdat doc)}, before the deferred functions run. So a table of
+    contents and a reference show the numbers. @code|{@numbered-headings}|
+    uses it.
+
+    A document numbers its headings once. A second call is rejected with
+    @code{refuse}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Other files
+;; ---------------------------------------------------------------------------
+
+(:doc relative-path
+  (summary "A path as a document writes it, relative to the directory of the file that is expanded.")
+  (arg cx "The state of the document.")
+  (arg path "The path as written.")
+  (returns "The path joined to the directory of the file. It is @code{path} unchanged when the name of the file has no directory.")
+  (see read-relative include-file ctx-source)
+  (reference """
+    In an included file, the path is relative to that file. A document read
+    from a string with the default name is in the current directory.
+    """))
+
+(:doc read-relative
+  (summary "The text of a file, relative to the file that is expanded.")
+  (arg cx "The state of the document.")
+  (arg c "The call, which an error message names.")
+  (arg path "The path as the document writes it.")
+  (returns "The text of the file.")
+  (see relative-path add-source! include-file)
+  (reference """
+    The file is added to the @code{sources} of the document. A file that
+    does not exist is rejected with @code{refuse}.
+    """))
+
+(:doc add-source!
+  (summary "Adds a file to the sources of the document.")
+  (arg cx "The state of the document.")
+  (arg file "The path of the file.")
+  (see read-relative Document)
+  (reference """
+    Call it for a file that a command reads in a different way than with
+    @code{read-relative}. Then a program that keeps the output knows that
+    the output changes when the file changes. A file that is in the
+    sources already is not added again.
+    """))
+
+(:doc include-file
+  (summary "Another document, expanded where the command is, as if its text were written there.")
+  (arg cx "The state of the document.")
+  (arg c "The call, which an error message names.")
+  (arg path "The path of the file, relative to the file that is expanded.")
+  (returns "The pieces of the included document.")
+  (see read-relative relative-path)
+  (reference """
+    The included document uses the footnotes, the heading ids and the state
+    of the document. Paths in it are relative to its own file. It is added
+    to the @code{sources}. @code|{@include}| uses it.
+
+    These are rejected with @code{refuse}:
+
+    @itemlist{
+    @item{a file that does not exist;}
+    @item{a file that is being included already, directly or through other files. The message shows the chain of files;}
+    @item{a file that the reader cannot read;}
+    @item{a file that starts with a @code{(meta ...)} form.}
+    }
+
+    A @code{refuse} inside the included file has a second line, which says
+    where the file was included from.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The arguments
+;; ---------------------------------------------------------------------------
+
+(:doc positional
+  (summary "The positional arguments of a call: the arguments that are not keywords or values of keywords.")
+  (arg c "The call.")
+  (returns "The arguments, in order, as bjodat values.")
+  (see arg-count arg-string keyword)
+  (example """
+    ;; @image["cat.png" #:alt "A cat" left]
+    (positional c)   ; [(BjoStr "cat.png") (BjoSym left)]
+    """))
+
+(:doc keyword
+  (summary "The value of a keyword argument of a call.")
+  (arg c "The call.")
+  (arg name "The name of the keyword, without @code{#:}.")
+  (returns "The value after the first @code{#:name}, or @code{None} when the call does not have it, or when no value comes after it.")
+  (see kw-string-or kw-int-or kw-bool-or check-keywords! positional))
+
+(:doc arg-count
+  (summary "The number of positional arguments of a call.")
+  (arg c "The call.")
+  (returns "The number. Keywords and their values are not counted.")
+  (see positional arg-string))
+
+(:doc arg-string
+  (summary "A positional argument that must be there, as text.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (arg i "The index of the argument, counting from 0.")
+  (returns "The argument. A string gives its text, and a symbol gives its name.")
+  (see arg-string-or arg-count positional)
+  (reference """
+    These are rejected with @code{refuse}: a call with fewer than
+    @code{i + 1} positional arguments, and an argument that is not a string
+    or a symbol.
+    """))
+
+(:doc arg-string-or
+  (summary "A positional argument as text, or a default when the call does not have it.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (arg i "The index of the argument, counting from 0.")
+  (arg fallback "The result when there is no argument at that index.")
+  (returns "The argument, or @code{fallback}. A string gives its text, and a symbol gives its name.")
+  (see arg-string)
+  (reference "An argument that is not a string or a symbol is rejected with @code{refuse}."))
+
+(:doc kw-string-or
+  (summary "The value of a keyword argument as text, or a default when the call does not have it.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (arg name "The name of the keyword, without @code{#:}.")
+  (arg fallback "The result when the call does not have the keyword.")
+  (returns "The value, or @code{fallback}. A string gives its text, and a symbol gives its name.")
+  (see kw-symbol-or kw-int-or kw-bool-or keyword check-keywords!)
+  (reference "A value that is not a string or a symbol is rejected with @code{refuse}."))
+
+(:doc kw-symbol-or
+  (summary "The value of a keyword argument as text, or a default: for a value written as a symbol.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (arg name "The name of the keyword, without @code{#:}.")
+  (arg fallback "The result when the call does not have the keyword.")
+  (returns "The value, or @code{fallback}.")
+  (see kw-string-or)
+  (example """
+    ;; @itemlist[#:style ordered]{...}
+    (kw-symbol-or cx c "style" "bullets")   ; "ordered"
+    """)
+  (reference """
+    It is the same as @code{kw-string-or}: a string and a symbol give the
+    same text. Use it where the document writes a symbol, so that the code
+    says so.
+    """))
+
+(:doc kw-int-or
+  (summary "The value of a keyword argument as an int, or a default when the call does not have it.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (arg name "The name of the keyword, without @code{#:}.")
+  (arg fallback "The result when the call does not have the keyword.")
+  (returns "The value, or @code{fallback}.")
+  (see kw-string-or kw-bool-or)
+  (reference "A value that is not an integer is rejected with @code{refuse}."))
+
+(:doc kw-bool-or
+  (summary "The value of a keyword argument as a bool, or a default when the call does not have it.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (arg name "The name of the keyword, without @code{#:}.")
+  (arg fallback "The result when the call does not have the keyword.")
+  (returns "The value, or @code{fallback}.")
+  (see kw-string-or kw-int-or)
+  (reference "A value that is not @code{#t} or @code{#f} is rejected with @code{refuse}."))
+
+(:doc check-keywords!
+  (summary "Rejects a keyword argument that a command does not take.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (arg names "The names of the keywords that the command takes, without @code{#:}.")
+  (see keyword refuse)
+  (example """
+    (check-keywords! cx c ["lang" "file"])
+    ;; @codeblock[#:langauge "x"] is rejected:
+    ;; "post.sz:1:1: @codeblock: takes no #:langauge; it takes #:lang, #:file"
+    """)
+  (reference """
+    Call it first in a command that takes keywords, or with
+    @code{(vec-empty)} in a command that takes none. Then a misspelt keyword
+    gives an error and is not ignored. A keyword that is not in
+    @code{names} is rejected with @code{refuse}, and so is a keyword with no
+    value after it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Rejecting
+;; ---------------------------------------------------------------------------
+
+(:doc refuse
+  (summary "Stops the expansion with a message that says where the call is.")
+  (tparam %a "Any type, so that a call can stand where a value is expected.")
+  (arg cx "The state of the document.")
+  (arg c "The call that is wrong.")
+  (arg why "What is wrong, such as @code{\"needs a body: {...}\"}.")
+  (returns "It does not return.")
+  (raises System.IO.InvalidDataException "Always. The message is @code|{FILE:LINE:COLUMN: @name: why}|.")
+  (see check-keywords! expand)
+  (example """
+    (unless (has-body? c) (refuse cx c "needs a body: {...}"))
+    ;; post.sz:14:3: @aside: needs a body: {...}
+    """)
+  (reference """
+    @code{expand} catches this exception and returns @code{Err} with the
+    message. Do not catch it in a command.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The state of the document
+;; ---------------------------------------------------------------------------
+
+(:doc add-note!
+  (summary "Adds a footnote to the document and returns its number.")
+  (arg cx "The state of the document.")
+  (arg make "The function that makes the blocks of the footnote.")
+  (returns "The number of the footnote, counting from 1, for a @code{NoteRef}.")
+  (see Document)
+  (example """
+    (inline (NoteRef (add-note! cx (fun () (expand-blocks cx c)))))
+    """)
+  (reference """
+    The number is taken before @code{make} is called. So a footnote inside
+    a footnote gets the next number.
+    """))
+
+(:doc unique-id!
+  (summary "An id made from text, which no other call in the document returned.")
+  (arg cx "The state of the document.")
+  (arg text "The text, such as the title of a heading.")
+  (returns "The id. @code{\"The Defaults\"} gives @code{\"the-defaults\"}, and a second time @code{\"the-defaults-2\"}.")
+  (see Inline Block)
+  (reference """
+    Letters and digits are kept, in lower case. Whitespace, @code{-} and
+    @code{_} become one @code{-}. Other characters are removed. A text that
+    gives nothing gives @code{\"section\"}. Use it for a @code{Heading} or
+    an @code{Anchor}.
+    """))
+
+(:doc ctx-source
+  (summary "The name of the file that is expanded, as an error message gives it.")
+  (arg cx "The state of the document.")
+  (returns "The name of the document, or the path of the included file that is expanded.")
+  (see relative-path refuse))
+
+(:doc state-ref
+  (summary "A value that a command kept for the rest of the document.")
+  (arg cx "The state of the document.")
+  (arg key "The key.")
+  (returns "The value, or @code{None} when nothing was kept under the key.")
+  (see state-set!)
+  (reference """
+    All commands use the same keys. Start a key with the name of the
+    command, such as @code{\"defmodule:current\"}. The state is kept for
+    the whole expansion, included files too.
+    """))
+
+(:doc state-set!
+  (summary "Keeps a value for the rest of the document.")
+  (arg cx "The state of the document.")
+  (arg key "The key. Start it with the name of the command.")
+  (arg value "The value. It replaces a value kept under the same key.")
+  (see state-ref))
+
+;; ---------------------------------------------------------------------------
+;; Commands made from less, and typography
+;; ---------------------------------------------------------------------------
+
+(:doc text-command
+  (summary "A command that stands for some text.")
+  (arg text "The text.")
+  (returns "A command that makes the text as a @code{Str}.")
+  (see Command)
+  (example """
+    (map-set standard-commands "bjolang" (text-command "Bjolang"))
+    ;; @bjolang is "Bjolang", and @|bjolang|s is "Bjolangs".
+    """)
+  (reference "A call with a positional argument or a body is rejected with @code{refuse}."))
+
+(:doc smarten
+  (summary "Changes dashes, ellipses and straight quotes in the text of blocks into typographic ones.")
+  (arg blocks "The blocks.")
+  (returns "The blocks, with the text changed.")
+  (see expand)
+  (reference """
+    @itemlist{
+    @item{@code{---} becomes an em dash, @code{--} an en dash and @code{...} an ellipsis.}
+    @item{A straight quote becomes an opening quote after whitespace, a bracket, a dash or an opening quote. Otherwise it becomes a closing quote.}
+    @item{The character before an inline is carried across it, so the quote after @code|{@em{word}}| closes.}
+    }
+
+    It changes the text in paragraphs, headings, quotations, lists, divs
+    and tables. Code, code blocks and raw text do not change. @code{expand}
+    calls it unless @code{#:typography} is @code{#f}.
+    """))

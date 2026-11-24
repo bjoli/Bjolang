@@ -681,7 +681,7 @@
     ((Some w) (close-unbuffered w))
     (None unit)))
 
-(: (-> Form (Result Exception string)))
+(: (-> Form (Result Exception string)) #:sync)
 (defun (run/string form)
   (match (run form)
     ((Err e) (Err e))
@@ -708,7 +708,7 @@
 ;; manifest prints nothing and exits non-zero, and that is not the same as a
 ;; tag whose manifest is empty. Both halves are here so that the caller does
 ;; not have to run the thing twice to get them.
-(: (-> Form (Result Exception (Tuple int string))))
+(: (-> Form (Result Exception (Tuple int string))) #:sync)
 (defun (run/output form)
   (match (run form)
     ((Err e) (Err e))
@@ -725,7 +725,7 @@
       ((Err e) (Err e))
       ((Ok code) (Ok (Tuple code text))))))
 
-(: (-> Form (Result Exception (Vec string))))
+(: (-> Form (Result Exception (Vec string))) #:sync)
 (defun (run/strings form)
   (match (run form)
     ((Err e) (Err e))
@@ -743,7 +743,7 @@
       ((Ok code) (Ok lines)))))
 
 ;; Runs for status code.
-(: (-> Form (Result Exception int)))
+(: (-> Form (Result Exception int)) #:sync)
 (defun (run/status form)
   (match (run form)
     ((Err e) (Err e))
@@ -858,10 +858,10 @@
   ;; commits first and the shield never raises `Cancelled`. The inner scope
   ;; cancels the awaits that are still waiting when the grace passes.
   (with-shield #:within (seconds 6)
-    (with-cancel (stop)
-      (def exited (bjo (awaiting-exits (record-ref p children))))
-      (ignore (sync (choose (wrap (promise-join exited) (fun (_) unit)) (timeout reap-grace))))
-      (ignore (stop (Requested "the grace for the form to exit has passed"))))))
+               (with-cancel (stop)
+                 (def exited (bjo (awaiting-exits (record-ref p children))))
+                 (ignore (sync (choose (wrap (promise-join exited) (fun (_) unit)) (timeout reap-grace))))
+                 (ignore (stop (Requested "the grace for the form to exit has passed"))))))
 
 
 ;; ===========================================================================

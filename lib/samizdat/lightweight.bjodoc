@@ -1,0 +1,88 @@
+;; Docs for samizdat/lightweight.bjo, read through (:doc #:file "lightweight.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}. A command name
+;; in code is written @code|{@name}|, so that it is not run.
+
+(:doc #:module
+  (summary "Commands that read lists and tables written as Markdown and Org write them.")
+  (see read-list read-table)
+  (example """
+    @read-list{
+    - this parses things
+      - a list with nested lists
+    - this is another post
+      and this continues the list item above.
+    }
+
+    @read-table{
+    #+CAPTION: What they drink
+    | Name  | Cups | Of       |
+    |-------+------+----------|
+    | Alice |    3 | @em{tea} |
+    | Bob   |   12 | coffee   |
+    }
+    """)
+  (reference """
+    The body is still samizdat: a command in it works as in any other body.
+    Both commands are in @code{standard-commands} of
+    @code{(samizdat commands)}.
+    """))
+
+(:doc read-list
+  (summary "A command that reads a list written as Markdown and Org write one.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (returns "An @code{ItemList} block, or nothing when the body is blank.")
+  (see read-table)
+  (example """
+    @read-list{
+    1. First
+    2. Second, with a list in it:
+       - a
+       - b
+    }
+    """)
+  (reference """
+    The rules are the rules of Markdown, with fewer cases:
+
+    @itemlist{
+    @item{An item starts with @code{-}, @code{+} or @code{*}, or with a number and @code{.} or @code{)}, and then a space.}
+    @item{The marker of the first item sets whether the list is numbered. Numbering always starts at 1.}
+    @item{An item that is indented more than the marker of the item before it is in a list inside that item.}
+    @item{A line of text continues the item above it, at any indentation.}
+    @item{After a blank line, text that is indented more than the marker of an item is a new paragraph of that item.}
+    }
+
+    These are rejected with @code{refuse}: arguments, a call with no body, a
+    body whose first line is not an item, and a line after a blank line
+    that is in no item.
+    """))
+
+(:doc read-table
+  (summary "A command that reads a table written as Org or Markdown write one.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (returns "A @code{TableBlock}, or nothing when the body has no rows.")
+  (see read-list)
+  (example """
+    @read-table[#:caption "Prices"]{
+    | Item   | Price |
+    |:-------|------:|
+    | Tea    |  2.50 |
+    | Coffee |  3.00 |
+    }
+    """)
+  (reference """
+    @itemlist{
+    @item{A row is a line that starts with @code{|}. The @code{|} characters divide its cells. @code{\|} is a @code{|} in a cell. A command in a cell stays whole.}
+    @item{A line of @code{-}, @code{+} and @code{|} is a rule. The rows above the first rule are the head. More rules divide the other rows into groups. A rule before the first row or after the last row has no effect.}
+    @item{A delimiter row of Markdown, @code{|:---|:---:|---:|}, is a rule. Its colons set the alignment of the columns.}
+    @item{A row of Org cookies, @code{| <l> | <c> | <r10> |}, sets the alignment of the columns. It is not a row of the table. Widths are ignored.}
+    @item{A column with no alignment whose body cells are mostly numbers is aligned to the right.}
+    @item{@code{#+CAPTION:} gives the caption. @code{#:caption "..."} gives the caption too, and replaces it. Other lines that start with @code{#+} are ignored.}
+    @item{The table has as many columns as its longest row. A shorter row gets empty cells.}
+    }
+
+    These are rejected with @code{refuse}: positional arguments, a keyword
+    other than @code{#:caption}, a call with no body, and a line that is not
+    a row, a rule or a @code{#+} line.
+    """))

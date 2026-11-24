@@ -1,0 +1,260 @@
+;; Docs for samizdat/doc.bjo, read through (:doc #:file "doc.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "The document tree that commands make and converters print: Block, Inline, Document.")
+  (see Document Block Inline Table meta-string document-headings document->sexp)
+  (example """
+    (import (samizdat doc))
+
+    ;; A converter is a match on the two unions.
+    (: words (-> (Vec Block) int))
+    (defun (words bs)
+      (loop (:for b bs)
+            (:acc n (folding 0
+                      (match b
+                        ((Para xs) (+ n (vec-length (string-split (inlines->text xs) " "))))
+                        (_ n))))))
+
+    (meta-string doc "title")    ; (Some "Cookies, carefully")
+    """)
+  (reference """
+    A @code{Document} holds the result of a document after its commands
+    ran. It does not say how the document looks. The commands in
+    @code{(samizdat commands)} make the tree. A converter, such as
+    @code{(samizdat html)}, prints it.
+
+    A converter is a function of a @code{Document}. It matches on
+    @code{Block} and @code{Inline}. The compiler reports a case that the
+    match does not handle.
+
+    Two pairs of cases are for content that the other cases do not cover:
+
+    @itemlist{
+    @item{@code{Span} and @code{Div} have a class, such as @code{"aside"}. A converter can know the class. Otherwise it prints the content as a plain container.}
+    @item{@code{RawInline} and @code{RawBlock} have text for one format, such as @code{"html"}. The converter for that format writes the text as it is. Every other converter leaves it out.}
+    }
+
+    @code{document->sexp} is a small converter. The tests use it to compare
+    trees.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The tree
+;; ---------------------------------------------------------------------------
+
+(:doc Align
+  (summary "How the cells of a table column are aligned.")
+  (case AlignDefault "No alignment was given. The converter decides.")
+  (case AlignLeft "Aligned to the left.")
+  (case AlignCenter "Centred.")
+  (case AlignRight "Aligned to the right.")
+  (see Table))
+
+(:doc Table
+  (summary "A table: a caption, the alignment of each column, the head rows, and groups of body rows.")
+  (field caption "The caption. It is empty when the table has no caption.")
+  (field aligns "One alignment for each column.")
+  (field head "The rows of the head. Each row is a vec of cells, and each cell is a vec of inlines. It is empty when the table has no head.")
+  (field bodies "The groups of body rows. A rule in the source divides two groups. Each group is a vec of rows.")
+  (see Align map-table-text)
+  (reference """
+    This is the table model of Org. A Markdown table also fits: it has one
+    head row and one group. Every row has one cell for each column.
+    @code|{@read-table}| in @code{(samizdat lightweight)} makes a
+    @code{Table}.
+    """))
+
+(:doc Inline
+  (summary "A piece of text in a paragraph, a heading, a cell or a caption.")
+  (case Str "Plain text.")
+  (case Emph "Emphasis.")
+  (case Strong "Strong emphasis.")
+  (case Strike "Struck-through text.")
+  (case Superscript "Superscript.")
+  (case Subscript "Subscript.")
+  (case Checkbox "A checkbox. The bool is @code{#t} when the box is checked.")
+  (case Code "Code, as it was written.")
+  (case Link "A link: the target, and the text that the link shows.")
+  (case Image "An image: the source, and the alternative text.")
+  (case LineBreak "A line break.")
+  (case NoteRef "A reference to a footnote. The number counts from 1 into the @code{notes} of the document.")
+  (case Span "Inlines with a class, for a converter that knows the class.")
+  (case RawInline "Text for one format: the format, such as @code{\"html\"}, and the text.")
+  (case Anchor "A target for a link that is not a heading. It holds an id, which is unique in the document. It shows nothing.")
+  (see Block inlines->text inlines->sexp))
+
+(:doc Block
+  (summary "A block of a document: a paragraph, a heading, a list, a table, and the other kinds.")
+  (case Para "A paragraph.")
+  (case Heading "A heading: the level, the id, and the title. Level 1 is a section. The id is unique in the document.")
+  (case UnnumberedHeading "A heading with no id: the level and the title. It is not in a table of contents.")
+  (case CodeBlock "A block of code: the language, and the code. The language is @code{\"\"} when none was given.")
+  (case Figure "A figure: the source of the image, the alternative text, and the caption. The alternative text is @code{\"\"} and the caption is empty when they were not given.")
+  (case Quote "A quotation, which holds blocks.")
+  (case ItemList "A list: whether it is numbered, the number of the first item, and the items. Each item is a vec of blocks.")
+  (case LineBlock "Lines whose breaks are kept, such as verse or an address. Each line is a vec of inlines.")
+  (case DefinitionList "A definition list. Each entry is a term and its definitions. Each definition is a vec of blocks.")
+  (case Rule "A horizontal rule.")
+  (case Div "Blocks with a class, for a converter that knows the class.")
+  (case RawBlock "A block for one format: the format, such as @code{\"html\"}, and the text.")
+  (case TableBlock "A table.")
+  (see Inline Table Document blocks->sexp))
+
+(:doc Document
+  (summary "A document after its commands ran: the meta form, the blocks, the footnotes and the source files.")
+  (field meta "The @code{(meta ...)} form as bjodat read it, or @code{None} when the document has no meta form.")
+  (field blocks "The content of the document.")
+  (field notes "The footnotes, in the order of their numbers. A @code{NoteRef} of 1 refers to the first.")
+  (field sources "The files that the document was made from, in the order they were read. The file of the document is first, when it was read from a file. The files that commands read come after it, such as an @code|{@include}|, an @code|{@include-markdown}| or the file of a @code|{@codeblock}|.")
+  (see meta-values meta-string meta-strings document-headings document->sexp)
+  (reference """
+    A program that keeps an output can compare it with @code{sources}. When
+    one of these files changes, the output is stale.
+
+    samizdat gives the meta form no meaning. To read it into a record,
+    use @code{def/bjodat-type} of @code{(text bjodat)} with
+    @code{#:tag meta}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Meta
+;; ---------------------------------------------------------------------------
+
+(:doc meta-values
+  (summary "The values of the first clause with a given name in the meta form.")
+  (arg doc "The document.")
+  (arg name "The name of the clause, such as @code{\"tags\"}.")
+  (returns "The values after the name, or @code{None} when the document has no meta form or no clause with that name.")
+  (see meta-string meta-strings Document)
+  (example """
+    ;; (meta (title "Cookies") (tags web http))
+    (meta-values doc "tags")    ; (Some ((BjoSym web) (BjoSym http)))
+    (meta-values doc "date")    ; None
+    """)
+  (reference """
+    A clause is a list whose head is a symbol. Other items in the meta form
+    are ignored.
+    """))
+
+(:doc meta-string
+  (summary "The one value of a clause in the meta form, as text.")
+  (arg doc "The document.")
+  (arg name "The name of the clause, such as @code{\"title\"}.")
+  (returns "The value as text, or @code{None} when there is no such clause, when the clause has more or fewer than one value, or when the value is not a string or a symbol.")
+  (see meta-strings meta-values)
+  (example """
+    ;; (meta (title "Cookies, carefully"))
+    (meta-string doc "title")   ; (Some "Cookies, carefully")
+    """))
+
+(:doc meta-strings
+  (summary "The values of a clause in the meta form that are strings or symbols, as text.")
+  (arg doc "The document.")
+  (arg name "The name of the clause, such as @code{\"tags\"}.")
+  (returns "The values as text, in order. Values of other kinds are left out. It is empty when there is no such clause.")
+  (see meta-string meta-values)
+  (example """
+    ;; (meta (tags samizdat bjolang))
+    (meta-strings doc "tags")   ; ["samizdat" "bjolang"]
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Text, headings, tables
+;; ---------------------------------------------------------------------------
+
+(:doc inlines->text
+  (summary "The text of some inlines, without their markup.")
+  (arg inlines "The inlines.")
+  (returns "The text. An image gives its alternative text, and a line break gives a space. A checkbox, a footnote reference, raw text and an anchor give nothing.")
+  (see Inline)
+  (reference """
+    Use it for text that cannot hold markup: an id, an alternative text, or
+    the title of a page.
+    """))
+
+(:doc document-headings
+  (summary "Every heading of a document, in order: its level, its id and its title.")
+  (arg doc "The document.")
+  (returns "One tuple for each @code{Heading}, in document order.")
+  (see number-headings Block)
+  (reference """
+    It looks in quotations, lists, definition lists and divs too. It does
+    not look in the footnotes. An @code{UnnumberedHeading} has no id, so it
+    is not in the result. @code|{@toc}| and @code|{@ref}| use this function.
+    """))
+
+(:doc number-headings
+  (summary "Puts a number in front of the title of each heading down to a level: 1, 1.1, 2.")
+  (arg bs "The blocks.")
+  (arg depth "The deepest level to number. A heading at a deeper level gets no number.")
+  (returns "The blocks, with each numbered heading changed.")
+  (see numbered-title? document-headings)
+  (example """
+    (number-headings blocks 2)
+    ;; (Heading 1 "reading" [(Str "Reading")]) becomes
+    ;; (Heading 1 "reading" [(Span "heading-number" [(Str "1")]) (Str " ") (Str "Reading")])
+    """)
+  (reference """
+    The headings are numbered in the order of @code{document-headings}. The
+    number is a @code{Span} of class @code{"heading-number"} and a space, at
+    the start of the title. So every converter shows the number, and so do
+    a table of contents and a reference made from the title later.
+
+    Numbering starts at the shallowest heading that is numbered. A level
+    that is skipped is 0: a subsection before the first section is 0.1. An
+    @code{UnnumberedHeading} is not changed. The ids do not change.
+
+    @code|{@numbered-headings}| uses this function, through
+    @code{number-headings!} of @code{(samizdat expand)}.
+    """))
+
+(:doc numbered-title?
+  (summary "Whether the title of a heading starts with the number that number-headings gave it.")
+  (arg xs "The title.")
+  (returns "@code{#t} when the first inline is a @code{Span} of class @code{\"heading-number\"}.")
+  (see number-headings))
+
+(:doc map-table-text
+  (summary "A table with a function applied to its caption and to each cell.")
+  (arg f "The function to apply.")
+  (arg t "The table.")
+  (returns "A new table with the same alignments and the same shape.")
+  (see Table)
+  (reference """
+    Use it in a pass over the text of a document that must also change the
+    text in tables.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; S-expressions
+;; ---------------------------------------------------------------------------
+
+(:doc document->sexp
+  (summary "A document as s-expressions: one block on each line, then the footnotes.")
+  (arg doc "The document.")
+  (returns "The text. The footnotes are one @code{(notes (note 1 ...) ...)} form on the last line. There is no such line when the document has no footnotes.")
+  (see blocks->sexp inlines->sexp)
+  (example """
+    (document->sexp doc)
+    ;; (heading 1 "the-defaults" "The defaults")
+    ;; (para "See " (em "this") "." (note-ref 1))
+    ;; (notes (note 1 (para "A note.")))
+    """)
+  (reference """
+    @code{bjo sz tree} prints a document with this function. The tests
+    compare trees as this text. The meta form and the sources are not in
+    the text.
+    """))
+
+(:doc blocks->sexp
+  (summary "Blocks as s-expressions, separated by spaces.")
+  (arg blocks "The blocks.")
+  (returns "The text: @code{(para ...)}, @code{(heading 1 \"id\" ...)}, @code{(bullets (item ...))}, and so on.")
+  (see document->sexp inlines->sexp))
+
+(:doc inlines->sexp
+  (summary "Inlines as s-expressions, separated by spaces.")
+  (arg inlines "The inlines.")
+  (returns "The text. Plain text is a string literal, and the other kinds are forms such as @code{(em ...)} and @code{(link \"url\" ...)}.")
+  (see document->sexp blocks->sexp))

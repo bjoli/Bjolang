@@ -11,7 +11,6 @@
 
 (export unicode-tables markdown-data bench Suite clean)
 
-(import (std prelude))
 (import (std argparse))
 (import (std os))
 (import (std run))
@@ -92,7 +91,8 @@
               "-o" file url]))
 
 (:doc markdown-data
-  (summary "Downloads the data of (text markdown): the HTML entities, and the spec examples its tests run.")
+  (summary
+   "Downloads the data of (text markdown): the HTML entities, and the spec examples its tests run.")
   (key #:build "Run build_std.sh after the entity table is written.")
   (reference """
     It writes @code{lib/text/markdown-entities.protobjo} from WHATWG's
@@ -269,7 +269,7 @@
 
 ;; The paths that a `git ls-files -z` command prints, or a message when git
 ;; cannot be run or fails.
-(: (-> Form (Result string (Vec string))))
+(:  (-> Form (Result string (Vec string))))
 (defun (git-files form)
   (match (run/output form)
     ((Err e) (Err #"clean: could not run git: ${(written e)}"))
@@ -287,7 +287,8 @@
     ((Ok (Tuple 0 prefix))
      (if (string-empty? (string-trim prefix))
          (Ok unit)
-         (Err #"clean: tasks.bjo is in ${(string-trim prefix)} of its git repository. clean runs only at the top.")))
+         (Err #"clean: tasks.bjo is in ${(string-trim prefix)} of its git repository. clean runs \
+                only at the top.")))
     ((Ok _) (Err "clean: git rev-parse failed. Is this a git repository?"))))
 
 (:doc clean
@@ -295,8 +296,9 @@
   (key #:delete "Delete what is listed. Without it, nothing is deleted.")
   (key #:lib "Also the build output under lib/. Run build_std.sh afterwards.")
   (key #:verbose "List each file and directory, not only a line for each top directory.")
-  (returns "0, or 1 when git cannot list the files, or tasks.bjo is not at the top of its git repository."))
-(: (-> (#:delete bool) (#:lib bool) (#:verbose bool) int))
+  (returns
+   "0, or 1 when git cannot list the files, or tasks.bjo is not at the top of its git repository."))
+(: (-> (#:delete bool) (#:lib bool) (#:verbose bool) int) #:sync)
 (defun (clean #:delete #f #:lib #f #:verbose #f)
   (def (Ok _) (at-repository-top)
     :leave ((Err why) (writeln (parameter-ref current-error-port) why) 1))
@@ -318,5 +320,6 @@
               (:do (if (string-ends-with? t "/") (directory-delete-tree t) (file-delete t))))
         (println #"Deleted ${(list-length sized)}, ${(size-text total)}."))
        (else
-        (println #"${(list-length sized)} to delete, ${(size-text total)}. Run with --delete to delete them.")))
+        (println #"${(list-length sized)} to delete, ${(size-text total)}. Run with --delete to \
+                   delete them.")))
      0)))

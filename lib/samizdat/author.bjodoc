@@ -1,0 +1,310 @@
+;; Docs for samizdat/author.bjo, read through (:doc #:file "author.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}, and a literal
+;; at sign is @"@".
+
+(:doc #:module
+  (summary "The high-level interface of samizdat: one Setup for every option, documents to files, and folders to sites.")
+  (see Setup author-setup load-document render convert-file convert-tree check-links)
+  (example """
+    (import (samizdat author))
+
+    (def setup (author-setup #:css ["style.css"]))
+
+    (convert-file "posts/cookies.sz" 'html #:setup setup)   ; writes posts/cookies.html
+    (convert-tree "docs" 'html #:out "site" #:setup setup)  ; every .sz file below docs
+
+    (match (load-document "posts/cookies.sz" #:setup setup)
+      ((Ok doc) (println (render doc 'markdown #:setup setup)))
+      ((Err why) (println why)))
+    """)
+  (reference """
+    A @code{Setup} holds every option: the commands, typography, the
+    title, the heading offset, the stylesheets, the hooks of each
+    converter, and a URL hook. Each function takes it as @code{#:setup}.
+    The default is @code{default-setup}. @code{bjo sz} is written on this
+    module, and an @code{sz.bjo} changes a @code{Setup}.
+
+    The module re-exports @code{Document}, @code{Command} and
+    @code{standard-commands}. So an @code{sz.bjo} that adds commands can
+    import this module alone for the common case.
+
+    @read-table{
+    | @code{author-setup}, @code{default-setup}      | a @code{Setup}. Change a field later with @code{record-set} |
+    | @code{load-document}, @code{load-document-text} | read a document and run its commands |
+    | @code{render}                                   | the document as text in an @code{OutputFormat} |
+    | @code{convert-file}, @code{convert-tree}        | write the output files |
+    | @code{output-path}, @code{output-suffix}, @code{sz-files} | the names of the files |
+    | @code{document-outline}, @code{document-sources} | the headings, and the files a document was made from |
+    | @code{document-links}, @code{document-ids}, @code{check-links} | the links, the ids, and the links that go nowhere |
+    | @code{command-names}                            | the names of the commands of a setup |
+    }
+
+    @strong{Errors are values.} Each function that reads a document returns
+    @code{Err} when the document cannot be read or a command rejects it.
+    The message has the form @code{FILE:LINE:COLUMN: @"@"command: why}.
+    No function raises for a bad document. A failure to write a file
+    raises.
+
+    @strong{A file is written only when its text changes.} So the
+    modification time of an output changes only for a real change. With
+    @code{#:check #t}, nothing is written, and the result tells whether
+    the file would change.
+
+    @strong{A link to a .sz file goes to its output.} With the default
+    @code{sz-links}, a relative link or image to a @code{.sz} file goes to
+    the file that the same format makes of it. In HTML,
+    @code{"guide.sz#install"} becomes @code{"guide.html#install"}, and in
+    Markdown @code{"guide.md#install"}. A link with a scheme, such as
+    @code{https:}, or a link that starts with @code{/}, does not change.
+    """))
+
+(:doc Setup
+  (summary "Every option of reading and writing a document.")
+  (field commands "The commands that a document can use.")
+  (field typography "Whether to make curly quotes, dashes and ellipses of the text.")
+  (field title "The title of a page or a Markdown file. When it is empty, the @code{(title ...)} of the meta form is used.")
+  (field heading-offset "Added to the level of each heading. With 1, a section is @code{<h2>} or @code{##}, below the title.")
+  (field id-prefix "HTML: put in front of each id, and in front of each link to an id.")
+  (field lang "HTML: the @code{lang} attribute of @code{<html>}.")
+  (field css "HTML: the URLs of the stylesheets. Each one is a @code{<link>} in the @code{<head>}.")
+  (field head "HTML: text that is put in the @code{<head>} as it is, after the stylesheets.")
+  (field highlighter "HTML: a function of the language and the code of a code block, which returns the node to write, or @code{None} for the plain code block.")
+  (field html-block-hook "HTML: called on each block first. It returns @code{None}, or the nodes for the block.")
+  (field html-inline-hook "HTML: called on each inline first. It returns @code{None}, or the nodes for the inline.")
+  (field anchors "Markdown: how a heading gets its id.")
+  (field md-block-hook "Markdown: called on each block first. It returns @code{None}, or the text for the block.")
+  (field md-inline-hook "Markdown: called on each inline first. It returns @code{None}, or the text for the inline.")
+  (field sz-links "Whether a relative link or image to a @code{.sz} file goes to its output.")
+  (field url-hook "Changes the target of each link and image, in both formats. It is applied after @code{sz-links}.")
+  (see author-setup default-setup)
+  (example """
+    (record-set default-setup (css ["/style.css"]) (lang "sv"))
+    """)
+  (reference """
+    The fields are public. Change one with @code{record-set}. The HTML
+    fields are the options of @code{html-options} in
+    @code{(samizdat html)}, and the Markdown fields are the options of
+    @code{markdown-options} in @code{(samizdat gfm)}.
+    """))
+
+(:doc author-setup
+  (summary "Makes a Setup. Each keyword sets the field of the same name.")
+  (key #:commands "The commands that a document can use.")
+  (key #:typography "Whether to make curly quotes, dashes and ellipses of the text.")
+  (key #:title "The title. Empty for the @code{(title ...)} of the meta form.")
+  (key #:heading-offset "Added to the level of each heading.")
+  (key #:id-prefix "HTML: put in front of each id.")
+  (key #:lang "HTML: the @code{lang} attribute.")
+  (key #:css "HTML: the URLs of the stylesheets.")
+  (key #:head "HTML: text for the @code{<head>}.")
+  (key #:highlighter "HTML: the highlighter of code blocks.")
+  (key #:html-block-hook "HTML: the block hook.")
+  (key #:html-inline-hook "HTML: the inline hook.")
+  (key #:anchors "Markdown: how a heading gets its id.")
+  (key #:md-block-hook "Markdown: the block hook.")
+  (key #:md-inline-hook "Markdown: the inline hook.")
+  (key #:sz-links "Whether a link to a @code{.sz} file goes to its output.")
+  (key #:url-hook "Changes the target of each link and image.")
+  (returns "The setup.")
+  (see Setup default-setup)
+  (example """
+    (author-setup #:commands (map-merge standard-commands mine)
+                  #:css ["style.css"]
+                  #:anchors 'html)
+    """)
+  (reference """
+    See @code{Setup} for what each field does.
+    """))
+
+(:doc default-setup
+  (summary "The standard commands, and each other option at its default: (author-setup).")
+  (see author-setup Setup standard-commands))
+
+(:doc OutputFormat
+  (summary "A format to write a document in.")
+  (case FormatHtml "A whole HTML page. Written @code{'html}.")
+  (case FormatHtmlFragment "The HTML of the body only, without @code{<html>}, @code{<head>} and @code{<body>}. Written @code{'html-fragment}.")
+  (case FormatMarkdown "GitHub Flavored Markdown. Written @code{'markdown}.")
+  (case FormatSexp "The tree of the document as s-expressions, to debug commands. Written @code{'sexp}.")
+  (see render output-suffix)
+  (reference """
+    @code{OutputFormat} is a grammar (see @code{def/grammar}). An argument
+    of this type takes the quoted symbol, @code{'html}, or the case,
+    @code{FormatHtml}.
+    """))
+
+(:doc output-suffix
+  (summary "The suffix of a file in a format.")
+  (arg format "The format.")
+  (returns "@code{\".html\"} for both HTML formats, @code{\".md\"} for Markdown, and @code{\".sexp\"} for s-expressions.")
+  (see output-path))
+
+(:doc output-path
+  (summary "The name of the file that a format makes of a source file.")
+  (arg input "The path of the source.")
+  (arg format "The format.")
+  (returns "The path with @code{.sz} at its end replaced by the suffix of the format. When the path does not end in @code{.sz}, the suffix is added.")
+  (see output-suffix convert-file)
+  (example """
+    (output-path "a/b.sz" 'html)       ; "a/b.html"
+    (output-path "README" 'markdown)   ; "README.md"
+    """))
+
+(:doc load-document
+  (summary "Reads a document file and runs its commands.")
+  (arg path "The path of the file.")
+  (key #:setup "The commands and the typography of the setup are used.")
+  (returns "The document, or @code{Err} with a message when the file does not exist, cannot be read as a document, or a command rejects it.")
+  (see load-document-text render)
+  (reference """
+    A relative @code{@"@"include} is read relative to the file.
+    """))
+
+(:doc load-document-text
+  (summary "Reads a string as a document and runs its commands.")
+  (arg text "The text of the document.")
+  (key #:name "The name that error messages give the document.")
+  (key #:setup "The commands and the typography of the setup are used.")
+  (returns "The document, or @code{Err} with a message when the text cannot be read as a document, or a command rejects it.")
+  (see load-document)
+  (reference """
+    A relative @code{@"@"include} is read from the current directory.
+    """))
+
+(:doc render
+  (summary "A document as text in a format.")
+  (arg doc "The document.")
+  (arg format "The format.")
+  (key #:setup "The options of the converter.")
+  (returns "The text. It ends with a newline.")
+  (see OutputFormat convert-file load-document)
+  (reference """
+    @code{'html} uses each HTML field of the setup. @code{'html-fragment}
+    does not use @code{title}, @code{lang}, @code{css} and @code{head}.
+    @code{'markdown} uses @code{title} and the Markdown fields.
+    @code{'sexp} uses no field.
+    """))
+
+(:doc convert-file
+  (summary "Reads a document file and writes it in a format.")
+  (arg input "The path of the source.")
+  (arg format "The format.")
+  (key #:setup "The options of reading and writing.")
+  (key #:output "The file to write. When it is empty, the file is @code{(output-path input format)}.")
+  (key #:check "When it is @code{#t}, nothing is written.")
+  (returns """
+    @code{#t} when the file changed, and @code{#f} when it already had the
+    same text. With @code{#:check #t}, whether the file would change.
+    @code{Err} with the message of the document when it cannot be loaded.
+    """)
+  (see convert-tree output-path render)
+  (reference """
+    The file is written only when its text changes, so its modification
+    time changes only for a real change. The directory of the file is made
+    when it does not exist. A failure to write the file raises.
+    """))
+
+(:doc sz-files
+  (summary "Every .sz file below a directory, sorted.")
+  (arg dir "The directory.")
+  (returns "The paths, each starting with @code{dir}.")
+  (see convert-tree)
+  (reference """
+    It does not go into a directory whose name starts with @code{.}, such
+    as @code{.git} and @code{.bjo}. A file whose name starts with @code{.}
+    is included.
+    """))
+
+(:doc convert-tree
+  (summary "Converts every .sz file below a directory, with convert-file.")
+  (arg dir "The directory.")
+  (arg format "The format.")
+  (key #:setup "The options of reading and writing.")
+  (key #:out "The directory to write into, with the same relative paths as below @code{dir}. When it is empty, each output is written beside its source.")
+  (key #:check "When it is @code{#t}, nothing is written.")
+  (returns "For each file of @code{(sz-files dir)}: the source, the output, and the result of @code{convert-file}.")
+  (see convert-file sz-files)
+  (example """
+    (loop (:for (Tuple input target result) (convert-tree "docs" 'html #:out "site"))
+          (:do (match result
+                 ((Err why) (println why))
+                 ((Ok #t) (println (str "Wrote " target)))
+                 ((Ok #f) (ignore 0)))))
+    """)
+  (reference """
+    It converts each file, also after an error in another file.
+    """))
+
+(:doc OutlineEntry
+  (summary "A heading of a document.")
+  (field level "The level: 1 for a section, 2 for a subsection, and so on.")
+  (field id "The id that @code{@\"@\"ref} and a link with @code{#} take.")
+  (field title "The text of the heading, without markup.")
+  (see document-outline))
+
+(:doc document-outline
+  (summary "The headings of a document that have an id, in order.")
+  (arg doc "The document.")
+  (returns "The headings, also those in quotations, lists and divs. A starred heading, such as @code{@\"@\"section*}, has no id and is left out. The notes are not included.")
+  (see OutlineEntry document-ids))
+
+(:doc document-sources
+  (summary "The files that a document was made from.")
+  (arg doc "The document.")
+  (returns "Its own file first, then each file that a command read, such as an @code{@\"@\"include}, in order.")
+  (see load-document))
+
+(:doc DocLink
+  (summary "A link or an image of a document.")
+  (field target "Where it goes: the URL of a link, or the source of an image.")
+  (field text "The text of a link, without markup, or the alt text of an image.")
+  (field image "Whether it is an image.")
+  (see document-links check-links))
+
+(:doc document-links
+  (summary "Every link and image of a document, in order.")
+  (arg doc "The document.")
+  (returns "The links and the images, those in the notes included. A link that @code{@\"@\"ref} or @code{@\"@\"toc} made goes to an id, such as @code{#install}.")
+  (see DocLink check-links document-ids)
+  (reference """
+    The targets are as the document has them, before @code{sz-links} and
+    @code{url-hook} change them.
+    """))
+
+(:doc document-ids
+  (summary "The ids in a document that a link with # can go to.")
+  (arg doc "The document.")
+  (returns "The id of each heading of @code{document-outline}, then the id of each anchor.")
+  (see document-outline check-links))
+
+(:doc BrokenLink
+  (summary "A link that goes nowhere, and why.")
+  (field link "The link.")
+  (field why "Why it goes nowhere, as a message.")
+  (see check-links))
+
+(:doc check-links
+  (summary "The links and images of a document file that go nowhere.")
+  (arg path "The path of the document.")
+  (key #:setup "The setup to read the document, and each other document it links to.")
+  (returns """
+    The broken links, in order. @code{Err} with the message of the
+    document when the document at @code{path} cannot be loaded.
+    """)
+  (see document-links document-ids BrokenLink)
+  (reference """
+    @itemlist{
+    @item{A link that is @code{#id} alone must go to an id of the document: of a heading or of an anchor.}
+    @item{The file of any other relative link must exist, relative to the directory of @code{path}. Escapes such as @code{%20} are decoded first. A link to a directory is not broken.}
+    @item{A link to @code{FILE.html} or @code{FILE.md} goes to @code{FILE.sz} when that file exists. So the outputs do not need to be written yet.}
+    @item{An @code{#id} after a @code{.sz} file must be an id of that document. Each other document is read once. When it has an error, each link with an @code{#id} to it is broken, and the error is why.}
+    @item{An @code{#id} after a file that is not a document is not checked.}
+    @item{A link with a scheme, such as @code{https:}, or a link that starts with @code{/}, is not checked.}
+    }
+    """))
+
+(:doc command-names
+  (summary "The names of the commands of a setup, sorted.")
+  (arg setup "The setup.")
+  (returns "The names, without the @code{@\"@\"}.")
+  (see Setup))

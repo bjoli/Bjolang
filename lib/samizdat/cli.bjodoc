@@ -1,0 +1,68 @@
+;; Docs for samizdat/cli.bjo, read through (:doc #:file "cli.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}, and a literal
+;; at sign is @"@".
+
+(:doc #:module
+  (summary "The command line of bjo sz, on the functions of (samizdat author).")
+  (see sz-main)
+  (example """
+    ;; .bjo/sz/main.bjo, which bjo sz writes for a project with an sz.bjo.
+    (import (std prelude))
+    (import (samizdat cli))
+    (import (only "../../sz.bjo" configure))
+
+    (defun (main args)
+      (sz-main args configure))
+    """)
+  (reference """
+    @code{bjo sz} reads documents and writes them. Each command has its
+    own help: @code{bjo sz md --help}.
+
+    @read-table{
+    | @code{bjo sz md FILE... [-o OUT] [--check]}   | Markdown (GFM): each @code{FILE.sz} gives @code{FILE.md} beside it |
+    | @code{bjo sz html FILE... [-o OUT] [--check]} | HTML pages. @code{--fragment} writes the body only. @code{--css URL} adds a stylesheet |
+    | @code{bjo sz build [DIR] [--to md] [-o DIR]}  | every @code{.sz} file below @code{DIR}, as HTML or Markdown |
+    | @code{bjo sz check FILE...}                   | read the documents and run their commands. Write nothing |
+    | @code{bjo sz outline FILE...}                 | the headings, with the id that @code{@"@"ref} and a @code{#} link take |
+    | @code{bjo sz links FILE... [--check]}         | the links and images. @code{--check} shows only the broken ones |
+    | @code{bjo sz deps FILE...}                    | the files the documents are made from, for a build tool |
+    | @code{bjo sz tree FILE}                       | the document after its commands ran, as s-expressions |
+    | @code{bjo sz commands}                        | the commands that a document can use here |
+    }
+
+    @itemlist{
+    @item{@code{-o -} writes one document to standard output. With more than one @code{FILE}, @code{-o} is a directory.}
+    @item{@code{md}, @code{html} and @code{build} also take @code{--heading-offset N} and @code{--no-typography}. @code{md} and @code{html} take @code{--title}. @code{html} takes @code{--lang} and @code{--id-prefix}. @code{build} takes @code{--css} and @code{--lang} for HTML.}
+    @item{@code{--check} writes nothing. It exits with 1 when an output is not what its source gives.}
+    @item{Messages about the run go to standard error. So @code{-o -} writes only the output to standard output.}
+    }
+
+    @strong{sz.bjo.} A project adds its own commands and hooks with an
+    @code{sz.bjo} in its root. It exports @code{configure}, a function
+    from @code{Setup} to @code{Setup}. @code{bjo sz} gives it
+    @code{default-setup}, and then applies the options of the command
+    line. So an option overrides @code{sz.bjo}.
+
+    @strong{How it runs.} @code{bjo sz} builds a program whose
+    @code{main} calls @code{sz-main}, and runs it in the current directory.
+    Without an @code{sz.bjo}, @code{configure} returns the setup it gets.
+    """))
+
+(:doc sz-main
+  (summary "Parses the words of bjo sz and runs the command.")
+  (arg args "The words after @code{sz}.")
+  (arg configure "Makes the setup from @code{default-setup}. The options of the command line are applied after it.")
+  (returns """
+    The exit code: 0 for success and for @code{--help}, 1 when a document
+    has an error, an output is not up to date with @code{--check}, or a
+    link is broken with @code{links --check}, and 2 for a wrong command
+    line.
+    """)
+  (see Setup default-setup)
+  (example """
+    (sz-main ["md" "--check" "README.sz"] (fun (s) s))
+    """)
+  (reference """
+    The help goes to standard output. Each other message, and the error
+    of a wrong command line, goes to standard error.
+    """))

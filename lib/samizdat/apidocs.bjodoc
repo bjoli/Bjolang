@@ -1,0 +1,182 @@
+;; Docs for samizdat/apidocs.bjo, read through (:doc #:file "apidocs.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}. A command name
+;; in code is written @code|{@name}|, so that it is not run.
+
+(:doc #:module
+  (summary "Commands that show the docs of a Bjolang module in a document.")
+  (see generate-docs defmodule defdoc defdocs docref)
+  (example """
+    (meta (title "(std random)"))
+
+    @generate-docs[#:module "std random"]{
+      Text of your own, at the end of the overview.
+    }
+
+    @comment{Or arrange the page yourself:}
+
+    @defmodule[(std random)]{
+      Everything here takes @code{#:rng}.
+    }
+
+    @defdoc[random-int]{
+      A die is @code{(random-int 1 6)}.
+    }
+
+    Or use @docref[random-double], further down.
+
+    @defdoc[random-double]
+    """)
+  (reference """
+    The docs are the @code{(:doc ...)} forms that the compiler published in
+    the dll of the module. The commands read them with @code{(bjo docs)}
+    while the document is expanded. So a page shows the docs of the module
+    as it was compiled. The dll is added to the @code{sources} of the
+    document, so a kept page is stale when the module is built again.
+
+    @strong{Which module.} A module is written in one of two ways:
+
+    @itemlist{
+    @item{A name, such as @code{(std random)}. It is found as the compiler finds it: in the installed library, and in the packages of the nearest @code{.bjo/roots} above the document.}
+    @item{A string, the path of the source of the module, relative to the document. The dll must be beside the source.}
+    }
+
+    @strong{Texts.} The texts in a doc are samizdat markup. They are
+    expanded with the commands of the document.
+
+    @strong{Errors.} These are rejected with @code{refuse}: a module that is
+    not found, a module that is not compiled, a name that the module has no
+    doc for, a definition that the document shows twice, and a
+    @code|{@docref}| to a definition that the document does not show.
+
+    @strong{Classes.} An entry is a @code{Div} of class @code{doc-entry}.
+    The doc of a module is a @code{Div} of class @code{doc-module}. The kind
+    of an entry is a @code{Span} of class @code{doc-kind}. On a page that
+    @code|{@generate-docs}| made, the link up to the index is a @code{Span}
+    of class @code{doc-up}, and the index is a @code{Div} of class
+    @code{doc-index}.
+    """))
+
+(:doc generate-docs
+  (summary "A command that makes a whole page for the docs of a module.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (returns "The blocks of the page.")
+  (see defmodule defdocs docref)
+  (example """
+    @generate-docs[#:module "std datetime"]
+    @generate-docs[#:path "src/thing.bjo"]{Text for the overview.}
+    """)
+  (reference """
+    It takes @code{#:module} or @code{#:path}, not both. @code{#:module} is
+    the name of the module, as a string with or without parentheses:
+    @code{"std datetime"}. @code{#:path} is the path of the source of the
+    module, relative to the document.
+
+    The page has these parts:
+
+    @itemlist{
+    @item{A link to the reference.}
+    @item{A heading @em{Overview}, then the doc of the module, then the body.}
+    @item{A heading @em{Reference}, then an index. The index has a group for each kind: types, functions, values, macros. In each group, the names are in alphabetical order. Each name is a link to its entry.}
+    @item{A heading for each group, then the entry of each definition of that kind, in the order of the module. Each entry has a link back to its group in the index.}
+    }
+
+    The headings of the parts are at level 1, the groups at level 2, and
+    the entries at level 3. After the command, the module is the module of
+    @code|{@defdoc}|, @code|{@defdocs}| and @code|{@docref}|.
+
+    Positional arguments, a call with neither keyword, and a call with both
+    are rejected with @code{refuse}.
+    """))
+
+(:doc defmodule
+  (summary "A command that shows the doc of a module, and sets the module of the commands after it.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (returns "A @code{Div} of class @code{doc-module}: the doc of the module, then the body.")
+  (see defdoc defdocs docref generate-docs)
+  (example """
+    @defmodule[(std random)]{
+      Everything here takes @code{#:rng}.
+    }
+    @defmodule["src/thing.bjo"]
+    """)
+  (reference """
+    It takes one positional argument: the name of the module, or the path
+    of its source as a string. It takes no keywords. A module with no
+    module doc shows only the body.
+
+    @code|{@defdoc}|, @code|{@defdocs}| and @code|{@docref}| without
+    @code{#:module} use this module, until the next @code|{@defmodule}| or
+    @code|{@generate-docs}|.
+    """))
+
+(:doc defdoc
+  (summary "A command that shows the doc of one definition, then the body.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (returns "A @code{Div} of class @code{doc-entry}.")
+  (see defdocs defmodule docref)
+  (example """
+    @defdoc[random-int]{
+      A die is @code{(random-int 1 6)}.
+    }
+    @defdoc["#pair"]
+    @defdoc[random-double #:module (std random) #:level 3]
+    """)
+  (reference """
+    The argument is the name of the definition. A reader extension is named
+    with a string: @code{"#pair"}. @code{#:module} names a module other than
+    the module of @code|{@defmodule}|. @code{#:level} is the level of the
+    heading, 4 by default, so that a table of contents of sections does not
+    list the definitions.
+
+    The entry has:
+
+    @itemlist{
+    @item{a heading with the name, which a link can go to;}
+    @item{the kind of the definition;}
+    @item{the type and the head of the definition, or the forms of a macro;}
+    @item{the summary;}
+    @item{the arguments, the keywords, the fields, the cases, the type parameters, the result and the exceptions, with their texts;}
+    @item{the examples, the reference text, and links to the related names that the document shows.}
+    }
+
+    A call with no name, a module that no @code|{@defmodule}| or
+    @code{#:module} gives, and a name that is shown already are rejected
+    with @code{refuse}.
+    """))
+
+(:doc defdocs
+  (summary "A command that shows the docs of every definition of a module, in the order of the module.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (returns "One @code{Div} of class @code{doc-entry} for each definition. The doc of the module is not included.")
+  (see defdoc defmodule)
+  (example """
+    @defmodule[(std random)]
+    @defdocs
+    @defdocs[#:module (std datetime) #:level 3]
+    """)
+  (reference """
+    It takes @code{#:module} and @code{#:level}, as @code|{@defdoc}| does.
+    Positional arguments and a body are rejected with @code{refuse}. Use
+    @code|{@defdoc}| for a definition with text of your own.
+    """))
+
+(:doc docref
+  (summary "A command that makes a link to a definition that the document shows, before or after the link.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (returns "A link to the entry. Its text is the body, or the name as code when there is no body.")
+  (see defdoc defdocs generate-docs)
+  (example """
+    See @docref[random-int].
+    See @docref[random-int]{the function for dice}.
+    """)
+  (reference """
+    It takes @code{#:module}, as @code|{@defdoc}| does. A name that the
+    module has no doc for is rejected with @code{refuse}. A name that the
+    document does not show with @code|{@defdoc}|, @code|{@defdocs}| or
+    @code|{@generate-docs}| is also rejected, after every command ran.
+    """))

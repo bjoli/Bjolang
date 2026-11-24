@@ -1,0 +1,82 @@
+;; Docs for samizdat/commands.bjo, read through (:doc #:file "commands.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}. A command name
+;; in code is written @code|{@name}|, so that it is not run.
+
+(:doc #:module
+  (summary "The standard commands of samizdat, as one table.")
+  (see standard-commands)
+  (example """
+    (import (samizdat expand))
+    (import (samizdat commands))
+
+    (def commands
+      (map-merge standard-commands
+                 #map(("bjolang" (text-command "Bjolang")))))
+
+    (read-document-file "post.sz" commands)
+    """)
+  (reference """
+    The commands make the tree of @code{(samizdat doc)}. They do not know
+    the output format.
+
+    Each command checks its call. A misspelt keyword, a body where the
+    command takes none, and an argument that is missing or of the wrong
+    kind are errors: the expansion returns @code{Err}.
+
+    @read-table{
+    | Command | What it makes |
+    |---------+---------------|
+    | @code|{@em{...}}| @code|{@strong{...}}|          | emphasis, and strong emphasis |
+    | @code|{@strike{...}}|                            | struck-through text |
+    | @code|{@sup{...}}| @code|{@sub{...}}|            | superscript and subscript |
+    | @code|{@code{...}}|                              | code, as written |
+    | @code|{@checkbox}| @code|{@checkbox[#:checked #t]}| | an unchecked or a checked box |
+    | @code|{@link["url"]{...}}|                       | a link. Without a body, the link shows the URL |
+    | @code|{@image["src" #:alt "..."]}|               | an image, as an inline |
+    | @code|{@image["src" #:alt "..."]{...}}|          | a figure with a caption, as a block |
+    | @code|{@br}|                                     | a line break |
+    | @code|{@span["class"]{...}}|                     | text with a class |
+    | @code|{@raw["html"]{...}}|                       | text for one format only |
+    | @code|{@note{...}}|                              | a footnote, which can hold paragraphs |
+    | @code|{@section{...}}| @code|{@section*{...}}|    | a heading. @code{#:id} sets its id. The starred form has no id and is not in the table of contents |
+    | @code|{@subsection{...}}| @code|{@subsubsection{...}}| | the levels below, also starred |
+    | @code|{@codeblock[#:lang "x"]{...}}|             | a block of code. With @code{#:file "x.bjo"}, the code is the text of the file |
+    | @code|{@blockquote{...}}|                        | a quotation, which can hold paragraphs |
+    | @code|{@itemlist{@item{...} ...}}|               | a list. @code{#:style ordered} numbers it, and @code{#:start N} sets the first number |
+    | @code|{@lineblock{... @br ...}}|                 | lines whose breaks are kept |
+    | @code|{@deflist{@term{...} @def{...}}}|          | a definition list. A term can have more than one definition |
+    | @code|{@read-list{- ...}}|                       | a list, written as Markdown and Org write one |
+    | @code|{@read-table{| ... |}}|                    | a table, written as Org or Markdown write one |
+    | @code|{@markdown{...}}| @code|{@include-markdown["post.md"]}| | Markdown, translated into the document |
+    | @code|{@hr}|                                     | a rule |
+    | @code|{@div["class"]{...}}|                      | blocks with a class |
+    | @code|{@raw-block["html"]{...}}|                 | a block for one format only |
+    | @code|{@toc}|                                    | a table of contents. @code{#:depth 3} includes one more level |
+    | @code|{@numbered-headings}|                      | numbers the headings: 1, 1.1, 1.1.1. @code{#:depth 2} numbers fewer levels |
+    | @code|{@ref["id"]}| @code|{@ref["id"]{...}}|      | a link to a heading, before or after it |
+    | @code|{@include["other.sz"]}|                    | another document, as if its text were written here |
+    | @code|{@generate-docs[#:module "std random"]}|   | a page of the docs of a Bjolang module |
+    | @code|{@defmodule[(std random)]{...}}|           | the doc of a module, and the module of the commands after it |
+    | @code|{@defdoc[random-int]{...}}| @code|{@defdocs}| | the doc of one definition, or of all of them |
+    | @code|{@docref[random-int]}|                     | a link to a definition that the document shows |
+    | @code|{@comment{...}}|                           | nothing |
+    }
+    """))
+
+(:doc standard-commands
+  (summary "The table of the standard commands, by name.")
+  (see read-list read-table markdown include-markdown generate-docs defmodule defdoc defdocs docref)
+  (example """
+    (read-document "Some @em{text}." standard-commands)
+
+    ;; Your own commands, over the standard ones:
+    (map-merge standard-commands #map(("aside" aside)))
+    """)
+  (reference """
+    The key is the name of the command, without the @code|{@}|. The module
+    doc lists every command. @code{map-merge} lets the second map win, so a
+    command of yours replaces a standard command with the same name.
+
+    @code|{@item}|, @code|{@term}| and @code|{@def}| are in the table only to
+    give an error outside @code|{@itemlist}| and @code|{@deflist}|.
+    """))

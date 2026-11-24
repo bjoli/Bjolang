@@ -1,0 +1,104 @@
+;; Docs for samizdat/markdown.bjo, read through (:doc #:file "markdown.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}, and a literal
+;; at sign is @"@".
+
+(:doc #:module
+  (summary "Markdown in a samizdat document: the commands markdown and include-markdown.")
+  (see markdown include-markdown markdown->pieces)
+  (example """
+    @markdown|{
+    ## Why
+
+    Because *some* things are quicker to write this way.[^1] See |@ref["why"].
+
+    - [x] tables, task lists, ~~strikethrough~~ and footnotes, as GitHub has them
+
+    [^1]: And some are not.
+    }|
+
+    @include-markdown["post.md"]
+    """)
+  (reference """
+    @code{(text markdown)} reads the Markdown: CommonMark, with the
+    extensions of GitHub Flavored Markdown. This module translates the
+    result into the tree of samizdat. After the translation, no Markdown
+    is left, and each converter sees the same tree as for samizdat markup:
+
+    @itemlist{
+    @item{A heading is a @code{Heading}, with an id that @code{@"@"toc} and @code{@"@"ref} know.}
+    @item{A footnote is a note of the document, numbered with the other notes.}
+    @item{A table is a @code{TableBlock}, with one head row and one group.}
+    @item{Raw HTML is a @code{RawBlock} or a @code{RawInline} for the format @code{"html"}.}
+    @item{A code block has the first word of its info string as its language.}
+    @item{The typography pass runs over the text, as over other text.}
+    }
+
+    The translation leaves out what samizdat does not have: the title of a
+    link, and the number that an ordered list starts at.
+
+    The commands are in @code{standard-commands}.
+    """))
+
+(:doc markdown
+  (summary "The command markdown: its body is Markdown, translated into the document.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (returns "The blocks of the Markdown, as pieces.")
+  (see include-markdown markdown->pieces)
+  (example """
+    @markdown|{
+    A paragraph with *emphasis*, and |@em{a command} in it.
+    }|
+    """)
+  (reference """
+    Write the body as @code{|{...}|} when the Markdown has braces or
+    @code{@"@"} characters in it. @code{{...}} works too, when its braces
+    balance.
+
+    A command works in the body: @code{@"@"em{x}} in a @code{{...}} body,
+    and @code{|@"@"em{x}} in a @code{|{...}|} body. Each command is
+    expanded where Markdown puts it. In text, it is what the command
+    makes. In code, a link target or raw HTML, it is the text of what the
+    command makes. A command that makes a block must be alone in a
+    paragraph.
+
+    The command is rejected when it has an argument, a keyword or no
+    body, and when a command that makes a block stands in running text.
+    """))
+
+(:doc include-markdown
+  (summary "The command include-markdown: a Markdown file, translated into the document.")
+  (arg cx "The state of the document.")
+  (arg c "The call.")
+  (returns "The blocks of the Markdown, as pieces.")
+  (see markdown markdown->pieces)
+  (example """
+    @include-markdown["notes/post.md"]
+    """)
+  (reference """
+    The argument is the path of the file. The path is relative to the
+    file that the command is in. The file is added to the @code{sources}
+    of the document. The file is read as it
+    is: an @code{@"@"} in it is a character, not a command. YAML front
+    matter at the start of the file is left out.
+
+    The command is rejected when it has a keyword or a body, when it has
+    no path, and when the file does not exist.
+    """))
+
+(:doc markdown->pieces
+  (summary "Markdown text as pieces of the document, for a command of your own.")
+  (arg cx "The state of the document.")
+  (arg c "The command that calls it. A rejection names this command.")
+  (arg text "The Markdown.")
+  (returns "The blocks of the Markdown, as pieces. The footnotes are added to the notes of the document.")
+  (see markdown include-markdown)
+  (example """
+    ;; @readme: the README.md of the project, as part of the document.
+    (: readme Command)
+    (defun (readme cx c)
+      (markdown->pieces cx c (read-relative cx c "README.md")))
+    """)
+  (reference """
+    The text is Markdown only. An @code{@"@"} in it is a character.
+    """))

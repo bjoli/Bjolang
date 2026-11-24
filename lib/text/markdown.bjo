@@ -120,13 +120,19 @@
 
 ;; A space, a tab, a newline, a form feed or a carriage return.
 (: (-> int bool))
-(defun (ascii-whitespace? b) (or (= b 32) (= b 9) (= b 10) (= b 12) (= b 13)))
+(defun (ascii-whitespace? b)
+  (case b
+    ((32 9 10 12 13) #t)
+    (else #f)))
 
 (: (-> int bool))
 (defun (ascii-digit? b) (and (>= b 48) (<= b 57)))
 
 (: (-> int bool))
-(defun (ascii-letter? b) (or (and (>= b 65) (<= b 90)) (and (>= b 97) (<= b 122))))
+(defun (ascii-letter? b)
+  (match b
+    ((or (:between 65 90) (:between 97 122)) #t)
+    (_ #f)))
 
 (: (-> int bool))
 (defun (ascii-alphanumeric? b) (or (ascii-letter? b) (ascii-digit? b)))
@@ -257,7 +263,7 @@
        (#:autolinks bool) (#:footnotes bool) (#:front-matter bool)
        MdDocument))
 (defun (markdown-parse text #:tables #t #:task-lists #t #:strikethrough #t
-                            #:autolinks #t #:footnotes #t #:front-matter #t)
+                       #:autolinks #t #:footnotes #t #:front-matter #t)
   (parse-document text
                   (Extensions (tables tables) (task-lists task-lists)
                               (strikethrough strikethrough) (autolinks autolinks)

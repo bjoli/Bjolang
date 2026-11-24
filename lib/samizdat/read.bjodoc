@@ -1,0 +1,139 @@
+;; Docs for samizdat/read.bjo, read through (:doc #:file "read.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}. A command name
+;; in code is written @code|{@name}|, so that it is not run.
+
+(:doc #:module
+  (summary "The samizdat reader: text to a tree of text and command calls, with no meaning given to the commands.")
+  (see read-source read-source-file At Call Source ats->string)
+  (example """
+    (import (samizdat read))
+
+    (match (read-source "Hello @em{you}." #:name "greeting")
+      ((Ok src) (println (ats->string (record-ref src content))))
+      ((Err why) (println why)))
+    ;; "Hello " (em {"you"}) "."
+    """)
+  (reference """
+    The reader makes a vec of @code{At} items. An item is text or a command
+    call. It does not run the commands. @code{(samizdat expand)} runs them.
+
+    @strong{The syntax.}
+
+    @itemlist{
+    @item{@code|{@name[args]{body}}| is a command. The arguments and the body are optional. They come right after the name, with no space.}
+    @item{@code|{@|name|}| is a command with no arguments and no body. Use it when a letter comes after the name.}
+    @item{@code|{@||}| is nothing. It separates two things.}
+    @item{@code|{@"text"}| is text, written as a string literal. @code|{@"@"}| is an @code|{@}|.}
+    @item{@code|{@;}| starts a comment that ends at the end of the line. The newline is part of the comment. @code|{@;{...}}| is a comment that ends at the matching brace.}
+    @item{@code|{|{...}|}| is a verbatim body. In it, only @code|<{|@}>| starts a command. When the text contains @code|<{}|}>|, put punctuation between the bar and the brace, and the reverse at the end: @code|{|<{...}>|}|.}
+    }
+
+    A name is a letter, then letters, digits and @code{- _ * /}. A full
+    stop, a comma, a colon, @code{!} and @code{?} end a name.
+
+    An @code|{@}| right after a letter or a digit is text, so
+    @code{linus@example.com} needs no escape. The exception is a name
+    followed by @code{[}, @code|{{}| or @code{|}: @code|{word@note{...}}| is
+    a command.
+
+    The arguments are bjodat, read by @code{(text bjodat-core)}. A comma is
+    not a separator. A document can start with a @code{(meta ...)} form,
+    which is also bjodat.
+
+    The braces in a body must balance. A balanced pair is text. At the top
+    level of a document, a brace is an ordinary character.
+
+    @strong{Indentation.} A body of more than one line loses the blank line
+    after its opening brace and the blank line before its closing brace.
+    Its lines lose the indentation that they have in common. A first line
+    with text after the opening brace is not changed.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The tree
+;; ---------------------------------------------------------------------------
+
+(:doc At
+  (summary "An item of a document as the reader read it: text, or a command call.")
+  (case Text "Text.")
+  (case Cmd "A command call.")
+  (see Call ats->string at-lines))
+
+(:doc Call
+  (summary "A command call as it was written: its name, arguments and body, not yet expanded.")
+  (field name "The name of the command, without the @code|{@}|.")
+  (field args "The arguments in the square brackets, as bjodat values. A keyword and its value are two items. It is empty when there are no square brackets.")
+  (field body "The body. It is @code{None} for a command written without braces, and @code{Some} for one with braces, also when they are empty.")
+  (field line "The line of the @code|{@}|, counting from 1.")
+  (field column "The column of the @code|{@}|, counting from 1.")
+  (see At)
+  (reference """
+    The line and the column are for error messages. @code{refuse} in
+    @code{(samizdat expand)} puts them in its message.
+    """))
+
+(:doc Source
+  (summary "A document as the reader read it: its meta form and its items.")
+  (field meta "The @code{(meta ...)} form, when the document starts with one.")
+  (field content "The items after the meta form.")
+  (see read-source read-source-file))
+
+;; ---------------------------------------------------------------------------
+;; Reading
+;; ---------------------------------------------------------------------------
+
+(:doc read-source
+  (summary "Reads the text of a document into a Source.")
+  (arg text "The text of the document.")
+  (key #:name "The name of the document in an error message, usually the name of its file.")
+  (returns "The document, or @code{Err} with a message when the text cannot be read. The message has the name, the line and the column, and what was expected there.")
+  (see read-source-file Source ats->string)
+  (example """
+    (read-source "An @image[\"a.png\", \"b\"]" #:name "post.sz")
+    ;; (Err "post.sz: Parse error at line 1, column 24: ...
+    ;;       in the [...]: at line 1, column 18: a comma is not a separator here")
+    """)
+  (reference """
+    A byte order mark at the start is removed. A line can end with
+    @code{\r\n}. A @code{(meta ...)} form that bjodat cannot read is also an
+    @code{Err}.
+    """))
+
+(:doc read-source-file
+  (summary "Reads a document from a file into a Source.")
+  (arg path "The path of the file. Error messages use it as the name of the document.")
+  (returns "The document, or @code{Err} with a message when the text cannot be read, as @code{read-source} returns.")
+  (raises System.IO.IOException "When the file cannot be opened, for example when it does not exist.")
+  (see read-source))
+
+(:doc ats->string
+  (summary "Items as s-expressions, for a test or to look at what the reader read.")
+  (arg items "The items.")
+  (returns "The text. Text is a string literal. A command is @code{(name arg ... {body ...})}. A command without a body has no braces.")
+  (see At read-source))
+
+;; ---------------------------------------------------------------------------
+;; Lines
+;; ---------------------------------------------------------------------------
+
+(:doc at-lines
+  (summary "Items split into lines, for a command that reads its body one line at a time.")
+  (arg items "The items, such as the body of a call.")
+  (returns "One vec of items for each line. The newlines are removed, and adjacent text is joined. A command stays in the line where it starts.")
+  (see at-line-blank? at-line-indentation)
+  (reference """
+    @code|{@read-list}| and @code|{@read-table}| in
+    @code{(samizdat lightweight)} use these three functions.
+    """))
+
+(:doc at-line-blank?
+  (summary "Whether a line from at-lines holds only whitespace, or nothing.")
+  (arg line "The line.")
+  (returns "@code{#t} when the line has no command and its text is only whitespace.")
+  (see at-lines at-line-indentation))
+
+(:doc at-line-indentation
+  (summary "The indentation of a line from at-lines, in characters.")
+  (arg line "The line.")
+  (returns "The number of whitespace characters at the start of its text. It is 0 for a line that starts with a command, and for an empty line.")
+  (see at-lines at-line-blank?))

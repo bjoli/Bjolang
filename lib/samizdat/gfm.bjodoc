@@ -1,0 +1,170 @@
+;; Docs for samizdat/gfm.bjo, read through (:doc #:file "gfm.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}, and a literal
+;; at sign is @"@".
+
+(:doc #:module
+  (summary "A samizdat Document as GitHub Flavored Markdown, for a README or the docs of a repository.")
+  (see markdown-page document->markdown markdown-options MdAnchors)
+  (example """
+    (import (samizdat expand))
+    (import (samizdat commands))
+    (import (samizdat gfm))
+
+    (match (read-document-file "README.sz" standard-commands)
+      ((Ok doc) (file-write-text "README.md" (markdown-page doc)))
+      ((Err e) (println e)))
+    """)
+  (reference """
+    @read-table{
+    | @code{document->markdown}                      | the blocks, then the footnotes |
+    | @code{markdown-page}                           | the same under a @code{#} heading, with a newline at the end: a file |
+    | @code{markdown-options}                        | the options, for @code{#:with} |
+    | @code{blocks->markdown}, @code{inlines->markdown} | part of a document, for a hook |
+    | @code{escape-markdown}                         | text, escaped to show as it is |
+    | @code{github-slug}                             | the id that GitHub gives a heading |
+    }
+
+    @strong{What the converter makes.} What Markdown has is written as
+    Markdown: emphasis, code, links, images, lists, task lists, quotations,
+    fenced code, tables and footnotes. What Markdown does not have is
+    written as HTML, which GitHub shows:
+
+    @itemlist{
+    @item{Superscript and subscript are @code{<sup>} and @code{<sub>}.}
+    @item{A definition list is a @code{<dl>}. Each definition is Markdown again, between blank lines.}
+    @item{A figure is its image, with the caption in emphasis below it. A table's caption is in emphasis above the table.}
+    @item{A table has one head row and one body. The head rows after the first start the body, and the groups are joined. A table without a head gets an empty head row.}
+    @item{A @code{Span} or a @code{Div} is what it holds.}
+    @item{Raw text for the format @code{"markdown"} or @code{"html"} is written as it is. Raw text for any other format is left out.}
+    @item{An @code{Anchor} is an @code{<a id>} with the id of samizdat.}
+    }
+
+    @strong{Escaping.} Text is escaped only where Markdown would read it as
+    markup. So the file is easy to read as text too. Emphasis is @code{*}
+    and @code{**} where Markdown reads them back as the same emphasis.
+    Elsewhere it is @code{<em>} or @code{<strong>}: for example, emphasis
+    with a letter outside it and a quotation mark inside it. Space at the
+    edges of emphasis goes outside it.
+
+    @strong{Links to headings.} GitHub makes the id of a heading from its
+    text, and samizdat makes ids in another way. With the default anchors,
+    a link to a heading of the document, from @code{@"@"ref},
+    @code{@"@"toc} or @code{@"@"docref}, goes to the id of GitHub:
+    @code{@"@"section{C# & .NET}} is @code{#c--net}, and the second
+    @code{Usage} is @code{#usage-1}. With @code{#:anchors 'html}, each
+    heading starts with an @code{<a id>} that has the id of samizdat, and
+    links keep that id.
+    """))
+
+(:doc Md
+  (summary "The options of the Markdown converter, which markdown-options makes.")
+  (see markdown-options default-markdown)
+  (reference """
+    A hook gets an @code{Md} as its first argument. Give it to
+    @code{blocks->markdown} or @code{inlines->markdown} to convert what is
+    inside the block or the inline with the same options. The @code{Md}
+    that a hook gets also knows the ids of GitHub for the headings of the
+    document.
+    """))
+
+(:doc MdAnchors
+  (summary "How a heading of the Markdown gets its id.")
+  (case AnchorsGithub "The id that GitHub makes from the text of the heading. A link to the heading is changed to that id. Written @code{'github}.")
+  (case AnchorsHtml "The id of samizdat, in an @code{<a id>} at the start of the heading. Written @code{'html}.")
+  (see markdown-options github-slug)
+  (reference """
+    @code{MdAnchors} is a grammar (see @code{def/grammar}). A keyword of
+    this type takes the quoted symbol, @code{#:anchors 'html}, or the case,
+    @code{#:anchors AnchorsHtml}.
+    """))
+
+(:doc markdown-options
+  (summary "Makes the options of the Markdown converter.")
+  (key #:heading-offset "Added to the level of each heading. With 1, a section is @code{##}, below the @code{#} title of the page. The level is kept between 1 and 6.")
+  (key #:anchors "How a heading gets its id.")
+  (key #:block-hook "Called on each block before the converter. It returns @code{None} for a block that the converter writes, or the Markdown text for the block.")
+  (key #:inline-hook "Called on each inline before the converter. It returns @code{None} for an inline that the converter writes, or the Markdown text for the inline.")
+  (key #:url-hook "Changes the target of each link and image: for example, @code{reference.html} to @code{reference.md}. A link to a heading gets the id of GitHub after the hook.")
+  (returns "The options.")
+  (see Md MdAnchors default-markdown markdown-page)
+  (example """
+    ;; An aside is a quotation: Markdown has nothing nearer.
+    (defun (asides h b)
+      (match b
+        ((Div "aside" bs) (Some (blocks->markdown h [(Quote bs)])))
+        (_ None)))
+
+    (markdown-page doc #:with (markdown-options #:block-hook asides))
+    """)
+  (reference """
+    A hook is called first for each block or inline, also inside other
+    blocks and inlines. When it returns text, the converter does not
+    convert the contents. The text that a hook returns is not escaped.
+    """))
+
+(:doc default-markdown
+  (summary "The options of the Markdown converter with each option at its default: (markdown-options).")
+  (see markdown-options))
+
+(:doc document->markdown
+  (summary "A document as Markdown: its blocks, then its footnotes.")
+  (arg doc "The document.")
+  (key #:with "The options.")
+  (returns "The Markdown, without a newline at the end. The footnotes are @code{[^1]:} and so on, after the blocks.")
+  (see markdown-page blocks->markdown))
+
+(:doc markdown-page
+  (summary "A document as a Markdown file, under a # heading with its title.")
+  (arg doc "The document.")
+  (key #:with "The options.")
+  (key #:title "The title. When it is empty, the page uses the @code{(title ...)} of the meta form. When neither is there, the page has no title heading.")
+  (returns "The title as a @code{#} heading, a blank line, the document, and a newline at the end.")
+  (see document->markdown markdown-options)
+  (reference """
+    The title heading is always level 1, whatever @code{#:heading-offset}
+    is. GitHub counts it when it makes the ids of the headings, so a
+    section with the same text as the title gets the id with @code{-1}.
+    """))
+
+(:doc blocks->markdown
+  (summary "Blocks as Markdown, for a hook.")
+  (arg h "The options. Give the ones the hook gets, so that links to headings get the ids of GitHub.")
+  (arg bs "The blocks.")
+  (returns "The Markdown of the blocks, with a blank line between two blocks.")
+  (see inlines->markdown document->markdown))
+
+(:doc inlines->markdown
+  (summary "Inlines as Markdown, for a hook.")
+  (arg h "The options. Give the ones the hook gets, so that links to headings get the ids of GitHub.")
+  (arg xs "The inlines.")
+  (returns "The Markdown of the inlines, escaped as at the middle of a line.")
+  (see blocks->markdown escape-markdown))
+
+(:doc escape-markdown
+  (summary "Text, escaped so that Markdown shows it as it is, within a line.")
+  (arg s "The text.")
+  (returns "The text, with a backslash before each character that Markdown would read as markup there.")
+  (see inlines->markdown)
+  (example """
+    (escape-markdown "a *b* [c]")   ; "a \\*b\\* \\[c\\]"
+    (escape-markdown "snake_case")  ; "snake_case"
+    """)
+  (reference """
+    It escapes @code{\ ` * [ ] < ~ $}, an @code{_} that is not between
+    two letters or digits, and an @code{&} that starts an entity. It does
+    not escape what is markup only at the start of a line, such as
+    @code{#} or @code{-}.
+    """))
+
+(:doc github-slug
+  (summary "The id that GitHub gives a heading with this text.")
+  (arg text "The text of the heading, without markup.")
+  (returns "The text in lower case, with a dash for each space, and without each character that is not a letter, a digit, a mark, @code{-} or @code{_}.")
+  (see MdAnchors)
+  (example """
+    (github-slug "C# & .NET")   ; "c--net"
+    """)
+  (reference """
+    GitHub adds @code{-1}, @code{-2} and so on to a second and a third
+    heading with the same id. This function does not.
+    """))

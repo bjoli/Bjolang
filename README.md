@@ -6,7 +6,7 @@ I think we have all had the thought: all programming languages suck in at least 
 
 ## Elevator pitch
 
-Bjolang is a scheme-inspired eager language with local HM type inference that bjompiles to constipated c#. Traits instead of classes. Never worry about two-way-interop with c# ever again! Fast immutable bjollections. Rrb tree! A champ map! A  b-tree bjordered map! Sets based on the previous 2! (and of course a linked list). Tail-resumptive effects: Fearlessly mock production code!
+Bjolang is a scheme-inspired eager language with local HM type inference that bjompiles to constipated c#. Traits instead of classes - Never worry about two-way-interop with c# ever again. Fast immutable bjollections. Rrb tree! A champ map! A  b-tree bjordered map! Sets based on the previous 2! (and of course a linked list). Tail-resumptive effects: Fearlessly mock production code!
 
 Inlineable traits gives us brand-like types that enable things like functors and do-notation.
 
@@ -45,7 +45,7 @@ But here is the part that is actually worth waking up for. “within” is a dea
 (: report (-> string (Option string) void))
 (defun (report what answer)
   (def (Some v) answer
-       #:default "gave up")
+    #:default "gave up")
   (println "{what}: ${v}"))
 
 (defbjo (main args)
@@ -157,7 +157,7 @@ Have a look inte the Examples directory. Or at the code in [the json module](lib
 Look Ma, a Monad!
 
 ```scheme
-;; The do notation is defined as a macro here
+;; The do notation is defined as a macro in (std monad)
 ;; as is the bind and pure trait
 (import (std monad))
 
@@ -179,7 +179,7 @@ although most do-notation cases (matching option and Result) is better handled b
 (: print-key (-> (Map Keyword string) (Result string string)))
 (defun (print-key myMap)
   (def (Some b) (try-ref myMap :key)
-       :leave-with (Err "Map was somehow not populated correctly"))
+    :leave-with (Err "Map was somehow not populated correctly"))
   ;; Here we know the call above worked and that b is bound to the value
   ;; under :key in myMap, otherwise 
   (println ":key is #${b}.")
@@ -414,6 +414,14 @@ returned within thirty days.
 
 A grammar is declared in the module with the types, so a library can give its users a notation of their own. (std run) declares one for shell pipelines, have a look at [Examples/run_with_bjoroutine.bjo](Examples/run_with_bjoroutine.bjo) which finds insidious plans!
 
+## Speed
+
+Speed is pretty good. Since bjolang compiles to c#, compilation is slower than c#, but actual speed when running is pretty much the same. I have been porting c# in the runtime to bjolang, and depsite the c# being pretty optimized, the bjolang code has been at most +/- 10%. Some of that is of course the power of hindsight and being able to make better decisions, but some of it are actually surprising speedups.
+
+Bjolang has spans, and most of the knobs to make fast code in c# are available to bjolang. The only thing that you actually get is a better looping facility that makes the easy path the fast path. It also does automatic vectorization for a (quite narrow) case of loops.
+
+Bjolang strings being utf8-only has both pros and cons. Some things are a LOT faster (like over 10x), but for cursor walks it is actually slower. When using the built in string search tools, it is mostly going to be faster than c# strings, though. Especially (std scan). When you can use it, it will beat c# regexps (even compiled ones) any day of the week.
+
 ## License
 
 MPL-2.0 with a linking exception. The exception says that what the bjompiler
@@ -456,8 +464,6 @@ I think  I am in a pretty good place right now, actually.
 ### Performance things
 
 The ports have very nice guarantees for concurrent code, but when that is not needed, you pay a small tax on all IO. Should this be solved?
-
-Figure out a way to add Spans to the language, preferrably without actually changing anything. Can spanization be an automatic process when dealing ith c# code? Or maybe some kind of block where spans cannot escape.
 
 Some kind of array slices, based on Memory or ReadOnlyMemory.
 
