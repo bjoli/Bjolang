@@ -925,7 +925,7 @@
 (:doc up-from
   (summary "The ints counting up from a start, with or without a bound.")
   (arg from "The first int.")
-  (key #:to "Where to stop, not included. Defaults to int-max.")
+  (key #:to "Where to stop, not included. Without it, the walk runs to the last value that it can step from.")
   (key #:by "The positive step.")
   (returns "An iterable sequence for (:for ...) loops.")
   (see down-from range int-max)
@@ -942,12 +942,18 @@
     A @code{#:by} of zero or less is a panic, since the walk would never
     move. The struct is a value, so a loop over one allocates nothing for
     it.
+
+    A walk does not step past the end of its number type. Without
+    @code{#:to} it ends one @code{#:by} before the largest value. A
+    @code{#:to} that the walk could step past, as in
+    @code{(up-from 0 #:to int-max #:by 2)}, raises
+    @code{ArgumentException} when the walk is made.
     """))
 
 (:doc down-from
   (summary "The ints counting down from a start, with or without a bound.")
   (arg from "The first int.")
-  (key #:to "Where to stop, included. Defaults to int-min.")
+  (key #:to "Where to stop, included. Without it, the walk runs to the last value that it can step from.")
   (key #:by "The distance to subtract each step. Positive.")
   (returns "An iterable sequence for (:for ...) loops.")
   (see up-from range int-min)
@@ -958,6 +964,14 @@
     Unlike @code{up-from}'s, its @code{#:to} is included:
     @code{(down-from n #:to 0)} counts down to zero and says zero.
     @code{#:by} is a distance, positive here too; zero or less is a panic.
+
+    A walk does not step past the end of its number type. Without
+    @code{#:to} it ends one @code{#:by} above the smallest value, so
+    @code{(down-from n)} does not give @code{int-min}. A @code{#:to} that
+    the walk could step past raises @code{ArgumentException} when the walk
+    is made: @code{(down-from n #:to int-min)}, and
+    @code{(down-from 3u #:to 0u)}, as an unsigned count cannot go under
+    zero. Stop such a count at @code{1u}, or count in a wider type.
     """))
 
 (:doc int-max

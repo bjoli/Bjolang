@@ -243,15 +243,63 @@
 (defun (step-panic who by)
   (panic! #"${who}: #:by is ${(clr-show by)}, and a step of zero or less is a walk that never gets anywhere. It is a distance; down-from subtracts it."))
 
-(: up-from (-> %n (#:to %n) (#:by %n) (UpFrom %n)) (where (Num %n) (Ordered %n)) #:inline)
-(defun (up-from from #:to (num-top) #:by 1)
-  (check-step "up-from" by)
-  (UpFrom (from from) (to to) (by by)))
+;; A walk does not step past the end of its number type, where an int wraps
+;; round. The bound is made safe once, when the walk is made, so a step is
+;; one addition and the test one comparison, as before.
+;;
+;; - A value is safe to step from when the step stays in the type: at most
+;;   `top - by` for `up-from`, and at least `bottom + by` for `down-from`.
+;; - A walk with no `#:to` ends at the last safe value: its bound is the
+;;   default of `#:to`, which is made from `#:by`. It does not give the
+;;   values within one step of the end of the type: `(down-from n)` ends at
+;;   `int-min + 1`.
+;; - A walk with a `#:to` that it could step past raises `ArgumentException`
+;;   when it is made, also when the `#:to` is the end of the type itself, as
+;;   in `(down-from 3u #:to 0u)`. Counting in a wider type, as
+;;   `(up-from 0L ...)`, has room for the last step.
+;; - A walk with no values takes no step, and raises nothing.
+;; - A double's ends are the infinities, so its bound is always kept.
+;;
+;; `#:by` is before `#:to` in both definitions, because the default of
+;; `#:to` reads it. A call names its keywords, so their order there is free.
 
-(: down-from (-> %n (#:to %n) (#:by %n) (DownFrom %n)) (where (Num %n) (Ordered %n)) #:inline)
-(defun (down-from from #:to (num-bottom) #:by 1)
+(: up-safe (-> %n %n) (where (Num %n)) #:inline)
+(defun (up-safe by) (+ (- (num-top) by) 1))
+
+(: down-safe (-> %n %n) (where (Num %n)) #:inline)
+(defun (down-safe by) (+ (num-bottom) by))
+
+(: up-bound (-> %n %n %n %n) (where (Num %n) (Ordered %n)) #:inline)
+(defun (up-bound from to by)
+  (cond
+    ((<= to (up-safe by)) to)
+    ;; No values, so no step.
+    ((>= from to) to)
+    (else (bound-panic "up-from" to by))))
+
+(: down-bound (-> %n %n %n %n) (where (Num %n) (Ordered %n)) #:inline)
+(defun (down-bound from to by)
+  (cond
+    ((>= to (down-safe by)) to)
+    ((< from to) to)
+    (else (bound-panic "down-from" to by))))
+
+;; `clr-show`, as in `step-panic`.
+(: bound-panic (-> string %n %n %n))
+(defun (bound-panic who to by)
+  (raise (cast Exception
+               (ArgumentException.
+                 #"${who}: #:to is ${(clr-show to)} and #:by is ${(clr-show by)}, so the last step could pass the end of the number type, where it wraps round. Count in a wider type, as (${who} 0L ...) does, or stop the walk at least one step before the end."))))
+
+(: up-from (-> %n (#:by %n) (#:to %n) (UpFrom %n)) (where (Num %n) (Ordered %n)) #:inline)
+(defun (up-from from #:by 1 #:to (up-safe by))
+  (check-step "up-from" by)
+  (UpFrom (from from) (to (up-bound from to by)) (by by)))
+
+(: down-from (-> %n (#:by %n) (#:to %n) (DownFrom %n)) (where (Num %n) (Ordered %n)) #:inline)
+(defun (down-from from #:by 1 #:to (down-safe by))
   (check-step "down-from" by)
-  (DownFrom (from from) (to to) (by by)))
+  (DownFrom (from from) (to (down-bound from to by)) (by by)))
 
 (impl (Iterable (UpFrom %n))
   (where (Num %n) (Ordered %n))

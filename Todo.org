@@ -403,16 +403,21 @@ cast, and a store of a reference into the heap (the GC's write barrier).
   copies its body into each call and drops the copy. The check of the copy
   is work for nothing; marking such a demand would save it.
 
-* Found while documenting the prelude
+* Walks to the end of a number type
 
-Behaviour the prelude's docs now describe as it is, and that is probably not
-what was meant. Confirmed by running it where it says so.
-
-- *~up-from #:by~ wraps past ~int-max~* instead of stopping, and ~down-from~
-  with no ~#:to~ never stops after ~int-min~. Kept: asking before each step
-  costs every walk a compare, and ~down-from~ would need a cursor that is not
-  an int. (~range-by~ no longer does: its stop is worked out once, which a
-  double's walk could not land on exactly.)
+- *~(down-from n #:to 0u)~ raises, and a count down to zero in an unsigned
+  type is common.* The bound is included, so the step from 0 would go under
+  zero (see the changelog, "~up-from~ and ~down-from~ do not step past the
+  end of their number type"). The same for ~(down-from n #:to int-min)~.
+  To give the last value at no cost for each step, one of:
+  - A cursor one above the value: start at ~from + 1~, stop when the cursor
+    is at or below ~#:to~, and give the cursor less 1. With ~#:by 1~ the
+    cursor ends at ~#:to~ and does not go under it. It moves the value that
+    cannot be reached to the top of the type (~from~ = the largest value),
+    and it costs a subtraction where the value is read. Not measured. It
+    does not help a ~#:by~ above 1.
+  - The last value in an iteration of its own after the loop, which needs
+    a loop with two phases.
 
 * Found while writing bjostat's parallel loops
 

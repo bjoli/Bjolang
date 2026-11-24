@@ -3,6 +3,47 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~up-from~ and ~down-from~ do not step past the end of their number type
+
+- *A walk wrapped round at the end of ~int~ and went on.* ~up-from~ with a
+  ~#:by~ above 1 and no ~#:to~, or a ~#:to~ near ~int-max~, stepped past
+  ~int-max~ to a negative number. ~down-from~ with no ~#:to~ never ended:
+  its bound is included, so the step from ~int-min~ wrapped to ~int-max~.
+  ~(down-from 3u #:to 0u)~ did the same under zero.
+- The bound is made safe once, when the walk is made. A step is one addition
+  and the test one comparison, as before.
+- A walk with no ~#:to~ ends at the last value that it can step from, one
+  ~#:by~ before the end of the type. ~(down-from n)~ ends at ~int-min + 1~
+  and does not give ~int-min~.
+- A walk with a ~#:to~ that it could step past raises ~ArgumentException~
+  when it is made, also when the ~#:to~ is the end of the type:
+  ~(up-from 0 #:to int-max #:by 2)~, ~(down-from n #:to int-min)~,
+  ~(down-from 3u #:to 0u)~. The test is by the bound and the step alone, so
+  it also raises for a walk whose values happen to end exactly on a safe
+  one. A walk with no values raises nothing.
+- A walk that is not within one step of the end of its type gives the
+  values that it gave before. ~(up-from a #:to b)~ with the default ~#:by~
+  is always such a walk.
+- ~#:by~ is before ~#:to~ in the two definitions, as the default of ~#:to~
+  reads it. A call names its keywords, so no call changes.
+- Measured with ~bjo bench~, before and after, the range of the medians:
+
+  | loop                                   | before        | after         |
+  |----------------------------------------+---------------+---------------|
+  | ~Examples/erathostenes.bjo~, 20M       | 32.2-34.1 ms  | 31.1-34.7 ms  |
+  | its older version, 20M                 | 76.3-79.3 ms  | 67.0-84.0 ms  |
+  | sum of an array, to its length         | 206 us        | 206 us        |
+  | the same, ~#:by 3~                     | 73.3-73.6 us  | 73.5-75.1 us  |
+  | the same, ~down-from~ to 0             | 206-207 us    | 206-207 us    |
+  | ~up-from~ with no ~#:to~, ~:finish~    | 206-207 us    | 206 us        |
+
+  The loop whose bound is the array's length keeps its speed, so the JIT
+  still removes its bounds check. The older sieve changes more between runs
+  than between the two builds. The ~#:by 3~ row is about 1% slower in most
+  runs, which is not examined.
+- ~range-by~ counts in a long and gives every value, as before.
+- TestFiles 600 tests the ends, the errors and the unchanged walks.
+
 * A cursor that only goes forward is tested against its string's start once
 
 - *Each ~string-cursor-ref~ and ~string-cursor-next~ tested that its cursor
