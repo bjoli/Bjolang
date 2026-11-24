@@ -898,7 +898,7 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
             atLevel (fun () ->
                 let exprType, typedExpr = infer env expr
                 let elementMetas = names |> List.map (fun _ -> freshMeta ())
-                unify env.Registry exprType (TTuple elementMetas)
+                Diagnostics.locatedAt (exprRange expr) (fun () -> unify env.Registry exprType (TTuple elementMetas))
                 solvePending env
                 exprType, typedExpr, elementMetas)
 
@@ -948,7 +948,9 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
         let exprType, typedExpr = infer env expr
 
         match Map.tryFind name sigs with
-        | Some signature -> unifyExpecting env.Registry signature.Type exprType $"'%s{name}'"
+        | Some signature ->
+            Diagnostics.locatedAt (exprRange expr) (fun () ->
+                unifyExpecting env.Registry signature.Type exprType $"'%s{name}'")
         | None -> ()
 
         solvePending env
@@ -992,7 +994,10 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
     | DHashMacro _
     | DSyncOnly _
     | DNoInline _
-    | DInline _ -> env, sigs, []
+    | DInline _
+    // Read off the declaration list by `checkDeclGroup`.
+    | DNonBlocking _
+    | DElsewhere _ -> env, sigs, []
 
     // Taken in when the group is done (see `checkDeclGroup`).
     | DDeprecated _ -> env, sigs, []
@@ -1150,7 +1155,9 @@ and private checkDef (env: Env) (sigs: Sigs) (name: string) (expr: Expr) (r: Ran
                 | None -> infer env expr
 
             match declaredType with
-            | Some sigType -> unifyExpecting env.Registry sigType exprType $"'%s{name}'"
+            | Some sigType ->
+                Diagnostics.locatedAt (exprRange expr) (fun () ->
+                    unifyExpecting env.Registry sigType exprType $"'%s{name}'")
             | None -> ()
 
             // Trait obligations are discharged before generalization: a scheme must
@@ -1388,7 +1395,9 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
     List.iter2
         (fun ann (_, t) ->
             match ann with
-            | Some ft -> unify env.Registry t (resolveTypeAnnotation env.Registry ft)
+            | Some ft ->
+                Diagnostics.locatedAt (ftypeRange ft) (fun () ->
+                    unify env.Registry t (resolveTypeAnnotation env.Registry ft))
             | None -> ())
         (defunArgs |> List.choose (function MandatoryArg(_, a) -> Some a | _ -> None))
         mandatoryTypes
@@ -1542,7 +1551,8 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
             // The return type is the body's expectation, so a literal the body ends
             // in is elaborated against it.
             let bodyType, typedBody = inferChecked expectedRetType bodyEnv body
-            unifyExpecting env.Registry expectedRetType bodyType $"what '%s{name}' returns"
+            Diagnostics.locatedAt (exprRange (resultExpr body)) (fun () ->
+                unifyExpecting env.Registry expectedRetType bodyType $"what '%s{name}' returns")
             let typedBody = bridgeToSuspending env expectedRetType typedBody
 
             // Type-check keyword default expressions, each against its parameter's
@@ -1808,6 +1818,78 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
                                 Set.contains name ownDoubles || not (Set.contains name ownDefinitions))
                         BlockingNames = Set.difference env.Registry.BlockingNames ownDefinitions
                         WaitingNames = Set.difference env.Registry.WaitingNames ownDefinitions } }
+
+    // The promises of `#:non-blocking` and `#:elsewhere param`, for the lint
+    // of a call that parks (`EffectGraph`). Each is on a function that this
+    // module defines.
+    let env =
+        let argumentsOf (name: string) =
+            decls
+            |> List.tryPick (function
+                | DDefun(n, args, _, _, _)
+                | DDefDouble(n, args, _, _, _) when n = name -> Some args
+                | _ -> None)
+
+        let parametersOf (name: string) = argumentsOf name |> Option.map mandatoryNames
+
+        let needsDefinition (marker: string) (name: string) (r: Range) =
+            match parametersOf name with
+            | Some parameters -> parameters
+            | None ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: #:%s{marker} is on the signature of '%s{name}', and this module does not define a function '%s{name}'. The marker is for a defun, a defbjo or a defbjouble."
+
+        let nonBlocking =
+            decls
+            |> List.choose (function
+                | DNonBlocking(name, r) ->
+                    needsDefinition "non-blocking" name r |> ignore
+                    Some name
+                | _ -> None)
+
+        let elsewhere =
+            decls
+            |> List.choose (function
+                | DElsewhere(name, parameter, r) ->
+                    let parameters = needsDefinition $"elsewhere %s{parameter}" name r
+
+                    // A rest parameter's arguments come after the positional
+                    // ones at a call, so a position could not be counted from
+                    // the last argument.
+                    if (argumentsOf name).Value |> List.exists (function RestArg _ -> true | _ -> false) then
+                        failwithf
+                            $"Type Error at %s{Lexer.formatPos r}: #:elsewhere is on the signature of '%s{name}', which has a #:rest parameter. The marker is not supported on such a function."
+
+                    match List.tryFindIndex ((=) parameter) parameters with
+                    | Some index -> Some(name, parameters.Length - 1 - index)
+                    | None ->
+                        let written = parameters |> List.map (fun p -> "'" + p + "'") |> String.concat ", "
+
+                        let has =
+                            if parameters.IsEmpty then
+                                "has no positional parameter"
+                            else
+                                $"has the positional parameters %s{written}"
+
+                        failwithf
+                            $"Type Error at %s{Lexer.formatPos r}: #:elsewhere names '%s{parameter}', and '%s{name}' %s{has}. The marker names the positional parameter that takes the function run on another thread; a keyword or rest parameter cannot be named."
+                | _ -> None)
+
+        if nonBlocking.IsEmpty && elsewhere.IsEmpty then
+            env
+        else
+            let ownElsewhere =
+                elsewhere
+                |> List.groupBy fst
+                |> List.fold
+                    (fun acc (name, group) -> Map.add ("", name) (group |> List.map snd |> List.sort) acc)
+                    env.Registry.ElsewhereParams
+
+            { env with
+                Registry =
+                    { env.Registry with
+                        NonBlockingNames = Set.union env.Registry.NonBlockingNames (Set.ofList nonBlocking)
+                        ElsewhereParams = ownElsewhere } }
 
     // The bare names of this module's traits and their methods, before
     // anything is checked: a signature's where clause, a forward declaration

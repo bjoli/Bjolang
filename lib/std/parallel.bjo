@@ -192,7 +192,9 @@
 ;;   is raised here when the parts that started have ended. A part that runs
 ;;   cannot be stopped. In a bjoroutine, the parts not started when the scope
 ;;   is cancelled do not run, and `Cancelled` is raised.
-(: computing-each (-> int (-> int %a) (Vec %a)))
+;; - In a bjoroutine each part runs on a compute thread, which runs no
+;;   fibers: thus `#:elsewhere`.
+(: computing-each (-> int (-> int %a) (Vec %a)) #:elsewhere work)
 (defun (computing-each n work)
   (if (<= n 0)
       []
@@ -270,14 +272,16 @@
 ;;   thread. The collection may make fewer.
 ;; - `#:size`: instead, ceil(n / size) parts of n elements, so that the parts
 ;;   do not depend on the machine.
-(: in-parts (-> %c (-> %p %r) (#:parts int) (#:size int) (Vec %r)) (where (Chunkable %c #:chunk %p)))
+(: in-parts (-> %c (-> %p %r) (#:parts int) (#:size int) (Vec %r)) (where (Chunkable %c #:chunk %p))
+   #:elsewhere f)
 (defun (in-parts c f #:parts (* 4 thread-count) #:size 0)
   (def ps (chunks c (parts-asked (chunk-size c) parts size)))
   (computing-each (vec-length ps) (fun (i) (f (vec-ref ps i)))))
 
 ;; `in-parts`, with the results combined in the order of the parts.
 (: in-parallel (-> %c (-> %p %r) (#:parts int) (#:size int) %r)
-   (where (Chunkable %c #:chunk %p) (Combinable %r)))
+   (where (Chunkable %c #:chunk %p) (Combinable %r))
+   #:elsewhere f)
 (defun (in-parallel c f #:parts (* 4 thread-count) #:size 0)
   (combine-all (in-parts c f #:parts parts #:size size)))
 
@@ -437,7 +441,8 @@
 ;; a part are taken in order, and the parts at the same time.
 (: par-for-each (-> (-> %e void) %c void)
    (where (Chunkable %c #:chunk %p)
-          (Iterable %p #:elem %e)))
+          (Iterable %p #:elem %e))
+   #:elsewhere f)
 (defun (par-for-each f c)
   (ignore (in-parallel c
                        (fun (part)

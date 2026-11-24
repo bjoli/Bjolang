@@ -28,6 +28,11 @@
 
 (import (std prelude))
 (import (std syntax-match))
+;; For the instances of their types. An instance is written in the module of
+;; its trait or of its type, and the modules of these types do not import
+;; this one.
+(import (std datetime))
+(import (std uuid))
 (import (text json))
 
 ;; Every export is documented there; the module doc is too.
@@ -52,6 +57,7 @@
 (impl (->json long)   (defun (->json n) (JsonInt n)))
 (impl (->json int)    (defun (->json n) (JsonInt (cast System.Int64 n))))
 (impl (->json double) (defun (->json n) (JsonFloat n)))
+(impl (->json float)  (defun (->json n) (JsonFloat (cast System.Double n))))
 (impl (->json bool)   (defun (->json b) (JsonBool b)))
 (impl (->json string) (defun (->json s) (JsonStr s)))
 
@@ -82,6 +88,15 @@
       ((JsonFloat d) (Ok d))
       ;; an int is a valid double.
       ((JsonInt n) (Ok (cast System.Double n)))
+      (_ (Err "expected a number")))))
+
+;; A number that a float cannot hold exactly is rounded to the nearest one,
+;; as a cast does.
+(impl (json-> float)
+  (defun (json-> j)
+    (match j
+      ((JsonFloat d) (Ok (cast System.Single d)))
+      ((JsonInt n) (Ok (cast System.Single n)))
       (_ (Err "expected a number")))))
 
 (impl (json-> bool)
@@ -116,6 +131,35 @@
            ((Err e) (Err e))
            ((Ok v) (Ok (Some v))))))))
 
+;; ---------------------------------------------------------------------------
+;; Arrays
+;; ---------------------------------------------------------------------------
+
+;; The elements of a JSON array, each one decoded.
+;; - An error of an element has its index before it: `[3]: expected a string`.
+(: (-> Json (Result string (Array %a))) (where (json-> %a)))
+(defun (json-elements j)
+  (match j
+    ((JsonArr items)
+     (def n (iarray-length items))
+     (def (: out (Array %a)) (make-array n))
+     (let go ((i 0))
+       (if (= i n)
+           (Ok out)
+           (match (json-> (iarray-ref items i))
+             ((Err e) (Err (str "[" (int->string i) "]: " e)))
+             ((Ok v)
+              (array-set! out i v)
+              (go (+ i 1)))))))
+    (_ (Err "expected an array"))))
+
+;; Element `i` of a JSON array, decoded, with its index before an error.
+(: (-> (IArray Json) int (Result string %a)) (where (json-> %a)))
+(defun (json-element items i)
+  (match (json-> (iarray-ref items i))
+    ((Err e) (Err (str "[" (int->string i) "]: " e)))
+    ((Ok v) (Ok v))))
+
 (impl (->json (Vec %a))
   (where (->json %a))
   (defun (->json v)
@@ -124,15 +168,79 @@
 (impl (json-> (Vec %a))
   (where (json-> %a))
   (defun (json-> j)
+    (def (Ok items) (json-elements j) :propagate)
+    (Ok (->vec items))))
+
+(impl (->json (List %a))
+  (where (->json %a))
+  (defun (->json xs)
+    (JsonArr (list->iarray (list-map (fun (x) (->json x)) xs)))))
+
+(impl (json-> (List %a))
+  (where (json-> %a))
+  (defun (json-> j)
+    (def (Ok items) (json-elements j) :propagate)
+    (Ok (->list items))))
+
+(impl (->json (Array %a))
+  (where (->json %a))
+  (defun (->json a)
+    (JsonArr (array->iarray {arraying (->json x) (:for x a)}))))
+
+(impl (json-> (Array %a))
+  (where (json-> %a))
+  (defun (json-> j) (json-elements j)))
+
+(impl (->json (IArray %a))
+  (where (->json %a))
+  (defun (->json a)
+    (JsonArr (iarray-map (fun (x) (->json x)) a))))
+
+(impl (json-> (IArray %a))
+  (where (json-> %a))
+  (defun (json-> j)
+    (def (Ok items) (json-elements j) :propagate)
+    (Ok (array->iarray items))))
+
+;; A tuple is an array of as many elements, each of its own type.
+(impl (->json (Tuple %a %b))
+  (where (->json %a) (->json %b))
+  (defun (->json t)
+    (def (Tuple a b) t)
+    (JsonArr (list->iarray (list (->json a) (->json b))))))
+
+(impl (json-> (Tuple %a %b))
+  (where (json-> %a) (json-> %b))
+  (defun (json-> j)
     (match j
       ((JsonArr items)
-       (fold (fun (el acc)
-               (def (Ok b) acc :propagate)
-               (def (Ok v) (json-> el) :propagate)
-               (Ok (vec-add b v)))
-             (Ok (vec-empty))
-             items))
-      (_ (Err "expected an array")))))
+       (cond
+         ((not (= (iarray-length items) 2))
+          (Err (str "expected an array of 2 elements, and this has " (int->string (iarray-length items)))))
+         (:def (Ok a) (json-element items 0) :propagate)
+         (:def (Ok b) (json-element items 1) :propagate)
+         (else (Ok (Tuple a b)))))
+      (_ (Err "expected an array of 2 elements")))))
+
+(impl (->json (Tuple %a %b %c))
+  (where (->json %a) (->json %b) (->json %c))
+  (defun (->json t)
+    (def (Tuple a b c) t)
+    (JsonArr (list->iarray (list (->json a) (->json b) (->json c))))))
+
+(impl (json-> (Tuple %a %b %c))
+  (where (json-> %a) (json-> %b) (json-> %c))
+  (defun (json-> j)
+    (match j
+      ((JsonArr items)
+       (cond
+         ((not (= (iarray-length items) 3))
+          (Err (str "expected an array of 3 elements, and this has " (int->string (iarray-length items)))))
+         (:def (Ok a) (json-element items 0) :propagate)
+         (:def (Ok b) (json-element items 1) :propagate)
+         (:def (Ok c) (json-element items 2) :propagate)
+         (else (Ok (Tuple a b c)))))
+      (_ (Err "expected an array of 3 elements")))))
 
 ;; A JSON object with values all of one type.
 (impl (->json (Map string %a))
@@ -167,6 +275,45 @@
              (Ok (map-empty))
              fields))
       (_ (Err "expected an object")))))
+
+;; ---------------------------------------------------------------------------
+;; Dates, times and UUIDs
+;; ---------------------------------------------------------------------------
+;; Each is the ISO 8601 string that `written` gives and `iso8601->...` reads,
+;; and a Uuid its string in lower case.
+
+;; The string of a JSON value, read by `read`. `what` names the type in the
+;; error.
+(: (-> Json (-> string (Option %a)) string (Result string %a)))
+(defun (from-text j read what)
+  (match j
+    ((JsonStr s)
+     (match (read s)
+       ((Some v) (Ok v))
+       (None (Err (str "expected " what ", and \"" s "\" is not one")))))
+    (_ (Err (str "expected " what ", as a string")))))
+
+(impl (->json Date) (defun (->json d) (JsonStr (written d))))
+(impl (json-> Date) (defun (json-> j) (from-text j iso8601->date "an ISO 8601 date")))
+
+(impl (->json Time) (defun (->json t) (JsonStr (written t))))
+(impl (json-> Time) (defun (json-> j) (from-text j iso8601->time "an ISO 8601 time")))
+
+(impl (->json DateTime) (defun (->json dt) (JsonStr (written dt))))
+(impl (json-> DateTime) (defun (json-> j) (from-text j iso8601->datetime "an ISO 8601 date and time")))
+
+(impl (->json Instant) (defun (->json i) (JsonStr (written i))))
+(impl (json-> Instant) (defun (json-> j) (from-text j iso8601->instant "an ISO 8601 instant")))
+
+(impl (->json Moment) (defun (->json m) (JsonStr (written m))))
+(impl (json-> Moment)
+  (defun (json-> j) (from-text j iso8601->moment "an ISO 8601 date and time with an offset")))
+
+(impl (->json Duration) (defun (->json d) (JsonStr (written d))))
+(impl (json-> Duration) (defun (json-> j) (from-text j iso8601->duration "an ISO 8601 duration")))
+
+(impl (->json Uuid) (defun (->json u) (JsonStr (uuid->string u))))
+(impl (json-> Uuid) (defun (json-> j) (from-text j string->uuid "a UUID")))
 
 ;; ---------------------------------------------------------------------------
 ;; What generated field code calls

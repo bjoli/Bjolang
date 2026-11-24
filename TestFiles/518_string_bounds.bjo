@@ -49,6 +49,38 @@
           (ignore (string-cursor-ref s c))
           (loop (string-cursor-next s c) (+ n 1))))))
 
+;; As `count-from`, but it takes a step only when `step?`. With #f it
+;; returns at once, and a cursor that `s` rejects raises nothing.
+(: (-> string StringCursor bool int))
+(defun (count-if s c step?)
+  (let loop ((c c) (n 0))
+    (if (or (not step?) (string-cursor-end? s c))
+        n
+        (begin
+          (ignore (string-cursor-ref s c))
+          (loop (string-cursor-next s c) (+ n 1))))))
+
+;; Counts the characters `rounds` + 1 times: a jump gives the cursor the
+;; start again, so the cursor does not only go forward.
+(: (-> string int int))
+(defun (count-rounds s rounds)
+  (let loop ((c (string-cursor-start s)) (left rounds) (n 0))
+    (cond
+      ((and (string-cursor-end? s c) (= left 0)) n)
+      ((string-cursor-end? s c) (loop (string-cursor-start s) (- left 1) n))
+      (else
+       (ignore (string-cursor-ref s c))
+       (loop (string-cursor-next s c) left (+ n 1))))))
+
+;; A jump that gives the cursor itself: the count of `ch` and of the steps.
+(: (-> string char int))
+(defun (count-twice s ch)
+  (let loop ((c (string-cursor-start s)) (seen #f) (n 0))
+    (cond
+      ((string-cursor-end? s c) n)
+      ((and (char=? (string-cursor-ref s c) ch) (not seen)) (loop c #t (+ n 1)))
+      (else (loop (string-cursor-next s c) #f (+ n 1))))))
+
 ;; The message a call raises, or "no error".
 (: (-> (-> int) string))
 (defun (raised f)
@@ -137,6 +169,24 @@
   ;; From the é: é , 😀 € z.
   (def at-e (string-cursor-next text (string-cursor-next text (string-cursor-next text (string-cursor-next text before)))))
   (expect "a cursor on a boundary" (count-from text at-e) 5)
+
+  ;; A forward cursor (`hoistStringBounds`, "Forward cursors"): the test of
+  ;; the slice's start is made once before the loop.
+  (expect "a forward cursor, whole" (count-from text before) 9)
+  (expect "a forward cursor, slice" (count-from middle (string-cursor-start middle)) 7)
+  (expect "a forward cursor, empty" (count-from empty (string-cursor-start empty)) 0)
+  (expect "a forward cursor at the end" (count-from middle (string-cursor-end middle)) 0)
+  (expect "a cursor outside the slice, and a loop that takes no step"
+          (raised (fun () (count-if middle before #f)))
+          "no error")
+  (expect "a cursor outside the slice, and a loop that takes a step"
+          (raised (fun () (count-if middle before #t)))
+          (raised (fun () (char->int (string-cursor-ref middle before)))))
+  (expect "a cursor after the slice ends the loop"
+          (raised (fun () (count-from middle (string-cursor-end text))))
+          "no error")
+  (expect "a cursor that starts again" (count-rounds middle 2) 21)
+  (expect "a jump that gives the cursor itself" (count-twice "abcb" #\b) 6)
 
   (expect "set! is seen" (count-switching "abcdef" "ab") 2)
   (expect "a changed slot is seen" (count-two "abc" "de") 5)

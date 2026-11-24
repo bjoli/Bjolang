@@ -1682,6 +1682,9 @@ type private DllFacts =
       /// The type parameters each exported generic function uses at run
       /// time, by the function's origin.
       RunTimeTypeParams: ((string * string) * (int * string) list) list
+      /// The parameters each exported function runs on another thread, by
+      /// the function's origin.
+      Elsewhere: ((string * string) * int list) list
       /// Exports written with `defbjouble`, each with where it was defined.
       Doubles: (string * (string * string)) list
       /// The bodies of exported constrained generics.
@@ -2394,6 +2397,7 @@ let loadModuleGraph
       * Set<string * (string * string)>
       * Set<string * (string * string)>
       * Map<string * string, (int * string) list>
+      * Map<string * string, int list>
       * Set<string * (string * string)>
       * Map<string, TypedAST.InlineTemplate>
       * (string * string * string) list
@@ -2435,6 +2439,9 @@ let loadModuleGraph
     let runTimeTypeParams =
         System.Collections.Generic.Dictionary<string * string, (int * string) list>()
 
+    /// The parameters imported functions run on another thread, by origin.
+    let elsewhereParams = System.Collections.Generic.Dictionary<string * string, int list>()
+
     /// Imported definitions written with `defbjouble`, under the names their
     /// origin published. The suspending copy is an ordinary imported binding
     /// like any other; what this adds is that the two are a pair.
@@ -2463,6 +2470,9 @@ let loadModuleGraph
 
         for (origin, ps) in facts.RunTimeTypeParams do
             runTimeTypeParams[origin] <- ps
+
+        for (origin, positions) in facts.Elsewhere do
+            elsewhereParams[origin] <- positions
 
         for entry in facts.Doubles do
             doubleDefs.Add entry |> ignore
@@ -2629,6 +2639,12 @@ let loadModuleGraph
                                     |> List.ofArray
 
                                 originOf name, ps)
+                          Elsewhere =
+                            meta.ElsewhereParams
+                            |> List.map (fun entry ->
+                                let bar = entry.IndexOf '|'
+                                let name = entry.Substring(0, bar)
+                                originOf name, entry.Substring(bar + 1).Split(',') |> Array.map int |> List.ofArray)
                           Doubles = meta.DoubleDefs |> List.map (fun name -> name, originOf name)
                           // Transitive for the same reason `BlockingDefs` is: a
                           // name re-exported through this DLL is bound here, and
@@ -3437,6 +3453,7 @@ let loadModuleGraph
     Set.ofSeq blockingDefs,
     Set.ofSeq waitingDefs,
     runTimeTypeParams |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq,
+    elsewhereParams |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq,
     Set.ofSeq doubleDefs,
     constrainedBodies |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq,
     List.ofSeq reExportedTraits,
@@ -3536,7 +3553,7 @@ let private importOrigins (decls: Decl list) : Map<string, string * string> =
 let runFrontend (codegen: bool) (mainFilePath: string) =
     try
         Diagnostics.progress "=== Step 1: Parsing & Module Resolution ==="
-        let parsedModuleDecls, dllDeps, importedBlocking, importedWaiting, importedRunTime, importedDoubles, importedBodies, reExportedTraits, docEntries =
+        let parsedModuleDecls, dllDeps, importedBlocking, importedWaiting, importedRunTime, importedElsewhere, importedDoubles, importedBodies, reExportedTraits, docEntries =
             Timing.phase "parse + module graph" (fun () -> loadModuleGraph mainFilePath)
 
         // A dependency compiled while the graph was loaded has published its
@@ -3637,7 +3654,8 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
                             |> Set.filter stillBound
                             |> Set.map fst
                             |> Set.union Prelude.prelude.Registry.WaitingNames
-                        RunTimeTypeParams = importedRunTime } }
+                        RunTimeTypeParams = importedRunTime
+                        ElsewhereParams = importedElsewhere } }
 
         let env, typedAst =
             Timing.phase "type check" (fun () -> Inference.checkProgram startEnv letrecifiedDecls)

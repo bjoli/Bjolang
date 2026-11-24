@@ -810,6 +810,25 @@ type Decl =
     ///
     /// Carried as `DNoInline` is.
     | DInline of string * Range
+    /// `(: name type #:non-blocking)`. A call of the function does not park
+    /// the thread that it runs on.
+    ///
+    /// - A promise of the programmer. The compiler does not check it.
+    /// - The lint of a call that parks does not go into the function, here
+    ///   or in a module that imports it.
+    ///
+    /// Carried as `DNoInline` is.
+    | DNonBlocking of string * Range
+    /// `(: name type #:elsewhere param)`: name, parameter, range. The
+    /// function runs the function that it is given as `param` on a thread
+    /// that runs no fibers.
+    ///
+    /// - A promise of the programmer. The compiler does not check it.
+    /// - The lint of a call that parks does not go into a lambda given as
+    ///   that parameter, here or in a module that imports the function.
+    ///
+    /// Carried as `DNoInline` is.
+    | DElsewhere of string * string * Range
     /// `(:deprecated name "what to use instead")`. A use of the binding warns,
     /// here and in a module that imports it, and the warning says what to
     /// write in its place. Published with the binding.
@@ -873,6 +892,8 @@ let rec declRange (decl: Decl) : Range =
     | DSyncOnly(_, r) -> r
     | DNoInline(_, r) -> r
     | DInline(_, r) -> r
+    | DNonBlocking(_, r) -> r
+    | DElsewhere(_, _, r) -> r
     | DDeprecated(_, _, r) -> r
 
 // ---------------------------------------------------------------------------
@@ -908,6 +929,13 @@ type ParseFns =
       /// A sequence of forms where a definition scopes over the forms after
       /// it, as in a `let` body. The range is for a body with no forms.
       Body: SExpr list -> Range -> Expr }
+
+/// The range of a type as the source writes it.
+let ftypeRange (t: FType) : Range =
+    match t with
+    | TName(_, r)
+    | TApp(_, _, r)
+    | TArrow(_, _, _, _, _, r) -> r
 
 /// A pattern's own range.
 let patternRange (p: Pattern) : Range =
@@ -981,6 +1009,19 @@ let exprRange (e: Expr) : Range =
     | EYieldFrom(_, r)
     | EWithReturn(_, _, r)
     | EDefMatch(_, _, _, _, r) -> r
+
+/// The expression that gives a body its value: the last form of the body.
+///
+/// A body is a chain of bindings, each with the rest of the body as its scope.
+/// The range of the chain is the range of the whole body.
+let rec resultExpr (body: Expr) : Expr =
+    match body with
+    | ELet(_, _, _, _, _, rest, _)
+    | ELetMono(_, _, rest, _)
+    | ELetRec(_, rest, _)
+    | ELetTuple(_, _, rest, _)
+    | ELetMutable(_, _, _, rest, _) -> resultExpr rest
+    | other -> other
 
 /// Every name a pattern binds.
 let rec patternBinders (pat: Pattern) : string list =
@@ -1238,6 +1279,17 @@ let byColourMarker = "%by-colour"
 /// walks both readings as ordinary operands. The label is an `EQuotedSymbol`,
 /// which no pass renames, because a label is a spelling and not a name.
 let fieldOrCallMarker = "%field-or-call"
+
+/// The test of the `if` that a loop's `(:finish test value)` is expanded to,
+/// applied to nothing: `(if (%finish-value) finish-block value)`.
+///
+/// - The test is false. The `if` exists so that the value is checked against
+///   the type of the loop's result at the clause.
+/// - Inference reads the name to report a mismatch as one of a `:finish`
+///   value, and not as two branches of an `if`.
+///
+/// An `EResolved` for the reason `byColourMarker` is.
+let finishValueMarker = "%finish-value"
 
 /// The call reading of a `fieldOrCallMarker` form that could not be read:
 /// `(%call-error "message")`. It is an error only if inference takes it.
@@ -1516,6 +1568,8 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DSyncOnly _
         | DNoInline _
         | DInline _
+        | DNonBlocking _
+        | DElsewhere _
         | DDeprecated _
         | DImplExtern _
         | DImplVia _
@@ -1583,6 +1637,8 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DSyncOnly _
     | DNoInline _
     | DInline _
+    | DNonBlocking _
+    | DElsewhere _
     | DDeprecated _
     | DImplExtern _
     | DImplVia _

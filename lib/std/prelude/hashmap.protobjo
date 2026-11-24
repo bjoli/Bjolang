@@ -75,7 +75,12 @@
                             (-> (TrieNode %a) int %a int int long (TrieNode %a))))
   (hm-assemble       (: Bjolang.Runtime.HashTries.NodeOps.Assemble
                         (-> int (Array %a) int (Array (TrieNode %a)) int long (TrieNode %a))))
-  (hm-collision-of   (: Bjolang.Runtime.HashTries.NodeOps.CollisionOf   (-> (Array %a) int int long (TrieNode %a)))))
+  (hm-collision-of   (: Bjolang.Runtime.HashTries.NodeOps.CollisionOf   (-> (Array %a) int int long (TrieNode %a))))
+  (hm-leaf-from      (: Bjolang.Runtime.HashTries.NodeOps.LeafFrom      (-> int (Array %a) int long (TrieNode %a))))
+  (hm-element-array  (: Bjolang.Runtime.HashTries.NodeOps.ElementArray  (-> int (Array %a))))
+  (hm-branch-for     (: Bjolang.Runtime.HashTries.NodeOps.BranchFor     (-> int (Array %a) int long (TrieNode %a))))
+  (hm-set-child!     (: Bjolang.Runtime.HashTries.NodeOps.SetChild      (-> (TrieNode %a) int (TrieNode %a) void)))
+  (hm-clear!         (: Bjolang.Runtime.HashTries.NodeOps.Clear         (-> (Array %a) int int void))))
 
 ;; The kinds `hm-node-kind` returns.
 (def hm-leaf-kind 0)
@@ -947,13 +952,17 @@
 (defun (hm-builder-with cmp capacity)
   (MapBuilder (hashes (make-array capacity)) (entries (make-array capacity)) (count 0) (comparer cmp)))
 
+;; A small first capacity: most maps are small, and the arrays double.
+(: int)
+(def hm-first-capacity 4)
+
 (: (-> (MapBuilder %k %v)) (where (Eq %k)))
-(defun (mapbuilder-empty) (hm-builder-with (eq-comparer) 16))
+(defun (mapbuilder-empty) (hm-builder-with (eq-comparer) hm-first-capacity))
 
 ;; A builder that holds the entries of `m`.
 (: (-> (Map %k %v) (MapBuilder %k %v)))
 (defun (map->mapbuilder m)
-  (def b (hm-builder-with (.comparer m) (max 16 (map-length m))))
+  (def b (hm-builder-with (.comparer m) (max hm-first-capacity (map-length m))))
   (loop (:for (Tuple k v) m) (:do (mapbuilder-add! b k v)))
   b)
 
@@ -961,7 +970,8 @@
 (defun (mapbuilder-add! b k v)
   (def n (.count b))
   (when (= n (array-length (.entries b)))
-    (record-set! b (hashes (array-resize (.hashes b) (* 2 n))) (entries (array-resize (.entries b) (* 2 n)))))
+    (def bigger (max hm-first-capacity (* 2 n)))
+    (record-set! b (hashes (array-resize (.hashes b) bigger)) (entries (array-resize (.entries b) bigger))))
   (array-set! (.hashes b) n (hm-hash-of (.comparer b) k))
   (array-set! (.entries b) n (Tuple k v))
   (record-set! b (count (+ n 1))))
@@ -999,40 +1009,85 @@
                  (array-set! out at x))))
   k)
 
-;; Where `hm-build-node` sorts and gathers: 32 slots for each level.
-(type (: (MapBuildScratch %k %v) #:opaque
-         (Record (: counts (Array int))
-                 (: starts (Array int))
-                 (: ends (Array int))
-                 (: own (Array (Tuple %k %v)))
-                 (: kids (Array (TrieNode (Tuple %k %v)))))))
+;; The counters of `hm-build-sorted`: one array for each level, made when the
+;; level first sorts a group. An array holds 32 counts, 32 starts and 32
+;; ends.
+(type (: MapBuildScratch #:opaque
+         (Record (: levels (Array (Array int))))))
+
+(: (Array int))
+(def hm-no-counters (make-array 0))
+
+(: (-> MapBuildScratch))
+(defun (hm-scratch)
+  (def (: levels (Array (Array int))) (make-array hm-levels))
+  (loop (:for i (range 0 hm-levels)) (:do (array-set! levels i hm-no-counters)))
+  (MapBuildScratch (levels levels)))
+
+;; The counters of the level at `shift`.
+(: (-> MapBuildScratch int (Array int)))
+(defun (hm-counters sc shift)
+  (def level (/ shift 5))
+  (def have (array-ref (.levels sc) level))
+  (if (> (array-length have) 0)
+      have
+      (begin
+        (def (: made (Array int)) (make-array 96))
+        (array-set! (.levels sc) level made)
+        made)))
 
 ;; The node at `shift` of the `n` entries of `hs` and `xs` from `from`, which
 ;; have at least two hashes. Sorts them into `to-hs` and `to-xs` on the
 ;; fragment at `shift`, and builds each group's child from there, with the
 ;; arrays swapped. Returns the node and how many entries it holds.
 (: (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) (Array int) (Array (Tuple %k %v)) int int int
-       (MapBuildScratch %k %v) (Tuple (TrieNode (Tuple %k %v)) int)))
+       MapBuildScratch (Tuple (TrieNode (Tuple %k %v)) int)))
 (defun (hm-build-node cmp hs xs to-hs to-xs from n shift sc)
   (if (<= n hm-small-group)
-      (hm-build-small cmp hs xs to-hs to-xs from n shift sc)
+      (hm-build-small cmp hs xs from n shift)
       (hm-build-sorted cmp hs xs to-hs to-xs from n shift sc)))
 
-;; A group of one hash at `shift` of the builder, into `own` or `kids`.
-;; Returns how many entries it holds, and whether it went into `kids`.
-(: (-> (EqualityComparer %k) (Array (Tuple %k %v)) int int int (MapBuildScratch %k %v) int int (Tuple int bool)))
-(defun (hm-build-one-hash cmp xs from c h sc ne nk)
+;; Whether the `n` entries of `hs` and `xs` from `from` have one key.
+(: (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) int int bool))
+(defun (hm-one-key? cmp hs xs from n)
+  (def h (array-ref hs from))
+  (def k (hm-key (array-ref xs from)))
+  (let same ((i (+ from 1)))
+    (cond ((= i (+ from n)) #t)
+          ((and (= (array-ref hs i) h) (hm-same-key? cmp (hm-key (array-ref xs i)) k)) (same (+ i 1)))
+          (else #f))))
+
+;; Where the run that starts at `i` ends: the entries from `i` below `end`
+;; with one fragment at `shift`.
+(: (-> (Array int) int int int int))
+(defun (hm-run-end hs i end shift)
+  (def f (hm-fragment (array-ref hs i) shift))
+  (let next ((j (+ i 1)))
+    (if (and (< j end) (= (hm-fragment (array-ref hs j) shift) f))
+        (next (+ j 1))
+        j)))
+
+;; The collision node of the `c` entries of `xs` from `from`, which have the
+;; hash `h` and two keys or more. Returns the node and how many entries it
+;; holds.
+(: (-> (EqualityComparer %k) (Array (Tuple %k %v)) int int int (Tuple (TrieNode (Tuple %k %v)) int)))
+(defun (hm-collision-run cmp xs from c h)
   (def (: group (Array (Tuple %k %v))) (make-array c))
   (def k (hm-distinct-into cmp xs from c group))
-  (if (= k 1)
-      (begin (array-set! (.own sc) ne (array-ref group 0)) (Tuple 1 #f))
-      (begin (array-set! (.kids sc) nk (hm-collision-of group k h hm-no-owner)) (Tuple k #t))))
+  (Tuple (hm-collision-of group k h hm-no-owner) k))
 
-;; `hm-build-node` for a small group: sorts it in place on the fragment at
-;; `shift`, then takes its runs of one fragment in order.
-(: (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) (Array int) (Array (Tuple %k %v)) int int int
-       (MapBuildScratch %k %v) (Tuple (TrieNode (Tuple %k %v)) int)))
-(defun (hm-build-small cmp hs xs to-hs to-xs from n shift sc)
+;; `hm-build-node` for a small group. It makes no scratch arrays.
+;;
+;; - Sorts the group in place on the fragment at `shift`. The sort keeps the
+;;   order of the entries of one fragment, so of two entries of one key the
+;;   one added last stays last.
+;; - A run of one entry, or of entries of one key, is an entry of the node.
+;;   Each other run is a child.
+;; - A group of runs of one entry is a leaf, copied from `xs`. Each other
+;;   group is built by `hm-build-mixed`.
+(: (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) int int int
+       (Tuple (TrieNode (Tuple %k %v)) int)))
+(defun (hm-build-small cmp hs xs from n shift)
   (def end (+ from n))
   (loop (:for i (range (+ from 1) end))
         (:do (def h (array-ref hs i))
@@ -1045,121 +1100,201 @@
                         (set! j (- j 1))))
              (array-set! hs j h)
              (array-set! xs j x)))
-  (def base (* 32 (/ shift 5)))
-  (def own (.own sc))
-  (def kids (.kids sc))
-  (def/mutable ne base)
-  (def/mutable nk base)
   (def/mutable em 0)
   (def/mutable cm 0)
+  (def/mutable ne 0)
+  (def/mutable plain #t)
+  (def/mutable i from)
+  (loop (:while (< i end))
+        (:do (def j (hm-run-end hs i end shift))
+             (def bit (shift-left 1 (hm-fragment (array-ref hs i) shift)))
+             (cond
+               ((= (- j i) 1)
+                (set! ne (+ ne 1))
+                (set! em (bitwise-ior em bit)))
+               ((hm-one-key? cmp hs xs i (- j i))
+                (set! plain #f)
+                (set! ne (+ ne 1))
+                (set! em (bitwise-ior em bit)))
+               (else
+                (set! plain #f)
+                (set! cm (bitwise-ior cm bit))))
+             (set! i j)))
+  (if plain
+      (Tuple (hm-leaf-from em xs from hm-no-owner) n)
+      (hm-build-mixed cmp hs xs from n shift em ne cm)))
+
+;; The node of a small group that is sorted on the fragment at `shift`, and
+;; that has a run of two entries or more.
+;;
+;; - `em` and `cm` are the node's maps, and `ne` is the number of its own
+;;   entries.
+;; - The node keeps the array of its own entries, so nothing is copied.
+;; - Of a run of one key, the entry added last is kept.
+(: (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) int int int int int int
+       (Tuple (TrieNode (Tuple %k %v)) int)))
+(defun (hm-build-mixed cmp hs xs from n shift em ne cm)
+  (def end (+ from n))
+  (def (: own (Array (Tuple %k %v))) (hm-element-array ne))
+  (def branch (if (= cm 0) (hm-empty-node) (hm-branch-for em own cm hm-no-owner)))
+  (def/mutable oi 0)
+  (def/mutable ki 0)
   (def/mutable total 0)
   (def/mutable i from)
   (loop (:while (< i end))
-        (:do (def f (hm-fragment (array-ref hs i) shift))
-             (def/mutable j (+ i 1))
-             (loop (:while (and (< j end) (= (hm-fragment (array-ref hs j) shift) f))) (:do (set! j (+ j 1))))
+        (:do (def j (hm-run-end hs i end shift))
              (def c (- j i))
-             (def bit (shift-left 1 f))
              (cond
-               ((= c 1)
-                (set! total (+ total 1))
-                (array-set! own ne (array-ref xs i))
-                (set! ne (+ ne 1))
-                (set! em (bitwise-ior em bit)))
-               ((hm-one-hash? hs i c)
-                (def (Tuple k kid?) (hm-build-one-hash cmp xs i c (array-ref hs i) sc ne nk))
-                (set! total (+ total k))
-                (if kid?
-                    (begin (set! nk (+ nk 1)) (set! cm (bitwise-ior cm bit)))
-                    (begin (set! ne (+ ne 1)) (set! em (bitwise-ior em bit)))))
+               ((or (= c 1) (hm-one-key? cmp hs xs i c))
+                (array-set! own oi (array-ref xs (- j 1)))
+                (set! oi (+ oi 1))
+                (set! total (+ total 1)))
                (else
-                (def (Tuple kid k) (hm-build-node cmp hs xs to-hs to-xs i c (+ shift 5) sc))
-                (set! total (+ total k))
-                (array-set! kids nk kid)
-                (set! nk (+ nk 1))
-                (set! cm (bitwise-ior cm bit))))
+                (def (Tuple kid k)
+                  (if (hm-one-hash? hs i c)
+                      (hm-collision-run cmp xs i c (array-ref hs i))
+                      (hm-build-small cmp hs xs i c (+ shift 5))))
+                (hm-set-child! branch ki kid)
+                (set! ki (+ ki 1))
+                (set! total (+ total k))))
              (set! i j)))
-  (Tuple (hm-assemble em own cm kids base hm-no-owner) total))
+  (Tuple (if (= cm 0) (hm-leaf-from em own 0 hm-no-owner) branch) total))
 
-;; `hm-build-node` for a big group: counts it into 32 buckets on the
-;; fragment at `shift` and moves it into `to-hs` and `to-xs` by bucket.
+;; `hm-build-node` for a big group.
+;;
+;; - Counts the group into 32 buckets on the fragment at `shift`, and moves
+;;   it into `to-hs` and `to-xs` by bucket. The move keeps the order of the
+;;   entries of one bucket.
+;; - A bucket of one entry, or of entries of one key, is an entry of the
+;;   node. Each other bucket is a child, built with the arrays swapped.
+;; - A group of buckets of one entry is a leaf, copied from `to-xs`. Else
+;;   the node keeps the array of its own entries, so nothing is copied.
 (: (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) (Array int) (Array (Tuple %k %v)) int int int
-       (MapBuildScratch %k %v) (Tuple (TrieNode (Tuple %k %v)) int)))
+       MapBuildScratch (Tuple (TrieNode (Tuple %k %v)) int)))
 (defun (hm-build-sorted cmp hs xs to-hs to-xs from n shift sc)
-  (def base (* 32 (/ shift 5)))
-  (def counts (.counts sc))
-  (def starts (.starts sc))
-  (def ends (.ends sc))
-  (def own (.own sc))
-  (def kids (.kids sc))
-  (loop (:for f (range base (+ base 32))) (:do (array-set! counts f 0)))
+  ;; Counts at 0, starts at 32, ends at 64.
+  (def counters (hm-counters sc shift))
+  (loop (:for f (range 0 32)) (:do (array-set! counters f 0)))
   (loop (:for i (range from (+ from n)))
-        (:do (def f (+ base (hm-fragment (array-ref hs i) shift)))
-             (array-set! counts f (+ (array-ref counts f) 1))))
+        (:do (def f (hm-fragment (array-ref hs i) shift))
+             (array-set! counters f (+ (array-ref counters f) 1))))
   (def/mutable o from)
-  (loop (:for f (range base (+ base 32)))
-        (:do (array-set! starts f o)
-             (array-set! ends f o)
-             (set! o (+ o (array-ref counts f)))))
+  (loop (:for f (range 0 32))
+        (:do (array-set! counters (+ 32 f) o)
+             (array-set! counters (+ 64 f) o)
+             (set! o (+ o (array-ref counters f)))))
   (loop (:for i (range from (+ from n)))
-        (:do (def f (+ base (hm-fragment (array-ref hs i) shift)))
-             (def p (array-ref ends f))
+        (:do (def f (hm-fragment (array-ref hs i) shift))
+             (def p (array-ref counters (+ 64 f)))
              (array-set! to-hs p (array-ref hs i))
              (array-set! to-xs p (array-ref xs i))
-             (array-set! ends f (+ p 1))))
-  (def/mutable ne base)
-  (def/mutable nk base)
+             (array-set! counters (+ 64 f) (+ p 1))))
+  ;; A child moves its entries back into `hs` and `xs`, at the indexes they
+  ;; have in `to-hs` and `to-xs`. Below the first level, both pairs of arrays
+  ;; hold the same entries in a group's range. At the first level they do
+  ;; not, so the copy makes it so: `xs` then keeps every entry.
+  (when (= shift 0)
+    (array-copy! to-hs from hs from n)
+    (array-copy! to-xs from xs from n))
   (def/mutable em 0)
   (def/mutable cm 0)
-  (def/mutable total 0)
+  (def/mutable ne 0)
+  (def/mutable plain #t)
   (loop (:for f (range 0 32))
-        (:do (def c (array-ref counts (+ base f)))
-             (def s (array-ref starts (+ base f)))
+        (:do (def c (array-ref counters f))
              (def bit (shift-left 1 f))
              (cond
                ((= c 0) unit)
                ((= c 1)
-                (set! total (+ total 1))
-                (array-set! own ne (array-ref to-xs s))
                 (set! ne (+ ne 1))
                 (set! em (bitwise-ior em bit)))
-               ((hm-one-hash? to-hs s c)
-                (def (Tuple k kid?) (hm-build-one-hash cmp to-xs s c (array-ref to-hs s) sc ne nk))
-                (set! total (+ total k))
-                (if kid?
-                    (begin (set! nk (+ nk 1)) (set! cm (bitwise-ior cm bit)))
-                    (begin (set! ne (+ ne 1)) (set! em (bitwise-ior em bit)))))
+               ((hm-one-key? cmp to-hs to-xs (array-ref counters (+ 32 f)) c)
+                (set! plain #f)
+                (set! ne (+ ne 1))
+                (set! em (bitwise-ior em bit)))
                (else
-                (def (Tuple kid k) (hm-build-node cmp to-hs to-xs hs xs s c (+ shift 5) sc))
-                (set! total (+ total k))
-                (array-set! kids nk kid)
-                (set! nk (+ nk 1))
+                (set! plain #f)
                 (set! cm (bitwise-ior cm bit))))))
-  (Tuple (hm-assemble em own cm kids base hm-no-owner) total))
+  (cond
+    (plain (Tuple (hm-leaf-from em to-xs from hm-no-owner) n))
+    (else
+     (def (: own (Array (Tuple %k %v))) (hm-element-array ne))
+     (def branch (if (= cm 0) (hm-empty-node) (hm-branch-for em own cm hm-no-owner)))
+     (def/mutable oi 0)
+     (def/mutable ki 0)
+     (def/mutable total 0)
+     (loop (:for f (range 0 32))
+           (:do (def c (array-ref counters f))
+                (def s (array-ref counters (+ 32 f)))
+                (cond
+                  ((= c 0) unit)
+                  ((or (= c 1) (hm-one-key? cmp to-hs to-xs s c))
+                   (array-set! own oi (array-ref to-xs (+ s (- c 1))))
+                   (set! oi (+ oi 1))
+                   (set! total (+ total 1)))
+                  (else
+                   (def (Tuple kid k)
+                     (if (hm-one-hash? to-hs s c)
+                         (hm-collision-run cmp to-xs s c (array-ref to-hs s))
+                         (hm-build-node cmp to-hs to-xs hs xs s c (+ shift 5) sc)))
+                   (hm-set-child! branch ki kid)
+                   (set! ki (+ ki 1))
+                   (set! total (+ total k))))))
+     (Tuple (if (= cm 0) (hm-leaf-from em own 0 hm-no-owner) branch) total))))
 
-(: (-> (MapBuilder %k %v) (Map %k %v)))
-(defun (mapbuilder->map b)
-  (def cmp (.comparer b))
-  (def n (.count b))
-  (def hs (.hashes b))
-  (def xs (.entries b))
+;; The map of the `n` entries of `hs` and `xs` from `from`, which compares
+;; keys with `cmp`.
+;;
+;; - Of two entries of one key, the one with the higher index is kept.
+;; - Reorders the `n` entries in place. Of one key, the entry with the higher
+;;   index stays there, so the same entries build the same map again.
+;; - A group of `hm-small-group` entries or fewer makes no scratch arrays.
+(: (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) int int (Map %k %v)))
+(defun (hm-build-range cmp hs xs from n)
   (cond
     ((= n 0) (hm-empty-with cmp))
-    ((hm-one-hash? hs 0 n)
+    ((hm-one-hash? hs from n)
      (def (: group (Array (Tuple %k %v))) (make-array n))
-     (def k (hm-distinct-into cmp xs 0 n group))
-     (def h (array-ref hs 0))
+     (def k (hm-distinct-into cmp xs from n group))
+     (def h (array-ref hs from))
      (Map (root (if (= k 1) (hm-leaf-of-one (array-ref group 0) h 0 hm-no-owner) (hm-collision-of group k h hm-no-owner)))
           (count k)
           (comparer cmp)))
+    ((<= n hm-small-group)
+     (def (Tuple root k) (hm-build-small cmp hs xs from n 0))
+     (Map (root root) (count k) (comparer cmp)))
+    ((= from 0)
+     (def (Tuple root k) (hm-build-node cmp hs xs (make-array n) (make-array n) 0 n 0 (hm-scratch)))
+     (Map (root root) (count k) (comparer cmp)))
     (else
-     ;; The build reorders the builder's entries, which leaves the builder
-     ;; holding the same entries: of one key, the last added stays last.
-     (def sc (MapBuildScratch (counts (make-array (* 32 hm-levels))) (starts (make-array (* 32 hm-levels)))
-                              (ends (make-array (* 32 hm-levels))) (own (make-array (* 32 hm-levels)))
-                              (kids (make-array (* 32 hm-levels)))))
-     (def (Tuple root k) (hm-build-node cmp hs xs (make-array n) (make-array n) 0 n 0 sc))
-     (Map (root root) (count k) (comparer cmp)))))
+     ;; The sort of a big group moves it between two arrays at the same
+     ;; indexes. A copy from index 0 keeps those arrays at `n` entries.
+     (def (: hs0 (Array int)) (make-array n))
+     (def (: xs0 (Array (Tuple %k %v))) (make-array n))
+     (array-copy! hs from hs0 0 n)
+     (array-copy! xs from xs0 0 n)
+     (hm-build-range cmp hs0 xs0 0 n))))
+
+(: (-> (MapBuilder %k %v) (Map %k %v)))
+(defun (mapbuilder->map b)
+  (hm-build-range (.comparer b) (.hashes b) (.entries b) 0 (.count b)))
+
+;; The map of the entries added after the first `from`. Removes those
+;; entries from the builder, which keeps the first `from`.
+;;
+;; - For a builder used as a stack: read `mapbuilder-length`, add the entries
+;;   of one map, and take them. Maps can nest.
+;; - Raises `ArgumentException` when `from` is below 0 or above the length.
+(: (-> (MapBuilder %k %v) int (Map %k %v)))
+(defun (mapbuilder-take! b from)
+  (def n (- (.count b) from))
+  (when (or (< from 0) (< n 0))
+    (raise (cast Exception (ArgumentException. "The start is not in the builder."))))
+  (def m (hm-build-range (.comparer b) (.hashes b) (.entries b) from n))
+  ;; So that the builder does not keep the keys and values alive.
+  (hm-clear! (.entries b) from n)
+  (record-set! b (count from))
+  m)
 
 (: (-> (Seq (Tuple %k %v)) (Map %k %v)) (where (Eq %k)))
 (defun (seq->map xs)

@@ -25,9 +25,16 @@
 
 ;; A tail-recursive function that passes its string on unchanged: the
 ;; function's parameter is a slot that keeps its value.
+;;
+;; Its cursor is a forward cursor: each jump gives the slot its own
+;; `string-cursor-next`. So `ref` and `next` take the forward bounds, got
+;; once from the string's bounds and the cursor that the loop starts with.
+;; The test for the end takes the string's bounds.
 ;; EXPECT-CS: var _bounds__\d+ = BjoString\.StringBounds\.Of\(passed\);
-;; EXPECT-CS: BjolangRuntime\.StringBoundsRef\(_bounds__\d+, 
-;; EXPECT-CS: BjolangRuntime\.StringBoundsNext\(_bounds__\d+, 
+;; EXPECT-CS: var _forward__\d+ = BjolangRuntime\.StringForwardOf\(_bounds__\d+, c\);
+;; EXPECT-CS: BjolangRuntime\.StringBoundsAtEnd\(_bounds__\d+, 
+;; EXPECT-CS: BjolangRuntime\.StringForwardRef\(_forward__\d+, 
+;; EXPECT-CS: BjolangRuntime\.StringForwardNext\(_forward__\d+, 
 (: (-> string StringCursor int int))
 (defun (count-digits passed c n)
   (cond
@@ -67,3 +74,26 @@
     (if (string-cursor-end? moduletext c)
         n
         (loop (string-cursor-next moduletext c) (+ n 1)))))
+
+;; A cursor that a jump gives another value: not a forward cursor, so its
+;; steps take the string's bounds.
+;; EXPECT-CS: var _bounds__\d+ = BjoString\.StringBounds\.Of\(restarted\);
+;; EXPECT-NO-CS: StringForwardOf\(_bounds__\d+, again
+(: (-> string int int))
+(defun (count-restarted restarted rounds)
+  (let loop ((again (string-cursor-start restarted)) (left rounds) (n 0))
+    (cond
+      ((and (string-cursor-end? restarted again) (= left 0)) n)
+      ((string-cursor-end? restarted again) (loop (string-cursor-start restarted) (- left 1) n))
+      (else
+       (ignore (string-cursor-ref restarted again))
+       (loop (string-cursor-next restarted again) left (+ n 1))))))
+
+;; A cursor that goes back: not a forward cursor.
+;; EXPECT-NO-CS: StringForwardOf\(_bounds__\d+, back
+(: (-> string int))
+(defun (count-back backwards)
+  (let loop ((back (string-cursor-end backwards)) (n 0))
+    (if (string-cursor=? back (string-cursor-start backwards))
+        n
+        (loop (string-cursor-prev backwards back) (+ n 1)))))

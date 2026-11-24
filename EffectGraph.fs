@@ -114,6 +114,39 @@ let private isBlocking (registry: TraitRegistry) (name: string) =
         | Some alias -> Set.contains alias.OriginalName registry.BlockingNames
         | None -> false)
 
+/// The name as source writes it: without the suffix of a suspending copy, and
+/// without that of a copy made for one instantiation (`Naming.specializedCopy`,
+/// which goes ahead of the other).
+let private sourceName (name: string) =
+    let name = Naming.writtenName name
+    let specialised = name.IndexOf(Naming.specializedCopy "" "")
+
+    if specialised > 0 then
+        name.Substring(0, specialised)
+    elif Naming.isSuspendingCopy name then
+        name.Substring(0, name.Length - (Naming.suspendingCopy "").Length)
+    else
+        name
+
+/// The positions of the parameters of `name` that it runs on another thread:
+/// those of its `#:elsewhere` markers, counted from the last positional
+/// parameter, which is 0. A lambda given there is not what the caller's
+/// thread does.
+let private elsewhereParams (registry: TraitRegistry) (name: string) : int list =
+    let name = sourceName name
+
+    let origin =
+        match Map.tryFind name registry.ImportAliases with
+        | Some alias -> alias.OriginModule, alias.OriginalName
+        | None -> "", name
+
+    Map.tryFind origin registry.ElsewhereParams |> Option.defaultValue []
+
+/// Whether `name` has `#:non-blocking`, or is the suspending copy of a
+/// function that has it.
+let private isNonBlocking (registry: TraitRegistry) (name: string) =
+    Set.contains (sourceName name) registry.NonBlockingNames
+
 let private scanBody (registry: TraitRegistry) (body: TypedExpr) : Scan =
     let leaves = ResizeArray<string * Range * Culprit>()
     let calls = ResizeArray<string * Range>()
@@ -194,14 +227,27 @@ let private scanBody (registry: TraitRegistry) (body: TypedExpr) : Scan =
                 | Some name -> Set.contains name Prelude.elsewhereBuiltins
                 | None -> false
 
+            // The same for a library's function, of the parameters that its
+            // signature marks `#:elsewhere`.
+            let elsewhereAt =
+                match named with
+                | Some name -> elsewhereParams registry name
+                | None -> []
+
             walk' target
 
             // An argument that is an ordinary lambda seals everything inside
             // it; one that is a bjoroutine unseals it again, since it can await
             // and so is not what declined a suspending copy.
-            for a in args do
-                if not (elsewhere && isLambda a) then
-                    walk (if isLambda a then isSyncLambda a else inLambda) a
+            // A position is counted from the last argument: a call of a
+            // constrained function has its dictionaries before the arguments
+            // that source wrote.
+            let last = args.Length - 1
+
+            args
+            |> List.iteri (fun i a ->
+                if not (isLambda a && (elsewhere || List.contains (last - i) elsewhereAt)) then
+                    walk (if isLambda a then isSyncLambda a else inLambda) a)
 
             for (_, v) in kwArgs do
                 walk (if isLambda v then isSyncLambda v else inLambda) v
@@ -255,6 +301,14 @@ let private scanBody (registry: TraitRegistry) (body: TypedExpr) : Scan =
 /// all do. Under-reporting is the right way for a lint to be wrong.
 let rec private collectNodes (registry: TraitRegistry) (decl: TDecl) : Node list =
     match decl with
+    // `#:non-blocking`: the programmer's promise that a call does not park.
+    // The node has nothing in it, so no path goes through it and it is not
+    // published as blocking.
+    | TDefun(name, _, _, _, _, _, effect, _, _) when isNonBlocking registry name ->
+        [ { Name = name
+            Effect = effect
+            Scan = { Leaves = []; Calls = [] } } ]
+
     | TDefun(name, _, _, kwDefaults, _, _, effect, body, _) ->
         // A keyword default is emitted into the method's prologue, so it runs
         // on this body's thread and belongs to this node.

@@ -1116,7 +1116,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 
     | EWhen(cond, body, negated, r) ->
         let condType, tCond = infer env cond
-        unify env.Registry condType TypeConstants.boolType
+        Diagnostics.locatedAt (exprRange cond) (fun () -> unify env.Registry condType TypeConstants.boolType)
 
         // The body is evaluated for its effect and its value thrown away, so it
         // constrains nothing: there is no other arm for it to agree with, and
@@ -3268,8 +3268,17 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
 // `infer`, or `inferChecked expected` when the context expects a type. The
 // expectation is what lets a literal in a branch or a body be elaborated.
 and private inferIf (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (cond: Expr) (trueBranch: Expr) (falseBranch: Expr) (r: Range) : HMType * TypedExpr =
-    let condType, tCond = infer env cond
-    unify env.Registry condType TypeConstants.boolType
+    // The `if` of a loop's `(:finish test value)`: see `finishValueMarker`.
+    // The true branch is the loop's other exit, and the false one the value.
+    let isFinishValue =
+        match cond with
+        | EApp(EResolved(marker, _), [], _) -> marker = finishValueMarker
+        | _ -> false
+
+    let condType, tCond =
+        if isFinishValue then infer env (EBool(false, exprRange cond)) else infer env cond
+
+    Diagnostics.locatedAt (exprRange cond) (fun () -> unify env.Registry condType TypeConstants.boolType)
     let trueType, tTrue = tail env trueBranch
     let falseType, tFalse = tail env falseBranch
 
@@ -3277,9 +3286,25 @@ and private inferIf (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (cond: 
     // which attaches no location of its own: without this, branches that
     // disagree are reported at whatever encloses the `if`.
     try
-        // Not "then" and "else": `cond` and a loop's `:finish` are ifs too, and
-        // neither says either word.
-        unifyLabelled env.Registry "two branches here give values of different types." ("one", trueType) ("other", falseType)
+        if isFinishValue then
+            // Read before `unify`, which can bind it.
+            let loopType = prune env.Registry trueType
+
+            try
+                unifyLabelled
+                    env.Registry
+                    "the value of this (:finish test value) does not have the type of the loop's result."
+                    ("loop", trueType)
+                    ("value", falseType)
+            with ex when
+                Diagnostics.isDiagnostic ex
+                && (loopType = TypeConstants.unitType || loopType = TypeConstants.voidType) ->
+                failwithf
+                    $"Type error: this (:finish test value) gives the loop a value of type %s{DotNetInterop.showType (prune env.Registry falseType)}, and the loop gives no value when it ends in another way.\n  A loop also ends when a (:for ...) runs out, or when a (:while ...) or (:until ...) test stops it. Write the value for that exit after => as the last form of the loop: (loop ... => value)."
+        else
+            // Not "then" and "else": `cond` is an if too, and does not say
+            // either word.
+            unifyLabelled env.Registry "two branches here give values of different types." ("one", trueType) ("other", falseType)
     with ex when Diagnostics.needsLocation ex ->
         raise (Diagnostics.withLocation r ex)
 
@@ -3311,7 +3336,7 @@ and private inferLetMono (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (n
 and private inferLetTuple (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (names: string list) (value: Expr) (body: Expr) (r: Range) : HMType * TypedExpr =
     let valType, typedVal = infer env value
     let elementMetas = names |> List.map (fun _ -> freshMeta ())
-    unify env.Registry valType (TTuple elementMetas)
+    Diagnostics.locatedAt (exprRange value) (fun () -> unify env.Registry valType (TTuple elementMetas))
 
     let localEnv =
         List.zip names elementMetas
@@ -3356,7 +3381,7 @@ and private inferLet (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (name:
                     | Some tAnn ->
                         let expectedType = resolveTypeAnnotation env.Registry tAnn
                         let t, typed = inferChecked expectedType env value
-                        unify env.Registry expectedType t
+                        Diagnostics.locatedAt (exprRange value) (fun () -> unify env.Registry expectedType t)
                         expectedType, bridgeToSuspending env expectedType typed
                     | None -> infer env value
 
@@ -3715,11 +3740,11 @@ and private inferLetRec (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (bi
                     match typeAnn with
                     | Some tAnn ->
                         let expectedType = resolveTypeAnnotation env.Registry tAnn
-                        unify env.Registry expectedType t
+                        Diagnostics.locatedAt (exprRange expr) (fun () -> unify env.Registry expectedType t)
                         expectedType, bridgeToSuspending env expectedType typed, noParams
                     | None -> t, typed, noParams
 
-            unify env.Registry valType expectedType
+            Diagnostics.locatedAt (exprRange expr) (fun () -> unify env.Registry valType expectedType)
             name, isFun, localFun, typedVal)
 
     // A named let in which every exit calls a member of the group again.
@@ -3773,7 +3798,7 @@ and private inferLetMutable (tail: Env -> Expr -> HMType * TypedExpr) (env: Env)
         | Some tAnn ->
             let expectedType = resolveTypeAnnotation env.Registry tAnn
             let t, typed = inferChecked expectedType env value
-            unify env.Registry expectedType t
+            Diagnostics.locatedAt (exprRange value) (fun () -> unify env.Registry expectedType t)
             expectedType, bridgeToSuspending env expectedType typed
         | None -> infer env value
 
@@ -3974,13 +3999,13 @@ and private inferMatch (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (tar
                 match guard with
                 | Some g ->
                     let gType, tg = infer boundEnv g
-                    unify env.Registry gType TypeConstants.boolType
+                    Diagnostics.locatedAt (exprRange g) (fun () -> unify env.Registry gType TypeConstants.boolType)
                     Some tg
                 | None -> None
 
             let bodyType, typedBody = tail boundEnv body
 
-            unify env.Registry bodyType returnType
+            Diagnostics.locatedAt (exprRange (resultExpr body)) (fun () -> unify env.Registry bodyType returnType)
 
             { Pattern = typedPat
               Guard = typedGuard
@@ -4214,14 +4239,17 @@ and private inferLocalFunBody
                 match prune env.Registry shape.RetType with
                 | TMeta _ -> functionResult env bodyType None
                 | _ -> bodyType
-            unifyExpecting env.Registry shape.RetType bodyType $"what '%s{name}' returns"
+            Diagnostics.locatedAt (exprRange (resultExpr value)) (fun () ->
+                unifyExpecting env.Registry shape.RetType bodyType $"what '%s{name}' returns")
 
             let typedKeywords, _ =
                 shape.Keywords
                 |> List.fold
                     (fun (acc, currentEnv) (n, t, defaultExpr) ->
                         let defaultType, typedDefault = infer currentEnv defaultExpr
-                        unify env.Registry defaultType t
+
+                        Diagnostics.locatedAt (exprRange defaultExpr) (fun () ->
+                            unifyExpecting env.Registry t defaultType $"the default of #:%s{n}")
                         acc @ [ n, t, typedDefault ], bind n t currentEnv)
                     ([], envWithMandatory)
 

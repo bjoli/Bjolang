@@ -148,7 +148,8 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
         match Map.tryFind name registry.Aliases with
             | Some (args, t) when args.Length = 0 -> t
             | Some (args, _) ->
-                failwithf $"Type alias {Naming.showTypeName name} expects {args.Length} arguments, but got 0"
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos nameRange}: the type alias {Naming.showTypeName name} expects {args.Length} arguments, but got 0"
             | None ->
                 match Map.tryFind name typeNameMap with
                 | Some t -> t
@@ -327,7 +328,7 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
                 // Use showTypeName to format the internal name (e.g. BjoMod.std.prelude__Map)
                 // back into the user-facing name (e.g. Map).
                 failwithf
-                    $"Type alias {Naming.showTypeName name} expects {typeParams.Length} arguments, but got {resolvedArgs.Length}"
+                    $"Type Error at %s{Lexer.formatPos appRange}: the type alias {Naming.showTypeName name} expects {typeParams.Length} arguments, but got {resolvedArgs.Length}"
             let normalizeParam (p: string) = if p.StartsWith("'") then p else "'" + p
             let subst = List.zip (typeParams |> List.map normalizeParam) resolvedArgs |> Map.ofList
             substTypeVars subst t
@@ -478,9 +479,9 @@ let rec resolveTemplate (registry: TraitRegistry) (holeVar: string) (ftype: FTyp
         TplFun(mandatory |> List.map go, go ret, ESync)
     | TApp("Tuple", args, _) -> TplTuple(args |> List.map go)
     | TApp(name, args, _) when name = holeName -> TplHole(args |> List.map go)
-    | TApp(name, args, _) when name.StartsWith "'" ->
+    | TApp(name, args, r) when name.StartsWith "'" ->
         failwithf
-            $"Type Error: only the trait's own constructor variable may be applied in a signature; %s{name} is an ordinary type variable."
+            $"Type Error at %s{Lexer.formatPos r}: only the trait's own constructor variable may be applied in a signature; %s{name} is an ordinary type variable."
     | TApp(name, args, _) ->
         match Map.tryFind name registry.Aliases with
         | Some _ ->

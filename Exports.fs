@@ -1809,6 +1809,17 @@ let metadata
                 if entries.IsEmpty then None else Some(n + "|" + String.concat "," entries)
             | _ -> None)
 
+    // The parameters that each exported function runs on another thread,
+    // for the importer's lint of a call that parks.
+    let elsewhereParams =
+        env.Registry.ElsewhereParams
+        |> Map.toList
+        |> List.choose (fun ((origin, n), positions) ->
+            if origin = "" && Set.contains n exportedNames then
+                Some(n + "|" + (positions |> List.map string |> String.concat ","))
+            else
+                None)
+
     // Which of the exported names have a suspending copy. The copy's own name
     // is derived by the same mangling on the far side rather than published,
     // so this is a list of written names and nothing else.
@@ -1859,6 +1870,7 @@ let metadata
       BlockingDefs = blockingDefs
       WaitingDefs = waitingDefs
       RunTimeTypeParams = runTimeTypeParams
+      ElsewhereParams = elsewhereParams
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies
       // The driver's to fill in, like `Deps`: which shared frameworks were

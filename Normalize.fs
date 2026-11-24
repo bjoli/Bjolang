@@ -370,6 +370,8 @@ let rec normalizeDecl (decl: Decl) : Decl =
     | DSyncOnly _
     | DNoInline _
     | DInline _
+    | DNonBlocking _
+    | DElsewhere _
     | DDeprecated _
     | DImplExtern _
     | DImplVia _

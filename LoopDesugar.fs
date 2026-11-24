@@ -2271,7 +2271,12 @@ and private buildGroup
                 match value with
                 | None -> finishBlock level cr
                 | Some v ->
-                    EIf(EBool(false, cr), finishBlock level cr, ending (ctx.Live @ groupCursors level) cr (fns.Expr v), cr)
+                    EIf(
+                        EApp(EResolved(finishValueMarker, cr), [], cr),
+                        finishBlock level cr,
+                        ending (ctx.Live @ groupCursors level) cr (fns.Expr v),
+                        cr
+                    )
 
             EIf(fns.Expr cond, leave, next tl, cr)
 

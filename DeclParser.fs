@@ -355,6 +355,8 @@ let declKindName (d: Decl) : string =
     | DSyncOnly _ -> "a #:sync marker"
     | DNoInline _ -> "a #:no-inline marker"
     | DInline _ -> "an #:inline marker"
+    | DNonBlocking _ -> "a #:non-blocking marker"
+    | DElsewhere _ -> "an #:elsewhere marker"
     | DDeprecated _ -> "a (:deprecated ...) declaration"
     | DImpl _ -> "an implementation"
     | DImplExtern _ -> "an imported implementation"
@@ -1101,6 +1103,12 @@ and tryParseDeclGroup (s: SExpr) : Decl list option =
                 match m with
                 | "sync" -> DSyncOnly(name, mr)
                 | "inline" -> DInline(name, mr)
+                | "non-blocking" -> DNonBlocking(name, mr)
+                | "elsewhere" ->
+                    failwithf
+                        $"Syntax error at %s{Lexer.formatPos mr}: #:elsewhere names a parameter of '%s{name}', the one that is run on another thread: (: %s{name} type #:elsewhere parameter)."
+                | m when m.StartsWith elsewhereMarkerPrefix ->
+                    DElsewhere(name, m.Substring elsewhereMarkerPrefix.Length, mr)
                 | _ -> DNoInline(name, mr))
 
         match tryParseDecl bare with

@@ -56,6 +56,19 @@ module Diagnostics =
     let withLocation (where: Lexer.Range) (ex: exn) : exn =
         System.Exception($"%s{ex.Message}\n  at %s{Lexer.formatPos where}")
 
+    /// Runs `action`, and gives `where` to a diagnostic that it raises
+    /// without a location.
+    ///
+    /// - Use it around a check whose error does not know its position, such
+    ///   as a `unify` of two types.
+    /// - A diagnostic that already has a location is not changed, so the
+    ///   innermost `locatedAt` decides.
+    let locatedAt (where: Lexer.Range) (action: unit -> 'a) : 'a =
+        try
+            action ()
+        with ex when needsLocation ex ->
+            raise (withLocation where ex)
+
     /// An invented name's `__12` suffix, wherever one appears in a message.
     let private invented = Regex(@"(?<=[A-Za-z0-9_?!*/<>=+'&.-])__\d+\b", RegexOptions.Compiled)
 

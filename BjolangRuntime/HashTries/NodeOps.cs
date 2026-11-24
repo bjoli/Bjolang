@@ -591,6 +591,33 @@ public static class NodeOps
         return b;
     }
 
+    /// <summary>
+    ///     A leaf of the elements of `elements` from `start`, one for each bit of `elementMap`,
+    ///     in the order of the bits. Copies them: the caller keeps `elements`.
+    /// </summary>
+    public static Node<T> LeafFrom<T>(int elementMap, T[] elements, int start, long owner) =>
+        LeafOf<T>(elements.AsSpan(start, BitOperations.PopCount((uint)elementMap)), (uint)elementMap, owner);
+
+    /// <summary>An array of `count` elements for `BranchFor`. The shared empty array if `count` is 0.</summary>
+    public static T[] ElementArray<T>(int count) => count == 0 ? [] : new T[count];
+
+    /// <summary>
+    ///     A branch with the elements `elements`, one for each bit of `elementMap` in the order
+    ///     of the bits, and a place for one child for each bit of `childMap`.
+    ///     - The branch keeps `elements` and does not copy it.
+    ///     - Before the branch is read, the caller must fill `elements` and give each child
+    ///       with `SetChild`. After that, the caller must not write `elements` again.
+    /// </summary>
+    public static Node<T> BranchFor<T>(int elementMap, T[] elements, int childMap, long owner) =>
+        BranchOf(BitOperations.PopCount((uint)childMap), ((ulong)(uint)childMap << 32) | (uint)elementMap, elements,
+            owner);
+
+    /// <summary>Gives a branch made by `BranchFor` its child `i`, in the order of the bits of its child map.</summary>
+    public static void SetChild<T>(Node<T> branch, int i, Node<T> child) => ChildSpan(branch)[i] = child;
+
+    /// <summary>Sets `count` elements of `elements` from `start` to the default value, so that they hold no reference.</summary>
+    public static void Clear<T>(T[] elements, int start, int count) => Array.Clear(elements, start, count);
+
     /// <summary>A collision node of the first `count` elements of `elements`, all of the hash `hash`.</summary>
     public static Node<T> CollisionOf<T>(T[] elements, int count, int hash, long owner) =>
         new CollisionNode<T>

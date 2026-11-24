@@ -564,7 +564,33 @@
   (summary "Builds the map a builder holds.")
   (arg b "The builder.")
   (returns "The map of the entries appended, the last value winning for a repeated key.")
-  (see mapbuilder-empty MapBuilder))
+  (see mapbuilder-empty mapbuilder-take! MapBuilder)
+  (reference """
+    The builder keeps its entries, and builds the same map again.
+    """))
+
+(:doc mapbuilder-take!
+  (summary "Builds the map of the last entries of a builder, and removes them from it.")
+  (arg b "The builder.")
+  (arg from "How many entries the builder keeps: a length that @code{mapbuilder-length} gave.")
+  (returns "The map of the entries appended after the first from, the last value winning for a repeated key.")
+  (see mapbuilder-length mapbuilder->map)
+  (example """
+    (def b (mapbuilder-empty))
+    (mapbuilder-add! b "outer" 1)
+    (def mark (mapbuilder-length b))   ; 1
+    (mapbuilder-add! b "x" 10)
+    (mapbuilder-add! b "y" 20)
+    (mapbuilder-take! b mark)          ; #map((x 10) (y 20))
+    (mapbuilder-length b)              ; 1
+    """)
+  (reference """
+    One builder can make many maps, also maps inside maps: a reader of nested
+    data appends the entries of each map and takes them when the map ends.
+    The arrays of the builder are used again, so a small map allocates only
+    its own nodes. Raises @code{ArgumentException} when from is below 0 or
+    above the length.
+    """))
 
 ;; ---------------------------------------------------------------------------
 ;; Transients

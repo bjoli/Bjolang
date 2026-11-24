@@ -131,6 +131,10 @@
                     (: keys (Array string) #:mutable)
                     ;; Whether objects are read as JsonFields.
                     (: as-fields bool)
+                    ;; One builder for every JsonObj's entries, as `stack` is
+                    ;; for arrays: an object takes its own entries off the
+                    ;; end.
+                    (: entries (MapBuilder string Json))
                     ;; One array for every JsonFields' pairs, as `stack` is
                     ;; for arrays.
                     (: pairs (Array (Tuple string Json)) #:mutable)
@@ -160,6 +164,7 @@
 (defun (reader port bytes objects)
   (Reader (port port)
           (as-fields (match objects (ObjectsAsMap #f) (ObjectsAsFields #t)))
+          (entries (mapbuilder-empty))
           (pairs no-pairs)
           (ptop 0)
           (slot-stamps no-slots)
@@ -1183,9 +1188,10 @@
    (:do 
     (step! rd)
     (skip-space! rd))
-   (:def b (transientmap-empty))
+   (:def b (record-ref rd entries))
+   (:def mark (mapbuilder-length b))
    ((at-end? rd) (Err (at rd "the document ended inside an object")))
-   ((char=? (peek rd) #\}) (step! rd) (Ok (JsonObj (transientmap->map b))))
+   ((char=? (peek rd) #\}) (step! rd) (Ok (JsonObj (map-empty))))
    (else
     (let go ()
       (skip-space! rd)
@@ -1202,13 +1208,13 @@
         (:do (step! rd))
         (:def (Ok v) (read-value rd (+ depth 1))
               :propagate)
-        (:do (transientmap-set! b key v)
+        (:do (mapbuilder-add! b key v)
              (skip-space! rd))
         ((at-end? rd) (Err (at rd "the document ended inside an object")))
         ((char=? (peek rd) #\,) (step! rd) (go))
         ((char=? (peek rd) #\})
          (step! rd)
-         (Ok (JsonObj (transientmap->map b))))
+         (Ok (JsonObj (mapbuilder-take! b mark))))
         (else
          (Err (at rd (str "an object wants ',' or '}' here, and this is "
                           (found rd))))))))))
@@ -1262,8 +1268,10 @@
 (defun (read-json port #:objects 'map)
   (read-document (reader (Some port) no-bytes objects)))
 
-;; The string's bytes are the document: no port in between.
-(: (-> string (#:objects JsonObjects) (Result string Json)))
+;; The string's bytes are the document: no port in between. The reader is
+;; the one that reads a port, so the compiler finds a wait in it; there is
+;; no port here, and thus no wait.
+(: (-> string (#:objects JsonObjects) (Result string Json)) #:non-blocking)
 (defun (parse-json text #:objects 'map)
   (read-document (reader None (string->bytes text) objects)))
 

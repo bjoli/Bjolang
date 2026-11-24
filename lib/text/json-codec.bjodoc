@@ -21,25 +21,39 @@
   (reference """
     @code{->json} turns a value into a @code{Json} tree, and @code{json->}
     reads one back, returning @code{(Err why)} when the tree is not the
-    shape the type wants. Instances come with the module for @code{Json}
-    itself, @code{long}, @code{int}, @code{double}, @code{bool},
-    @code{string}, and for @code{(Option %a)}, @code{(Vec %a)} and
-    @code{(Map string %a)} of anything that has one. A record gets its pair
-    from @code{def/json-type}; any other type can have them written by hand.
+    shape the type wants. Instances come with the module for:
+
+    @itemlist{
+    @item{@code{Json} itself, @code{long}, @code{int}, @code{double},
+      @code{float}, @code{bool} and @code{string};}
+    @item{@code{(Option %a)} of anything that has one;}
+    @item{@code{(Vec %a)}, @code{(List %a)}, @code{(Array %a)} and
+      @code{(IArray %a)}, each an array;}
+    @item{a tuple of two or of three, an array of as many elements;}
+    @item{@code{(Map string %a)}, an object;}
+    @item{@code{Date}, @code{Time}, @code{DateTime}, @code{Instant},
+      @code{Moment} and @code{Duration} of @code{(std datetime)}, each the
+      ISO 8601 string that @code{written} gives;}
+    @item{@code{Uuid} of @code{(std uuid)}, its string in lower case.}
+    }
+
+    A record gets its pair from @code{def/json-type}; any other type can
+    have them written by hand.
 
     @strong{Null is None.} An @code{Option} is @code{null} when it is
     @code{None}, and the value itself when it is @code{Some}; nothing else
     reads or writes @code{null}.
 
     @strong{Numbers.} An integer type reads only a JSON integer: @code{1.0}
-    is refused for an @code{int} field. A @code{double} reads either.
+    is refused for an @code{int} field. A @code{double} or a @code{float}
+    reads either, and a @code{float} rounds a number that it cannot hold.
 
     @strong{Errors.} An error gives the path to where it happened, one
-    part for each record and each @code{Map} key on the way:
-    @code{Point: the object has no "y" field}, or, for an @code{Order}
-    whose @code{items} is a @code{(Vec Item)},
-    @code{Order.items: Item.id: expected an integer}. An element of a
-    @code{Vec} adds no index to the path.
+    part for each record, each @code{Map} key and each element of an array
+    on the way: @code{Point: the object has no "y" field}, or, for an
+    @code{Order} whose @code{items} is a @code{(Vec Item)},
+    @code{Order.items: [1]: Item.id: expected an integer}. The index of an
+    element starts at 0.
 
     @strong{Writing.} @code{->json} gives a tree, and @code{json->string}
     or @code{write-json} from @code{(text json)} writes it out as text.

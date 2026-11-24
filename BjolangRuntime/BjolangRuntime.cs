@@ -350,6 +350,20 @@ public static partial class BjolangRuntime {
     public static BjoString.StringCursor StringBoundsNext(BjoString.StringBounds b, BjoString.StringCursor c) =>
         BjoString.StringCursor.Next(b, c);
 
+    // The steps of a cursor that only goes forward on one string, on the
+    // forward bounds that the compiler gets once before the loop.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static BjoString.StringForward StringForwardOf(BjoString.StringBounds b, BjoString.StringCursor c) =>
+        BjoString.StringForward.Of(b, c);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Bjolang.Runtime.BjoChar StringForwardRef(BjoString.StringForward f, BjoString.StringCursor c) =>
+        Bjolang.Runtime.BjoChar.FromRune(BjoString.StringCursor.Ref(f, c));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static BjoString.StringCursor StringForwardNext(BjoString.StringForward f, BjoString.StringCursor c) =>
+        BjoString.StringCursor.Next(f, c);
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static BjoString.StringCursor StringBoundsPrev(BjoString.StringBounds b, BjoString.StringCursor c) =>
         BjoString.StringCursor.Prev(b, c);

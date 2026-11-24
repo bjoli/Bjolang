@@ -2046,6 +2046,22 @@ type TraitRegistry =
       /// name. See `ClrConstraints.runTimeParams`.
       RunTimeTypeParams: Map<string * string, (int * string) list>
 
+      /// The functions of the module being checked whose signature has
+      /// `#:non-blocking`: a call of one does not park its thread. The lint
+      /// of a call that parks does not go into them, and they are not
+      /// published as blocking.
+      NonBlockingNames: Set<string>
+
+      /// The positions of the parameters that a function runs on a thread
+      /// that runs no fibers, from `#:elsewhere param`.
+      ///
+      /// - A position is counted from the last positional parameter, which
+      ///   is 0: a call of a constrained function has dictionaries before
+      ///   the arguments that source wrote.
+      /// - Keyed by the function's origin module and name. A function of the
+      ///   module being checked has the origin module "".
+      ElsewhereParams: Map<string * string, int list>
+
       /// Written name -> the name its suspending copy is emitted under, for
       /// every `defbjouble` in scope.
       ///

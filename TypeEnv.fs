@@ -797,6 +797,15 @@ let rec checkPattern
     (expectedType: HMType)
     (pat: Pattern)
     : TypedPattern * Map<string, HMType> =
+    // A mismatch is reported at the innermost pattern that it is found in.
+    Diagnostics.locatedAt (patternRange pat) (fun () -> checkPatternNode inferStep env expectedType pat)
+
+and private checkPatternNode
+    (inferStep: HMType -> Env -> Expr -> HMType * TypedExpr)
+    (env: Env)
+    (expectedType: HMType)
+    (pat: Pattern)
+    : TypedPattern * Map<string, HMType> =
     let checkPattern env expectedType pat = checkPattern inferStep env expectedType pat
 
     match pat with

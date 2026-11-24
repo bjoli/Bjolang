@@ -363,6 +363,25 @@ Markers are part of the signature, and go last in it, after the type and its ~(w
 
 Both are also accepted on ~defbjo~ and ~defbjouble~. A ~defbjouble~ whose copy the colour around each call chooses is not inlined, with a warning; one that takes a ~-?->~, as ~vec-filter~ does, is.
 
+*** Promises to the parking lint: ~#:non-blocking~ and ~#:elsewhere~
+The compiler warns when a bjoroutine reaches a call that parks its thread. It finds such a call through the functions of a module and of the modules it imports. Two markers at the end of a signature tell it what it cannot see. Each is a promise: the compiler does not check it.
+
+~#:non-blocking~ says that a call of the function does not park its thread. The compiler does not look into the function, and does not publish it as one that parks. Use it where the body reaches a call that waits, on a path that this function never takes. ~parse-json~ has it: the reader also reads ports, and a string has no port.
+
+~#:elsewhere parameter~ says that the function runs the function it is given as that parameter on a thread that runs no fibers. The compiler does not look into a lambda that a call gives there, as it does not for ~blocking~ and ~spawn-thunk~. ~computing-each~ and ~in-parts~ of ~(std parallel)~ have it.
+
+#+BEGIN_SRC scheme
+(: parse-json (-> string (#:objects JsonObjects) (Result string Json)) #:non-blocking)
+
+(: computing-each (-> int (-> int %a) (Vec %a)) #:elsewhere work)
+(defun (computing-each n work) ...)
+#+END_SRC
+
+- A signature can have more than one ~#:elsewhere~, one for each parameter.
+- The parameter is a positional one. A keyword parameter cannot be named, and a function with a ~#:rest~ parameter cannot have the marker.
+- The method of a trait cannot have either marker.
+- A promise changes the warning only. The check that a module's initialiser does not wait for a thread that uses the module still looks into a ~#:non-blocking~ function.
+
 *** Colour: ~defbjo~, ~defbjouble~ and ~-?->~
 A procedure that may suspend is defined with ~defbjo~ rather than ~defun~, and calling it is a yield point. Everything else about it is the same.
 

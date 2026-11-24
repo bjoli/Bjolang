@@ -3,6 +3,195 @@
 
 What each change guarantees, and what it leaves open.
 
+* A cursor that only goes forward is tested against its string's start once
+
+- *Each ~string-cursor-ref~ and ~string-cursor-next~ tested that its cursor
+  is not before the start of the string's slice.* For a loop variable that
+  only goes forward on one string, the test is now made once, before the
+  loop.
+- Which cursors: a slot of a loop whose string's bounds are got before the
+  loop (~hoistStringBounds~ in Codegen.fs), when each jump gives the slot
+  itself or its
+  ~(string-cursor-next s c)~, and nothing else writes or binds it. A cursor
+  that starts in the slice then stays in it.
+- A cursor that starts before the slice raises at its first step, with the
+  message of a step on the string, as before. A loop that takes no step
+  raises nothing, as before. ~BjoString.StringForward~ holds the bounds for
+  the steps: its end is 0 for such a cursor, so that each step raises.
+- Measured with ~bjo bench~, 1 MB, the median. With the JIT's profile, a
+  process gets one of two versions of the loop, so two times are given.
+
+  | loop                                    | before  | after           |
+  |-----------------------------------------+---------+-----------------|
+  | ~next~ and ~ref~ apart, ASCII           | 821 us  | 517 or 617 us   |
+  | the same, a slice                       | 822 us  | 517 or 616 us   |
+  | the same, mixed UTF-8                   | 800 us  | 739 or 687 us   |
+  | the same, ASCII, ~DOTNET_TieredPGO=0~   | 1.66 ms | 1.04 ms         |
+  | the same, mixed, ~DOTNET_TieredPGO=0~   | 1.41 ms | 0.99 ms         |
+  | ~string-cursor-ref+next~, ASCII         | 413 us  | 414-419 us      |
+  | ~(:for ch s)~, ASCII                    | 412 us  | 411 us          |
+
+- Not changed: a loop of ~string-cursor-ref+next~, and a loop over the
+  string, were at that speed before.
+- *A span in place of the bounds gives nothing.* Measured in C# with the
+  steps of ~BjoString.Cursors~: a loop with an index into a span, and a
+  loop on the array with no test of the start, had the same speed on three
+  of four loops. The steps already make one range test and read the byte
+  with no second one, so a span has no test to remove.
+- Set ~BJOLANG_NO_FORWARD_CURSORS~ when a program is compiled to get the
+  steps on the string's bounds: the baseline for a benchmark.
+- TestFiles 518 tests the answers and the errors, and
+  TestFiles/codegen ~string_bounds.bjo~ where the forward bounds are got.
+
+* ~(text json-codec)~: more instances, and the index of an element in an error
+
+- ~->json~ and ~json->~ have instances for:
+  - ~(List %a)~, ~(Array %a)~ and ~(IArray %a)~, each an array, as
+    ~(Vec %a)~ is;
+  - a tuple of two and of three, an array of as many elements, each of its
+    own type;
+  - ~float~, a number. A number that a ~float~ cannot hold is rounded;
+  - ~Date~, ~Time~, ~DateTime~, ~Instant~, ~Moment~ and ~Duration~, each
+    the ISO 8601 string that ~written~ gives and ~iso8601->...~ reads;
+  - ~Uuid~, its string in lower case.
+- *The path of an error named no index.* An element of an array adds its
+  index, from 0: ~Order.items: [1]: Item.id: expected an integer~, where it
+  was ~Order.items: Item.id: expected an integer~. For ~Vec~ too, so the
+  text of such an error changes.
+- ~(text json-codec)~ imports ~(std datetime)~ and ~(std uuid)~ for these.
+  An instance is written in the module of its trait or of its type, and
+  those modules do not import this one.
+- Still open: ~decimal~, unions, and ~def/json-type~ for other than
+  records. See ~Todo.org~.
+- TestFiles 599 tests the instances and the paths.
+
+* ~#:non-blocking~ and ~#:elsewhere~: promises to the parking lint
+
+- *Two warnings of a call that parks were wrong, and a library had no way
+  to say so.*
+  - ~(parse-json s)~ in an ordinary lambda in a bjoroutine: the reader
+    also reads ports, so the compiler found a wait that a string never
+    makes.
+  - A lambda given to ~computing-each~ or ~in-parts~ that reads a file: in
+    a bjoroutine it runs on a compute thread, and the warning was for the
+    caller's fiber. Only the builtins ~blocking~ and ~spawn-thunk~ were
+    known to run a lambda on another thread.
+- ~(: name type #:non-blocking)~: a call of the function does not park its
+  thread. The lint does not go into the function, and the function is not
+  published as one that parks.
+- ~(: name type #:elsewhere parameter)~: the function runs what it is given
+  as that parameter on a thread that runs no fibers. The lint does not go
+  into a lambda given there. This marker is the first with an operand.
+- Each is a promise that the compiler does not check. A promise changes the
+  warning only: the check of module initialisers that wait for another
+  thread does not read ~#:non-blocking~.
+- ~parse-json~, ~parse-bjodat~ and ~parse-bjodat-all~ are ~#:non-blocking~.
+  ~computing-each~, ~in-parts~, ~in-parallel~ and ~par-for-each~ have
+  ~#:elsewhere~ on their function.
+- The positions of ~#:elsewhere~ are published in module metadata
+  (~ElsewhereParams~, version 33), counted from the last positional
+  parameter, as a call of a constrained function has its dictionaries
+  first. Libraries built before this must be built again.
+- Errors: ~#:elsewhere~ with no parameter, with a name that is not a
+  positional parameter, on a function with a ~#:rest~ parameter, and either
+  marker on a name that is not a function of the module.
+- Still open: the methods of a trait cannot have a marker, so a lambda given
+  to ~par-map~ or ~par-filter~ is still warned of. See ~Todo.org~.
+- TestFiles/warnings ~parking_markers.bjo~, and four fixtures in
+  TestFiles/errors.
+
+* A ~:finish~ value of the wrong type is reported as one
+
+- *The message was that of the ~if~ the clause expands to*: "two branches
+  here give values of different types", with the labels "one" and "other".
+  It now names the clause, and labels the types "loop" and "value":
+  "the value of this (:finish test value) does not have the type of the
+  loop's result".
+- *A loop with no ~=>~ that can also run out showed "void" and "int".* The
+  message now says that the loop gives no value when it ends in another
+  way, names the exits (a ~:for~ that runs out, a ~:while~ or ~:until~
+  test), and says to write the value after ~=>~.
+- The expansion's test is ~(%finish-value)~, ~Ast.finishValueMarker~, in
+  place of ~#f~. Inference reads it as false, so the emitted code is the
+  same.
+- The location is the clause, as before.
+
+* A small map is built with no scratch arrays
+
+- *A map builder made about 6.5 KB of scratch for each map.*
+  ~mapbuilder->map~ made five arrays of 224 slots, also for a map of three
+  entries. This is the cost of ~vec->map~, ~list->map~, ~->map~, the
+  ~mapping~ collector and a ~#map(...)~ literal.
+- A group of 12 entries or fewer is sorted in place and makes only its
+  nodes. A leaf is copied from the builder's array, and a branch keeps the
+  array of its own entries.
+- A group above 12 entries makes its nodes the same way. Its counters are
+  one array of 96 ints for each level that sorts, made when the level first
+  sorts.
+- ~mapbuilder-take! b from~ builds the map of the entries added after the
+  first ~from~, and removes them from the builder. One builder then makes
+  many maps, also maps inside maps.
+- ~(text json)~ reads the entries of each ~JsonObj~ into one builder of the
+  reader, and takes them when the object ends. Before, each object made a
+  transient map and grew it one key at a time.
+- ~vec->map~ and ~list->map~ make a builder of the collection's length. A
+  builder starts with a capacity of 4, not 16.
+- *A builder with a group above 12 entries under the root did not build the
+  same map twice.* The second level of the sort wrote over entries of the
+  builder's array (about 400 entries or more, found by reading the code and
+  shown with the new test). The builder's array now keeps every entry.
+- Measured with ~bjo bench~, the median and the bytes of one call. String
+  keys hash differently in each process, so a row with strings changes by
+  some tens of bytes between runs.
+
+  | row                         | before             | after             |
+  |-----------------------------+--------------------+-------------------|
+  | ~vec->map~, 4 string keys   | 355 ns, 8.71 KB    | 70-105 ns, 312-384 B |
+  | ~vec->map~, 12 string keys  | 586 ns, 9.14 KB    | 275-282 ns, 712-752 B |
+  | ~vec->map~, 100 string keys | 2.77 us, 17.8 KB   | 2.52 us, 7.72 KB  |
+  | ~vec->map~, 4 int keys      | 246 ns, 6.77 KB    | 51 ns, 248 B      |
+  | ~vec->map~, 1000 int keys   | 15.5 us, 51.4 KB   | 10.1 us, 33.6 KB  |
+  | ~vec->map~, 100000 int keys | 3.88 ms, 6.21 MB   | 2.74 ms, 4.35 MB  |
+  | ~#map(...)~ of 3            | 328 ns, 8.80 KB    | 74 ns, 400 B      |
+  | JSON, 1000 objects of 6     | 565 us, 978 KB     | 441 us, 494 KB    |
+  | JSON, one object of 40      | 3.83 us, 9.11 KB   | 3.43 us, 8.88 KB  |
+  | JSON, one object of 4       | 429 ns, 1.55 KB    | 435-470 ns, 1.50-1.57 KB |
+
+- Not faster: a document that is one small object. The reader's builder is
+  made for each document, which costs what the transient map did.
+- Not changed: ~(std hashset)~ and ~(std orderedmap)~ have builders of
+  their own. See ~Todo.org~.
+- TestFiles 598 tests the builder against ~map-set~ with keys of chosen
+  hashes.
+
+* A type mismatch is reported at the expression that causes it
+
+- *These errors named the whole declaration, at its first column.* Each
+  now names the smaller part:
+  - a value that disagrees with its signature or annotation, for ~def~,
+    ~def/mutable~ and a tuple ~def~, at module level and in a body: the
+    value;
+  - what a function returns, for ~defun~, a local ~defun~ and a method of an
+    ~impl~: the last form of the body;
+  - a type written at a parameter that disagrees with the signature: that
+    type;
+  - the default of a keyword parameter of a local function: the default.
+- *A pattern of the wrong type named the whole ~match~.* It now names the
+  innermost pattern that does not fit, also in a ~def~ with a pattern.
+- A ~match~ arm of another type names the last form of that arm, and a guard
+  that is not a bool names the guard. The test of an ~if~, ~when~, ~unless~,
+  ~:while~ or ~:until~ that is not a bool names the test.
+- A type alias with the wrong number of arguments names the place where it
+  is written, not the declaration: ~Type Error at FILE:LINE:COL: the type
+  alias ...~.
+- ~Diagnostics.locatedAt~ gives a range to a diagnostic that has none.
+  ~Ast.resultExpr~ gives the last form of a body.
+- The messages are the same, except the alias message above and the default
+  of a local function's keyword parameter, which now reads as a top-level
+  one does: "the default of #:name has the wrong type".
+- Still open: see ~Todo.org~, "Diagnostics".
+- TestFiles/errors ~located_*.bjo~ test the locations.
+
 * ~bjo sz~, and ~(samizdat author)~
 
 - The new module ~(samizdat author)~ is samizdat's high-level interface. A

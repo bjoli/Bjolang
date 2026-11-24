@@ -96,7 +96,7 @@
   map->str map-entry->str
   ;; Builders.
   mapbuilder-empty map->mapbuilder mapbuilder-add! mapbuilder-add-all!
-  mapbuilder-length mapbuilder->map
+  mapbuilder-length mapbuilder->map mapbuilder-take!
   ;; The vec's transient.
   transientvec-empty vec->transientvec transientvec->vec
   transientvec-length transientvec-empty? transientvec-ref transientvec-set!
@@ -2102,8 +2102,10 @@
 
 (: (-> (List (Tuple %k %v)) (Map %k %v)))
 (defun (list->map xs)
-  (loop (:for kvp xs)
-        (:acc map (mapping kvp))))
+  ;; A builder of the list's length, so that it does not grow.
+  (def b (hm-builder-with (eq-comparer) (max 1 (list-length xs))))
+  (loop (:for (Tuple k v) xs) (:do (mapbuilder-add! b k v)))
+  (mapbuilder->map b))
 
 (: (-> (List %a) (Vec %a)))
 (defun (list->vec lst)
@@ -2115,8 +2117,10 @@
 
 (: (-> (Vec (Tuple %k %v)) (Map %k %v)))
 (defun (vec->map v)
-  (loop (:for kvp v)
-        (:acc map (mapping kvp))))
+  ;; A builder of the vec's length, so that it does not grow.
+  (def b (hm-builder-with (eq-comparer) (max 1 (vec-length v))))
+  (loop (:for (Tuple k x) v) (:do (mapbuilder-add! b k x)))
+  (mapbuilder->map b))
 
 ;; Faster than a loop over the indices: `vec-for-each` walks the vec itself,
 ;; and the builder adds in place.

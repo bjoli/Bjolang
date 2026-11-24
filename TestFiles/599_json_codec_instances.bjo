@@ -1,0 +1,120 @@
+;; The instances of (text json-codec) for collections, tuples, float, dates,
+;; times and UUIDs, and the index of an element in the path of an error.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std datetime))
+(import (std uuid))
+(import (text json))
+(import (text json-codec))
+
+(def/json-type
+  (: Item (Record (: id int) (: tags (List string)))))
+
+(def/json-type
+  (: Order (Record (: items (Vec Item))
+                   (: placed Date)
+                   (: sizes (Array int))
+                   (: corner (Tuple int double)))))
+
+;; The text of a value's JSON.
+(: (-> %a string) (where (->json %a)))
+(defun (text-of x) (json->string (->json x)))
+
+;; What reading `text` as an Order gives: "ok", or the error.
+(: (-> string string))
+(defun (order-error text)
+  (match (parse-json text)
+    ((Err e) (str "not JSON: " e))
+    ((Ok j)
+     (match (: (json-> j) (Result string Order))
+       ((Ok _) "ok")
+       ((Err e) e)))))
+
+(defun (main)
+  ;; --- collections ------------------------------------------------------------
+  (expect "a list" (text-of (list 1 2 3)) "[1,2,3]")
+  (expect "an array" (text-of #[1 2 3]) "[1,2,3]")
+  (expect "an iarray" (text-of (list->iarray (list "a" "b"))) "[\"a\",\"b\"]")
+  (expect "a list reads back"
+          (: (json-> (->json (list 1 2 3))) (Result string (List int)))
+          (Ok (list 1 2 3)))
+  (expect "an iarray reads back"
+          (match (: (json-> (->json (list->iarray (list "a" "b")))) (Result string (IArray string)))
+            ((Ok a) (iarray->list a))
+            ((Err _) Nil))
+          (list "a" "b"))
+  (expect "an array reads back"
+          (match (: (json-> (->json #[4 5])) (Result string (Array int)))
+            ((Ok a) (+ (array-ref a 0) (array-ref a 1)))
+            ((Err _) -1))
+          9)
+  (expect "a list of lists"
+          (: (json-> (->json (list (list 1) (list 2 3)))) (Result string (List (List int))))
+          (Ok (list (list 1) (list 2 3))))
+
+  ;; --- tuples -----------------------------------------------------------------
+  (expect "a pair" (text-of (Tuple 1 "a")) "[1,\"a\"]")
+  (expect "a pair reads back" (: (json-> (->json (Tuple 1 "a"))) (Result string (Tuple int string))) (Ok (Tuple 1 "a")))
+  (expect "a triple reads back"
+          (: (json-> (->json (Tuple 1 "a" #t))) (Result string (Tuple int string bool)))
+          (Ok (Tuple 1 "a" #t)))
+  (expect "a pair of the wrong length"
+          (: (json-> (->json (list 1 2 3))) (Result string (Tuple int int)))
+          (Err "expected an array of 2 elements, and this has 3"))
+  (expect "a pair with a wrong element"
+          (: (json-> (->json (list 1 2))) (Result string (Tuple int string)))
+          (Err "[1]: expected a string"))
+
+  ;; --- float ------------------------------------------------------------------
+  (expect "a float reads a number" (: (json-> (JsonFloat 1.5)) (Result string float)) (Ok (cast float 1.5)))
+  (expect "a float reads an integer" (: (json-> (JsonInt 2L)) (Result string float)) (Ok (cast float 2.0)))
+
+  ;; --- dates, times and UUIDs -------------------------------------------------
+  (def (Some d) (date 2024 2 29) :panic)
+  (def (Some t) (time 13 5 #:seconds 9) :panic)
+  (def dt (date+time->datetime d t))
+  (def i (utc-datetime->instant dt))
+  (def du (duration #:hours 1L #:seconds 30L))
+  (expect "a date" (text-of d) "\"2024-02-29\"")
+  (expect "a date reads back" (: (json-> (->json d)) (Result string Date)) (Ok d))
+  (expect "a time reads back" (: (json-> (->json t)) (Result string Time)) (Ok t))
+  (expect "a datetime reads back" (: (json-> (->json dt)) (Result string DateTime)) (Ok dt))
+  (expect "an instant" (text-of i) "\"2024-02-29T13:05:09Z\"")
+  (expect "an instant reads back" (: (json-> (->json i)) (Result string Instant)) (Ok i))
+  (expect "a moment reads back"
+          (match (: (json-> (->json (instant->moment i utc))) (Result string Moment))
+            ((Ok m) (written m))
+            ((Err e) e))
+          (written (instant->moment i utc)))
+  (expect "a duration" (text-of du) "\"PT1H30S\"")
+  (expect "a duration reads back" (: (json-> (->json du)) (Result string Duration)) (Ok du))
+  (expect "not a date"
+          (: (json-> (JsonStr "2024-02-30")) (Result string Date))
+          (Err "expected an ISO 8601 date, and \"2024-02-30\" is not one"))
+  (expect "a date that is a number"
+          (: (json-> (JsonInt 20240229L)) (Result string Date))
+          (Err "expected an ISO 8601 date, as a string"))
+  (expect "a uuid" (text-of uuid-nil) "\"00000000-0000-0000-0000-000000000000\"")
+  (expect "a uuid reads back" (: (json-> (->json uuid-max)) (Result string Uuid)) (Ok uuid-max))
+  (expect "not a uuid" (: (json-> (JsonStr "nil")) (Result string Uuid)) (Err "expected a UUID, and \"nil\" is not one"))
+
+  ;; --- the path of an error ---------------------------------------------------
+  (def good "{\"items\":[{\"id\":1,\"tags\":[\"a\"]}],\"placed\":\"2024-02-29\",\"sizes\":[1,2],\"corner\":[3,0.5]}")
+  (expect "an order" (order-error good) "ok")
+  (expect "an element of a Vec has its index"
+          (order-error "{\"items\":[{\"id\":1,\"tags\":[]},{\"id\":\"x\",\"tags\":[]}],\"placed\":\"2024-02-29\",\"sizes\":[],\"corner\":[3,0.5]}")
+          "Order.items: [1]: Item.id: expected an integer")
+  (expect "an element of a List in an element of a Vec"
+          (order-error "{\"items\":[{\"id\":1,\"tags\":[\"a\",2]}],\"placed\":\"2024-02-29\",\"sizes\":[],\"corner\":[3,0.5]}")
+          "Order.items: [0]: Item.tags: [1]: expected a string")
+  (expect "an element of an Array"
+          (order-error "{\"items\":[],\"placed\":\"2024-02-29\",\"sizes\":[1,2,true],\"corner\":[3,0.5]}")
+          "Order.sizes: [2]: expected an integer")
+  (expect "a date in a record"
+          (order-error "{\"items\":[],\"placed\":\"soon\",\"sizes\":[],\"corner\":[3,0.5]}")
+          "Order.placed: expected an ISO 8601 date, and \"soon\" is not one")
+  (expect "a tuple in a record"
+          (order-error "{\"items\":[],\"placed\":\"2024-02-29\",\"sizes\":[],\"corner\":[3]}")
+          "Order.corner: expected an array of 2 elements, and this has 1")
+  0)

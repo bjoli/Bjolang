@@ -1,0 +1,125 @@
+;; A map builder against a map made by `map-set`, one key at a time.
+;;
+;; - The keys have a hash that the test chooses, so that each shape of a
+;;   node is made: a leaf, a child under a fragment, a collision node, and a
+;;   key added twice.
+;; - A builder builds the same map twice.
+;; - `mapbuilder-take!` takes the entries of one map off the end.
+;; - (text json) reads an object through one builder.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text json))
+
+(type
+  (: Key (Record (: id int) (: hash int))))
+
+(impl (Eq Key)
+  (defun (= a b) (= (record-ref a id) (record-ref b id)))
+  (defun (eq-hash k) (record-ref k hash)))
+
+;; The map of `adds`, an (id hash value) each, made by `map-set`.
+(: (-> (List (Tuple int int int)) (Map Key int)))
+(defun (by-set adds)
+  (loop (:for (Tuple id h v) adds)
+        (:acc m (folding (map-empty) (map-set m (Key (id id) (hash h)) v)))
+        => m))
+
+(: (-> (List (Tuple int int int)) (MapBuilder Key int)))
+(defun (builder-of adds)
+  (def b (mapbuilder-empty))
+  (loop (:for (Tuple id h v) adds) (:do (mapbuilder-add! b (Key (id id) (hash h)) v)))
+  b)
+
+;; Whether each entry of `a` is found in `b`.
+(: (-> (Map Key int) (Map Key int) bool))
+(defun (found-in? a b)
+  (loop (:for (Tuple k v) a)
+        (:acc ok (folding #t (and ok (= (map-ref-or b k -1) v))))
+        => ok))
+
+;; Whether `a` and `b` have the same keys with the same values. Each map is
+;; searched for the entries of the other: an entry in the wrong place of a
+;; trie is iterated, but not found.
+(: (-> (Map Key int) (Map Key int) bool))
+(defun (same-map? a b)
+  (and (= (map-length a) (map-length b)) (found-in? a b) (found-in? b a)))
+
+(: (-> string (List (Tuple int int int)) void))
+(defun (check label adds)
+  (def want (by-set adds))
+  (def b (builder-of adds))
+  (def first (mapbuilder->map b))
+  (expect-true (str label ": as map-set makes it") (same-map? first want))
+  (expect-true (str label ": the same map the second time") (same-map? (mapbuilder->map b) want))
+  ;; Under other entries, which have to stay.
+  (def under (builder-of (list (Tuple 9001 3 1) (Tuple 9002 35 2))))
+  (def mark (mapbuilder-length under))
+  (loop (:for (Tuple id h v) adds) (:do (mapbuilder-add! under (Key (id id) (hash h)) v)))
+  (expect-true (str label ": taken off the end") (same-map? (mapbuilder-take! under mark) want))
+  (expect (str label ": the builder keeps what was under") (mapbuilder-length under) mark)
+  (expect-true (str label ": and builds it")
+               (same-map? (mapbuilder->map under) (by-set (list (Tuple 9001 3 1) (Tuple 9002 35 2))))))
+
+;; `n` entries with ids below `ids` and hashes below `hashes`: repeated keys
+;; when `ids` is small, and keys of one hash when `hashes` is small.
+(: (-> int int int (List (Tuple int int int))))
+(defun (many n ids hashes)
+  {listing (Tuple (% (* i 7919) ids) (% (* (% (* i 7919) ids) 2654435) hashes) i)
+           (:for i (range 0 n))})
+
+(defun (main)
+  (check "no entries" Nil)
+  (check "one entry" (list (Tuple 1 5 10)))
+  (check "a leaf" (list (Tuple 1 1 10) (Tuple 2 2 20) (Tuple 3 3 30) (Tuple 4 4 40)))
+  (check "a leaf, added out of order" (list (Tuple 4 31 40) (Tuple 1 0 10) (Tuple 3 17 30) (Tuple 2 9 20)))
+  ;; 0, 32 and 64 have the fragment 0 at the first level.
+  (check "a child" (list (Tuple 1 0 10) (Tuple 2 32 20) (Tuple 3 64 30) (Tuple 4 5 40)))
+  (check "only a child" (list (Tuple 1 0 10) (Tuple 2 32 20)))
+  (check "two children" (list (Tuple 1 0 1) (Tuple 2 32 2) (Tuple 3 7 3) (Tuple 4 39 4) (Tuple 5 9 5)))
+  ;; These differ only in the last fragment.
+  (check "a child at the last level" (list (Tuple 1 0 10) (Tuple 2 1073741824 20) (Tuple 3 -2147483648 30)))
+  (check "one hash, two keys" (list (Tuple 1 7 10) (Tuple 2 7 20)))
+  (check "a collision node under a leaf" (list (Tuple 1 7 10) (Tuple 2 7 20) (Tuple 3 7 30) (Tuple 4 9 40)))
+  (check "a collision node under a child" (list (Tuple 1 7 10) (Tuple 2 7 20) (Tuple 3 39 30) (Tuple 4 9 40)))
+  (check "one key twice" (list (Tuple 1 7 10) (Tuple 1 7 11)))
+  (check "one key three times, among others"
+         (list (Tuple 1 7 10) (Tuple 2 8 20) (Tuple 1 7 11) (Tuple 3 9 30) (Tuple 1 7 12)))
+  (check "one key twice, in a collision node"
+         (list (Tuple 1 7 10) (Tuple 2 7 20) (Tuple 1 7 11) (Tuple 3 9 30)))
+  (check "one key twice, in a child" (list (Tuple 1 0 10) (Tuple 2 32 20) (Tuple 1 0 11) (Tuple 3 5 30)))
+  (check "12 entries" (many 12 100 1000000))
+  (check "13 entries" (many 13 100 1000000))
+  (check "40 entries, keys repeated" (many 40 25 1000000))
+  (check "400 entries" (many 400 1000 1000000))
+  (check "400 entries, keys repeated" (many 400 150 1000000))
+  (check "400 entries, few hashes" (many 400 1000 50))
+  (check "5000 entries, keys repeated" (many 5000 3000 1000000))
+  (check "5000 entries, few hashes" (many 5000 4000 700))
+
+  ;; --- the conversions, which make a builder of the collection's length ---
+  (expect "list->map keeps the last value" (map-ref (list->map (list (Tuple "a" 1) (Tuple "b" 2) (Tuple "a" 3))) "a") 3)
+  (expect "list->map of no pairs" (map-length (list->map (: Nil (List (Tuple string int))))) 0)
+  (expect "vec->map" (map-length (vec->map [(Tuple 1 "a") (Tuple 2 "b") (Tuple 1 "c")])) 2)
+  (expect "a map literal" (map-ref #map(("a" 1) ("b" 2) ("c" 3)) "c") 3)
+
+  ;; --- JSON: objects in objects, through one builder ---
+  (def doc (parse-json "{\"a\":{\"x\":1,\"y\":{},\"x\":2},\"b\":[{\"c\":{\"d\":4}},{}],\"a2\":3,\"b\":5}"))
+  (match doc
+    ((Ok j)
+     (expect "json: the outer object" (match j ((JsonObj m) (map-length m)) (_ -1)) 3)
+     (expect "json: a repeated key keeps the last value"
+             (match (json-object-ref j "b") ((Some (JsonInt n)) (cast int n)) (_ -1))
+             5)
+     (expect "json: the inner object"
+             (match (json-object-ref j "a")
+               ((Some (JsonObj m)) (map-length m))
+               (_ -1))
+             2)
+     (expect "json: its repeated key"
+             (match (json-object-ref j "a")
+               ((Some inner) (match (json-object-ref inner "x") ((Some (JsonInt n)) (cast int n)) (_ -1)))
+               (_ -1))
+             2))
+    ((Err e) (expect-true (str "json: the document is read: " e) #f)))
+  0)

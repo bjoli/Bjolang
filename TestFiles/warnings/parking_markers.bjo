@@ -1,0 +1,83 @@
+;; The two promises a signature can make to the lint of a call that parks.
+;;
+;; - `#:non-blocking`: a call of the function does not park its thread. The
+;;   lint does not go into the function.
+;; - `#:elsewhere param`: the function runs what it is given as `param` on a
+;;   thread that runs no fibers. The lint does not go into a lambda given
+;;   there.
+;;
+;; The compiler does not check a promise. Each case is a bjoroutine that
+;; reaches `file-read-text`, which parks, or `parse-json`, whose reader can.
+
+(import (std prelude))
+(import (std parallel))
+(import (text json))
+
+;; --- NOT reported: a promise of this module ----------------------------------
+
+(: (-> string int) #:non-blocking)
+(defun (promised-length path) (string-length (file-read-text path)))
+
+(: (-> (-> int) int) #:elsewhere work)
+(defun (run-elsewhere work) (work))
+
+;; EXPECT-NO-WARNING: 'quiet-own' is a bjoroutine
+(: (-bjo-> (List string) (List int)))
+(defbjo (quiet-own paths)
+  (list-map (fun (p) (promised-length p)) paths))
+
+;; EXPECT-NO-WARNING: 'quiet-own-direct' is a bjoroutine
+(: (-bjo-> string int))
+(defbjo (quiet-own-direct path)
+  (promised-length path))
+
+;; EXPECT-NO-WARNING: 'quiet-own-elsewhere' is a bjoroutine
+(: (-bjo-> string int))
+(defbjo (quiet-own-elsewhere path)
+  (run-elsewhere (fun () (string-length (file-read-text path)))))
+
+;; --- NOT reported: a promise of an imported module ---------------------------
+
+;; EXPECT-NO-WARNING: 'quiet-parse' is a bjoroutine
+(: (-bjo-> (List string) int))
+(defbjo (quiet-parse texts)
+  (list-length (list-map (fun (s) (parse-json s)) texts)))
+
+;; EXPECT-NO-WARNING: 'quiet-parts' is a bjoroutine
+(: (-bjo-> string int))
+(defbjo (quiet-parts path)
+  (vec-length (computing-each 4 (fun (i) (string-length (file-read-text path))))))
+
+;; EXPECT-NO-WARNING: 'quiet-in-parts' is a bjoroutine
+(: (-bjo-> string int))
+(defbjo (quiet-in-parts path)
+  (vec-length (in-parts (range 0 8) (fun (part) (string-length (file-read-text path))))))
+
+;; --- Reported: the promise is for one parameter, and one function ------------
+
+;; - `#:sync`, so that a lambda given to it is an ordinary one. Without it
+;;   the function has a suspending copy, the lambda is given that colour, and
+;;   nothing parks.
+;; - `#:no-inline`, so that the call stays a call. Copied into its caller,
+;;   the lambda's body is the bjoroutine's own.
+(: (-> (-> int) (-> int) int) #:sync #:no-inline #:elsewhere second)
+(defun (first-here first second) (+ (first) (second)))
+
+;; The lambda given as `first` runs on the caller's thread.
+;; EXPECT-WARNING: 'loud-first' is a bjoroutine, and calling 'file-read-text'
+(: (-bjo-> string int))
+(defbjo (loud-first path)
+  (first-here (fun () (string-length (file-read-text path))) (fun () 0)))
+
+;; EXPECT-NO-WARNING: 'quiet-second' is a bjoroutine
+(: (-bjo-> string int))
+(defbjo (quiet-second path)
+  (first-here (fun () 0) (fun () (string-length (file-read-text path)))))
+
+;; A function with no promise.
+;; EXPECT-WARNING: 'loud-plain' is a bjoroutine, and calling 'file-read-text'
+(: (-bjo-> (List string) (List int)))
+(defbjo (loud-plain paths)
+  (list-map (fun (p) (string-length (file-read-text p))) paths))
+
+(defun (main) 0)

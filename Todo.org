@@ -56,28 +56,42 @@ noted.
 
 * Diagnostics
 
-- Errors from generalization, trait registration and parts of declaration
-  checking carry a location only if their call site supplied one. Threading a
-  ~Range~ into ~unify~ would close it.
-- A ~loop~'s ~:finish~ value against the loop's result reads as "two
-  branches": the message is the expansion's ~if~, not the clause. The common
-  case is a loop with no ~=>~ that can also run out: "void" is that exit's
-  value, and the message does not say so or suggest ~=>~.
+- ~unify~ still takes no ~Range~: an error has the range that its call site
+  gives it with ~Diagnostics.locatedAt~, or the range of the enclosing
+  expression or declaration. The sites found with the fixtures of
+  ~TestFiles/errors~ are done (see the changelog, "A type mismatch is
+  reported at the expression that causes it"). Not done:
+  - a ~defun~ whose type as a whole does not fit its signature
+    (~checkDefun~, ~unify env.Registry funType st~) names the declaration;
+  - the ~unify~ calls of ~ForeignTyping~ and of the grammar literals in
+    ~InferExpr~ were not examined.
+- An ~Export Error~ of an imported module has no location and does not name
+  the file, and the ~Import Error~ after it says "imported here" with no
+  position (~TestFiles/errors/type_not_exported.bjo~).
 
 * JSON (~(text json)~, ~(text json-codec)~)
 
-- An error's path names no index: a bad element of a ~(Vec Item)~ field
-  reports ~Order.items: Item.id: expected an integer~, not which element.
-- There are no instances for ~List~, ~Array~, tuples, ~decimal~, ~float~, the
-  date and time types or ~Uuid~, and ~def/json-type~ takes records only. A
-  union, such as a status written as ~"open"~, needs its two ~impl~s by hand,
-  which is about eight lines.
-- Reading an object: half of what it allocates, 376 of about 750 bytes for
-  four short fields, is its map, built by ~transientmap-set!~ one key at a time
-  and then frozen. A map built from pairs it knows all of, with nodes of the
-  size they end at, would help every map built from a collection, not only
-  JSON's; the reader would put an object's pairs on its stack, as it does an
-  array's elements, and build the map once.
+- ~decimal~ has no instance. ~Json~ holds a number as a ~long~ or a
+  ~double~, so a ~decimal~ written as a number loses digits above about 15.
+  To decide: a string, which keeps every digit, or a number, as
+  System.Text.Json writes it, which needs a node of ~Json~ that keeps the
+  number's text.
+- ~def/json-type~ takes records only. A union, such as a status written as
+  ~"open"~, needs its two ~impl~s by hand, which is about eight lines. A
+  macro for a union of cases with no fields would cover the common case.
+- ~(text json-codec)~ imports ~(std datetime)~ and ~(std uuid)~ for their
+  instances, so each program that uses the codec loads them. The cost at
+  start is not measured.
+- Done: an object's entries go into one builder of the reader, and the map
+  is built once with nodes of the size they end at (see the changelog, "A
+  small map is built with no scratch arrays"). Still open:
+  - A document that is one small object is not faster: the builder is made
+    for each document. A builder made at the first object that has an entry
+    would save it for a document with no ~JsonObj~.
+  - ~(std hashset)~ has the same builder as the map had, with scratch for
+    each set, and ~(std orderedmap)~ has its own. Not measured.
+  - A group above 12 entries still copies into two arrays of its length
+    (~to-hs~, ~to-xs~) to sort.
 - Reading a float copies its bytes into the builder before parsing them.
   Most of a float's time is .NET's parse, so the copy is a small part.
 - With ~#:ascii~, a string is still written a character at a time: every
@@ -99,14 +113,20 @@ noted.
   positions are opaque cursors. ~string->bytes~ copies. When
   ~ReadOnlyMemory<byte>~ is usable from Bjolang, a string can give its bytes
   as one, and ~SimdSource~ can take that without exposing string indexes.
-- *Cursor loops: a span in place of the hoisted bounds.* ~hoistStringBounds~
-  (Codegen.fs) gets a string's bounds once before a loop where the string does
-  not change. A ~ReadOnlySpan<byte>~ local and an index into it would be about
-  10-20% faster again: the JIT then knows that the index check covers the
-  read. A span is legal only in a loop that runs inline in its method, with no
-  closure that captures it, and with no ~await~ or ~yield~ that it must
-  survive. Elsewhere keep ~StringBounds~. Cursors are offsets into the whole
-  array, so a step reads ~span[c - lo]~ and makes ~lo + i~.
+- *Cursor loops: what is left after the forward cursors* (see the changelog,
+  "A cursor that only goes forward is tested against its string's start
+  once"). A span in place of the hoisted bounds was measured and gives
+  nothing. Not done:
+  - A cursor that a jump gives a local bound to its ~string-cursor-next~, or
+    the cursor of a ~string-cursor-ref+next~, is not a forward cursor. Not
+    needed for speed so far: a ~ref+next~ loop is as fast as a loop over the
+    string.
+  - With the JIT's profile, a process gets one of two versions of the loop:
+    517 us for ASCII and 739 us for mixed text, or 617 us and 687 us. The
+    test for the end reads the string's bounds and the steps read the
+    forward bounds, which are two locals with one value. Whether one local
+    for both removes the slower version is not examined.
+  - ~string-cursor-prev~ tests the start at each step, and has to.
 - *Hoisted bounds: what is not done.* A merged loop group (several members in
   one ~while~) does not get bounds. A string that is a module-level binding,
   or that ~set!~ writes anywhere in its declaration, is read again at each
@@ -343,14 +363,8 @@ cast, and a store of a reference into the heap (the GC's write barrier).
   return ~AsyncSeq~, a different function. ~port->stream~ instead.
 - A ~(do ...)~ block cannot suspend: ~:bind~'s lambda colour is fixed. Would
   need ~:bind/bjo~ or a keyword on ~do~.
-- *Parsing a string counts as parking.* The bjodat and JSON readers share
-  one core for strings and ports, and every function in it reaches the
-  ~read-some~ a refill makes, so ~parse-bjodat~ and ~parse-json~ are
-  blocking definitions with suspending copies. Reached through an ordinary
-  lambda from a bjoroutine, the lint reports the parse, which on a string
-  never waits (samizdat's ~generate-docs~ did, fixed there with a loop).
-  A port-free copy of the core, or a way for a library to say a function
-  does not park, would end it.
+- Done: ~parse-json~ and ~parse-bjodat~ of a string are ~#:non-blocking~
+  (see the changelog, "~#:non-blocking~ and ~#:elsewhere~").
 
 * Traits and macros
 
@@ -470,13 +484,12 @@ several cores and their ends are events.
   examined further. After the threads sleep, 26 us: the wake of one thread
   in this KVM guest (~BjolangRuntime/Cml/design.md~, "The cost of a call of
   (std parallel)").
-- *The compiler cannot see that a lambda runs on another thread.* The lint
-  that a call parks its thread exempts the lambdas of ~blocking~ and
-  ~spawn-thunk~ by name (~Prelude.elsewhereBuiltins~). A library function
-  such as ~in-parts~ or ~computing-each~ cannot say the same of its
-  function parameter, so a nested call in a part, which parks a compute
-  thread, is warned of as if it parked a thread that runs fibers. A
-  declaration on the parameter would fix it.
+- *A lambda given to ~par-map~ or ~par-filter~ is still warned of as if it
+  parked a thread that runs fibers.* A function says that it runs a
+  parameter on another thread with ~#:elsewhere~, as ~in-parts~ and
+  ~computing-each~ do, but the method of a trait cannot have a marker. It
+  would be a marker on the method's signature in the ~def/trait~, read by
+  the lint at a call of the method.
 - *Parts are not split again.* ~chunks~ makes about k parts at once, so a
   part that is slower than the others is not shared. A recursive split, as
   in Rayon or Java's ~Spliterator~, would let idle workers take half of it.
@@ -549,3 +562,14 @@ several cores and their ends are events.
   reaches them, and survive collections into older generations, where a body
   that writes into them pays for it. If wanted, an opt-in for a body meant
   to be measured on cold data.
+
+
+* Samizdat
+
+Does not apply typography everywhere. like curly quotes in @sections etc
+
+Rewrites #:id in @section but not in @ref, meaning a ref to a section does not work. (My_Id becomes my-id).
+
+Missing files raises exceptions instead of returning Err.
+
+sz files erroneously includes hidden files. 

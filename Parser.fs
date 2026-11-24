@@ -563,24 +563,38 @@ let private isConstructorName (sym: string) : bool =
 /// - `#:sync`: the function gets no suspending copy.
 /// - `#:inline`: the function is copied at its plain calls.
 /// - `#:no-inline`: the function's body is not published for inlining.
-let signatureMarkers: Set<string> = set [ "sync"; "inline"; "no-inline" ]
+/// - `#:non-blocking`: a call of the function does not park its thread.
+/// - `#:elsewhere param`: the function given as `param` runs on a thread
+///   that runs no fibers. This marker is the only one with an operand.
+let signatureMarkers: Set<string> =
+    set [ "sync"; "inline"; "no-inline"; "non-blocking"; "elsewhere" ]
+
+/// The start of the text of an `#:elsewhere` marker with its parameter.
+let elsewhereMarkerPrefix = "elsewhere "
 
 /// A `(: ...)` form without the markers at its end, and those markers in
 /// order. Any other form is returned as it is, with no markers.
+///
+/// - A marker is given as its keyword's text: `sync`.
+/// - `#:elsewhere param` is given as one text, `elsewhere param`, which is
+///   also how a message shows it after `#:`. An `#:elsewhere` with no
+///   parameter after it is given as `elsewhere`.
 let splitSignatureMarkers (form: SExpr) : SExpr * (string * Range) list =
-    let marker (item: SExpr) =
-        match item with
-        | SAtom { Token = Keyword k; Range = kr } when signatureMarkers.Contains k -> Some(k, kr)
-        | _ -> None
+    // From the end of the form. Returns what is before the markers, in
+    // reverse, and the markers in order.
+    let rec take (reversed: SExpr list) (found: (string * Range) list) =
+        match reversed with
+        | SAtom { Token = Symbol param } :: SAtom { Token = Keyword "elsewhere"; Range = kr } :: before ->
+            take before ((elsewhereMarkerPrefix + param, kr) :: found)
+        | SAtom { Token = Keyword k; Range = kr } :: before when signatureMarkers.Contains k ->
+            take before ((k, kr) :: found)
+        | _ -> reversed, found
 
     match form with
     | SList((SAtom { Token = Colon } :: _) as items, r) ->
-        let trailing = items |> List.rev |> List.takeWhile (marker >> Option.isSome)
-
-        if trailing.IsEmpty then
-            form, []
-        else
-            SList(List.take (items.Length - trailing.Length) items, r), trailing |> List.rev |> List.choose marker
+        match take (List.rev items) [] with
+        | _, [] -> form, []
+        | before, markers -> SList(List.rev before, r), markers
     | _ -> form, []
 
 /// The error for a marker in the old place, straight after the name, as in

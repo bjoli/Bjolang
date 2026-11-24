@@ -343,6 +343,11 @@ type CodegenContext = {
     /// string it holds the bounds of. Found before the code is written: see
     /// `hoistStringBounds`.
     StringBounds: System.Collections.Generic.Dictionary<TypedExpr, (string * TypedExpr) list>
+    /// The forward bounds to get before the `while` of a loop member, after
+    /// its string bounds, by the member's body, compared by reference. Each
+    /// is the C# local, the local of the string's bounds, and the cursor
+    /// slot that the loop starts with. See `hoistStringBounds`.
+    StringForwards: System.Collections.Generic.Dictionary<TypedExpr, (string * string * TypedExpr) list>
     /// The names that a `set!` assigns or a `let-mutable` or `def/mutable`
     /// binds anywhere in the module. Names are unique here.
     Assigned: Set<string>
@@ -472,6 +477,7 @@ let mapPrimitiveType (name: string) =
     | "StringCursor" -> "BjoString.StringCursor"
     // Made only by the compiler: see `hoistStringBounds`.
     | "StringBounds" -> "BjoString.StringBounds"
+    | "StringForward" -> "BjoString.StringForward"
     | "StringBuilder" -> "BjoString.Utf8StringBuilder"
     | "VecBuilder" -> "Bjolang.Runtime.Rrb.RrbBuilder"
     | "List" -> "SchemeList.SchemeList"
@@ -6933,6 +6939,16 @@ and private emitStringBounds (ctx: CodegenContext) (member_: TLoopMember) : unit
                 appendLine c ");")
     | _ -> ()
 
+    match ctx.StringForwards.TryGetValue member_.Body with
+    | true, forwards ->
+        for name, bounds, cursor in forwards do
+            emitStatement ctx (fun c ->
+                indent c
+                append c $"var %s{sanitizeIdent name} = BjolangRuntime.StringForwardOf(%s{sanitizeIdent bounds}, "
+                generateExpr c cursor
+                appendLine c ");")
+    | _ -> ()
+
 /// Emits `TLoop (_, None)`: the loop *is* this function's body, so the
 /// `while (true)` lives in the function's own block and its slots are the
 /// function's own parameters.
@@ -9345,6 +9361,13 @@ let private boundsSteps: Map<string, string> =
           "string-cursor-prev", "StringBoundsPrev"
           "string-cursor-ref+next", "StringBoundsRefNext" ]
 
+/// The cursor steps that take a string's forward bounds, and the runtime
+/// method for each. See `hoistStringBounds`, "Forward cursors".
+let private forwardSteps: Map<string, string> =
+    Map
+        [ "string-cursor-ref", "StringForwardRef"
+          "string-cursor-next", "StringForwardNext" ]
+
 /// The names that `expr` binds at its own node.
 let private bindersAt (expr: TypedExpr) : string list =
     let ofFun (fn: LocalFun) =
@@ -9432,6 +9455,21 @@ let rec private jumpsTo (index: int) (level: int) (expr: TypedExpr) : TypedExpr 
 /// - Result: the steps on `s` become calls of the `StringBounds*` methods of
 ///   the runtime, and `ctx.StringBounds` has the local to get before the
 ///   `while` (`emitStringBounds`).
+///
+/// Forward cursors. A step tests that its cursor is not before the start of
+/// the slice. For a cursor that only goes forward on `s`, the test is made
+/// once before the `while`:
+///
+/// - Which cursors: a slot `c` of the member, when each jump to the member
+///   gives the slot `c` itself or `(string-cursor-next s c)`, and nothing
+///   else writes or binds `c`. A cursor that starts in the slice then stays
+///   in it.
+/// - Result: `(string-cursor-ref s c)` and `(string-cursor-next s c)` become
+///   calls of the `StringForward*` methods of the runtime, and
+///   `ctx.StringForwards` has the local to get before the `while`.
+/// - A cursor that starts before the slice makes each of those steps raise,
+///   with the message that the step on the string has (see
+///   `BjoString.StringForward`).
 ///
 /// Inner loops are done first. An inner loop gets the bounds again at each
 /// entry, which also makes it correct when `s` is a slot of an outer loop.
@@ -9531,8 +9569,78 @@ let private hoistStringBounds (ctx: CodegenContext) (decl: TDecl) : TDecl =
         else
             let boundsOf = hoists |> List.map (fun (s, b, _) -> s, b) |> Map.ofList
 
+            // The slot that `e` names, as the slot or as its copy for the
+            // iteration.
+            let slotOf (e: TypedExpr) : int option =
+                match e.Node with
+                | TIdent(a, []) ->
+                    m.Slots
+                    |> List.tryFindIndex (fun (n, _) -> n = a)
+                    |> Option.orElse (List.tryFindIndex (fun l -> l = a) m.Locals)
+                | _ -> None
+
+            // Forward cursors: the slots that each jump gives themselves or
+            // their `string-cursor-next` on `s`, and the string of each.
+            //
+            // Set the environment variable BJOLANG_NO_FORWARD_CURSORS to find
+            // none. The steps then take the string's bounds, which is the
+            // baseline that a benchmark of this needs.
+            let slotsToTry =
+                if isNull (Environment.GetEnvironmentVariable "BJOLANG_NO_FORWARD_CURSORS") then
+                    [ 0 .. m.Slots.Length - 1 ]
+                else
+                    []
+
+            let forwardOf: Map<int, string * string> =
+                [ for k in slotsToTry do
+                      let slot = fst m.Slots[k]
+                      let names = slot :: (List.tryItem k m.Locals |> Option.toList)
+
+                      let unchanged =
+                          names |> List.forall (fun n -> not (mutated.Contains n) && not (bindsAnywhere n m.Body))
+
+                      // The string that a jump's argument steps the slot on:
+                      // None for the slot itself.
+                      let stepOf (arg: TypedExpr) : Result<string option, unit> =
+                          match arg.Node with
+                          | _ when slotOf arg = Some k -> Ok None
+                          | TApply({ Node = TIdent(step, _) }, [ { Node = TIdent(s, []) }; cursor ], []) when
+                              step = "string-cursor-next" && isStep step && boundsOf.ContainsKey s && slotOf cursor = Some k
+                              ->
+                              Ok(Some s)
+                          | _ -> Error()
+
+                      let steps =
+                          jumps.Value
+                          |> List.map (fun args -> if args.Length = m.Slots.Length then stepOf args[k] else Error())
+
+                      let strings = steps |> List.choose (function Ok(Some s) -> Some s | _ -> None) |> List.distinct
+
+                      match strings with
+                      | [ s ] when unchanged && steps |> List.forall Result.isOk ->
+                          yield k, (s, Gensym.fresh "_forward")
+                      | _ -> () ]
+                |> Map.ofList
+
             let rec rewrite (e: TypedExpr) : TypedExpr option =
                 match e.Node with
+                | TApply({ Node = TIdent(step, _) }, [ ({ Node = TIdent(s, []) } as str); cursor ], []) when
+                    isStep step
+                    && forwardSteps.ContainsKey step
+                    && (match slotOf cursor |> Option.bind (fun k -> Map.tryFind k forwardOf) with
+                        | Some(forwardString, _) -> forwardString = s
+                        | None -> false)
+                    ->
+                    let _, local = forwardOf[(slotOf cursor).Value]
+
+                    let forward =
+                        { str with
+                            Node = TIdent(local, [])
+                            Type = TCon("StringForward", []) }
+
+                    Some
+                        { e with
+                            Node = TForeignStaticCall("BjolangRuntime", forwardSteps[step], [ forward; cursor ], None) }
                 | TApply({ Node = TIdent(step, _) }, [ ({ Node = TIdent(s, []) } as str); cursor ], []) when
                     isStep step && boundsOf.ContainsKey s
                     ->
@@ -9548,6 +9656,18 @@ let private hoistStringBounds (ctx: CodegenContext) (decl: TDecl) : TDecl =
 
             let body = mapAtLevel rewrite m.Body
             ctx.StringBounds[body] <- hoists |> List.map (fun (_, b, source) -> b, source)
+
+            if not forwardOf.IsEmpty then
+                ctx.StringForwards[body] <-
+                    [ for KeyValue(k, (s, local)) in forwardOf do
+                          let slot, slotType = m.Slots[k]
+
+                          yield
+                              local,
+                              boundsOf[s],
+                              { Type = slotType
+                                Range = m.Body.Range
+                                Node = TIdent(slot, []) } ]
             { m with Body = body }
 
     let hoistLoop (e: TypedExpr) : TypedExpr =
@@ -9906,6 +10026,7 @@ let generateProgram
           OwnStatement = false
           VectorLoops = System.Collections.Generic.Dictionary()
           StringBounds = System.Collections.Generic.Dictionary(HashIdentity.Reference)
+          StringForwards = System.Collections.Generic.Dictionary(HashIdentity.Reference)
           Assigned =
             let acc = System.Collections.Generic.HashSet<string>()
 
