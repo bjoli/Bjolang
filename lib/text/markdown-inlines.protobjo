@@ -1,0 +1,1313 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; The inline phase of (text markdown), included by markdown.bjo, and the
+;; scanners that the block phase shares with it.
+;;
+;; - The inlines of a paragraph are records in an arena, `nodes`, linked as
+;;   a tree by their indices: emphasis and links take the nodes between
+;;   their delimiters as children.
+;; - A run of *, _ or ~ is a text node and an entry on the delimiter stack.
+;;   `process-emphasis!` matches closers with openers by the spec's rules,
+;;   and makes the emphasis.
+;; - [ and ![ are text nodes and entries on the bracket stack. A ] looks
+;;   for an inline link, then a reference, after its opener.
+;; - With the autolinks extension, the text that is not in a link is then
+;;   searched for www., http:// and https:// addresses, and email addresses.
+
+;; ---------------------------------------------------------------------------
+;; Entities, labels and escapes
+;; ---------------------------------------------------------------------------
+
+(: (Map string string))
+(def entities (vec->map entity-table))
+
+;; The text of an entity at `i` of `s`, and the position after it: &name;,
+;; &#digits; or &#xhex;. None when there is none there.
+;;
+;; - A numeric entity for 0, a surrogate, or a number past U+10FFFF is
+;;   U+FFFD.
+;; - A name that HTML does not have is not an entity.
+(: (-> ByteString int (Option (Tuple string int))))
+(defun (scan-entity s i)
+  (with-return ret
+    (unless (at? s i #\&) (ret None))
+    (cond
+      ((at? s (+ i 1) #\#)
+       (def hex (or (at? s (+ i 2) #\x) (at? s (+ i 2) #\X)))
+       (def from (+ i (if hex 3 2)))
+       (def end (let go ((k from))
+                  (if (if hex (ascii-hex-digit? (at s k)) (ascii-digit? (at s k))) (go (+ k 1)) k)))
+       (def count (- end from))
+       (unless (and (>= count 1) (<= count (if hex 6 7)) (at? s end #\;)) (ret None))
+       (def n (string->int (text-of s from end) #:radix (if hex 16 10)))
+       (def c (if (or (= n 0) (> n 1114111) (and (>= n 55296) (<= n 57343))) 65533 n))
+       (Some (Tuple (char->string (int->char c)) (+ end 1))))
+      (else
+       (def end (let go ((k (+ i 1)))
+                  (if (ascii-alphanumeric? (at s k)) (go (+ k 1)) k)))
+       (unless (and (ascii-letter? (at s (+ i 1))) (at? s end #\;) (<= (- end i 1) 32)) (ret None))
+       (match (map-try-ref entities (text-of s (+ i 1) end))
+         ((Some t) (Some (Tuple t (+ end 1))))
+         (None None))))))
+
+;; `text` with its backslash escapes and its entities replaced by what they
+;; stand for.
+(: (-> string string))
+(defun (unescape-string text)
+  (def s (string->bytestring text))
+  (cond
+    ((and (none? (search-byte s (char->int #\\)))
+          (none? (search-byte s (char->int #\&))))
+     text)
+    (else
+     (def out (bytestringbuilder-empty))
+     (let go ((i 0))
+       (def b (at s i))
+       (cond
+         ((= b -1) unit)
+         ((and (= b (char->int #\\)) (ascii-punctuation? (at s (+ i 1))))
+          (add-byte! out (at s (+ i 1)))
+          (go (+ i 2)))
+         ((= b (char->int #\&))
+          (match (scan-entity s i)
+            ((Some (Tuple t next)) (add-string! out t) (go next))
+            (None (add-byte! out b) (go (+ i 1)))))
+         (else (add-byte! out b) (go (+ i 1)))))
+     (bytestring->string/lossy (bytestringbuilder->bytestring out)))))
+
+(: (-> ByteStringBuilder int void))
+(defun (add-byte! b x) (bytestringbuilder-add-byte! b (cast System.Byte x)))
+
+(: (-> ByteStringBuilder string void))
+(defun (add-string! b t) (bytestringbuilder-add-bytestring! b (string->bytestring t)))
+
+;; A link label as it is matched: trimmed, with each run of whitespace one
+;; space, and case-folded.
+(: (-> string string))
+(defun (normalize-label label)
+  (def sb (stringbuilder-empty))
+  (def/mutable space #f)
+  (loop (:for ch label)
+        (:do (cond
+               ((or (char=? ch #\space) (char=? ch #\tab) (char=? ch #\newline) (char=? ch #\return))
+                (set! space (> (stringbuilder-length sb) 0)))
+               (else
+                (when space (stringbuilder-add! sb #\space))
+                (set! space #f)
+                (stringbuilder-add! sb ch)))))
+  (string-foldcase (stringbuilder->string sb)))
+
+;; The end of a link label at `i` of `s`: [, at most 999 characters that
+;; are not unescaped brackets, and ]. 0 when there is none.
+(: (-> ByteString int int))
+(defun (scan-link-label s i)
+  (cond
+    ((at? s i #\[)
+     (let go ((k (+ i 1)) (chars 0))
+       (def b (at s k))
+       (cond
+         ((> chars 999) 0)
+         ((= b -1) 0)
+         ((= b (char->int #\])) (+ k 1))
+         ((= b (char->int #\[)) 0)
+         ((= b (char->int #\\))
+          (if (= (at s (+ k 1)) -1) (go (+ k 1) (+ chars 1)) (go (+ k 2) (+ chars 2))))
+         (else (go (+ k 1) (+ chars 1))))))
+    (else 0)))
+
+;; Spaces and tabs, at most one newline, and spaces and tabs.
+(: (-> ByteString int int))
+(defun (skip-spnl s i)
+  (def a (skip-spaces s i))
+  (if (= (at s a) 10) (skip-spaces s (+ a 1)) a))
+
+;; A link destination at `i` of `s`: <...>, or a run with balanced
+;; parentheses and no whitespace. Returns the destination, unescaped, and
+;; the position after it.
+(: (-> ByteString int (Option (Tuple string int))))
+(defun (scan-link-destination s i)
+  (cond
+    ((at? s i #\<)
+     (let go ((k (+ i 1)))
+       (def b (at s k))
+       (cond
+         ((or (= b -1) (= b 10) (= b (char->int #\<))) None)
+         ((= b (char->int #\>)) (Some (Tuple (unescape-string (text-of s (+ i 1) k)) (+ k 1))))
+         ((and (= b (char->int #\\)) (>= (at s (+ k 1)) 0) (not (= (at s (+ k 1)) 10))) (go (+ k 2)))
+         (else (go (+ k 1))))))
+    (else
+     (let go ((k i) (parens 0))
+       (def b (at s k))
+       (cond
+         ((and (= b (char->int #\\)) (ascii-punctuation? (at s (+ k 1)))) (go (+ k 2) parens))
+         ((= b (char->int #\()) (go (+ k 1) (+ parens 1)))
+         ((and (= b (char->int #\))) (> parens 0)) (go (+ k 1) (- parens 1)))
+         ((or (= b -1) (= b (char->int #\))) (ascii-whitespace? b) (< b 32))
+          (cond
+            ((and (= k i) (not (= b (char->int #\))))) None)
+            ((not (= parens 0)) None)
+            (else (Some (Tuple (unescape-string (text-of s i k)) k)))))
+         (else (go (+ k 1) parens)))))))
+
+;; A link title at `i` of `s`: "...", '...' or (...), with backslash
+;; escapes. Returns the title, unescaped, and the position after it.
+(: (-> ByteString int (Option (Tuple string int))))
+(defun (scan-link-title s i)
+  (def open (at s i))
+  (def close (cond ((= open (char->int #\")) open)
+                   ((= open (char->int #\')) open)
+                   ((= open (char->int #\()) (char->int #\)))
+                   (else -1)))
+  (cond
+    ((= close -1) None)
+    (else
+     (let go ((k (+ i 1)))
+       (def b (at s k))
+       (cond
+         ((= b -1) None)
+         ((= b close) (Some (Tuple (unescape-string (text-of s (+ i 1) k)) (+ k 1))))
+         ((and (= open (char->int #\()) (= b open)) None)
+         ((= b (char->int #\\)) (if (= (at s (+ k 1)) -1) (go (+ k 1)) (go (+ k 2))))
+         (else (go (+ k 1))))))))
+
+;; Whether only spaces and tabs are between `i` and the end of its line.
+;; Returns the position after the newline, or the end.
+(: (-> ByteString int (Option int)))
+(defun (line-end-after s i)
+  (def k (skip-spaces s i))
+  (cond
+    ((= (at s k) 10) (Some (+ k 1)))
+    ((= (at s k) -1) (Some k))
+    (else None)))
+
+;; Reads a link reference definition at the start of `s` into `refs`, and
+;; returns the position after it. None when `s` does not start with one.
+;; The first definition of a label is the one that counts.
+(: (-> ByteString (TransientMap string (Tuple string string)) (Option int)))
+(defun (parse-reference s refs)
+  (with-return ret
+    (def label-end (scan-link-label s 0))
+    (when (= label-end 0) (ret None))
+    (unless (at? s label-end #\:) (ret None))
+    (def label (normalize-label (text-of s 1 (- label-end 1))))
+    (when (string-empty? label) (ret None))
+    (def (Some (Tuple dest after-dest)) (scan-link-destination s (skip-spnl s (+ label-end 1)))
+      :leave-with None)
+    (def before-title after-dest)
+    (def title-start (skip-spnl s before-title))
+    (def titled
+      (if (= title-start before-title)
+          None
+          (match (scan-link-title s title-start)
+            ((Some (Tuple title after-title))
+             (match (line-end-after s after-title)
+               ((Some next) (Some (Tuple title next)))
+               (None None)))
+            (None None))))
+    (def (Some (Tuple title next))
+      (match titled
+        ((Some t) (Some t))
+        (None (option-map (fun (next) (Tuple "" next)) (line-end-after s before-title))))
+      :leave-with None)
+    (unless (transientmap-contains? refs label)
+      (transientmap-set! refs label (Tuple dest title)))
+    (Some next)))
+
+;; ---------------------------------------------------------------------------
+;; HTML
+;; ---------------------------------------------------------------------------
+
+;; The end of an HTML tag name at `i` of `s`: a letter, then letters,
+;; digits and -. `i` when there is none.
+(: (-> ByteString int int))
+(defun (scan-tag-name s i)
+  (if (ascii-letter? (at s i))
+      (let go ((k (+ i 1)))
+        (def b (at s k))
+        (if (or (ascii-alphanumeric? b) (= b (char->int #\-))) (go (+ k 1)) k))
+      i))
+
+;; Whitespace in a tag: spaces, tabs and newlines.
+(: (-> ByteString int int))
+(defun (skip-tag-space s i)
+  (if (ascii-whitespace? (at s i)) (skip-tag-space s (+ i 1)) i))
+
+;; The end of an attribute at `i` of `s`, which starts with whitespace: a
+;; name, then optionally = and a value. `i` when there is none.
+(: (-> ByteString int int))
+(defun (scan-attribute s i)
+  (with-return ret
+    (def name-start (skip-tag-space s i))
+    (when (= name-start i) (ret i))
+    (def c (at s name-start))
+    (unless (or (ascii-letter? c) (= c (char->int #\_)) (= c (char->int #\:))) (ret i))
+    (def name-end
+      (let go ((k (+ name-start 1)))
+        (def b (at s k))
+        (if (or (ascii-alphanumeric? b) (= b (char->int #\_)) (= b (char->int #\.))
+                (= b (char->int #\:)) (= b (char->int #\-)))
+            (go (+ k 1))
+            k)))
+    (def eq (skip-tag-space s name-end))
+    (unless (at? s eq #\=) (ret name-end))
+    (def v (skip-tag-space s (+ eq 1)))
+    (def q (at s v))
+    (cond
+      ((or (= q (char->int #\")) (= q (char->int #\')))
+       (match (search-byte (bytestring-slice s (+ v 1) (bytestring-length s)) q)
+         ((Some p) (+ v 1 p 1))
+         (None name-end)))
+      (else
+       (def end
+         (let go ((k v))
+           (def b (at s k))
+           (if (or (= b -1) (<= b 32) (= b (char->int #\")) (= b (char->int #\'))
+                   (= b (char->int #\=)) (= b (char->int #\<)) (= b (char->int #\>))
+                   (= b (char->int #\`)))
+               k
+               (go (+ k 1)))))
+       (if (= end v) name-end end)))))
+
+;; The end of an open tag at `i` of `s`, or None.
+(: (-> ByteString int (Option int)))
+(defun (scan-open-tag s i)
+  (with-return ret
+    (unless (at? s i #\<) (ret None))
+    (def name-end (scan-tag-name s (+ i 1)))
+    (when (= name-end (+ i 1)) (ret None))
+    (def attrs-end
+      (let go ((k name-end))
+        (def next (scan-attribute s k))
+        (if (= next k) k (go next))))
+    (def k (skip-tag-space s attrs-end))
+    (cond
+      ((at? s k #\>) (Some (+ k 1)))
+      ((and (at? s k #\/) (at? s (+ k 1) #\>)) (Some (+ k 2)))
+      (else None))))
+
+;; The end of a closing tag at `i` of `s`, or None.
+(: (-> ByteString int (Option int)))
+(defun (scan-closing-tag s i)
+  (with-return ret
+    (unless (and (at? s i #\<) (at? s (+ i 1) #\/)) (ret None))
+    (def name-end (scan-tag-name s (+ i 2)))
+    (when (= name-end (+ i 2)) (ret None))
+    (def k (skip-tag-space s name-end))
+    (if (at? s k #\>) (Some (+ k 1)) None)))
+
+;; The ends of HTML constructs, for `search-after`.
+(: ByteString)
+(def comment-end (string->bytestring "-->"))
+(: ByteString)
+(def instruction-end (string->bytestring "?>"))
+(: ByteString)
+(def cdata-end (string->bytestring "]]>"))
+(: ByteString)
+(def tag-end (string->bytestring ">"))
+
+;; The position after the first `w` at or after `i` of `s`, or None.
+(: (-> ByteString int ByteString (Option int)))
+(defun (search-after s i w)
+  (match (bytestring-search (bytestring-slice s (min i (bytestring-length s)) (bytestring-length s)) w)
+    ((Some p) (Some (+ i p (bytestring-length w))))
+    (None None)))
+
+;; The end of raw inline HTML at `i` of `s`: a tag, a comment, a
+;; processing instruction, a declaration or CDATA. None when there is none.
+(: (-> ByteString int (Option int)))
+(defun (scan-html-inline s i)
+  (cond
+    ((not (at? s i #\<)) None)
+    ((at? s (+ i 1) #\/) (scan-closing-tag s i))
+    ((and (at? s (+ i 1) #\!) (at? s (+ i 2) #\-) (at? s (+ i 3) #\-))
+     (cond
+       ((at? s (+ i 4) #\>) (Some (+ i 5)))
+       ((and (at? s (+ i 4) #\-) (at? s (+ i 5) #\>)) (Some (+ i 6)))
+       (else (search-after s (+ i 4) comment-end))))
+    ((at? s (+ i 1) #\?) (search-after s (+ i 2) instruction-end))
+    ((starts-with-ci? s i "<![CDATA[") (search-after s (+ i 9) cdata-end))
+    ((and (at? s (+ i 1) #\!) (ascii-letter? (at s (+ i 2)))) (search-after s (+ i 2) tag-end))
+    (else (scan-open-tag s i))))
+
+;; The tag names that start an HTML block of kind 6.
+(: (Vec string))
+(def block-tag-names
+  ["address" "article" "aside" "base" "basefont" "blockquote" "body" "caption" "center"
+   "col" "colgroup" "dd" "details" "dialog" "dir" "div" "dl" "dt" "fieldset" "figcaption"
+   "figure" "footer" "form" "frame" "frameset" "h1" "h2" "h3" "h4" "h5" "h6" "head"
+   "header" "hr" "html" "iframe" "legend" "li" "link" "main" "menu" "menuitem" "nav"
+   "noframes" "ol" "optgroup" "option" "p" "param" "search" "section" "summary" "table"
+   "tbody" "td" "tfoot" "th" "thead" "title" "tr" "track" "ul"])
+
+;; The tag names of an HTML block of kind 1.
+(: (Vec string))
+(def raw-tag-names ["pre" "script" "style" "textarea"])
+
+;; The kind of HTML block, 1 to 7, that `ln` starts at `from`, or 0.
+(: (-> ByteString int int))
+(defun (html-block-start ln from)
+  (def name-from (if (at? ln (+ from 1) #\/) (+ from 2) (+ from 1)))
+  (def name-end (scan-tag-name ln name-from))
+  (def name (string-downcase (text-of ln name-from name-end)))
+  (def after (at ln name-end))
+  (cond
+    ((and (= name-from (+ from 1)) (vec-contains? raw-tag-names name)
+          (or (= after -1) (ascii-whitespace? after) (= after (char->int #\>))))
+     1)
+    ((starts-with-ci? ln from "<!--") 2)
+    ((at? ln (+ from 1) #\?) 3)
+    ((and (at? ln (+ from 1) #\!) (ascii-letter? (at ln (+ from 2)))) 4)
+    ((starts-with-ci? ln from "<![CDATA[") 5)
+    ((and (vec-contains? block-tag-names name)
+          (or (= after -1) (ascii-whitespace? after) (= after (char->int #\>))
+              (and (= after (char->int #\/)) (at? ln (+ name-end 1) #\>))))
+     6)
+    ((vec-contains? raw-tag-names name) 0)
+    (else
+     (match (if (at? ln (+ from 1) #\/) (scan-closing-tag ln from) (scan-open-tag ln from))
+       ((Some end) (if (blank-from? ln end) 7 0))
+       (None 0)))))
+
+;; The end tags of an HTML block of kind 1.
+(: (Vec string))
+(def raw-end-tags ["</script>" "</pre>" "</style>" "</textarea>"])
+
+;; Whether `ln` from `offset` has the end of an HTML block of kind 1 to 5.
+(: (-> int ByteString int bool))
+(defun (html-block-ends? type ln offset)
+  (def rest (bytestring-slice ln (min offset (bytestring-length ln)) (bytestring-length ln)))
+  (cond
+    ((= type 1)
+     ;; Each < is checked for the end tags, without case.
+     (let go ((k 0))
+       (match (search-byte (bytestring-slice rest k (bytestring-length rest)) (char->int #\<))
+         (None #f)
+         ((Some p)
+          (def at-k (+ k p))
+          (or (some? {finding #t (:for t raw-end-tags) (:when (starts-with-ci? rest at-k t))})
+              (go (+ at-k 1)))))))
+    ((= type 2) (some? (search-after rest 0 comment-end)))
+    ((= type 3) (some? (search-after rest 0 instruction-end)))
+    ((= type 4) (some? (search-after rest 0 tag-end)))
+    ((= type 5) (some? (search-after rest 0 cdata-end)))
+    (else #f)))
+
+;; ---------------------------------------------------------------------------
+;; The inline tree
+;; ---------------------------------------------------------------------------
+
+;; The kinds of inline.
+(def I-ROOT 0)
+(def I-TEXT 1)
+(def I-SOFT 2)
+(def I-HARD 3)
+(def I-CODE 4)
+(def I-HTML 5)
+(def I-EMPH 6)
+(def I-STRONG 7)
+(def I-STRIKE 8)
+(def I-LINK 9)
+(def I-IMAGE 10)
+(def I-NOTE 11)
+
+;; An inline, while a paragraph is read. -1 is no node.
+(type
+  (: INode (Record
+            (: kind int)
+            ;; A text's or a code span's text, or raw HTML.
+            ;;
+            ;; Possible change: a text could be a byte range of the
+            ;; paragraph's bytes instead of a string. Only an entity needs a
+            ;; string. convert-inlines would then make one string for each
+            ;; run of texts, and the autolink scan would read the bytes
+            ;; directly. This removes a string for each text, the copy that
+            ;; joins a run, and the copy back to bytes for autolinks.
+            (: text string #:mutable)
+            (: dest string)
+            (: title string)
+            ;; A footnote reference's number.
+            (: number int)
+            (: parent int #:mutable)
+            (: first int #:mutable)
+            (: last int #:mutable)
+            (: prev int #:mutable)
+            (: next int #:mutable))))
+
+;; An entry on the delimiter stack: a run of *, _ or ~.
+(type
+  (: Delim (Record
+            (: node int)
+            (: ch int)
+            (: count int #:mutable)
+            (: original int)
+            (: can-open bool)
+            (: can-close bool)
+            (: previous int #:mutable)
+            (: next int #:mutable))))
+
+;; An entry on the bracket stack: a [ or a ![.
+(type
+  (: Bracket (Record
+              (: node int)
+              (: previous int)
+              (: previous-delim int)
+              ;; The position of the [.
+              (: index int)
+              (: image bool)
+              (: active bool #:mutable)
+              (: bracket-after bool #:mutable))))
+
+;; What the inline phase needs from the whole document.
+(type
+  (: InlineContext (Record
+                    (: blocks BlockState)
+                    ;; The footnotes referred to: each label's number, and the
+                    ;; labels in the order of their numbers.
+                    (: note-numbers (TransientMap string int))
+                    (: note-order (TransientVec string)))))
+
+(: (-> BlockState InlineContext))
+(defun (make-inline-context st)
+  (InlineContext (blocks st) (note-numbers (transientmap-empty)) (note-order (transientvec-empty))))
+
+;; The state of the inline phase for one paragraph.
+(type
+  (: InlineState (Record
+                  (: cx InlineContext)
+                  (: s ByteString)
+                  (: pos int #:mutable)
+                  (: nodes (TransientVec INode))
+                  (: delims (TransientVec Delim))
+                  (: top-delim int #:mutable)
+                  (: brackets (TransientVec Bracket))
+                  (: top-bracket int #:mutable))))
+
+(: (-> InlineState int INode))
+(defun (inode is i) (transientvec-ref (record-ref is nodes) i))
+
+(: (-> InlineState int Delim))
+(defun (delim is i) (transientvec-ref (record-ref is delims) i))
+
+(: (-> InlineState int Bracket))
+(defun (bracket is i) (transientvec-ref (record-ref is brackets) i))
+
+;; Makes an inline that is in no tree yet, and returns its index.
+(: (-> InlineState int string string string int int))
+(defun (new-inline! is k text dest title number)
+  (def nodes (record-ref is nodes))
+  (def i (transientvec-length nodes))
+  (transientvec-add! nodes (INode (kind k) (text text) (dest dest) (title title) (number number)
+                                  (parent -1) (first -1) (last -1) (prev -1) (next -1)))
+  i)
+
+;; Makes `c` the last child of `p`.
+(: (-> InlineState int int void))
+(defun (append-child! is p c)
+  (unlink! is c)
+  (def pn (inode is p))
+  (def cn (inode is c))
+  (record-set! cn (parent p) (prev (record-ref pn last)) (next -1))
+  (if (>= (record-ref pn last) 0)
+      (let ((rs (inode is (record-ref pn last)))) (record-set! rs (next c)))
+      (record-set! pn (first c)))
+  (record-set! pn (last c)))
+
+;; Takes `c` out of its parent.
+(: (-> InlineState int void))
+(defun (unlink! is c)
+  (def cn (inode is c))
+  (def p (record-ref cn parent))
+  (when (>= p 0)
+    (def pn (inode is p))
+    (def prev (record-ref cn prev))
+    (def next (record-ref cn next))
+    (if (>= prev 0) (let ((rs (inode is prev))) (record-set! rs (next next))) (record-set! pn (first next)))
+    (if (>= next 0) (let ((rs (inode is next))) (record-set! rs (prev prev))) (record-set! pn (last prev)))
+    (record-set! cn (parent -1) (prev -1) (next -1))))
+
+;; Puts `b` right after `a`, in `a`'s parent.
+(: (-> InlineState int int void))
+(defun (insert-after! is a b)
+  (unlink! is b)
+  (def an (inode is a))
+  (def p (record-ref an parent))
+  (def next (record-ref an next))
+  (let ((rs (inode is b))) (record-set! rs (parent p) (prev a) (next next)))
+  (record-set! an (next b))
+  (if (>= next 0)
+      (let ((rs (inode is next))) (record-set! rs (prev b)))
+      (let ((rs (inode is p))) (record-set! rs (last b)))))
+
+;; Adds a text to the paragraph, and returns it.
+(: (-> InlineState string int))
+(defun (add-text! is text)
+  (def t (new-inline! is I-TEXT text "" "" 0))
+  (append-child! is 0 t)
+  t)
+
+;; Adds an inline of kind `k` with no text to the paragraph.
+(: (-> InlineState int void))
+(defun (add-inline! is k)
+  (append-child! is 0 (new-inline! is k "" "" "" 0)))
+
+;; ---------------------------------------------------------------------------
+;; Reading inlines
+;; ---------------------------------------------------------------------------
+
+;; The inlines of a paragraph's or a heading's text.
+(: (-> InlineContext ByteString (Vec MdInline)))
+(defun (parse-inlines cx text)
+  (def s (trim-heading-content text))
+  (def is (InlineState (cx cx) (s s) (pos 0) (nodes (transientvec-empty))
+                       (delims (transientvec-empty)) (top-delim -1)
+                       (brackets (transientvec-empty)) (top-bracket -1)))
+  (ignore (new-inline! is I-ROOT "" "" "" 0))
+  (let go ()
+    (when (< (record-ref is pos) (bytestring-length s))
+      (parse-inline! is)
+      (go)))
+  (process-emphasis! is -1)
+  (def ext (record-ref (record-ref cx blocks) ext))
+  (convert-inlines is 0 (record-ref ext autolinks)))
+
+(: (-> InlineState Extensions))
+(defun (extensions is) (record-ref (record-ref (record-ref is cx) blocks) ext))
+
+;; Reads one inline at the position.
+(: (-> InlineState void))
+(defun (parse-inline! is)
+  (def s (record-ref is s))
+  (def pos (record-ref is pos))
+  (def c (at s pos))
+  (def handled
+    (cond
+      ((= c 10) (parse-newline! is))
+      ((= c (char->int #\\)) (parse-backslash! is))
+      ((= c (char->int #\`)) (parse-backticks! is))
+      ((or (= c (char->int #\*)) (= c (char->int #\_))) (handle-delim! is c))
+      ((and (= c (char->int #\~)) (record-ref (extensions is) strikethrough)) (handle-delim! is c))
+      ((= c (char->int #\[)) (parse-open-bracket! is))
+      ((= c (char->int #\!)) (parse-bang! is))
+      ((= c (char->int #\])) (parse-close-bracket! is))
+      ((= c (char->int #\<)) (or (parse-autolink! is) (parse-html-inline! is)))
+      ((= c (char->int #\&)) (parse-entity! is))
+      (else (parse-string! is))))
+  (unless handled
+    (record-set! is (pos (+ pos 1)))
+    (ignore (add-text! is (text-of s pos (+ pos 1))))))
+
+;; Whether `b` starts something other than text.
+(: (-> InlineState int bool))
+(defun (special? is b)
+  (or (= b 10) (= b (char->int #\\)) (= b (char->int #\`)) (= b (char->int #\*))
+      (= b (char->int #\_)) (= b (char->int #\[)) (= b (char->int #\!)) (= b (char->int #\]))
+      (= b (char->int #\<)) (= b (char->int #\&))
+      (and (= b (char->int #\~)) (record-ref (extensions is) strikethrough))))
+
+;; A run of text up to the next byte that may be special.
+(: (-> InlineState bool))
+(defun (parse-string! is)
+  (def s (record-ref is s))
+  (def from (record-ref is pos))
+  (def end (let go ((k from))
+             (def b (at s k))
+             (if (or (= b -1) (special? is b)) k (go (+ k 1)))))
+  (cond
+    ((= end from) #f)
+    (else
+     (record-set! is (pos end))
+     (ignore (add-text! is (text-of s from end)))
+     #t)))
+
+;; A newline: a hard break after two spaces, else a soft one. The spaces at
+;; the end of the line and at the start of the next are not text.
+(: (-> InlineState bool))
+(defun (parse-newline! is)
+  (def s (record-ref is s))
+  (record-set! is (pos (+ (record-ref is pos) 1)))
+  (def last (record-ref (inode is 0) last))
+  (def hard
+    (cond
+      ((and (>= last 0) (= (record-ref (inode is last) kind) I-TEXT)
+            (string-ends-with? (record-ref (inode is last) text) " "))
+       (def t (record-ref (inode is last) text))
+       (def h (string-ends-with? t "  "))
+       (let ((rs (inode is last))) (record-set! rs (text (string-trim-right t))))
+       h)
+      (else #f)))
+  (add-inline! is (if hard I-HARD I-SOFT))
+  (record-set! is (pos (skip-spaces s (record-ref is pos))))
+  #t)
+
+;; A backslash: before a newline a hard break, before ASCII punctuation
+;; that character as text, else itself.
+(: (-> InlineState bool))
+(defun (parse-backslash! is)
+  (def s (record-ref is s))
+  (def pos (+ (record-ref is pos) 1))
+  (def next (at s pos))
+  (cond
+    ((= next 10) (record-set! is (pos (+ pos 1))) (add-inline! is I-HARD))
+    ((ascii-punctuation? next) (record-set! is (pos (+ pos 1))) (ignore (add-text! is (text-of s pos (+ pos 1)))))
+    (else (record-set! is (pos pos)) (ignore (add-text! is "\\"))))
+  #t)
+
+;; A code span: a run of backticks, and the next run of as many. Newlines
+;; are spaces, and one space at each end goes when both ends have one and
+;; the code is not only spaces.
+(: (-> InlineState bool))
+(defun (parse-backticks! is)
+  (def s (record-ref is s))
+  (def from (record-ref is pos))
+  (def ticks (run-length s from (char->int #\`)))
+  (def after (+ from ticks))
+  (def close
+    (let go ((k after))
+      (def b (at s k))
+      (cond
+        ((= b -1) -1)
+        ((= b (char->int #\`))
+         (def run (run-length s k b))
+         (if (= run ticks) k (go (+ k run))))
+        (else (go (+ k 1))))))
+  (cond
+    ((< close 0)
+     (record-set! is (pos after))
+     (ignore (add-text! is (text-of s from after))))
+    (else
+     ;; A line ending is a space. One space is stripped from each end when
+     ;; both ends are spaces and the span is not only spaces.
+     (def space? (fun (b) (or (= b 32) (= b 10))))
+     (def strip
+       (and (>= (- close after) 2) (space? (at s after)) (space? (at s (- close 1)))
+            (some? {finding k (:for k (range after close)) (:when (not (space? (at s k))))})))
+     (def from-byte (if strip (+ after 1) after))
+     (def to-byte (if strip (- close 1) close))
+     (record-set! is (pos (+ close ticks)))
+     (append-child! is 0 (new-inline! is I-CODE (code-text s from-byte to-byte) "" "" 0))))
+  #t)
+
+;; The text of bytes `from` to `to` of `s`, with each newline a space.
+(: (-> ByteString int int string))
+(defun (code-text s from to)
+  (def span (bytestring-slice s from to))
+  (cond
+    ((none? (search-byte span 10)) (text-of s from to))
+    (else
+     (def b (bytestringbuilder-empty))
+     (loop (:for k (range from to))
+           (:do (add-byte! b (let ((x (at s k))) (if (= x 10) 32 x)))))
+     (bytestring->string/lossy (bytestringbuilder->bytestring b)))))
+
+;; An entity, as the text it stands for.
+(: (-> InlineState bool))
+(defun (parse-entity! is)
+  (match (scan-entity (record-ref is s) (record-ref is pos))
+    ((Some (Tuple t next)) (record-set! is (pos next)) (ignore (add-text! is t)) #t)
+    (None #f)))
+
+;; Raw HTML.
+(: (-> InlineState bool))
+(defun (parse-html-inline! is)
+  (def s (record-ref is s))
+  (def from (record-ref is pos))
+  (match (scan-html-inline s from)
+    ((Some end)
+     (record-set! is (pos end))
+     (append-child! is 0 (new-inline! is I-HTML (text-of s from end) "" "" 0))
+     #t)
+    (None #f)))
+
+;; An autolink: <scheme:...> or <email>.
+(: (-> InlineState bool))
+(defun (parse-autolink! is)
+  (def s (record-ref is s))
+  (def from (record-ref is pos))
+  (match (scan-autolink s from)
+    ((Some (Tuple dest end))
+     (def text (text-of s (+ from 1) (- end 1)))
+     (record-set! is (pos end))
+     (def link (new-inline! is I-LINK "" dest "" 0))
+     (append-child! is link (new-inline! is I-TEXT text "" "" 0))
+     (append-child! is 0 link)
+     #t)
+    (None #f)))
+
+;; The punctuation of the local part of an email address in an autolink
+;; <...>.
+(: ByteString)
+(def email-local-bytes (string->bytestring ".!#$%&'*+/=?^_`{|}~-"))
+
+;; The destination of an autolink at `i` of `s`, and the position after
+;; it: a URI with a scheme of 2 to 32 characters and no spaces or < >, or
+;; an email address, which gets mailto:.
+(: (-> ByteString int (Option (Tuple string int))))
+(defun (scan-autolink s i)
+  (with-return ret
+    (unless (at? s i #\<) (ret None))
+    ;; A URI.
+    (def scheme-end
+      (if (ascii-letter? (at s (+ i 1)))
+          (let go ((k (+ i 2)))
+            (def b (at s k))
+            (if (or (ascii-alphanumeric? b) (= b (char->int #\+)) (= b (char->int #\.))
+                    (= b (char->int #\-)))
+                (go (+ k 1))
+                k))
+          -1))
+    (when (and (> scheme-end 0) (>= (- scheme-end i 1) 2) (<= (- scheme-end i 1) 32)
+               (at? s scheme-end #\:))
+      (def end (let go ((k (+ scheme-end 1)))
+                 (def b (at s k))
+                 (cond
+                   ((= b (char->int #\>)) k)
+                   ((or (= b -1) (<= b 32) (= b (char->int #\<))) -1)
+                   (else (go (+ k 1))))))
+      (when (> end 0) (ret (Some (Tuple (text-of s (+ i 1) end) (+ end 1))))))
+    ;; An email address.
+    (def at-sign
+      (let go ((k (+ i 1)))
+        (def b (at s k))
+        (if (or (ascii-alphanumeric? b)
+                (and (> b 32) (< b 127) (byte-in? b email-local-bytes)))
+            (go (+ k 1))
+            k)))
+    (unless (and (> at-sign (+ i 1)) (at? s at-sign #\@)) (ret None))
+    (def end
+      (let go ((k (+ at-sign 1)))
+        ;; A label: a letter or digit, then up to 62 letters, digits or -,
+        ;; not ending in -.
+        (def label-end (let run ((j k)) (if (or (ascii-alphanumeric? (at s j)) (= (at s j) (char->int #\-))) (run (+ j 1)) j)))
+        (cond
+          ((or (= label-end k) (not (ascii-alphanumeric? (at s k)))
+               (> (- label-end k) 63) (= (at s (- label-end 1)) (char->int #\-)))
+           -1)
+          ((at? s label-end #\.) (go (+ label-end 1)))
+          ((at? s label-end #\>) label-end)
+          (else -1))))
+    (if (> end 0)
+        (Some (Tuple (str "mailto:" (text-of s (+ i 1) end)) (+ end 1)))
+        None)))
+
+;; ---------------------------------------------------------------------------
+;; Emphasis
+;; ---------------------------------------------------------------------------
+
+;; A run of *, _ or ~: a text, and a delimiter when it can open or close.
+;; ~ is strikethrough, in runs of one or two.
+(: (-> InlineState int bool))
+(defun (handle-delim! is c)
+  (def s (record-ref is s))
+  (def from (record-ref is pos))
+  (def count (run-length s from c))
+  (def end (+ from count))
+  (def before (if (= from 0) #\newline (char-at s (char-start-before s from))))
+  (def after (char-at s end))
+  (def after-space (unicode-whitespace? after))
+  (def after-punct (unicode-punctuation? after))
+  (def before-space (unicode-whitespace? before))
+  (def before-punct (unicode-punctuation? before))
+  (def left (and (not after-space) (or (not after-punct) before-space before-punct)))
+  (def right (and (not before-space) (or (not before-punct) after-space after-punct)))
+  (def can-open (if (= c (char->int #\_)) (and left (or (not right) before-punct)) left))
+  (def can-close (if (= c (char->int #\_)) (and right (or (not left) after-punct)) right))
+  (record-set! is (pos end))
+  (def t (add-text! is (text-of s from end)))
+  (when (and (or can-open can-close)
+             (or (not (= c (char->int #\~))) (<= count 2)))
+    (def delims (record-ref is delims))
+    (def d (transientvec-length delims))
+    (def top (record-ref is top-delim))
+    (transientvec-add! delims (Delim (node t) (ch c) (count count) (original count)
+                                     (can-open can-open) (can-close can-close)
+                                     (previous top) (next -1)))
+    (when (>= top 0) (let ((rs (delim is top))) (record-set! rs (next d))))
+    (record-set! is (top-delim d)))
+  #t)
+
+;; Takes delimiter `d` off the stack.
+(: (-> InlineState int void))
+(defun (remove-delim! is d)
+  (def dd (delim is d))
+  (def prev (record-ref dd previous))
+  (def next (record-ref dd next))
+  (when (>= prev 0) (let ((rs (delim is prev))) (record-set! rs (next next))))
+  (if (< next 0)
+      (record-set! is (top-delim prev))
+      (let ((rs (delim is next))) (record-set! rs (previous prev)))))
+
+;; Matches the closers above `bottom` (-1 for the bottom of the stack)
+;; with their openers, makes the emphasis, and takes the delimiters above
+;; `bottom` off the stack.
+(: (-> InlineState int void))
+(defun (process-emphasis! is bottom)
+  ;; For each kind of closer, the lowest opener worth trying: the openers
+  ;; at and below it did not match an earlier closer of that kind.
+  (def openers-bottom (make-array 15 #:fill bottom))
+  ;; The first closer above the bottom.
+  (def first
+    (let go ((d (record-ref is top-delim)) (above -1))
+      (if (or (< d 0) (= d bottom)) above (go (record-ref (delim is d) previous) d))))
+  (let go ((closer first))
+    (when (>= closer 0)
+      (def cd (delim is closer))
+      (cond
+        ((not (record-ref cd can-close)) (go (record-ref cd next)))
+        (else
+         (def c (record-ref cd ch))
+         (def bottom-index
+           (cond
+             ((= c (char->int #\~)) 14)
+             (else (+ (if (= c (char->int #\_)) 2 8)
+                      (if (record-ref cd can-open) 3 0)
+                      (% (record-ref cd original) 3)))))
+         (def opener
+           (let look ((o (record-ref cd previous)))
+             (cond
+               ((or (< o 0) (= o bottom) (= o (array-ref openers-bottom bottom-index))) -1)
+               (else
+                (def od (delim is o))
+                (def odd-match
+                  (and (or (record-ref cd can-open) (record-ref od can-close))
+                       (not (= (% (record-ref cd original) 3) 0))
+                       (= (% (+ (record-ref od original) (record-ref cd original)) 3) 0)))
+                (if (and (= (record-ref od ch) c) (record-ref od can-open)
+                         (if (= c (char->int #\~))
+                             (= (record-ref od count) (record-ref cd count))
+                             (not odd-match)))
+                    o
+                    (look (record-ref od previous)))))))
+         (cond
+           ((< opener 0)
+            (array-set! openers-bottom bottom-index (record-ref cd previous))
+            (def next (record-ref cd next))
+            (unless (record-ref cd can-open) (remove-delim! is closer))
+            (go next))
+           (else
+            (def od (delim is opener))
+            (def use (cond
+                       ((= c (char->int #\~)) (record-ref cd count))
+                       ((and (>= (record-ref cd count) 2) (>= (record-ref od count) 2)) 2)
+                       (else 1)))
+            (def opener-node (record-ref od node))
+            (def closer-node (record-ref cd node))
+            (record-set! od (count (- (record-ref od count) use)))
+            (record-set! cd (count (- (record-ref cd count) use)))
+            (def on (inode is opener-node))
+            (def cn (inode is closer-node))
+            (record-set! on (text (string-drop-right (record-ref on text) use)))
+            (record-set! cn (text (string-drop-right (record-ref cn text) use)))
+            (def k (cond ((= c (char->int #\~)) I-STRIKE) ((= use 1) I-EMPH) (else I-STRONG)))
+            (def emph (new-inline! is k "" "" "" 0))
+            (let move ((t (record-ref on next)))
+              (when (and (>= t 0) (not (= t closer-node)))
+                (def next (record-ref (inode is t) next))
+                (append-child! is emph t)
+                (move next)))
+            (insert-after! is opener-node emph)
+            ;; The delimiters between the two are text now.
+            (unless (= (record-ref od next) closer)
+              (record-set! od (next closer))
+              (record-set! cd (previous opener)))
+            (when (= (record-ref od count) 0)
+              (unlink! is opener-node)
+              (remove-delim! is opener))
+            (cond
+              ((= (record-ref cd count) 0)
+               (unlink! is closer-node)
+               (def next (record-ref cd next))
+               (remove-delim! is closer)
+               (go next))
+              (else (go closer)))))))))
+  (let go ()
+    (def top (record-ref is top-delim))
+    (when (and (>= top 0) (not (= top bottom)))
+      (remove-delim! is top)
+      (go))))
+
+;; ---------------------------------------------------------------------------
+;; Links
+;; ---------------------------------------------------------------------------
+
+(: (-> InlineState int int bool void))
+(defun (add-bracket! is node index image)
+  (def top (record-ref is top-bracket))
+  (when (>= top 0) (let ((rs (bracket is top))) (record-set! rs (bracket-after #t))))
+  (def brackets (record-ref is brackets))
+  (def b (transientvec-length brackets))
+  (transientvec-add! brackets (Bracket (node node) (previous top) (previous-delim (record-ref is top-delim))
+                                       (index index) (image image) (active #t) (bracket-after #f)))
+  (record-set! is (top-bracket b)))
+
+(: (-> InlineState void))
+(defun (remove-bracket! is)
+  (record-set! is (top-bracket (record-ref (bracket is (record-ref is top-bracket)) previous))))
+
+(: (-> InlineState bool))
+(defun (parse-open-bracket! is)
+  (def from (record-ref is pos))
+  (record-set! is (pos (+ from 1)))
+  (add-bracket! is (add-text! is "[") from #f)
+  #t)
+
+(: (-> InlineState bool))
+(defun (parse-bang! is)
+  (def s (record-ref is s))
+  (def from (record-ref is pos))
+  (cond
+    ((at? s (+ from 1) #\[)
+     (record-set! is (pos (+ from 2)))
+     (add-bracket! is (add-text! is "![") (+ from 1) #t))
+    (else
+     (record-set! is (pos (+ from 1)))
+     (ignore (add-text! is "!"))))
+  #t)
+
+;; The number of the footnote with `label`, given at its first reference.
+(: (-> InlineContext string int))
+(defun (note-number! cx label)
+  (match (transientmap-try-ref (record-ref cx note-numbers) label)
+    ((Some n) n)
+    (None
+     (def n (+ (transientvec-length (record-ref cx note-order)) 1))
+     (transientmap-set! (record-ref cx note-numbers) label n)
+     (transientvec-add! (record-ref cx note-order) label)
+     n)))
+
+;; An inline link after the ] at `i`: (destination "title"). Returns the
+;; destination, the title, and the position after the ).
+(: (-> ByteString int (Option (Tuple string string int))))
+(defun (scan-inline-link s i)
+  (with-return ret
+    (unless (at? s i #\() (ret None))
+    (def (Some (Tuple dest after-dest)) (scan-link-destination s (skip-spnl s (+ i 1))) :leave-with None)
+    (def k (skip-spnl s after-dest))
+    (def (Tuple title close)
+      (match (if (> k after-dest) (scan-link-title s k) None)
+        ((Some (Tuple t after-title)) (Tuple t (skip-spnl s after-title)))
+        (None (Tuple "" k))))
+    (if (at? s close #\)) (Some (Tuple dest title (+ close 1))) None)))
+
+;; Replaces the bracket `opener` and the text after it with a reference to
+;; the footnote `label`.
+(: (-> InlineState Bracket string bool))
+(defun (add-footnote-ref! is opener label)
+  (def n (note-number! (record-ref is cx) label))
+  (def opener-node (record-ref opener node))
+  (let drop ((t (record-ref (inode is opener-node) next)))
+    (when (>= t 0)
+      (def next (record-ref (inode is t) next))
+      (unlink! is t)
+      (drop next)))
+  (process-emphasis! is (record-ref opener previous-delim))
+  (remove-bracket! is)
+  (unlink! is opener-node)
+  (append-child! is 0 (new-inline! is I-NOTE "" "" "" n))
+  #t)
+
+;; A ]: a link or an image when it closes a bracket with an inline link or
+;; a reference after it, a footnote reference, or else text.
+(: (-> InlineState bool))
+(defun (parse-close-bracket! is)
+  (with-return ret
+    (def s (record-ref is s))
+    (def start (+ (record-ref is pos) 1))
+    (record-set! is (pos start))
+    (def top (record-ref is top-bracket))
+    (when (< top 0) (ret (let () (ignore (add-text! is "]")) #t)))
+    (def opener (bracket is top))
+    (unless (record-ref opener active)
+      (ret (let () (ignore (add-text! is "]")) (remove-bracket! is) #t)))
+    (def image (record-ref opener image))
+    (def cx (record-ref is cx))
+    (def refs (record-ref (record-ref cx blocks) refs))
+    (def notes (record-ref (record-ref cx blocks) notes))
+    ;; A footnote reference: [^label], with a definition.
+    (def inner (text-of s (+ (record-ref opener index) 1) (- start 1)))
+    (when (and (record-ref (extensions is) footnotes) (not image)
+               (string-starts-with? inner "^")
+               (transientmap-contains? notes (normalize-label (string-drop inner 1))))
+      (ret (add-footnote-ref! is opener (normalize-label (string-drop inner 1)))))
+    (def found
+      (match (scan-inline-link s start)
+        ((Some (Tuple dest title next)) (record-set! is (pos next)) (Some (Tuple dest title)))
+        (None
+         (def label-end (scan-link-label s start))
+         (def label
+           (cond
+             ((> (- label-end start) 2) (Some (text-of s (+ start 1) (- label-end 1))))
+             ((not (record-ref opener bracket-after)) (Some inner))
+             (else None)))
+         (when (> label-end 0) (record-set! is (pos label-end)))
+         (match label
+           ((Some l) (transientmap-try-ref refs (normalize-label l)))
+           (None None)))))
+    (match found
+      ((Some (Tuple dest title))
+       (def link (new-inline! is (if image I-IMAGE I-LINK) "" dest title 0))
+       (def opener-node (record-ref opener node))
+       (let move ((t (record-ref (inode is opener-node) next)))
+         (when (>= t 0)
+           (def next (record-ref (inode is t) next))
+           (append-child! is link t)
+           (move next)))
+       (append-child! is 0 link)
+       (process-emphasis! is (record-ref opener previous-delim))
+       (remove-bracket! is)
+       (unlink! is opener-node)
+       ;; No links in links: the openers before this one cannot make links.
+       (unless image
+         (let off ((b (record-ref is top-bracket)))
+           (when (>= b 0)
+             (unless (record-ref (bracket is b) image) (let ((rs (bracket is b))) (record-set! rs (active #f))))
+             (off (record-ref (bracket is b) previous)))))
+       #t)
+      (None
+       (remove-bracket! is)
+       (record-set! is (pos start))
+       (ignore (add-text! is "]"))
+       #t))))
+
+;; ---------------------------------------------------------------------------
+;; The public tree
+;; ---------------------------------------------------------------------------
+
+;; The children of inline `i`, with each run of texts one text.
+;;
+;; - `links` is whether the texts get the extended autolinks. The texts of
+;;   a link or an image do not.
+;; - A run of one text keeps that text's string.
+(: (-> InlineState int bool (Vec MdInline)))
+(defun (convert-inlines is i links)
+  (def out (vecbuilder-empty))
+  (def pending (stringbuilder-empty))
+  (def/mutable run-length 0)
+  (def/mutable run-first "")
+  (def emit!
+    (fun (t) (if links (autolink-add! out t) (vecbuilder-add! out (MdText t)))))
+  (def flush!
+    (fun ()
+      (cond
+        ((= run-length 1) (emit! run-first))
+        ((> run-length 1)
+         (emit! (stringbuilder->string pending))
+         (stringbuilder-clear! pending))
+        (else unit))
+      (set! run-length 0)))
+  (let go ((c (record-ref (inode is i) first)))
+    (when (>= c 0)
+      (def n (inode is c))
+      (def k (record-ref n kind))
+      (cond
+        ((= k I-TEXT)
+         (cond
+           ((= run-length 0) (set! run-first (record-ref n text)))
+           ((= run-length 1)
+            (stringbuilder-add-string! pending run-first)
+            (stringbuilder-add-string! pending (record-ref n text)))
+           (else (stringbuilder-add-string! pending (record-ref n text))))
+         (set! run-length (+ run-length 1)))
+        (else
+         (flush!)
+         (vecbuilder-add! out
+           (cond
+             ((= k I-SOFT) MdSoftBreak)
+             ((= k I-HARD) MdHardBreak)
+             ((= k I-CODE) (MdCode (record-ref n text)))
+             ((= k I-HTML) (MdHtml (record-ref n text)))
+             ((= k I-EMPH) (MdEmph (convert-inlines is c links)))
+             ((= k I-STRONG) (MdStrong (convert-inlines is c links)))
+             ((= k I-STRIKE) (MdStrike (convert-inlines is c links)))
+             ((= k I-LINK) (MdLink (record-ref n dest) (record-ref n title) (convert-inlines is c #f)))
+             ((= k I-IMAGE) (MdImage (record-ref n dest) (record-ref n title) (convert-inlines is c #f)))
+             (else (MdFootnoteRef (record-ref n number)))))))
+      (go (record-ref n next))))
+  (flush!)
+  (vecbuilder->vec out))
+
+;; The footnotes that are referred to, in the order of their numbers. A
+;; footnote that a footnote refers to comes after them.
+(: (-> InlineContext (Vec (Tuple int (Vec MdBlock)))))
+(defun (convert-footnotes cx)
+  (def st (record-ref cx blocks))
+  (def out (vecbuilder-empty))
+  (let go ((k 0))
+    (when (< k (transientvec-length (record-ref cx note-order)))
+      (def label (transientvec-ref (record-ref cx note-order) k))
+      ;; Every label has a definition: a reference is made only for one.
+      (match (transientmap-try-ref (record-ref st notes) label)
+        ((Some node-index) (vecbuilder-add! out (Tuple (+ k 1) (convert-children cx node-index))))
+        (None unit))
+      (go (+ k 1))))
+  (vecbuilder->vec out))
+
+;; ---------------------------------------------------------------------------
+;; Autolinks of GitHub Flavored Markdown
+;; ---------------------------------------------------------------------------
+
+;; A text, with its addresses as links.
+;;
+;; - An address starts at the start of the text, after whitespace, or after
+;;   *, _, ~ or (. It is www. and a domain, or http://, https:// or ftp://
+;;   and a domain, then anything up to whitespace or <.
+;; - Its end is cut back by `trim-address`.
+;; - An email address is a local part, @, and a domain with a period.
+;;
+;; The inlines are added to `out`. Every address has a period, so a text
+;; without one is added at once. A text without an address is added as it
+;; is, without a copy.
+(: (-> (VecBuilder MdInline) string void))
+(defun (autolink-add! out t)
+  (cond
+    ((not (string-contains? t ".")) (vecbuilder-add! out (MdText t)))
+    (else
+     (def s (string->bytestring t))
+     (def len (bytestring-length s))
+     (def emails (some? (search-byte s (char->int #\@))))
+     (let go ((i 0) (from 0))
+       (cond
+         ((>= i len)
+          (cond
+            ((= from 0) (vecbuilder-add! out (MdText t)))
+            ((< from len) (vecbuilder-add! out (MdText (text-of s from len))))
+            (else unit)))
+         (else
+          (def b (ascii-lower (at s i)))
+          (def prev (at s (- i 1)))
+          (def found
+            (cond
+              ((and (or (= b (char->int #\w)) (= b (char->int #\h)) (= b (char->int #\f)))
+                    (address-boundary? prev))
+               (address-at s i prev emails))
+              ((and emails (email-local? b) (not (email-local? prev))) (address-email s i))
+              (else None)))
+          (match found
+            ((Some (Tuple end href))
+             (when (< from i) (vecbuilder-add! out (MdText (text-of s from i))))
+             (vecbuilder-add! out (MdLink href "" [(MdText (text-of s i end))]))
+             (go end end))
+            (None (go (+ i 1) from)))))))))
+
+;; Whether an address may start after the byte `prev`: at the start of the
+;; text (-1), after whitespace, or after *, _, ~ or (.
+(: (-> int bool))
+(defun (address-boundary? prev)
+  (or (= prev -1) (ascii-whitespace? prev) (= prev (char->int #\*)) (= prev (char->int #\_))
+      (= prev (char->int #\~)) (= prev (char->int #\())))
+
+;; The schemes of a URL that is an extended autolink.
+(: (Vec string))
+(def autolink-schemes ["http://" "https://" "ftp://"])
+
+;; The www. or scheme address at `i` of `s`, after a boundary: its end and
+;; its destination. Falls back to an email address. `emails` is whether
+;; `s` has an @.
+(: (-> ByteString int int bool (Option (Tuple int string))))
+(defun (address-at s i prev emails)
+  (def scheme {finding p (:for p autolink-schemes) (:when (starts-with-ci? s i p))})
+  (def url
+    (cond
+      ((starts-with-ci? s i "www.")
+       (match (url-end s i i)
+         ((Some end) (Some (Tuple end (str "http://" (text-of s i end)))))
+         (None None)))
+      ((some? scheme)
+       (match (url-end s i (+ i (string-length (option-ref-or scheme ""))))
+         ((Some end) (Some (Tuple end (text-of s i end))))
+         (None None)))
+      (else None)))
+  (if (and (none? url) emails (not (email-local? prev)))
+      (address-email s i)
+      url))
+
+;; The email address that starts at `i` of `s`: its end and its
+;; destination.
+(: (-> ByteString int (Option (Tuple int string))))
+(defun (address-email s i)
+  (match (email-end s i)
+    ((Some end) (Some (Tuple end (str "mailto:" (text-of s i end)))))
+    (None None)))
+
+;; The end of a URL at `start` of `s` whose domain is at `domain`, or None
+;; when the domain is not valid: segments of letters, digits, _ and -,
+;; with a period between them, and no _ in the last two.
+(: (-> ByteString int int (Option int)))
+(defun (url-end s start domain)
+  (def domain-end
+    (let go ((k domain))
+      (def b (at s k))
+      (if (or (ascii-alphanumeric? b) (= b (char->int #\_)) (= b (char->int #\-)) (= b (char->int #\.)))
+          (go (+ k 1))
+          k)))
+  ;; A trailing . is the end of a sentence, not of the domain.
+  (def name-end (let go ((k domain-end)) (if (and (> k domain) (at? s (- k 1) #\.)) (go (- k 1)) k)))
+  (def segments (string-split (text-of s domain name-end) "."))
+  (def count (vec-length segments))
+  (cond
+    ((or (< count 2) (some? {finding #t (:for g segments) (:when (string-empty? g))})
+         (string-contains? (vec-ref segments (- count 1)) "_")
+         (string-contains? (vec-ref segments (- count 2)) "_"))
+     None)
+    (else
+     (def end (let go ((k domain-end))
+                (def b (at s k))
+                (if (or (= b -1) (ascii-whitespace? b) (= b (char->int #\<))) k (go (+ k 1)))))
+     (def trimmed (trim-address s start end))
+     (if (> trimmed start) (Some trimmed) None))))
+
+;; The punctuation that is not the last character of an address.
+(: ByteString)
+(def address-trailing-bytes (string->bytestring "?!.,:*_~"))
+
+;; The end of an address from `start` to `end` of `s`, without what does
+;; not belong to it: trailing ?, !, ., ,, :, *, _ and ~; a ) that has no (;
+;; and an entity-like &name; at the end.
+(: (-> ByteString int int int))
+(defun (trim-address s start end)
+  (def last (at s (- end 1)))
+  (cond
+    ((<= end start) end)
+    ((byte-in? last address-trailing-bytes) (trim-address s start (- end 1)))
+    ((and (= last (char->int #\)))
+          (let ((t (text-of s start end)))
+            (> (vec-length (string-split t ")")) (vec-length (string-split t "(")))))
+     (trim-address s start (- end 1)))
+    ((= last (char->int #\;))
+     (def amp (let go ((k (- end 2)))
+                (if (and (> k start) (ascii-alphanumeric? (at s k))) (go (- k 1)) k)))
+     (if (and (at? s amp #\&) (< amp (- end 2)))
+         (trim-address s start amp)
+         end))
+    (else end)))
+
+;; A character of an email address's local part.
+(: (-> int bool))
+(defun (email-local? b)
+  (or (ascii-alphanumeric? b) (= b (char->int #\.)) (= b (char->int #\-))
+      (= b (char->int #\_)) (= b (char->int #\+))))
+
+;; The end of an email address at `start` of `s`, or None.
+(: (-> ByteString int (Option int)))
+(defun (email-end s start)
+  (def at-sign (let go ((k start)) (if (email-local? (at s k)) (go (+ k 1)) k)))
+  (cond
+    ((not (at? s at-sign #\@)) None)
+    (else
+     (def raw-end
+       (let go ((k (+ at-sign 1)))
+         (def b (at s k))
+         (if (or (ascii-alphanumeric? b) (= b (char->int #\-)) (= b (char->int #\_)) (= b (char->int #\.)))
+             (go (+ k 1))
+             k)))
+     ;; A trailing . is not part of the address.
+     (def end (let go ((k raw-end)) (if (and (> k (+ at-sign 1)) (at? s (- k 1) #\.)) (go (- k 1)) k)))
+     (def domain (text-of s (+ at-sign 1) end))
+     (def last (at s (- end 1)))
+     (cond
+       ((or (= end (+ at-sign 1)) (not (string-contains? domain "."))
+            (= last (char->int #\-)) (= last (char->int #\_))
+            (some? {finding #t (:for g (string-split domain ".")) (:when (string-empty? g))}))
+        None)
+       (else (Some end))))))

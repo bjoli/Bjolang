@@ -1,0 +1,264 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; text/markdown.bjo — the module (text markdown): CommonMark, with the
+;; extensions of GitHub Flavored Markdown, read into a tree.
+;;
+;; - `markdown-parse` reads a document into an `MdDocument`. Each extension
+;;   is a keyword, on by default: tables, task lists, strikethrough,
+;;   autolinks, footnotes and YAML front matter.
+;; - `markdown->html` writes a document as HTML, as the CommonMark spec's
+;;   examples have it.
+;;
+;; The parser is the two-phase algorithm of the CommonMark spec's appendix,
+;; as commonmark.js has it:
+;;
+;; - The block phase reads one line at a time, and keeps a tree of open
+;;   blocks. A line continues the open blocks it matches, may start new
+;;   ones, and then adds its text to the last open block. See
+;;   markdown-blocks.protobjo.
+;; - The inline phase reads the text of each paragraph and heading, with a
+;;   stack of delimiters for emphasis and a stack of brackets for links. See
+;;   markdown-inlines.protobjo.
+;;
+;; Both phases work on the UTF-8 bytes of the input, with positions as ints.
+;; Every character that Markdown gives a meaning is ASCII, so a position
+;; that the parser cuts at is always at a character boundary.
+
+(export
+  ;; The tree, with the constructors of its types
+  MdAlign MdInline MdList MdTable MdBlock MdDocument
+  ;; Reading and writing
+  markdown-parse markdown->html inlines->plain-text)
+
+(import (std prelude))
+(import (std unicode casefold))
+
+(:doc #:file "markdown.bjodoc")
+
+;; ---------------------------------------------------------------------------
+;; The tree
+;; ---------------------------------------------------------------------------
+
+;; A table column's alignment, from its delimiter row: `:--`, `:-:`, `--:`.
+(type (: MdAlign (Union MdAlignNone MdAlignLeft MdAlignCenter MdAlignRight)))
+
+(type-rec
+  (: MdInline (Union (: MdText string)
+                     (: MdCode string)
+                     (: MdEmph (Vec MdInline))
+                     (: MdStrong (Vec MdInline))
+                     (: MdStrike (Vec MdInline))
+                     ;; The destination, the title ("" for none), and the text.
+                     (: MdLink string string (Vec MdInline))
+                     ;; The source, the title, and the description.
+                     (: MdImage string string (Vec MdInline))
+                     ;; A line break in the source, which is shown as a space.
+                     MdSoftBreak
+                     ;; A hard line break: two spaces or a \ at the end of a line.
+                     MdHardBreak
+                     ;; Raw HTML in the text, as it is written.
+                     (: MdHtml string)
+                     ;; A task list item's [ ] (#f) or [x] (#t).
+                     (: MdCheckbox bool)
+                     ;; A reference to the footnote with this number.
+                     (: MdFootnoteRef int)))
+  ;; Whether the list is numbered, the number it starts at, whether it is
+  ;; loose (its items are paragraphs apart), and the items.
+  (: MdList (Record (: ordered bool)
+                    (: start int)
+                    (: loose bool)
+                    (: items (Vec (Vec MdBlock)))))
+  ;; One alignment for each column, the header row, and the body rows. A
+  ;; row is a cell for each column.
+  (: MdTable (Record (: aligns (Vec MdAlign))
+                     (: head (Vec (Vec MdInline)))
+                     (: body (Vec (Vec (Vec MdInline))))))
+  (: MdBlock (Union (: MdParagraph (Vec MdInline))
+                    (: MdHeading int (Vec MdInline))
+                    ;; The info string ("" for none), and the code.
+                    (: MdCodeBlock string string)
+                    (: MdQuote (Vec MdBlock))
+                    (: MdListBlock MdList)
+                    MdRule
+                    (: MdHtmlBlock string)
+                    (: MdTableBlock MdTable))))
+
+;; The blocks; the footnotes, each with its number, in the order of their
+;; first references; and the text of the YAML front matter, when the
+;; document begins with one.
+(type (: MdDocument (Record (: blocks (Vec MdBlock))
+                            (: footnotes (Vec (Tuple int (Vec MdBlock))))
+                            (: front-matter (Option string)))))
+
+;; ---------------------------------------------------------------------------
+;; Bytes
+;; ---------------------------------------------------------------------------
+
+;; The byte at `i` of `s`, or -1 when `i` is outside it.
+(: (-> ByteString int int))
+(defun (at s i)
+  (if (and (>= i 0) (< i (bytestring-length s)))
+      (cast System.Int32 (bytestring-ref s i))
+      -1))
+
+;; Whether the byte at `i` of `s` is the ASCII character `c`.
+(: (-> ByteString int char bool))
+(defun (at? s i c) (= (at s i) (char->int c)))
+
+(: (-> int bool))
+(defun (space-or-tab? b) (or (= b 32) (= b 9)))
+
+;; A space, a tab, a newline, a form feed or a carriage return.
+(: (-> int bool))
+(defun (ascii-whitespace? b) (or (= b 32) (= b 9) (= b 10) (= b 12) (= b 13)))
+
+(: (-> int bool))
+(defun (ascii-digit? b) (and (>= b 48) (<= b 57)))
+
+(: (-> int bool))
+(defun (ascii-letter? b) (or (and (>= b 65) (<= b 90)) (and (>= b 97) (<= b 122))))
+
+(: (-> int bool))
+(defun (ascii-alphanumeric? b) (or (ascii-letter? b) (ascii-digit? b)))
+
+(: (-> int bool))
+(defun (ascii-hex-digit? b)
+  (or (ascii-digit? b) (and (>= b 65) (<= b 70)) (and (>= b 97) (<= b 102))))
+
+;; An ASCII punctuation character, as the spec counts them.
+(: (-> int bool))
+(defun (ascii-punctuation? b)
+  (or (and (>= b 33) (<= b 47)) (and (>= b 58) (<= b 64))
+      (and (>= b 91) (<= b 96)) (and (>= b 123) (<= b 126))))
+
+;; The first position of byte `c` in `s`, or None.
+(: (-> ByteString int (Option int)))
+(defun (search-byte s c) (bytestring-search-byte s (cast System.Byte c)))
+
+;; The last position of byte `c` in `s`, or None.
+(: (-> ByteString int (Option int)))
+(defun (search-byte-backward s c) (bytestring-search-byte-backward s (cast System.Byte c)))
+
+;; Whether byte `b` is one of the bytes of `set`.
+(: (-> int ByteString bool))
+(defun (byte-in? b set)
+  (let go ((k 0))
+    (cond
+      ((= k (bytestring-length set)) #f)
+      ((= (at set k) b) #t)
+      (else (go (+ k 1))))))
+
+;; The text of bytes `from` to `to` of `s`.
+(: (-> ByteString int int string))
+(defun (text-of s from to) (bytestring->string/lossy (bytestring-slice s from to)))
+
+;; The position of the first byte at or after `i` that is not a space or
+;; a tab.
+(: (-> ByteString int int))
+(defun (skip-spaces s i)
+  (if (space-or-tab? (at s i)) (skip-spaces s (+ i 1)) i))
+
+;; Whether bytes `from` to the end of `s` are spaces and tabs only.
+(: (-> ByteString int bool))
+(defun (blank-from? s from)
+  (= (skip-spaces s from) (bytestring-length s)))
+
+;; Whether `s` has only spaces, tabs and newlines.
+(: (-> ByteString bool))
+(defun (whitespace-only? s)
+  (let go ((i 0))
+    (cond
+      ((= i (bytestring-length s)) #t)
+      ((ascii-whitespace? (at s i)) (go (+ i 1)))
+      (else #f))))
+
+;; The ASCII lowercase of a byte.
+(: (-> int int))
+(defun (ascii-lower b) (if (and (>= b 65) (<= b 90)) (+ b 32) b))
+
+;; Whether bytes `i` onwards of `s` start with the ASCII `word`, without
+;; case.
+(: (-> ByteString int string bool))
+(defun (starts-with-ci? s i word)
+  (let go ((k i) (c (string-cursor-start word)))
+    (cond
+      ((string-cursor-end? word c) #t)
+      ((= (ascii-lower (at s k)) (ascii-lower (char->int (string-cursor-ref word c))))
+       (go (+ k 1) (string-cursor-next word c)))
+      (else #f))))
+
+;; The character whose UTF-8 encoding starts at byte `i` of `s`. A newline
+;; when `i` is before the start or past the end, since the spec counts the
+;; start and the end of the text as whitespace.
+(: (-> ByteString int char))
+(defun (char-at s i)
+  (cond
+    ((or (< i 0) (>= i (bytestring-length s))) #\newline)
+    ((< (at s i) 128) (int->char (at s i)))
+    (else
+     (def b (at s i))
+     (def n (cond ((>= b 240) 4) ((>= b 224) 3) (else 2)))
+     (def t (text-of s i (min (+ i n) (bytestring-length s))))
+     (string-cursor-ref t (string-cursor-start t)))))
+
+;; The start of the character that ends just before byte `i` of `s`.
+(: (-> ByteString int int))
+(defun (char-start-before s i)
+  (let go ((k (- i 1)))
+    (if (and (> k 0) (= (bitwise-and (at s k) 192) 128))
+        (go (- k 1))
+        k)))
+
+;; Unicode whitespace, as the spec has it: the Zs characters, tab, newline,
+;; form feed and carriage return.
+(: (-> char bool))
+(defun (unicode-whitespace? c)
+  (or (ascii-whitespace? (char->int c))
+      (= (char-general-category c) 'Zs)))
+
+;; Unicode punctuation, as the spec has it: a character of a P or S
+;; general category.
+(: (-> char bool))
+(defun (unicode-punctuation? c)
+  (if (< (char->int c) 128)
+      (ascii-punctuation? (char->int c))
+      (let ((cat (symbol->string (char-general-category c))))
+        (or (string-starts-with? cat "P") (string-starts-with? cat "S")))))
+
+;; ---------------------------------------------------------------------------
+;; The parts
+;; ---------------------------------------------------------------------------
+
+(include "markdown-entities.protobjo")
+(include "markdown-blocks.protobjo")
+(include "markdown-inlines.protobjo")
+(include "markdown-html.protobjo")
+
+;; ---------------------------------------------------------------------------
+;; Reading
+;; ---------------------------------------------------------------------------
+
+;; Reads `text` as a Markdown document.
+;;
+;; - Each keyword turns an extension of GitHub Flavored Markdown on or off.
+;;   With all of them off, the document is read as CommonMark 0.31.2.
+;; - A document cannot fail to parse: any text is a Markdown document.
+(: (-> string (#:tables bool) (#:task-lists bool) (#:strikethrough bool)
+       (#:autolinks bool) (#:footnotes bool) (#:front-matter bool)
+       MdDocument))
+(defun (markdown-parse text #:tables #t #:task-lists #t #:strikethrough #t
+                            #:autolinks #t #:footnotes #t #:front-matter #t)
+  (parse-document text
+                  (Extensions (tables tables) (task-lists task-lists)
+                              (strikethrough strikethrough) (autolinks autolinks)
+                              (footnotes footnotes) (front-matter front-matter))))

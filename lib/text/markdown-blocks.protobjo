@@ -1,0 +1,1140 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; The block phase of (text markdown), included by markdown.bjo.
+;;
+;; - The blocks are records in an arena, `nodes`, and refer to each other by
+;;   their index. The document is node 0.
+;; - Each line goes through `incorporate-line!`:
+;;   1. The open blocks, from the document down, are continued while the
+;;      line matches them: a block quote needs its >, a list item its
+;;      indentation.
+;;   2. New blocks are started while the rest of the line starts one.
+;;   3. The rest is text. It goes to the last open block when that block
+;;      takes lines, or continues a paragraph lazily, or starts a paragraph.
+;; - A block is finalized when it is closed: a paragraph gives up its
+;;   link reference definitions, a list finds out whether it is loose.
+;;
+;; Positions are byte offsets into the current line. Columns are counted
+;; with tabs to the next multiple of 4, for indentation; a tab that is only
+;; partly used as indentation is `partial-tab`.
+
+;; The kinds of block.
+(def K-DOCUMENT 0)
+(def K-QUOTE 1)
+(def K-LIST 2)
+(def K-ITEM 3)
+(def K-PARAGRAPH 4)
+(def K-HEADING 5)
+(def K-CODE 6)
+(def K-HTML 7)
+(def K-RULE 8)
+(def K-TABLE 9)
+(def K-FOOTNOTE 10)
+
+;; The indentation of an indented code block.
+(def code-indent 4)
+
+;; The extensions of GitHub Flavored Markdown that are on.
+(type (: Extensions (Record (: tables bool)
+                            (: task-lists bool)
+                            (: strikethrough bool)
+                            (: autolinks bool)
+                            (: footnotes bool)
+                            (: front-matter bool))))
+
+;; A block, while the document is read. The fields that a kind does not use
+;; keep their first values.
+(type
+  (: BNode (Record
+            (: kind int #:mutable)
+            (: parent int)
+            (: children (TransientVec int))
+            (: open bool #:mutable)
+            ;; Unlinked: a paragraph that was only reference definitions.
+            (: dead bool #:mutable)
+            (: start-line int)
+            (: end-line int #:mutable)
+            ;; The lines of a leaf block, each with its newline.
+            (: content ByteStringBuilder)
+            ;; The text of a paragraph or heading, or the code of a code block,
+            ;; once it is finalized.
+            (: text ByteString #:mutable)
+            (: level int #:mutable)
+            (: fenced bool #:mutable)
+            (: fence-char int #:mutable)
+            (: fence-length int #:mutable)
+            (: fence-offset int #:mutable)
+            (: info string #:mutable)
+            (: html-type int #:mutable)
+            ;; A list or list item: its marker.
+            (: ordered bool #:mutable)
+            (: bullet int #:mutable)
+            (: delimiter int #:mutable)
+            (: start int #:mutable)
+            (: marker-offset int #:mutable)
+            (: padding int #:mutable)
+            (: tight bool #:mutable)
+            ;; A table: the alignment of each column.
+            (: aligns (Vec MdAlign) #:mutable)
+            ;; A footnote definition: its label, normalized.
+            (: label string #:mutable))))
+
+;; The state of the block phase.
+(type
+  (: BlockState (Record
+                 (: nodes (TransientVec BNode))
+                 (: ext Extensions)
+                 ;; Link reference definitions: the normalized label, then the
+                 ;; destination and the title.
+                 (: refs (TransientMap string (Tuple string string)))
+                 ;; Footnote definitions: the normalized label, then the node.
+                 (: notes (TransientMap string int))
+                 (: tip int #:mutable)
+                 (: oldtip int #:mutable)
+                 (: line ByteString #:mutable)
+                 (: line-number int #:mutable)
+                 (: offset int #:mutable)
+                 (: column int #:mutable)
+                 (: next-nonspace int #:mutable)
+                 (: next-nonspace-column int #:mutable)
+                 (: indent int #:mutable)
+                 (: indented bool #:mutable)
+                 (: blank bool #:mutable)
+                 (: partial-tab bool #:mutable)
+                 (: all-closed bool #:mutable)
+                 (: last-matched int #:mutable)
+                 (: last-line-length int #:mutable))))
+
+;; ---------------------------------------------------------------------------
+;; Nodes
+;; ---------------------------------------------------------------------------
+
+(: (-> BlockState int BNode))
+(defun (node st i) (transientvec-ref (record-ref st nodes) i))
+
+(: (-> BlockState int int))
+(defun (kind st i) (record-ref (node st i) kind))
+
+(: (-> BlockState int int))
+(defun (parent st i) (record-ref (node st i) parent))
+
+(: (-> BlockState int bool))
+(defun (open? st i) (record-ref (node st i) open))
+
+;; The children of block `i` that are not unlinked, in order.
+(: (-> BlockState int (Vec int)))
+(defun (live-children st i)
+  (def cs (record-ref (node st i) children))
+  {vecing c
+          (:for k (range 0 (transientvec-length cs)))
+          (:let c (transientvec-ref cs k))
+          (:when (not (record-ref (node st c) dead)))})
+
+;; The last child of block `i`, or -1.
+(: (-> BlockState int int))
+(defun (last-child st i)
+  (def cs (record-ref (node st i) children))
+  (if (= (transientvec-length cs) 0)
+      -1
+      (transientvec-ref cs (- (transientvec-length cs) 1))))
+
+;; Adds a block of kind `k` under `parent-index`, and returns its index.
+(: (-> BlockState int int int int))
+(defun (new-node! st k parent-index line)
+  (def nodes (record-ref st nodes))
+  (def i (transientvec-length nodes))
+  (transientvec-add! nodes
+    (BNode (kind k) (parent parent-index) (children (transientvec-empty))
+           (open #t) (dead #f) (start-line line) (end-line line)
+           (content (bytestringbuilder-empty)) (text bytestring-empty)
+           (level 0) (fenced #f) (fence-char 0) (fence-length 0) (fence-offset 0)
+           (info "") (html-type 0)
+           (ordered #f) (bullet 0) (delimiter 0) (start 1) (marker-offset 0)
+           (padding 0) (tight #t) (aligns []) (label "")))
+  (when (>= parent-index 0)
+    (transientvec-add! (record-ref (node st parent-index) children) i))
+  i)
+
+;; Whether a block of kind `parent-kind` can hold one of kind `child-kind`.
+(: (-> int int bool))
+(defun (can-contain? parent-kind child-kind)
+  (cond
+    ((= parent-kind K-LIST) (= child-kind K-ITEM))
+    ((or (= parent-kind K-DOCUMENT) (= parent-kind K-QUOTE) (= parent-kind K-ITEM)
+         (= parent-kind K-FOOTNOTE))
+     (not (= child-kind K-ITEM)))
+    (else #f)))
+
+;; Whether a block of kind `k` takes the text of the lines in it.
+(: (-> int bool))
+(defun (accepts-lines? k)
+  (or (= k K-PARAGRAPH) (= k K-CODE) (= k K-HTML) (= k K-TABLE)))
+
+;; ---------------------------------------------------------------------------
+;; Moving along the line
+;; ---------------------------------------------------------------------------
+
+;; Sets next-nonspace, its column, the indentation from the current
+;; column, and whether the rest of the line is blank.
+(: (-> BlockState void))
+(defun (find-next-nonspace! st)
+  (def ln (record-ref st line))
+  (let go ((i (record-ref st offset)) (cols (record-ref st column)))
+    (def c (at ln i))
+    (cond
+      ((= c 32) (go (+ i 1) (+ cols 1)))
+      ((= c 9) (go (+ i 1) (+ cols (- 4 (% cols 4)))))
+      (else
+       (def indent (- cols (record-ref st column)))
+       (record-set! st (next-nonspace i) (next-nonspace-column cols)
+                    (indent indent) (indented (>= indent code-indent))
+                    (blank (= c -1)))))))
+
+;; Moves the offset forward by `count` bytes, or by `count` columns when
+;; `columns?`. A tab that is wider than what is left of `count` is then
+;; used only in part.
+(: (-> BlockState int bool void))
+(defun (advance-offset! st count columns?)
+  (def ln (record-ref st line))
+  (let go ((count count))
+    (def c (at ln (record-ref st offset)))
+    (when (and (> count 0) (>= c 0))
+      (cond
+        ((= c 9)
+         (def to-tab (- 4 (% (record-ref st column) 4)))
+         (cond
+           (columns?
+            (def partial (> to-tab count))
+            (def step (min to-tab count))
+            (record-set! st (partial-tab partial)
+                         (column (+ (record-ref st column) step))
+                         (offset (+ (record-ref st offset) (if partial 0 1))))
+            (go (- count step)))
+           (else
+            (record-set! st (partial-tab #f)
+                         (column (+ (record-ref st column) to-tab))
+                         (offset (+ (record-ref st offset) 1)))
+            (go (- count 1)))))
+        (else
+         (record-set! st (partial-tab #f)
+                      (offset (+ (record-ref st offset) 1))
+                      (column (+ (record-ref st column) 1)))
+         (go (- count 1)))))))
+
+(: (-> BlockState void))
+(defun (advance-next-nonspace! st)
+  (record-set! st (offset (record-ref st next-nonspace))
+               (column (record-ref st next-nonspace-column))
+               (partial-tab #f)))
+
+;; Moves the offset to the end of the line.
+(: (-> BlockState void))
+(defun (advance-to-end! st)
+  (advance-offset! st (- (bytestring-length (record-ref st line)) (record-ref st offset)) #f))
+
+;; Adds the rest of the line to the tip's content. The part of a tab that
+;; was not used as indentation becomes spaces.
+(: (-> BlockState void))
+(defun (add-line! st)
+  (def b (record-ref (node st (record-ref st tip)) content))
+  (when (record-ref st partial-tab)
+    (record-set! st (offset (+ (record-ref st offset) 1)))
+    (loop (:for _ (range 0 (- 4 (% (record-ref st column) 4))))
+          (:do (add-byte! b 32))))
+  (def ln (record-ref st line))
+  (bytestringbuilder-add-bytestring! b (bytestring-slice ln (min (record-ref st offset) (bytestring-length ln))
+                                                         (bytestring-length ln)))
+  (add-byte! b 10))
+
+;; ---------------------------------------------------------------------------
+;; Opening and closing
+;; ---------------------------------------------------------------------------
+
+;; Adds a block of kind `k` at the tip, after closing the blocks that
+;; cannot hold it. Returns its index, which is the new tip.
+(: (-> BlockState int int))
+(defun (add-child! st k)
+  (let go ()
+    (unless (can-contain? (kind st (record-ref st tip)) k)
+      (finalize! st (record-ref st tip) (- (record-ref st line-number) 1))
+      (go)))
+  (def i (new-node! st k (record-ref st tip) (record-ref st line-number)))
+  (record-set! st (tip i))
+  i)
+
+;; Closes the blocks that the current line did not continue.
+(: (-> BlockState void))
+(defun (close-unmatched! st)
+  (unless (record-ref st all-closed)
+    (let go ()
+      (unless (= (record-ref st oldtip) (record-ref st last-matched))
+        (def up (parent st (record-ref st oldtip)))
+        (finalize! st (record-ref st oldtip) (- (record-ref st line-number) 1))
+        (record-set! st (oldtip up))
+        (go)))
+    (record-set! st (all-closed #t))))
+
+;; Closes block `i`, which ends at `line`, and makes its parent the tip.
+(: (-> BlockState int int void))
+(defun (finalize! st i line)
+  (def n (node st i))
+  (record-set! n (open #f) (end-line line))
+  (def k (record-ref n kind))
+  (cond
+    ((= k K-PARAGRAPH) (finalize-paragraph! st i))
+    ((= k K-CODE) (finalize-code! st i))
+    ((= k K-HTML)
+     (record-set! n (text (trim-trailing-blank-lines (bytestringbuilder->bytestring (record-ref n content)) #f))))
+    ((= k K-LIST) (finalize-list! st i))
+    ((= k K-ITEM)
+     (def last (last-live-child st i))
+     (record-set! n (end-line (if (>= last 0) (record-ref (node st last) end-line) (record-ref n start-line)))))
+    ((= k K-TABLE) unit)
+    (else unit))
+  (record-set! st (tip (record-ref n parent))))
+
+;; The last child of block `i` that is not unlinked, or -1.
+(: (-> BlockState int int))
+(defun (last-live-child st i)
+  (def cs (live-children st i))
+  (if (vec-empty? cs) -1 (vec-ref cs (- (vec-length cs) 1))))
+
+;; `s` without its trailing lines that are blank. With `keep-newline?` the
+;; result ends with one newline, unless it is empty.
+(: (-> ByteString bool ByteString))
+(defun (trim-trailing-blank-lines s keep-newline?)
+  ;; The end of the last line that has something other than spaces.
+  (def end
+    (let go ((i (bytestring-length s)) (last-content 0))
+      (cond
+        ((= i 0) last-content)
+        (else
+         (def c (at s (- i 1)))
+         (cond
+           ((= c 10) (go (- i 1) last-content))
+           ((= c 32) (go (- i 1) last-content))
+           (else i))))))
+  ;; Back to the end of that line: the content ends at a newline.
+  (def line-end
+    (let go ((i end))
+      (cond
+        ((>= i (bytestring-length s)) i)
+        ((= (at s i) 10) i)
+        (else (go (+ i 1))))))
+  (cond
+    ((= end 0) bytestring-empty)
+    (keep-newline? (bytestring-slice s 0 (min (+ line-end 1) (bytestring-length s))))
+    (else (bytestring-slice s 0 line-end))))
+
+;; A paragraph gives up the link reference definitions at its start. One
+;; that was nothing else is unlinked.
+(: (-> BlockState int void))
+(defun (finalize-paragraph! st i)
+  (def n (node st i))
+  (def content (bytestringbuilder->bytestring (record-ref n content)))
+  (def rest (take-references! st content))
+  (record-set! n (text rest))
+  (when (and (< (bytestring-length rest) (bytestring-length content)) (whitespace-only? rest))
+    (record-set! n (dead #t))))
+
+;; Reads the link reference definitions at the start of `content` into the
+;; state, and returns what follows them.
+(: (-> BlockState ByteString ByteString))
+(defun (take-references! st content)
+  (let go ((s content))
+    (if (at? s 0 #\[)
+        (match (parse-reference s (record-ref st refs))
+          ((Some pos) (go (bytestring-slice s pos (bytestring-length s))))
+          (None s))
+        s)))
+
+;; A fenced block's first line is its info string; an indented block loses
+;; its trailing blank lines.
+(: (-> BlockState int void))
+(defun (finalize-code! st i)
+  (def n (node st i))
+  (def content (bytestringbuilder->bytestring (record-ref n content)))
+  (cond
+    ((record-ref n fenced)
+     (def nl (match (search-byte content 10) ((Some p) p) (None (bytestring-length content))))
+     (def first (bytestring->string/lossy (bytestring-slice content 0 nl)))
+     (record-set! n (info (unescape-string (string-trim first)))
+                  (text (bytestring-slice content (min (+ nl 1) (bytestring-length content))
+                                          (bytestring-length content)))))
+    (else
+     (record-set! n (text (trim-trailing-blank-lines content #t))))))
+
+;; Whether there is a blank line between block `i` and the block `next`
+;; after it. False when there is no next block (-1).
+(: (-> BlockState int int bool))
+(defun (blank-line-between? st i next)
+  (and (>= next 0)
+       (not (= (record-ref (node st i) end-line)
+               (- (record-ref (node st next) start-line) 1)))))
+
+;; Whether two blocks next to each other in `blocks` have a blank line
+;; between them.
+(: (-> BlockState (Vec int) bool))
+(defun (gap-in? st blocks)
+  (some? {finding #t
+                  (:for k (range 1 (vec-length blocks)))
+                  (:when (blank-line-between? st (vec-ref blocks (- k 1)) (vec-ref blocks k)))}))
+
+;; A list is loose when two of its items have a blank line between them,
+;; or when an item has two blocks with a blank line between them.
+(: (-> BlockState int void))
+(defun (finalize-list! st i)
+  (def items (live-children st i))
+  (def loose
+    (or (gap-in? st items)
+        (some? {finding #t (:for item items) (:when (gap-in? st (live-children st item)))})))
+  (let ((rs (node st i))) (record-set! rs (tight (not loose))
+               (end-line (record-ref (node st (vec-ref items (- (vec-length items) 1))) end-line)))))
+
+;; ---------------------------------------------------------------------------
+;; Continuing the open blocks
+;; ---------------------------------------------------------------------------
+
+;; Whether the current line continues open block `i`: 0 when it does, 1
+;; when it does not, and 2 when the line is used up (a closing fence).
+(: (-> BlockState int int))
+(defun (continue-block! st i)
+  (def n (node st i))
+  (def k (record-ref n kind))
+  (def ln (record-ref st line))
+  (cond
+    ((or (= k K-DOCUMENT) (= k K-LIST)) 0)
+    ((= k K-QUOTE)
+     (cond
+       ((and (not (record-ref st indented)) (at? ln (record-ref st next-nonspace) #\>))
+        (advance-next-nonspace! st)
+        (advance-offset! st 1 #f)
+        (when (space-or-tab? (at ln (record-ref st offset))) (advance-offset! st 1 #t))
+        0)
+       (else 1)))
+    ((= k K-ITEM)
+     (def width (+ (record-ref n marker-offset) (record-ref n padding)))
+     (cond
+       ((record-ref st blank)
+        (cond
+          ;; A blank line after an empty list item ends it.
+          ((< (last-child st i) 0) 1)
+          (else (advance-next-nonspace! st) 0)))
+       ((>= (record-ref st indent) width) (advance-offset! st width #t) 0)
+       (else 1)))
+    ((= k K-FOOTNOTE)
+     (cond
+       ((record-ref st blank) (advance-next-nonspace! st) 0)
+       ((>= (record-ref st indent) 4) (advance-offset! st 4 #t) 0)
+       (else 1)))
+    ((or (= k K-HEADING) (= k K-RULE)) 1)
+    ((= k K-CODE) (continue-code! st i))
+    ((= k K-HTML)
+     (if (and (record-ref st blank) (or (= (record-ref n html-type) 6) (= (record-ref n html-type) 7))) 1 0))
+    ((= k K-PARAGRAPH) (if (record-ref st blank) 1 0))
+    ((= k K-TABLE) (if (record-ref st blank) 1 0))
+    (else 1)))
+
+;; A fenced block closes at a fence of its character, at least as long as
+;; its opening one; an indented block goes on while lines are indented or
+;; blank.
+(: (-> BlockState int int))
+(defun (continue-code! st i)
+  (def n (node st i))
+  (def ln (record-ref st line))
+  (cond
+    ((record-ref n fenced)
+     (def from (record-ref st next-nonspace))
+     (def run (run-length ln from (record-ref n fence-char)))
+     (cond
+       ((and (<= (record-ref st indent) 3)
+             (>= run 3)
+             (>= run (record-ref n fence-length))
+             (blank-from? ln (+ from run)))
+        (record-set! st (last-line-length (+ (record-ref st offset) (record-ref st indent) run)))
+        (finalize! st i (record-ref st line-number))
+        2)
+       (else
+        ;; The spaces of the opening fence's indentation are not code.
+        (let go ((k (record-ref n fence-offset)))
+          (when (and (> k 0) (space-or-tab? (at ln (record-ref st offset))))
+            (advance-offset! st 1 #t)
+            (go (- k 1))))
+        0)))
+    ((>= (record-ref st indent) code-indent) (advance-offset! st code-indent #t) 0)
+    ((record-ref st blank) (advance-next-nonspace! st) 0)
+    (else 1)))
+
+;; How many bytes `c` repeats at `from` of `s`.
+(: (-> ByteString int int int))
+(defun (run-length s from c)
+  (let go ((i from))
+    (if (= (at s i) c) (go (+ i 1)) (- i from))))
+
+;; ---------------------------------------------------------------------------
+;; Starting blocks
+;; ---------------------------------------------------------------------------
+
+;; Tries each kind of block at the current position, in the spec's order.
+;; Returns 0 when none starts, 1 when a container starts, and 2 when a
+;; leaf starts.
+(: (-> BlockState int int))
+(defun (start-block! st container)
+  (def starts [start-quote! start-atx-heading! start-fence! start-html! start-setext!
+               start-thematic-break! start-footnote! start-list-item! start-indented-code!
+               start-table!])
+  (let go ((k 0))
+    (cond
+      ((= k (vec-length starts)) 0)
+      (else
+       (def r ((vec-ref starts k) st container))
+       (if (= r 0) (go (+ k 1)) r)))))
+
+;; > and an optional space.
+(: (-> BlockState int int))
+(defun (start-quote! st container)
+  (def ln (record-ref st line))
+  (cond
+    ((and (not (record-ref st indented)) (at? ln (record-ref st next-nonspace) #\>))
+     (advance-next-nonspace! st)
+     (advance-offset! st 1 #f)
+     (when (space-or-tab? (at ln (record-ref st offset))) (advance-offset! st 1 #t))
+     (close-unmatched! st)
+     (ignore (add-child! st K-QUOTE))
+     1)
+    (else 0)))
+
+;; 1 to 6 #, then a space, a tab or the end of the line. A closing run of #
+;; is not part of the heading.
+(: (-> BlockState int int))
+(defun (start-atx-heading! st container)
+  (def ln (record-ref st line))
+  (def from (record-ref st next-nonspace))
+  (def level (run-length ln from (char->int #\#)))
+  (def after (at ln (+ from level)))
+  (cond
+    ((and (not (record-ref st indented)) (>= level 1) (<= level 6)
+          (or (= after -1) (space-or-tab? after)))
+     (advance-next-nonspace! st)
+     (advance-offset! st level #f)
+     (close-unmatched! st)
+     (def h (add-child! st K-HEADING))
+     (let ((rs (node st h))) (record-set! rs (level level)
+                  (text (heading-text ln (record-ref st offset)))))
+     (advance-to-end! st)
+     2)
+    (else 0)))
+
+;; The text of an ATX heading from `from` of `ln`: trimmed, without a
+;; closing sequence of # that is preceded by a space or is all there is.
+(: (-> ByteString int ByteString))
+(defun (heading-text ln from)
+  (def start (skip-spaces ln from))
+  (def end
+    (let go ((i (bytestring-length ln)))
+      (if (and (> i start) (space-or-tab? (at ln (- i 1)))) (go (- i 1)) i)))
+  (def hashes-start
+    (let go ((i end))
+      (if (and (> i start) (at? ln (- i 1) #\#)) (go (- i 1)) i)))
+  (def cut
+    (cond
+      ((= hashes-start end) end)
+      ((= hashes-start start) start)
+      ((space-or-tab? (at ln (- hashes-start 1))) hashes-start)
+      (else end)))
+  (def text-end
+    (let go ((i cut))
+      (if (and (> i start) (space-or-tab? (at ln (- i 1)))) (go (- i 1)) i)))
+  (bytestring-slice ln start text-end))
+
+;; Three or more ` or ~. A backtick fence has no backtick after it on its
+;; line.
+(: (-> BlockState int int))
+(defun (start-fence! st container)
+  (def ln (record-ref st line))
+  (def from (record-ref st next-nonspace))
+  (def c (at ln from))
+  (def run (if (or (= c (char->int #\`)) (= c (char->int #\~))) (run-length ln from c) 0))
+  (cond
+    ((and (not (record-ref st indented)) (>= run 3)
+          (or (= c (char->int #\~))
+              (none? (search-byte (bytestring-slice ln (+ from run) (bytestring-length ln))
+                                             (char->int #\`)))))
+     (close-unmatched! st)
+     (def b (add-child! st K-CODE))
+     (let ((rs (node st b))) (record-set! rs (fenced #t) (fence-length run) (fence-char c)
+                  (fence-offset (record-ref st indent))))
+     (advance-next-nonspace! st)
+     (advance-offset! st run #f)
+     2)
+    (else 0)))
+
+;; The seven kinds of HTML block. Kind 7 cannot interrupt a paragraph.
+(: (-> BlockState int int))
+(defun (start-html! st container)
+  (def ln (record-ref st line))
+  (def from (record-ref st next-nonspace))
+  (cond
+    ((and (not (record-ref st indented)) (at? ln from #\<))
+     (def lazy-paragraph (and (not (record-ref st all-closed)) (not (record-ref st blank))
+                              (= (kind st (record-ref st tip)) K-PARAGRAPH)))
+     (def type (html-block-start ln from))
+     (cond
+       ((and (> type 0)
+             (or (< type 7)
+                 (and (not (= (kind st container) K-PARAGRAPH)) (not lazy-paragraph))))
+        (close-unmatched! st)
+        ;; The offset stays: the indentation is part of the HTML.
+        (def b (add-child! st K-HTML))
+        (let ((rs (node st b))) (record-set! rs (html-type type)))
+        2)
+       (else 0)))
+    (else 0)))
+
+;; A line of = or of -, under a paragraph, makes the paragraph a heading.
+(: (-> BlockState int int))
+(defun (start-setext! st container)
+  (def ln (record-ref st line))
+  (def from (record-ref st next-nonspace))
+  (def c (at ln from))
+  (def run (if (or (= c (char->int #\=)) (= c (char->int #\-))) (run-length ln from c) 0))
+  (cond
+    ((and (not (record-ref st indented)) (= (kind st container) K-PARAGRAPH)
+          (> run 0) (blank-from? ln (+ from run)))
+     (close-unmatched! st)
+     (def n (node st container))
+     (def rest (take-references! st (bytestringbuilder->bytestring (record-ref n content))))
+     (cond
+       ((> (bytestring-length rest) 0)
+        (record-set! n (kind K-HEADING) (level (if (= c (char->int #\=)) 1 2))
+                     (text (trim-heading-content rest)))
+        (record-set! st (tip container))
+        (advance-to-end! st)
+        2)
+       (else
+        ;; Only reference definitions: what is left is a paragraph again.
+        (bytestringbuilder-clear! (record-ref n content))
+        0)))
+    (else 0)))
+
+;; The content of a setext heading: its lines, trimmed of spaces and tabs
+;; at both ends.
+(: (-> ByteString ByteString))
+(defun (trim-heading-content s)
+  (def start (let go ((i 0)) (if (ascii-whitespace? (at s i)) (go (+ i 1)) i)))
+  (def end (let go ((i (bytestring-length s)))
+             (if (and (> i start) (ascii-whitespace? (at s (- i 1)))) (go (- i 1)) i)))
+  (bytestring-slice s start end))
+
+;; Three or more *, - or _, with spaces and tabs between them and nothing
+;; else.
+(: (-> BlockState int int))
+(defun (start-thematic-break! st container)
+  (def ln (record-ref st line))
+  (cond
+    ((and (not (record-ref st indented)) (thematic-break? ln (record-ref st next-nonspace)))
+     (close-unmatched! st)
+     (ignore (add-child! st K-RULE))
+     (advance-to-end! st)
+     2)
+    (else 0)))
+
+(: (-> ByteString int bool))
+(defun (thematic-break? ln from)
+  (def c (at ln from))
+  (and (or (= c (char->int #\*)) (= c (char->int #\-)) (= c (char->int #\_)))
+       (let go ((i from) (count 0))
+         (def b (at ln i))
+         (cond
+           ((= b -1) (>= count 3))
+           ((= b c) (go (+ i 1) (+ count 1)))
+           ((space-or-tab? b) (go (+ i 1) count))
+           (else #f)))))
+
+;; [^label]: at the start of a line, with the footnotes extension.
+(: (-> BlockState int int))
+(defun (start-footnote! st container)
+  (def ln (record-ref st line))
+  (def from (record-ref st next-nonspace))
+  (cond
+    ((and (record-ref (record-ref st ext) footnotes) (not (record-ref st indented))
+          (at? ln from #\[) (at? ln (+ from 1) #\^))
+     (def close (let go ((i (+ from 2)))
+                  (def b (at ln i))
+                  (cond
+                    ((or (= b -1) (= b (char->int #\[))) -1)
+                    ((= b (char->int #\\)) (go (+ i 2)))
+                    ((= b (char->int #\])) i)
+                    ((ascii-whitespace? b) -1)
+                    (else (go (+ i 1))))))
+     (cond
+       ((and (> close (+ from 2)) (at? ln (+ close 1) #\:))
+        (def label (normalize-label (text-of ln (+ from 2) close)))
+        (close-unmatched! st)
+        (def f (add-child! st K-FOOTNOTE))
+        (let ((rs (node st f))) (record-set! rs (label label)))
+        (unless (transientmap-contains? (record-ref st notes) label)
+          (transientmap-set! (record-ref st notes) label f))
+        (advance-next-nonspace! st)
+        (advance-offset! st (- (+ close 2) from) #f)
+        (when (space-or-tab? (at ln (record-ref st offset)))
+          (find-next-nonspace! st)
+          (advance-next-nonspace! st))
+        1)
+       (else 0)))
+    (else 0)))
+
+;; A list item's marker, as `parse-list-marker!` reads it.
+(type (: ListMarker (Record (: ordered bool)
+                            (: bullet int)
+                            (: delimiter int)
+                            (: start int)
+                            (: marker-offset int)
+                            (: padding int))))
+
+;; A list marker: -, + or *, or 1 to 9 digits and . or ). Starts a list
+;; when the tip is not a list with the same kind of marker.
+(: (-> BlockState int int))
+(defun (start-list-item! st container)
+  (cond
+    ((or (not (record-ref st indented)) (= (kind st container) K-LIST))
+     (match (parse-list-marker! st container)
+       ((Some m)
+        (close-unmatched! st)
+        (def tip (record-ref st tip))
+        (unless (and (= (kind st tip) K-LIST) (same-list? (node st tip) m))
+          (set-marker! (node st (add-child! st K-LIST)) m))
+        (set-marker! (node st (add-child! st K-ITEM)) m)
+        1)
+       (None 0)))
+    (else 0)))
+
+(: (-> BNode ListMarker void))
+(defun (set-marker! n m)
+  (record-set! n (ordered (record-ref m ordered)) (bullet (record-ref m bullet))
+               (delimiter (record-ref m delimiter)) (start (record-ref m start))
+               (marker-offset (record-ref m marker-offset)) (padding (record-ref m padding))))
+
+;; Whether an item with marker `m` belongs in list `n`.
+(: (-> BNode ListMarker bool))
+(defun (same-list? n m)
+  (and (= (record-ref n ordered) (record-ref m ordered))
+       (= (record-ref n bullet) (record-ref m bullet))
+       (= (record-ref n delimiter) (record-ref m delimiter))))
+
+;; Reads a list marker at next-nonspace, and moves past it and the spaces
+;; after it. Returns None, and moves nothing, when there is no marker.
+;;
+;; - An ordered list can interrupt a paragraph only when it starts at 1, and
+;;   no item can interrupt one with an empty first line.
+;; - The padding is the width of the marker and of the spaces after it. With
+;;   5 or more spaces, or none before the end of the line, the padding is the
+;;   marker and one space, and the rest is the item's content.
+(: (-> BlockState int (Option ListMarker)))
+(defun (parse-list-marker! st container)
+  (with-return ret
+    (def ln (record-ref st line))
+    (def from (record-ref st next-nonspace))
+    (def c (at ln from))
+    (when (>= (record-ref st indent) 4) (ret None))
+    (def in-paragraph (= (kind st container) K-PARAGRAPH))
+    (def digits (let go ((i from)) (if (ascii-digit? (at ln i)) (go (+ i 1)) (- i from))))
+    (def marker
+      (cond
+        ((or (= c (char->int #\-)) (= c (char->int #\+)) (= c (char->int #\*)))
+         (Some (Tuple (ListMarker (ordered #f) (bullet c) (delimiter 0) (start 1)
+                                  (marker-offset (record-ref st indent)) (padding 0))
+                      1)))
+        ((and (>= digits 1) (<= digits 9)
+              (let ((d (at ln (+ from digits))))
+                (or (= d (char->int #\.)) (= d (char->int #\)))))
+              (or (not in-paragraph) (= (string->int (text-of ln from (+ from digits))) 1)))
+         (Some (Tuple (ListMarker (ordered #t) (bullet 0) (delimiter (at ln (+ from digits)))
+                                  (start (string->int (text-of ln from (+ from digits))))
+                                  (marker-offset (record-ref st indent)) (padding 0))
+                      (+ digits 1))))
+        (else None)))
+    (def (Some (Tuple m width)) marker :leave-with None)
+    (def after (at ln (+ from width)))
+    (unless (or (= after -1) (space-or-tab? after)) (ret None))
+    (when (and in-paragraph (blank-from? ln (+ from width))) (ret None))
+    (advance-next-nonspace! st)
+    (advance-offset! st width #t)
+    (def spaces-start-column (record-ref st column))
+    (def spaces-start-offset (record-ref st offset))
+    (let go ()
+      (advance-offset! st 1 #t)
+      (when (and (< (- (record-ref st column) spaces-start-column) 5)
+                 (space-or-tab? (at ln (record-ref st offset))))
+        (go)))
+    (def blank-item (= (at ln (record-ref st offset)) -1))
+    (def spaces (- (record-ref st column) spaces-start-column))
+    (cond
+      ((or (>= spaces 5) (< spaces 1) blank-item)
+       (record-set! st (column spaces-start-column) (offset spaces-start-offset))
+       (when (space-or-tab? (at ln (record-ref st offset))) (advance-offset! st 1 #t))
+       (Some (record-set m (padding (+ width 1)))))
+      (else (Some (record-set m (padding (+ width spaces))))))))
+
+(: (-> BlockState int int))
+(defun (start-indented-code! st container)
+  (cond
+    ((and (record-ref st indented) (not (= (kind st (record-ref st tip)) K-PARAGRAPH))
+          (not (record-ref st blank)))
+     (advance-offset! st code-indent #t)
+     (close-unmatched! st)
+     (ignore (add-child! st K-CODE))
+     2)
+    (else 0)))
+
+;; A delimiter row under a paragraph makes the paragraph's last line a
+;; table's header row, when the two have as many cells. The paragraph's
+;; other lines stay a paragraph.
+(: (-> BlockState int int))
+(defun (start-table! st container)
+  (with-return ret
+    (def ln (record-ref st line))
+    (unless (and (record-ref (record-ref st ext) tables) (not (record-ref st indented))
+                 (= (kind st container) K-PARAGRAPH))
+      (ret 0))
+    (def (Some aligns) (delimiter-row ln (record-ref st next-nonspace)) :leave-with 0)
+    (def n (node st container))
+    (def content (bytestringbuilder->bytestring (record-ref n content)))
+    ;; The last line of the content, without its newline.
+    (def end (- (bytestring-length content) 1))
+    (def line-start (match (search-byte-backward (bytestring-slice content 0 end) 10)
+                      ((Some p) (+ p 1))
+                      (None 0)))
+    (def header (bytestring-slice content line-start end))
+    (unless (= (vec-length (table-cells header)) (vec-length aligns)) (ret 0))
+    (close-unmatched! st)
+    (def before (bytestring-slice content 0 line-start))
+    (def table
+      (cond
+        ((whitespace-only? (take-references! st before))
+         ;; The paragraph is only the header, and becomes the table.
+         (ignore (take-references! st before))
+         (record-set! n (kind K-TABLE))
+         (bytestringbuilder-clear! (record-ref n content))
+         container)
+        (else
+         (bytestringbuilder-clear! (record-ref n content))
+         (bytestringbuilder-add-bytestring! (record-ref n content) before)
+         (finalize! st container (- (record-ref st line-number) 1))
+         (add-child! st K-TABLE))))
+    (def t (node st table))
+    (record-set! t (aligns aligns))
+    (bytestringbuilder-add-bytestring! (record-ref t content) header)
+    (add-byte! (record-ref t content) 10)
+    (record-set! st (tip table))
+    (advance-to-end! st)
+    2))
+
+;; Whether the bytes of `ln` from `from` are only |, :, -, spaces, tabs and
+;; line endings, with at least one -. A delimiter row is such a line.
+(: (-> ByteString int bool))
+(defun (delimiter-bytes? ln from)
+  (let go ((k from) (dash #f))
+    (def b (at ln k))
+    (cond
+      ((= b -1) dash)
+      ((= b (char->int #\-)) (go (+ k 1) #t))
+      ((or (= b (char->int #\|)) (= b (char->int #\:)) (ascii-whitespace? b)) (go (+ k 1) dash))
+      (else #f))))
+
+;; The alignments of a delimiter row at `from` of `ln`: cells of an
+;; optional :, one or more -, and an optional :, between pipes. None when
+;; the line is not one.
+(: (-> ByteString int (Option (Vec MdAlign))))
+(defun (delimiter-row ln from)
+  (if (delimiter-bytes? ln from) (delimiter-cells ln from) None))
+
+(: (-> ByteString int (Option (Vec MdAlign))))
+(defun (delimiter-cells ln from)
+  (def cells (table-cells (bytestring-slice ln from (bytestring-length ln))))
+  (def aligns
+    {vecing (cell-align c) (:for c cells)})
+  (cond
+    ;; A row with one cell and no pipe is a setext underline or a rule, not
+    ;; a delimiter row.
+    ((and (= (vec-length cells) 1)
+          (none? (search-byte (bytestring-slice ln from (bytestring-length ln))
+                                         (char->int #\|))))
+     None)
+    ((and (> (vec-length cells) 0) (all? some? aligns)) (Some {vecing a (:for x aligns) (:when-let (Some a) x)}))
+    (else None)))
+
+;; The alignment of a delimiter cell, or None when it is not one.
+(: (-> ByteString (Option MdAlign)))
+(defun (cell-align c)
+  (def len (bytestring-length c))
+  (def left (at? c 0 #\:))
+  (def right (and (> len 1) (at? c (- len 1) #\:)))
+  (def dashes-from (if left 1 0))
+  (def dashes-to (if right (- len 1) len))
+  (cond
+    ((< dashes-to (+ dashes-from 1)) None)
+    ((= (run-length c dashes-from (char->int #\-)) (- dashes-to dashes-from))
+     (Some (cond ((and left right) MdAlignCenter) (left MdAlignLeft) (right MdAlignRight)
+                 (else MdAlignNone))))
+    (else None)))
+
+;; The cells of a table row, trimmed: split at the pipes that are not
+;; escaped, without the empty cells that a leading or a trailing pipe makes.
+(: (-> ByteString (Vec ByteString)))
+(defun (table-cells row)
+  (def s (trim-heading-content row))
+  (def len (bytestring-length s))
+  (def from (if (at? s 0 #\|) 1 0))
+  (def cells (vecbuilder-empty))
+  (let go ((i from) (cell-start from))
+    (def b (at s i))
+    (cond
+      ((= b -1)
+       (when (or (< cell-start len) (= (vecbuilder-length cells) 0) (not (at? s (- len 1) #\|)))
+         (unless (and (= cell-start len) (> (vecbuilder-length cells) 0))
+           (vecbuilder-add! cells (trim-heading-content (bytestring-slice s cell-start len))))))
+      ((= b (char->int #\\)) (go (+ i 2) cell-start))
+      ((= b (char->int #\|))
+       (vecbuilder-add! cells (trim-heading-content (bytestring-slice s cell-start i)))
+       (go (+ i 1) (+ i 1)))
+      (else (go (+ i 1) cell-start))))
+  (vecbuilder->vec cells))
+
+;; ---------------------------------------------------------------------------
+;; A line
+;; ---------------------------------------------------------------------------
+
+;; The bytes other than digits that can start a block.
+(: ByteString)
+(def block-start-bytes (string->bytestring "#`~*+_=<>-[|:"))
+
+;; The bytes that can start a block, other than spaces and text.
+(: (-> int bool))
+(defun (maybe-special? b)
+  (and (>= b 0)
+       (or (ascii-digit? b)
+           (byte-in? b block-start-bytes))))
+
+;; Reads one line into the tree.
+(: (-> BlockState ByteString void))
+(defun (incorporate-line! st ln)
+  (with-return ret
+    (record-set! st (offset 0) (column 0) (blank #f) (partial-tab #f) (line ln)
+                 (line-number (+ (record-ref st line-number) 1))
+                 (oldtip (record-ref st tip)))
+    (def/mutable container 0)
+    ;; 1. Continue the open blocks the line matches.
+    (let go ()
+      (def last (last-child st container))
+      (when (and (>= last 0) (open? st last))
+        (find-next-nonspace! st)
+        (def r (continue-block! st last))
+        (cond
+          ((= r 0) (set! container last) (go))
+          ((= r 2) (ret unit))
+          (else unit))))
+    (record-set! st (all-closed (= container (record-ref st oldtip))) (last-matched container))
+    ;; 2. Start new blocks.
+    (def/mutable matched-leaf
+      (let ((k (kind st container)))
+        (and (not (= k K-PARAGRAPH)) (not (= k K-TABLE)) (accepts-lines? k))))
+    (let go ()
+      (unless matched-leaf
+        (find-next-nonspace! st)
+        (cond
+          ((and (not (record-ref st indented))
+                (not (maybe-special? (at ln (record-ref st next-nonspace)))))
+           (advance-next-nonspace! st))
+          (else
+           (def r (start-block! st container))
+           (cond
+             ((= r 0) (advance-next-nonspace! st))
+             ((= r 1) (set! container (record-ref st tip)) (go))
+             (else (set! container (record-ref st tip)) (set! matched-leaf #t)))))))
+    ;; 3. The rest of the line is text.
+    (cond
+      ((and (not (record-ref st all-closed)) (not (record-ref st blank))
+            (= (kind st (record-ref st tip)) K-PARAGRAPH))
+       ;; A lazy continuation line of a paragraph.
+       (add-line! st))
+      (else
+       (close-unmatched! st)
+       (def k (kind st container))
+       (cond
+         ((accepts-lines? k)
+          (add-line! st)
+          (def n (node st container))
+          (when (and (= k K-HTML) (>= (record-ref n html-type) 1) (<= (record-ref n html-type) 5)
+                     (html-block-ends? (record-ref n html-type) ln (record-ref st offset)))
+            (record-set! st (last-line-length (bytestring-length ln)))
+            (finalize! st container (record-ref st line-number))))
+         ((and (< (record-ref st offset) (bytestring-length ln)) (not (record-ref st blank)))
+          (ignore (add-child! st K-PARAGRAPH))
+          (advance-next-nonspace! st)
+          (add-line! st))
+         (else unit))))
+    (record-set! st (last-line-length (bytestring-length ln)))))
+
+;; ---------------------------------------------------------------------------
+;; The document
+;; ---------------------------------------------------------------------------
+
+;; The lines of `s`, without their line endings: \n, \r\n or \r. A final
+;; line ending does not start another line.
+(: (-> ByteString (Vec ByteString)))
+(defun (split-lines s)
+  (def len (bytestring-length s))
+  (def lines (vecbuilder-empty))
+  (let go ((i 0) (start 0))
+    (cond
+      ((= i len)
+       (when (< start len) (vecbuilder-add! lines (bytestring-slice s start len))))
+      ((= (at s i) 10)
+       (vecbuilder-add! lines (bytestring-slice s start i))
+       (go (+ i 1) (+ i 1)))
+      ((= (at s i) 13)
+       (vecbuilder-add! lines (bytestring-slice s start i))
+       (def next (if (= (at s (+ i 1)) 10) (+ i 2) (+ i 1)))
+       (go next next))
+      (else (go (+ i 1) start))))
+  (vecbuilder->vec lines))
+
+;; The YAML front matter at the start of `lines`: a line of ---, and the
+;; lines up to a line of --- or ... . Returns its text and the number of
+;; lines it takes, or None.
+(: (-> (Vec ByteString) (Option (Tuple string int))))
+(defun (front-matter lines)
+  (cond
+    ((and (> (vec-length lines) 0)
+          (= (string-trim-right (bytestring->string/lossy (vec-ref lines 0))) "---"))
+     (match {finding k
+                     (:for k (range 1 (vec-length lines)))
+                     (:let t (string-trim-right (bytestring->string/lossy (vec-ref lines k))))
+                     (:when (or (= t "---") (= t "...")))}
+       ((Some k)
+        (Some (Tuple (string-join {vecing (bytestring->string/lossy (vec-ref lines j)) (:for j (range 1 k))} "\n")
+                     (+ k 1))))
+       (None None)))
+    (else None)))
+
+;; Reads `text` with the extensions `ext`.
+(: (-> string Extensions MdDocument))
+(defun (parse-document text ext)
+  (def input (string->bytestring (if (string-contains? text "\u{0}")
+                                      (string-replace text "\u{0}" "\u{FFFD}")
+                                      text)))
+  (def all-lines (split-lines input))
+  (def front (if (record-ref ext front-matter) (front-matter all-lines) None))
+  (def skip (match front ((Some (Tuple _ k)) k) (None 0)))
+  (def st (BlockState (nodes (transientvec-empty)) (ext ext)
+                      (refs (transientmap-empty)) (notes (transientmap-empty))
+                      (tip 0) (oldtip 0) (line bytestring-empty) (line-number 0)
+                      (offset 0) (column 0) (next-nonspace 0) (next-nonspace-column 0)
+                      (indent 0) (indented #f) (blank #f) (partial-tab #f)
+                      (all-closed #t) (last-matched 0) (last-line-length 0)))
+  (ignore (new-node! st K-DOCUMENT -1 1))
+  (loop (:for k (range skip (vec-length all-lines)))
+        (:do (incorporate-line! st (vec-ref all-lines k))))
+  (let go ()
+    (when (>= (record-ref st tip) 0)
+      (finalize! st (record-ref st tip) (record-ref st line-number))
+      (go)))
+  (def cx (make-inline-context st))
+  (def blocks (convert-children cx 0))
+  (MdDocument (blocks blocks)
+              (footnotes (convert-footnotes cx))
+              (front-matter (match front ((Some (Tuple t _)) (Some t)) (None None)))))
+
+;; ---------------------------------------------------------------------------
+;; The tree
+;; ---------------------------------------------------------------------------
+
+;; The children of block `i`, as the public tree.
+(: (-> InlineContext int (Vec MdBlock)))
+(defun (convert-children cx i)
+  (def st (record-ref cx blocks))
+  {vecing b
+          (:for c (live-children st i))
+          (:when-let (Some b) (convert-block cx c))})
+
+;; Block `i` as the public tree. A footnote definition is None: it is
+;; shown where it is referred to.
+(: (-> InlineContext int (Option MdBlock)))
+(defun (convert-block cx i)
+  (def st (record-ref cx blocks))
+  (def n (node st i))
+  (def k (record-ref n kind))
+  (cond
+    ((= k K-PARAGRAPH) (Some (MdParagraph (parse-inlines cx (record-ref n text)))))
+    ((= k K-HEADING) (Some (MdHeading (record-ref n level) (parse-inlines cx (record-ref n text)))))
+    ((= k K-CODE) (Some (MdCodeBlock (record-ref n info) (bytestring->string/lossy (record-ref n text)))))
+    ((= k K-HTML) (Some (MdHtmlBlock (bytestring->string/lossy (record-ref n text)))))
+    ((= k K-RULE) (Some MdRule))
+    ((= k K-QUOTE) (Some (MdQuote (convert-children cx i))))
+    ((= k K-LIST)
+     (Some (MdListBlock
+            (MdList (ordered (record-ref n ordered)) (start (record-ref n start))
+                    (loose (not (record-ref n tight)))
+                    (items {vecing (convert-item cx item) (:for item (live-children st i))})))))
+    ((= k K-TABLE) (Some (MdTableBlock (convert-table cx n))))
+    (else None)))
+
+;; A list item's blocks. With the task-lists extension, a first paragraph
+;; that starts with [ ], [x] or [X] and a space starts with a checkbox.
+(: (-> InlineContext int (Vec MdBlock)))
+(defun (convert-item cx i)
+  (def st (record-ref cx blocks))
+  (def blocks (convert-children cx i))
+  (def kids (live-children st i))
+  (def first-text
+    (if (and (record-ref (record-ref st ext) task-lists) (> (vec-length kids) 0)
+             (= (kind st (vec-ref kids 0)) K-PARAGRAPH))
+        (Some (record-ref (node st (vec-ref kids 0)) text))
+        None))
+  (match first-text
+    ((Some t)
+     #:when (and (at? t 0 #\[) (at? t 2 #\])
+                 (or (at? t 1 #\space) (at? t 1 #\x) (at? t 1 #\X))
+                 (space-or-tab? (at t 3)))
+     (def rest (parse-inlines cx (bytestring-slice t 3 (bytestring-length t))))
+     (vec-add-first (vec-drop blocks 1)
+                    (MdParagraph (vec-add-first rest (MdCheckbox (not (at? t 1 #\space)))))))
+    (_ blocks)))
+
+;; A table's rows, each with a cell for each column: a short row gets empty
+;; cells, and a long one loses its last ones.
+(: (-> InlineContext BNode MdTable))
+(defun (convert-table cx n)
+  (def aligns (record-ref n aligns))
+  (def width (vec-length aligns))
+  (def rows
+    {vecing (table-cells l)
+            (:for l (split-lines (bytestringbuilder->bytestring (record-ref n content))))
+            (:when (not (whitespace-only? l)))})
+  (def row-of
+    (fun (cells)
+     {vecing (if (< k (vec-length cells))
+                (parse-inlines cx (unescape-pipes (vec-ref cells k)))
+                [])
+            (:for k (range 0 width))}))
+  (MdTable (aligns aligns)
+           (head (row-of (vec-ref rows 0)))
+           (body {vecing (row-of r) (:for r (vec-drop rows 1))})))
+
+;; A cell without the backslashes of its escaped pipes, which are part of
+;; the cell and not of its Markdown.
+(: (-> ByteString ByteString))
+(defun (unescape-pipes c)
+  (def b (bytestringbuilder-empty))
+  (let go ((i 0))
+    (def x (at c i))
+    (cond
+      ((= x -1) unit)
+      ((and (= x (char->int #\\)) (at? c (+ i 1) #\|))
+       (add-byte! b (char->int #\|))
+       (go (+ i 2)))
+      (else (add-byte! b x) (go (+ i 1)))))
+  (bytestringbuilder->bytestring b))

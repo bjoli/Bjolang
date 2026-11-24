@@ -1,0 +1,55 @@
+;; The examples of the extensions in the GitHub Flavored Markdown spec,
+;; read by (text markdown) with its extensions on, and written with
+;; markdown->html and the tag filter. The other examples of that spec are
+;; CommonMark's, of an older version, and 588 has CommonMark's own.
+;;
+;; The examples are in TestFiles/assets/markdown/gfm-spec.txt, from
+;; `bjo task markdown-data`. In that file an example is between two fences of
+;; 32 backticks, a line of "." is between the Markdown and the HTML, and
+;; "→" is a tab.
+
+(import (std prelude))
+(import (text markdown))
+
+(: string)
+(def fence "````````````````````````````````")
+
+;; An example: its number in the file, its section, its Markdown and its
+;; HTML.
+(type (: Example (Record (: number int) (: section string) (: markdown string) (: html string))))
+
+;; The examples of the sections whose titles end in "(extension)".
+(: (-> (Vec string) (Vec Example)))
+(defun (extension-examples lines)
+  (def out (vecbuilder-empty))
+  (let go ((k 0) (section "") (number 0))
+    (when (< k (vec-length lines))
+      (def l (vec-ref lines k))
+      (cond
+        ((string-starts-with? l "## ") (go (+ k 1) (string-drop l 3) number))
+        ((string-starts-with? l (str fence " example"))
+         ;; The lines up to "." are the Markdown; up to the fence, the HTML.
+         (def dot {finding j (:for j (range (+ k 1) (vec-length lines))) (:when (= (vec-ref lines j) "."))})
+         (def end {finding j (:for j (range (+ k 1) (vec-length lines))) (:when (= (vec-ref lines j) fence))})
+         (match (Tuple dot end)
+           ((Tuple (Some d) (Some e))
+            (def text (fun (from to)
+                        (string-replace (string-join {vecing (str (vec-ref lines j) "\n") (:for j (range from to))} "")
+                                        "→" "\t")))
+            (when (string-ends-with? section "(extension)")
+              (vecbuilder-add! out (Example (number (+ number 1)) (section section)
+                                            (markdown (text (+ k 1) d)) (html (text (+ d 1) e)))))
+            (go (+ e 1) section (+ number 1)))
+           (_ (panic! "589: an example without its . or its closing fence"))))
+        (else (go (+ k 1) section number)))))
+  (vecbuilder->vec out))
+
+(defun (main)
+  (def examples (extension-examples (string-split (file-read-text "TestFiles/assets/markdown/gfm-spec.txt") "\n")))
+  (def failed
+    {counting #t
+              (:for e examples)
+              (:let got (markdown->html (markdown-parse (record-ref e markdown)) #:tag-filter #t))
+              (:when (not (= got (record-ref e html))))
+              (:do (println #"FAILURE: example ${(record-ref e number)} (${(record-ref e section)}): ${(written (record-ref e markdown))} gave ${(written got)} but wanted ${(written (record-ref e html))}"))})
+  (println #"gfm extensions: ${(- (vec-length examples) failed)} of ${(vec-length examples)} examples"))

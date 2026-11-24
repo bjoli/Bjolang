@@ -1,0 +1,169 @@
+;; Docs for text/markdown.bjo, read through (:doc #:file "markdown.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}. Every example
+;; is checked by TestFiles/590_markdown_extensions.bjo.
+
+(:doc #:module
+  (summary "Markdown: CommonMark 0.31.2 and the extensions of GitHub Flavored Markdown, read into a tree and written as HTML.")
+  (see markdown-parse markdown->html MdDocument)
+  (example """
+    (import (text markdown))
+
+    (def doc (markdown-parse "# Title\n\nSome *text*.\n"))
+    (record-ref doc blocks)
+    ;; [(MdHeading 1 [(MdText "Title")]) (MdParagraph [(MdText "Some ") (MdEmph [(MdText "text")]) (MdText ".")])]
+    (markdown->html doc)
+    ;; "<h1>Title</h1>\n<p>Some <em>text</em>.</p>\n"
+    """)
+  (reference """
+    @code{markdown-parse} reads a document into an @code{MdDocument}: a
+    tree of blocks (@code{MdBlock}) that contain inlines
+    (@code{MdInline}). @code{markdown->html} writes the tree as HTML. A
+    program that writes another format, or that reads the text of a
+    document, uses the tree.
+
+    @strong{Extensions.} These extensions are on by default. A keyword of
+    @code{markdown-parse} turns each one off:
+
+    @itemlist{
+      @item{@code{#:tables}: tables, with a delimiter row such as
+        @code{|:--|--:|}.}
+      @item{@code{#:task-lists}: a list item that starts with @code{[ ]}
+        or @code{[x]}.}
+      @item{@code{#:strikethrough}: @code{~~text~~}.}
+      @item{@code{#:autolinks}: links without @code{<>}, such as
+        @code{www.example.com}, @code{https://example.com} and e-mail
+        addresses.}
+      @item{@code{#:footnotes}: a reference @code{[^label]} and a
+        definition @code{[^label]: text}.}
+      @item{@code{#:front-matter}: YAML front matter. The document starts
+        with a line of @code{---} and the front matter stops at the next
+        line of @code{---} or @code{...}.}
+    }
+
+    With all extensions off, the parser obeys CommonMark 0.31.2. All 652
+    examples of the spec give the spec's HTML. With all extensions on and
+    with @code{#:tag-filter}, all the extension examples of the GitHub
+    Flavored Markdown spec give that spec's HTML.
+
+    @strong{Errors.} All text is a Markdown document, so
+    @code{markdown-parse} does not fail. Text that does not make a
+    construct is text: an unclosed @code{*} is a @code{*}.
+
+    @strong{Raw HTML.} HTML in the document goes into the output as it is.
+    Do not write the HTML of an untrusted document into a page without a
+    sanitizer. @code{#:tag-filter} disables only some tags, such as
+    @code{<script>}. It does not make the HTML safe.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The tree
+;; ---------------------------------------------------------------------------
+
+(:doc MdDocument
+  (summary "A parsed document: its blocks, its footnotes and its front matter.")
+  (field blocks "The blocks of the document, in order.")
+  (field footnotes "The footnotes that have a reference, each with its number. The numbers are 1, 2, ..., in the order of the first reference to each footnote. A footnote without a reference is not in the list.")
+  (field front-matter "The text between the lines of @code{---}, without them, or None when the document does not start with front matter.")
+  (see markdown-parse MdBlock))
+
+(:doc MdBlock
+  (summary "A block of a document.")
+  (case MdParagraph "A paragraph, with its inlines.")
+  (case MdHeading "A heading: its level, 1 to 6, and its inlines. An ATX heading (@code{# text}) and a setext heading (text with a line of @code{=} or @code{-} under it) are the same.")
+  (case MdCodeBlock "A code block: its info string and its code. The info string is the text after the opening fence, or \"\" for none and for an indented code block. The code ends with a newline when it is not empty.")
+  (case MdQuote "A block quote, with its blocks.")
+  (case MdListBlock "A list.")
+  (case MdRule "A thematic break: @code{***}, @code{---} or @code{___}.")
+  (case MdHtmlBlock "A block of raw HTML, as it is written.")
+  (case MdTableBlock "A table.")
+  (see MdInline MdList MdTable))
+
+(:doc MdList
+  (summary "A list and its items.")
+  (field ordered "@code{#t} for a numbered list, @code{#f} for a bullet list.")
+  (field start "The number of the first item of a numbered list. 1 for a bullet list.")
+  (field loose "@code{#t} when a blank line is between items, or between two blocks of an item. The paragraphs of a tight list's items have no @code{<p>} in HTML.")
+  (field items "The items. Each item is a vec of blocks."))
+
+(:doc MdTable
+  (summary "A table. Each row has one cell for each column.")
+  (field aligns "The alignment of each column, from the delimiter row.")
+  (field head "The header row: the inlines of each cell.")
+  (field body "The body rows. A row with fewer cells gets empty cells, and a row with more cells loses the extra cells."))
+
+(:doc MdAlign
+  (summary "The alignment of a table column.")
+  (case MdAlignNone "@code{---}.")
+  (case MdAlignLeft "@code{:--}.")
+  (case MdAlignCenter "@code{:-:}.")
+  (case MdAlignRight "@code{--:}."))
+
+(:doc MdInline
+  (summary "An inline: a part of the text of a paragraph, a heading or a table cell.")
+  (case MdText "Text, with its escapes and entities resolved.")
+  (case MdCode "A code span, without its backticks.")
+  (case MdEmph "Emphasis: @code{*text*} or @code{_text_}.")
+  (case MdStrong "Strong emphasis: @code{**text**} or @code{__text__}.")
+  (case MdStrike "Strikethrough: @code{~~text~~}.")
+  (case MdLink "A link: its destination, its title (\"\" for none) and its text. An autolink is a link whose text is its address.")
+  (case MdImage "An image: its source, its title (\"\" for none) and its description.")
+  (case MdSoftBreak "A line break in the source. HTML shows it as a space.")
+  (case MdHardBreak "A hard line break: two spaces or a @code{\\} at the end of a line.")
+  (case MdHtml "Raw HTML in the text, as it is written.")
+  (case MdCheckbox "The box of a task list item: @code{#t} for @code{[x]}, @code{#f} for @code{[ ]}. It is the first inline of the item's first paragraph.")
+  (case MdFootnoteRef "A reference to the footnote with this number in @code{(record-ref doc footnotes)}.")
+  (see inlines->plain-text))
+
+;; ---------------------------------------------------------------------------
+;; Reading and writing
+;; ---------------------------------------------------------------------------
+
+(:doc markdown-parse
+  (summary "Reads a Markdown document into a tree.")
+  (arg text "The document. A NUL character becomes U+FFFD.")
+  (key #:tables "Tables. The default is @code{#t}.")
+  (key #:task-lists "Task list items, @code{[ ]} and @code{[x]}. The default is @code{#t}.")
+  (key #:strikethrough "Strikethrough, @code{~~text~~}. The default is @code{#t}.")
+  (key #:autolinks "Links without @code{<>}: @code{www.}, @code{http://}, @code{https://} and e-mail addresses. The default is @code{#t}.")
+  (key #:footnotes "Footnotes. The default is @code{#t}. When off, @code{[^label]: text} is a link reference definition.")
+  (key #:front-matter "YAML front matter. The default is @code{#t}. When off, the first @code{---} is a thematic break.")
+  (returns "The document. With all keywords @code{#f}, the document is read as CommonMark 0.31.2.")
+  (see markdown->html MdDocument)
+  (example """
+    (record-ref (markdown-parse "- [x] done\n- ~~old~~\n") blocks)
+    ;; [(MdListBlock (MdList (ordered #f) (start 1) (loose #f) (items [[(MdParagraph [(MdCheckbox #t) (MdText "done")])] [(MdParagraph [(MdStrike [(MdText "old")])])]])))]
+
+    (record-ref (markdown-parse "---\ntitle: Notes\n---\nText.\n") front-matter)
+    ;; (Some "title: Notes")
+    """))
+
+(:doc markdown->html
+  (summary "Writes a document as HTML.")
+  (arg doc "The document.")
+  (key #:tag-filter "When @code{#t}, the @code{<} of these tags in raw HTML becomes @code{&lt;}: title, textarea, style, xmp, iframe, noembed, noframes, script and plaintext. The default is @code{#f}.")
+  (returns "The HTML, as the CommonMark spec's examples write it. Each block starts on a new line.")
+  (see markdown-parse)
+  (example """
+    (markdown->html (markdown-parse "A note[^1].\n\n[^1]: The note.\n"))
+    ;; "<p>A note<sup class=\"footnote-ref\"><a href=\"#fn-1\" id=\"fnref-1\" data-footnote-ref>1</a></sup>.</p>\n<section class=\"footnotes\" data-footnotes>\n<ol>\n<li id=\"fn-1\">\n<p>The note. <a href=\"#fnref-1\" class=\"footnote-backref\" data-footnote-backref data-footnote-backref-idx=\"1\" aria-label=\"Back to reference 1\">↩</a></p>\n</li>\n</ol>\n</section>\n"
+    """)
+  (reference """
+    The footnotes are a @code{<section>} at the end of the output. Each
+    footnote has a link back to each reference to it. The links go into
+    the footnote's last paragraph. When a footnote has more than one
+    reference, the ids of the references after the first are
+    @code{fnref-N-2}, @code{fnref-N-3}, ...
+    """))
+
+(:doc inlines->plain-text
+  (summary "The text of inlines, without their markup.")
+  (arg xs "The inlines.")
+  (returns "The text. A line break becomes a newline, a footnote reference becomes its number, and a checkbox becomes \"\".")
+  (example """
+    (inlines->plain-text [(MdText "a ") (MdStrong [(MdCode "b")])])
+    ;; "a b"
+    """)
+  (reference """
+    @code{markdown->html} uses it for the alt text of an image. Use it also
+    for the text of a heading in a table of contents.
+    """))

@@ -9,7 +9,7 @@
 ;;   build_std.sh, run_tests.py and run_bjo_tests.py. They must work when
 ;;   the tree does not build.
 
-(export unicode-tables bench Suite clean)
+(export unicode-tables markdown-data bench Suite clean)
 
 (import (std prelude))
 (import (std argparse))
@@ -21,6 +21,7 @@
 (import "tools/unicode/chars.bjo")
 (import "tools/unicode/grapheme.bjo")
 (import "tools/unicode/normalize.bjo")
+(import "tools/markdown/entities.bjo")
 
 ;; ---------------------------------------------------------------------------
 ;; unicode-tables
@@ -74,6 +75,43 @@
   (when (none? ucd) (directory-delete-tree dir))
   (when build (task-run! ["./build_std.sh"]))
   (println "The tables are written. Run ./run_tests.py, then look at git diff."))
+
+;; ---------------------------------------------------------------------------
+;; markdown-data
+;; ---------------------------------------------------------------------------
+
+;; The CommonMark version whose spec examples the tests of (text markdown)
+;; run.
+(: string)
+(def commonmark-version "0.31.2")
+
+;; Downloads `url` to `file`. Ends the task when the download fails.
+(: (-> string string void))
+(defun (download url file)
+  (task-run! ["curl" "--fail" "--silent" "--show-error" "--location" "--create-dirs"
+              "-o" file url]))
+
+(:doc markdown-data
+  (summary "Downloads the data of (text markdown): the HTML entities, and the spec examples its tests run.")
+  (key #:build "Run build_std.sh after the entity table is written.")
+  (reference """
+    It writes @code{lib/text/markdown-entities.protobjo} from WHATWG's
+    @code{entities.json}. It downloads the examples of the CommonMark spec
+    and of the GitHub Flavored Markdown spec to
+    @code{TestFiles/assets/markdown}.
+    """))
+(: (-> (#:build bool) void))
+(defun (markdown-data #:build #t)
+  (def dir (make-temp-directory #:prefix "bjolang-markdown-"))
+  (def entities (path-combine dir "entities.json"))
+  (download "https://html.spec.whatwg.org/entities.json" entities)
+  (entity-table-file entities)
+  (directory-delete-tree dir)
+  (download #"https://spec.commonmark.org/${commonmark-version}/spec.json"
+            "TestFiles/assets/markdown/commonmark-spec.json")
+  (download "https://raw.githubusercontent.com/github/cmark-gfm/master/test/spec.txt"
+            "TestFiles/assets/markdown/gfm-spec.txt")
+  (when build (task-run! ["./build_std.sh"])))
 
 ;; ---------------------------------------------------------------------------
 ;; bench
