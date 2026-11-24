@@ -1,0 +1,42 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; Examples/samizdat/markdown.bjo — a document in, Markdown out.
+;;
+;;     bjo run Examples/samizdat/markdown.bjo docs/index.sz            # writes docs/index.md
+;;     bjo run Examples/samizdat/markdown.bjo docs/index.sz README.md
+;;
+;; For docs that live in a repository and are read on GitHub. A link to
+;; another page of them, "reference.html", goes to its Markdown,
+;; "reference.md", which is the same command away.
+
+(import (std prelude))
+(import (samizdat expand))
+(import (samizdat commands))
+(import (samizdat gfm))
+
+(: without-suffix (-> string string string))
+(defun (without-suffix s suffix)
+  (if (string-ends-with? s suffix)
+      (substring s (string-cursor-start s)
+                 (loop (:for i (range 0 (string-length suffix)))
+                       (:acc at (folding (string-cursor-end s) (string-cursor-prev s at)))))
+      s))
+
+;; A page beside this one; not a site's, and not one with a #fragment.
+(: local-page (-> string string))
+(defun (local-page url)
+  (if (and (string-ends-with? url ".html") (not (string-contains? url "://")))
+      (str (without-suffix url ".html") ".md")
+      url))
+
+(defun (main args)
+  (def input (if (> (vec-length args) 0) (vec-ref args 0) "Examples/samizdat/post.sz"))
+  (def output (if (> (vec-length args) 1) (vec-ref args 1) (str (without-suffix input ".sz") ".md")))
+  (match (read-document-file input standard-commands)
+    ((Err e) (println e) 1)
+    ((Ok doc)
+     (file-write-text output (markdown-page doc #:with (markdown-options #:url-hook local-page)))
+     (println (str "wrote " output))
+     0)))

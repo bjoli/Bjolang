@@ -1,0 +1,233 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; 596_samizdat_gfm.bjo — the Markdown converter.
+;;
+;; Markup in, through the standard commands, and the Markdown out compared as
+;; text. Then documents written as Markdown and read back by @markdown, whose
+;; HTML must be the HTML of the document they were written from: what the
+;; escaping and the emphasis are for.
+
+(import (std prelude))
+(import (std simpletest))
+(import (samizdat doc))
+(import (samizdat expand))
+(import (samizdat commands))
+(import (samizdat html))
+(import (samizdat gfm))
+
+(: doc-of (-> string Document))
+(defun (doc-of text)
+  (match (read-document text standard-commands #:typography #f)
+    ((Ok d) d)
+    ((Err e) (Document (meta None) (blocks [(Para [(Str (str "error: " e))])]) (notes (vec-empty))
+                       (sources (vec-empty))))))
+
+(: md-with (-> Md string string))
+(defun (md-with h text) (document->markdown (doc-of text) #:with h))
+
+(: md-of (-> string string))
+(defun (md-of text) (md-with default-markdown text))
+
+;; HTML without the <a id="..."></a> that #:anchors 'html puts in headings.
+(: unanchored (-> string string))
+(defun (unanchored html)
+  (loop (:for part (string-split html "<a id=\""))
+        (:for i (up-from 0))
+        (:acc out (folding "" (str out (if (= i 0)
+                                           part
+                                           (let ((fields (string-split part "\"></a>")))
+                                             (if (and (> (vec-length fields) 1) (not (string-contains? (vec-ref fields 0) "\"")))
+                                                 (string-join (vec-remove-at fields 0) "\"></a>")
+                                                 (str "<a id=\"" part)))))))))
+
+;; The document's HTML, and the HTML of its Markdown read back. Headings at
+;; their own level, so that # is a section as it is for @markdown, and with
+;; samizdat's ids, which the reader makes again.
+(: both-ways (-> string (Tuple string string)))
+(defun (both-ways text)
+  (def d (doc-of text))
+  (def md (document->markdown d #:with (markdown-options #:heading-offset 0 #:anchors 'html)))
+  (Tuple (document->html d)
+         (match (read-document (str "@markdown|<{\n" md "\n}>|") standard-commands #:typography #f)
+           ((Ok back) (unanchored (document->html back)))
+           ((Err e) (str "error: " e "\n" md)))))
+
+(: round-trip (-> string string void))
+(defun (round-trip name text)
+  (match (both-ways text)
+    ((Tuple want got) (expect name got want))))
+
+(: warnings (-> Md Block (Option string)))
+(defun (warnings h b)
+  (match b
+    ((Div "warning" bs) (Some (str "> [!WARNING]\n" (string-join (vec-map (fun (l) (str "> " l))
+                                                                          (string-split (blocks->markdown h bs) "\n"))
+                                                                 "\n"))))
+    (_ None)))
+
+(: html->md (-> string string))
+(defun (html->md url)
+  (if (string-ends-with? url ".html") (str (string-replace url ".html" "") ".md") url))
+
+(defun (main args)
+  ;; --- text -----------------------------------------------------------------
+  (expect "a paragraph, emphasis, and what is left alone"
+          (md-of "Hi @em{there} & <you>, @strong{bold}.")
+          "Hi *there* & \\<you>, **bold**.")
+  (expect "what Markdown would read as markup is escaped"
+          (md-of "2*3 = [x] `y` a_b _c_ ~d~ $5 AT&T &amp; \\ #1")
+          "2\\*3 = \\[x\\] \\`y\\` a_b \\_c\\_ \\~d\\~ \\$5 AT&T \\&amp; \\\\ #1")
+  (expect "what begins a block, at the start of a line"
+          (md-of "# not\n- not\n1. not\n12) not\n+ x\n> q\n= y\n2024 was")
+          "\\# not\n\\- not\n1\\. not\n12\\) not\n\\+ x\n\\> q\n\\= y\n2024 was")
+  (expect "a ! before a link"
+          (md-of "Wow!@link[\"u\"]{x}")
+          "Wow\\![x](u)")
+  (expect "space around a paragraph's lines, and blank ones, go"
+          (md-of "@lineblock{one@|br|   two}")
+          "one\\\ntwo")
+
+  ;; --- emphasis ---------------------------------------------------------------
+  (expect "inside a word"
+          (md-of "a@em{b}c and un@strong{believ}able")
+          "a*b*c and un**believ**able")
+  (expect "space goes outside the marks"
+          (md-of "a@em{ x }b")
+          "a *x* b")
+  (expect "punctuation inside the marks, a letter outside: HTML"
+          (md-of "@em{\"x\"}y and @em{\"x\"} y")
+          "<em>\"x\"</em>y and *\"x\"* y")
+  (expect "nested, and side by side"
+          (md-of "@strong{@em{x} y} @em{@em{x}} @em{a}@em{b} @strong{a}@em{b} @strike{gone}")
+          "***x* y** *<em>x</em>* *ab* <strong>a</strong>*b* ~~gone~~")
+  (expect "empty emphasis is nothing"
+          (md-of "a@em{}b")
+          "ab")
+
+  ;; --- code, links, images ------------------------------------------------------
+  (expect "code with backticks in it"
+          (md-of "@code{a`b} @code{`x} @code{ y } @code{*z*}")
+          "``a`b`` `` `x `` `  y  ` `*z*`")
+  (expect "links: bare, with space, to a heading not in the document"
+          (md-of "@link[\"https://x.org\"] @link[\"a b.html\"]{t} @link[\"#nowhere\"]{n}")
+          "<https://x.org> [t](<a b.html>) [n](#nowhere)")
+  (expect "an image, its alt escaped"
+          (md-of "@image[\"c.png\" #:alt \"A [cat]\"]")
+          "![A \\[cat\\]](c.png)")
+  (expect "a figure: the image, and its caption below"
+          (md-of "@image[\"c.png\" #:alt \"cat\"]{A cat.}")
+          "![cat](c.png)\n\n*A cat.*")
+  (expect "sup, sub, and raw text for markdown and html only"
+          (md-of "x@sup{2} H@sub{2}O @raw[\"html\"]{<kbd>k</kbd>}@raw[\"latex\"]{\\LaTeX}@raw[\"markdown\"]{*m*}")
+          "x<sup>2</sup> H<sub>2</sub>O <kbd>k</kbd>*m*")
+  (expect "#:url-hook"
+          (md-with (markdown-options #:url-hook html->md) "@link[\"reference.html\"]{the reference}")
+          "[the reference](reference.md)")
+
+  ;; --- headings -----------------------------------------------------------------
+  (expect "levels, under a page's # unless #:heading-offset says"
+          (md-of "@section{One}\n@subsection{Two}\n@subsubsection*{Three}")
+          "## One\n\n### Two\n\n#### Three")
+  (expect "#:heading-offset 0"
+          (md-with (markdown-options #:heading-offset 0) "@section{One}")
+          "# One")
+  (expect "a # at the end is escaped"
+          (md-of "@section{In C#}")
+          "## In C\\#")
+  (expect "a link to a heading goes to GitHub's id for it"
+          (md-of "@section{C# & .NET}\nSee @ref[\"c-net\"], @ref[\"usage\"] and @ref[\"usage-2\"].\n@section{Usage}\n@section{Usage}")
+          (str "## C# & .NET\n\nSee [C# & .NET](#c--net), [Usage](#usage) and [Usage](#usage-1).\n\n"
+               "## Usage\n\n## Usage"))
+  (expect "#:anchors 'html keeps samizdat's ids"
+          (md-with (markdown-options #:anchors 'html) "@section{Usage}\nSee @ref[\"usage\"].")
+          "## <a id=\"usage\"></a>Usage\n\nSee [Usage](#usage).")
+  (expect "an anchor is an <a id> with samizdat's id, and a link to it keeps the id"
+          (document->markdown (Document (meta None)
+                                        (blocks [(Para [(Anchor "here") (Str "Text, and ")
+                                                        (Link "#here" [(Str "back")])])])
+                                        (notes (vec-empty)) (sources (vec-empty))))
+          "<a id=\"here\"></a>Text, and [back](#here)")
+  (expect "numbered headings, and GitHub's id for one, which has its number"
+          (md-of "@numbered-headings\n@section{Intro}\n@subsection{Detail}\nSee @ref[\"detail\"].")
+          "## 1 Intro\n\n### 1.1 Detail\n\nSee [1.1 Detail](#11-detail).")
+  (expect "a table of contents"
+          (md-of "@toc\n@section{A}\n@subsection{B}")
+          "- [A](#a)\n  - [B](#b)\n\n## A\n\n### B")
+
+  ;; --- blocks -------------------------------------------------------------------
+  (expect "a code block, fenced longer than what is in it"
+          (md-of "@codeblock[#:lang \"scheme\"]|{(f)\n```}|")
+          "````scheme\n(f)\n```\n````")
+  (expect "a quotation"
+          (md-of "@blockquote{One.\n\nTwo.}")
+          "> One.\n>\n> Two.")
+  (expect "a rule"
+          (md-of "a\n@hr\nb")
+          "a\n\n---\n\nb")
+
+  ;; --- lists --------------------------------------------------------------------
+  (expect "a tight list, with a list inside"
+          (md-of "@read-list{\n- one\n  - inner\n- two\n}")
+          "- one\n  - inner\n- two")
+  (expect "a numbered list from 3"
+          (md-of "@itemlist[#:style ordered #:start 3]{@item{a} @item{b}}")
+          "3. a\n4. b")
+  (expect "a loose list"
+          (md-of "@itemlist{@item{One.\n\nMore.} @item{Two.}}")
+          "- One.\n\n  More.\n\n- Two.")
+  (expect "a task list"
+          (md-of "@itemlist{@item{@checkbox done} @item{@checkbox[#:checked #t] did}}")
+          "- [ ] done\n- [x] did")
+  (expect "two lists in a row are told apart"
+          (md-of "@itemlist{@item{a}}@itemlist{@item{b}}@itemlist[#:style ordered]{@item{c}}@itemlist[#:style ordered]{@item{d}}")
+          "- a\n\n* b\n\n1. c\n\n1) d")
+  (expect "a definition list is HTML around Markdown"
+          (md-of "@deflist{@term{@code{st}} @def{The @em{state}.}}")
+          "<dl>\n<dt><code>st</code></dt>\n<dd>\n\nThe *state*.\n\n</dd>\n</dl>")
+
+  ;; --- tables ---------------------------------------------------------------------
+  (expect "a table, aligned, with a | in a cell"
+          (md-of "@read-table{\n| Name | Cups |\n|:-----|-----:|\n| a\\|b | @code{x|y} |\n| Bob | 12 |\n}")
+          "| Name |   Cups |\n| :--- | -----: |\n| a\\|b | `x\\|y` |\n| Bob  |     12 |")
+  (expect "a table without a head, with a caption and two groups"
+          (md-of "@read-table[#:caption \"Cups\"]{\n| a | 1 |\n|---+---|\n| b | 2 |\n}")
+          "*Cups*\n\n| a   |   1 |\n| --- | --: |\n| b   |   2 |")
+
+  ;; --- notes, hooks, a page -------------------------------------------------------
+  (expect "footnotes at the end, a note's later blocks indented"
+          (md-of "A.@note{One.} B.@note{First.\n\nSecond.}")
+          "A.[^1] B.[^2]\n\n[^1]: One.\n\n[^2]: First.\n\n    Second.")
+  (expect "a block hook"
+          (md-with (markdown-options #:block-hook warnings) "@div[\"warning\"]{Careful @em{now}.}")
+          "> [!WARNING]\n> Careful *now*.")
+  (expect "a page: the title as a heading, counted among GitHub's ids"
+          (markdown-page (doc-of "(meta (title \"Usage\"))\n@section{Usage}\nSee @ref[\"usage\"]."))
+          "# Usage\n\n## Usage\n\nSee [Usage](#usage-1).\n")
+
+  ;; --- read back -------------------------------------------------------------------
+  (round-trip "text and its escapes"
+              "2*3 = [x] `y` a_b _c_ ~d~ $5 AT&T &amp; \\ <b> Wow!@link[\"u\"]{x} *@em{y}*")
+  (round-trip "line starts"
+              "# not\n- not\n1. not\n12) not\n+ x\n> q\n= y\n---\n***\n2024 was")
+  (round-trip "emphasis of every kind"
+              (str "a@em{b}c @em{\"x\"}y @strong{@em{x} y} @em{@strong{x} y} "
+                   "@strong{a}@em{b} @strike{a}b @em{.}a @strong{a@em{b}}c"))
+  (round-trip "code and links"
+              "@code{a`b} @code{`x} @code{ y } @link[\"https://x.org\"] @link[\"a b.html\"]{t @em{u}} @image[\"c.png\" #:alt \"A [cat]\"]")
+  (round-trip "headings and references"
+              "@section{C# & .NET}\nSee @ref[\"c-net\"].\n@subsection{In C#}\n@section{Usage}\n@section{Usage}\nAnd @ref[\"usage-2\"].")
+  (round-trip "lists, nested and numbered, tasks"
+              (str "@read-list{\n- one\n  1. inner\n  2. more\n- two\n}\n"
+                   "@itemlist[#:style ordered]{@item{a} @item{b}}"
+                   "@itemlist{@item{One.\n\nMore.} @item{@checkbox[#:checked #t] Two.}}"
+                   "@itemlist{@item{x}}@itemlist{@item{y}}"))
+  (round-trip "quotations and code"
+              "@blockquote{One.\n\n@codeblock[#:lang \"scheme\"]|{(f)\n```\n}|\n\nTwo.}")
+  (round-trip "a table"
+              "@read-table{\n| Name | Cups |\n|:-----|-----:|\n| a\\|b @em{c} | @code{x} |\n| Bob | 12 |\n}")
+  (round-trip "footnotes"
+              "A.@note{One.} B.@note{First.\n\nSecond.}")
+  (println "gfm ok")
+  0)

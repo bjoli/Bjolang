@@ -1,0 +1,792 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; samizdat/gfm.bjo — the module (samizdat gfm).
+;;
+;; A converter: a `Document` as GitHub Flavored Markdown, for a page read
+;; where Markdown is shown — a repository's README, or its docs/.
+;;
+;;     (document->markdown doc)            the blocks, then the footnotes
+;;     (markdown-page doc #:title "...")   the same under a # heading: a file
+;;     (blocks->markdown h bs)             part of a document, for a hook
+;;     (inlines->markdown h xs)
+;;
+;; What Markdown has, it is written as: emphasis, code, links, lists, task
+;; lists, quotations, fenced code, tables, footnotes as [^1]. What it has
+;; not is HTML, which GitHub shows: <sup>, <sub>, and a definition list as a
+;; <dl> whose definitions are Markdown again. Text is escaped where Markdown
+;; would read it as markup, and nowhere else, so that the file reads as
+;; text too. Emphasis Markdown cannot write — a word half in it, after a
+;; quotation mark — is <em>.
+;;
+;; A heading's id is GitHub's: GitHub makes one from the heading's text,
+;; which is not how samizdat makes them, so a link to a heading in the
+;; document — @ref, @toc, @docref — is changed to GitHub's id for it.
+;; `#:anchors 'html` instead keeps samizdat's ids, in an <a id> in each
+;; heading. An `Anchor` is an <a id> with samizdat's id either way, and a
+;; link to it keeps that id: GitHub finds an <a id> by its own id.
+;;
+;; Raw text for "markdown" or "html" is passed through, and for any other
+;; format left out. `Span` and `Div` are what they hold. A hook takes over
+;; one kind of block or inline, as for HTML, and answers the text it makes:
+;;
+;;     (markdown-options #:block-hook
+;;       (fun (h b)
+;;         (match b
+;;           ((Div "aside" bs) (Some (blocks->markdown h [(Quote bs)])))
+;;           (_ None))))
+;;
+;; `#:url-hook` rewrites every link's and image's target: a site's
+;; "reference.html" is "reference.md" in a repository.
+
+(export
+  Md MdAnchors markdown-options default-markdown
+  document->markdown markdown-page blocks->markdown inlines->markdown
+  escape-markdown github-slug)
+
+(import (std prelude))
+(import (samizdat doc))
+;; A definition's term is written in its <dt> as HTML.
+(import (only (samizdat html) inlines->html default-html escape-attribute))
+
+;; ---------------------------------------------------------------------------
+;; Options
+;; ---------------------------------------------------------------------------
+
+;; How a heading gets its id: `'github` or `'html`.
+(def/grammar MdAnchors
+  (:or (: AnchorsGithub 'github)
+       (: AnchorsHtml 'html)))
+
+(type-rec
+  (: Md #:opaque (Record (: offset int)
+                         (: anchors MdAnchors)
+                         (: block-hook (-> Md Block (Option string)))
+                         (: inline-hook (-> Md Inline (Option string)))
+                         (: url-hook (-> string string))
+                         ;; samizdat's id of each heading, to GitHub's.
+                         (: slugs (Map string string)))))
+
+(: no-block-hook (-> Md Block (Option string)))
+(defun (no-block-hook h b) None)
+
+(: no-inline-hook (-> Md Inline (Option string)))
+(defun (no-inline-hook h i) None)
+
+(: same-url (-> string string))
+(defun (same-url u) u)
+
+(: markdown-options (-> (#:heading-offset int) (#:anchors MdAnchors)
+                        (#:block-hook (-> Md Block (Option string)))
+                        (#:inline-hook (-> Md Inline (Option string)))
+                        (#:url-hook (-> string string))
+                        Md))
+(defun (markdown-options #:heading-offset 1 #:anchors 'github
+                         #:block-hook no-block-hook #:inline-hook no-inline-hook
+                         #:url-hook same-url)
+  (Md (offset heading-offset) (anchors anchors) (block-hook block-hook) (inline-hook inline-hook)
+      (url-hook url-hook) (slugs (map-empty))))
+
+(: default-markdown Md)
+(def default-markdown (markdown-options))
+
+(: with-slugs (-> Md (Map string string) Md))
+(defun (with-slugs h slugs)
+  (Md (offset (record-ref h offset)) (anchors (record-ref h anchors))
+      (block-hook (record-ref h block-hook)) (inline-hook (record-ref h inline-hook))
+      (url-hook (record-ref h url-hook)) (slugs slugs)))
+
+;; ---------------------------------------------------------------------------
+;; Strings
+;; ---------------------------------------------------------------------------
+
+(: first-char (-> string (Option char)))
+(defun (first-char s)
+  (if (string-empty? s) None (Some (string-cursor-ref s (string-cursor-start s)))))
+
+(: last-char (-> string (Option char)))
+(defun (last-char s)
+  (if (string-empty? s) None (Some (string-cursor-ref s (string-cursor-prev s (string-cursor-end s))))))
+
+(: drop-first (-> string string))
+(defun (drop-first s)
+  (substring s (string-cursor-next s (string-cursor-start s)) (string-cursor-end s)))
+
+(: drop-last (-> string string))
+(defun (drop-last s)
+  (substring s (string-cursor-start s) (string-cursor-prev s (string-cursor-end s))))
+
+(: is? (-> (Option char) char bool))
+(defun (is? o c)
+  (match o
+    ((Some d) (char=? d c))
+    (None #f)))
+
+(: repeat (-> char int string))
+(defun (repeat c n) (string-pad-left "" n #:with c))
+
+(: spaces (-> int string))
+(defun (spaces n) (repeat #\space n))
+
+;; The space before the first character that is not space, what is between,
+;; and the space after the last.
+(: edges (-> string (Tuple string string string)))
+(defun (edges s)
+  (match (string-find (fun (c) (not (char-whitespace? c))) s)
+    (None (Tuple s "" ""))
+    ((Some from)
+     (def to (let back ((at (string-cursor-end s)))
+               (def p (string-cursor-prev s at))
+               (if (char-whitespace? (string-cursor-ref s p)) (back p) at)))
+     (Tuple (substring s (string-cursor-start s) from)
+            (substring s from to)
+            (substring s to (string-cursor-end s))))))
+
+(: longest-run (-> string char int))
+(defun (longest-run s c)
+  (def cs (string->vec s))
+  (let go ((i 0) (current 0) (best 0))
+    (if (= i (vec-length cs))
+        best
+        (let ((k (if (char=? (vec-ref cs i) c) (+ current 1) 0)))
+          (go (+ i 1) k (max best k))))))
+
+(: ascii-digit? (-> char bool))
+(defun (ascii-digit? c) (and (char>=? c #\0) (char<=? c #\9)))
+
+(: word-char? (-> char bool))
+(defun (word-char? c) (or (char-alphabetic? c) (char-numeric? c)))
+
+;; The first line after `first`, and each line after it after `rest`; a
+;; blank line stays blank. How a list item or a footnote holds its blocks.
+(: hang (-> string string string string))
+(defun (hang text first rest)
+  (string-join (loop (:for line (string-split text "\n"))
+                     (:for i (up-from 0))
+                     (:acc (vecing (cond ((= i 0) (str first line))
+                                         ((string-empty? line) "")
+                                         (else (str rest line))))))
+               "\n"))
+
+;; ---------------------------------------------------------------------------
+;; Escaping
+;; ---------------------------------------------------------------------------
+;; Within a line. What only matters at the start of one — # > - + = and
+;; 1. — is `line-start`'s, once a paragraph is in lines.
+
+(: always-escaped string)
+(def always-escaped "\\`*[]<~$")
+
+;; `&` begins an entity only when a name and a ; follow it.
+(: entity-at? (-> (Vec char) int bool))
+(defun (entity-at? cs i)
+  (def n (vec-length cs))
+  (let go ((j (+ i 1)))
+    (cond ((= j n) #f)
+          ((let ((c (vec-ref cs j))) (or (word-char? c) (char=? c #\#))) (go (+ j 1)))
+          (else (and (> j (+ i 1)) (char=? (vec-ref cs j) #\;))))))
+
+;; `next` is the character the next inline begins with: a ! before a link's
+;; [ would make it an image.
+(: escaped? (-> (Vec char) int (Option char) bool))
+(defun (escaped? cs i next)
+  (def n (vec-length cs))
+  (def c (vec-ref cs i))
+  (cond ((string-contains? always-escaped (char->string c)) #t)
+        ;; Between letters, _ is never emphasis.
+        ((char=? c #\_) (not (and (> i 0) (< (+ i 1) n)
+                                  (word-char? (vec-ref cs (- i 1)))
+                                  (word-char? (vec-ref cs (+ i 1))))))
+        ((char=? c #\&) (entity-at? cs i))
+        ((char=? c #\!) (and (= (+ i 1) n) (is? next #\[)))
+        (else #f)))
+
+(: escape-text (-> string (Option char) string))
+(defun (escape-text s next)
+  (def cs (string->vec s))
+  (def b (stringbuilder-empty))
+  (loop (:for i (range 0 (vec-length cs)))
+        (:do (when (escaped? cs i next) (stringbuilder-add! b #\\))
+             (stringbuilder-add! b (vec-ref cs i))))
+  (stringbuilder->string b))
+
+;; Text, escaped so that Markdown shows it as it is, within a line.
+(: escape-markdown (-> string string))
+(defun (escape-markdown s) (escape-text s None))
+
+;; A line of a paragraph, with what would make it a heading, a quotation, a
+;; list item or a rule escaped. The line has no space in front.
+(: line-start (-> string string))
+(defun (line-start line)
+  (match (first-char line)
+    ((Some c)
+     (cond ((string-contains? "#>-+=" (char->string c)) (str "\\" line))
+           ((ascii-digit? c) (escape-number line))
+           (else line)))
+    (None line)))
+
+;; 1. and 1) begin a numbered list, with up to nine digits.
+(: escape-number (-> string string))
+(defun (escape-number line)
+  (let go ((at (string-cursor-start line)) (n 0))
+    (if (string-cursor-end? line at)
+        line
+        (let ((c (string-cursor-ref line at)))
+          (cond ((ascii-digit? c) (go (string-cursor-next line at) (+ n 1)))
+                ((and (<= n 9) (or (char=? c #\.) (char=? c (int->char 41))))
+                 (str (substring line (string-cursor-start line) at) "\\" (substring line at (string-cursor-end line))))
+                (else line))))))
+
+;; ---------------------------------------------------------------------------
+;; Headings' ids
+;; ---------------------------------------------------------------------------
+
+;; GitHub's id for a heading: its text lower-cased, without what is not a
+;; letter, a digit, a mark, - or _, and with a dash for each space.
+(: github-slug (-> string string))
+(defun (github-slug text)
+  (def b (stringbuilder-empty))
+  (string-for-each (fun (c)
+                     (cond ((char=? c #\space) (stringbuilder-add! b #\-))
+                           ((or (word-char? c) (char=? c #\-) (char=? c #\_)
+                                (string-starts-with? (symbol->string (char-general-category c)) "M"))
+                            (stringbuilder-add! b c))
+                           (else unit)))
+                   (string-downcase text))
+  (stringbuilder->string b))
+
+;; Each heading's id, "" for one without, and its text, in the order they
+;; are written.
+(: headings-of (-> (Vec Block) (Vec (Tuple string string))))
+(defun (headings-of bs)
+  (vec-fold (fun (b out)
+              (vec-append out (match b
+                               ((Heading level id xs) [(Tuple id (inlines->text xs))])
+                               ((UnnumberedHeading level xs) [(Tuple "" (inlines->text xs))])
+                               ((Quote inner) (headings-of inner))
+                               ((Div c inner) (headings-of inner))
+                               ((ItemList numbered start items)
+                                (vec-fold (fun (item acc) (vec-append acc (headings-of item))) (vec-empty) items))
+                               ((DefinitionList entries)
+                                (vec-fold (fun (entry acc)
+                                            (match entry
+                                              ((Tuple term defs)
+                                               (vec-fold (fun (d more) (vec-append more (headings-of d))) acc defs))))
+                                          (vec-empty) entries))
+                               (_ (vec-empty)))))
+            (vec-empty) bs))
+
+;; As GitHub numbers them: the second "Usage" is usage-1, the third usage-2.
+(: slug-map (-> (Vec (Tuple string string)) (Map string string)))
+(defun (slug-map headings)
+  (def result
+    (vec-fold (fun (heading acc)
+                (match (Tuple heading acc)
+                  ((Tuple (Tuple id text) (Tuple slugs seen))
+                   (def base (github-slug text))
+                   (match (let go ((candidate base) (seen seen))
+                            (if (map-contains? seen candidate)
+                                (let ((n (+ (map-ref-or seen base 0) 1)))
+                                  (go (str base "-" (int->string n)) (map-set seen base n)))
+                                (Tuple candidate (map-set seen candidate 0))))
+                     ((Tuple slug now-seen)
+                      (Tuple (if (string-empty? id) slugs (map-set slugs id slug)) now-seen))))))
+              (Tuple (map-empty) (map-empty))
+              headings))
+  (match result ((Tuple slugs seen) slugs)))
+
+;; ---------------------------------------------------------------------------
+;; Inlines
+;; ---------------------------------------------------------------------------
+;; Emphasis is * and ** only where Markdown reads them back so: the
+;; character before an opening one and after a closing one decide, by the
+;; rules of CommonMark's "flanking". So an inline is written knowing the kind
+;; of character before it and after it, and whether that character is an *
+;; or a ~ of a neighbour's, which would run into its own.
+
+(type (: Flank (Union AtSpace AtPunct AtWord)))
+
+(: flank-of (-> char Flank))
+(defun (flank-of c)
+  (if (char-whitespace? c)
+      AtSpace
+      (let ((category (symbol->string (char-general-category c))))
+        (if (or (string-starts-with? category "P") (string-starts-with? category "S")) AtPunct AtWord))))
+
+(: word? (-> Flank bool))
+(defun (word? f)
+  (match f
+    (AtWord #t)
+    (_ #f)))
+
+;; Where the inlines are: a line break is a backslash in a paragraph, a
+;; space in a heading and a <br> in a table's cell.
+(type (: Mode (Union InPara InHeading InCell)))
+
+;; What an inline begins with: its first character's kind, and the
+;; character when a neighbour cares — an * or ~ of emphasis, or a link's [.
+(: lead (-> Inline (Tuple Flank (Option char))))
+(defun (lead x)
+  (match x
+    ((Str s) (Tuple (match (first-char s) ((Some c) (flank-of c)) (None AtWord)) None))
+    ((Emph xs) (Tuple AtPunct (Some #\*)))
+    ((Strong xs) (Tuple AtPunct (Some #\*)))
+    ((Strike xs) (Tuple AtPunct (Some #\~)))
+    ((Link url xs) (Tuple AtPunct (Some #\[)))
+    ((NoteRef n) (Tuple AtPunct (Some #\[)))
+    ((Span c xs) (if (vec-empty? xs) (Tuple AtWord None) (lead (vec-ref xs 0))))
+    ((RawInline f s) (Tuple (match (first-char s) ((Some c) (flank-of c)) (None AtWord)) None))
+    (_ (Tuple AtPunct None))))
+
+;; Two of a kind side by side are one: "a" "b" is "ab", which escapes an _
+;; between them rightly, and *a**b* would not read back as two.
+(: absorb (-> (Vec Inline) Inline (Vec Inline)))
+(defun (absorb out x)
+  (def n (vec-length out))
+  (def merged (if (= n 0)
+                  None
+                  (match (Tuple (vec-ref out (- n 1)) x)
+                    ((Tuple (Str a) (Str b)) (Some (Str (str a b))))
+                    ((Tuple (Emph a) (Emph b)) (Some (Emph (vec-append a b))))
+                    ((Tuple (Strong a) (Strong b)) (Some (Strong (vec-append a b))))
+                    ((Tuple (Strike a) (Strike b)) (Some (Strike (vec-append a b))))
+                    (_ None))))
+  (match merged
+    ((Some y) (vec-set out (- n 1) y))
+    (None (match x
+            ((Str "") out)
+            (_ (vec-add out x))))))
+
+(: member? (-> string (List string) bool))
+(defun (member? s xs)
+  (match xs
+    (Nil #f)
+    ((Cons y rest) (or (= y s) (member? s rest)))))
+
+;; `before` and `after` are the kinds of character around the inlines;
+;; `prev` and `next` the characters of the neighbours, as `lead` has them;
+;; `open` the emphasis they are inside, which they must not open again.
+(: run (-> Md Mode (Vec Inline) Flank Flank (Option char) (Option char) (List string) string))
+(defun (run h mode xs before after prev next open)
+  (def ys (vec-fold (fun (x out) (absorb out x)) (vec-empty) xs))
+  (def n (vec-length ys))
+  (def b (stringbuilder-empty))
+  (let go ((i 0) (flank before) (sib prev))
+    (when (< i n)
+      (def s (match (if (< (+ i 1) n) (lead (vec-ref ys (+ i 1))) (Tuple after next))
+               ((Tuple next-flank next-char)
+                (inline-md h mode (vec-ref ys i) flank next-flank sib next-char open))))
+      (stringbuilder-add-string! b s)
+      (match (last-char s)
+        ((Some c) (go (+ i 1) (flank-of c) (Some c)))
+        (None (go (+ i 1) flank sib)))))
+  (stringbuilder->string b))
+
+(: inlines->markdown (-> Md (Vec Inline) string))
+(defun (inlines->markdown h xs) (run h InPara xs AtSpace AtSpace None None Nil))
+
+(: inside (-> Md Mode (Vec Inline) (List string) string))
+(defun (inside h mode xs open) (run h mode xs AtPunct AtPunct None None open))
+
+(: raw-format? (-> string bool))
+(defun (raw-format? f) (or (= f "markdown") (= f "html")))
+
+(: inline-md (-> Md Mode Inline Flank Flank (Option char) (Option char) (List string) string))
+(defun (inline-md h mode x before after prev next open)
+  (match ((record-ref h inline-hook) h x)
+    ((Some s) s)
+    (None
+     (match x
+       ((Str s) (escape-text s next))
+       ((Emph xs) (emphasis h mode "*" #\* "em" xs before after prev next open))
+       ((Strong xs) (emphasis h mode "**" #\* "strong" xs before after prev next open))
+       ((Strike xs) (emphasis h mode "~~" #\~ "del" xs before after prev next open))
+       ((Superscript xs) (str "<sup>" (inside h mode xs open) "</sup>"))
+       ((Subscript xs) (str "<sub>" (inside h mode xs open) "</sub>"))
+       ;; A task list item's box is its list's; see `item-md`.
+       ((Checkbox checked) (if checked "\\[x\\]" "\\[ \\]"))
+       ((Code s) (code-span s))
+       ((Link url xs) (link-md h mode url xs open))
+       ((Image src alt) (image-md h src alt))
+       (LineBreak (match mode
+                    (InPara "\\\n")
+                    (InHeading " ")
+                    (InCell "<br>")))
+       ((NoteRef n) (str "[^" (int->string n) "]"))
+       ((Span c xs) (run h mode xs before after prev next open))
+       ((RawInline format s) (if (raw-format? format) s ""))
+       ((Anchor id) (str "<a id=\"" (escape-attribute id) "\"></a>"))))))
+
+;; Space at either end goes outside the marks, where Markdown wants it. The
+;; marks are HTML's when Markdown would not read them back: punctuation
+;; inside a mark with a letter outside it, a neighbour's mark against it, or
+;; the same emphasis inside itself.
+(: emphasis (-> Md Mode string char string (Vec Inline) Flank Flank (Option char) (Option char) (List string) string))
+(defun (emphasis h mode mark c tag xs before after prev next open)
+  (match (edges (inside h mode xs (Cons mark open)))
+    ((Tuple lead core trail)
+     (def b (if (string-empty? lead) before AtSpace))
+     (def a (if (string-empty? trail) after AtSpace))
+     (def opens (or (not (word? b)) (match (first-char core) ((Some ch) (word? (flank-of ch))) (None #t))))
+     (def closes (or (not (word? a)) (match (last-char core) ((Some ch) (word? (flank-of ch))) (None #t))))
+     (def touching (or (and (string-empty? lead) (is? prev c)) (and (string-empty? trail) (is? next c))))
+     (cond ((string-empty? core) (str lead trail))
+           ((and opens closes (not touching) (not (member? mark open))) (str lead mark core mark trail))
+           (else (str lead "<" tag ">" core "</" tag ">" trail))))))
+
+;; In more backticks than it has in a row, and with a space inside them
+;; when it begins or ends with one, which Markdown takes away.
+(: code-span (-> string string))
+(defun (code-span s)
+  (def t (string-replace s "\n" " "))
+  (def fence (repeat #\` (+ (longest-run t #\`) 1)))
+  (def pad (or (string-starts-with? t "`") (string-ends-with? t "`")
+               (and (string-starts-with? t " ") (string-ends-with? t " ") (not (string-empty? (string-trim t))))))
+  (cond ((string-empty? t) "")
+        (pad (str fence " " t " " fence))
+        (else (str fence t fence))))
+
+(: url-of (-> Md string string))
+(defun (url-of h url) ((record-ref h url-hook) url))
+
+;; A link to a heading in the document goes to GitHub's id for it.
+(: target-of (-> Md string string))
+(defun (target-of h url)
+  (def u (url-of h url))
+  (match (record-ref h anchors)
+    (AnchorsGithub (if (string-starts-with? u "#")
+                       (match (map-try-ref (record-ref h slugs) (drop-first u))
+                         ((Some slug) (str "#" slug))
+                         (None u))
+                       u))
+    (AnchorsHtml u)))
+
+(: destination (-> string string))
+(defun (destination url)
+  (if (or (string-empty? url)
+          (loop (:for c (string->vec " ()<>"))
+                (:acc any (folding #f (or any (string-contains? url (char->string c)))))))
+      (str "<" (string-replace (string-replace url "<" "\\<") ">" "\\>") ">")
+      url))
+
+;; A link that says where it goes is written <https://...>.
+(: link-md (-> Md Mode string (Vec Inline) (List string) string))
+(defun (link-md h mode url xs open)
+  (def target (target-of h url))
+  (def bare (and (= (vec-length xs) 1)
+                 (match (vec-ref xs 0) ((Str s) (= s url)) (_ #f))
+                 (or (string-starts-with? target "https://") (string-starts-with? target "http://")
+                     (string-starts-with? target "mailto:"))
+                 (= (destination target) target)))
+  (if bare
+      (str "<" target ">")
+      (str "[" (inside h mode xs open) "](" (destination target) ")")))
+
+(: image-md (-> Md string string string))
+(defun (image-md h src alt)
+  (str "![" (escape-text (string-replace alt "\n" " ") None) "](" (destination (url-of h src)) ")"))
+
+;; ---------------------------------------------------------------------------
+;; Blocks
+;; ---------------------------------------------------------------------------
+
+(: break? (-> Inline bool))
+(defun (break? x)
+  (match x
+    (LineBreak #t)
+    ((Str s) (string-empty? (string-trim s)))
+    (_ #f)))
+
+;; A paragraph's lines, each without space around it, and none blank. A
+;; line break at the end would be a backslash.
+(: para-md (-> Md (Vec Inline) string))
+(defun (para-md h xs)
+  (def kept (let trim ((ys xs))
+              (if (and (not (vec-empty? ys)) (break? (vec-ref ys (- (vec-length ys) 1))))
+                  (trim (vec-pop ys))
+                  ys)))
+  (string-join (vec-map line-start
+                        (vec-filter (fun (line) (not (string-empty? line)))
+                                    (vec-map string-trim (string-split (inlines->markdown h kept) "\n"))))
+               "\n"))
+
+(: heading-md (-> Md int string (Vec Inline) string))
+(defun (heading-md h level id xs)
+  (def n (max 1 (min 6 (+ level (record-ref h offset)))))
+  (def text (string-trim (string-replace (run h InHeading xs AtSpace AtSpace None None Nil) "\n" " ")))
+  ;; A # at the end would close it.
+  (def safe (if (string-ends-with? text "#") (str (drop-last text) "\\#") text))
+  (def anchor (match (record-ref h anchors)
+                (AnchorsHtml (if (string-empty? id) "" (str "<a id=\"" id "\"></a>")))
+                (AnchorsGithub "")))
+  (str (repeat #\# n) " " anchor safe))
+
+;; Fenced in more backticks than the code has in a row; in tildes when the
+;; language has a backtick in it, which a backtick fence's may not.
+(: code-block-md (-> string string string))
+(defun (code-block-md lang text)
+  (def c (if (string-contains? lang "`") #\~ #\`))
+  (def fence (repeat c (max 3 (+ (longest-run text c) 1))))
+  (cond ((string-empty? text) (str fence lang "\n" fence))
+        ((string-ends-with? text "\n") (str fence lang "\n" text fence))
+        (else (str fence lang "\n" text "\n" fence))))
+
+;; Markdown has no figure: the image, and its caption in emphasis below it.
+(: figure-md (-> Md string string (Vec Inline) string))
+(defun (figure-md h src alt xs)
+  (def image (image-md h src alt))
+  (if (vec-empty? xs) image (str image "\n\n" (para-md h [(Emph xs)]))))
+
+(: quote-md (-> Md (Vec Block) string))
+(defun (quote-md h bs)
+  (string-join (vec-map (fun (line) (if (string-empty? line) ">" (str "> " line)))
+                        (string-split (blocks->markdown h bs) "\n"))
+               "\n"))
+
+;; A list is tight — no blank lines, no <p> — when each item is a paragraph
+;; and perhaps lists after it, as for HTML. A list that comes right after a
+;; paragraph must begin at 1, or Markdown reads it as more of the paragraph.
+(: tight-item? (-> (Vec Block) bool))
+(defun (tight-item? item)
+  (or (vec-empty? item)
+      (match (vec-ref item 0)
+        ((Para xs)
+         (vec-fold (fun (b ok)
+                     (and ok (match b
+                               ((ItemList numbered start items) (and (not (vec-empty? items)) (or (not numbered) (= start 1))))
+                               (_ #f))))
+                   #t (vec-remove-at item 0)))
+        (_ #f))))
+
+;; A box at the start of an item's first paragraph makes it a task.
+(: item-md (-> Md (Vec Block) string string))
+(defun (item-md h item sep)
+  (def task (if (vec-empty? item)
+                None
+                (match (vec-ref item 0)
+                  ((Para xs) (if (vec-empty? xs)
+                                 None
+                                 (match (vec-ref xs 0)
+                                   ((Checkbox checked) (Some (Tuple checked (vec-remove-at xs 0))))
+                                   (_ None))))
+                  (_ None))))
+  (match task
+    ((Some (Tuple checked rest))
+     (def first (string-trim-right (str (if checked "[x] " "[ ] ") (para-md h rest))))
+     (def more (blocks-sep h (vec-remove-at item 0) sep))
+     (if (string-empty? more) first (str first sep more)))
+    (None (blocks-sep h item sep))))
+
+(: list-md (-> Md bool int (Vec (Vec Block)) string string))
+(defun (list-md h numbered start items mark)
+  (def sep (if (vec-fold (fun (item ok) (and ok (tight-item? item))) #t items) "\n" "\n\n"))
+  (string-join (loop (:for item items)
+                     (:for i (up-from 0))
+                     (:let marker (if numbered (str (int->string (+ start i)) mark) mark))
+                     (:let body (item-md h item sep))
+                     (:acc (vecing (if (string-empty? body)
+                                       marker
+                                       (hang body (str marker " ") (spaces (+ (string-length marker) 1)))))))
+               sep))
+
+(: line-block-md (-> Md (Vec (Vec Inline)) string))
+(defun (line-block-md h lines)
+  (para-md h (loop (:for line lines)
+                   (:for i (up-from 0))
+                   (:acc out (folding (vec-empty) (vec-append (if (= i 0) out (vec-add out LineBreak)) line))))))
+
+;; Links in a term go where the document's links go.
+(: retarget (-> Md (Vec Inline) (Vec Inline)))
+(defun (retarget h xs)
+  (vec-map (fun (x)
+             (match x
+               ((Link url ys) (Link (target-of h url) (retarget h ys)))
+               ((Image src alt) (Image (url-of h src) alt))
+               ((Emph ys) (Emph (retarget h ys)))
+               ((Strong ys) (Strong (retarget h ys)))
+               ((Strike ys) (Strike (retarget h ys)))
+               ((Superscript ys) (Superscript (retarget h ys)))
+               ((Subscript ys) (Subscript (retarget h ys)))
+               ((Span c ys) (Span c (retarget h ys)))
+               (_ x)))
+           xs))
+
+;; GitHub shows a <dl>. A definition is Markdown again, between blank lines
+;; that end the HTML around it.
+(: definition-list-md (-> Md (Vec (Tuple (Vec Inline) (Vec (Vec Block)))) string))
+(defun (definition-list-md h entries)
+  (def parts
+    (vec-fold (fun (entry out)
+                (match entry
+                  ((Tuple term defs)
+                   (vec-append (vec-add out (str "<dt>" (inlines->html default-html (retarget h term)) "</dt>"))
+                              (vec-map (fun (d)
+                                         (def inner (blocks->markdown h d))
+                                         (if (string-empty? inner) "<dd></dd>" (str "<dd>\n\n" inner "\n\n</dd>")))
+                                       defs)))))
+              (vec-empty) entries))
+  (str "<dl>\n" (string-join parts "\n") "\n</dl>"))
+
+;; ---------------------------------------------------------------------------
+;; Tables
+;; ---------------------------------------------------------------------------
+;; GitHub's tables have one head row and one body. Rows of a head after the
+;; first begin the body, groups are put together, and a table without a
+;; head has an empty one.
+
+(: cell-md (-> Md (Vec Inline) string))
+(defun (cell-md h xs)
+  (string-replace (string-trim (string-replace (run h InCell xs AtSpace AtSpace None None Nil) "\n" " "))
+                  "|" "\\|"))
+
+(: align-at (-> (Vec Align) int Align))
+(defun (align-at aligns i) (if (< i (vec-length aligns)) (vec-ref aligns i) AlignDefault))
+
+(: rule-cell (-> int Align string))
+(defun (rule-cell width a)
+  (match a
+    (AlignDefault (repeat #\- width))
+    (AlignLeft (str ":" (repeat #\- (- width 1))))
+    (AlignRight (str (repeat #\- (- width 1)) ":"))
+    (AlignCenter (str ":" (repeat #\- (- width 2)) ":"))))
+
+(: table-md (-> Md Table string))
+(defun (table-md h t)
+  (def aligns (record-ref t aligns))
+  (def head (record-ref t head))
+  (def rest (vec-append (if (vec-empty? head) (vec-empty) (vec-remove-at head 0))
+                       (vec-fold (fun (group acc) (vec-append acc group)) (vec-empty) (record-ref t bodies))))
+  (def columns (vec-fold (fun (r w) (max w (vec-length r))) (vec-length aligns) (vec-append head rest)))
+  (def cells (fun (r) (loop (:for i (range 0 columns))
+                            (:acc (vecing (if (< i (vec-length r)) (cell-md h (vec-ref r i)) ""))))))
+  (def top (cells (if (vec-empty? head) (vec-empty) (vec-ref head 0))))
+  (def body (vec-map cells rest))
+  (def widths (loop (:for i (range 0 columns))
+                    (:acc (vecing (vec-fold (fun (r w) (max w (string-count (vec-ref r i)))) 3 (vec-add body top))))))
+  (def row (fun (r)
+             (str "| "
+                  (string-join (loop (:for i (range 0 columns))
+                                     (:let c (vec-ref r i))
+                                     (:acc (vecing (match (align-at aligns i)
+                                                     (AlignRight (string-pad-left c (vec-ref widths i)))
+                                                     (_ (string-pad-right c (vec-ref widths i)))))))
+                               " | ")
+                  " |")))
+  (def rule (str "| "
+                 (string-join (loop (:for i (range 0 columns))
+                                    (:acc (vecing (rule-cell (vec-ref widths i) (align-at aligns i)))))
+                              " | ")
+                 " |"))
+  (def table (string-join (vec-append [(row top) rule] (vec-map row body)) "\n"))
+  (def caption (record-ref t caption))
+  (cond ((= columns 0) "")
+        ((vec-empty? caption) table)
+        (else (str (para-md h [(Emph caption)]) "\n\n" table))))
+
+;; ---------------------------------------------------------------------------
+;; A sequence of blocks
+;; ---------------------------------------------------------------------------
+;; A list right after a list of the same kind is given the other marker, -
+;; or *, . or ), or Markdown would read the two as one. A div is its blocks,
+;; so that this sees through it. The state is the parts so far, and the
+;; marker of the list that is the last of them, "" when that is no list.
+
+(: emit (-> (Tuple (Vec string) string) string string (Tuple (Vec string) string)))
+(defun (emit state s mark)
+  (match state
+    ((Tuple parts last) (if (string-empty? s) state (Tuple (vec-add parts s) mark)))))
+
+(: add-blocks (-> Md (Vec Block) (Tuple (Vec string) string) (Tuple (Vec string) string)))
+(defun (add-blocks h bs state)
+  (vec-fold (fun (b st) (add-block h b st)) state bs))
+
+(: add-block (-> Md Block (Tuple (Vec string) string) (Tuple (Vec string) string)))
+(defun (add-block h b state)
+  (match ((record-ref h block-hook) h b)
+    ((Some s) (emit state s ""))
+    (None
+     (match b
+       ((Div c bs) (add-blocks h bs state))
+       ((ItemList numbered start items)
+        (def last (match state ((Tuple parts m) m)))
+        (def mark (if numbered (if (= last ".") ")" ".") (if (= last "-") "*" "-")))
+        (emit state (list-md h numbered start items mark) mark))
+       (_ (emit state (block-md h b) ""))))))
+
+(: blocks-sep (-> Md (Vec Block) string string))
+(defun (blocks-sep h bs sep)
+  (match (add-blocks h bs (Tuple (vec-empty) ""))
+    ((Tuple parts last) (string-join parts sep))))
+
+(: blocks->markdown (-> Md (Vec Block) string))
+(defun (blocks->markdown h bs) (blocks-sep h bs "\n\n"))
+
+(: block-md (-> Md Block string))
+(defun (block-md h b)
+  (match b
+    ((Para xs) (para-md h xs))
+    ((Heading level id xs) (heading-md h level id xs))
+    ((UnnumberedHeading level xs) (heading-md h level "" xs))
+    ((CodeBlock lang text) (code-block-md lang text))
+    ((Figure src alt xs) (figure-md h src alt xs))
+    ((Quote bs) (quote-md h bs))
+    ((ItemList numbered start items) (list-md h numbered start items (if numbered "." "-")))
+    ((LineBlock lines) (line-block-md h lines))
+    ((DefinitionList entries) (definition-list-md h entries))
+    (Rule "---")
+    ((Div c bs) (blocks->markdown h bs))
+    ((RawBlock format s) (if (raw-format? format) (string-trim-right s) ""))
+    ((TableBlock t) (table-md h t))))
+
+;; ---------------------------------------------------------------------------
+;; Notes, and a document
+;; ---------------------------------------------------------------------------
+
+;; [^1]: and the note, its blocks after the first indented under it.
+(: notes-md (-> Md (Vec (Vec Block)) string))
+(defun (notes-md h notes)
+  (string-join (loop (:for note notes)
+                     (:for n (up-from 1))
+                     (:let label (str "[^" (int->string n) "]:"))
+                     (:let body (blocks->markdown h note))
+                     (:acc (vecing (if (string-empty? body) label (hang body (str label " ") "    ")))))
+               "\n\n"))
+
+;; `titles` are headings written before the document, which GitHub counts
+;; when it numbers ids.
+(: body-md (-> Document Md (Vec string) string))
+(defun (body-md doc with titles)
+  (def headings (vec-append (vec-append (vec-map (fun (t) (Tuple "" t)) titles)
+                                      (headings-of (record-ref doc blocks)))
+                           (vec-fold (fun (note acc) (vec-append acc (headings-of note)))
+                                     (vec-empty) (record-ref doc notes))))
+  (def h (with-slugs with (slug-map headings)))
+  (def body (blocks->markdown h (record-ref doc blocks)))
+  (def notes (record-ref doc notes))
+  (cond ((vec-empty? notes) body)
+        ((string-empty? body) (notes-md h notes))
+        (else (str body "\n\n" (notes-md h notes)))))
+
+;; The blocks, then the notes.
+(: document->markdown (-> Document (#:with Md) string))
+(defun (document->markdown doc #:with default-markdown)
+  (body-md doc with (vec-empty)))
+
+;; A file: the title as a # heading, which is `#:title` or the meta form's
+;; `(title ...)`, the document under it, and a newline at the end.
+(: markdown-page (-> Document (#:with Md) (#:title string) string))
+(defun (markdown-page doc #:with default-markdown #:title "")
+  (def title-text (if (string-empty? title) (option-ref-or (meta-string doc "title") "") title))
+  (if (string-empty? title-text)
+      (str (body-md doc with (vec-empty)) "\n")
+      (str (heading-md with (- 1 (record-ref with offset)) "" [(Str title-text)]) "\n\n"
+           (body-md doc with [title-text]) "\n")))

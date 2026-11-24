@@ -1,0 +1,825 @@
+* samizdat — a markup for writing, after Scribble
+
+samizdat is part of the distribution, in ~lib/samizdat~. Its modules are
+~(samizdat read)~, ~(samizdat html)~ and the others below, and a program
+imports them with no dependency in its manifest.
+
+
+samizdat reads text written like Racket's Scribble —
+
+#+BEGIN_SRC text
+(meta (title "Cookies, carefully")
+      (date "2026-09-26")
+      (tags bjoweb http))
+
+Setting a cookie is one header, but getting it @em{right} is the hard
+part.@note{See @link["https://www.rfc-editor.org/rfc/rfc6265"]{RFC 6265}.}
+
+@section{The defaults}
+
+@codeblock[#:lang "scheme"]|{
+  (with-cookie (text "saved") "theme" "dark" #:max-age 31536000)
+}|
+#+END_SRC
+
+— into a tree that says what the document is and nothing about how it looks,
+which a converter then prints. HTML and Markdown are the converters that come
+with it.
+
+A command is a Bjolang function, and a table of them is a map from names to
+functions. A blog that wants ~@youtube~ writes one and merges it over the
+standard table; nothing in samizdat has to know. What makes a function enough
+is that a command gets its call as it was read — arguments and body not yet
+expanded — and decides what to do with them: ~@em~ expands its body and wraps
+it, ~@code~ takes it as it is written, ~@note~ expands it into paragraphs and
+puts them somewhere else.
+
+Files are called ~.sz~.
+
+** The nine modules
+
+| ~(samizdat read)~        | the reader: text to ~At~ items, text or commands, on ~(text parser-combinators)~ |
+| ~(samizdat doc)~         | the document: ~Block~, ~Inline~, ~Document~; a printer to s-expressions |
+| ~(samizdat expand)~      | runs the commands; what a command is written with            |
+| ~(samizdat commands)~    | ~standard-commands~                                          |
+| ~(samizdat lightweight)~ | commands that read Markdown's and Org's ways of writing: ~@read-list~, ~@read-table~ |
+| ~(samizdat markdown)~    | ~@markdown~ and ~@include-markdown~, through ~(text markdown)~ |
+| ~(samizdat apidocs)~     | Bjolang modules' own docs: ~@generate-docs~, ~@defmodule~, ~@defdoc~, ~@defdocs~, ~@docref~ |
+| ~(samizdat html)~        | a ~Document~ as HTML: ~(text xml)~ nodes, and a writer for them; code highlighted by a function you give |
+| ~(samizdat gfm)~         | a ~Document~ as GitHub Flavored Markdown, for docs read in a repository |
+
+** Using it
+
+#+BEGIN_SRC scheme
+(import (samizdat expand))
+(import (samizdat commands))
+(import (samizdat html))
+
+(match (read-document-file "posts/cookies.sz" standard-commands)
+  ((Ok doc) (file-write-text "cookies.html" (html-page doc)))
+  ((Err e) (println e)))
+#+END_SRC
+
+~read-document~ does the same for a string, with ~#:name~ for what a message
+calls it. Both take ~#:typography #f~ to leave dashes and quotes as they were
+typed. ~document->html~ is the document without the page around it, for a
+template of your own.
+
+~Examples/samizdat/render.bjo~ is a whole blog in one file: commands of its own, hooks
+for how the converter writes them, the meta form read into a record, and a
+page around the result.
+
+#+BEGIN_SRC sh
+bjo run Examples/samizdat/render.bjo Examples/samizdat/post.sz   # writes Examples/samizdat/post.html
+#+END_SRC
+
+~Examples/samizdat/markdown.bjo~ writes a document as Markdown, for docs kept in a
+repository and read on GitHub:
+
+#+BEGIN_SRC sh
+bjo run Examples/samizdat/markdown.bjo docs/index.sz      # writes docs/index.md
+#+END_SRC
+
+~Examples/samizdat/cli.bjo~ is both, with the standard commands only: a page of HTML, or
+Markdown, beside the input or on standard output with ~-~. Bjolang's
+~README.md~ is ~README.sz~ written by it.
+
+#+BEGIN_SRC sh
+bjo run Examples/samizdat/cli.bjo html docs/index.sz      # writes docs/index.html
+bjo run Examples/samizdat/cli.bjo md docs/index.sz -      # Markdown to standard output
+#+END_SRC
+
+** The syntax
+
+#+BEGIN_SRC text
+@name[args]{body}   a command; [args] and {body} are both optional,
+                    and come right after the name, with no space
+@name               a command with neither
+@|name|             the same, where a letter follows: @|bjo|s
+@||                 nothing, to keep two things apart
+@"text"             text, as a string literal: @"@" is an @, @"}" a brace
+@; ...              a comment to the end of the line, the newline included
+@;{...}             a comment to the matching brace
+|{...}|             a body in which only |@ starts a command
+#+END_SRC
+
+A name is a letter and then letters, digits and ~- _ * /~. Not a full stop, a
+comma, a colon, ~!~ or ~?~, which end sentences: ~see @toc.~ is the command
+~toc~ and then a full stop.
+
+*The arguments are bjodat* — strings, numbers, symbols, ~#:keywords~, lists
+and vecs, exactly as in a ~.bjodat~ file — so ~@image["cat.png" #:alt "A cat"]~
+has one positional argument and one keyword. A comma is not a separator.
+
+*The body* is text and commands. Its braces must balance, and a balanced pair
+is text: ~@code{f {x}}~ is the code ~f {x}~. At the top level of a document a
+brace is an ordinary character.
+
+*A verbatim body*, ~|{ ... }|~, is for code: an ~@~ in it is a character, and
+only ~|@name~ is a command. When the text has ~}|~ in it, put punctuation
+between the bar and the brace, and the same turned around at the end:
+~|<{ ... }>|~, ~|(({ ... }))|~. A ~|{ }|~ inside one is text.
+
+*An ~@~ right after a letter or a digit is text*, so that ~linus@example.com~
+needs nothing done to it — unless the name after it has a ~[~, ~{~ or ~|~ right
+after it, which is how a footnote on a word is written: ~word@note{...}~. To
+put a command against a word that ends where its name begins, use
+~@|name|~, which is always a command.
+
+*Indentation.* A body over several lines loses the blank line after its ~{~,
+the blank line before its ~}~, and the indentation its lines have in common. So
+a code block may be indented with the markup around it:
+
+#+BEGIN_SRC text
+@itemlist{
+  @item{A list,}
+  @item{and in it
+
+    a second paragraph.}
+}
+#+END_SRC
+
+A first line with text on it, right after the ~{~, is left as it is, since it
+did not begin at a margin.
+
+** The meta form
+
+A document may begin with a ~(meta ...)~ form, which bjodat reads:
+
+#+BEGIN_SRC text
+(meta (title "Writing in samizdat")
+      (date "2026-09-26")
+      (tags samizdat bjolang))
+#+END_SRC
+
+~(meta-string doc "title")~ is ~(Some "Writing in samizdat")~ and
+~(meta-strings doc "tags")~ is ~["samizdat" "bjolang"]~. For more than that,
+read it into a record of your own, the way a manifest is read:
+
+#+BEGIN_SRC scheme
+(import (text bjodat))
+
+(def/bjodat-type
+  (: PostMeta (Record #:tag meta
+                      (: title string)
+                      (: date string #:default "")
+                      (: tags (List Symbol) #:rest #:default Nil))))
+
+(match (record-ref doc meta)
+  ((Some m) (bjodat->PostMeta m))         ; (Result string PostMeta)
+  (None (Err "no meta")))
+#+END_SRC
+
+samizdat itself gives the form no meaning. What its clauses are is the blog's
+to say; ~html-page~ only looks for a ~(title ...)~.
+
+** The standard commands
+
+| ~@em{...}~ ~@strong{...}~          | emphasis, and strong emphasis                       |
+| ~@strike{...}~                     | struck-through text                                 |
+| ~@sup{...}~  ~@sub{...}~           | superscript and subscript                           |
+| ~@code{...}~                       | code, as written                                    |
+| ~@checkbox~  ~@checkbox[#:checked #t]~ | an unchecked or checked box                     |
+| ~@link["url"]{...}~                | a link; ~@link["url"]~ shows the url                |
+| ~@image["src" #:alt "..."]~        | an image (inline)                                   |
+| ~@image["src" #:alt "..."]{...}~   | a figure with a caption (block)                     |
+| ~@br~                              | a line break                                        |
+| ~@span["class"]{...}~              | text with a class, for a converter to do something with |
+| ~@raw["html"]{...}~                | text for one format; every other converter leaves it out |
+| ~@note{...}~                       | a footnote, which may hold paragraphs               |
+| ~@section{...}~  ~@section*{...}~  | a heading (~#:id~ chooses its id); starred: no id, not in TOC |
+| ~@subsection{...}~  ~@subsection*{...}~ | the level below                              |
+| ~@subsubsection{...}~  ~@subsubsection*{...}~ | and the one below that                |
+| ~@codeblock[#:lang "x"]{...}~      | a block of code; usually with a verbatim body       |
+| ~@codeblock[#:file "x.bjo"]~       | the code in that file                               |
+| ~@blockquote{...}~                 | a quotation, which may hold paragraphs              |
+| ~@itemlist{@item{...} ...}~        | a list; ~#:style ordered~ numbers it; ~#:start N~ begins at N |
+| ~@lineblock{...@br ...}~           | lines preserved: verse, addresses, lyrics           |
+| ~@deflist{@term{...} @def{...}}~   | a definition list; a term may have multiple ~@def~  |
+| ~@read-list{- ...}~                | a list written as Markdown and Org write one        |
+| ~@read-table{... }~                | a table written as Org writes one, or Markdown      |
+| ~@markdown{...}~                   | Markdown, translated into the document              |
+| ~@include-markdown["post.md"]~     | a Markdown file, translated the same way            |
+| ~@hr~                              | a rule                                              |
+| ~@div["class"]{...}~               | blocks with a class                                 |
+| ~@raw-block["html"]{...}~          | a block for one format                              |
+| ~@toc~                             | a table of contents; ~#:depth 3~ goes a level deeper |
+| ~@numbered-headings~               | the headings numbered, 1, 1.1, 1.1.1; ~#:depth 2~ for fewer levels |
+| ~@ref["id"]~ ~@ref["id"]{...}~     | a link to a heading, before or after it             |
+| ~@include["other.sz"]~             | another document, as if it were written here        |
+| ~@generate-docs[#:module "std random"]~ | a page of a Bjolang module's docs; see below   |
+| ~@defmodule[(std random)]{...}~    | a Bjolang module's doc; see below                   |
+| ~@defdoc[random-int]{...}~         | one of its definitions' doc                         |
+| ~@defdocs~                         | all of them                                         |
+| ~@docref[random-int]~              | a link to a definition the document shows           |
+| ~@comment{...}~                    | nothing                                             |
+
+Each checks what it is given. A misspelt keyword says so rather than being
+ignored — ~@codeblock: takes no #:langauge; it takes #:lang~ — and so does a
+body where none is taken, or an argument that is missing or of the wrong kind.
+
+** Other files
+
+~@include["chapter.sz"]~ reads another document and expands it where the
+command is, as if its text were written there — so it shares the document's
+footnotes, heading ids and table of contents. The path is relative to the file
+the command is in, so an included file can include its own neighbours; a
+document read from a string, rather than from a file, is in the current
+directory.
+
+An included file may not begin with ~(meta ...)~: there is one document, and
+it has one. A file that includes itself, however far round, is refused with
+the chain of files, and a refusal from inside an included file says where it
+was included from:
+
+#+BEGIN_SRC text
+chapters/two.sz:14:3: @nope: there is no such command
+  included from post.sz:5:1
+#+END_SRC
+
+~@codeblock[#:lang "scheme" #:file "src/example.bjo"]~ is the code in that
+file, found the same way — so a post can show code that something else runs.
+
+Every file read so is in the document's ~sources~, after its own file:
+what a program that keeps its output needs to know to tell when it is stale.
+
+** A table of contents, and references
+
+~@toc~ is the sections and subsections, as nested lists of links; ~#:depth 3~
+takes in the subsubsections, and ~#:depth 1~ leaves out the subsections. It
+lists the headings after it too, and those in included files: it is made once
+every command has run.
+
+~@ref["the-defaults"]~ is a link to the heading with that id —
+~@section{The Defaults}~, or one given ~#:id "the-defaults"~ — which says the
+heading's title; ~@ref["the-defaults"]{those}~ says something else. The heading
+may come before it or after. An id no heading has is refused.
+
+Both are made in a way a command of your own can use too; see ~defer-blocks~
+under Writing a command.
+
+*** Numbered headings
+
+#+BEGIN_SRC text
+@numbered-headings
+@toc
+
+@section{Reading}            1 Reading
+@subsection{The meta form}   1.1 The meta form
+@section*{An aside}          An aside
+@section{Writing}            2 Writing
+#+END_SRC
+
+~@numbered-headings~, anywhere in the document, numbers its sections,
+subsections and subsubsections, those in included files too. The number is
+part of the title, so the table of contents says it, and so does a ~@ref~
+that says the title. ~#:depth 2~ numbers down to the subsections and
+~#:depth 1~ the sections alone; a starred heading has no number and takes
+none. Numbering begins at the shallowest heading numbered, and a level
+passed over is a 0: a subsection before the first section is 0.1. Ids are
+made from the title before it is numbered, so a link to a heading does not
+change when it is.
+
+In the tree the number is a ~Span~ of class ~heading-number~ at the start of
+the title, then a space: HTML writes ~<h2 id="reading"><span
+class="heading-number">1</span> Reading</h2>~. A table of contents of
+numbered headings is a ~Div~ of class ~toc numbered~, for a style sheet that
+leaves out its bullets. On GitHub a heading's id has its number in it,
+~#11-the-meta-form~, and ~(samizdat gfm)~ links to that.
+~(number-headings blocks depth)~ in ~(samizdat doc)~ is the numbering on its
+own.
+
+** Bjolang modules' docs
+
+A Bjolang module documents itself with ~(:doc ...)~, and the compiler checks
+those docs and publishes them in the module's dll.
+
+A page for a module is one command:
+
+#+BEGIN_SRC text
+(meta (title "(std random)"))
+
+@generate-docs[#:module "std random"]{
+  Text of your own, at the end of the overview.
+}
+#+END_SRC
+
+It makes a link to the reference, then an @em{Overview} — the module's own
+doc and the body — and a @em{Reference}: an index of every name, in
+alphabetical order within each kind (types, functions, values, macros), and
+then every definition's doc under a heading for its kind, in the order the
+module wrote them, each with a link back up to its kind's names in the index,
+~↑ Functions~. ~#:path "src/thing.bjo"~ names a module by its source
+instead, relative to the document. The module is ~@docref~'s from there on.
+
+To arrange a page yourself, four commands show the parts:
+
+#+BEGIN_SRC text
+@section{Random numbers}
+
+@defmodule[(std random)]{
+  Everything here takes @code{#:rng}.
+}
+
+@defdoc[random-int]{
+  A die is @code{(random-int 1 6)}.
+}
+
+Or use @docref[random-double], further down.
+
+@defdoc[random-double]
+#+END_SRC
+
+- ~@defmodule~ shows the module's own doc and then its body, and is the module
+  the commands after it mean, until the next. A module is a name, found as the
+  compiler finds it — the installed library, and the packages of the nearest
+  ~.bjo/roots~ above the document — or a string, the path of a module's source
+  relative to the document, whose dll is beside it.
+- ~@defdoc[name]~ shows one definition: a heading to link to, what kind of
+  definition it is, its type and its head as written, or how a macro is
+  written; the summary; the arguments, fields and cases with their texts;
+  what it returns and raises; the examples, the long text, and links to the
+  related names the document shows. Then its body, which is the document's
+  own. A reader extension is named with a string: ~@defdoc["#pair"]~.
+- ~@defdocs~ shows every definition, in the module's order.
+- ~@docref[name]~ is a link to a definition the document shows, before or
+  after; ~@docref[name]{text}~ says something else.
+
+~@defdoc~ and ~@defdocs~ take ~#:level~, the level of the heading, 4 unless it
+says, so that a table of contents of sections leaves the definitions out;
+all three take ~#:module~ for another module than ~@defmodule~'s. A name the
+module has no doc for is refused, and so is a ~@docref~ to one the document
+never shows, a definition shown twice, and a module that is not compiled.
+
+The texts in a doc are samizdat markup, expanded with the document's commands.
+The dll is one of the document's ~sources~, so a page kept from it goes stale
+when the module is rebuilt. In the tree an entry is a ~Div~ of class
+~doc-entry~, and a module's doc one of class ~doc-module~, with the kind in a
+~Span~ of class ~doc-kind~ and, on a page ~@generate-docs~ made, the link up
+in one of class ~doc-up~ beside it; the index is a ~Div~ of class
+~doc-index~: a stylesheet has what it needs.
+
+** Lists, as Markdown and Org write them
+
+#+BEGIN_SRC text
+@read-list{
+- this parses things
+  - a list with nested lists
+- this is another post
+  and this continues the list item above.
+}
+#+END_SRC
+
+is an ~@itemlist~ of two items, with a list inside the first. The rules are
+Markdown's, with less to them:
+
+- An item begins with ~-~, ~+~ or ~*~, or a number and ~.~ or ~)~, and a
+  space. The first item's marker says whether the list is numbered.
+- An item indented past the marker of the one before it is in a list inside
+  that one.
+- A line of text goes on with the item above it, however it is indented.
+- After a blank line, text indented past an item's marker is a new paragraph
+  of that item. Text that is not is in no item, and refused.
+
+The body is still samizdat: ~- see @link["..."]{this}~ is an item with a link
+in it. ~(samizdat lightweight)~ is where more of these go.
+
+** Tables, as Org writes them
+
+#+BEGIN_SRC text
+@read-table{
+#+CAPTION: What they drink
+| Name  | Cups | Of       |
+|-------+------+----------|
+| Alice |    3 | @em{tea} |
+| Bob   |   12 | coffee   |
+}
+#+END_SRC
+
+- A row is a line that begins with ~|~, and its cells are what the ~|~ s
+  divide. ~\|~ is a ~|~ in a cell, and a command in one stays whole.
+- A line of ~-~, ~+~ and ~|~ is a rule. The rows above the first rule are the
+  head, and further rules divide the rest into groups — each a ~<tbody>~ in
+  HTML, as Org exports them. Rules before the first row and after the last
+  divide nothing.
+- Markdown's delimiter row, ~|:---|:---:|---:|~, is a rule too, and its colons
+  set the columns' alignment; so does a row of Org's cookies, ~| <l> | <r10> |~,
+  which is not a row of the table. The widths are passed over.
+- A column nobody aligned whose cells are mostly numbers is set to the right,
+  as Org exports it.
+- ~#+CAPTION:~ gives the caption, and so does ~#:caption "..."~. Other ~#+~
+  lines — ~#+NAME:~, ~#+TBLFM:~ — are passed over, so a table can be pasted
+  from an Org file as it is.
+- A short row is filled with empty cells.
+
+In the tree it is a ~TableBlock~, which holds a ~Table~: a caption, an
+alignment for each column, the head's rows, and the groups of the rest. A row
+is its cells and a cell is text. That is what Org's tables are, and Markdown's
+fit in it: one head row, one group.
+
+** Markdown
+
+#+BEGIN_SRC text
+@markdown|{
+## Why
+
+Because *some* things are quicker to write this way.[^1] See |@ref["why"].
+
+- [x] tables, task lists, ~~strikethrough~~ and footnotes, as GitHub has them
+
+[^1]: And some are not.
+}|
+#+END_SRC
+
+Markdown is read by Bjolang's ~(text markdown)~ — CommonMark with the
+extensions of GitHub Flavored Markdown — and translated into samizdat's own
+tree, so nothing of Markdown is left once it is read: a heading is a
+~Heading~ with an id that ~@toc~ and ~@ref~ know, a footnote is one of the document's notes,
+numbered with the rest, a table is a ~TableBlock~, raw HTML is ~RawBlock~ and
+~RawInline~ for HTML, and the typography pass runs over it like any other
+text. What Markdown has and samizdat does not is left out: a link's title, and
+the number an ordered list starts at.
+
+Write it ~@markdown|{...}|~ when the Markdown has braces or ~@~ s in it, which
+Markdown usually does; ~@markdown{...}~ works too, with the braces balanced.
+
+*Commands work inside*: ~@em{x}~ in a ~{...}~ body, ~|@em{x}~ in a ~|{...}|~
+one. Each is set aside before the Markdown is read, as a placeholder that
+Markdown reads as ordinary characters, and put back, expanded, where the
+placeholder ends up. In text it is text; in code it is its text. A command
+that makes a block — ~|@codeblock[...]{...}~, ~|@toc~ — goes in a paragraph of
+its own, and in running text it is refused.
+
+~@include-markdown["post.md"]~ reads a Markdown file, relative to the
+document, as it is. Its YAML front matter is set aside; ~@~ is just a character
+in it. ~markdown->pieces~ in ~(samizdat markdown)~ is the same translation, for
+a command of your own.
+
+** Paragraphs, and typography
+
+Nobody says where a paragraph is. Text between blocks is gathered into
+paragraphs: a blank line ends one, and so does a block command, blank line or
+not. Space at either end of a paragraph is not part of it.
+
+After that, text that is not code is made typographic: ~---~ is an em dash,
+~--~ an en dash, ~...~ an ellipsis, and straight quotes are curly — opening
+after a space, a bracket or a dash, closing otherwise. What came before is
+carried across inline commands, so the quote after ~@em{word}~ closes.
+~#:typography #f~ turns it off.
+
+** Writing a command
+
+A command is ~(-> Ctx Call (Vec Piece))~: the document's state, the call as
+it was read, and what it makes — inlines and blocks, any number of each.
+
+#+BEGIN_SRC scheme
+(import (samizdat read))
+(import (samizdat doc))
+(import (samizdat expand))
+(import (samizdat commands))
+
+;; @aside{...}: paragraphs set apart.
+(: aside (-> Ctx Call (Vec Piece)))
+(defun (aside cx c)
+  (check-keywords! cx c (vec-empty))
+  (block (Div "aside" (expand-blocks cx c))))
+
+;; @version["1.2"], or @version["1.2" #:prefix "r"]
+(: version (-> Ctx Call (Vec Piece)))
+(defun (version cx c)
+  (check-keywords! cx c ["prefix"])
+  (inline (Code (str (kw-string-or cx c "prefix" "v") (arg-string cx c 0)))))
+
+(def commands
+  (map-merge standard-commands
+             #map(("aside" aside)
+                  ("version" version)
+                  ("bjolang" (text-command "Bjolang")))))
+#+END_SRC
+
+~map-merge~ lets the second map win, so a command of yours replaces a standard
+one of the same name.
+
+What a command is written with, from ~(samizdat expand)~:
+
+| ~(inline x)~ ~(block x)~ ~nothing~     | what to answer                                  |
+| ~(expand-inlines cx c)~                | the body, expanded as text; a block in it is refused |
+| ~(expand-blocks cx c)~                 | the body, expanded into paragraphs and blocks   |
+| ~(body-text cx c)~                     | the body as written; a command in it counts as its text |
+| ~(body-items c)~ ~(has-body? c)~       | the body as it was read, ~At~ items             |
+| ~(arg-string cx c i)~ ~(arg-string-or cx c i s)~ ~(arg-count c)~ | positional arguments, from 0 |
+| ~(kw-string-or cx c "k" s)~ ~kw-int-or~ ~kw-bool-or~ ~kw-symbol-or~ | keywords |
+| ~(positional c)~ ~(keyword c "k")~     | the ~Bjodat~ values themselves                  |
+| ~(check-keywords! cx c ["k" ...])~     | refuses any other keyword, and one with no value |
+| ~(refuse cx c "why")~                  | stops, with where the command is                |
+| ~(state-ref cx "k")~ ~(state-set! cx "k" v)~ | what a command keeps for the rest of the document, a ~Bjodat~ |
+| ~(add-source! cx path)~                | a file the document was made from, read some other way than ~read-relative~ |
+| ~(add-note! cx (fun () blocks))~       | a footnote; answers its number, for a ~NoteRef~ |
+| ~(unique-id! cx text)~                 | an id made from text, used nowhere else in the document |
+| ~(text-command "text")~                | a command that stands for some text             |
+| ~(items->blocks cx items)~             | any ~At~ items — part of a body a command took apart — as paragraphs and blocks |
+| ~(defer-blocks cx f)~ ~(defer-inlines cx f)~ | a placeholder now, and later what ~f~ makes of the finished ~Document~ |
+| ~(number-headings! cx c depth)~        | the document's headings numbered once every command has run, as ~@numbered-headings~ does |
+| ~(include-file cx c path)~             | another document, expanded here                 |
+| ~(relative-path cx path)~ ~(read-relative cx c path)~ | a path relative to the file being expanded, and the text of it |
+
+~@itemlist~ is the example of a command reading its body itself: it walks
+~(body-items c)~, takes each ~@item~ and expands its body, and refuses anything
+else. That is how a command gets structure no body could express. ~@read-list~
+goes further, and reads its body a line at a time: ~at-lines~,
+~at-line-blank?~ and ~at-line-indentation~ in ~(samizdat read)~ are for that.
+
+A command that needs the whole document — what comes after it, or what is in
+included files — answers with ~defer-blocks~ or ~defer-inlines~. Its function
+is called once every command has run, with the document as it then stands, and
+what it makes goes where the placeholder was. ~@toc~ is one:
+
+#+BEGIN_SRC scheme
+(defer-blocks cx (fun (doc) (toc-of (document-headings doc))))
+#+END_SRC
+
+A refusal from such a function names the file its command was written in.
+
+** The tree, and writing a converter
+
+#+BEGIN_SRC scheme
+(type-rec
+  (: Inline (Union (: Str string) (: Emph (Vec Inline)) (: Strong (Vec Inline))
+                   (: Strike (Vec Inline)) (: Superscript (Vec Inline)) (: Subscript (Vec Inline))
+                   (: Checkbox bool) (: Code string)
+                   (: Link string (Vec Inline)) (: Image string string)
+                   LineBreak (: NoteRef int) (: Span string (Vec Inline))
+                   (: RawInline string string) (: Anchor string)))
+  (: Block (Union (: Para (Vec Inline)) (: Heading int string (Vec Inline))
+                  (: UnnumberedHeading int (Vec Inline))
+                  (: CodeBlock string string) (: Figure string string (Vec Inline))
+                  (: Quote (Vec Block)) (: ItemList bool int (Vec (Vec Block)))
+                  (: LineBlock (Vec (Vec Inline)))
+                  (: DefinitionList (Vec (Tuple (Vec Inline) (Vec (Vec Block)))))
+                  Rule (: Div string (Vec Block)) (: RawBlock string string)
+                  (: TableBlock Table)))
+  (: Table (Record (: caption (Vec Inline))
+                   (: aligns (Vec Align))              ; AlignDefault AlignLeft AlignCenter AlignRight
+                   (: head (Vec (Vec (Vec Inline))))    ; rows of cells of text
+                   (: bodies (Vec (Vec (Vec (Vec Inline))))))))
+
+(type (: Document (Record (: meta (Option Bjodat))
+                          (: blocks (Vec Block))
+                          (: notes (Vec (Vec Block)))
+                          ;; the files it was made from: its own, then
+                          ;; what @include and the rest read, in order
+                          (: sources (Vec string)))))
+#+END_SRC
+
+A converter is a function from a ~Document~, and matching on these two unions
+is all of it: the compiler says when a case is missing. ~Span~ and ~Div~ are
+for what the rest does not cover, with a class a converter may know something
+about and otherwise treats as a plain container. ~RawInline~ and ~RawBlock~
+are for one format, which its converter passes through and every other one
+leaves out. ~Anchor~ is a place to link to that is not a heading: an id, made
+with ~unique-id!~, and nothing to show. HTML writes it ~<a id="...">~, and so
+does Markdown, whose links to it keep the id. ~document->sexp~ in ~(samizdat doc)~ is a converter about forty
+lines long, which the tests use.
+
+*** The HTML one
+
+The document becomes ~(text xml)~ nodes — SXML — and the nodes become HTML:
+
+| ~(document->nodes doc)~              | the blocks, then the footnotes, as nodes      |
+| ~(document->html doc)~               | the same, written as HTML                     |
+| ~(html-page doc #:title #:head #:lang)~ | a whole page around it                     |
+| ~(html-options ...)~                 | what ~#:with~ takes, for any of those         |
+| ~(nodes->html nodes)~                | any nodes, written as HTML                    |
+| ~(blocks->nodes h bs)~ ~(inlines->nodes h xs)~ | part of a document, as nodes        |
+| ~(html-element "name" attrs children)~ | an element, named by strings              |
+| ~(raw-html s)~ ~(raw-html-block s)~  | markup written as it is, in text or as a block |
+
+#+BEGIN_SRC scheme
+(document->nodes doc)
+;; ((h2 (@ (id "the-defaults")) "The defaults")
+;;  (p "Setting a cookie is one header, but getting it " (em "right") " is the hard part."
+;;     (sup (@ (class "note-ref")) (a (@ (id "note-ref-1") (href "#note-1")) "1")))
+;;  ...)
+#+END_SRC
+
+So a template can put the document in a page of nodes of its own, and
+~nodes->html~ writes the lot; ~Examples/samizdat/render.bjo~ does. ~(samizdat html)~
+passes on ~Node~ and ~xml-text~, so a template or a hook needs no import of
+~(text xml)~ — whose ~Document~ is not samizdat's.
+
+~html-options~ takes ~#:heading-offset~ (default 1, so a section is an ~<h2>~
+under the page's ~<h1>~), ~#:id-prefix~ (for two documents on one page, whose
+~note-1~ would otherwise clash), a highlighter, and two hooks. A hook is asked
+about each block or inline first, and answers ~None~ for what it leaves alone,
+or the nodes it makes; it is handed the options, so it can make what is inside
+with ~blocks->nodes~ and ~inlines->nodes~:
+
+#+BEGIN_SRC scheme
+(defun (asides h b)
+  (match b
+    ((Div "aside" bs) (Some (list (html-element "aside" Nil (blocks->nodes h bs)))))
+    (_ None)))
+
+(document->html doc #:with (html-options #:block-hook asides))
+#+END_SRC
+
+*Highlighted code.* ~#:highlighter~ is a function of a code block's language
+and its code. It returns the ~<pre>~ to write, or ~None~ to leave the block
+to the converter. samizdat has no highlighter of its own.
+[[https://rikspucko.koketteriet.se/bjoli/textmate-bjolang][textmate-bjolang]]
+has VS Code's grammars and themes, Bjolang's grammar among them. A project
+that depends on it gives its ~code->node~:
+
+#+BEGIN_SRC scheme
+(import (only (textmate-bjolang core) highlighter highlighter-css code->node))
+
+(def code-colours (highlighter #:theme 'light-plus))   ; once: reading grammars is slow
+
+(def with-colours
+  (html-options #:highlighter
+    (Some (fun (lang code) (Some (code->node code-colours lang code #:style 'classes))))))
+
+(document->html doc #:with with-colours)
+(highlighter-css code-colours #:selector "pre.tm")     ; the stylesheet for 'classes
+#+END_SRC
+
+~#:style 'inline~ writes the theme's colours into ~style~ attributes, and
+the page needs nothing more. ~'classes~ writes class names from the
+grammar's scopes — ~tm-keyword tm-keyword-control~ — and ~highlighter-css~
+writes a stylesheet for them from any of the themes, or you write your own.
+
+*The writer* is HTML's, not XML's: ~<br>~ rather than ~<br />~, and an empty
+element closed, ~<td></td>~, which HTML would otherwise read as an open tag. A
+boolean attribute given its own name, ~(Tuple "open" "open")~, is written bare.
+An element with blocks among its children puts each on a line of its own; text
+is never moved, and nothing inside a ~<pre>~ is. The text of a ~<script>~ or a
+~<style>~ is not escaped.
+
+Without a highlighter, a code block is ~<pre><code class="language-scheme">~,
+the class highlight.js and Prism look for. A footnote is a ~<sup class="note-ref">~ link, and the notes
+are a ~<section class="notes">~ at the end, each with a link back. A table of
+contents is a ~<div class="toc">~. Struck text is ~<del>~, and a checkbox a
+disabled ~<input type="checkbox">~, as GitHub writes them. A table has its caption, a ~<thead>~, a
+~<tbody>~ for each group, and ~style="text-align: ..."~ on an aligned column's
+cells. A link whose href begins with ~#~ is to an
+id in the document, and gets ~#:id-prefix~ as the id does. A list item that is
+one paragraph, and perhaps lists after it, is written without a ~<p>~, as a
+Markdown renderer writes a short list.
+
+*** The Markdown one
+
+~(samizdat gfm)~ writes a ~Document~ as GitHub Flavored Markdown: a README, or
+the pages of a ~docs/~ directory, which GitHub shows as they are.
+
+| ~(document->markdown doc)~             | the blocks, then the footnotes                 |
+| ~(markdown-page doc #:title)~          | the same under a ~#~ heading, the title or the meta form's, and a newline: a file |
+| ~(markdown-options ...)~               | what ~#:with~ takes, for either                 |
+| ~(blocks->markdown h bs)~ ~(inlines->markdown h xs)~ | part of a document, for a hook    |
+| ~(escape-markdown s)~                  | text, escaped to be shown as it is             |
+| ~(github-slug s)~                      | the id GitHub gives a heading with that text   |
+
+#+BEGIN_SRC scheme
+(import (samizdat gfm))
+
+(file-write-text "docs/index.md" (markdown-page doc))
+#+END_SRC
+
+What Markdown has, a document is written as: emphasis, code, links, images,
+lists, task lists, quotations, fenced code, tables and footnotes. What it has
+not is HTML, which GitHub shows: ~<sup>~ and ~<sub>~, and a definition list as
+a ~<dl>~ whose definitions are Markdown again, between blank lines. A figure is
+its image with the caption in emphasis below it, and so is a table's caption
+above it. A table has the one head row and the one body Markdown's have: rows
+of the head after the first begin the body, groups are put together, and a
+table without a head is given an empty one. ~Span~ and ~Div~ are what they
+hold, and raw text is passed through for ~"markdown"~ and ~"html"~ and left out
+for any other format.
+
+*Escaping.* Text is escaped where Markdown would read it as markup, and nowhere
+else, so that the file reads as text too: ~*~, ~[~, ~<~, a backtick, a tilde,
+~$~ — GitHub's mathematics — and ~_~ where it is not between letters; ~&~ when an
+entity follows it, ~!~ before a link; and at the start of a paragraph's line,
+whatever would begin a heading, a quotation, a list or a rule. Emphasis is ~*~
+and ~**~ where Markdown reads them back as the same emphasis, and HTML's ~<em>~
+where it would not: a word half in emphasis is ~a*b*c~, but emphasis that
+begins with a quotation mark and has a letter before it is not something
+Markdown can write. Space at the edges of emphasis goes outside it.
+
+*Links to headings.* GitHub gives a heading an id of its own, made from its
+text, and samizdat's ids are not made the same way. So a link to a heading in
+the document — from ~@ref~, ~@toc~, ~@docref~ — goes to GitHub's id for it:
+~@section{C# & .NET}~ is ~#c--net~ on GitHub, and the second ~Usage~ is
+~#usage-1~. ~#:anchors 'html~ instead keeps samizdat's ids, in an ~<a id>~ at
+the start of each heading. ~#:anchors~ is an ~MdAnchors~. Its grammar reads
+~'github~ (the default) or ~'html~. In code, use ~AnchorsGithub~ or
+~AnchorsHtml~.
+
+~markdown-options~ takes ~#:heading-offset~ (default 1, so a section is a ~##~
+under the page's ~#~), ~#:anchors~, ~#:url-hook~, which rewrites the target of
+every link and image — a site's ~reference.html~ is ~reference.md~ in a
+repository — and the two hooks, which answer text:
+
+#+BEGIN_SRC scheme
+;; An aside is a quotation: Markdown has nothing nearer.
+(defun (asides h b)
+  (match b
+    ((Div "aside" bs) (Some (blocks->markdown h [(Quote bs)])))
+    (_ None)))
+
+(markdown-page doc #:with (markdown-options #:block-hook asides))
+#+END_SRC
+
+** Errors
+
+A document that cannot be read, or whose commands refuse, is an ~Err~ with a
+message that says where:
+
+#+BEGIN_SRC text
+post.sz: Parse error at line 3, column 9:
+and more
+        ^
+Expecting: '}' to end the body
+
+post.sz:1:1: @link: needs 1 argument in its [...]
+post.sz:1:1: @codeblock: takes no #:langauge; it takes #:lang
+
+post.sz: Parse error at line 1, column 24:
+An @image["a.png", "b"]
+                       ^
+in the [...]: at line 1, column 18: a comma is not a separator here
+#+END_SRC
+
+** Installing it
+
+samizdat comes with Bjolang. A manifest names no dependency for it, and
+cannot: ~(samizdat)~ is part of the standard library. The samizdat
+repository is for Bjolang versions before samizdat was in the distribution.
+
+** Editing in Emacs
+
+~samizdat-mode.el~, beside ~bjomode.el~ at the top of the repository, is a
+major mode for ~.sz~ files:
+
+#+BEGIN_SRC emacs-lisp
+(add-to-list 'load-path "/path/to/Bjolang")
+(require 'samizdat-mode)
+#+END_SRC
+
+It knows what the reader knows: an ~@~ in a ~|{ ... }|~ body is code and
+~|@~ is a command, ~@;~ comments run to the end of the line or the matching
+brace, and ~linus@example.com~ is text. Section titles, ~@em~, ~@strong~ and
+~@code~ bodies are shown as what they are. Filling leaves code, ~[...]~ and
+the meta form alone, and does not join a block command to the text above it.
+
+| ~C-c C-e~ | a command around the region, or an empty one |
+| ~C-c C-s~ | a section; ~C-u 2~ for a subsection         |
+| ~C-c C-b~ | a code block around the region               |
+| ~C-c C-l~ | a link around the region                     |
+| ~C-c '~   | the code block at point, in its language's mode, as org-mode does it; ~C-c '~ again puts it back |
+| ~C-c C-o~ | follow the command at point: a link, an ~@ref~, or the file an ~@include~, ~@image~ or ~#:file~ names |
+
+~outline-minor-mode~ folds sections and ~imenu~ lists them. Commands of your
+own go in ~samizdat-command-names~, for completion after an ~@~, and
+~samizdat-code-block-modes~ says which mode a ~#:lang~ is edited in.
+
+** The tests
+
+~./run_tests.py~ runs them with the other tests. The files they read are in
+~TestFiles/assets/samizdat/~.
+
+| ~591_samizdat_read~     | 42 checks: the reader on its own                          |
+| ~592_samizdat_expand~   | 86 checks: commands, paragraphs, typography, refusals     |
+| ~593_samizdat_html~     | 48 checks: the HTML converter, a highlighter, the writer  |
+| ~594_samizdat_markdown~ | 15 checks: Markdown, translated                           |
+| ~595_samizdat_apidocs~  | 29 checks: Bjolang modules' docs                          |
+| ~596_samizdat_gfm~      | 47 checks: the Markdown converter, and Markdown read back |
+
+~gfm~ compares the Markdown of each kind of block and inline as text — the
+escapes, emphasis Markdown can and cannot write, GitHub's ids, lists side by
+side, tables, notes, hooks — and then writes documents as Markdown, reads them
+back with ~@markdown~, and compares the HTML of the two.
+
+~markdown~ reads @markdown and @include-markdown into samizdat's tree: every
+kind of Markdown node, footnotes numbered with the document's notes, headings
+in ~@toc~, commands inside — in text, in code, alone in a paragraph and
+refused in running text — and a Markdown file.
+
+~read~ reads markup and prints what came out as s-expressions with
+~ats->string~: every rule above, positions, the meta form, and the reader's
+errors. ~expand~ runs the standard commands and compares the tree through
+~document->sexp~, with a table of its own for a replaced command, a text
+command, and one that runs itself until the depth limit stops it; then the
+table of contents, references, including — a loop among the included files
+too — ~@read-list~ and ~@read-table~. ~html~ compares HTML as text, hooks and
+a whole page included; a code block given to a highlighter; the document as
+nodes; and what the writer does with empty, void and raw elements, boolean
+attributes, a ~<pre>~ and a ~<style>~.
+
+** Not yet
+
+- Another converter — plain text, or LaTeX.
+- An ~@~ inside ~[...]~, for a command as an argument.
+- ~@anchor["id"]~, so that ~@ref~ can target something other than a heading.
+- ~@no-typography{...}~, to suppress typography inside a span.
+- ~@read-list~ starting at the first item's number, for ~3. first item~.
+- Math: inline and display LaTeX, rendered by MathJax or KaTeX.

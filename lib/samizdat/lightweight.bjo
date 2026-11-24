@@ -1,0 +1,526 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; samizdat/lightweight.bjo — the module (samizdat lightweight).
+;;
+;; Commands that read a body written the way Markdown and Org write things,
+;; for what is quicker to type that way than with a command for every part.
+;; The body is still samizdat: commands work in it as anywhere else.
+;;
+;;     @read-list{
+;;     - this parses things
+;;       - a list with nested lists
+;;     - this is another post
+;;       and this continues the list item above.
+;;     }
+;;
+;; is an @itemlist of two @items, with another list inside the first.
+;;
+;; The rules, which are Markdown's with less to them:
+;;
+;;   - An item begins with `-`, `+` or `*`, or a number and `.` or `)`, and a
+;;     space. The first item's marker says whether the list is numbered.
+;;   - An item indented past the marker of the one before it is in a list
+;;     inside that one.
+;;   - A line of text continues the item above it, however it is indented.
+;;   - After a blank line, text indented past an item's marker is a new
+;;     paragraph of that item. Text that is not is in no item, and refused.
+
+(export read-list read-table)
+
+(import (std prelude))
+(import (samizdat read))
+(import (samizdat doc))
+(import (samizdat expand))
+
+;; ---------------------------------------------------------------------------
+;; Lines
+;; ---------------------------------------------------------------------------
+
+;; A line of a list: nothing; the start of an item — how far its marker is
+;; indented, whether it numbers, and what follows the marker; or text, with
+;; its indentation taken off.
+(type (: Line (Union Blank
+                     (: Bullet int bool (Vec At))
+                     (: Plain int (Vec At)))))
+
+;; How many ASCII digits start at `c`, and the cursor after them.
+(: digits-from (-> string StringCursor int (Tuple int StringCursor)))
+(defun (digits-from s c n)
+  (if (and (not (string-cursor-end? s c))
+           (let ((ch (string-cursor-ref s c)))
+             (and (char>=? ch #\0) (char<=? ch #\9))))
+      (digits-from s (string-cursor-next s c) (+ n 1))
+      (Tuple n c)))
+
+;; Is the character at `c` a space? False at the end.
+(: space-at? (-> string StringCursor bool))
+(defun (space-at? s c)
+  (and (not (string-cursor-end? s c)) (char=? (string-cursor-ref s c) #\space)))
+
+;; The marker at the start of `s`, if there is one: its length, the space
+;; after it included, and whether it numbers. A marker at the very end of the
+;; text counts, since a command may come right after it: `- @em{x}` is read as
+;; the text "- " and a command. A marker is ASCII, so its length is the same
+;; in characters, bytes and UTF-16 units.
+(: marker (-> string (Option (Tuple int bool))))
+(defun (marker s)
+  (def start (string-cursor-start s))
+  (if (string-cursor-end? s start)
+      None
+      (let ((first (string-cursor-ref s start))
+            (after (string-cursor-next s start)))
+        (cond
+          ((or (char=? first #\-) (char=? first #\+) (char=? first #\*))
+           (cond
+             ((string-cursor-end? s after) (Some (Tuple 1 #f)))
+             ((space-at? s after) (Some (Tuple 2 #f)))
+             (else None)))
+          (else
+           (def (Tuple d c) (digits-from s start 0))
+           (cond
+             ((or (= d 0) (> d 9) (string-cursor-end? s c)) None)
+             ((not (or (char=? (string-cursor-ref s c) #\.) (char=? (string-cursor-ref s c) #\)))) None)
+             ((string-cursor-end? s (string-cursor-next s c)) (Some (Tuple (+ d 1) #t)))
+             ((space-at? s (string-cursor-next s c)) (Some (Tuple (+ d 2) #t)))
+             (else None)))))))
+
+(: with-first-text (-> (Vec At) string (Vec At)))
+(defun (with-first-text line s)
+  (if (string-empty? s) (vec-remove-at line 0) (vec-set line 0 (Text s))))
+
+(: classify (-> (Vec At) Line))
+(defun (classify line)
+  (if (at-line-blank? line)
+      Blank
+      (match (vec-ref line 0)
+        ((Cmd c) (Plain 0 line))
+        ((Text s)
+         (def k (at-line-indentation line))
+         (def rest (.Substring s k))
+         (match (marker rest)
+           ((Some (Tuple len numbered))
+            (Bullet k numbered (with-first-text line (string-trim-left (.Substring rest len)))))
+           (None (Plain k (with-first-text line rest))))))))
+
+(: line-indent (-> Line int))
+(defun (line-indent l)
+  (match l
+    (Blank -1)
+    ((Bullet k numbered xs) k)
+    ((Plain k xs) k)))
+
+(: next-non-blank (-> (Vec Line) int int))
+(defun (next-non-blank lines i)
+  (cond
+    ((>= i (vec-length lines)) i)
+    (else (match (vec-ref lines i)
+            (Blank (next-non-blank lines (+ i 1)))
+            (_ i)))))
+
+(: bullet-at? (-> Line int bool))
+(defun (bullet-at? l indent)
+  (match l
+    ((Bullet k numbered xs) (= k indent))
+    (_ #f)))
+
+;; ---------------------------------------------------------------------------
+;; Items
+;; ---------------------------------------------------------------------------
+
+;; What an item holds, in order: its text, and the lists inside it.
+(type (: Part (Union (: Words (Vec At))
+                     (: Sublist bool (Vec (Vec Part))))))
+
+;; Text added to an item: after the words it ends with, with `joint` between —
+;; a newline, or a blank line for a new paragraph — or, after a list inside
+;; it, as words of their own.
+(: add-words (-> (Vec Part) string (Vec At) (Vec Part)))
+(defun (add-words parts joint content)
+  (def last (- (vec-length parts) 1))
+  (match (vec-ref parts last)
+    ((Words ws) (vec-set parts last (Words (vec-append (vec-add ws (Text joint)) content))))
+    (_ (vec-add parts (Words content)))))
+
+;; The list whose first item is the bullet at `start`, indented `indent`:
+;; whether it numbers, its items, and the line it stopped at.
+(: parse-list (-> (Vec Line) int int (Tuple bool (Vec (Vec Part)) int)))
+(defun (parse-list lines start indent)
+  (def numbered (match (vec-ref lines start)
+                  ((Bullet k num xs) num)
+                  (_ #f)))
+  (let go ((i start) (items (vec-empty)))
+    (def j (next-non-blank lines i))
+    (if (and (< j (vec-length lines)) (bullet-at? (vec-ref lines j) indent))
+        (match (parse-item lines j indent)
+          ((Tuple item next) (go next (vec-add items item))))
+        (Tuple numbered items i))))
+
+;; The item whose bullet is at `start`, and the line it stopped at: a bullet
+;; no further in than its own, or a blank line after which nothing is
+;; indented past its marker.
+(: parse-item (-> (Vec Line) int int (Tuple (Vec Part) int)))
+(defun (parse-item lines start indent)
+  (def n (vec-length lines))
+  (def first (match (vec-ref lines start)
+               ((Bullet k num xs) xs)
+               (_ (vec-empty))))
+  (let go ((i (+ start 1)) (parts [(Words first)]))
+    (if (>= i n)
+        (Tuple parts i)
+        (match (vec-ref lines i)
+          (Blank
+           (def j (next-non-blank lines i))
+           (if (or (>= j n) (<= (line-indent (vec-ref lines j)) indent))
+               (Tuple parts i)
+               (match (vec-ref lines j)
+                 ((Plain k xs) (go (+ j 1) (add-words parts "\n\n" xs)))
+                 (_ (go j parts)))))
+          ((Plain k xs) (go (+ i 1) (add-words parts "\n" xs)))
+          ((Bullet k num xs)
+           (if (> k indent)
+               (match (parse-list lines i k)
+                 ((Tuple numbered items next) (go next (vec-add parts (Sublist numbered items)))))
+               (Tuple parts i)))))))
+
+(: list->block (-> Ctx bool (Vec (Vec Part)) Block))
+(defun (list->block cx numbered items)
+  (ItemList numbered 1 (vec-map (fun (item) (item->blocks cx item)) items)))
+
+(: item->blocks (-> Ctx (Vec Part) (Vec Block)))
+(defun (item->blocks cx parts)
+  (loop (:for p parts)
+        (:acc out (folding (vec-empty)
+                           (match p
+                             ((Words ws) (vec-append out (items->blocks cx ws)))
+                             ((Sublist numbered items) (vec-add out (list->block cx numbered items))))))))
+
+;; ---------------------------------------------------------------------------
+;; The command
+;; ---------------------------------------------------------------------------
+
+;; A line as it was written, near enough, for a message.
+(: line-text (-> (Vec At) string))
+(defun (line-text line)
+  (string-trim (string-join (vec-map (fun (item)
+                                       (match item
+                                         ((Text s) s)
+                                         ((Cmd c) (str "@" (record-ref c name) "..."))))
+                                     line)
+                            "")))
+
+(: read-list (-> Ctx Call (Vec Piece)))
+(defun (read-list cx c)
+  (check-keywords! cx c (vec-empty))
+  (when (> (arg-count c) 0) (refuse cx c "takes no arguments"))
+  (unless (has-body? c) (refuse cx c "needs a body: {...}"))
+  (def raw (at-lines (body-items c)))
+  (def lines (vec-map classify raw))
+  (def n (vec-length lines))
+  (def start (next-non-blank lines 0))
+  (if (>= start n)
+      nothing
+      (match (vec-ref lines start)
+        ((Bullet k num xs)
+         (match (parse-list lines start k)
+           ((Tuple numbered items next)
+            (def rest (next-non-blank lines next))
+            (when (< rest n)
+              (refuse cx c (str "has a line in no item: \"" (line-text (vec-ref raw rest))
+                                "\". After a blank line, text is in an item when it is"
+                                " indented past the item's marker")))
+            (block (list->block cx numbered items)))))
+        (_ (refuse cx c (str "begins with text, and a list begins with - or 1.: \""
+                             (line-text (vec-ref raw start)) "\""))))))
+
+;; ---------------------------------------------------------------------------
+;; Tables, as Org writes them
+;; ---------------------------------------------------------------------------
+;;
+;;     @read-table{
+;;     #+CAPTION: What they drink
+;;     | Name  | Cups | Of     |
+;;     |-------+------+--------|
+;;     | Alice |    3 | @em{tea} |
+;;     | Bob   |   12 | coffee |
+;;     }
+;;
+;; A row is a line that begins with `|`, and its cells are what the `|`s
+;; divide; `\|` is a `|` in a cell, and a command in one stays whole. A line
+;; of `-`, `+` and `|` is a rule: the rows above the first rule are the head,
+;; and further rules divide the rest into groups. Markdown's delimiter row,
+;; `|:---|---:|`, is a rule too, and its colons set the columns' alignment.
+;; So does an Org row of cookies, `| <l> | <r10> |`, which is not a row of the
+;; table. A column nobody aligned whose cells are mostly numbers is set to the
+;; right, as Org exports one. `#+CAPTION:` gives a caption, and other `#+`
+;; lines — `#+NAME:`, `#+TBLFM:` — are passed over.
+
+(type (: TableLine (Union Skipped
+                          (: CaptionLine (Vec At))
+                          (: RuleLine (Vec Align))
+                          (: CookieLine (Vec Align))
+                          (: RowLine (Vec (Vec At)))
+                          (: StrayLine (Vec At)))))
+
+;; The line's text, when it is nothing but text.
+(: plain-line (-> (Vec At) (Option string)))
+(defun (plain-line line)
+  (loop (:for item line)
+        (:acc text (folding (Some "")
+                            (match (Tuple text item)
+                              ((Tuple (Some so-far) (Text s)) (Some (str so-far s)))
+                              (_ None))))))
+
+(: rule-char? (-> char bool))
+(defun (rule-char? c)
+  (or (char=? c #\-) (char=? c #\+) (char=? c #\|) (char=? c #\:) (char-whitespace? c)))
+
+(: rule? (-> string bool))
+(defun (rule? s)
+  (and (string-contains? s "-")
+       (string-fold (fun (c ok) (and ok (rule-char? c))) #t s)))
+
+;; The alignment each segment of a rule asks for: `:--` left, `--:` right,
+;; `:-:` centred, and `---` nothing.
+(: rule-aligns (-> string (Vec Align)))
+(defun (rule-aligns s)
+  (loop (:for segment (string-split (string-replace (string-trim s) "+" "|") "|"))
+        (:let t (string-trim segment))
+        (:when (not (string-empty? t)))
+        (:acc (vecing (cond
+                        ((and (string-starts-with? t ":") (string-ends-with? t ":")) AlignCenter)
+                        ((string-starts-with? t ":") AlignLeft)
+                        ((string-ends-with? t ":") AlignRight)
+                        (else AlignDefault))))))
+
+;; `\|` is kept out of the way of the split as a character from the private
+;; use area, and put back in each cell.
+(: kept-pipe string)
+(def kept-pipe (char->string (int->char 57344)))
+
+(: unpipe (-> string string))
+(defun (unpipe s) (string-replace s kept-pipe "|"))
+
+(: add-text (-> (Vec At) string (Vec At)))
+(defun (add-text items s)
+  (if (string-empty? s) items (vec-add items (Text s))))
+
+(: split-item (-> (Tuple (Vec (Vec At)) (Vec At)) At (Tuple (Vec (Vec At)) (Vec At))))
+(defun (split-item st item)
+  (match (Tuple st item)
+    ((Tuple (Tuple cells current) (Cmd c)) (Tuple cells (vec-add current item)))
+    ((Tuple (Tuple cells current) (Text s))
+     (def parts (string-split (string-replace s "\\|" kept-pipe) "|"))
+     (loop (:for part (in-vec parts #:from 1))
+           (:acc next (folding (Tuple cells (add-text current (unpipe (vec-ref parts 0))))
+                               (match next
+                                 ((Tuple done cell)
+                                  (Tuple (vec-add done cell) (add-text (vec-empty) (unpipe part)))))))))))
+
+;; A cell with the space around it taken off.
+(: trim-cell (-> (Vec At) (Vec At)))
+(defun (trim-cell cell)
+  (def start (if (vec-empty? cell)
+                 cell
+                 (match (vec-ref cell 0)
+                   ((Text s) (with-first-text cell (string-trim-left s)))
+                   ((Cmd c) cell))))
+  (if (vec-empty? start)
+      start
+      (let ((last (- (vec-length start) 1)))
+        (match (vec-ref start last)
+          ((Text s) (if (string-empty? (string-trim-right s))
+                        (vec-remove-at start last)
+                        (vec-set start last (Text (string-trim-right s)))))
+          ((Cmd c) start)))))
+
+;; The cells of a row. What is before its first `|` is not a cell, and neither
+;; is what is after its last, when that is only space.
+(: split-cells (-> (Vec At) (Vec (Vec At))))
+(defun (split-cells line)
+  (match (loop (:for item line)
+               (:acc st (folding (Tuple (vec-empty) (vec-empty)) (split-item st item))))
+    ((Tuple cells current)
+     (def all (vec-remove-at (vec-add cells current) 0))
+     (def n (vec-length all))
+     (vec-map trim-cell
+              (if (and (> n 0) (at-line-blank? (vec-ref all (- n 1))))
+                  (vec-remove-at all (- n 1))
+                  all)))))
+
+;; `<l>`, `<c>`, `<r>`, with a width or without, and `<10>`, a width alone.
+(: cookie (-> string (Option Align)))
+(defun (cookie s)
+  (if (and (>= (string-length s) 2) (string-starts-with? s "<") (string-ends-with? s ">"))
+      (let* ((inner (string-downcase (.Substring s 1 (- (.-Length s) 2))))
+             (letter (if (string-empty? inner) "" (.Substring inner 0 1)))
+             (lettered (or (= letter "l") (= letter "c") (= letter "r")))
+             (width (if lettered (.Substring inner 1) inner)))
+        (if (string-fold (fun (ch ok) (and ok (char-numeric? ch))) #t width)
+            (Some (cond ((= letter "l") AlignLeft)
+                        ((= letter "c") AlignCenter)
+                        ((= letter "r") AlignRight)
+                        (else AlignDefault)))
+            None))
+      None))
+
+;; The alignments a row of cookies sets, if that is what the row is: every
+;; cell a cookie or empty, and one cookie at least.
+(: cookie-aligns (-> (Vec (Vec At)) (Option (Vec Align))))
+(defun (cookie-aligns cells)
+  (def found
+    (loop (:for cell cells)
+          (:acc st (folding (Some (vec-empty))
+                            (match (Tuple st (plain-line cell))
+                              ((Tuple (Some aligns) (Some text))
+                               (cond
+                                 ((string-empty? (string-trim text)) (Some (vec-add aligns AlignDefault)))
+                                 (else (match (cookie (string-trim text))
+                                         ((Some a) (Some (vec-add aligns a)))
+                                         (None None)))))
+                              (_ None))))))
+  (if (vec-empty? (vec-filter (fun (cell) (not (at-line-blank? cell))) cells))
+      None
+      found))
+
+(: table-line (-> (Vec At) TableLine))
+(defun (table-line line)
+  (if (at-line-blank? line)
+      Skipped
+      (match (vec-ref line 0)
+        ((Cmd c) (StrayLine line))
+        ((Text s)
+         (def rest (string-trim-left s))
+         (cond
+           ((string-starts-with? (string-upcase rest) "#+CAPTION:")
+            (CaptionLine (trim-cell (with-first-text line (.Substring rest 10)))))
+           ((string-starts-with? rest "#+") Skipped)
+           ((not (string-starts-with? rest "|")) (StrayLine line))
+           (else
+            (match (plain-line line)
+              ((Some text)
+               (if (rule? text)
+                   (RuleLine (rule-aligns text))
+                   (row-or-cookies line)))
+              (None (row-or-cookies line)))))))))
+
+(: row-or-cookies (-> (Vec At) TableLine))
+(defun (row-or-cookies line)
+  (def cells (split-cells line))
+  (match (cookie-aligns cells)
+    ((Some aligns) (CookieLine aligns))
+    (None (RowLine cells))))
+
+;; Alignments laid over one another, a later one winning where it says
+;; anything.
+(: over-aligns (-> (Vec Align) (Vec Align) (Vec Align)))
+(defun (over-aligns before after)
+  (def n (if (> (vec-length after) (vec-length before)) (vec-length after) (vec-length before)))
+  (loop (:for i (up-from 0 #:to n))
+        (:let old (if (< i (vec-length before)) (vec-ref before i) AlignDefault))
+        (:let new (if (< i (vec-length after)) (vec-ref after i) AlignDefault))
+        (:acc (vecing (match new
+                        (AlignDefault old)
+                        (_ new))))))
+
+;; A number, as Org sees one: a sign, digits with . and , among them, a %.
+(: number-text? (-> string bool))
+(defun (number-text? s)
+  (def t0 (string-trim s))
+  (def t1 (if (or (string-starts-with? t0 "-") (string-starts-with? t0 "+")) (.Substring t0 1) t0))
+  (def t2 (if (string-ends-with? t1 "%") (.Substring t1 0 (- (.-Length t1) 1)) t1))
+  (and (string-fold (fun (ch ok) (and ok (or (char-numeric? ch) (char=? ch #\.) (char=? ch #\,)))) #t t2)
+       (string-fold (fun (ch any) (or any (char-numeric? ch))) #f t2)))
+
+;; Whether more than half of a column's non-empty body cells are numbers.
+(: numeric-column? (-> (Vec (Vec (Vec At))) int bool))
+(defun (numeric-column? rows i)
+  (match (loop (:for row rows)
+               (:when (< i (vec-length row)))
+               (:let cell (vec-ref row i))
+               (:when (not (at-line-blank? cell)))
+               (:acc (counting cell))
+               (:acc (counting cell) #:when (match (plain-line cell)
+                                              ((Some text) (number-text? text))
+                                              (None #f))))
+    ((Tuple filled numbers) (> (* 2 numbers) filled))))
+
+(: padded (-> int (Vec (Vec At)) (Vec (Vec At))))
+(defun (padded n row)
+  (if (>= (vec-length row) n) row (padded n (vec-add row (vec-empty)))))
+
+(: read-table (-> Ctx Call (Vec Piece)))
+(defun (read-table cx c)
+  (check-keywords! cx c ["caption"])
+  (when (> (arg-count c) 0) (refuse cx c "takes no arguments; the caption is #:caption"))
+  (unless (has-body? c) (refuse cx c "needs a body: {...}"))
+  (def raw (at-lines (body-items c)))
+  (def lines (vec-map table-line raw))
+  (loop (:for line lines)
+        (:for text raw)
+        (:do (match line
+               ((StrayLine l)
+                (refuse cx c (str "has a line that is not a row, a rule or a #+ line: \""
+                                  (line-text text) "\"")))
+               (_ unit))))
+  ;; The rows in groups, and whether the first group was ended by a rule.
+  (def grouped
+    (loop (:for line lines)
+          (:acc st (folding (Tuple (vec-empty) (vec-empty) #f)
+                            (match (Tuple st line)
+                              ((Tuple (Tuple groups current headed) (RowLine cells))
+                               (Tuple groups (vec-add current cells) headed))
+                              ((Tuple (Tuple groups current headed) (RuleLine a))
+                               (if (vec-empty? current)
+                                   st
+                                   (Tuple (vec-add groups current) (vec-empty)
+                                          (or headed (vec-empty? groups)))))
+                              (_ st))))))
+  (match grouped
+    ((Tuple closed last headed)
+     (def groups (if (vec-empty? last) closed (vec-add closed last)))
+     (if (vec-empty? groups)
+         nothing
+         (let* ((head (if headed (vec-ref groups 0) (vec-empty)))
+                (bodies (if headed (vec-remove-at groups 0) groups))
+                (body-rows (loop (:for g bodies)
+                                 (:acc rows (folding (vec-empty) (vec-append rows g)))))
+                (columns (loop (:for row (vec-append head body-rows))
+                               (:acc widest (folding 0 (if (> (vec-length row) widest) (vec-length row) widest)))))
+                (asked (loop (:for line lines)
+                             (:acc so-far (folding (vec-empty)
+                                                   (match line
+                                                     ((RuleLine a) (over-aligns so-far a))
+                                                     ((CookieLine a) (over-aligns so-far a))
+                                                     (_ so-far))))))
+                (aligns (loop (:for i (up-from 0 #:to columns))
+                              (:let a (if (< i (vec-length asked)) (vec-ref asked i) AlignDefault))
+                              (:acc (vecing (match a
+                                              (AlignDefault (if (numeric-column? body-rows i) AlignRight AlignDefault))
+                                              (_ a))))))
+                (caption-text (kw-string-or cx c "caption" ""))
+                (caption (if (string-empty? caption-text)
+                             (items->inlines cx c
+                                             (loop (:for line lines)
+                                                   (:acc words (folding (vec-empty)
+                                                                        (match line
+                                                                          ((CaptionLine more)
+                                                                           (if (vec-empty? words)
+                                                                               more
+                                                                               (vec-append (vec-add words (Text " ")) more)))
+                                                                          (_ words))))))
+                             [(Str caption-text)]))
+                (cells-of (fun (row) (vec-map (fun (cell) (items->inlines cx c cell)) (padded columns row)))))
+           (block (TableBlock (Table (caption caption)
+                                     (aligns aligns)
+                                     (head (vec-map cells-of head))
+                                     (bodies (vec-map (fun (g) (vec-map cells-of g)) bodies))))))))))

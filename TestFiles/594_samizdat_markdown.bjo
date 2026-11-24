@@ -1,0 +1,106 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; 594_samizdat_markdown.bjo — Markdown, translated into samizdat's tree.
+;;
+;; Markup with @markdown or @include-markdown in it, run through the standard
+;; commands, and the tree compared as `document->sexp` writes it — which is
+;; samizdat's tree: nothing of Markdown's is left in it.
+
+(import (std prelude))
+(import (std simpletest))
+(import (samizdat doc))
+(import (samizdat expand))
+(import (samizdat commands))
+(import (samizdat html))
+
+(def mine (map-merge standard-commands #map(("bjo" (text-command "Bjolang")))))
+
+(: tree-with (-> (Map string Command) bool string string))
+(defun (tree-with commands typography text)
+  (match (read-document text commands #:name "post.sz" #:typography typography)
+    ((Ok d) (document->sexp d))
+    ((Err e) (str "error: " e))))
+
+(: tree (-> string string))
+(defun (tree text) (tree-with mine #f text))
+
+(: refusal (-> string string))
+(defun (refusal text)
+  (match (read-document text mine #:name "post.sz")
+    ((Ok d) (str "no error: " (document->sexp d)))
+    ((Err e) e)))
+
+(: html-of (-> string string))
+(defun (html-of text)
+  (match (read-document text mine #:typography #f)
+    ((Ok d) (document->html d))
+    ((Err e) (str "error: " e))))
+
+(defun (main args)
+  ;; --- what Markdown writes, as samizdat's tree ------------------------------
+  (expect "a heading with an id, and text with emphasis, strikethrough and code"
+          (tree "@markdown|{\n# Title\n\nSome *em*, **strong**, ~~gone~~ and `code`.\n}|")
+          (str "(heading 1 \"title\" \"Title\")\n"
+               "(para \"Some \" (em \"em\") \", \" (strong \"strong\") \", \" (strike \"gone\") \" and \" (code \"code\") \".\")"))
+  (expect "links, images, raw html, a hard break and a soft one"
+          (tree "@markdown|{\n[a](http://x.org \"t\") ![b](i.png) <b>h</b> one  \ntwo\nthree\n}|")
+          (str "(para (link \"http://x.org\" \"a\") \" \" (image \"i.png\" \"b\") \" \" (raw \"html\" \"<b>\") \"h\""
+               " (raw \"html\" \"</b>\") \" one\" (br) \"two\\nthree\")"))
+  (expect "task lists, and a numbered list inside"
+          (tree "@markdown|{\n- [ ] todo\n- [x] done\n  1. one\n}|")
+          (str "(bullets (item (para (checkbox #f) \" todo\"))"
+               " (item (para (checkbox #t) \" done\") (numbered (item (para \"one\")))))"))
+  (expect "a quote, a code block's language, a rule and an html block"
+          (tree "@markdown|{\n> q\n\n```scheme title=x\n(f)\n```\n\n---\n\n<div>h</div>\n}|")
+          "(quote (para \"q\"))\n(codeblock \"scheme\" \"(f)\")\n(rule)\n(raw-block \"html\" \"<div>h</div>\")")
+  (expect "a table"
+          (tree "@markdown|{\n| a | b |\n|:--|--:|\n| 1 | 2 |\n}|")
+          "(table (aligns left right) (head (row (cell \"a\") (cell \"b\"))) (body (row (cell \"1\") (cell \"2\"))))")
+
+  ;; --- one document -------------------------------------------------------------
+  (expect "footnotes are the document's notes, and one referred to twice is one note"
+          (tree "First.@note{Own.}\n@markdown|{\nA[^x] and again[^x], then[^y].\n\n[^x]: X.\n[^y]: Y.\n}|")
+          (str "(para \"First.\" (note-ref 1))\n"
+               "(para \"A\" (note-ref 2) \" and again\" (note-ref 2) \", then\" (note-ref 3) \".\")\n"
+               "(notes (note 1 (para \"Own.\")) (note 2 (para \"X.\")) (note 3 (para \"Y.\")))"))
+  (expect "a Markdown heading is in @toc, and @ref finds it"
+          (tree "@toc\n@markdown|{\n## Part\n\nSee |@ref[\"part\"].\n}|")
+          (str "(div \"toc\" (bullets (item (para (link \"#part\" \"Part\")))))\n"
+               "(heading 2 \"part\" \"Part\")\n(para \"See \" (link \"#part\" \"Part\") \".\")"))
+  (expect "typography runs over it too"
+          (tree-with mine #t "@markdown|{\n\"quoted\" -- dash\n}|")
+          "(para \"“quoted” – dash\")")
+
+  ;; --- commands inside ------------------------------------------------------------
+  (expect "a command in a {...} body, beside Markdown's emphasis"
+          (tree "@markdown{Some @em{samizdat} in *Markdown*.}")
+          "(para \"Some \" (em \"samizdat\") \" in \" (em \"Markdown\") \".\")")
+  (expect "a block command in a paragraph of its own"
+          (tree "@markdown|{\nBefore.\n\n|@codeblock[#:lang \"x\"]{y}\n\nAfter.\n}|")
+          "(para \"Before.\")\n(codeblock \"x\" \"y\")\n(para \"After.\")")
+  (expect "a command in code is its text"
+          (tree "@markdown|{\nUse `|@bjo` here.\n}|")
+          "(para \"Use \" (code \"Bjolang\") \" here.\")")
+  (expect "a block command in running text"
+          (refusal "@markdown|{\nText |@hr more.\n}|")
+          "post.sz:2:6: @hr: makes a block, and stands in running Markdown text; give it a paragraph of its own")
+
+  ;; --- a file ---------------------------------------------------------------------
+  (expect "a Markdown file, its front matter set aside, its note one of the document's"
+          (tree "Before.@note{Own.}\n@include-markdown[\"TestFiles/assets/samizdat/post.md\"]")
+          (str "(para \"Before.\" (note-ref 1))\n(heading 1 \"from-a-file\" \"From a file\")\n"
+               "(para \"With a \" (link \"https://example.com\" \"link\") \" and a note.\" (note-ref 2))\n"
+               "(notes (note 1 (para \"Own.\")) (note 2 (para \"The file's note.\")))"))
+  (expect "a file that is not there"
+          (refusal "@include-markdown[\"TestFiles/assets/samizdat/none.md\"]")
+          "post.sz:1:1: @include-markdown: there is no file TestFiles/assets/samizdat/none.md")
+
+  ;; --- as HTML --------------------------------------------------------------------
+  (expect "a ticked box and struck text, in HTML"
+          (html-of "@markdown|{\n- [x] ~~done~~\n}|")
+          "<ul>\n<li><input type=\"checkbox\" disabled checked> <del>done</del></li>\n</ul>")
+
+  (println "markdown ok")
+  0)

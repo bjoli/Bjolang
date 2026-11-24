@@ -1,0 +1,296 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; samizdat/markdown.bjo — the module (samizdat markdown).
+;;
+;; Markdown in a samizdat document, read by Bjolang's (text markdown) and
+;; translated into samizdat's own tree: a Markdown heading is a `Heading` with an id that
+;; @toc and @ref know, a footnote is one of the document's notes, a table is
+;; a `TableBlock`. Nothing of Markdown is left once it is read, and every
+;; converter sees what it would have seen from samizdat markup.
+;;
+;;     @markdown|{
+;;     ## Why
+;;
+;;     Because *some* things are quicker to write this way.[^1]
+;;
+;;     [^1]: And some are not.
+;;     }|
+;;
+;; A command works inside too — `@em{x}` in a `{...}` body, `|@em{x}` in a
+;; `|{...}|` one. Each is set aside before the Markdown is read, as a
+;; placeholder that Markdown reads as ordinary characters, and put back,
+;; expanded, where the placeholder ends up: in text it is text, and a command
+;; that makes a block does so in a paragraph of its own.
+;;
+;; `@include-markdown["post.md"]` reads a Markdown file, relative to the
+;; document, as it is.
+
+(export markdown include-markdown markdown->pieces)
+
+(import (std prelude))
+(import (samizdat read))
+(import (samizdat doc))
+(import (samizdat expand))
+(import (text markdown))
+
+;; ---------------------------------------------------------------------------
+;; Placeholders
+;; ---------------------------------------------------------------------------
+;; A command becomes U+E001, its number, U+E002: characters from the private
+;; use area, which Markdown gives no meaning, around digits.
+
+(: token-open string)
+(def token-open (char->string (int->char 57345)))
+
+(: token-close string)
+(def token-close (char->string (int->char 57346)))
+
+(: token (-> int string))
+(defun (token n) (str token-open (int->string n) token-close))
+
+;; The body's text with a placeholder where each command was, and the
+;; commands, numbered from 0.
+(: with-tokens (-> (Vec At) (Tuple string (Vec Call))))
+(defun (with-tokens items)
+  (def sb (stringbuilder-empty))
+  (def calls
+    (loop (:for item items)
+          (:acc found (folding (vec-empty)
+                               (match item
+                                 ((Text s) (stringbuilder-add-string! sb s) found)
+                                 ((Cmd c)
+                                  (stringbuilder-add-string! sb (token (vec-length found)))
+                                  (vec-add found c)))))))
+  (Tuple (stringbuilder->string sb) calls))
+
+;; The number, when the text is one placeholder and nothing else but space.
+(: sole-token (-> string (Option int)))
+(defun (sole-token s)
+  (def t (string-trim s))
+  (if (and (string-starts-with? t token-open)
+           (string-ends-with? t token-close)
+           (= (vec-length (string-split t token-open)) 2))
+      (Some (string->int (.Substring t 1 (- (.-Length t) 2))))
+      None))
+
+;; ---------------------------------------------------------------------------
+;; A translation
+;; ---------------------------------------------------------------------------
+
+;; What one translation works with: the document being expanded, the command
+;; that asked for it, the commands set aside, the Markdown's footnotes, and
+;; the note number each footnote has been given.
+(type (: Md (Record (: cx Ctx)
+                    (: call Call)
+                    (: calls (Vec Call))
+                    (: footnotes (Vec (Tuple int (Vec MdBlock))))
+                    (: numbers (Box (Map int int))))))
+
+(: command-pieces (-> Md int (Vec Piece)))
+(defun (command-pieces md n)
+  (expand-items (record-ref md cx) (vec-add (vec-empty) (Cmd (vec-ref (record-ref md calls) n)))))
+
+(: add-str (-> (Vec Piece) string (Vec Piece)))
+(defun (add-str out s)
+  (if (string-empty? s) out (vec-add out (PInline (Str s)))))
+
+;; Text with placeholders in it: the text, and each command expanded where
+;; its placeholder was. A command that makes a block is refused here, in
+;; running text.
+(: text-pieces (-> Md string (Vec Piece)))
+(defun (text-pieces md s)
+  (def parts (string-split s token-open))
+  (loop (:for part (in-vec parts #:from 1))
+        (:acc out (folding (add-str (vec-empty) (vec-ref parts 0))
+                           (let* ((halves (string-split part token-close))
+                                  (n (string->int (vec-ref halves 0)))
+                                  (rest (string-join (vec-remove-at halves 0) token-close))
+                                  (made (command-pieces md n)))
+                             (loop (:for p made)
+                                   (:do (match p
+                                          ((PBlock b)
+                                           (refuse (record-ref md cx) (vec-ref (record-ref md calls) n)
+                                                   "makes a block, and stands in running Markdown text; give it a paragraph of its own"))
+                                          (_ unit))))
+                             (add-str (vec-append out made) rest))))))
+
+;; Text where only text will do — code, an address: a command's text.
+(: plain (-> Md string string))
+(defun (plain md s)
+  (if (string-contains? s token-open)
+      (string-join (vec-map (fun (p)
+                              (match p
+                                ((PInline x) (inlines->text (vec-add (vec-empty) x)))
+                                ((PBlock b) "")))
+                            (text-pieces md s))
+                   "")
+      s))
+
+;; Adjacent text as one string, as the rest of the tree has it.
+(: push-inline (-> (Vec Inline) Inline (Vec Inline)))
+(defun (push-inline out x)
+  (match x
+    ((Str s)
+     (cond
+       ((string-empty? s) out)
+       ((vec-empty? out) (vec-add out x))
+       (else
+        (def last (- (vec-length out) 1))
+        (match (vec-ref out last)
+          ((Str before) (vec-set out last (Str (str before s))))
+          (_ (vec-add out x))))))
+    (_ (vec-add out x))))
+
+(: inlines-of (-> Md (Vec MdInline) (Vec Inline)))
+(defun (inlines-of md xs)
+  (loop (:for x xs)
+        (:subloop)
+        (:for p (inline-pieces md x))
+        (:acc out (folding (vec-empty)
+                           (match p
+                             ((PInline i) (push-inline out i))
+                             ;; text-pieces has refused any block already
+                             ((PBlock b) out))))))
+
+(: inline-pieces (-> Md MdInline (Vec Piece)))
+(defun (inline-pieces md x)
+  (def one (fun (i) (vec-add (vec-empty) (PInline i))))
+  (match x
+    ((MdText s) (text-pieces md s))
+    ((MdCode s) (one (Code (plain md s))))
+    ((MdEmph xs) (one (Emph (inlines-of md xs))))
+    ((MdStrong xs) (one (Strong (inlines-of md xs))))
+    ((MdStrike xs) (one (Strike (inlines-of md xs))))
+    ((MdLink url title xs) (one (Link (plain md url) (inlines-of md xs))))
+    ((MdImage url title xs) (one (Image (plain md url) (inlines->text (inlines-of md xs)))))
+    (MdSoftBreak (one (Str "\n")))
+    (MdHardBreak (one LineBreak))
+    ((MdHtml s) (one (RawInline "html" (plain md s))))
+    ((MdCheckbox checked) (one (Checkbox checked)))
+    ((MdFootnoteRef n) (one (NoteRef (note-number md n))))))
+
+;; The document's number for the Markdown's footnote `n`: added as a note the
+;; first time it is referred to, and the same number after that.
+(: note-number (-> Md int int))
+(defun (note-number md n)
+  (def numbers (record-ref md numbers))
+  (match (map-try-ref (box-ref numbers) n)
+    ((Some k) k)
+    (None
+     (def blocks (loop (:for note (record-ref md footnotes))
+                       (:acc found (folding (vec-empty)
+                                            (match note
+                                              ((Tuple order bs) (if (= order n) bs found)))))))
+     (def k (add-note! (record-ref md cx) (fun () (blocks-of md blocks))))
+     (box-set! numbers (map-set (box-ref numbers) n k))
+     k)))
+
+;; A command alone in a paragraph: what it makes, its text in paragraphs.
+(: pieces->blocks (-> (Vec Piece) (Vec Block)))
+(defun (pieces->blocks pieces)
+  (def with-run (fun (blocks run) (if (vec-empty? run) blocks (vec-add blocks (Para run)))))
+  (match (loop (:for p pieces)
+               (:acc st (folding (Tuple (vec-empty) (vec-empty))
+                                 (match (Tuple st p)
+                                   ((Tuple (Tuple blocks run) (PInline x)) (Tuple blocks (vec-add run x)))
+                                   ((Tuple (Tuple blocks run) (PBlock b))
+                                    (Tuple (vec-add (with-run blocks run) b) (vec-empty)))))))
+    ((Tuple blocks run) (with-run blocks run))))
+
+(: blocks-of (-> Md (Vec MdBlock) (Vec Block)))
+(defun (blocks-of md bs)
+  (loop (:for b bs)
+        (:acc out (folding (vec-empty) (vec-append out (block-of md b))))))
+
+(: align-of (-> MdAlign Align))
+(defun (align-of a)
+  (match a
+    (MdAlignNone AlignDefault)
+    (MdAlignLeft AlignLeft)
+    (MdAlignCenter AlignCenter)
+    (MdAlignRight AlignRight)))
+
+(: rows-of (-> Md (Vec (Vec (Vec MdInline))) (Vec (Vec (Vec Inline)))))
+(defun (rows-of md rows)
+  (vec-map (fun (row) (vec-map (fun (cell) (inlines-of md cell)) row)) rows))
+
+;; The first word of a code block's info string: ```scheme title="x"``` is scheme.
+(: language (-> string string))
+(defun (language info)
+  (vec-ref (string-split (string-trim info) " ") 0))
+
+(: block-of (-> Md MdBlock (Vec Block)))
+(defun (block-of md b)
+  (def cx (record-ref md cx))
+  (match b
+    ((MdParagraph xs)
+     (def alone (if (= (vec-length xs) 1)
+                    (match (vec-ref xs 0)
+                      ((MdText s) (sole-token s))
+                      (_ None))
+                    None))
+     (match alone
+       ((Some n) (pieces->blocks (command-pieces md n)))
+       (None [(Para (inlines-of md xs))])))
+    ((MdHeading level xs)
+     (def title (inlines-of md xs))
+     [(Heading level (unique-id! cx (inlines->text title)) title)])
+    ;; The code ends with a newline, as CommonMark has it; a CodeBlock's does not.
+    ((MdCodeBlock info code)
+     [(CodeBlock (language (plain md info))
+                 (plain md (if (string-ends-with? code "\n") (string-drop-right code 1) code)))])
+    ((MdQuote bs) [(Quote (blocks-of md bs))])
+    ((MdListBlock l)
+     [(ItemList (record-ref l ordered) 1 (vec-map (fun (item) (blocks-of md item)) (record-ref l items)))])
+    (MdRule [Rule])
+    ((MdHtmlBlock s) [(RawBlock "html" (plain md s))])
+    ((MdTableBlock t)
+     (def body (record-ref t body))
+     [(TableBlock (Table (caption (vec-empty))
+                         (aligns (vec-map align-of (record-ref t aligns)))
+                         (head (rows-of md [(record-ref t head)]))
+                         (bodies (if (vec-empty? body) (vec-empty) [(rows-of md body)]))))])))
+
+;; ---------------------------------------------------------------------------
+;; The commands
+;; ---------------------------------------------------------------------------
+
+;; Markdown, with `calls` in it as placeholders, as blocks of this document.
+(: translate (-> Ctx Call string (Vec Call) (Vec Piece)))
+(defun (translate cx c text calls)
+  (def doc (markdown-parse text))
+  (def md (Md (cx cx) (call c) (calls calls) (footnotes (record-ref doc footnotes))
+              (numbers (make-box (map-empty)))))
+  (vec-map (fun (b) (PBlock b)) (blocks-of md (record-ref doc blocks))))
+
+;; Markdown text as blocks of the document being expanded, for a command of
+;; your own. `c` is the command, for what a refusal names.
+(: markdown->pieces (-> Ctx Call string (Vec Piece)))
+(defun (markdown->pieces cx c text) (translate cx c text (vec-empty)))
+
+;; @markdown{...}, or @markdown|{...}| when the Markdown has braces or @s in it.
+(: markdown (-> Ctx Call (Vec Piece)))
+(defun (markdown cx c)
+  (check-keywords! cx c (vec-empty))
+  (when (> (arg-count c) 0) (refuse cx c "takes no arguments"))
+  (unless (has-body? c)
+    (refuse cx c "needs a body: {...}, or |{...}| when the Markdown has braces or @s in it"))
+  (match (with-tokens (body-items c))
+    ((Tuple text calls) (translate cx c text calls))))
+
+;; @include-markdown["post.md"]: a Markdown file, relative to the document.
+(: include-markdown (-> Ctx Call (Vec Piece)))
+(defun (include-markdown cx c)
+  (check-keywords! cx c (vec-empty))
+  (when (has-body? c) (refuse cx c "takes no body"))
+  (translate cx c (read-relative cx c (arg-string cx c 0)) (vec-empty)))

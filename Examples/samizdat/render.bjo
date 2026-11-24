@@ -1,0 +1,134 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; Examples/samizdat/render.bjo — a post in, a page out.
+;;
+;;     bjo run Examples/samizdat/render.bjo Examples/samizdat/post.sz
+;;
+;; writes Examples/samizdat/post.html. What a blog adds to samizdat, in one file:
+;;
+;;   - its own commands, merged over the standard ones: @aside and @kbd,
+;;     and @bjolang, which stands for a word;
+;;   - how the HTML converter writes them, as hooks that make nodes;
+;;   - code blocks with their language as a class, for highlight.js or
+;;     Prism; `#:highlighter` in `html-options` colours them instead;
+;;   - the (meta ...) form read into a record of its own, with bjodat;
+;;   - a page around the document, made of nodes like the document.
+
+(import (std prelude))
+(import (text bjodat))
+(import (samizdat read))
+(import (samizdat doc))
+(import (samizdat expand))
+(import (samizdat commands))
+(import (samizdat html))
+
+;; ---------------------------------------------------------------------------
+;; The meta form, as a record
+;; ---------------------------------------------------------------------------
+;; (meta (title "...") (date "2026-09-26") (tags a b c))
+
+(def/bjodat-type
+  (: PostMeta (Record #:tag meta
+                      (: title string)
+                      (: date string #:default "")
+                      (: tags (List Symbol) #:rest #:default Nil))))
+
+;; ---------------------------------------------------------------------------
+;; Commands of this blog's own
+;; ---------------------------------------------------------------------------
+
+;; @aside{...}: paragraphs set apart. A div with a class, as far as the
+;; document is concerned; the hook below makes it an <aside>.
+(: aside (-> Ctx Call (Vec Piece)))
+(defun (aside cx c)
+  (check-keywords! cx c (vec-empty))
+  (block (Div "aside" (expand-blocks cx c))))
+
+;; @kbd{C-x C-s}: keys to press.
+(: kbd (-> Ctx Call (Vec Piece)))
+(defun (kbd cx c)
+  (inline (Span "kbd" (vec-add (vec-empty) (Str (body-text cx c))))))
+
+(def commands
+  (map-merge standard-commands
+             #map(("aside" aside)
+                  ("kbd" kbd)
+                  ("bjolang" (text-command "Bjolang")))))
+
+;; ---------------------------------------------------------------------------
+;; How they look
+;; ---------------------------------------------------------------------------
+
+(: blocks-hook (-> Html Block (Option (List Node))))
+(defun (blocks-hook h b)
+  (match b
+    ((Div "aside" bs) (Some (list (html-element "aside" Nil (blocks->nodes h bs)))))
+    (_ None)))
+
+(: inlines-hook (-> Html Inline (Option (List Node))))
+(defun (inlines-hook h i)
+  (match i
+    ((Span "kbd" xs) (Some (list (html-element "kbd" Nil (inlines->nodes h xs)))))
+    (_ None)))
+
+(def html (html-options #:block-hook blocks-hook #:inline-hook inlines-hook))
+
+(def style
+  (str "body { max-width: 40em; margin: 2em auto; font: 18px/1.5 Georgia, serif; }\n"
+       "pre { padding: 1em; overflow-x: auto; }\n"
+       "aside { border-left: 3px solid #999; padding-left: 1em; color: #444; }\n"
+       "kbd { border: 1px solid #aaa; border-radius: 3px; padding: 0 .3em; }\n"
+       ".notes { font-size: 90%; border-top: 1px solid #ccc; }\n"
+       ".date { color: #777; }\n"))
+
+;; ---------------------------------------------------------------------------
+;; The page
+;; ---------------------------------------------------------------------------
+
+(: text-element (-> string (List (Tuple string string)) string Node))
+(defun (text-element name attrs text) (html-element name attrs (list (xml-text text))))
+
+(: page (-> PostMeta Document string))
+(defun (page m doc)
+  (def tags (string-join (list->vec (list-map symbol->string (record-ref m tags))) ", "))
+  (str "<!DOCTYPE html>\n"
+       (nodes->html
+         (list (html-element "html" (list (Tuple "lang" "en"))
+                 (list (html-element "head" Nil
+                         (list (html-element "meta" (list (Tuple "charset" "utf-8")) Nil)
+                               (text-element "title" Nil (record-ref m title))
+                               (text-element "style" Nil style)))
+                       (html-element "body" Nil
+                         (list (html-element "article" Nil
+                                 (list-append
+                                   (list (text-element "h1" Nil (record-ref m title))
+                                         (text-element "p" (list (Tuple "class" "date"))
+                                                       (str (record-ref m date) " · " tags)))
+                                   (document->nodes doc #:with html)))))))))
+       "\n"))
+
+(: meta-of (-> Document (Result string PostMeta)))
+(defun (meta-of doc)
+  (match (record-ref doc meta)
+    ((Some m) (bjodat->PostMeta m))
+    (None (Err "the post has no (meta ...) form"))))
+
+(defun (main args)
+  (def input (if (> (vec-length args) 0) (vec-ref args 0) "Examples/samizdat/post.sz"))
+  (def output (if (> (vec-length args) 1)
+                  (vec-ref args 1)
+                  (str (if (string-ends-with? input ".sz")
+                           (.Substring input 0 (- (string-length input) 3))
+                           input)
+                       ".html")))
+  (match (read-document-file input commands)
+    ((Err e) (println e) 1)
+    ((Ok doc)
+     (match (meta-of doc)
+       ((Err e) (println (str input ": " e)) 1)
+       ((Ok m)
+        (file-write-text output (page m doc))
+        (println (str "wrote " output))
+        0)))))

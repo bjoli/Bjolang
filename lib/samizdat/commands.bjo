@@ -1,0 +1,499 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; samizdat/commands.bjo — the module (samizdat commands).
+;;
+;; The commands a document can use out of the box. They make the tree in
+;; `(samizdat doc)` and know nothing of any output format.
+;;
+;; Text
+;;     @em{...}  @strong{...}          emphasis, and strong emphasis
+;;     @strike{...}                    struck-through text
+;;     @sup{...}  @sub{...}            superscript and subscript
+;;     @code{...}                      code, as written
+;;     @checkbox  @checkbox[#:checked #t]  an unchecked or checked box
+;;     @link["url"]{...}  @link["url"] a link; with no body the url is its text
+;;     @image["src" #:alt "..."]       an image (inline)
+;;     @image["src" #:alt "..."]{...}  a figure with a caption (block)
+;;     @br                             a line break
+;;     @span["class"]{...}             text with a class, for a converter to style
+;;     @raw["html"]{...}               text for one format only
+;;     @note{...}                      a footnote, which may hold paragraphs
+;;
+;; Blocks
+;;     @lineblock{...@br ...}          lines preserved as-is: verse, addresses
+;;     @deflist{@term{...} @def{...}}  a definition list
+;;     @section{...}  @section*{...}   a heading, with #:id; starred: no id, not in TOC
+;;     @subsection{...}  @subsection*{...}   the level below
+;;     @subsubsection{...}  @subsubsection*{...}   and the one below that
+;;     @codeblock[#:lang "x"]|{...}|   a block of code, or with #:file "x.bjo"
+;;                                     the code in that file
+;;     @blockquote{...}                a quotation, which may hold paragraphs
+;;     @itemlist{@item{...} ...}       a list; #:style ordered numbers it; #:start N begins at N
+;;     @read-list{- ...}               a list written as in Markdown or Org
+;;     @read-table{| ... |}            a table written as in Org, or Markdown
+;;     @hr                             a rule
+;;     @div["class"]{...}              blocks with a class
+;;     @raw-block["html"]{...}         a block for one format only
+;;
+;; The whole document
+;;     @toc                            a table of contents; #:depth 3 for more
+;;     @numbered-headings              the headings numbered, 1, 1.1, 1.1.1;
+;;                                     #:depth 2 for fewer levels
+;;     @ref["id"]  @ref["id"]{...}     a link to a heading, anywhere in it
+;;     @include["other.sz"]            another document, as if written here
+;;
+;; Bjolang modules' docs, from (samizdat apidocs)
+;;     @generate-docs[#:module "std random"]  a whole page of a module's docs
+;;     @defmodule[(std random)]{...}   the module's doc, and the module from here on
+;;     @defdoc[random-int]{...}        a definition's doc
+;;     @defdocs                        every definition's doc
+;;     @docref[random-int]{...}        a link to a definition shown in the document
+;;
+;; And @comment{...}, which is nothing, as @;{...} is.
+;;
+;; To add your own, or replace one of these, merge a table over this one —
+;; `(map-merge standard-commands mine)` — and yours win.
+
+(export standard-commands)
+
+(import (std prelude))
+(import (samizdat read))
+(import (samizdat doc))
+(import (samizdat expand))
+(import (samizdat lightweight))
+(import (samizdat markdown))
+(import (samizdat apidocs))
+
+;; ---------------------------------------------------------------------------
+;; Checking a call
+;; ---------------------------------------------------------------------------
+
+(: no-arguments! (-> Ctx Call void))
+(defun (no-arguments! cx c)
+  (check-keywords! cx c (vec-empty))
+  (when (> (arg-count c) 0) (refuse cx c "takes no arguments")))
+
+(: no-body! (-> Ctx Call void))
+(defun (no-body! cx c)
+  (when (has-body? c) (refuse cx c "takes no body")))
+
+(: needs-body! (-> Ctx Call void))
+(defun (needs-body! cx c)
+  (unless (has-body? c) (refuse cx c "needs a body: {...}")))
+
+;; ---------------------------------------------------------------------------
+;; Text
+;; ---------------------------------------------------------------------------
+
+(: em (-> Ctx Call (Vec Piece)))
+(defun (em cx c)
+  (no-arguments! cx c)
+  (needs-body! cx c)
+  (inline (Emph (expand-inlines cx c))))
+
+(: strong (-> Ctx Call (Vec Piece)))
+(defun (strong cx c)
+  (no-arguments! cx c)
+  (needs-body! cx c)
+  (inline (Strong (expand-inlines cx c))))
+
+(: code (-> Ctx Call (Vec Piece)))
+(defun (code cx c)
+  (no-arguments! cx c)
+  (needs-body! cx c)
+  (inline (Code (body-text cx c))))
+
+(: link (-> Ctx Call (Vec Piece)))
+(defun (link cx c)
+  (check-keywords! cx c (vec-empty))
+  (def url (arg-string cx c 0))
+  (inline (Link url (if (has-body? c) (expand-inlines cx c) (vec-add (vec-empty) (Str url))))))
+
+(: image (-> Ctx Call (Vec Piece)))
+(defun (image cx c)
+  (check-keywords! cx c ["alt"])
+  (def src (arg-string cx c 0))
+  (def alt (kw-string-or cx c "alt" ""))
+  (if (has-body? c)
+      (block (Figure src alt (expand-inlines cx c)))
+      (inline (Image src alt))))
+
+(: br (-> Ctx Call (Vec Piece)))
+(defun (br cx c)
+  (no-arguments! cx c)
+  (no-body! cx c)
+  (inline LineBreak))
+
+(: span (-> Ctx Call (Vec Piece)))
+(defun (span cx c)
+  (check-keywords! cx c (vec-empty))
+  (inline (Span (arg-string cx c 0) (expand-inlines cx c))))
+
+(: raw (-> Ctx Call (Vec Piece)))
+(defun (raw cx c)
+  (check-keywords! cx c (vec-empty))
+  (inline (RawInline (arg-string cx c 0) (body-text cx c))))
+
+(: note (-> Ctx Call (Vec Piece)))
+(defun (note cx c)
+  (no-arguments! cx c)
+  (needs-body! cx c)
+  (inline (NoteRef (add-note! cx (fun () (expand-blocks cx c))))))
+
+(: strike (-> Ctx Call (Vec Piece)))
+(defun (strike cx c)
+  (no-arguments! cx c)
+  (needs-body! cx c)
+  (inline (Strike (expand-inlines cx c))))
+
+(: sup (-> Ctx Call (Vec Piece)))
+(defun (sup cx c)
+  (no-arguments! cx c)
+  (needs-body! cx c)
+  (inline (Superscript (expand-inlines cx c))))
+
+(: sub (-> Ctx Call (Vec Piece)))
+(defun (sub cx c)
+  (no-arguments! cx c)
+  (needs-body! cx c)
+  (inline (Subscript (expand-inlines cx c))))
+
+(: checkbox (-> Ctx Call (Vec Piece)))
+(defun (checkbox cx c)
+  (check-keywords! cx c ["checked"])
+  (no-body! cx c)
+  (when (> (arg-count c) 0) (refuse cx c "takes no arguments; use #:checked #t for a checked box"))
+  (inline (Checkbox (kw-bool-or cx c "checked" #f))))
+
+;; ---------------------------------------------------------------------------
+;; Blocks
+;; ---------------------------------------------------------------------------
+
+(: heading (-> int Command))
+(defun (heading level)
+  (fun (cx c)
+    (check-keywords! cx c ["id"])
+    (needs-body! cx c)
+    (def title (expand-inlines cx c))
+    (def id (kw-string-or cx c "id" ""))
+    (block (Heading level
+                    (unique-id! cx (if (string-empty? id) (inlines->text title) id))
+                    title))))
+
+(: heading* (-> int Command))
+(defun (heading* level)
+  (fun (cx c)
+    (check-keywords! cx c (vec-empty))
+    (needs-body! cx c)
+    (def title (expand-inlines cx c))
+    (block (UnnumberedHeading level title))))
+
+;; The code is the body, or with #:file the file's text, relative to the
+;; document; a trailing newline in the file is not part of it.
+(: codeblock (-> Ctx Call (Vec Piece)))
+(defun (codeblock cx c)
+  (check-keywords! cx c ["lang" "file"])
+  (when (> (arg-count c) 0) (refuse cx c "takes no arguments; the language is #:lang"))
+  (def file (kw-string-or cx c "file" ""))
+  (def text
+    (cond
+      ((string-empty? file) (body-text cx c))
+      ((has-body? c) (refuse cx c "takes its code from #:file or from its body, not both"))
+      (else (string-trim-right (string-replace (read-relative cx c file) "\r\n" "\n")))))
+  (block (CodeBlock (kw-string-or cx c "lang" "") text)))
+
+(: blockquote (-> Ctx Call (Vec Piece)))
+(defun (blockquote cx c)
+  (no-arguments! cx c)
+  (block (Quote (expand-blocks cx c))))
+
+;; The items are read off the body, which holds nothing else but space.
+(: itemlist (-> Ctx Call (Vec Piece)))
+(defun (itemlist cx c)
+  (check-keywords! cx c ["style" "start"])
+  (def style (kw-symbol-or cx c "style" "bullets"))
+  (unless (or (= style "bullets") (= style "ordered"))
+    (refuse cx c (str "#:style is bullets or ordered, not " style)))
+  (def start (kw-int-or cx c "start" 1))
+  (def items
+    (loop (:for item (body-items c))
+          (:acc out (folding (vec-empty)
+                             (match item
+                               ((Text s)
+                                (unless (string-empty? (string-trim s))
+                                  (refuse cx c "holds only @item{...}, and there is text in it"))
+                                out)
+                               ((Cmd inner)
+                                (unless (= (record-ref inner name) "item")
+                                  (refuse cx inner "cannot stand in an @itemlist, where only @item{...} can"))
+                                (check-keywords! cx inner (vec-empty))
+                                (vec-add out (expand-blocks cx inner))))))))
+  (block (ItemList (= style "ordered") start items)))
+
+;; An @item is read by the @itemlist it is in, and anywhere else is a mistake.
+(: item (-> Ctx Call (Vec Piece)))
+(defun (item cx c) (refuse cx c "belongs inside an @itemlist"))
+
+(: term (-> Ctx Call (Vec Piece)))
+(defun (term cx c) (refuse cx c "belongs inside a @deflist"))
+
+(: def (-> Ctx Call (Vec Piece)))
+(defun (def cx c) (refuse cx c "belongs inside a @deflist"))
+
+;; Split a vec of inlines on LineBreak nodes, producing a vec of lines.
+;;
+;; The newline written after a @br in the markup is where that line ends, not
+;; text of the next one, and is dropped: a converter puts in its own.
+(: split-lines (-> (Vec Inline) (Vec (Vec Inline))))
+(defun (split-lines xs)
+  (match (loop (:for x xs)
+               (:acc st (folding (Tuple (vec-empty) (vec-empty))
+                                 (match (Tuple st x)
+                                   ((Tuple (Tuple lines current) LineBreak)
+                                    (Tuple (vec-add lines current) (vec-empty)))
+                                   ((Tuple (Tuple lines current) inline)
+                                    (Tuple lines (vec-add current (if (and (vec-empty? current) (not (vec-empty? lines)))
+                                                                      (without-leading-newline inline)
+                                                                      inline))))))))
+    ((Tuple lines current)
+     (if (vec-empty? current) lines (vec-add lines current)))))
+
+;; Text less the newline it begins with, if it begins with one.
+(: without-leading-newline (-> Inline Inline))
+(defun (without-leading-newline x)
+  (match x
+    ((Str s) (if (string-starts-with? s "\n") (Str (.Substring s 1)) x))
+    (_ x)))
+
+(: lineblock (-> Ctx Call (Vec Piece)))
+(defun (lineblock cx c)
+  (no-arguments! cx c)
+  (needs-body! cx c)
+  (block (LineBlock (split-lines (expand-inlines cx c)))))
+
+;; Flush a pending (term, defs) entry into entries.
+(: flush-entry (-> (Vec (Tuple (Vec Inline) (Vec (Vec Block))))
+                   (Option (Tuple (Vec Inline) (Vec (Vec Block))))
+                   (Vec (Tuple (Vec Inline) (Vec (Vec Block))))))
+(defun (flush-entry entries current)
+  (match current
+    (None entries)
+    ((Some entry) (vec-add entries entry))))
+
+(: deflist (-> Ctx Call (Vec Piece)))
+(defun (deflist cx c)
+  (check-keywords! cx c (vec-empty))
+  (needs-body! cx c)
+  (def final
+    (loop (:for item (body-items c))
+          (:acc st (folding (Tuple (vec-empty) None)
+                            (match item
+                              ((Text s)
+                               (unless (string-empty? (string-trim s))
+                                 (refuse cx c "holds only @term{...} and @def{...}, and there is text in it"))
+                               st)
+                              ((Cmd inner)
+                               (def nm (record-ref inner name))
+                               (cond
+                                 ((= nm "term")
+                                  (check-keywords! cx inner (vec-empty))
+                                  (needs-body! cx inner)
+                                  (match st
+                                    ((Tuple entries current)
+                                     (Tuple (flush-entry entries current)
+                                            (Some (Tuple (expand-inlines cx inner) (vec-empty)))))))
+                                 ((= nm "def")
+                                  (check-keywords! cx inner (vec-empty))
+                                  (needs-body! cx inner)
+                                  (match st
+                                    ((Tuple entries None)
+                                     (refuse cx inner "has a @def before any @term"))
+                                    ((Tuple entries (Some (Tuple t defs)))
+                                     (Tuple entries (Some (Tuple t (vec-add defs (expand-blocks cx inner))))))))
+                                 (else
+                                  (refuse cx inner "cannot stand in a @deflist; only @term{...} and @def{...} can")))))))))
+  (match final
+    ((Tuple entries current)
+     (def all (flush-entry entries current))
+     (if (vec-empty? all) nothing (block (DefinitionList all))))))
+
+(: hr (-> Ctx Call (Vec Piece)))
+(defun (hr cx c)
+  (no-arguments! cx c)
+  (no-body! cx c)
+  (block Rule))
+
+(: div (-> Ctx Call (Vec Piece)))
+(defun (div cx c)
+  (check-keywords! cx c (vec-empty))
+  (block (Div (arg-string cx c 0) (expand-blocks cx c))))
+
+(: raw-block (-> Ctx Call (Vec Piece)))
+(defun (raw-block cx c)
+  (check-keywords! cx c (vec-empty))
+  (block (RawBlock (arg-string cx c 0) (body-text cx c))))
+
+(: comment (-> Ctx Call (Vec Piece)))
+(defun (comment cx c) nothing)
+
+;; ---------------------------------------------------------------------------
+;; What needs the whole document
+;; ---------------------------------------------------------------------------
+
+(type (: Entry (Alias (Tuple int string (Vec Inline)))))
+
+(: entry-level (-> Entry int))
+(defun (entry-level h) (match h ((Tuple level id xs) level)))
+
+;; The items for the headings from `i` on, at `level`, and where they stopped:
+;; at the end, or at a heading above `level`. A heading below it makes a list
+;; inside the item before it — or an item of its own, when there is none.
+(: toc-level (-> (Vec Entry) int int (Tuple (Vec (Vec Block)) int)))
+(defun (toc-level hs i level)
+  (let go ((i i) (items (vec-empty)))
+    (cond
+      ((>= i (vec-length hs)) (Tuple items i))
+      ((< (entry-level (vec-ref hs i)) level) (Tuple items i))
+      ((> (entry-level (vec-ref hs i)) level)
+       (match (toc-level hs i (entry-level (vec-ref hs i)))
+         ((Tuple sub next)
+          (def sublist (ItemList #f 1 sub))
+          (def last (- (vec-length items) 1))
+          (go next (if (vec-empty? items)
+                       (vec-add items [sublist])
+                       (vec-set items last (vec-add (vec-ref items last) sublist)))))))
+      (else
+       (match (vec-ref hs i)
+         ((Tuple l id xs) (go (+ i 1) (vec-add items [(Para [(Link (str "#" id) xs)])]))))))))
+
+;; Of class "toc", and "toc numbered" when the headings have their numbers in
+;; their titles, for a style sheet that leaves out the bullets.
+(: toc-of (-> (Vec Entry) (Vec Block)))
+(defun (toc-of hs)
+  (if (vec-empty? hs)
+      (vec-empty)
+      (let ((top (loop (:for h hs)
+                       (:acc least (folding 1000 (if (< (entry-level h) least) (entry-level h) least)))))
+            (numbered (loop (:for h hs)
+                            (:acc any (folding #f (or any (match h ((Tuple l id xs) (numbered-title? xs)))))))))
+        (match (toc-level hs 0 top)
+          ((Tuple items next) [(Div (if numbered "toc numbered" "toc") [(ItemList #f 1 items)])])))))
+
+;; @toc, or @toc[#:depth 3]: the headings down to that level — sections and
+;; subsections by default — as nested lists of links. It is made once every
+;; command has run, so it lists the headings after it too, and in included
+;; files. A document with no headings has none.
+(: toc (-> Ctx Call (Vec Piece)))
+(defun (toc cx c)
+  (check-keywords! cx c ["depth"])
+  (no-body! cx c)
+  (when (> (arg-count c) 0) (refuse cx c "takes no arguments; the depth is #:depth"))
+  (def depth (kw-int-or cx c "depth" 2))
+  (defer-blocks cx (fun (doc)
+                     (toc-of (vec-filter (fun (h) (<= (entry-level h) depth))
+                                         (document-headings doc))))))
+
+(: heading-titled (-> (Vec Entry) string (Option (Vec Inline))))
+(defun (heading-titled hs target)
+  (loop (:for h hs)
+        (:acc found (folding None
+                             (match found
+                               ((Some xs) found)
+                               (None (match h
+                                       ((Tuple level id xs) (if (= id target) (Some xs) None)))))))))
+
+;; @numbered-headings, anywhere in the document: its sections, subsections and
+;; subsubsections numbered, 1, 1.1, 1.1.1, in their titles and so in @toc and
+;; @ref too. #:depth 2 numbers down to the subsections, and a heading deeper
+;; than the depth, or an unnumbered one, @section*, has no number.
+(: numbered-headings (-> Ctx Call (Vec Piece)))
+(defun (numbered-headings cx c)
+  (check-keywords! cx c ["depth"])
+  (no-body! cx c)
+  (when (> (arg-count c) 0) (refuse cx c "takes no arguments; the depth is #:depth"))
+  (def depth (kw-int-or cx c "depth" 3))
+  (when (< depth 1) (refuse cx c (str "#:depth is 1 or more, not " (int->string depth))))
+  (number-headings! cx c depth)
+  nothing)
+
+;; @ref["the-defaults"]: a link to the heading with that id, which says the
+;; heading's title; @ref["the-defaults"]{that section} says something else.
+;; The heading may come after the reference.
+(: reference (-> Ctx Call (Vec Piece)))
+(defun (reference cx c)
+  (check-keywords! cx c (vec-empty))
+  (def target (arg-string cx c 0))
+  (def text (if (has-body? c) (Some (expand-inlines cx c)) None))
+  (defer-inlines cx (fun (doc)
+                      (match (heading-titled (document-headings doc) target)
+                        (None (refuse cx c (str "there is no heading with the id " target)))
+                        ((Some title) [(Link (str "#" target) (option-ref-or text title))])))))
+
+;; @include["chapter.sz"]: that document, relative to this one, as if its text
+;; were written here.
+(: include (-> Ctx Call (Vec Piece)))
+(defun (include cx c)
+  (check-keywords! cx c (vec-empty))
+  (no-body! cx c)
+  (include-file cx c (arg-string cx c 0)))
+
+;; ---------------------------------------------------------------------------
+;; The table
+;; ---------------------------------------------------------------------------
+
+(: standard-commands (Map string Command))
+(def standard-commands
+  #map(("toc" toc)
+       ("numbered-headings" numbered-headings)
+       ("ref" reference)
+       ("include" include)
+       ("em" em)
+       ("strong" strong)
+       ("strike" strike)
+       ("sup" sup)
+       ("sub" sub)
+       ("checkbox" checkbox)
+       ("code" code)
+       ("link" link)
+       ("image" image)
+       ("br" br)
+       ("span" span)
+       ("raw" raw)
+       ("note" note)
+       ("section" (heading 1))
+       ("section*" (heading* 1))
+       ("subsection" (heading 2))
+       ("subsection*" (heading* 2))
+       ("subsubsection" (heading 3))
+       ("subsubsection*" (heading* 3))
+       ("codeblock" codeblock)
+       ("blockquote" blockquote)
+       ("itemlist" itemlist)
+       ("lineblock" lineblock)
+       ("deflist" deflist)
+       ("term" term)
+       ("def" def)
+       ("read-list" read-list)
+       ("read-table" read-table)
+       ("markdown" markdown)
+       ("include-markdown" include-markdown)
+       ("item" item)
+       ("hr" hr)
+       ("div" div)
+       ("raw-block" raw-block)
+       ("comment" comment)
+       ("defmodule" defmodule)
+       ("defdoc" defdoc)
+       ("defdocs" defdocs)
+       ("docref" docref)
+       ("generate-docs" generate-docs)))

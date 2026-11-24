@@ -1,0 +1,100 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; Examples/samizdat/cli.bjo — a document in, HTML or Markdown out.
+;;
+;;     bjo run Examples/samizdat/cli.bjo html docs/index.sz          # writes docs/index.html
+;;     bjo run Examples/samizdat/cli.bjo md docs/index.sz README.md
+;;     bjo run Examples/samizdat/cli.bjo html post.sz -              # to standard output
+;;
+;; The standard commands only. A page is `html-page`'s. A code block has its
+;; language as a class, for highlight.js or Prism; `#:highlighter` in
+;; `html-options` colours it instead.
+;; Markdown is for docs read in a repository, as in markdown.bjo: a
+;; link to another page of them, "reference.html", goes to "reference.md".
+
+(import (std prelude))
+(import (samizdat doc))
+(import (samizdat expand))
+(import (samizdat commands))
+(import (samizdat html))
+(import (samizdat gfm))
+
+;; A line on standard error: where what is said about the run goes, so that a
+;; page written to standard output is the page and nothing else.
+(: eprintln (-> string void))
+(defun (eprintln s)
+  (writeln (parameter-ref current-error-port) s))
+
+(: without-suffix (-> string string string))
+(defun (without-suffix s suffix)
+  (if (string-ends-with? s suffix)
+      (substring s (string-cursor-start s)
+                 (loop (:for _i (range 0 (string-length suffix)))
+                       (:acc at (folding (string-cursor-end s) (string-cursor-prev s at)))))
+      s))
+
+;; A page beside this one; not a site's, and not one with a #fragment.
+(: local-page (-> string string))
+(defun (local-page url)
+  (if (and (string-ends-with? url ".html") (not (string-contains? url "://")))
+      (str (without-suffix url ".html") ".md")
+      url))
+
+(: usage string)
+(def usage
+  "usage: samizdat html <in.sz> [out.html | -]
+       samizdat md   <in.sz> [out.md | -]
+
+Writes the document as a page of HTML, or as GitHub Flavored Markdown.
+Without an output, it goes beside the input, as in.html or in.md; - is
+standard output.")
+
+;; What a format writes, and the suffix its file gets.
+(type (: Format (Union AsHtml AsMarkdown)))
+
+(: format-named (-> string (Option Format)))
+(defun (format-named name)
+  (match name
+    ((or "html" "htm") (Some AsHtml))
+    ((or "md" "markdown" "gfm") (Some AsMarkdown))
+    (_ None)))
+
+(: suffix (-> Format string))
+(defun (suffix f)
+  (match f
+    (AsHtml ".html")
+    (AsMarkdown ".md")))
+
+(: write-as (-> Format Document string))
+(defun (write-as f doc)
+  (match f
+    (AsHtml (html-page doc))
+    (AsMarkdown (markdown-page doc #:with (markdown-options #:url-hook local-page)))))
+
+(: convert (-> Format string string int))
+(defun (convert f input output)
+  (match (read-document-file input standard-commands)
+    ((Err e) (eprintln e) 1)
+    ((Ok doc)
+     (def text (write-as f doc))
+     (if (= output "-")
+         (print text)
+         (begin
+           (file-write-text output text)
+           (eprintln (str "wrote " output))))
+     0)))
+
+(defun (main args)
+  (match args
+    ([(or "-h" "--help" "help") _ ...] (println usage) 0)
+    ([name input rest ...]
+     (match (format-named name)
+       ((Some f)
+        (match rest
+          ([] (convert f input (str (without-suffix input ".sz") (suffix f))))
+          ([output] (convert f input output))
+          (_ (eprintln usage) 2)))
+       (None (eprintln (str "samizdat: no format called " name ": html or md")) 2)))
+    (_ (eprintln usage) 2)))

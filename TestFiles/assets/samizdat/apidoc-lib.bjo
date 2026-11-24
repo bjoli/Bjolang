@@ -1,0 +1,39 @@
+;; A module with docs, for TestFiles/595_samizdat_apidocs.bjo: one of each kind the commands
+;; show differently. Its texts use samizdat markup, as any doc may.
+
+(import (std prelude))
+(import (std syntax-match))
+
+(export bound Point with-twice)
+
+(:doc #:module
+  (summary "Things to @em{document}.")
+  (see bound))
+
+(:doc bound
+  (summary "A number kept between two others.")
+  (arg lo "The least.")
+  (arg hi "The most.")
+  (arg x "The number.")
+  (key #:scale "Multiplied in first.")
+  (returns "x, kept between lo and hi.")
+  (raises System.ArgumentException "When lo is more than hi.")
+  (see Point with-twice)
+  (example "(bound 0 10 50) ; 10"))
+(: bound (-> int int int (#:scale int) int))
+(defun (bound lo hi x #:scale 1)
+  (max lo (min hi (* scale x))))
+
+(:doc Point
+  (summary "A point.")
+  (field x "Across.")
+  (field y "Down."))
+(type (: Point (Record (: x int) (: y int))))
+
+(:doc with-twice
+  (summary "Runs a body twice.")
+  (form (with-twice body ...))
+  (rest body "What to run."))
+(def/macro (with-twice form inject compare)
+  (syntax-match form
+    ((_ body ...) #'(begin ,@body ,@body))))

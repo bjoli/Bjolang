@@ -1,0 +1,426 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; samizdat/doc.bjo — the module (samizdat doc).
+;;
+;; What a document is once its commands have run, and before anything has
+;; been decided about how it looks. The commands make these; a converter —
+;; `(samizdat html)`, or one of your own — prints them. Neither side knows the
+;; other: a command does not know it is headed for HTML, and a converter does
+;; not know which command made a paragraph.
+;;
+;; Two cases are for what the rest does not cover. `Span` and `Div` carry a
+;; class — "aside", "warning", "kbd" — which a converter may know something
+;; about, and otherwise treats as a plain container. `RawInline` and
+;; `RawBlock` carry text for one format only, which the converter for that
+;; format passes through and every other one leaves out.
+
+(export
+  Inline Block Document Table Align
+  ;; Reading the (meta ...) form.
+  meta-values meta-string meta-strings
+  ;; The text of some inlines, markup aside: for an id, an alt, a title.
+  inlines->text
+  ;; Every heading, in order: for a table of contents.
+  document-headings
+  ;; The headings numbered, 1, 1.1, 2, and whether a title has its number.
+  number-headings numbered-title?
+  ;; A table with each piece of its text rewritten: caption and cells.
+  map-table-text
+  ;; A converter to s-expressions, for tests and for looking.
+  document->sexp blocks->sexp inlines->sexp)
+
+(import (std prelude))
+(import (text bjodat-core))
+
+;; ---------------------------------------------------------------------------
+;; The tree
+;; ---------------------------------------------------------------------------
+
+;; How a column's cells are set. `AlignDefault` leaves it to the converter.
+(type (: Align (Union AlignDefault AlignLeft AlignCenter AlignRight)))
+
+(type-rec
+  ;; A table as Org writes one, which is enough for Markdown's too: rows
+  ;; above a rule are the head, and rules divide the rest into groups. A row is
+  ;; its cells, and a cell is text. `aligns` has one entry per column, and
+  ;; every row as many cells as there are columns.
+  (: Table (Record (: caption (Vec Inline))
+                   (: aligns (Vec Align))
+                   (: head (Vec (Vec (Vec Inline))))
+                   (: bodies (Vec (Vec (Vec (Vec Inline)))))))
+  (: Inline (Union (: Str string)
+                   (: Emph (Vec Inline))
+                   (: Strong (Vec Inline))
+                   ;; Struck through: ~~this~~ in Markdown, +this+ in Org.
+                   (: Strike (Vec Inline))
+                   (: Superscript (Vec Inline))
+                   (: Subscript (Vec Inline))
+                   ;; A box, ticked or not: a task list item's [ ] or [x].
+                   (: Checkbox bool)
+                   ;; Code, as it is written.
+                   (: Code string)
+                   ;; Where it goes, and what it says.
+                   (: Link string (Vec Inline))
+                   ;; Where the image is, and a description of it.
+                   (: Image string string)
+                   LineBreak
+                   ;; The number of a footnote, which is in the document's
+                   ;; `notes`, counting from 1.
+                   (: NoteRef int)
+                   (: Span string (Vec Inline))
+                   ;; A format — "html" — and text in it.
+                   (: RawInline string string)
+                   ;; A place to link to that is not a heading: an id, unique
+                   ;; in the document, and nothing to show.
+                   (: Anchor string)))
+  (: Block (Union (: Para (Vec Inline))
+                  ;; A level, 1 for a section and more for the ones inside it;
+                  ;; an id to link to, unique in the document; and the title.
+                  (: Heading int string (Vec Inline))
+                  ;; An unnumbered heading: not in the TOC, no id to link to.
+                  (: UnnumberedHeading int (Vec Inline))
+                  ;; The language it is in, "" if nobody said, and the code.
+                  (: CodeBlock string string)
+                  ;; A source, an alt text, and a caption. The alt text is ""
+                  ;; when none was given; the caption is empty when none was.
+                  (: Figure string string (Vec Inline))
+                  (: Quote (Vec Block))
+                  ;; Whether it is numbered, the number it starts at, and its items.
+                  (: ItemList bool int (Vec (Vec Block)))
+                  ;; Lines of text, each a vec of inlines: verse, addresses.
+                  (: LineBlock (Vec (Vec Inline)))
+                  ;; Terms and their definitions: each entry is a term and a vec
+                  ;; of definitions, each definition a vec of blocks.
+                  (: DefinitionList (Vec (Tuple (Vec Inline) (Vec (Vec Block)))))
+                  Rule
+                  (: Div string (Vec Block))
+                  (: RawBlock string string)
+                  (: TableBlock Table))))
+
+;; `meta` is the (meta ...) form as bjodat read it; see `meta-values`, or read
+;; it into a record of your own with `def/bjodat-type` and `#:tag meta`.
+;; `notes` are the footnotes, in the order they are numbered. `sources` are
+;; the files it was made from, in the order they were read: the document's
+;; own, when it was read from a file, and every file a command read for it —
+;; an @include, an @include-markdown, the code of a @codeblock. A program that
+;; keeps what it made can tell from them when to make it again.
+(type (: Document (Record (: meta (Option Bjodat))
+                          (: blocks (Vec Block))
+                          (: notes (Vec (Vec Block)))
+                          (: sources (Vec string)))))
+
+;; ---------------------------------------------------------------------------
+;; Meta
+;; ---------------------------------------------------------------------------
+;; `(meta (title "Cookies") (tags web http))`: each clause a name and values.
+
+;; The values of the first clause called `name`.
+(: meta-values (-> Document string (Option (List Bjodat))))
+(defun (meta-values doc name)
+  (match (record-ref doc meta)
+    ((Some (BjoList (Cons head clauses))) (clause-named clauses name))
+    (_ None)))
+
+(: clause-named (-> (List Bjodat) string (Option (List Bjodat))))
+(defun (clause-named clauses name)
+  (match clauses
+    (Nil None)
+    ((Cons (BjoList (Cons (BjoSym s) values)) rest)
+     (if (= (symbol->string s) name) (Some values) (clause-named rest name)))
+    ((Cons other rest) (clause-named rest name))))
+
+;; A string or a symbol as text, and nothing else.
+(: textual (-> Bjodat (Option string)))
+(defun (textual v)
+  (match v
+    ((BjoStr s) (Some s))
+    ((BjoSym s) (Some (symbol->string s)))
+    (_ None)))
+
+;; The clause's value, when it has one and it is a string or a symbol:
+;; `(title "Cookies")`.
+(: meta-string (-> Document string (Option string)))
+(defun (meta-string doc name)
+  (match (meta-values doc name)
+    ((Some (Cons v Nil)) (textual v))
+    (_ None)))
+
+;; The clause's values that are strings or symbols: `(tags web http)`.
+(: meta-strings (-> Document string (Vec string)))
+(defun (meta-strings doc name)
+  (match (meta-values doc name)
+    ((Some values)
+     (loop (:for v values)
+           (:when-let (Some s) (textual v))
+           (:acc (vecing s))))
+    (None (vec-empty))))
+
+;; ---------------------------------------------------------------------------
+;; Text
+;; ---------------------------------------------------------------------------
+
+(: inlines->text (-> (Vec Inline) string))
+(defun (inlines->text inlines)
+  (string-join (vec-map inline->text inlines) ""))
+
+(: inline->text (-> Inline string))
+(defun (inline->text i)
+  (match i
+    ((Str s) s)
+    ((Emph xs) (inlines->text xs))
+    ((Strong xs) (inlines->text xs))
+    ((Strike xs) (inlines->text xs))
+    ((Superscript xs) (inlines->text xs))
+    ((Subscript xs) (inlines->text xs))
+    ((Checkbox checked) "")
+    ((Code s) s)
+    ((Link url xs) (inlines->text xs))
+    ((Image src alt) alt)
+    (LineBreak " ")
+    ((NoteRef n) "")
+    ((Span c xs) (inlines->text xs))
+    ((RawInline f s) "")
+    ((Anchor id) "")))
+
+;; ---------------------------------------------------------------------------
+;; Headings
+;; ---------------------------------------------------------------------------
+
+;; The level, id and title of every heading in the document's blocks, in the
+;; order they come, those in quotations, lists and divs included. The notes
+;; are not looked in.
+(: document-headings (-> Document (Vec (Tuple int string (Vec Inline)))))
+(defun (document-headings doc)
+  (headings-in (record-ref doc blocks)))
+
+(: headings-in (-> (Vec Block) (Vec (Tuple int string (Vec Inline)))))
+(defun (headings-in bs)
+  (loop (:for b bs)
+        (:acc out (folding (vec-empty)
+                           (match b
+                             ((Heading level id xs) (vec-add out (Tuple level id xs)))
+                             ((Quote inner) (vec-append out (headings-in inner)))
+                             ((Div c inner) (vec-append out (headings-in inner)))
+                             ((ItemList numbered start items)
+                              (vec-append out (loop (:for item items)
+                                                   (:acc more (folding (vec-empty)
+                                                                       (vec-append more (headings-in item)))))))
+                             ((DefinitionList entries)
+                              (vec-append out (loop (:for entry entries)
+                                                   (:acc more (folding (vec-empty)
+                                                                       (match entry
+                                                                         ((Tuple term defs)
+                                                                          (vec-append more
+                                                                                     (loop (:for def defs)
+                                                                                           (:acc inner (folding (vec-empty)
+                                                                                                                (vec-append inner (headings-in def)))))))))))))
+                             (_ out))))))
+
+;; ---------------------------------------------------------------------------
+;; Numbering
+;; ---------------------------------------------------------------------------
+
+;; The headings down to level `depth` numbered, in the order
+;; `document-headings` finds them: 1, 1.1, 1.2, 2. The number goes in front of
+;; the title, a `Span` of class "heading-number" and a space, so that every
+;; converter shows it, and so does what is made from the title afterwards: a
+;; table of contents, a reference. It counts from the shallowest heading
+;; numbered, and a level passed over is a 0: a subsection before any section
+;; is 0.1. An unnumbered heading, and one deeper than `depth`, is left as it
+;; is, and no heading's id changes.
+(: number-headings (-> (Vec Block) int (Vec Block)))
+(defun (number-headings bs depth)
+  (def top (loop (:for h (headings-in bs))
+                 (:acc least (folding 0 (match h
+                                          ((Tuple level id xs)
+                                           (if (and (<= level depth) (or (= least 0) (< level least)))
+                                               level
+                                               least)))))))
+  (if (= top 0)
+      bs
+      (number-in bs depth top (make-box (vec-empty)))))
+
+;; `counters` is the number of the heading numbered last, one part a level.
+(: number-in (-> (Vec Block) int int (Box (Vec int)) (Vec Block)))
+(defun (number-in bs depth top counters)
+  (vec-map (fun (b) (number-block b depth top counters)) bs))
+
+(: number-block (-> Block int int (Box (Vec int)) Block))
+(defun (number-block b depth top counters)
+  (match b
+    ((Heading level id xs)
+     (if (> level depth)
+         b
+         (let ((k (- level top))
+               (last (box-ref counters)))
+           (def now (loop (:for i (range 0 (+ k 1)))
+                          (:acc (vecing (let ((n (if (< i (vec-length last)) (vec-ref last i) 0)))
+                                          (if (= i k) (+ n 1) n))))))
+           (box-set! counters now)
+           (Heading level id (vec-append [(Span "heading-number" [(Str (string-join (vec-map int->string now) "."))])
+                                         (Str " ")]
+                                        xs)))))
+    ((Quote inner) (Quote (number-in inner depth top counters)))
+    ((Div c inner) (Div c (number-in inner depth top counters)))
+    ((ItemList numbered start items)
+     (ItemList numbered start (vec-map (fun (item) (number-in item depth top counters)) items)))
+    ((DefinitionList entries)
+     (DefinitionList (vec-map (fun (entry)
+                                (match entry
+                                  ((Tuple term defs)
+                                   (Tuple term (vec-map (fun (d) (number-in d depth top counters)) defs)))))
+                              entries)))
+    (_ b)))
+
+;; Whether a heading's title begins with the number `number-headings` gave it.
+(: numbered-title? (-> (Vec Inline) bool))
+(defun (numbered-title? xs)
+  (and (not (vec-empty? xs))
+       (match (vec-ref xs 0)
+         ((Span "heading-number" n) #t)
+         (_ #f))))
+
+;; ---------------------------------------------------------------------------
+;; Tables
+;; ---------------------------------------------------------------------------
+
+;; The table with `f` applied to its caption and to every cell, for a pass
+;; over the text of a document that has to look in tables too.
+(: map-table-text (-> (-> (Vec Inline) (Vec Inline)) Table Table))
+(defun (map-table-text f t)
+  (def row (fun (r) (vec-map f r)))
+  (Table (caption (f (record-ref t caption)))
+         (aligns (record-ref t aligns))
+         (head (vec-map row (record-ref t head)))
+         (bodies (vec-map (fun (group) (vec-map row group)) (record-ref t bodies)))))
+
+;; ---------------------------------------------------------------------------
+;; S-expressions
+;; ---------------------------------------------------------------------------
+;; A converter like any other, which prints the tree rather than a format:
+;;
+;;     (para "See " (em "this") ".")
+;;     (heading 1 "the-defaults" "The defaults")
+;;     (unnumbered-heading 3 "A local note")
+;;     (figure "cat.png" "A cat" "A cat in a box.")
+;;     (line-block (line "Roses are red") (line "Violets are blue"))
+;;     (deflist (entry (term "Key") (def (para "Value"))))
+
+(: quoted (-> string string))
+(defun (quoted s) (bjodat->string (BjoStr s)))
+
+(: form (-> string (Vec string) string))
+(defun (form head parts)
+  (if (vec-empty? parts)
+      (str "(" head ")")
+      (str "(" head " " (string-join parts " ") ")")))
+
+(: inlines->sexp (-> (Vec Inline) string))
+(defun (inlines->sexp inlines)
+  (string-join (vec-map inline->sexp inlines) " "))
+
+(: inline->sexp (-> Inline string))
+(defun (inline->sexp i)
+  (match i
+    ((Str s) (quoted s))
+    ((Emph xs) (form "em" (vec-map inline->sexp xs)))
+    ((Strong xs) (form "strong" (vec-map inline->sexp xs)))
+    ((Strike xs) (form "strike" (vec-map inline->sexp xs)))
+    ((Superscript xs) (form "sup" (vec-map inline->sexp xs)))
+    ((Subscript xs) (form "sub" (vec-map inline->sexp xs)))
+    ((Checkbox checked) (if checked "(checkbox #t)" "(checkbox #f)"))
+    ((Code s) (form "code" [(quoted s)]))
+    ((Link url xs) (form "link" (vec-insert (vec-map inline->sexp xs) 0 (quoted url))))
+    ((Image src alt) (form "image" [(quoted src) (quoted alt)]))
+    (LineBreak "(br)")
+    ((NoteRef n) (form "note-ref" [(int->string n)]))
+    ((Span c xs) (form "span" (vec-insert (vec-map inline->sexp xs) 0 (quoted c))))
+    ((RawInline f s) (form "raw" [(quoted f) (quoted s)]))
+    ((Anchor id) (form "anchor" [(quoted id)]))))
+
+(: blocks->sexp (-> (Vec Block) string))
+(defun (blocks->sexp blocks)
+  (string-join (vec-map block->sexp blocks) " "))
+
+(: block->sexp (-> Block string))
+(defun (block->sexp b)
+  (match b
+    ((Para xs) (form "para" (vec-map inline->sexp xs)))
+    ((Heading level id xs)
+     (form "heading" (vec-append [(int->string level) (quoted id)] (vec-map inline->sexp xs))))
+    ((UnnumberedHeading level xs)
+     (form "unnumbered-heading" (vec-append [(int->string level)] (vec-map inline->sexp xs))))
+    ((Figure src alt xs)
+     (form "figure" (vec-append [(quoted src) (quoted alt)] (vec-map inline->sexp xs))))
+    ((CodeBlock lang text) (form "codeblock" [(quoted lang) (quoted text)]))
+    ((Quote bs) (form "quote" (vec-map block->sexp bs)))
+    ((ItemList numbered start items)
+     (form (if numbered (if (> start 1) (str "numbered-from-" (int->string start)) "numbered") "bullets")
+           (vec-map (fun (item) (form "item" (vec-map block->sexp item))) items)))
+    ((LineBlock lines)
+     (form "line-block" (vec-map (fun (line) (form "line" (vec-map inline->sexp line))) lines)))
+    ((DefinitionList entries)
+     (form "deflist"
+           (vec-map (fun (entry)
+                      (match entry
+                        ((Tuple term defs)
+                         (form "entry"
+                               (vec-append [(form "term" (vec-map inline->sexp term))]
+                                          (vec-map (fun (def) (form "def" (vec-map block->sexp def))) defs))))))
+                    entries)))
+    (Rule "(rule)")
+    ((Div c bs) (form "div" (vec-insert (vec-map block->sexp bs) 0 (quoted c))))
+    ((RawBlock f s) (form "raw-block" [(quoted f) (quoted s)]))
+    ((TableBlock t) (table->sexp t))))
+
+;; (table (aligns left right) (caption ...) (head (row (cell ...) ...)) (body ...) ...)
+;; with no caption and no head when it has none.
+(: table->sexp (-> Table string))
+(defun (table->sexp t)
+  (def caption (record-ref t caption))
+  (def head (record-ref t head))
+  (def parts (vec-add (vec-empty) (form "aligns" (vec-map align->string (record-ref t aligns)))))
+  (def captioned (if (vec-empty? caption) parts (vec-add parts (form "caption" (vec-map inline->sexp caption)))))
+  (def headed (if (vec-empty? head) captioned (vec-add captioned (form "head" (vec-map row->sexp head)))))
+  (form "table" (vec-append headed (vec-map (fun (group) (form "body" (vec-map row->sexp group)))
+                                           (record-ref t bodies)))))
+
+(: row->sexp (-> (Vec (Vec Inline)) string))
+(defun (row->sexp row)
+  (form "row" (vec-map (fun (cell) (form "cell" (vec-map inline->sexp cell))) row)))
+
+(: align->string (-> Align string))
+(defun (align->string a)
+  (match a
+    (AlignDefault "default")
+    (AlignLeft "left")
+    (AlignCenter "center")
+    (AlignRight "right")))
+
+;; One block to a line, and the notes after them.
+(: document->sexp (-> Document string))
+(defun (document->sexp doc)
+  (with-return ret 
+    (def notes (record-ref doc notes))
+    (def body (string-join (vec-map block->sexp (record-ref doc blocks)) "\n"))
+    (when (empty? notes)
+      (ret body))
+    (def all-notes
+       (loop (:for i (up-from 1))
+             (:for inv notes)
+             (:let noteblocks (vec-map block->sexp inv))
+             (:let prepended (vec-insert noteblocks 0 (int->string i)))
+             (:acc (vecing (form "note" prepended)))))
+
+    (str body "\n" (form "notes" all-notes))))
+               

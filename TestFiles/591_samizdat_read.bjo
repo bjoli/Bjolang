@@ -1,0 +1,210 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; 591_samizdat_read.bjo — the reader on its own.
+;;
+;; Each check reads a piece of markup and compares what came out, written back
+;; as s-expressions by `ats->string`: text as a string literal, and a command
+;; as `(name arg ... {body ...})`.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text bjodat-core))
+(import (samizdat read))
+
+;; What `text` reads as, or the error.
+(: shown (-> string string))
+(defun (shown text)
+  (match (read-source text)
+    ((Ok src) (ats->string (record-ref src content)))
+    ((Err e) (str "error: " e))))
+
+;; The error `text` gives, or what it read as when it gave none.
+(: error-of (-> string string))
+(defun (error-of text)
+  (match (read-source text #:name "post.sz")
+    ((Ok src) (str "no error: " (ats->string (record-ref src content))))
+    ((Err e) e)))
+
+;; Every command's name and where its @ is, nested ones included.
+(: positions (-> (Vec At) string))
+(defun (positions items)
+  (string-join
+    (loop (:for item items)
+          (:acc out (folding (vec-empty)
+                             (match item
+                               ((Text s) out)
+                               ((Cmd c)
+                                (def here (str (record-ref c name) "@" (int->string (record-ref c line))
+                                               ":" (int->string (record-ref c column))))
+                                (def inner (match (record-ref c body)
+                                             ((Some items) (positions items))
+                                             (None "")))
+                                (if (string-empty? inner)
+                                    (vec-add out here)
+                                    (vec-add (vec-add out here) inner)))))))
+    " "))
+
+(: positions-in (-> string string))
+(defun (positions-in text)
+  (match (read-source text)
+    ((Ok src) (string-trim (positions (record-ref src content))))
+    ((Err e) (str "error: " e))))
+
+;; The meta form, written back, and what followed it.
+(: meta-and-rest (-> string string))
+(defun (meta-and-rest text)
+  (match (read-source text)
+    ((Err e) (str "error: " e))
+    ((Ok src)
+     (str (match (record-ref src meta)
+            ((Some m) (bjodat->string m))
+            (None "no meta"))
+          " | "
+          (ats->string (record-ref src content))))))
+
+(defun (main args)
+  ;; --- text and commands --------------------------------------------------
+  (expect "plain text" (shown "hello, world") "\"hello, world\"")
+  (expect "a command with a body"
+          (shown "a @em{b} c")
+          "\"a \" (em {\"b\"}) \" c\"")
+  (expect "arguments are bjodat: strings, keywords, numbers, symbols"
+          (shown "@image[\"cat.png\" #:width 400 left]")
+          "(image \"cat.png\" :width 400 left)")
+  (expect "arguments and a body"
+          (shown "@link[\"https://example.com\"]{an example}")
+          "(link \"https://example.com\" {\"an example\"})")
+  (expect "a command with neither, and @|name| even after a word"
+          (shown "one@|br|two and @br then")
+          "\"one\" (br) \"two and \" (br) \" then\"")
+  (expect "@|name| where a letter follows"
+          (shown "the @|bjo|s")
+          "\"the \" (bjo) \"s\"")
+  (expect "empty braces are a body"
+          (shown "@toc{}")
+          "(toc {})")
+  (expect "a space before the brace is not a body"
+          (shown "@em {x}")
+          "(em) \" {x}\"")
+  (expect "a nested command"
+          (shown "@em{a @strong{b} c}")
+          "(em {\"a \" (strong {\"b\"}) \" c\"})")
+
+  ;; --- the @ that is not a command ---------------------------------------
+  (expect "an @ after a letter is text"
+          (shown "mail linus@example.com today")
+          "\"mail linus@example.com today\"")
+  (expect "unless a bracket follows its name: a footnote on a word"
+          (shown "a word@note{x}. and a@b[1] and 2@c|{y}|")
+          "\"a word\" (note {\"x\"}) \". and a\" (b 1) \" and 2\" (c {\"y\"})")
+  (expect "after punctuation it is a command"
+          (shown "(@em{x})")
+          "\"(\" (em {\"x\"}) \")\"")
+  (expect "@\"...\" is text, with a string's escapes"
+          (shown "an @\"@\" and a @\"}\" and @\"a\\tb\"")
+          "\"an @ and a } and a\\tb\"")
+  (expect "@|| is nothing"
+          (shown "a @||b")
+          "\"a b\"")
+
+  ;; --- comments -----------------------------------------------------------
+  (expect "a line comment takes its newline"
+          (shown "a @; not this\nb")
+          "\"a b\"")
+  (expect "a block comment, with commands in it"
+          (shown "a @;{x @em{y} {z}} b")
+          "\"a  b\"")
+
+  ;; --- braces -------------------------------------------------------------
+  (expect "balanced braces in a body are text"
+          (shown "@code{f {x} {y {z}}}")
+          "(code {\"f {x} {y {z}}\"})")
+  (expect "at the top level a brace is just a character"
+          (shown "a } b { c")
+          "\"a } b { c\"")
+
+  ;; --- verbatim bodies ----------------------------------------------------
+  (expect "in |{ }| an @ is text"
+          (shown "@code|{a @em{b} }|")
+          "(code {\"a @em{b} \"})")
+  (expect "and |@ is a command"
+          (shown "@code|{a |@em{b} c}|")
+          "(code {\"a \" (em {\"b\"}) \" c\"})")
+  (expect "a nested |{ }| is text"
+          (shown "@code|{a |{b}| c}|")
+          "(code {\"a |{b}| c\"})")
+  (expect "|<{ ... }>| for text with }| in it"
+          (shown "@code|<{a }| b}>|")
+          "(code {\"a }| b\"})")
+  (expect "a | after a command, with no brace, is text"
+          (shown "@b| c")
+          "(b) \"| c\"")
+
+  ;; --- lines and indentation ------------------------------------------------
+  (expect "the lines after the brace lose what they share"
+          (shown "@codeblock{\n    one\n      two\n    }")
+          "(codeblock {\"one\\n  two\"})")
+  (expect "a first line on the brace's line is kept as it is"
+          (shown "@note{first\n    second}")
+          "(note {\"first\\nsecond\"})")
+  (expect "a blank line inside is kept, empty"
+          (shown "@q{\n  a\n    \n  b\n}")
+          "(q {\"a\\n\\nb\"})")
+  (expect "a verbatim body too"
+          (shown "@code|{\n  (define x\n    1)\n}|")
+          "(code {\"(define x\\n  1)\"})")
+  (expect "a command at the start of a line"
+          (shown "@list{\n  @item{a}\n  @item{b}\n}")
+          "(list {(item {\"a\"}) \"\\n\" (item {\"b\"})})")
+  (expect "a return before a newline is dropped"
+          (shown "a\r\nb")
+          "\"a\\nb\"")
+
+  ;; --- where a command is -----------------------------------------------
+  (expect "the line and column of each @"
+          (positions-in "a\n  @em{x @b{y}}\n@c")
+          "em@2:3 b@2:9 c@3:1")
+
+  ;; --- meta ------------------------------------------------------------------
+  (expect "a document may begin with (meta ...)"
+          (meta-and-rest "(meta (title \"Hi\") (tags a b))\nText")
+          "(meta (title \"Hi\") (tags a b)) | \"\\nText\"")
+  (expect "after blank lines too"
+          (meta-and-rest "\n\n  (meta (title \"Hi\"))\nText")
+          "(meta (title \"Hi\")) | \"\\nText\"")
+  (expect "anywhere else it is text"
+          (meta-and-rest "Text (meta (title \"Hi\"))")
+          "no meta | \"Text (meta (title \\\"Hi\\\"))\"")
+  (expect "and (metaphor is not meta"
+          (meta-and-rest "(metaphor)")
+          "no meta | \"(metaphor)\"")
+  (expect "a bracket in a string in meta does not count"
+          (meta-and-rest "(meta (title \"a ) b\"))x")
+          "(meta (title \"a ) b\")) | \"x\"")
+
+  ;; --- errors -----------------------------------------------------------------
+  (expect-true "a body that never closes says where, and what"
+               (let ((e (error-of "one\n@em{two")))
+                 (and (string-starts-with? e "post.sz: ")
+                      (string-contains? e "line 2")
+                      (string-contains? e "'}' to end the body"))))
+  (expect-true "an @ followed by nothing it knows"
+               (string-contains? (error-of "a @ b") "a command name, '|', '\"' or ';' after the @"))
+  (expect-true "arguments bjodat refuses, and where in the document"
+               (let ((e (error-of "@img[\"a.png\", \"b\"]")))
+                 (and (string-contains? e "in the [...]: at line 1, column 13:")
+                      (string-contains? e "comma"))))
+  (expect-true "on a later line of the brackets too"
+               (string-contains? (error-of "x\n@img[\"a.png\"\n  , \"b\"]")
+                                 "in the [...]: at line 3, column 3:"))
+  (expect-true "an unclosed bracket"
+               (string-contains? (error-of "@img[\"a.png\" x") "']'"))
+  (expect-true "a verbatim body that never closes"
+               (string-contains? (error-of "@code|<{a}|") "'}>|' to end the body"))
+  (expect-true "a meta form bjodat refuses"
+               (string-contains? (error-of "(meta (title 'x))") "in (meta ...):"))
+
+  (println "read ok")
+  0)
