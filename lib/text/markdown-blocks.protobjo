@@ -1083,11 +1083,12 @@
     (else None)))
 
 ;; A list item's blocks. With the task-lists extension, a first paragraph
-;; that starts with [ ], [x] or [X] and a space starts with a checkbox.
+;; that starts with [ ], [x] or [X] and a space starts with a checkbox. The
+;; space or tab after the box is the start of the text after it, as it is
+;; in the source.
 (: (-> InlineContext int (Vec MdBlock)))
 (defun (convert-item cx i)
   (def st (record-ref cx blocks))
-  (def blocks (convert-children cx i))
   (def kids (live-children st i))
   (def first-text
     (if (and (record-ref (record-ref st ext) task-lists) (> (vec-length kids) 0)
@@ -1099,10 +1100,15 @@
      #:when (and (at? t 0 #\[) (at? t 2 #\])
                  (or (at? t 1 #\space) (at? t 1 #\x) (at? t 1 #\X))
                  (space-or-tab? (at t 3)))
+     (def space (text-of t 3 4))
      (def rest (parse-inlines cx (bytestring-slice t 3 (bytestring-length t))))
-     (vec-add-first (vec-drop blocks 1)
-                    (MdParagraph (vec-add-first rest (MdCheckbox (not (at? t 1 #\space)))))))
-    (_ blocks)))
+     (def text
+       (match (if (vec-empty? rest) None (Some (vec-ref rest 0)))
+         ((Some (MdText first)) (vec-set rest 0 (MdText (str space first))))
+         (_ (vec-add-first rest (MdText space)))))
+     (vec-add-first {vecing b (:for c (vec-drop kids 1)) (:when-let (Some b) (convert-block cx c))}
+                    (MdParagraph (vec-add-first text (MdCheckbox (not (at? t 1 #\space)))))))
+    (_ (convert-children cx i))))
 
 ;; A table's rows, each with a cell for each column: a short row gets empty
 ;; cells, and a long one loses its last ones.
