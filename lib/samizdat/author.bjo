@@ -1,0 +1,513 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; samizdat/author.bjo — the module (samizdat author).
+;;
+;; The high-level interface: read documents and write them as files, with
+;; one `Setup` record that holds every option. `bjo sz` is written on it.
+;; The other modules stay the interface for commands and converters.
+;;
+;;     (def setup (author-setup #:commands (map-merge standard-commands mine)
+;;                              #:css ["style.css"]))
+;;     (load-document "index.sz" #:setup setup)       Result: the document, or an error
+;;     (render doc 'html #:setup setup)                the output, as a string
+;;     (convert-file "index.sz" 'html #:setup setup)  writes index.html
+;;     (convert-tree "docs" 'html #:out "site")        every .sz file below docs
+;;
+;; Formats: 'html is a whole page, 'html-fragment the body only, 'markdown
+;; GitHub Flavored Markdown, and 'sexp the tree, for debugging commands.
+;;
+;; Links: with `#:sz-links #t`, the default, a relative link or image to a
+;; .sz file is rewritten to the file that the same format makes of it:
+;; "guide.sz#install" becomes "guide.html#install". A document links to
+;; sources, and each output links to outputs.
+;;
+;; Errors: every function that reads a document returns `Err` with a message
+;; of the form "file:line:column: @command: why". Nothing here raises for a
+;; bad document.
+
+(export
+  Setup author-setup default-setup
+  OutputFormat output-suffix output-path
+  load-document load-document-text
+  render convert-file convert-tree sz-files
+  OutlineEntry document-outline document-sources
+  DocLink document-links document-ids
+  BrokenLink check-links
+  command-names)
+
+;; What a setup is written with, so that sz.bjo needs this module and no other
+;; for the common case.
+(re-export Document Command standard-commands)
+
+(import (std prelude))
+(import (samizdat doc))
+(import (samizdat expand))
+(import (samizdat commands))
+(import (samizdat html))
+(import (samizdat gfm))
+
+;; ---------------------------------------------------------------------------
+;; The setup
+;; ---------------------------------------------------------------------------
+
+;; Every option of reading and writing a document. The fields are public:
+;; change one with `record-set`.
+;;
+;; - `commands`, `typography`: how the document is read. See `read-document`.
+;; - `title`: the page's title. "" takes the meta form's `(title ...)`.
+;; - `heading-offset`: added to a section's level. With 1, the default, a
+;;   section is <h2> or ##, below the title.
+;; - `id-prefix`, `lang`, `css`, `head`, `highlighter`, `html-block-hook`,
+;;   `html-inline-hook`: for HTML. `css` is the URLs of the stylesheets, each
+;;   a <link> in the <head>. `head` is put in the <head> as it is.
+;; - `anchors`, `md-block-hook`, `md-inline-hook`: for Markdown.
+;; - `url-hook`: rewrites the target of each link and image, in both
+;;   formats, after `sz-links`.
+(type (: Setup (Record (: commands (Map string Command))
+                       (: typography bool)
+                       (: title string)
+                       (: heading-offset int)
+                       (: id-prefix string)
+                       (: lang string)
+                       (: css (Vec string))
+                       (: head string)
+                       (: highlighter (Option (-> string string (Option Node))))
+                       (: html-block-hook (-> Html Block (Option (List Node))))
+                       (: html-inline-hook (-> Html Inline (Option (List Node))))
+                       (: anchors MdAnchors)
+                       (: md-block-hook (-> Md Block (Option string)))
+                       (: md-inline-hook (-> Md Inline (Option string)))
+                       (: sz-links bool)
+                       (: url-hook (-> string string)))))
+
+(: author-setup (-> (#:commands (Map string Command)) (#:typography bool) (#:title string)
+                    (#:heading-offset int) (#:id-prefix string) (#:lang string)
+                    (#:css (Vec string)) (#:head string)
+                    (#:highlighter (Option (-> string string (Option Node))))
+                    (#:html-block-hook (-> Html Block (Option (List Node))))
+                    (#:html-inline-hook (-> Html Inline (Option (List Node))))
+                    (#:anchors MdAnchors)
+                    (#:md-block-hook (-> Md Block (Option string)))
+                    (#:md-inline-hook (-> Md Inline (Option string)))
+                    (#:sz-links bool)
+                    (#:url-hook (-> string string))
+                    Setup))
+(defun (author-setup #:commands standard-commands #:typography #t #:title ""
+                     #:heading-offset 1 #:id-prefix "" #:lang "en" #:css (vec-empty) #:head ""
+                     #:highlighter None
+                     #:html-block-hook (fun (h b) None) #:html-inline-hook (fun (h i) None)
+                     #:anchors 'github
+                     #:md-block-hook (fun (h b) None) #:md-inline-hook (fun (h i) None)
+                     #:sz-links #t #:url-hook (fun (u) u))
+  (Setup (commands commands) (typography typography) (title title)
+         (heading-offset heading-offset) (id-prefix id-prefix) (lang lang) (css css) (head head)
+         (highlighter highlighter) (html-block-hook html-block-hook) (html-inline-hook html-inline-hook)
+         (anchors anchors) (md-block-hook md-block-hook) (md-inline-hook md-inline-hook)
+         (sz-links sz-links) (url-hook url-hook)))
+
+;; The standard commands, and every other option at its default.
+(: default-setup Setup)
+(def default-setup (author-setup))
+
+;; ---------------------------------------------------------------------------
+;; Formats and file names
+;; ---------------------------------------------------------------------------
+
+(def/grammar OutputFormat
+  (:or (: FormatHtml 'html)
+       (: FormatHtmlFragment 'html-fragment)
+       (: FormatMarkdown 'markdown)
+       (: FormatSexp 'sexp)))
+
+;; The suffix of a file in `format`: ".html", ".md" or ".sexp".
+(: output-suffix (-> OutputFormat string))
+(defun (output-suffix format)
+  (match format
+    (FormatHtml ".html")
+    (FormatHtmlFragment ".html")
+    (FormatMarkdown ".md")
+    (FormatSexp ".sexp")))
+
+;; `s` without `suffix` at its end, or `s` when it does not end with it.
+(: without-suffix (-> string string string))
+(defun (without-suffix s suffix)
+  (if (string-ends-with? s suffix)
+      (string-take s (- (string-length s) (string-length suffix)))
+      s))
+
+;; The file that `format` makes of `input`: "a/b.sz" gives "a/b.html". A name
+;; that does not end in ".sz" gets the suffix added.
+(: output-path (-> string OutputFormat string))
+(defun (output-path input format)
+  (str (without-suffix input ".sz") (output-suffix format)))
+
+;; `url` as its path and the rest, which begins at the first "#" or "?":
+;; "a.sz#b" gives "a.sz" and "#b".
+(: split-url (-> string (Tuple string string)))
+(defun (split-url url)
+  (def cut (option-ref-or (string-search-any url "#?" (string-cursor-start url))
+                          (string-cursor-end url)))
+  (Tuple (substring url (string-cursor-start url) cut) (substring url cut (string-cursor-end url))))
+
+;; Whether `url` is relative to the document: it has no scheme, such as
+;; "https:" or "mailto:", and does not begin with "/". A scheme is a ":" that
+;; comes before any "/", "?" or "#", after at least one character.
+(: local-url? (-> string bool))
+(defun (local-url? url)
+  (def start (string-cursor-start url))
+  (def scheme? (match (string-search-any url ":/?#" start)
+                 ((Some c) (and (char=? (string-cursor-ref url c) #\:) (not (= c start))))
+                 (None #f)))
+  (not (or scheme? (string-starts-with? url "/"))))
+
+;; A link to a .sz file, made relative to the outputs: "guide.sz#install"
+;; gives "guide.html#install". Returns every other URL as it is: one that is
+;; not `local-url?`, one that begins with "#", and one to another kind of file.
+(: sz-link (-> OutputFormat string string))
+(defun (sz-link format url)
+  (match (split-url url)
+    ((Tuple path rest)
+     (if (and (local-url? url) (string-ends-with? path ".sz"))
+         (str (output-path path format) rest)
+         url))))
+
+(: url-rewriter (-> Setup OutputFormat (-> string string)))
+(defun (url-rewriter setup format)
+  (def hook (record-ref setup url-hook))
+  (if (record-ref setup sz-links)
+      (fun (u) (hook (sz-link format u)))
+      hook))
+
+;; ---------------------------------------------------------------------------
+;; Reading
+;; ---------------------------------------------------------------------------
+
+;; Reads the file at `path` and runs its commands. A file that is not there
+;; is an `Err` too.
+(: load-document (-> string (#:setup Setup) (Result string Document)))
+(defun (load-document path #:setup default-setup)
+  (if (file-exists? path)
+      (read-document-file path (record-ref setup commands) #:typography (record-ref setup typography))
+      (Err #"${path}: there is no such file")))
+
+;; Reads `text` as a document and runs its commands. `#:name` is the name that
+;; messages give it. A relative @include is read from the current directory.
+(: load-document-text (-> string (#:name string) (#:setup Setup) (Result string Document)))
+(defun (load-document-text text #:name "input" #:setup default-setup)
+  (read-document text (record-ref setup commands) #:name name
+                 #:typography (record-ref setup typography)))
+
+;; ---------------------------------------------------------------------------
+;; Writing
+;; ---------------------------------------------------------------------------
+
+(: html-of (-> Setup OutputFormat Html))
+(defun (html-of setup format)
+  (html-options #:heading-offset (record-ref setup heading-offset)
+                #:id-prefix (record-ref setup id-prefix)
+                #:block-hook (record-ref setup html-block-hook)
+                #:inline-hook (record-ref setup html-inline-hook)
+                #:url-hook (url-rewriter setup format)
+                #:highlighter (record-ref setup highlighter)))
+
+(: md-of (-> Setup Md))
+(defun (md-of setup)
+  (markdown-options #:heading-offset (record-ref setup heading-offset)
+                    #:anchors (record-ref setup anchors)
+                    #:block-hook (record-ref setup md-block-hook)
+                    #:inline-hook (record-ref setup md-inline-hook)
+                    #:url-hook (url-rewriter setup 'markdown)))
+
+;; The <head> additions: a <link> per stylesheet, then `head`.
+(: head-of (-> Setup string))
+(defun (head-of setup)
+  (def links (vec-map (fun (url) #"<link rel=\"stylesheet\" href=\"${(escape-attribute url)}\">")
+                      (record-ref setup css)))
+  (string-join (vec-filter (fun (s) (not (string-empty? s)))
+                           (vec-add links (record-ref setup head)))
+               "\n"))
+
+;; `doc` as text in `format`. A page and a Markdown file end with a newline.
+(: render (-> Document OutputFormat (#:setup Setup) string))
+(defun (render doc format #:setup default-setup)
+  (match format
+    (FormatHtml (html-page doc #:with (html-of setup format) #:title (record-ref setup title)
+                           #:head (head-of setup) #:lang (record-ref setup lang)))
+    (FormatHtmlFragment (str (document->html doc #:with (html-of setup format)) "\n"))
+    (FormatMarkdown (markdown-page doc #:with (md-of setup) #:title (record-ref setup title)))
+    (FormatSexp (str (document->sexp doc) "\n"))))
+
+;; Reads `input` and writes it in `format`.
+;;
+;; - `#:output`: the file to write. "" is `(output-path input format)`.
+;; - Writes the file only when its text changes, so that a build tool sees a
+;;   new modification time only for a real change. Makes the directory.
+;; - `#:check #t`: writes nothing.
+;; - Returns whether the file was changed, or with `#:check`, whether it
+;;   would be. `Err` is the document's error.
+(: convert-file (-> string OutputFormat (#:setup Setup) (#:output string) (#:check bool)
+                    (Result string bool)))
+(defun (convert-file input format #:setup default-setup #:output "" #:check #f)
+  (def target (if (string-empty? output) (output-path input format) output))
+  (def (Ok doc) (load-document input #:setup setup) :propagate)
+  (def text (render doc format #:setup setup))
+  (def changed (not (and (file-exists? target) (= (file-read-text target) text))))
+  (when (and changed (not check))
+    (match (path-parent target)
+      ((Some dir) (unless (or (string-empty? (path->string/lossy dir)) (directory-exists? dir))
+                    (directory-create dir)))
+      (None (ignore 0)))
+    (file-write-text target text))
+  (Ok changed))
+
+;; Every .sz file below `dir`, sorted. Skips a directory whose name begins
+;; with ".", such as .git and .bjo.
+(: sz-files (-> string (Vec string)))
+(defun (sz-files dir)
+  (def hidden? (fun (p) (match (path-name p)
+                          ((Some name) (bytestring-starts-with? name (string->bytestring ".")))
+                          (None #f))))
+  (vec-sort
+   (loop (:for p (directory-walk dir #:into? (fun (d) (not (hidden? d)))))
+         (:let s (path->string/lossy p))
+         (:when (string-ends-with? s ".sz"))
+         (:acc out (vecing s)))))
+
+;; `convert-file` for every file of `sz-files dir`.
+;;
+;; - `#:out`: the directory to write into, with the same relative paths as
+;;   below `dir`. "" writes each output beside its source.
+;; - Converts every file, also after an error.
+;; - Returns, for each source, its output and the result of `convert-file`.
+(: convert-tree (-> string OutputFormat (#:setup Setup) (#:out string) (#:check bool)
+                    (Vec (Tuple string string (Result string bool)))))
+(defun (convert-tree dir format #:setup default-setup #:out "" #:check #f)
+  (loop (:for input (sz-files dir))
+        (:let target (if (string-empty? out)
+                         (output-path input format)
+                         (match (path-strip-prefix input dir)
+                           ((Some rel) (output-path (path-combine out (path->string/lossy rel)) format))
+                           (None (output-path input format)))))
+        (:acc results (vecing (Tuple input target
+                                     (convert-file input format #:setup setup #:output target
+                                                   #:check check))))))
+
+;; ---------------------------------------------------------------------------
+;; Looking at a document
+;; ---------------------------------------------------------------------------
+
+;; A heading: its level (1 for a section), the id that @ref and a link with
+;; # take, and its text without markup.
+(type (: OutlineEntry (Record (: level int) (: id string) (: title string))))
+
+;; Every numbered heading of `doc`, in order. Unnumbered headings (@section*)
+;; have no id and are left out.
+(: document-outline (-> Document (Vec OutlineEntry)))
+(defun (document-outline doc)
+  (vec-map (fun (h) (match h
+                      ((Tuple level id xs) (OutlineEntry (level level) (id id) (title (inlines->text xs))))))
+           (document-headings doc)))
+
+;; Every file that `doc` was made from: its own file first, and then each file
+;; a command read, such as an @include.
+(: document-sources (-> Document (Vec string)))
+(defun (document-sources doc) (record-ref doc sources))
+
+;; ---------------------------------------------------------------------------
+;; Links
+;; ---------------------------------------------------------------------------
+
+;; A link or an image of a document: where it goes, and its text. The text of
+;; an image is its alt text.
+(type (: DocLink (Record (: target string) (: text string) (: image bool))))
+
+(: add-inlines! (-> (VecBuilder Inline) (Vec Inline) void))
+(defun (add-inlines! out xs)
+  (loop (:for x xs) (:do (add-inline! out x))))
+
+(: add-inline! (-> (VecBuilder Inline) Inline void))
+(defun (add-inline! out x)
+  (vecbuilder-add! out x)
+  (match x
+    ((Emph xs) (add-inlines! out xs))
+    ((Strong xs) (add-inlines! out xs))
+    ((Strike xs) (add-inlines! out xs))
+    ((Superscript xs) (add-inlines! out xs))
+    ((Subscript xs) (add-inlines! out xs))
+    ((Link _ xs) (add-inlines! out xs))
+    ((Span _ xs) (add-inlines! out xs))
+    (_ (ignore 0))))
+
+(: add-blocks! (-> (VecBuilder Inline) (Vec Block) void))
+(defun (add-blocks! out bs)
+  (loop (:for b bs) (:do (add-block! out b))))
+
+(: add-rows! (-> (VecBuilder Inline) (Vec (Vec (Vec Inline))) void))
+(defun (add-rows! out rows)
+  (loop (:for row rows) (:do (loop (:for cell row) (:do (add-inlines! out cell))))))
+
+;; The inlines of `b`, also the ones inside other inlines. A figure's image
+;; is added as an `Image`.
+(: add-block! (-> (VecBuilder Inline) Block void))
+(defun (add-block! out b)
+  (match b
+    ((Para xs) (add-inlines! out xs))
+    ((Heading _ _ xs) (add-inlines! out xs))
+    ((UnnumberedHeading _ xs) (add-inlines! out xs))
+    ((Figure src alt xs) (vecbuilder-add! out (Image src alt)) (add-inlines! out xs))
+    ((Quote bs) (add-blocks! out bs))
+    ((Div _ bs) (add-blocks! out bs))
+    ((ItemList _ _ items) (loop (:for item items) (:do (add-blocks! out item))))
+    ((LineBlock lines) (loop (:for line lines) (:do (add-inlines! out line))))
+    ((DefinitionList entries)
+     (loop (:for (Tuple term defs) entries)
+           (:do (add-inlines! out term)
+                (loop (:for d defs) (:do (add-blocks! out d))))))
+    ((TableBlock t)
+     (add-inlines! out (record-ref t caption))
+     (add-rows! out (record-ref t head))
+     (loop (:for body (record-ref t bodies)) (:do (add-rows! out body))))
+    (_ (ignore 0))))
+
+;; Every inline of `doc`, its notes included, in order.
+(: document-inlines (-> Document (Vec Inline)))
+(defun (document-inlines doc)
+  (def out (vecbuilder-empty))
+  (add-blocks! out (record-ref doc blocks))
+  (loop (:for n (record-ref doc notes)) (:do (add-blocks! out n)))
+  (vecbuilder->vec out))
+
+;; Every link and image of `doc`, its notes included, in order. A link that
+;; @ref or @toc made is a link to an id, as "#install".
+(: document-links (-> Document (Vec DocLink)))
+(defun (document-links doc)
+  (loop (:for x (document-inlines doc))
+        (:acc out (folding (vec-empty)
+                           (match x
+                             ((Link url xs) (vec-add out (DocLink (target url) (text (inlines->text xs)) (image #f))))
+                             ((Image src alt) (vec-add out (DocLink (target src) (text alt) (image #t))))
+                             (_ out))))))
+
+;; The ids that a link with a "#" can go to in `doc`: each numbered
+;; heading's, and each anchor's.
+(: document-ids (-> Document (Vec string)))
+(defun (document-ids doc)
+  (vec-append (vec-map (fun (e) (record-ref e id)) (document-outline doc))
+              (loop (:for x (document-inlines doc))
+                    (:acc out (folding (vec-empty)
+                                       (match x
+                                         ((Anchor id) (vec-add out id))
+                                         (_ out)))))))
+
+;; A link that goes nowhere, and why.
+(type (: BrokenLink (Record (: link DocLink) (: why string))))
+
+(import/extern
+  (unescape-url (: System.Uri.UnescapeDataString (-> string string))))
+
+;; Why `ids`, the ids of the document `where`, have no `fragment`, or `None`
+;; when they have it. An empty fragment is no id, and is always there.
+(: id-problem (-> (Vec string) string string (Option string)))
+(defun (id-problem ids fragment where)
+  (if (or (string-empty? fragment) (vec-contains? ids fragment))
+      None
+      (Some #"${where} has no heading or anchor with the id ${fragment}")))
+
+;; What `check-links` checks one document with: the setup, the document's
+;; directory and ids, and the ids of each other document read so far, by
+;; absolute path.
+(type (: LinkCheck (Record (: setup Setup)
+                           (: dir string)
+                           (: own-ids (Vec string))
+                           (: known (Box (Map string (Result string (Vec string))))))))
+
+;; The ids of the document at `file`, or its error. Reads each file once.
+(: ids-of (-> LinkCheck string (Result string (Vec string))))
+(defun (ids-of lc file)
+  (def known (record-ref lc known))
+  (def key (path-absolute file))
+  (match (map-try-ref (box-ref known) key)
+    ((Some ids) ids)
+    (None
+     (def ids (match (load-document file #:setup (record-ref lc setup))
+                ((Ok d) (Ok (document-ids d)))
+                ((Err why) (Err why))))
+     (box-set! known (map-set (box-ref known) key ids))
+     ids)))
+
+;; Why the document at `file` has no `fragment`, or `None`.
+(: fragment-problem (-> LinkCheck string string (Option string)))
+(defun (fragment-problem lc file fragment)
+  (if (string-empty? fragment)
+      None
+      (match (ids-of lc file)
+        ((Ok ids) (id-problem ids fragment file))
+        ((Err why) (Some why)))))
+
+;; Why `target` goes nowhere, or `None`. See `check-links`.
+(: link-problem (-> LinkCheck string (Option string)))
+(defun (link-problem lc target)
+  (match (split-url target)
+    ((Tuple raw rest)
+     (def fragment (match (string-search-any rest "#" (string-cursor-start rest))
+                     ((Some c) (unescape-url (substring rest (string-cursor-next rest c) (string-cursor-end rest))))
+                     (None "")))
+     (def dir (record-ref lc dir))
+     (cond
+       ((not (local-url? target)) None)
+       ((string-empty? raw) (id-problem (record-ref lc own-ids) fragment "this document"))
+       (else
+        (def file (if (string-empty? dir) (unescape-url raw) (path-combine dir (unescape-url raw))))
+        (def source (str (without-suffix (without-suffix file ".html") ".md") ".sz"))
+        (def output? (or (string-ends-with? file ".html") (string-ends-with? file ".md")))
+        (cond
+          ((and output? (file-exists? source)) (fragment-problem lc source fragment))
+          ((file-exists? file) (if (string-ends-with? file ".sz") (fragment-problem lc file fragment) None))
+          ((directory-exists? file) None)
+          (else (Some #"there is no file ${file}"))))))))
+
+;; The links and images of the document at `path` that go nowhere.
+;;
+;; - A link with a "#" alone goes to an id of the document: a heading's or an
+;;   anchor's.
+;; - The file of any other relative link must exist, relative to the
+;;   directory of `path`. "%20" and the like are decoded first.
+;; - A link to FILE.html or FILE.md goes to FILE.sz when that is there, so
+;;   the outputs need not be written yet, and a "#id" is checked in FILE.sz.
+;; - A "#id" after a .sz file must be an id of that document. Each other
+;;   document is read once, with `setup`.
+;; - A link that is not relative, such as "https:..." or "/style.css", is not
+;;   checked.
+;; - Returns `Err` when the document at `path` has an error. When a linked
+;;   document has one, each link with a "#id" to it is broken, and the error
+;;   is why.
+(: check-links (-> string (#:setup Setup) (Result string (Vec BrokenLink))))
+(defun (check-links path #:setup default-setup)
+  (def (Ok doc) (load-document path #:setup setup) :propagate)
+  (def lc (LinkCheck (setup setup)
+                     ;; "" for a file in the current directory, so that a
+                     ;; message names "a.sz" and not "./a.sz".
+                     (dir (match (path-parent path)
+                            ((Some d) (if (= (path->string/lossy d) ".") "" (path->string/lossy d)))
+                            (None "")))
+                     (own-ids (document-ids doc))
+                     (known (make-box (map-empty)))))
+  (Ok (loop (:for l (document-links doc))
+            (:let why (link-problem lc (record-ref l target)))
+            (:when-let (Some w) why)
+            (:acc out (vecing (BrokenLink (link l) (why w)))))))
+
+;; The names of the commands that `setup` reads documents with, sorted.
+(: command-names (-> Setup (Vec string)))
+(defun (command-names setup)
+  (vec-sort (->vec (map-keys (record-ref setup commands)))))

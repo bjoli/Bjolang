@@ -2,7 +2,8 @@
 
 samizdat is part of the distribution, in ~lib/samizdat~. Its modules are
 ~(samizdat read)~, ~(samizdat html)~ and the others below, and a program
-imports them with no dependency in its manifest.
+imports them with no dependency in its manifest. ~bjo sz~ is its command
+line: see [[*bjo sz][bjo sz]].
 
 
 samizdat reads text written like Racket's Scribble —
@@ -36,7 +37,7 @@ puts them somewhere else.
 
 Files are called ~.sz~.
 
-** The nine modules
+** The modules
 
 | ~(samizdat read)~        | the reader: text to ~At~ items, text or commands, on ~(text parser-combinators)~ |
 | ~(samizdat doc)~         | the document: ~Block~, ~Inline~, ~Document~; a printer to s-expressions |
@@ -47,8 +48,68 @@ Files are called ~.sz~.
 | ~(samizdat apidocs)~     | Bjolang modules' own docs: ~@generate-docs~, ~@defmodule~, ~@defdoc~, ~@defdocs~, ~@docref~ |
 | ~(samizdat html)~        | a ~Document~ as HTML: ~(text xml)~ nodes, and a writer for them; code highlighted by a function you give |
 | ~(samizdat gfm)~         | a ~Document~ as GitHub Flavored Markdown, for docs read in a repository |
+| ~(samizdat author)~      | the high-level interface: one ~Setup~ for every option; documents to files, and folders to sites |
+| ~(samizdat cli)~         | the command line of ~bjo sz~, on ~(samizdat author)~             |
 
 ** Using it
+
+~(samizdat author)~ is the interface for most programs. A ~Setup~ record
+holds every option: the commands, typography, the title, the heading
+offset, the stylesheets, the hooks of each converter, and a URL hook. Each
+function takes it as ~#:setup~. The default is ~default-setup~: the
+standard commands, and each option at its default.
+
+#+BEGIN_SRC scheme
+(import (samizdat author))
+
+(def setup (author-setup #:css ["style.css"]))
+
+(convert-file "posts/cookies.sz" 'html #:setup setup)   ; writes posts/cookies.html
+(convert-tree "docs" 'html #:out "site" #:setup setup)  ; every .sz file below docs
+
+(match (load-document "posts/cookies.sz" #:setup setup)
+  ((Ok doc) (println (render doc 'markdown #:setup setup)))
+  ((Err why) (println why)))
+#+END_SRC
+
+| ~(author-setup #:commands ... #:css ...)~ | a ~Setup~. Change a field later with ~record-set~ |
+| ~(load-document path)~ ~(load-document-text text #:name n)~ | read a document and run its commands. ~Err~ is the message |
+| ~(render doc format)~               | the document as text: ~'html~, ~'html-fragment~, ~'markdown~ or ~'sexp~ |
+| ~(convert-file path format #:output #:check)~ | write the output file. ~Ok #t~ if it changed       |
+| ~(convert-tree dir format #:out #:check)~ | ~convert-file~ for each file of ~(sz-files dir)~ |
+| ~(output-path path format)~         | the output's name: ~a.sz~ gives ~a.html~               |
+| ~(document-outline doc)~            | the headings: level, id and text                    |
+| ~(document-sources doc)~            | the files the document was made from                |
+| ~(document-links doc)~ ~(document-ids doc)~ | its links and images, and the ids a ~#~ link can go to |
+| ~(check-links path)~                | the links and images of a file that go nowhere      |
+| ~(command-names setup)~             | the names of the setup's commands                   |
+
+*A file is written only when its text changes.* So the modification time of
+an output changes only for a real change, and a build tool does no work for
+the outputs that are the same. With ~#:check #t~, nothing is written, and the
+result says whether the file would change.
+
+*A link to a .sz file goes to its output.* In HTML, ~@link["guide.sz#install"]{...}~
+is a link to ~guide.html#install~, and in Markdown to ~guide.md#install~.
+So a document links to the sources, and each output links to the outputs. A
+link with a scheme, such as ~https:~, or one that starts with ~/~, does not
+change. ~#:sz-links #f~ stops this. ~#:url-hook~ is applied after it, to
+each link and image.
+
+*~check-links~ finds broken links.* It reads each relative link and image
+of a document. The file must exist, relative to the document's directory.
+A ~#id~ must be the id of a heading or an anchor in the document it goes to.
+A link to ~FILE.html~ or ~FILE.md~ goes to ~FILE.sz~ when that is there, so
+you can check links before you write the outputs. A link with a scheme, such
+as ~https:~, or one that starts with ~/~, is not checked.
+
+*Errors are values.* A document that cannot be read gives ~Err~, with a
+message that says the file, the line and the column. ~convert-tree~
+converts each file, also after an error, and gives the result of each.
+
+The lower modules are the interface for commands and converters.
+~read-document-file~ of ~(samizdat expand)~ reads a document with a table of
+commands, and ~html-page~ of ~(samizdat html)~ writes it:
 
 #+BEGIN_SRC scheme
 (import (samizdat expand))
@@ -73,21 +134,80 @@ page around the result.
 bjo run Examples/samizdat/render.bjo Examples/samizdat/post.sz   # writes Examples/samizdat/post.html
 #+END_SRC
 
-~Examples/samizdat/markdown.bjo~ writes a document as Markdown, for docs kept in a
-repository and read on GitHub:
+~Examples/samizdat/markdown.bjo~ writes a document as Markdown with
+~(samizdat gfm)~ alone.
+
+** bjo sz
+
+~bjo sz~ reads documents and writes them, from the command line. Each
+command has its own help: ~bjo sz md --help~.
+
+| ~bjo sz md FILE... [-o OUT] [--check]~   | Markdown (GFM): each ~FILE.sz~ gives ~FILE.md~ beside it |
+| ~bjo sz html FILE... [-o OUT] [--check]~ | HTML pages. ~--fragment~ writes the body only. ~--css URL~ adds a stylesheet |
+| ~bjo sz build [DIR] [--to md] [-o DIR]~ | every ~.sz~ file below ~DIR~, as HTML or Markdown, with the links between them |
+| ~bjo sz check FILE...~                   | read the documents and run their commands. Write nothing |
+| ~bjo sz outline FILE...~                 | the headings, with the id that ~@ref~ and a ~#~ link take |
+| ~bjo sz links FILE... [--check]~         | the links and images. ~--check~ shows the broken ones only |
+| ~bjo sz deps FILE...~                    | the files the documents are made from, for a build tool |
+| ~bjo sz tree FILE~                       | the document after its commands ran, as s-expressions |
+| ~bjo sz commands~                        | the commands that a document can use here |
+
+~-o -~ writes one document to standard output. With more than one ~FILE~,
+~-o~ is a directory. ~md~, ~html~ and ~build~ also take ~--title~,
+~--heading-offset N~ and ~--no-typography~, and ~html~ takes ~--lang~ and
+~--id-prefix~.
+
+*~--check~ is for CI.* It writes nothing. It exits with 1 when an output is
+not what its source gives. This keeps a ~README.md~ that is made from a
+~README.sz~ correct:
 
 #+BEGIN_SRC sh
-bjo run Examples/samizdat/markdown.bjo docs/index.sz      # writes docs/index.md
+bjo sz md README.sz           # writes README.md
+bjo sz md --check README.sz   # exits with 1 if README.md is not up to date
+bjo sz links --check docs/*.sz  # exits with 1 if a link goes nowhere
 #+END_SRC
 
-~Examples/samizdat/cli.bjo~ is both, with the standard commands only: a page of HTML, or
-Markdown, beside the input or on standard output with ~-~. Bjolang's
-~README.md~ is ~README.sz~ written by it.
+*A project adds its own commands with ~sz.bjo~.* It is a file in the
+project's root, beside ~tasks.bjo~, that exports ~configure~: a function
+from ~Setup~ to ~Setup~. ~bjo sz~ gives it ~default-setup~, and then applies
+the options of the command line. So an option overrides ~sz.bjo~.
 
-#+BEGIN_SRC sh
-bjo run Examples/samizdat/cli.bjo html docs/index.sz      # writes docs/index.html
-bjo run Examples/samizdat/cli.bjo md docs/index.sz -      # Markdown to standard output
+#+BEGIN_SRC scheme
+;; sz.bjo
+(export configure)
+(import (std prelude))
+(import (samizdat author))
+(import (samizdat doc))
+(import (samizdat expand))
+(import (samizdat html))
+
+(: kbd Command)
+(defun (kbd cx c) (inline (Span "kbd" [(Str (body-text cx c))])))
+
+(: keys (-> Html Inline (Option (List Node))))
+(defun (keys h i)
+  (match i
+    ((Span "kbd" xs) (Some (list (html-element "kbd" Nil (inlines->nodes h xs)))))
+    (_ None)))
+
+(: configure (-> Setup Setup))
+(defun (configure s)
+  (record-set s (commands (map-set (record-ref s commands) "kbd" kbd))
+                (html-inline-hook keys)
+                (css ["/style.css"])))
 #+END_SRC
+
+Then ~@kbd~ works in each command of ~bjo sz~, and ~bjo sz commands~ shows
+it. ~sz.bjo~ can import the project's own packages.
+
+*How it runs.* ~bjo sz~ builds a program and runs it with the words after
+~sz~, in the current directory. A program is built again only when its
+sources change.
+
+- Without ~sz.bjo~, the program is ~bjo/sz/main.bjo~ of the installation.
+- With ~sz.bjo~, ~bjo sz~ writes an entry point to ~.bjo/sz/main.bjo~, which
+  imports ~sz.bjo~, and builds it against the project's packages.
+- Outside a project, ~bjo sz~ looks for ~sz.bjo~ in the current directory.
 
 ** The syntax
 
@@ -609,7 +729,8 @@ passes on ~Node~ and ~xml-text~, so a template or a hook needs no import of
 
 ~html-options~ takes ~#:heading-offset~ (default 1, so a section is an ~<h2>~
 under the page's ~<h1>~), ~#:id-prefix~ (for two documents on one page, whose
-~note-1~ would otherwise clash), a highlighter, and two hooks. A hook is asked
+~note-1~ would otherwise clash), ~#:url-hook~ (which changes the target of
+each link and image, but not a link to an id), a highlighter, and two hooks. A hook is asked
 about each block or inline first, and answers ~None~ for what it leaves alone,
 or the nodes it makes; it is handed the options, so it can make what is inside
 with ~blocks->nodes~ and ~inlines->nodes~:
@@ -793,6 +914,14 @@ own go in ~samizdat-command-names~, for completion after an ~@~, and
 | ~594_samizdat_markdown~ | 15 checks: Markdown, translated                           |
 | ~595_samizdat_apidocs~  | 29 checks: Bjolang modules' docs                          |
 | ~596_samizdat_gfm~      | 47 checks: the Markdown converter, and Markdown read back |
+| ~597_samizdat_author~   | 48 checks: the high-level interface, files and links      |
+
+~author~ renders documents with each option of a ~Setup~, rewrites links to
+~.sz~ files, makes an outline, and finds the links and ids. Then it writes files in a directory under
+the system's temporary directory: one file, again with no change, with
+~#:check~, and a folder with ~convert-tree~, with an error in one file. It
+checks the links of a document with each kind of link, broken and not. It
+deletes the directory at the end.
 
 ~gfm~ compares the Markdown of each kind of block and inline as text — the
 escapes, emphasis Markdown can and cannot write, GitHub's ids, lists side by

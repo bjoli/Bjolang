@@ -49,6 +49,9 @@
 ;; (an href that begins with #), so that two documents on one page — a blog's
 ;; front page — do not share a `note-1`.
 ;;
+;; `#:url-hook` rewrites the target of every link and image, except a link
+;; to an id in the document (an href that begins with #).
+;;
 ;; `#:highlighter` colours a code block. It is a function of the block's
 ;; language and code that returns the <pre> to write, or None to leave the
 ;; block to the converter. With textmate-bjolang:
@@ -98,6 +101,7 @@
                            (: prefix string)
                            (: block-hook (-> Html Block (Option (List Node))))
                            (: inline-hook (-> Html Inline (Option (List Node))))
+                           (: url-hook (-> string string))
                            (: highlighter (Option (-> string string (Option Node)))))))
 
 (: no-block-hook (-> Html Block (Option (List Node))))
@@ -109,13 +113,14 @@
 (: html-options (-> (#:heading-offset int) (#:id-prefix string)
                     (#:block-hook (-> Html Block (Option (List Node))))
                     (#:inline-hook (-> Html Inline (Option (List Node))))
+                    (#:url-hook (-> string string))
                     (#:highlighter (Option (-> string string (Option Node))))
                     Html))
 (defun (html-options #:heading-offset 1 #:id-prefix ""
                      #:block-hook no-block-hook #:inline-hook no-inline-hook
-                     #:highlighter None)
+                     #:url-hook (fun (u) u) #:highlighter None)
   (Html (offset heading-offset) (prefix id-prefix) (block-hook block-hook) (inline-hook inline-hook)
-        (highlighter highlighter)))
+        (url-hook url-hook) (highlighter highlighter)))
 
 (: default-html Html)
 (def default-html (html-options))
@@ -231,11 +236,12 @@
 
 ;; A link to `#something` is to an id in this document, which has the prefix
 ;; too: a table of contents and a reference keep working under `#:id-prefix`.
+;; Any other link goes through `#:url-hook`.
 (: href (-> Html string string))
 (defun (href h url)
   (if (string-starts-with? url "#")
       (str "#" (id h (.Substring url 1)))
-      url))
+      ((record-ref h url-hook) url)))
 
 ;; ---------------------------------------------------------------------------
 ;; Inlines
@@ -277,7 +283,7 @@
      [(xml-element input-tag (if checked (list-append attrs (list (Tuple checked-attr "checked"))) attrs) Nil)])
     ((Code s) [(xml-element code-tag Nil (list (xml-text s)))])
     ((Link url xs) [(xml-element a-tag (list (Tuple href-attr (href h url))) (inlines->nodes h xs))])
-    ((Image src alt) [(image src alt)])
+    ((Image src alt) [(image ((record-ref h url-hook) src) alt)])
     (LineBreak [(xml-element br-tag Nil Nil)])
     ((NoteRef n)
      (def k (int->string n))
@@ -383,8 +389,8 @@
     ((Figure src alt xs)
      [(xml-element figure-tag Nil
                    (if (vec-empty? xs)
-                       (list (image src alt))
-                       (list (image src alt) (xml-element figcaption-tag Nil (inlines->nodes h xs)))))])
+                       (list (image ((record-ref h url-hook) src) alt))
+                       (list (image ((record-ref h url-hook) src) alt) (xml-element figcaption-tag Nil (inlines->nodes h xs)))))])
     ((CodeBlock lang text) [(code-block h lang text)])
     ((Quote bs) [(xml-element blockquote-tag Nil (blocks->nodes h bs))])
     ((ItemList numbered start items)

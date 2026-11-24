@@ -69,6 +69,7 @@
 (import/class
   (Process (: System.Diagnostics.Process))
   (ProcessStartInfo (: System.Diagnostics.ProcessStartInfo (-> ProcessStartInfo)))
+  (StreamReader (: System.IO.StreamReader))
   (DateTime (: System.DateTime)))
 
 (import/extern
@@ -78,6 +79,11 @@
                           (-> ProcessStartInfo bool void) #:set))
   (settings-argument   (: BjoProc.AddArgument
                           (-> ProcessStartInfo string ProcessStartInfo)))
+  (settings-pipe-out!  (: System.Diagnostics.ProcessStartInfo.RedirectStandardOutput
+                          (-> ProcessStartInfo bool void) #:set))
+  (process-out   (: System.Diagnostics.Process.StandardOutput (-> Process StreamReader) #:get))
+  (reader-line   (: System.IO.StreamReader.ReadLine (-> StreamReader string) #:blocking))
+  (reader-peek   (: System.IO.StreamReader.Peek (-> StreamReader int) #:blocking))
   (process-start (: System.Diagnostics.Process.Start (-> ProcessStartInfo Process)
                     #:exceptions (System.ComponentModel.Win32Exception
                                   System.InvalidOperationException)))
@@ -99,16 +105,32 @@
 ;; Starting something, and waiting for it
 ;; ---------------------------------------------------------------------------
 
+;; Whether `exec` sends a child's standard output to bjo's standard error.
+;; `bjo sz` builds with it set, so that its standard output holds only what
+;; the samizdat program writes.
+(def child-out-to-stderr (make-parameter #f))
+
+;; Copies each line of `reader` to standard error, until it ends: `Peek`
+;; returns -1 at the end, and waits for the child until then.
+(: copy-to-stderr! (-> StreamReader void) #:sync)
+(defun (copy-to-stderr! reader)
+  (unless (< (reader-peek reader) 0)
+    (writeln (parameter-ref current-error-port) (reader-line reader))
+    (copy-to-stderr! reader)))
+
 ;; Runs `program` and answers its exit code.
 ;;
-;; No redirection anywhere: the child writes to the terminal `bjo` was started
-;; from, reads from the same stdin, and is not a pipe stage. `UseShellExecute`
-;; off is what makes the program name resolve against PATH.
+;; No redirection, unless `child-out-to-stderr` is set: the child writes to the
+;; terminal `bjo` was started from, reads from the same stdin, and is not a
+;; pipe stage. `UseShellExecute` off is what makes the program name resolve
+;; against PATH.
 (: exec (-> string (Vec string) int) #:sync)
 (defun (exec program arguments)
+  (def to-stderr? (parameter-ref child-out-to-stderr))
   (def settings (ProcessStartInfo.))
   (settings-program! settings program)
   (settings-use-shell! settings #f)
+  (when to-stderr? (settings-pipe-out! settings #t))
   (loop (:for a arguments)
         (:do (ignore (settings-argument settings a))))
   (match (process-start settings)
@@ -117,6 +139,9 @@
      ;; What a shell answers for a command it could not run.
      127)
     ((Ok child)
+     ;; Only standard output is a pipe, so reading it to the end cannot wait
+     ;; on a child that waits on another pipe.
+     (when to-stderr? (copy-to-stderr! (process-out child)))
      (process-wait child)
      (process-code child))))
 
@@ -778,6 +803,54 @@
        (set-current-directory! dir)
        (run-built rec words)))))
 
+;; The file of a project's own samizdat setup: its commands and hooks.
+(: string)
+(def sz-file-name "sz.bjo")
+
+;; The entry point that imports a project's sz.bjo, at .bjo/sz/main.bjo.
+(: string)
+(def sz-project-entry
+  (string-join [";; Written by bjo sz from sz.bjo. Do not edit: it is written again."
+                ""
+                "(import (std prelude))"
+                "(import (samizdat cli))"
+                "(import (only \"../../sz.bjo\" configure))"
+                ""
+                "(defun (main args)"
+                "  (sz-main args configure))"
+                ""]
+               "\n"))
+
+;; `bjo sz`: the samizdat command line of `(samizdat cli)`.
+;;
+;; - Without an sz.bjo in the project's root, or here outside a project, the
+;;   program is bjo/sz/main.bjo of this installation, built once against the
+;;   standard library.
+;; - With one, the entry point is written to .bjo/sz/main.bjo when it changed,
+;;   and built against the project's roots. It passes sz.bjo's `configure` to
+;;   `sz-main`.
+;; - The program runs with the words as they are, in the current directory, so
+;;   a relative file name is the user's.
+;; - What the builds say goes to standard error, so that standard output holds
+;;   only the program's output, also on the run that builds it.
+(: cmd-sz (-> (List string) bool bool bool int) #:sync)
+(defun (cmd-sz words debug? force? locked?)
+  (def dir (match (find-project-dir (current-directory))
+             ((Some d) d)
+             (None (current-directory))))
+  (def own? (file-exists? (path-combine dir sz-file-name)))
+  (def (Ok roots) (if own? (roots-near dir locked?) (Ok nothing-against))
+    :leave ((Err why) (fail why)))
+  (def entry (if own?
+                 (path-combine dir ".bjo" "sz" "main.bjo")
+                 (path-combine root "bjo" "sz" "main.bjo")))
+  (when own? (write-if-changed! entry sz-project-entry))
+  (def (Ok (Tuple rec _))
+    (parameterize ((child-out-to-stderr #t))
+      (ensure-built entry debug? #f force? roots))
+    :leave ((Err status) status))
+  (run-built rec words))
+
 ;; `bjo bench` is `bench.bjo`'s. What it needs from here is lent to it: a
 ;; benchmark file built in Release, whatever `-d` says; a program run on the
 ;; console; and a source file found.
@@ -1368,6 +1441,10 @@
   (println "  bjo task [-d] [-c] [task] [args...]    Run a task of this project's tasks.bjo, with")
   (println "                                          its arguments. With no task, list them.")
   (println "                                          'bjo task NAME --help' shows a task's help.")
+  (println "  bjo sz COMMAND [args...]                Read samizdat documents and write them as HTML or")
+  (println "                                          Markdown, check them, or show their outline.")
+  (println "                                          'bjo sz --help' lists the commands. A project's")
+  (println "                                          sz.bjo adds its own samizdat commands.")
   (println "  bjo repl                                Start a REPL.")
   (println "  bjo rebjo                               Rebuild the compiler and bjo itself.")
   (println "  bjo help                                Show this message.")
@@ -1615,6 +1692,12 @@
        (when lib? (ret (fail "bjo task: runs a task, so it takes no --lib.")))
        (cmd-task rest debug? force? locked?)))
 
+    ;; Everything after `sz` is the samizdat program's, as for `task`.
+    ("sz"
+     (with-return ret
+       (when lib? (ret (fail "bjo sz: runs the samizdat tool, so it takes no --lib.")))
+       (cmd-sz rest debug? force? locked?)))
+
     (("help" "-h" "--help") (usage) 0)
 
     (else (fail #"bjo: '${command}' is not a command. Try 'bjo help'."))))
@@ -1630,7 +1713,8 @@
   ;; are what follows it.
   (def (Cons command rest) (vec->list args)
     :leave (Nil (usage) 1))
-  (match (parse-flags rest (or (= command "test") (= command "bench") (= command "fmt") (= command "task")))
+  (match (parse-flags rest (or (= command "test") (= command "bench") (= command "fmt") (= command "task")
+                            (= command "sz")))
     ((Err message) (fail message))
     ((Ok line) #:when (and (some? (record-ref line output)) (not (= command "publish")))
      (fail #"bjo ${command}: -o is for publish, which writes a directory; ${command} does not."))

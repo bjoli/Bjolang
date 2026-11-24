@@ -3,6 +3,40 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~bjo sz~, and ~(samizdat author)~
+
+- The new module ~(samizdat author)~ is samizdat's high-level interface. A
+  ~Setup~ record holds every option of reading and writing.
+  ~load-document~ reads a file, ~render~ writes the document as HTML, an
+  HTML fragment, Markdown or s-expressions, ~convert-file~ writes one file,
+  and ~convert-tree~ writes every ~.sz~ file below a directory.
+  ~document-outline~, ~document-sources~ and ~command-names~ give the
+  headings, the files read and the commands.
+- An output file is written only when its text changes. ~#:check #t~
+  writes nothing and gives whether the file would change.
+- With ~(samizdat author)~, a relative link or image to a ~.sz~ file goes to
+  the file that the same format makes of it: ~guide.sz#a~ is ~guide.html#a~
+  or ~guide.md#a~. ~#:sz-links #f~ stops it.
+- ~check-links~ gives the links and images of a document that go nowhere: a
+  relative file that is not there, or a ~#id~ that is not a heading or an
+  anchor of the document it goes to. A link to ~FILE.html~ or ~FILE.md~ is
+  checked in ~FILE.sz~. A link such as ~https:...~ or ~/style.css~ is not
+  checked. ~document-links~ and ~document-ids~ give the links and the ids.
+- ~load-document~ gives ~Err~ for a file that is not there.
+- ~bjo sz~ is samizdat's command line, from ~(samizdat cli)~: ~md~, ~html~,
+  ~build~, ~check~, ~outline~, ~links~, ~deps~, ~tree~ and ~commands~.
+  ~--check~ exits with 1 when an output is not up to date, or with
+  ~links~, when a link goes nowhere: for CI.
+- A project's ~sz.bjo~ exports ~configure~, from ~Setup~ to ~Setup~, and
+  each command of ~bjo sz~ uses it: commands and hooks of the project's
+  own. ~bjo sz~ builds its program as ~bjo task~ does, and builds it again
+  only when a source changes.
+- ~html-options~ of ~(samizdat html)~ takes ~#:url-hook~, as
+  ~markdown-options~ does. It changes the target of each link and image,
+  but not a link to an id.
+- ~Examples/samizdat/cli.bjo~ is removed. Use ~bjo sz md~ and ~bjo sz html~.
+- TestFiles 597 tests ~(samizdat author)~.
+
 * samizdat is in the distribution
 
 - The modules of samizdat 0.11.0 are in ~lib/samizdat~: ~(samizdat read)~,

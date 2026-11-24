@@ -1,0 +1,419 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; samizdat/cli.bjo — the module (samizdat cli).
+;;
+;; The command line of `bjo sz`: `sz-main` parses the words and runs the
+;; subcommand, on the functions of (samizdat author).
+;;
+;; - `bjo sz` builds a program whose `main` calls `sz-main`. Without a
+;;   project sz.bjo, `configure` is the identity.
+;; - With an sz.bjo in the project's root, `bjo sz` builds a program that
+;;   imports it, and passes its export `configure`, of type
+;;   `(-> Setup Setup)`. It is how a project adds its own commands and hooks.
+;; - `configure` is given `default-setup`. The command-line options are
+;;   applied after it, so an option overrides sz.bjo.
+;;
+;; What is said about the run goes to standard error, so that `-o -` writes
+;; only the output to standard output.
+
+(export sz-main)
+
+(import (std prelude))
+(import (std argparse))
+(import (samizdat author))
+
+;; ---------------------------------------------------------------------------
+;; The command line
+;; ---------------------------------------------------------------------------
+
+(def/cmdline
+  (: MdOptions
+     (Record #:summary "Writes documents as GitHub Flavored Markdown."
+             #:after "Each FILE.sz gives FILE.md beside it, unless -o says otherwise."
+             (: output (Option string) #:short #\o #:value "OUT"
+                #:help "The file to write, or - for standard output. With more than one FILE, the directory.")
+             (: check bool #:help "Write nothing. Exit with 1 if an output is not what its source gives.")
+             (: title (Option string) #:value "TEXT" #:help "The title. By default, the (title ...) of the meta form.")
+             (: heading-offset (Option int) #:value "N" #:help "Added to the level of each section. By default 1: a section is ##.")
+             (: typography bool #:default #t #:help "Make curly quotes and dashes. --no-typography keeps the text as typed.")
+             (: files (List string) #:positional #:at-least 1 #:value "FILE"))))
+
+(def/cmdline
+  (: HtmlOptions
+     (Record #:summary "Writes documents as HTML pages."
+             #:after "Each FILE.sz gives FILE.html beside it, unless -o says otherwise."
+             (: output (Option string) #:short #\o #:value "OUT"
+                #:help "The file to write, or - for standard output. With more than one FILE, the directory.")
+             (: check bool #:help "Write nothing. Exit with 1 if an output is not what its source gives.")
+             (: fragment bool #:help "Write the body only, without <html>, <head> and <body>.")
+             (: css (List string) #:value "URL" #:help "A stylesheet for the <head>. Give it more than once for more than one.")
+             (: lang (Option string) #:value "LANG" #:help "The lang of <html>. By default en.")
+             (: id-prefix (Option string) #:value "TEXT" #:help "Put in front of every id and every link to one.")
+             (: title (Option string) #:value "TEXT" #:help "The title. By default, the (title ...) of the meta form.")
+             (: heading-offset (Option int) #:value "N" #:help "Added to the level of each section. By default 1: a section is <h2>.")
+             (: typography bool #:default #t #:help "Make curly quotes and dashes. --no-typography keeps the text as typed.")
+             (: files (List string) #:positional #:at-least 1 #:value "FILE"))))
+
+(def/cmdline
+  (: BuildOptions
+     (Record #:summary "Writes every .sz file below a directory."
+             #:after "Skips directories whose names begin with a dot. A link to a .sz file goes to the file that it gives. A file is written only when its text changes."
+             (: to string #:default "html" #:value "html|md" #:help "The format to write.")
+             (: output (Option string) #:short #\o #:value "DIR"
+                #:help "The directory to write into. By default, each output goes beside its source.")
+             (: check bool #:help "Write nothing. Exit with 1 if an output is not what its source gives.")
+             (: css (List string) #:value "URL" #:help "A stylesheet for each page's <head>. HTML only.")
+             (: lang (Option string) #:value "LANG" #:help "The lang of each page. HTML only.")
+             (: heading-offset (Option int) #:value "N" #:help "Added to the level of each section.")
+             (: typography bool #:default #t #:help "Make curly quotes and dashes. --no-typography keeps the text as typed.")
+             (: dir (Option string) #:positional #:value "DIR"))))
+
+(def/cmdline
+  (: CheckOptions
+     (Record #:summary "Reads documents and runs their commands. Writes nothing."
+             #:after "Each error is FILE:LINE:COLUMN: @command: why. Exits with 1 if a document has an error."
+             (: files (List string) #:positional #:at-least 1 #:value "FILE"))))
+
+(def/cmdline
+  (: OutlineOptions
+     (Record #:summary "Shows the headings, with the id that @ref and a #link take."
+             (: files (List string) #:positional #:at-least 1 #:value "FILE"))))
+
+(def/cmdline
+  (: LinksOptions
+     (Record #:summary "Shows the links and images of documents. With --check, the ones that go nowhere."
+             #:after "--check reads each relative link. Its file must exist, and a #id must be a heading or an anchor of the document it goes to. A link to FILE.html or FILE.md goes to FILE.sz when that is there, so the outputs need not be written yet. A link such as https://... or /style.css is not checked."
+             (: check bool #:help "Show only the links that go nowhere. Exit with 1 if there is one, or if a document has an error.")
+             (: files (List string) #:positional #:at-least 1 #:value "FILE"))))
+
+(def/cmdline
+  (: DepsOptions
+     (Record #:summary "Shows the files that documents are made from, one to a line."
+             #:after "The documents themselves, and each file a command reads, such as an @include. For a build tool."
+             (: files (List string) #:positional #:at-least 1 #:value "FILE"))))
+
+(def/cmdline
+  (: TreeOptions
+     (Record #:summary "Shows the document after its commands ran, as s-expressions."
+             (: file string #:positional #:value "FILE"))))
+
+(def/cmdline
+  (: CommandsOptions
+     (Record #:summary "Shows the commands that a document can use here.")))
+
+(def/cmdline-commands
+  (: SzCommand (Union (: Md MdOptions)
+                      (: Html HtmlOptions)
+                      (: Build BuildOptions)
+                      (: Check CheckOptions)
+                      (: Outline OutlineOptions)
+                      (: Links LinksOptions)
+                      (: Deps DepsOptions)
+                      (: Tree TreeOptions)
+                      (: Commands CommandsOptions))))
+
+(def/cmdline
+  (: SzLine
+     (Record #:program "bjo sz"
+             #:summary "Reads samizdat documents, and writes them as HTML or Markdown."
+             #:after "A project adds commands of its own with an sz.bjo in its root. It exports (configure setup), a function from Setup to Setup of (samizdat author). Options on the command line override it."
+             (: command SzCommand #:subcommand))))
+
+;; ---------------------------------------------------------------------------
+;; Saying things
+;; ---------------------------------------------------------------------------
+
+(: eprintln (-> string void))
+(defun (eprintln s)
+  (writeln (parameter-ref current-error-port) s))
+
+;; Says `why` on standard error, and returns 1.
+(: fail (-> string int))
+(defun (fail why)
+  (eprintln (str "bjo sz: " why))
+  1)
+
+;; ---------------------------------------------------------------------------
+;; The options into a setup
+;; ---------------------------------------------------------------------------
+
+;; `setup` with the options that every writing command has. An absent option
+;; leaves the field as `configure` set it.
+(: with-common (-> Setup (Option string) (Option int) bool Setup))
+(defun (with-common setup title offset typography)
+  (-> setup
+      (match title ((Some t) (record-set & (title t))) (None &))
+      (match offset ((Some n) (record-set & (heading-offset n))) (None &))
+      (if typography & (record-set & (typography #f)))))
+
+;; `setup` with the HTML options.
+(: with-html (-> Setup (List string) (Option string) (Option string) Setup))
+(defun (with-html setup css lang id-prefix)
+  (-> setup
+      (record-set & (css (vec-append (record-ref & css) (list->vec css))))
+      (match lang ((Some l) (record-set & (lang l))) (None &))
+      (match id-prefix ((Some p) (record-set & (id-prefix p))) (None &))))
+
+;; ---------------------------------------------------------------------------
+;; md and html
+;; ---------------------------------------------------------------------------
+
+;; The file name of `path`, without its directories.
+(: file-name (-> string string))
+(defun (file-name path)
+  (option-ref-or (path-filename path) path))
+
+;; Where each of `files` is written.
+;;
+;; - No -o: beside its source.
+;; - One file, and an -o that is not a directory: that file.
+;; - Otherwise -o is a directory, with each output under its file name.
+(: targets (-> (List string) (Option string) OutputFormat (List (Tuple string string))))
+(defun (targets files output format)
+  (match output
+    (None (list-map (fun (f) (Tuple f (output-path f format))) files))
+    ((Some out)
+     (if (and (= (length files) 1) (not (directory-exists? out)))
+         (list-map (fun (f) (Tuple f out)) files)
+         (list-map (fun (f) (Tuple f (path-combine out (output-path (file-name f) format)))) files)))))
+
+;; `-o -`: writes the one document of `files` to standard output.
+(: write-stdout (-> Setup OutputFormat (List string) bool int))
+(defun (write-stdout setup format files check?)
+  (def (Cons file Nil) files
+    :leave (_ (fail "-o - writes one document. Give one FILE.")))
+  (def (Ok doc) (if check?
+                    (Err "--check compares a file, so it takes no -o -.")
+                    (load-document file #:setup setup))
+    :leave ((Err why) (fail why)))
+  (print (render doc format #:setup setup))
+  0)
+
+;; Writes each of `files` in `format`, or with `check?`, compares.
+;;
+;; - `-o -` writes one document to standard output.
+;; - Returns 1 if a document has an error, or with `check?`, if an output
+;;   differs from what its source gives.
+(: write-files (-> Setup OutputFormat (List string) (Option string) bool int))
+(defun (write-files setup format files output check?)
+  (with-return ret
+    (when (= output (Some "-"))
+      (ret (write-stdout setup format files check?)))
+    (def failures
+      (loop (:for (Tuple input target) (targets files output format))
+            (:let result (convert-file input format #:setup setup #:output target #:check check?))
+            (:acc failed (folding 0
+                                  (match result
+                                    ((Err why) (eprintln why) (+ failed 1))
+                                    ((Ok #t) #:when check?
+                                     (eprintln (str target " is not what " input " gives."))
+                                     (+ failed 1))
+                                    ((Ok #t) (eprintln (str "Wrote " target)) failed)
+                                    ((Ok #f) #:when check? failed)
+                                    ((Ok #f) (eprintln (str "Up to date: " target)) failed))))))
+    (if (= failures 0) 0 1)))
+
+(: run-md (-> Setup MdOptions int))
+(defun (run-md base o)
+  (def setup (with-common base (record-ref o title) (record-ref o heading-offset) (record-ref o typography)))
+  (write-files setup 'markdown (record-ref o files) (record-ref o output) (record-ref o check)))
+
+(: run-html (-> Setup HtmlOptions int))
+(defun (run-html base o)
+  (def setup (-> base
+                 (with-common & (record-ref o title) (record-ref o heading-offset) (record-ref o typography))
+                 (with-html & (record-ref o css) (record-ref o lang) (record-ref o id-prefix))))
+  (write-files setup (if (record-ref o fragment) 'html-fragment 'html)
+               (record-ref o files) (record-ref o output) (record-ref o check)))
+
+;; ---------------------------------------------------------------------------
+;; build
+;; ---------------------------------------------------------------------------
+
+(: run-build (-> Setup BuildOptions int))
+(defun (run-build base o)
+  (def setup (-> base
+                 (with-common & None (record-ref o heading-offset) (record-ref o typography))
+                 (with-html & (record-ref o css) (record-ref o lang) None)))
+  (def dir (option-ref-or (record-ref o dir) "."))
+  (def check? (record-ref o check))
+  (def (: chosen (Option OutputFormat))
+    (case (record-ref o to)
+      ("html" (Some FormatHtml))
+      ("md" (Some FormatMarkdown))
+      (else None)))
+  (def (Some format) chosen
+    :leave (None (fail #"--to takes html or md, not '${(record-ref o to)}'.")))
+  (with-return ret
+    (unless (directory-exists? dir) (ret (fail #"there is no directory ${dir}.")))
+    (def results (convert-tree dir format #:setup setup #:out (option-ref-or (record-ref o output) "")
+                               #:check check?))
+    (when (vec-empty? results) (ret (fail #"there is no .sz file below ${dir}.")))
+    (def counts
+      (loop (:for (Tuple input target result) results)
+            (:acc counts
+                  (folding (Tuple 0 0)
+                           (match (Tuple counts result)
+                             ((Tuple (Tuple written failed) (Err why))
+                              (eprintln why)
+                              (Tuple written (+ failed 1)))
+                             ((Tuple (Tuple written failed) (Ok #t))
+                              (if check?
+                                  (begin (eprintln (str target " is not what " input " gives."))
+                                         (Tuple written (+ failed 1)))
+                                  (begin (eprintln (str "Wrote " target))
+                                         (Tuple (+ written 1) failed))))
+                             ((Tuple c (Ok #f)) c))))))
+    (match counts
+      ((Tuple written failed)
+       (def total (vec-length results))
+       (eprintln (cond
+                   (check? #"${total} files, ${failed} not up to date.")
+                   (else #"${total} files, ${written} written, ${failed} with errors.")))
+       (if (= failed 0) 0 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Looking at documents
+;; ---------------------------------------------------------------------------
+
+;; Reads each of `files`, and says the error of each that has one. Returns
+;; how many have one.
+;;
+;; - Runs `show` on each document that has no error.
+;; - `headers?`: writes a "== FILE" line before each document that is shown,
+;;   when there is more than one file.
+(: each-document (-> Setup (List string) bool (-> Document void) int))
+(defun (each-document setup files headers? show)
+  (def many? (and headers? (> (length files) 1)))
+  (loop (:for file files)
+        (:acc failed (folding 0
+                              (match (load-document file #:setup setup)
+                                ((Err why) (eprintln why) (+ failed 1))
+                                ((Ok doc)
+                                 (when many? (println (str "== " file)))
+                                 (show doc)
+                                 failed))))))
+
+;; 0 when no document failed, and 1 otherwise.
+(: status-of (-> int int))
+(defun (status-of failed) (if (= failed 0) 0 1))
+
+(: run-check (-> Setup CheckOptions int))
+(defun (run-check setup o)
+  (def files (record-ref o files))
+  (def failed (each-document setup files #f (fun (doc) (ignore 0))))
+  (def total (length files))
+  (eprintln (cond
+              ((= failed 0) (if (= total 1) "No errors." #"${total} files, no errors."))
+              ((= total 1) "1 error.")
+              (else #"${total} files, ${failed} with errors.")))
+  (status-of failed))
+
+(: run-outline (-> Setup OutlineOptions int))
+(defun (run-outline setup o)
+  (status-of
+   (each-document setup (record-ref o files) #t
+                 (fun (doc)
+                   (loop (:for e (document-outline doc))
+                         (:do (println (str (string-pad-right "" (* 2 (- (record-ref e level) 1)))
+                                            (record-ref e title) "  #" (record-ref e id)))))))))
+
+;; A link as a line: its target, and its text after two spaces. An image's
+;; text begins with "image: ".
+(: link-line (-> DocLink string))
+(defun (link-line l)
+  (def text (str (if (record-ref l image) "image: " "") (record-ref l text)))
+  (if (string-empty? text) (record-ref l target) (str (record-ref l target) "  " text)))
+
+;; Without --check, each link of each document. With --check, each broken
+;; link as "FILE: TARGET  TEXT: why", and a count on standard error.
+(: run-links (-> Setup LinksOptions int))
+(defun (run-links setup o)
+  (def files (record-ref o files))
+  (if (not (record-ref o check))
+      (status-of
+       (each-document setup files #t
+                      (fun (doc) (loop (:for l (document-links doc)) (:do (println (link-line l)))))))
+      (match
+        (loop (:for file files)
+              (:acc counts
+                    (folding (Tuple 0 0)
+                             (match (Tuple counts (check-links file #:setup setup))
+                               ((Tuple (Tuple broken failed) (Err why))
+                                (eprintln why)
+                                (Tuple broken (+ failed 1)))
+                               ((Tuple (Tuple broken failed) (Ok found))
+                                (loop (:for b found)
+                                      (:do (println (str file ": " (link-line (record-ref b link)) ": " (record-ref b why)))))
+                                (Tuple (+ broken (vec-length found)) failed))))))
+        ((Tuple broken failed)
+         ;; The broken links before the count, also in a terminal.
+         (flush-port (parameter-ref current-output-port))
+         (def links (cond
+                      ((= broken 0) "No broken links.")
+                      ((= broken 1) "1 broken link.")
+                      (else #"${broken} broken links.")))
+         (eprintln (cond
+                     ((= failed 0) links)
+                     ((= failed 1) (str links " 1 document has an error."))
+                     (else #"${links} ${failed} documents have errors.")))
+         (if (and (= broken 0) (= failed 0)) 0 1)))))
+
+;; Every source of every document, each once, in the order they are first read.
+(: run-deps (-> Setup DepsOptions int))
+(defun (run-deps setup o)
+  (def (: seen (Box (Map string bool))) (make-box (map-empty)))
+  (status-of
+   (each-document setup (record-ref o files) #f
+                  (fun (doc)
+                    (loop (:for s (document-sources doc))
+                          (:when (not (map-has-key? (box-ref seen) s)))
+                          (:do (box-set! seen (map-set (box-ref seen) s #t))
+                               (println s)))))))
+
+(: run-tree (-> Setup TreeOptions int))
+(defun (run-tree setup o)
+  (status-of
+   (each-document setup (list (record-ref o file)) #f
+                  (fun (doc) (print (render doc 'sexp #:setup setup))))))
+
+(: run-commands (-> Setup int))
+(defun (run-commands setup)
+  (loop (:for name (command-names setup))
+        (:do (println (str "@" name))))
+  0)
+
+;; ---------------------------------------------------------------------------
+;; The entry
+;; ---------------------------------------------------------------------------
+
+;; Parses `args` and runs the subcommand. `configure` makes the setup from
+;; `default-setup`; the options are applied after it. Returns the exit code:
+;; 0, 1 for a failure, and 2 for a wrong command line.
+(: sz-main (-> (Vec string) (-> Setup Setup) int))
+(defun (sz-main args configure)
+  (match (cmdline-parse-SzLine args)
+    ((Err (HelpWanted text)) (println text) 0)
+    ((Err e) (eprintln (arg-error-message e)) (arg-error-exit-code e))
+    ((Ok line)
+     (def setup (configure default-setup))
+     (match (record-ref line command)
+       ((Md o) (run-md setup o))
+       ((Html o) (run-html setup o))
+       ((Build o) (run-build setup o))
+       ((Check o) (run-check setup o))
+       ((Outline o) (run-outline setup o))
+       ((Links o) (run-links setup o))
+       ((Deps o) (run-deps setup o))
+       ((Tree o) (run-tree setup o))
+       ((Commands _) (run-commands setup))))))

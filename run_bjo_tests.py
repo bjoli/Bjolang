@@ -2540,6 +2540,84 @@ def test_task(work, c):
     c.says("and it runs in the project's root", greeted, "/proj\n")
 
 
+# --- bjo sz ------------------------------------------------------------------
+
+SZ_BJO = """(export configure)
+(import (std prelude))
+(import (samizdat author))
+(import (samizdat doc))
+(import (samizdat expand))
+
+(: shout Command)
+(defun (shout cx c) (inline (Str (string-upcase (body-text cx c)))))
+
+(: configure (-> Setup Setup))
+(defun (configure s)
+  (record-set s (commands (map-set (record-ref s commands) "shout" shout))))
+"""
+
+
+@test("sz")
+def test_sz(work, c):
+    loose = work / "loose"
+    write(loose / "docs" / "a.sz", '(meta (title "A"))\n@section{One}\nSee @link["sub/b.sz"]{b}.\n')
+    write(loose / "docs" / "sub" / "b.sz", "@section{Two}\n")
+
+    md = run_bjo(loose, "sz", "md", "docs/a.sz")
+    c.worked("bjo sz md writes Markdown", md)
+    c.that("beside the source, with the links to .sz files rewritten",
+           (loose / "docs" / "a.md").exists()
+           and (loose / "docs" / "a.md").read_text() == "# A\n\n## One\n\nSee [b](sub/b.md).\n",
+           said(md))
+    c.worked("--check passes when the output is up to date", run_bjo(loose, "sz", "md", "--check", "docs/a.sz"))
+    write(loose / "docs" / "a.md", "edited\n")
+    stale = run_bjo(loose, "sz", "md", "--check", "docs/a.sz")
+    c.failed("--check fails when it is not", stale)
+    c.says("and names the output", stale, "docs/a.md is not what docs/a.sz gives")
+    c.that("and writes nothing", (loose / "docs" / "a.md").read_text() == "edited\n")
+
+    out = run_bjo(loose, "sz", "html", "--fragment", "-o", "-", "docs/sub/b.sz")
+    c.worked("bjo sz html -o - writes to standard output", out)
+    c.that("only the output", out.stdout == '<h2 id="two">Two</h2>\n', out.stdout)
+
+    built = run_bjo(loose, "sz", "build", "docs", "-o", "site")
+    c.worked("bjo sz build writes a site", built)
+    c.that("under the same relative paths", (loose / "site" / "sub" / "b.html").exists(), said(built))
+    c.says("and says what it wrote", built, "2 files, 2 written, 0 with errors.")
+    c.says("a second build writes nothing", run_bjo(loose, "sz", "build", "docs", "-o", "site"),
+           "2 files, 0 written, 0 with errors.")
+
+    c.says("bjo sz outline shows the headings and their ids", run_bjo(loose, "sz", "outline", "docs/a.sz"),
+           "One  #one")
+    write(loose / "bad.sz", "@shout{x}\n")
+    bad = run_bjo(loose, "sz", "check", "bad.sz")
+    c.failed("bjo sz check fails for an unknown command", bad)
+    c.says("and says where it is", bad, "bad.sz:1:1: @shout: there is no such command")
+    write(loose / "links.sz", '@section{Here}\n@link["docs/a.sz#one"]{ok} @link["docs/a.sz#two"]{bad} @link["#here"]{self}\n')
+    listed = run_bjo(loose, "sz", "links", "links.sz")
+    c.worked("bjo sz links lists the links", listed)
+    c.says("with their text", listed, "docs/a.sz#two  bad")
+    linked = run_bjo(loose, "sz", "links", "--check", "links.sz")
+    c.failed("bjo sz links --check fails for a link to an id that is not there", linked)
+    c.says("and names the link and why", linked,
+           "links.sz: docs/a.sz#two  bad: docs/a.sz has no heading or anchor with the id two")
+    c.that("and only that link", "#one" not in linked.stdout and "#here" not in linked.stdout, linked.stdout)
+    c.says("and counts them", linked, "1 broken link.")
+    write(loose / "links.sz", '@link["docs/a.sz#one"]{ok}\n')
+    c.worked("--check passes when every link goes somewhere", run_bjo(loose, "sz", "links", "--check", "links.sz"))
+    wrong = run_bjo(loose, "sz", "mdd")
+    c.that("an unknown command exits with 2", wrong.returncode == 2, said(wrong))
+    c.says("and says the nearest one", wrong, "Did you mean md?")
+
+    # sz.bjo adds the project's own commands to each command of bjo sz.
+    write(loose / "sz.bjo", SZ_BJO)
+    shouted = run_bjo(loose, "sz", "html", "--fragment", "-o", "-", "bad.sz")
+    c.worked("with sz.bjo, its commands work", shouted)
+    c.that("as it defines them", shouted.stdout == "<p>X</p>\n", said(shouted))
+    c.says("and bjo sz commands lists them", run_bjo(loose, "sz", "commands"), "@shout")
+    c.that("the entry point is in .bjo/sz", (loose / ".bjo" / "sz" / "main.bjo").exists())
+
+
 def run_test(name, fn):
     """One test in its own work directory. Returns its checks and seconds."""
     work = WORK / name.replace(" ", "_")

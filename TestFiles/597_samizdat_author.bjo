@@ -1,0 +1,191 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;; 597_samizdat_author.bjo — the high-level interface, (samizdat author).
+;;
+;; The setup's options in each format, the rewriting of links to .sz files,
+;; the outline, links and ids, and files: convert-file, convert-tree and
+;; check-links in a directory of their own under the system's temporary
+;; directory, which the test deletes.
+
+(import (std prelude))
+(import (std simpletest))
+(import (samizdat doc))
+(import (samizdat expand))
+(import (samizdat author))
+
+(import/extern
+  (temp-dir (: System.IO.Path.GetTempPath (-> string))))
+
+;; The document of `text`, read with `setup`. An error is a paragraph that
+;; says it, so that a check shows it.
+(: doc-with (-> Setup string Document))
+(defun (doc-with setup text)
+  (match (load-document-text text #:setup setup)
+    ((Ok d) d)
+    ((Err e) (Document (meta None) (blocks [(Para [(Str (str "error: " e))])]) (notes (vec-empty))
+                       (sources (vec-empty))))))
+
+(: plain Setup)
+(def plain (author-setup #:typography #f))
+
+(: as (-> OutputFormat string string))
+(defun (as format text) (render (doc-with plain text) format #:setup plain))
+
+(: shout Command)
+(defun (shout cx c) (inline (Str (string-upcase (body-text cx c)))))
+
+(defun (main args)
+  ;; --- file names ---------------------------------------------------------------
+  (expect "a .sz file gives a .html file" (output-path "docs/a.sz" 'html) "docs/a.html")
+  (expect "a fragment is .html too" (output-path "a.sz" 'html-fragment) "a.html")
+  (expect "and Markdown .md" (output-path "a.sz" 'markdown) "a.md")
+  (expect "another name gets the suffix added" (output-path "notes" 'markdown) "notes.md")
+
+  ;; --- links to sources -----------------------------------------------------------
+  (expect "a link to a .sz file goes to its page, with its fragment"
+          (as 'html-fragment "@link[\"sub/guide.sz#install\"]{g}")
+          "<p><a href=\"sub/guide.html#install\">g</a></p>\n")
+  (expect "in Markdown, to its .md file"
+          (as 'markdown "@link[\"guide.sz\"]{g}")
+          "[g](guide.md)\n")
+  (expect "a link with a scheme, a link to /, and one to another file are left as they are"
+          (as 'html-fragment "@link[\"https://x.org/a.sz\"]{a} @link[\"/b.sz\"]{b} @link[\"c.txt\"]{c}")
+          "<p><a href=\"https://x.org/a.sz\">a</a> <a href=\"/b.sz\">b</a> <a href=\"c.txt\">c</a></p>\n")
+  (expect "#:sz-links #f leaves them all"
+          (render (doc-with plain "@link[\"guide.sz\"]{g}") 'html-fragment
+                  #:setup (record-set plain (sz-links #f)))
+          "<p><a href=\"guide.sz\">g</a></p>\n")
+  (expect "#:url-hook runs after, on the rewritten link"
+          (render (doc-with plain "@link[\"guide.sz\"]{g}") 'html-fragment
+                  #:setup (record-set plain (url-hook (fun (u) (str "/docs/" u)))))
+          "<p><a href=\"/docs/guide.html\">g</a></p>\n")
+  (expect "an image goes through it too"
+          (render (doc-with plain "@image[\"cat.png\" #:alt \"c\"]") 'html-fragment
+                  #:setup (record-set plain (url-hook (fun (u) (str "/img/" u)))))
+          "<p><img src=\"/img/cat.png\" alt=\"c\"></p>\n")
+
+  ;; --- the setup -------------------------------------------------------------------
+  (def page (render (doc-with plain "(meta (title \"T\"))\n@section{S}")
+                    'html #:setup (record-set plain (css ["a.css" "b&c.css"]) (lang "sv"))))
+  (expect-true "a page has a <link> for each stylesheet, escaped"
+               (string-contains? page "<link rel=\"stylesheet\" href=\"a.css\">\n<link rel=\"stylesheet\" href=\"b&amp;c.css\">\n</head>"))
+  (expect-true "and its lang" (string-starts-with? page "<!DOCTYPE html>\n<html lang=\"sv\">"))
+  (expect-true "and its title from the meta form" (string-contains? page "<title>T</title>"))
+  (expect "#:heading-offset 0 makes a section an <h1>"
+          (render (doc-with plain "@section{S}") 'html-fragment #:setup (record-set plain (heading-offset 0)))
+          "<h1 id=\"s\">S</h1>\n")
+  (expect "and a # heading in Markdown"
+          (render (doc-with plain "@section{S}") 'markdown #:setup (record-set plain (heading-offset 0)))
+          "# S\n")
+  (expect "#:title is the Markdown file's first heading"
+          (render (doc-with plain "Text.") 'markdown #:setup (record-set plain (title "Top")))
+          "# Top\n\nText.\n")
+  (expect "typography is on by default"
+          (render (doc-with default-setup "\"a\" -- b") 'html-fragment)
+          "<p>“a” – b</p>\n")
+  (expect "'sexp is the tree"
+          (as 'sexp "Hi @em{you}.")
+          "(para \"Hi \" (em \"you\") \".\")\n")
+  (def own (record-set plain (commands (map-set (record-ref plain commands) "shout" shout))))
+  (expect "a setup's own command" (render (doc-with own "@shout{hey}") 'html-fragment #:setup own) "<p>HEY</p>\n")
+  (expect-true "is in command-names" (vec-contains? (command-names own) "shout"))
+  (expect-true "beside the standard ones" (vec-contains? (command-names own) "section"))
+
+  ;; --- the outline ---------------------------------------------------------------------
+  (def outline (document-outline (doc-with plain "@section{One @em{a}}\n@subsection{Two}\n@section*{Not}")))
+  (expect "the outline has the numbered headings" (vec-length outline) 2)
+  (expect "a level" (record-ref (vec-ref outline 1) level) 2)
+  (expect "an id" (record-ref (vec-ref outline 0) id) "one-a")
+  (expect "and the text, without markup" (record-ref (vec-ref outline 0) title) "One a")
+
+  ;; --- links and ids -------------------------------------------------------------------
+  (def linked (doc-with plain (str "@section{A}\n@link[\"x.sz\"]{one @em{two}} @image[\"p.png\" #:alt \"P\"]\n"
+                                   "@blockquote{@link[\"#a\"]{in a quote}}\n@image[\"fig.png\" #:alt \"F\"]{Cap}\n"
+                                   "@read-table{\n| @link[\"t.sz\"]{cell} |\n}\nA note.@note{@link[\"n.sz\"]{in a note}}")))
+  (expect "document-links: every link and image, inside quotes, figures, tables and notes, in order"
+          (vec-map (fun (l) (record-ref l target)) (document-links linked))
+          ["x.sz" "p.png" "#a" "fig.png" "t.sz" "n.sz"])
+  (expect "a link's text has no markup" (record-ref (vec-ref (document-links linked) 0) text) "one two")
+  (expect "an image's text is its alt text, and it says it is an image"
+          (match (vec-ref (document-links linked) 1) (l (Tuple (record-ref l text) (record-ref l image))))
+          (Tuple "P" #t))
+  (expect "document-ids: the headings' ids" (document-ids linked) ["a"])
+
+  ;; --- files -----------------------------------------------------------------------------
+  (def dir (path-combine (temp-dir) "bjolang-597-samizdat-author"))
+  (when (directory-exists? dir) (directory-delete-tree dir))
+  (directory-create (path-combine dir "src" "sub"))
+  (directory-create (path-combine dir "src" ".hidden"))
+  (def index (path-combine dir "src" "index.sz"))
+  (file-write-text index "(meta (title \"Home\"))\nSee @link[\"sub/b.sz\"]{b}.\n\n@include[\"part.txt\"]\n")
+  (file-write-text (path-combine dir "src" "part.txt") "Included.")
+  (file-write-text (path-combine dir "src" "sub" "b.sz") "@section{B}\n")
+  (file-write-text (path-combine dir "src" ".hidden" "c.sz") "C\n")
+  (file-write-text (path-combine dir "src" "bad.sz") "@nosuch{x}\n")
+
+  (expect "convert-file writes the output beside its source" (convert-file index 'markdown) (Ok #t))
+  (expect "the output" (file-read-text (path-combine dir "src" "index.md")) "# Home\n\nSee [b](sub/b.md).\n\nIncluded.\n")
+  (expect "a second time it changes nothing" (convert-file index 'markdown) (Ok #f))
+  (file-write-text (path-combine dir "src" "index.md") "edited")
+  (expect "#:check says that it would change" (convert-file index 'markdown #:check #t) (Ok #t))
+  (expect "and writes nothing" (file-read-text (path-combine dir "src" "index.md")) "edited")
+  (expect "#:output names the file, and its directory is made"
+          (convert-file index 'html #:output (path-combine dir "out" "deep" "i.html")) (Ok #t))
+  (expect-true "which is there" (file-exists? (path-combine dir "out" "deep" "i.html")))
+  (match (load-document (path-combine dir "src" "bad.sz"))
+    ((Ok _) (expect-true "a document with an unknown command is an error" #f))
+    ((Err why) (expect-true "an error says the file, the line and the column"
+                            (string-contains? why "bad.sz:1:1: @nosuch:"))))
+  (match (load-document index)
+    ((Ok doc) (expect "the sources: the document, then what it included"
+                      (vec-map (fun (s) (option-ref-or (path-filename s) s)) (document-sources doc))
+                      ["index.sz" "part.txt"]))
+    ((Err why) (expect-true why #f)))
+
+  (expect "sz-files: every .sz file, sorted, and none under a directory that begins with ."
+          (vec-map (fun (s) (option-ref-or (path-filename s) s)) (sz-files (path-combine dir "src")))
+          ["bad.sz" "index.sz" "b.sz"])
+  (def site (path-combine dir "site"))
+  (def tree (convert-tree (path-combine dir "src") 'html #:out site))
+  (expect "convert-tree converts each one" (vec-length tree) 3)
+  (expect "an error is one file's result"
+          (match (vec-ref tree 0) ((Tuple _ _ (Err _)) #t) (_ #f))
+          #t)
+  (expect "the others are written, under the same relative paths"
+          (vec-map (fun (t) (match t ((Tuple _ target r) (Tuple (file-exists? target) r)))) (vec-drop tree 1))
+          [(Tuple #t (Ok #t)) (Tuple #t (Ok #t))])
+  (expect-true "a page links to the other page"
+               (string-contains? (file-read-text (path-combine site "index.html")) "<a href=\"sub/b.html\">b</a>"))
+  (expect "with #:check after a build, nothing would change"
+          (vec-map (fun (t) (match t ((Tuple _ _ r) r))) (vec-drop (convert-tree (path-combine dir "src") 'html #:out site #:check #t) 1))
+          [(Ok #f) (Ok #f)])
+
+  (def links-dir (path-combine dir "links"))
+  (directory-create (path-combine links-dir "sub"))
+  (file-write-text (path-combine links-dir "sub" "b.sz") "@section{Install}\n")
+  (file-write-text (path-combine links-dir "pic one.png") "")
+  (file-write-text (path-combine links-dir "a.sz")
+                   (str "@section{Top}\n"
+                        "@link[\"sub/b.sz#install\"]{1} @link[\"sub/b.sz#instal\"]{2} @link[\"missing.sz\"]{3}\n"
+                        "@link[\"#top\"]{4} @link[\"#nope\"]{5} @link[\"sub/b.html#install\"]{6}\n"
+                        "@link[\"sub/b.md#nope\"]{7} @image[\"pic%20one.png\"] @link[\"https://x.org/y.sz\"]{8}\n"
+                        "@link[\"/abs.css\"]{9} @link[\"sub/\"]{10} @link[\"mailto:a@b.c\"]{11}\n"))
+  (match (check-links (path-combine links-dir "a.sz"))
+    ((Err why) (expect-true why #f))
+    ((Ok broken)
+     (expect "check-links: a wrong id in another document, a missing file, a wrong id here, and a wrong id after FILE.md"
+             (vec-map (fun (b) (record-ref (record-ref b link) target)) broken)
+             ["sub/b.sz#instal" "missing.sz" "#nope" "sub/b.md#nope"])
+     (expect-true "and says which id is not there"
+                  (string-contains? (record-ref (vec-ref broken 0) why) "has no heading or anchor with the id instal"))
+     (expect-true "and which file"
+                  (string-contains? (record-ref (vec-ref broken 1) why) "there is no file"))))
+  (expect "a document that is not there is an Err"
+          (match (check-links (path-combine links-dir "none.sz")) ((Err _) #t) (_ #f))
+          #t)
+  (directory-delete-tree dir)
+
+  (println "author ok")
+  0)
