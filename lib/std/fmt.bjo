@@ -67,13 +67,13 @@
 ;; Formats to string.
 (: (-> (Vec Disp) string))
 (defun (str* ds)
-  (let ((b (stringbuilder-empty)))
-    (ignore (fold (fun (d acc)
-                    (stringbuilder-add-string! acc (disp->string d))
-                    acc)
-                  b
-                  ds))
-    (stringbuilder->string b)))
+  (def b (stringbuilder-empty))
+  (ignore (fold (fun (d acc)
+                  (stringbuilder-add-string! acc (disp->string d))
+                  acc)
+                b
+                ds))
+  (stringbuilder->string b))
 
 (: (-> (Vec Disp) void))
 (defun (println* ds)
@@ -105,9 +105,8 @@
 (defun (run-block out col b)
   (match b
     ((BStr s)
-     (let ()
-       (out s)
-       (column-after col s)))
+     (out s)
+     (column-after col s))
     ((BInt n) (run-block out col (BStr (int->string n))))
     ((BChar c) (run-block out col (BStr (char->string c))))
     ((BMany bs) (run-blocks out col bs))
@@ -127,9 +126,9 @@
 
 (: (-> Block string))
 (defun (render->string b)
-  (let ((sb (stringbuilder-empty)))
-    (ignore (run-block #(stringbuilder-add-string! sb &1) 0 b))
-    (stringbuilder->string sb)))
+  (def sb (stringbuilder-empty))
+  (ignore (run-block #(stringbuilder-add-string! sb &1) 0 b))
+  (stringbuilder->string sb))
 
 ;; Renders to current output port. `#:sync` for `render`'s reason, and stated
 ;; here too rather than left to follow from it: this is the exported one, and
@@ -203,8 +202,8 @@
 ;; Returns width of string.
 (: (-> string int))
 (defun (width-of s)
-  (let ((measure (parameter-ref current-string-width)))
-    (measure s)))
+  (def measure (parameter-ref current-string-width))
+  (measure s))
 
 ;; Generates padding of specified width.
 (: (-> int string))
@@ -224,12 +223,11 @@
 (defun (prefix-of-width s w)
   (let loop ((c (string-cursor-start s))
              (room w))
-    (if (string-cursor-end? s c)
-        s
-        (let ((cw (width-of (char->string (string-cursor-ref s c)))))
-          (if (<= cw room)
-              (loop (string-cursor-next s c) (- room cw))
-              (substring s (string-cursor-start s) c))))))
+    (cond
+      ((string-cursor-end? s c) s)
+      (:def cw (width-of (char->string (string-cursor-ref s c))))
+      ((<= cw room) (loop (string-cursor-next s c) (- room cw)))
+      (else (substring s (string-cursor-start s) c)))))
 
 (: (-> string int string))
 (defun (suffix-of-width s w)
@@ -260,9 +258,9 @@
 ;; Centred, with the odd column on the right — SRFI 166's rule.
 (: (-> int string string))
 (defun (pad/both w s)
-  (let* ((missing (- w (width-of s)))
-         (left (/ missing 2)))
-    (string-append (padding left) (string-append s (padding (- missing left))))))
+  (def missing (- w (width-of s)))
+  (def left (/ missing 2))
+  (string-append (padding left) (string-append s (padding (- missing left)))))
 
 ;; Trims string to w columns.
 (: (-> int string string))
@@ -427,11 +425,11 @@
         (let loop ((c (string-cursor-end digits))
                    (i 0))
           (unless (string-cursor=? c (string-cursor-start digits))
-            (let ((p (string-cursor-prev digits c)))
-              (when (and (> i 0) (= 0 (% i n)))
-                (stringbuilder-add! b sep))
-              (stringbuilder-add! b (string-cursor-ref digits p))
-              (loop p (+ i 1)))))
+            (def p (string-cursor-prev digits c))
+            (when (and (> i 0) (= 0 (% i n)))
+              (stringbuilder-add! b sep))
+            (stringbuilder-add! b (string-cursor-ref digits p))
+            (loop p (+ i 1))))
         (string-reverse (stringbuilder->string b)))))
 
 ;; Formats number blocks.
@@ -461,23 +459,26 @@
 
 (: (-> double int int char char bool string))
 (defun (formatted x precision comma comma-sep decimal-sep signed)
-  (let* ((raw (if (< precision 0)
-                  (.ToString x clr-invariant)
-                  (.ToString x (string-append "F" (int->string precision)) clr-invariant)))
-         (negative? (string-starts-with? raw "-"))
-         (body (if negative?
-                   (string-drop-first raw)
-                   raw))
-         (parts (split-at-point body))
-         (whole (first-of parts))
-         (fraction (second-of parts)))
-    (string-append (if negative?
-                       "-"
-                       (if signed "+" ""))
-                   (string-append (grouped whole comma comma-sep)
-                                  (if (string-empty? fraction)
-                                      ""
-                                      (string-append (char->string decimal-sep) fraction))))))
+  (def raw
+    (if (< precision 0)
+        (.ToString x clr-invariant)
+        (.ToString x (string-append "F" (int->string precision)) clr-invariant)))
+  (def negative? (string-starts-with? raw "-"))
+  (def body
+    (if negative?
+        (string-drop-first raw)
+        raw))
+  (def parts (split-at-point body))
+  (def whole (first-of parts))
+  (def fraction (second-of parts))
+  (string-append (cond
+                   (negative? "-")
+                   (signed "+")
+                   (else ""))
+                 (string-append (grouped whole comma comma-sep)
+                                (if (string-empty? fraction)
+                                    ""
+                                    (string-append (char->string decimal-sep) fraction)))))
 
 ;; The common case, and the reason `comma` is spelled that way: thousands.
 (: (-> double Block))
@@ -617,16 +618,16 @@
   (let lp ((c (string-cursor-start s))
            (start (string-cursor-start s))
            (in? #f))
-    (if (string-cursor-end? s c)
-        ;; todo: add a (cond ...) here
-        (when in?
-          (vecbuilder-add! out (substring s start c)))
-        (if (char-whitespace? (string-cursor-ref s c))
-            (let ()
-              (when in?
-                (vecbuilder-add! out (substring s start c)))
-              (lp (string-cursor-next s c) (string-cursor-next s c) #f))
-            (lp (string-cursor-next s c) (if in? start c) #t))))
+    (cond
+      ((string-cursor-end? s c)
+       ;; todo: add a (cond ...) here
+       (when in?
+         (vecbuilder-add! out (substring s start c))))
+      ((char-whitespace? (string-cursor-ref s c))
+       (when in?
+         (vecbuilder-add! out (substring s start c)))
+       (lp (string-cursor-next s c) (string-cursor-next s c) #f))
+      (else (lp (string-cursor-next s c) (if in? start c) #t))))
   (vecbuilder->vec out))
 
 ;; Packs words into lines.
@@ -637,17 +638,18 @@
            (used 0)
            (budget first)
            (lines Nil))
-    (if (>= i (vec-length ws))
-        (list-reverse (if (list-empty? line)
-                          lines
-                          (Cons (list-reverse line) lines)))
-        (let* ((w (vec-ref ws i))
-               (needed (if (= used 0)
-                           (width-of w)
-                           (+ used 1 (width-of w)))))
-          (if (or (= used 0) (<= needed budget))
-              (lp (+ i 1) (Cons w line) needed budget lines)
-              (lp i Nil 0 width (Cons (list-reverse line) lines)))))))
+    (cond
+      ((>= i (vec-length ws))
+       (list-reverse (if (list-empty? line)
+                         lines
+                         (Cons (list-reverse line) lines))))
+      (:def w (vec-ref ws i))
+      (:def needed
+            (if (= used 0)
+                (width-of w)
+                (+ used 1 (width-of w))))
+      ((or (= used 0) (<= needed budget)) (lp (+ i 1) (Cons w line) needed budget lines))
+      (else (lp i Nil 0 width (Cons (list-reverse line) lines))))))
 
 ;; The words with a single pad character between them.
 (: (-> (List string) string))
@@ -664,50 +666,53 @@
 ;; Stretches spaced words to budget.
 (: (-> (List string) int string))
 (defun (stretched ws budget)
-  (let ((gaps (- (list-length ws) 1)))
-    (if (<= gaps 0)
-        (spaced ws)
-        (let* ((text (list-foldl (fun (w acc) (+ acc (width-of w))) 0 ws))
-               (room (max (- budget text) gaps))
-               (base (/ room gaps))
-               (extra (% room gaps))
-               (b (stringbuilder-empty)))
-          ;; TODO: rewrite as a {folding ...}
-          (ignore (list-foldl (fun (w i)
-                                (when (> i 0)
-                                  (stringbuilder-add-string! b
-                                                             (padding (+ base
-                                                                         (if (<= i extra)
-                                                                             1
-                                                                             0)))))
-                                (stringbuilder-add-string! b w)
-                                (+ i 1))
-                              0
-                              ws))
-          (stringbuilder->string b)))))
+  (def gaps (- (list-length ws) 1))
+  (if (<= gaps 0)
+      (spaced ws)
+      (let* ((text (list-foldl (fun (w acc) (+ acc (width-of w))) 0 ws))
+             (room (max (- budget text) gaps))
+             (base (/ room gaps))
+             (extra (% room gaps))
+             (b (stringbuilder-empty)))
+        ;; TODO: rewrite as a {folding ...}
+        (ignore (list-foldl (fun (w i)
+                              (when (> i 0)
+                                (stringbuilder-add-string! b
+                                                           (padding (+ base
+                                                                       (if (<= i extra)
+                                                                           1
+                                                                           0)))))
+                              (stringbuilder-add-string! b w)
+                              (+ i 1))
+                            0
+                            ws))
+        (stringbuilder->string b))))
 
 (: (-> (Vec string) bool Block))
 (defun (wrap ws justify?)
   (BRun (fun (out col)
-          (let* ((width (parameter-ref current-width))
-                 (lines (packed ws (- width col) width)))
-            (let loop ((ls lines)
-                       (c col)
-                       (first? #t))
-              (match ls
-                (Nil c)
-                ((Cons line rest)
-                 ;; Todo: rewrite using (def ...)
-                 (let* ((c1 (if first?
-                                c
-                                (run-block out c nl)))
-                        (budget (if first?
-                                    (- width col)
-                                    width))
-                        (text (if (and justify? (not (list-empty? rest)))
-                                  (stretched line budget)
-                                  (spaced line))))
-                   (loop rest (run-block out c1 (BStr text)) #f)))))))))
+          (def width (parameter-ref current-width))
+          (def lines (packed ws (- width col) width))
+          (let loop ((ls lines)
+                     (c col)
+                     (first? #t))
+            (match ls
+              (Nil c)
+              ((Cons line rest)
+               ;; Todo: rewrite using (def ...)
+               (def c1
+                 (if first?
+                     c
+                     (run-block out c nl)))
+               (def budget
+                 (if first?
+                     (- width col)
+                     width))
+               (def text
+                 (if (and justify? (not (list-empty? rest)))
+                     (stretched line budget)
+                     (spaced line)))
+               (loop rest (run-block out c1 (BStr text)) #f)))))))
 
 ;; Filled to the right margin, ragged on the right.
 (: (-> Block Block))
@@ -827,15 +832,15 @@
 ;; Renders columns.
 (: (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) Block))
 (defun (columnar cols #:sep " " #:align [])
-  (BRun
-   (fun (out col)
-     (let* ((cells (rendered-cells cols))
-            (n (vec-length cells))
-            (room (- (parameter-ref current-width) (* (width-of sep) (max (- n 1) 0))))
-            (each-width (if (> n 0)
-                            (max (/ room n) 0)
-                            0)))
-       (run-block out col (laid-out cells (vec-map (fun (ls) each-width) cells) align sep #t))))))
+  (BRun (fun (out col)
+          (def cells (rendered-cells cols))
+          (def n (vec-length cells))
+          (def room (- (parameter-ref current-width) (* (width-of sep) (max (- n 1) 0))))
+          (def each-width
+            (if (> n 0)
+                (max (/ room n) 0)
+                0))
+          (run-block out col (laid-out cells (vec-map (fun (ls) each-width) cells) align sep #t)))))
 
 ;; --- Borders -----------------------------------------------------------------
 ;;
@@ -1492,22 +1497,23 @@
   (BRun
    (fun (out col)
      (def cells (rendered-row row))
-     (if (plain-table? (record-ref layout style) [] [] [] OverflowPush)
-         (let ()
-           (def ws (record-ref layout widths))
-           (def widths
-             {vecing (if (< i (vec-length ws))
-                         (vec-ref ws i)
-                         0)
-                     (:for i (range 0 (vec-length cells)))})
-           (run-block out
-                      col
-                      (laid-out cells widths (record-ref layout aligns) (record-ref layout sep) #f)))
-         (run-block
-          out
-          col
-          (lines-block
-           (row-lines (layout-chars layout) (layout-aligns layout) (layout-fits layout) cells)))))))
+     (cond
+       ((plain-table? (record-ref layout style) [] [] [] OverflowPush)
+        (def ws (record-ref layout widths))
+        (def widths
+          {vecing (if (< i (vec-length ws))
+                      (vec-ref ws i)
+                      0)
+                  (:for i (range 0 (vec-length cells)))})
+        (run-block out
+                   col
+                   (laid-out cells widths (record-ref layout aligns) (record-ref layout sep) #f)))
+       (else
+        (run-block
+         out
+         col
+         (lines-block
+          (row-lines (layout-chars layout) (layout-aligns layout) (layout-fits layout) cells))))))))
 
 ;; `tabular`, given rows rather than columns.
 (: (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) (#:style TableStyle)
@@ -1523,19 +1529,20 @@
                      #:overflow OverflowPush)
   ;; Measured when it runs, where the settings it is run under are bound.
   (BRun (fun (out col)
-          (if (plain-table? style titles align widths overflow)
-              (let ()
-                (def layout (table-layout (table-widths rows) #:sep sep #:align align))
-                (run-blocks out col (vec-map (fun (row) (table-row layout row)) rows)))
-              (run-block out
-                         col
-                         (bordered (border-chars style sep)
-                                   align
-                                   (rendered-row titles)
-                                   (vec-map rendered-row rows)
-                                   rules
-                                   widths
-                                   overflow))))))
+          (cond
+            ((plain-table? style titles align widths overflow)
+             (def layout (table-layout (table-widths rows) #:sep sep #:align align))
+             (run-blocks out col (vec-map (fun (row) (table-row layout row)) rows)))
+            (else
+             (run-block out
+                        col
+                        (bordered (border-chars style sep)
+                                  align
+                                  (rendered-row titles)
+                                  (vec-map rendered-row rows)
+                                  rules
+                                  widths
+                                  overflow)))))))
 
 ;; --- Width in a terminal ---------------------------------------------------
 ;;
