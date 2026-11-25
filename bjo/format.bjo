@@ -1952,6 +1952,9 @@
 ;; The forms of a `def`, a `:def` or a `def*` clause whose pattern is item
 ;; `first`. The value is on the pattern's line or `below`, and each failure
 ;; part is on a line of its own, 2 in.
+;;
+;; A `def*` clause is laid out as a binding of a `let`: a value over several
+;; lines starts on the pattern's line too, if it fits there.
 (: def-plans (-> Group int Gap (List Plan)))
 (defun (def-plans g first below)
   (def string-value?
@@ -1961,7 +1964,8 @@
   (def parts
     (list (plan g 0 (fun (k) (def-gap g first below #f k)))
           (plan g 0 (fun (k) (def-gap g first below #t k)))))
-  (if (or string-value? (> (vec-length (record-ref g items)) (+ first 2)))
+  (def def*-clause? (= first 0))
+  (if (or def*-clause? string-value? (> (vec-length (record-ref g items)) (+ first 2)))
       (Cons (plan g 0 (fun (k) (def-gap g first Same #f k))) parts)
       parts))
 
