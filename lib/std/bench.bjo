@@ -741,8 +741,8 @@
                ((Tuple t b) (go (+ i 1L) (+ total t) (+ bytes b))))
              (Tuple total bytes))))
       (None
-       (let ((t (time-batch run k)))
-         (Tuple t (- (bench-allocated alloc) b0))))))
+       (def t (time-batch run k))
+       (Tuple t (- (bench-allocated alloc) b0)))))
   (Sample (ns ns)
           (bytes bytes)
           (gc0 (cast System.Int64 (- (gc-count 0) g0)))
@@ -1082,30 +1082,30 @@
                            "setup-every: below resolution"
                            ""))))
   (def extra
-    (if (record-ref m once)
-        (list (str "(" (string-join (vec-map time-text xs) ", ") ")"))
-        (if detail
-            (list (str "mean "
-                       (time-text (mean xs))
-                       ", sd "
-                       (time-text (std-dev xs))
-                       ", q1 "
-                       (time-text (quantile xs 0.25))
-                       ", q3 "
-                       (time-text (quantile xs 0.75))
-                       ", "
-                       (int->string (vec-length xs))
-                       " samples of "
-                       (long->string (record-ref m k))
-                       " calls")
-                  (str "in order   " (sparkline xs 60))
-                  (str "histogram  "
-                       (time-text lowest)
-                       " "
-                       (histogram xs 24)
-                       " "
-                       (time-text (vec-fold max (vec-ref xs 0) xs))))
-            (list))))
+    (cond
+      ((record-ref m once) (list (str "(" (string-join (vec-map time-text xs) ", ") ")")))
+      (detail
+       (list (str "mean "
+                  (time-text (mean xs))
+                  ", sd "
+                  (time-text (std-dev xs))
+                  ", q1 "
+                  (time-text (quantile xs 0.25))
+                  ", q3 "
+                  (time-text (quantile xs 0.75))
+                  ", "
+                  (int->string (vec-length xs))
+                  " samples of "
+                  (long->string (record-ref m k))
+                  " calls")
+             (str "in order   " (sparkline xs 60))
+             (str "histogram  "
+                  (time-text lowest)
+                  " "
+                  (histogram xs 24)
+                  " "
+                  (time-text (vec-fold max (vec-ref xs 0) xs)))))
+      (else (list))))
   (Row (name name)
        (labels labels)
        (cells (list (time-text med)
@@ -1946,13 +1946,13 @@
              (println why)
              (ask previous))
             ((Ok chosen)
-             (if (= (case-count chosen) 0)
-                 (let ()
-                   (println "That chooses nothing.")
-                   (ask previous))
-                 (let ()
-                   (run chosen)
-                   (ask (Some chosen))))))))))))
+             (cond
+               ((= (case-count chosen) 0)
+                (println "That chooses nothing.")
+                (ask previous))
+               (else
+                (run chosen)
+                (ask (Some chosen))))))))))))
 
 ;; Whether to ask what to run: with no names and no `--all`, at a terminal,
 ;; and not in CI. `BJO_BENCH_MENU=1` asks anyway, which is how it is tested.
@@ -2178,11 +2178,11 @@
         2)))
     (else
      (def chosen (filtered benches (record-ref o filters)))
-     (if (= (case-count chosen) 0)
-         (let ()
-           (println "No benchmark's name contains any of the names given.")
-           0)
-         (run-and-report chosen o)))))
+     (cond
+       ((= (case-count chosen) 0)
+        (println "No benchmark's name contains any of the names given.")
+        0)
+       (else (run-and-report chosen o))))))
 
 ;; The cases numbered `wanted`, in `(list)`'s numbering, as selections: a
 ;; benchmark's chosen cases together, in the order the file has them.

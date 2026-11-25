@@ -274,16 +274,15 @@
 (defun (escape-number line)
   (let go ((at (string-cursor-start line))
            (n 0))
-    (if (string-cursor-end? line at)
-        line
-        (let ((c (string-cursor-ref line at)))
-          (cond
-            ((ascii-digit? c) (go (string-cursor-next line at) (+ n 1)))
-            ((and (<= n 9) (or (char=? c #\.) (char=? c (int->char 41))))
-             (str (substring line (string-cursor-start line) at)
-                  "\\"
-                  (substring line at (string-cursor-end line))))
-            (else line))))))
+    (cond
+      ((string-cursor-end? line at) line)
+      (:def c (string-cursor-ref line at))
+      ((ascii-digit? c) (go (string-cursor-next line at) (+ n 1)))
+      ((and (<= n 9) (or (char=? c #\.) (char=? c (int->char 41))))
+       (str (substring line (string-cursor-start line) at)
+            "\\"
+            (substring line at (string-cursor-end line))))
+      (else line))))
 
 ;; ---------------------------------------------------------------------------
 ;; Headings' ids
@@ -369,12 +368,11 @@
 
 (: flank-of (-> char Flank))
 (defun (flank-of c)
-  (if (char-whitespace? c)
-      AtSpace
-      (let ((category (symbol->string (char-general-category c))))
-        (if (or (string-starts-with? category "P") (string-starts-with? category "S"))
-            AtPunct
-            AtWord))))
+  (cond
+    ((char-whitespace? c) AtSpace)
+    (:def category (symbol->string (char-general-category c)))
+    ((or (string-starts-with? category "P") (string-starts-with? category "S")) AtPunct)
+    (else AtWord)))
 
 (: word? (-> Flank bool))
 (defun (word? f)
@@ -894,13 +892,13 @@
           (match state
             ((Tuple parts m) m)))
         (def mark
-          (if numbered
-              (if (= last ".")
-                  ")"
-                  ".")
-              (if (= last "-")
-                  "*"
-                  "-")))
+          (cond
+            (numbered
+             (if (= last ".")
+                 ")"
+                 "."))
+            ((= last "-") "*")
+            (else "-")))
         (emit state (list-md h numbered start items mark) mark))
        (_ (emit state (block-md h b) ""))))))
 

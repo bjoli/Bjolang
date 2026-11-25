@@ -77,25 +77,23 @@
 (: marker (-> string (Option (Tuple int bool))))
 (defun (marker s)
   (def start (string-cursor-start s))
-  (if (string-cursor-end? s start)
-      None
-      (let ((first (string-cursor-ref s start))
-            (after (string-cursor-next s start)))
-        (cond
-          ((or (char=? first #\-) (char=? first #\+) (char=? first #\*))
-           (cond
-             ((string-cursor-end? s after) (Some (Tuple 1 #f)))
-             ((space-at? s after) (Some (Tuple 2 #f)))
-             (else None)))
-          (else
-           (def (Tuple d c) (digits-from s start 0))
-           (cond
-             ((or (= d 0) (> d 9) (string-cursor-end? s c)) None)
-             ((not (or (char=? (string-cursor-ref s c) #\.) (char=? (string-cursor-ref s c) #\))))
-              None)
-             ((string-cursor-end? s (string-cursor-next s c)) (Some (Tuple (+ d 1) #t)))
-             ((space-at? s (string-cursor-next s c)) (Some (Tuple (+ d 2) #t)))
-             (else None)))))))
+  (cond
+    ((string-cursor-end? s start) None)
+    (:def first (string-cursor-ref s start))
+    (:def after (string-cursor-next s start))
+    ((or (char=? first #\-) (char=? first #\+) (char=? first #\*))
+     (cond
+       ((string-cursor-end? s after) (Some (Tuple 1 #f)))
+       ((space-at? s after) (Some (Tuple 2 #f)))
+       (else None)))
+    (else
+     (def (Tuple d c) (digits-from s start 0))
+     (cond
+       ((or (= d 0) (> d 9) (string-cursor-end? s c)) None)
+       ((not (or (char=? (string-cursor-ref s c) #\.) (char=? (string-cursor-ref s c) #\)))) None)
+       ((string-cursor-end? s (string-cursor-next s c)) (Some (Tuple (+ d 1) #t)))
+       ((space-at? s (string-cursor-next s c)) (Some (Tuple (+ d 2) #t)))
+       (else None)))))
 
 (: with-first-text (-> (Vec At) string (Vec At)))
 (defun (with-first-text line s)

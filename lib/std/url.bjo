@@ -338,21 +338,20 @@
 ;; Every byte from `i` to `end` is one `ok?` allows, or a `%XX`.
 (: (-> (Array byte) int int (-> int bool) string (Result string bool)))
 (defun (check-part bytes i end ok? part)
-  (if (>= i end)
-      (Ok #t)
-      (let ((b (byte-at bytes i)))
-        (cond
-          ((= b 37)
-           (if (and (< (+ i 2) end)
-                    (>= (hex-value (byte-at bytes (+ i 1))) 0)
-                    (>= (hex-value (byte-at bytes (+ i 2))) 0))
-               (check-part bytes (+ i 3) end ok? part)
-               (refuse-at i "a '%' begins an escape of two hex digits")))
-          ((ok? b) (check-part bytes (+ i 1) end ok? part))
-          (else
-           (refuse-at
-            i
-            (str (what-byte b) " is not allowed in the " part ", and has to be percent-encoded")))))))
+  (cond
+    ((>= i end) (Ok #t))
+    (:def b (byte-at bytes i))
+    ((= b 37)
+     (if (and (< (+ i 2) end)
+              (>= (hex-value (byte-at bytes (+ i 1))) 0)
+              (>= (hex-value (byte-at bytes (+ i 2))) 0))
+         (check-part bytes (+ i 3) end ok? part)
+         (refuse-at i "a '%' begins an escape of two hex digits")))
+    ((ok? b) (check-part bytes (+ i 1) end ok? part))
+    (else
+     (refuse-at
+      i
+      (str (what-byte b) " is not allowed in the " part ", and has to be percent-encoded")))))
 
 ;; Every byte from `i` to `end` is a hex digit.
 (: (-> (Array byte) int int bool))

@@ -128,18 +128,18 @@
 ;; The exact b-th root of n >= 0, or None.
 (: (-> bigint int (Option bigint)))
 (defun (exact-root n b)
-  (if (or (< n 2I) (= b 1))
-      (Some n)
-      (let* ((bb (int->bigint b))
-             (start (shift-left 1I (+ (/ (bit-count n) b) 1)))
-             (r (let go ((x start))
-                  (def y (/ (+ (* (- bb 1I) x) (/ n (expt x (- b 1)))) bb))
-                  (if (>= y x)
-                      x
-                      (go y)))))
-        (if (= (expt r b) n)
-            (Some r)
-            None))))
+  (cond
+    ((or (< n 2I) (= b 1)) (Some n))
+    (:def bb (int->bigint b))
+    (:def start (shift-left 1I (+ (/ (bit-count n) b) 1)))
+    (:def r
+          (let go ((x start))
+            (def y (/ (+ (* (- bb 1I) x) (/ n (expt x (- b 1)))) bb))
+            (if (>= y x)
+                x
+                (go y))))
+    ((= (expt r b) n) (Some r))
+    (else None)))
 
 ;; f^q, or None when the result is irrational, or q is negative and f zero.
 (: (-> Factor Rational (Option Factor)))
@@ -680,11 +680,11 @@
   (def (Ok (Tuple first rest)) (parse-unary ts) :propagate)
   (let go ((e first)
            (ts rest))
-    (if (starts-factor? ts)
-        (let ()
-          (def (Ok (Tuple r after)) (parse-power ts) :propagate)
-          (go (EMul e r) after))
-        (Ok (Tuple e ts)))))
+    (cond
+      ((starts-factor? ts)
+       (def (Ok (Tuple r after)) (parse-power ts) :propagate)
+       (go (EMul e r) after))
+      (else (Ok (Tuple e ts))))))
 
 (: (-> (List Token) (Result string (Tuple Expr (List Token)))))
 (defun (parse-unary ts)

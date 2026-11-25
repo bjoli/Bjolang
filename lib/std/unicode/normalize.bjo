@@ -101,14 +101,13 @@
 (defun (search table count x)
   (let go ((lo 0)
            (hi count))
-    (if (>= lo hi)
-        -1
-        (let* ((mid (shift-right (+ lo hi) 1))
-               (k (ro-span-ref table mid)))
-          (cond
-            ((< x k) (go lo mid))
-            ((> x k) (go (+ mid 1) hi))
-            (else mid))))))
+    (cond
+      ((>= lo hi) -1)
+      (:def mid (shift-right (+ lo hi) 1))
+      (:def k (ro-span-ref table mid))
+      ((< x k) (go lo mid))
+      ((> x k) (go (+ mid 1) hi))
+      (else mid))))
 
 ;; The pairs that compose, as `first * 0x110000 + second`, in order.
 (: (RoSpan long))
@@ -181,25 +180,24 @@
            (safe start)
            (last-class 0)
            (verdict 0))
-    (if (string-cursor-end? s c)
-        (Check (verdict verdict) (restart safe))
-        (let* ((r (string-cursor-ref+next s c))
-               (cp (char->int (fst r)))
-               (p (props-of cp))
-               (cls (class-of p))
-               (qc (quick-check p compat? compose?)))
-          (cond
-            ((and (> last-class cls) (not (= cls 0))) (Check (verdict 2) (restart safe)))
-            ((= qc 2) (Check (verdict 2) (restart safe)))
-            (else
-             (go (snd r)
-                 (if (and (= verdict 0) (= qc 0) (= cls 0))
-                     c
-                     safe)
-                 cls
-                 (if (= qc 1)
-                     1
-                     verdict))))))))
+    (cond
+      ((string-cursor-end? s c) (Check (verdict verdict) (restart safe)))
+      (:def r (string-cursor-ref+next s c))
+      (:def cp (char->int (fst r)))
+      (:def p (props-of cp))
+      (:def cls (class-of p))
+      (:def qc (quick-check p compat? compose?))
+      ((and (> last-class cls) (not (= cls 0))) (Check (verdict 2) (restart safe)))
+      ((= qc 2) (Check (verdict 2) (restart safe)))
+      (else
+       (go (snd r)
+           (if (and (= verdict 0) (= qc 0) (= cls 0))
+               c
+               safe)
+           cls
+           (if (= qc 1)
+               1
+               verdict))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Normalization
@@ -280,14 +278,13 @@
      (def key (+ (* (cast long first) 1114112L) (cast long second)))
      (let go ((lo 0)
               (hi composition-count))
-       (if (>= lo hi)
-           -1
-           (let* ((mid (shift-right (+ lo hi) 1))
-                  (k (ro-span-ref composition-keys mid)))
-             (cond
-               ((< key k) (go lo mid))
-               ((> key k) (go (+ mid 1) hi))
-               (else (ro-span-ref composites mid)))))))))
+       (cond
+         ((>= lo hi) -1)
+         (:def mid (shift-right (+ lo hi) 1))
+         (:def k (ro-span-ref composition-keys mid))
+         ((< key k) (go lo mid))
+         ((> key k) (go (+ mid 1) hi))
+         (else (ro-span-ref composites mid)))))))
 
 ;; Composes the decomposed, ordered code points of `buf` in place: the
 ;; canonical composition algorithm of UAX #15. A character composes with the
@@ -307,29 +304,29 @@
              (last-class (if (= first-class 0)
                              0
                              256)))
-      (if (= i n)
-          (record-set! buf (size out))
-          (let* ((cp (array-ref data i))
-                 (p (props-of cp))
-                 (cls (class-of p))
-                 ;; Only a character whose NFC_QC is Maybe can be the second
-                 ;; of a composite.
-                 (made (if (and (= (bitwise-and (shift-right p 10) 3) 1)
-                                (or (< last-class cls) (= last-class 0)))
-                           (composite (array-ref data starter) cp)
-                           -1)))
-            (if (>= made 0)
-                (begin
-                  (array-set! data starter made)
-                  (go (+ i 1) out starter last-class))
-                (begin
-                  (array-set! data out cp)
-                  (go (+ i 1)
-                      (+ out 1)
-                      (if (= cls 0)
-                          out
-                          starter)
-                      cls))))))))
+      (cond
+        ((= i n) (record-set! buf (size out)))
+        (:def cp (array-ref data i))
+        (:def p (props-of cp))
+        (:def cls (class-of p))
+        ;; Only a character whose NFC_QC is Maybe can be the second
+        ;; of a composite.
+        (:def made
+              (if (and (= (bitwise-and (shift-right p 10) 3) 1)
+                       (or (< last-class cls) (= last-class 0)))
+                  (composite (array-ref data starter) cp)
+                  -1))
+        ((>= made 0)
+         (array-set! data starter made)
+         (go (+ i 1) out starter last-class))
+        (else
+         (array-set! data out cp)
+         (go (+ i 1)
+             (+ out 1)
+             (if (= cls 0)
+                 out
+                 starter)
+             cls))))))
 
 ;; The normal form of `s`, whose part before `from` is already normal.
 (: (-> string StringCursor bool bool string))

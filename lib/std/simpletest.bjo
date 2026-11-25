@@ -121,26 +121,27 @@
 
 (: (-> Syntax Syntax bool (List Syntax) Syntax))
 (defun (test-expansion name ms check body)
-  (let ((core (if check
-                  #'(let ()
-                      ,@body
-                      ,(leak-check name)
-                      unit)
-                  #'(let ()
-                      ,@body
-                      unit))))
-    #'(let ((holder (make-box None)))
-        (match (try
-                 (with-deadline ,ms
-                   (let ()
-                     (box-set! holder (Some (current-scope)))
-                     ,core))
-                 #:catch (System.Exception))
-          ((Ok _)
-           (when (overran? holder)
-             (fail (string-append ,name
-                                  " ran past its deadline: something it started never finished"))))
-          ((Err e) (fail (string-append ,name (string-append " did not finish: " (.-Message e)))))))))
+  (def core
+    (if check
+        #'(let ()
+            ,@body
+            ,(leak-check name)
+            unit)
+        #'(let ()
+            ,@body
+            unit)))
+  #'(let ((holder (make-box None)))
+      (match (try
+               (with-deadline ,ms
+                 (let ()
+                   (box-set! holder (Some (current-scope)))
+                   ,core))
+               #:catch (System.Exception))
+        ((Ok _)
+         (when (overran? holder)
+           (fail (string-append ,name
+                                " ran past its deadline: something it started never finished"))))
+        ((Err e) (fail (string-append ,name (string-append " did not finish: " (.-Message e))))))))
 
 (def/macro (with-test form inject compare)
   (syntax-match form
@@ -447,9 +448,9 @@
           (def s
             (match (Tuple mode (fake-bytes-at fs path))
               ((Tuple Append (Some bytes))
-               (let ((m (fake-memory-stream bytes)))
-                 (stream-position! (cast ClrStream m) (.-Length m))
-                 m))
+               (def m (fake-memory-stream bytes))
+               (stream-position! (cast ClrStream m) (.-Length m))
+               m)
               (_ (MemoryStream.))))
           (fake-update! fs (map-set (fake-entries fs) path (FakeWritten s)))
           (fake-stamp! fs path)

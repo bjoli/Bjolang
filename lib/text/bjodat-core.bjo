@@ -526,14 +526,14 @@
                                      (simd-or (simd-eq v (simd256-splat 9uy))
                                               (simd-eq v (simd256-splat 13uy))))))
           (def nls (simd-mask-bits nl))
-          (if (= spaces -1)
-              (let ()
-                (def (Tuple r c) (after-space nls 32 row col))
-                (go (+ i 32) r c))
-              (let ()
-                (def t (trailing-zeros (bitwise-not spaces)))
-                (def (Tuple r c) (after-space (bitwise-and nls (- (shift-left 1 t) 1)) t row col))
-                (Tuple (+ i t) r c #t)))))))
+          (cond
+            ((= spaces -1)
+             (def (Tuple r c) (after-space nls 32 row col))
+             (go (+ i 32) r c))
+            (else
+             (def t (trailing-zeros (bitwise-not spaces)))
+             (def (Tuple r c) (after-space (bitwise-and nls (- (shift-left 1 t) 1)) t row col))
+             (Tuple (+ i t) r c #t)))))))
 
 (: (-> (Array byte) int int int int (Tuple int int int bool)))
 (defun (scan-space/128 b start limit row col)
@@ -550,14 +550,14 @@
                                      (simd-or (simd-eq v (simd128-splat 9uy))
                                               (simd-eq v (simd128-splat 13uy))))))
           (def nls (simd-mask-bits nl))
-          (if (= spaces 65535)
-              (let ()
-                (def (Tuple r c) (after-space nls 16 row col))
-                (go (+ i 16) r c))
-              (let ()
-                (def t (trailing-zeros (bitwise-xor spaces 65535)))
-                (def (Tuple r c) (after-space (bitwise-and nls (- (shift-left 1 t) 1)) t row col))
-                (Tuple (+ i t) r c #t)))))))
+          (cond
+            ((= spaces 65535)
+             (def (Tuple r c) (after-space nls 16 row col))
+             (go (+ i 16) r c))
+            (else
+             (def t (trailing-zeros (bitwise-xor spaces 65535)))
+             (def (Tuple r c) (after-space (bitwise-and nls (- (shift-left 1 t) 1)) t row col))
+             (Tuple (+ i t) r c #t)))))))
 
 ;; White space a chunk at a time: the chunk is scanned with `scan-space` and
 ;; then a byte at a time, and the reader is moved once for it. A chunk that
@@ -572,13 +572,12 @@
     (let go ((i fast-end)
              (row fast-row)
              (col fast-col))
-      (if (or stopped (>= i limit))
-          (Tuple i row col)
-          (let ((c (cast int (array-ref b i))))
-            (cond
-              ((= c 10) (go (+ i 1) (+ row 1) 1))
-              ((or (= c 32) (= c 9) (= c 13)) (go (+ i 1) row (+ col 1)))
-              (else (Tuple i row col)))))))
+      (cond
+        ((or stopped (>= i limit)) (Tuple i row col))
+        (:def c (cast int (array-ref b i)))
+        ((= c 10) (go (+ i 1) (+ row 1) 1))
+        ((or (= c 32) (= c 9) (= c 13)) (go (+ i 1) row (+ col 1)))
+        (else (Tuple i row col)))))
   (record-set! rd (next end) (row row) (col col))
   (when (and (>= end limit) (ensure! rd 1))
     (skip-space-run! rd)))
@@ -1028,14 +1027,13 @@
         (let go ((i fast-end)
                  (chars fast-chars)
                  (high fast-high))
-          (if (>= i limit)
-              (Tuple i chars high)
-              (let ((c (cast int (array-ref b i))))
-                (cond
-                  ((or (= c 34) (= c 92) (= c 10)) (Tuple i chars high))
-                  ((< c 128) (go (+ i 1) (+ chars 1) high))
-                  ((continuation? c) (go (+ i 1) chars #t))
-                  (else (go (+ i 1) (+ chars 1) #t))))))))
+          (cond
+            ((>= i limit) (Tuple i chars high))
+            (:def c (cast int (array-ref b i)))
+            ((or (= c 34) (= c 92) (= c 10)) (Tuple i chars high))
+            ((< c 128) (go (+ i 1) (+ chars 1) high))
+            ((continuation? c) (go (+ i 1) chars #t))
+            (else (go (+ i 1) (+ chars 1) #t))))))
   (cond
     ((and high (not (bytes-utf-8? b start end))) (take-run/checked! rd sb))
     ((> end start)
@@ -1054,17 +1052,16 @@
   (def (Tuple end chars)
     (let go ((i start)
              (chars 0))
-      (if (>= i limit)
-          (Tuple i chars)
-          (let ((c (cast int (array-ref b i))))
-            (cond
-              ((or (= c 34) (= c 92) (= c 10)) (Tuple i chars))
-              ((< c 128) (go (+ i 1) (+ chars 1)))
-              (else
-               (let ((n (sequence-length-at b i limit)))
-                 (if (= n 0)
-                     (Tuple i chars)
-                     (go (+ i n) (+ chars 1))))))))))
+      (cond
+        ((>= i limit) (Tuple i chars))
+        (:def c (cast int (array-ref b i)))
+        ((or (= c 34) (= c 92) (= c 10)) (Tuple i chars))
+        ((< c 128) (go (+ i 1) (+ chars 1)))
+        (else
+         (def n (sequence-length-at b i limit))
+         (if (= n 0)
+             (Tuple i chars)
+             (go (+ i n) (+ chars 1)))))))
   (when (> end start)
     (stringbuilder-add-bytes! sb b start end)
     (record-set! rd (next end) (col (+ (record-ref rd col) chars)))))
@@ -1137,34 +1134,33 @@
   (step! rd)
   (def sb (buffer rd))
   (let go ((n 0))
-    (if (and (not (at-end? rd)) (>= (radix-digit radix (peek rd)) 0))
-        (begin
-          (stringbuilder-add-unit! sb (held-code rd))
-          (step! rd)
-          (go (+ n 1)))
-        (cond
-          ((= n 0)
-           (Err (at rd (str "this number has no digits after its radix, and there is " (found rd)))))
-          ((and (= radix 2) (digit-code? (held-code rd)))
-           (Err (at rd (str "a binary number has the digits 0 and 1, and this is " (found rd)))))
-          (else
-           (def unsigned? (ulong-suffix? rd))
-           (match (try
-                    (clr-radix-ulong (stringbuilder->string sb) radix)
-                    #:catch (System.OverflowException))
-             ((Err _)
-              (Err (at rd
-                       (if unsigned?
-                           "this number does not fit in a ulong"
-                           "this number does not fit in a long"))))
-             ((Ok v)
-              (cond
-                ((and unsigned? neg) (Err (at rd "a ulong is not negative")))
-                (unsigned? (Ok (BjoULong v)))
-                ((and neg (= v long-min-magnitude)) (Ok (BjoInt (- -9223372036854775807L 1L))))
-                ((> v long-max-magnitude) (Err (at rd "this number does not fit in a long")))
-                (neg (Ok (BjoInt (- 0L (cast long v)))))
-                (else (Ok (BjoInt (cast long v))))))))))))
+    (cond
+      ((and (not (at-end? rd)) (>= (radix-digit radix (peek rd)) 0))
+       (stringbuilder-add-unit! sb (held-code rd))
+       (step! rd)
+       (go (+ n 1)))
+      ((= n 0)
+       (Err (at rd (str "this number has no digits after its radix, and there is " (found rd)))))
+      ((and (= radix 2) (digit-code? (held-code rd)))
+       (Err (at rd (str "a binary number has the digits 0 and 1, and this is " (found rd)))))
+      (else
+       (def unsigned? (ulong-suffix? rd))
+       (match (try
+                (clr-radix-ulong (stringbuilder->string sb) radix)
+                #:catch (System.OverflowException))
+         ((Err _)
+          (Err (at rd
+                   (if unsigned?
+                       "this number does not fit in a ulong"
+                       "this number does not fit in a long"))))
+         ((Ok v)
+          (cond
+            ((and unsigned? neg) (Err (at rd "a ulong is not negative")))
+            (unsigned? (Ok (BjoULong v)))
+            ((and neg (= v long-min-magnitude)) (Ok (BjoInt (- -9223372036854775807L 1L))))
+            ((> v long-max-magnitude) (Err (at rd "this number does not fit in a long")))
+            (neg (Ok (BjoInt (- 0L (cast long v)))))
+            (else (Ok (BjoInt (cast long v)))))))))))
 
 ;; Steps over `UL` when it is held. A `U` without the `L` is refused by what
 ;; reads next, as any other character after a number is.

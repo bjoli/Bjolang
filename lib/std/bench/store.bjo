@@ -430,44 +430,43 @@
 (: (-> PairedCase Paired))
 (defun (paired-one c)
   (def pairs (vec-length (record-ref c a)))
-  (if (= pairs 1)
-      ;; One process a side: the rounds are the pairs. The Wilcoxon test on
-      ;; each round's difference of log times, and a bootstrap that draws
-      ;; whole rounds.
-      (let ()
-        (def a (vec-ref (record-ref c a) 0))
-        (def b (vec-ref (record-ref c b) 0))
-        (def n (min (vec-length a) (vec-length b)))
-        (def was (median a))
-        (def now (median b))
-        (def (Tuple lo hi) (bootstrap-ratio/paired a b))
-        (Paired (was was)
-                (now now)
-                (change (if (> was 0.0)
-                            (- (/ now was) 1.0)
-                            0.0))
-                (lo (- lo 1.0))
-                (hi (- hi 1.0))
-                (p (wilcoxon-p {vecing (log-ratio (vec-ref a i) (vec-ref b i)) (:for i (range 0 n))}))
-                (spread -1.0)))
-      ;; Several process pairs: one ratio of medians each, and the t-test
-      ;; and t-interval on their logs, which a difference between processes
-      ;; is in.
-      (let ()
-        (def logs
-          {vecing (log-ratio (median (vec-ref (record-ref c a) j))
-                             (median (vec-ref (record-ref c b) j)))
-                  (:for j (range 0 pairs))})
-        (def m (mean logs))
-        (def sd (std-dev logs))
-        (def half (* (t-critical 0.05 (- pairs 1)) (/ sd (sqrt (cast System.Double pairs)))))
-        (Paired (was (median (vec-map median (record-ref c a))))
-                (now (median (vec-map median (record-ref c b))))
-                (change (- (exp m) 1.0))
-                (lo (- (exp (- m half)) 1.0))
-                (hi (- (exp (+ m half)) 1.0))
-                (p (t-test-p logs))
-                (spread sd)))))
+  (cond
+    ((= pairs 1)
+     ;; One process a side: the rounds are the pairs. The Wilcoxon test on
+     ;; each round's difference of log times, and a bootstrap that draws
+     ;; whole rounds.
+     (def a (vec-ref (record-ref c a) 0))
+     (def b (vec-ref (record-ref c b) 0))
+     (def n (min (vec-length a) (vec-length b)))
+     (def was (median a))
+     (def now (median b))
+     (def (Tuple lo hi) (bootstrap-ratio/paired a b))
+     (Paired (was was)
+             (now now)
+             (change (if (> was 0.0)
+                         (- (/ now was) 1.0)
+                         0.0))
+             (lo (- lo 1.0))
+             (hi (- hi 1.0))
+             (p (wilcoxon-p {vecing (log-ratio (vec-ref a i) (vec-ref b i)) (:for i (range 0 n))}))
+             (spread -1.0)))
+    ;; Several process pairs: one ratio of medians each, and the t-test
+    ;; and t-interval on their logs, which a difference between processes
+    ;; is in.
+    (else
+     (def logs
+       {vecing (log-ratio (median (vec-ref (record-ref c a) j)) (median (vec-ref (record-ref c b) j)))
+               (:for j (range 0 pairs))})
+     (def m (mean logs))
+     (def sd (std-dev logs))
+     (def half (* (t-critical 0.05 (- pairs 1)) (/ sd (sqrt (cast System.Double pairs)))))
+     (Paired (was (median (vec-map median (record-ref c a))))
+             (now (median (vec-map median (record-ref c b))))
+             (change (- (exp m) 1.0))
+             (lo (- (exp (- m half)) 1.0))
+             (hi (- (exp (+ m half)) 1.0))
+             (p (t-test-p logs))
+             (spread sd)))))
 
 ;; An A/B run's cases compared, A as `was` and B as `now`, the p-values
 ;; corrected by Holm's method. `only-a` and `only-b` are the cases one side

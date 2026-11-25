@@ -120,10 +120,10 @@
                 (with-scope
                   (failures-into failures body)
                   (unless open-ok
-                    (let ((left (scope-owned-count (current-scope))))
-                      (unless (= left 0)
-                        (box-set! failures
-                                  (cons #"  it left ${left} resource(s) open" (box-ref failures)))))))
+                    (def left (scope-owned-count (current-scope)))
+                    (unless (= left 0)
+                      (box-set! failures
+                                (cons #"  it left ${left} resource(s) open" (box-ref failures))))))
                 #:catch (System.Exception))
          ((Err e)
           (if (choices-discarded? c)
@@ -238,11 +238,10 @@
 (defun (delete-blocks! s k)
   (let go ((i 0)
            (any #f))
-    (if (> (+ i k) (vec-length (record-ref s best)))
-        any
-        (if (try! s (vec-without (record-ref s best) i k))
-            (go i #t)
-            (go (+ i 1) any)))))
+    (cond
+      ((> (+ i k) (vec-length (record-ref s best))) any)
+      ((try! s (vec-without (record-ref s best) i k)) (go i #t))
+      (else (go (+ i 1) any)))))
 
 ;; Sets blocks of k draws to 0, from every place.
 (: (-> Shrink int bool))
@@ -261,26 +260,24 @@
 (defun (minimize-draws! s)
   (let go ((i 0)
            (any #f))
-    (if (>= i (vec-length (record-ref s best)))
-        any
-        (let ((v (vec-ref (record-ref s best) i)))
-          (cond
-            ((= v 0UL) (go (+ i 1) any))
-            ((try! s (vec-with (record-ref s best) i 0UL)) (go (+ i 1) #t))
-            (else (go (+ i 1) (or (search-down! s i 0UL v) any))))))))
+    (cond
+      ((>= i (vec-length (record-ref s best))) any)
+      (:def v (vec-ref (record-ref s best) i))
+      ((= v 0UL) (go (+ i 1) any))
+      ((try! s (vec-with (record-ref s best) i 0UL)) (go (+ i 1) #t))
+      (else (go (+ i 1) (or (search-down! s i 0UL v) any))))))
 
 ;; Draw i fails at `hi` and passed at `lo`. Tries the middle until the two
 ;; meet, and answers whether it kept a smaller value.
 (: (-> Shrink int ulong ulong bool))
 (defun (search-down! s i lo hi)
-  (if (or (<= (- hi lo) 1UL) (>= i (vec-length (record-ref s best))))
-      #f
-      (let ((mid (+ lo (/ (- hi lo) 2UL))))
-        (if (try! s (vec-with (record-ref s best) i mid))
-            (begin
-              (ignore (search-down! s i lo mid))
-              #t)
-            (search-down! s i mid hi)))))
+  (cond
+    ((or (<= (- hi lo) 1UL) (>= i (vec-length (record-ref s best)))) #f)
+    (:def mid (+ lo (/ (- hi lo) 2UL)))
+    ((try! s (vec-with (record-ref s best) i mid))
+     (ignore (search-down! s i lo mid))
+     #t)
+    (else (search-down! s i mid hi))))
 
 ;; The draws near i that a step pairs with draw i: up to 8 on each side.
 (: (-> int int (List int)))
@@ -302,19 +299,20 @@
   (let go ((i 0)
            (any #f))
     (def best (record-ref s best))
-    (if (> (+ i k) (vec-length best))
-        any
-        (let* ((removed (loop (:for j (range i (+ i k)))
-                              (:acc t (summing (vec-ref best j)))))
-               (rest (vec-without best i k))
-               (kept (any? (fun (j) (try! s (vec-with rest j (+ (vec-ref rest j) removed))))
-                           (neighbours (if (< i (vec-length rest))
-                                           i
-                                           (- (vec-length rest) 1))
-                                       (vec-length rest)))))
-          (if kept
-              (go i #t)
-              (go (+ i 1) any))))))
+    (cond
+      ((> (+ i k) (vec-length best)) any)
+      (:def removed
+            (loop (:for j (range i (+ i k)))
+                  (:acc t (summing (vec-ref best j)))))
+      (:def rest (vec-without best i k))
+      (:def kept
+            (any? (fun (j) (try! s (vec-with rest j (+ (vec-ref rest j) removed))))
+                  (neighbours (if (< i (vec-length rest))
+                                  i
+                                  (- (vec-length rest) 1))
+                              (vec-length rest))))
+      (kept (go i #t))
+      (else (go (+ i 1) any)))))
 
 ;; Moves value from a draw to a later one near it: the earlier draw gets
 ;; smaller, which makes the vector smaller, and the later one makes up for
@@ -345,12 +343,11 @@
 (defun (sort-pairs! s)
   (let go ((i 0)
            (any #f))
-    (if (>= (+ i 1) (vec-length (record-ref s best)))
-        any
-        (let ((b (record-ref s best)))
-          (if (and (> (vec-ref b i) (vec-ref b (+ i 1))) (try! s (vec-swapped b i)))
-              (go (+ i 1) #t)
-              (go (+ i 1) any))))))
+    (cond
+      ((>= (+ i 1) (vec-length (record-ref s best))) any)
+      (:def b (record-ref s best))
+      ((and (> (vec-ref b i) (vec-ref b (+ i 1))) (try! s (vec-swapped b i))) (go (+ i 1) #t))
+      (else (go (+ i 1) any)))))
 
 ;; Shrinks until a whole round of the steps changes nothing, or the shrink is
 ;; out of replays or time.
@@ -884,8 +881,8 @@
   (match type
     ((SList items) (any? type-variable-in? items))
     (_
-     (let ((s (syntax->string type)))
-       (or (string-starts-with? s "%") (string-starts-with? s "'"))))))
+     (def s (syntax->string type))
+     (or (string-starts-with? s "%") (string-starts-with? s "'")))))
 
 (: (-> Syntax Syntax))
 (defun (binding-name b)

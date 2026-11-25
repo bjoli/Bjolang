@@ -119,31 +119,30 @@
                (acc 0)
                (digits 0)
                (out Nil))
-        (if (string-cursor-end? s c)
-            (if (= digits 0)
-                (Err (version-shape s))
-                (finish-version (Cons acc out) s))
-            (let ((ch (string-cursor-ref s c))
-                  (next (string-cursor-next s c)))
-              (cond
-                ((and (char>=? ch #\0) (char<=? ch #\9))
-                 (go next (+ (* acc 10) (- (char->int ch) 48)) (+ digits 1) out))
-                ((char=? ch #\.)
-                 (if (= digits 0)
-                     (Err (version-shape s))
-                     (go next 0 0 (Cons acc out))))
-                (else (Err (version-shape s)))))))))
+        (cond
+          ((string-cursor-end? s c)
+           (if (= digits 0)
+               (Err (version-shape s))
+               (finish-version (Cons acc out) s)))
+          (:def ch (string-cursor-ref s c))
+          (:def next (string-cursor-next s c))
+          ((and (char>=? ch #\0) (char<=? ch #\9))
+           (go next (+ (* acc 10) (- (char->int ch) 48)) (+ digits 1) out))
+          ((char=? ch #\.)
+           (if (= digits 0)
+               (Err (version-shape s))
+               (go next 0 0 (Cons acc out))))
+          (else (Err (version-shape s)))))))
 
 ;; Negative when `a` is the older, zero when they are the same version.
 (: (-> Version Version int))
 (defun (version-compare a b)
   (def d (- (record-ref a major) (record-ref b major)))
-  (if (not (= d 0))
-      d
-      (let ((e (- (record-ref a minor) (record-ref b minor))))
-        (if (not (= e 0))
-            e
-            (- (record-ref a patch) (record-ref b patch))))))
+  (cond
+    ((not (= d 0)) d)
+    (:def e (- (record-ref a minor) (record-ref b minor)))
+    ((not (= e 0)) e)
+    (else (- (record-ref a patch) (record-ref b patch)))))
 
 ;; A version is written as a string, because it is one value and not a record.
 (impl (->bjodat Version)
@@ -196,27 +195,27 @@
   (defun (bjodat-> v)
     (match v
       ((BjoList (Cons (BjoSym h) args))
-       (let ((tag (symbol->string h)))
-         (cond
-           ((= tag "version-at-least")
-            (match (one-version args tag)
-              ((Err e) (Err e))
-              ((Ok a) (Ok (AtLeast a)))))
-           ((= tag "version-at-most")
-            (match (one-version args tag)
-              ((Err e) (Err e))
-              ((Ok a) (Ok (AtMost a)))))
-           ((= tag "version-between")
-            (match args
-              ((Cons lo (Cons hi Nil))
-               (match (bjodat-> lo)
-                 ((Err e) (Err e))
-                 ((Ok l)
-                  (match (bjodat-> hi)
-                    ((Err e) (Err e))
-                    ((Ok h2) (Ok (Between l h2)))))))
-              (_ (Err "(version-between ...) takes two versions"))))
-           (else (Err (str "(" tag " ...) is not a version constraint: " req-shape))))))
+       (def tag (symbol->string h))
+       (cond
+         ((= tag "version-at-least")
+          (match (one-version args tag)
+            ((Err e) (Err e))
+            ((Ok a) (Ok (AtLeast a)))))
+         ((= tag "version-at-most")
+          (match (one-version args tag)
+            ((Err e) (Err e))
+            ((Ok a) (Ok (AtMost a)))))
+         ((= tag "version-between")
+          (match args
+            ((Cons lo (Cons hi Nil))
+             (match (bjodat-> lo)
+               ((Err e) (Err e))
+               ((Ok l)
+                (match (bjodat-> hi)
+                  ((Err e) (Err e))
+                  ((Ok h2) (Ok (Between l h2)))))))
+            (_ (Err "(version-between ...) takes two versions"))))
+         (else (Err (str "(" tag " ...) is not a version constraint: " req-shape)))))
       (_ (Err req-shape)))))
 
 (impl (->bjodat VersionReq)
@@ -260,25 +259,25 @@
   (defun (bjodat-> v)
     (match v
       ((BjoList (Cons (BjoSym h) _))
-       (let ((tag (symbol->string h)))
-         (cond
-           ((= tag "git")
-            (match (bjodat->Git v)
-              ((Err e) (Err e))
-              ((Ok g) (Ok (FromGit g)))))
-           ((= tag "path")
-            (match (bjodat->Local v)
-              ((Err e) (Err e))
-              ((Ok p) (Ok (FromPath p)))))
-           ((= tag "registry")
-            (match (bjodat->Registry v)
-              ((Err e) (Err e))
-              ((Ok r) (Ok (FromRegistry r)))))
-           (else
-            (Err (str "("
-                      tag
-                      " ...) is not a source: write (git (url \"...\")), "
-                      "(path (dir \"...\")) or (registry)"))))))
+       (def tag (symbol->string h))
+       (cond
+         ((= tag "git")
+          (match (bjodat->Git v)
+            ((Err e) (Err e))
+            ((Ok g) (Ok (FromGit g)))))
+         ((= tag "path")
+          (match (bjodat->Local v)
+            ((Err e) (Err e))
+            ((Ok p) (Ok (FromPath p)))))
+         ((= tag "registry")
+          (match (bjodat->Registry v)
+            ((Err e) (Err e))
+            ((Ok r) (Ok (FromRegistry r)))))
+         (else
+          (Err (str "("
+                    tag
+                    " ...) is not a source: write (git (url \"...\")), "
+                    "(path (dir \"...\")) or (registry)")))))
       (_ (Err "expected a source, such as (git (url \"https://...\"))")))))
 
 (impl (->bjodat Source)
@@ -371,23 +370,22 @@
   (defun (bjodat-> v)
     (match v
       ((BjoList (Cons (BjoSym h) (Cons value Nil)))
-       (let ((name (symbol->string h)))
-         (cond
-           ((any? #(= & name) flag-settings)
-            (match value
-              ((BjoBool b) (Ok (RuntimeSetting (name name) (value (if b "true" "false")))))
-              (_ (Err (str "(" name " ...) is #t or #f")))))
-           ((any? #(= & name) count-settings)
-            (match value
-              ((BjoInt n) #:when (>= n 1L) (Ok (RuntimeSetting (name name) (value (long->string n)))))
-              (_ (Err (str "(" name " ...) is a whole number from 1")))))
-           ((any? #(= & name) millis-settings)
-            (match value
-              ((BjoInt n) #:when (>= n 0L) (Ok (RuntimeSetting (name name) (value (long->string n)))))
-              (_ (Err (str "(" name " ...) is a number of milliseconds from 0")))))
-           (else
-            (Err
-             (str "(" name " ...) is not a runtime setting. The settings are: " known-settings))))))
+       (def name (symbol->string h))
+       (cond
+         ((any? #(= & name) flag-settings)
+          (match value
+            ((BjoBool b) (Ok (RuntimeSetting (name name) (value (if b "true" "false")))))
+            (_ (Err (str "(" name " ...) is #t or #f")))))
+         ((any? #(= & name) count-settings)
+          (match value
+            ((BjoInt n) #:when (>= n 1L) (Ok (RuntimeSetting (name name) (value (long->string n)))))
+            (_ (Err (str "(" name " ...) is a whole number from 1")))))
+         ((any? #(= & name) millis-settings)
+          (match value
+            ((BjoInt n) #:when (>= n 0L) (Ok (RuntimeSetting (name name) (value (long->string n)))))
+            (_ (Err (str "(" name " ...) is a number of milliseconds from 0")))))
+         (else
+          (Err (str "(" name " ...) is not a runtime setting. The settings are: " known-settings)))))
       (_ (Err "a runtime setting is (name value), such as (gc-server #t)")))))
 
 (impl (->bjodat RuntimeSetting)

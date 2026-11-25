@@ -212,12 +212,11 @@
   (def cs (string->vec text))
   (let go ((i 0)
            (best 0))
-    (if (>= i (vec-length cs))
-        best
-        (let ((q (quote-run cs i)))
-          (if (> q 0)
-              (go (+ i q) (max q best))
-              (go (+ i 1) best))))))
+    (cond
+      ((>= i (vec-length cs)) best)
+      (:def q (quote-run cs i))
+      ((> q 0) (go (+ i q) (max q best)))
+      (else (go (+ i 1) best)))))
 
 (: (-> string int string))
 (defun (repeat-string s n)
@@ -241,19 +240,19 @@
           (not (string-contains? (vec-ref lines 0) "\t")))
      (str "\"" (vec-ref lines 0) "\""))
     (else
-     (let* ((q (repeat-string "\"" (max 3 (+ 1 (longest-quote-run text)))))
-            (pad (repeat-string " " margin)))
-       (str q
-            "\n"
-            (string-join (vec-map (fun (l)
-                                    (if (string-empty? l)
-                                        ""
-                                        (str pad l)))
-                                  lines)
-                         "\n")
-            "\n"
-            pad
-            q)))))
+     (def q (repeat-string "\"" (max 3 (+ 1 (longest-quote-run text)))))
+     (def pad (repeat-string " " margin))
+     (str q
+          "\n"
+          (string-join (vec-map (fun (l)
+                                  (if (string-empty? l)
+                                      ""
+                                      (str pad l)))
+                                lines)
+                       "\n")
+          "\n"
+          pad
+          q))))
 
 ;; What the string literal from i to end holds: a raw string without its
 ;; margin, or an escaped string with its escapes undone.

@@ -39,20 +39,21 @@
 (defbjo (ring-node in out is-last trips)
   (let go ()
     (def msg (sync (chan-recv in)))
-    (if (= msg -1)
-        (if is-last
-            unit
-            (sync (chan-send out -1)))
-        (let ((m (if is-last
-                     (+ msg 1)
-                     msg)))
-          (if (and is-last (>= m trips))
-              (let ()
-                (sync (chan-send out -1))
-                (go))
-              (let ()
-                (sync (chan-send out m))
-                (go)))))))
+    (cond
+      ((= msg -1)
+       (if is-last
+           unit
+           (sync (chan-send out -1))))
+      (:def m
+            (if is-last
+                (+ msg 1)
+                msg))
+      ((and is-last (>= m trips))
+       (sync (chan-send out -1))
+       (go))
+      (else
+       (sync (chan-send out m))
+       (go)))))
 
 (: (-bjo-> (Chan int) int void))
 (defbjo (send-one ch v)
@@ -62,20 +63,21 @@
 (defbjo (ring-node/put in out is-last trips)
   (let go ()
     (def msg (chan-get in))
-    (if (= msg -1)
-        (if is-last
-            unit
-            (chan-put out -1))
-        (let ((m (if is-last
-                     (+ msg 1)
-                     msg)))
-          (if (and is-last (>= m trips))
-              (let ()
-                (chan-put out -1)
-                (go))
-              (let ()
-                (chan-put out m)
-                (go)))))))
+    (cond
+      ((= msg -1)
+       (if is-last
+           unit
+           (chan-put out -1)))
+      (:def m
+            (if is-last
+                (+ msg 1)
+                msg))
+      ((and is-last (>= m trips))
+       (chan-put out -1)
+       (go))
+      (else
+       (chan-put out m)
+       (go)))))
 
 (: (-bjo-> (Chan int) int void))
 (defbjo (send-one/put ch v)
@@ -220,11 +222,11 @@
     (loop (:for i (range 0 c))
           (:acc v (vecing (bjo (cruncher crunch-work))))))
   (def ring-ns
-    (if ring?
-        (let ()
-          (run-rings 1 channels nodes)
-          (/ (ns-since t0) 1000000L))
-        0L))
+    (cond
+      (ring?
+       (run-rings 1 channels nodes)
+       (/ (ns-since t0) 1000000L))
+      (else 0L)))
   (loop (:for i (range 0 c))
         (:do (ignore (sync (promise-join (vec-ref crunchers i))))))
   (def crunch-ms

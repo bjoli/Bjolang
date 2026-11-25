@@ -661,11 +661,11 @@
         (Err (failure-at st items))
         (let ()
           (def (Tuple c next) (string-cursor-ref+next (record-ref st text) (record-ref st pos)))
-          (if (char-in? c s)
-              (let ()
-                (advance! st c next)
-                (Ok c))
-              (Err (failure-at st items)))))))
+          (cond
+            ((char-in? c s)
+             (advance! st c next)
+             (Ok c))
+            (else (Err (failure-at st items))))))))
 
 (: none-of (-> string (Parser char)))
 (defun (none-of s)
@@ -810,11 +810,11 @@
           (Ok unit)
           (let ()
             (def (Tuple c next) (string-cursor-ref+next text (record-ref st pos)))
-            (if (or (char=? c #\space) (char=? c #\tab) (char=? c #\newline) (char=? c #\return))
-                (let ()
-                  (advance! st c next)
-                  (go))
-                (Ok unit)))))))
+            (cond
+              ((or (char=? c #\space) (char=? c #\tab) (char=? c #\newline) (char=? c #\return))
+               (advance! st c next)
+               (go))
+              (else (Ok unit))))))))
 
 (: spaces1-items ErrorItems)
 (def spaces1-items (expected-items "whitespace"))
@@ -1057,11 +1057,11 @@
         n
         (let ()
           (def (Tuple c next) (string-cursor-ref+next text (record-ref st pos)))
-          (if (ascii-digit? c)
-              (let ()
-                (advance! st c next)
-                (go (+ n 1)))
-              n)))))
+          (cond
+            ((ascii-digit? c)
+             (advance! st c next)
+             (go (+ n 1)))
+            (else n))))))
 
 (: pint-items ErrorItems)
 (def pint-items (expected-items "an integer"))

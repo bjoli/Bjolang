@@ -729,12 +729,13 @@
 ;; on a full pipe never exits, so waiting first would wait forever.
 (: (-> Proc (Result Exception string)))
 (defbjo (collecting p)
-  (let ((text (match (proc-output p)
-                ((Some out) (read-rest out))
-                (None ""))))
-    (match (waiting p)
-      ((Err e) (Err e))
-      ((Ok code) (Ok text)))))
+  (def text
+    (match (proc-output p)
+      ((Some out) (read-rest out))
+      (None "")))
+  (match (waiting p)
+    ((Err e) (Err e))
+    ((Ok code) (Ok text))))
 
 ;; The output and the exit code, together.
 ;;
@@ -754,12 +755,13 @@
 
 (: (-> Proc (Result Exception (Tuple int string))))
 (defbjo (collecting/code p)
-  (let ((text (match (proc-output p)
-                ((Some out) (read-rest out))
-                (None ""))))
-    (match (waiting p)
-      ((Err e) (Err e))
-      ((Ok code) (Ok (Tuple code text))))))
+  (def text
+    (match (proc-output p)
+      ((Some out) (read-rest out))
+      (None "")))
+  (match (waiting p)
+    ((Err e) (Err e))
+    ((Ok code) (Ok (Tuple code text)))))
 
 (: (-> Form (Result Exception (Vec string))) #:sync)
 (defun (run/strings form)
@@ -771,14 +773,15 @@
 
 (: (-> Proc (Result Exception (Vec string))))
 (defbjo (collecting/lines p)
-  (let ((lines (match (proc-output p)
-                 ((Some out)
-                  (loop (:for l (read-lines out))
-                        (:acc v (vecing l))))
-                 (None (vec-empty)))))
-    (match (waiting p)
-      ((Err e) (Err e))
-      ((Ok code) (Ok lines)))))
+  (def lines
+    (match (proc-output p)
+      ((Some out)
+       (loop (:for l (read-lines out))
+             (:acc v (vecing l))))
+      (None (vec-empty))))
+  (match (waiting p)
+    ((Err e) (Err e))
+    ((Ok code) (Ok lines))))
 
 ;; Runs for status code.
 (: (-> Form (Result Exception int)) #:sync)
@@ -809,15 +812,15 @@
   (match (run form)
     ((Err e) (Err e))
     ((Ok p)
-     (let ((items (make-chan)))
-       (match (proc-output p)
-         ;; Handles redirect output.
-         (None
-          (kill p)
-          (Err
-           (run-error
-            "this form sends its output to a file, so there is nothing left to read onto a channel")))
-         ((Some out) (Ok (Tuple items (with-wait p (bjo (read out items)))))))))))
+     (def items (make-chan))
+     (match (proc-output p)
+       ;; Handles redirect output.
+       (None
+        (kill p)
+        (Err
+         (run-error
+          "this form sends its output to a file, so there is nothing left to read onto a channel")))
+       ((Some out) (Ok (Tuple items (with-wait p (bjo (read out items))))))))))
 
 ;; The stock `Reader`: one item per line, `\r\n` and a missing last newline
 ;; handled by `read-line`'s default mode rather than by guessing. Each line is
@@ -923,12 +926,12 @@
         ((Err e) (always (Err e)))
         ((Ok p)
          (close-input p)
-         (let ((done (bjo (collecting p))))
-           (ignore (bjo (reap-on-loss nack p done)))
-           (wrap (promise-join done) (fun (r)
-                                       (match r
-                                         ((Err e) (Err e))
-                                         ((Ok answer) answer))))))))))
+         (def done (bjo (collecting p)))
+         (ignore (bjo (reap-on-loss nack p done)))
+         (wrap (promise-join done) (fun (r)
+                                     (match r
+                                       ((Err e) (Err e))
+                                       ((Ok answer) answer)))))))))
 
 ;; ===========================================================================
 ;; Scoped

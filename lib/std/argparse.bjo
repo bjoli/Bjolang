@@ -743,19 +743,20 @@
                  (else
                   (def s (vec-ref specs i))
                   (if (= (.kind s) 2)
-                      (if (list-empty? after)
-                          (match (take-words (.words s) rest)
-                            ((Some (Tuple got rest2))
-                             (record! occs i got)
-                             (go rest2 pos options-done))
-                            (None (fail (MissingValue (spec-name s)))))
-                          (if (= (.words s) 1)
-                              (begin
-                                (record! occs i (list (list->string after)))
-                                (go rest pos options-done))
-                              (fail (BadValue (spec-name s)
-                                              (list->string after)
-                                              #"${(int->string (.words s))} separate words"))))
+                      (cond
+                        ((list-empty? after)
+                         (match (take-words (.words s) rest)
+                           ((Some (Tuple got rest2))
+                            (record! occs i got)
+                            (go rest2 pos options-done))
+                           (None (fail (MissingValue (spec-name s))))))
+                        ((= (.words s) 1)
+                         (record! occs i (list (list->string after)))
+                         (go rest pos options-done))
+                        (else
+                         (fail (BadValue (spec-name s)
+                                         (list->string after)
+                                         #"${(int->string (.words s))} separate words"))))
                       (begin
                         (record! occs i (list "1"))
                         (short after rest))))))))))))))

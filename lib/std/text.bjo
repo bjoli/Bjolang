@@ -1059,21 +1059,20 @@
       (begin
         (def cy (node-count y))
         (def cb (node-count b))
-        (if (<= (+ cy cb) cap)
-            (begin
-              (def y2 (editable hb y o))
-              (append-slots! hb y2 b)
-              (tidy-seam! hb y2 cy)
-              (put-kid! n last y2)
-              (Tuple n no-node #f))
-            (if (or (< cy min-kids) (< cb min-kids))
-                (begin
-                  (def y2 (editable hb y o))
-                  (def b2 (editable hb b o))
-                  (even-out! hb y2 b2)
-                  (put-kid! n last y2)
-                  (add-kid-at n ha (+ last 1) b2 o))
-                (add-kid-at n ha (+ last 1) b o))))
+        (cond
+          ((<= (+ cy cb) cap)
+           (def y2 (editable hb y o))
+           (append-slots! hb y2 b)
+           (tidy-seam! hb y2 cy)
+           (put-kid! n last y2)
+           (Tuple n no-node #f))
+          ((or (< cy min-kids) (< cb min-kids))
+           (def y2 (editable hb y o))
+           (def b2 (editable hb b o))
+           (even-out! hb y2 b2)
+           (put-kid! n last y2)
+           (add-kid-at n ha (+ last 1) b2 o))
+          (else (add-kid-at n ha (+ last 1) b o))))
       (begin
         (def (Tuple c extra split?) (join-right y (- ha 1) b hb o))
         (put-kid! n last c)
@@ -1091,21 +1090,20 @@
       (begin
         (def cy (node-count y))
         (def ca (node-count a))
-        (if (<= (+ cy ca) cap)
-            (begin
-              (def a2 (editable ha a o))
-              (append-slots! ha a2 y)
-              (tidy-seam! ha a2 ca)
-              (put-kid! n 0 a2)
-              (Tuple n no-node #f))
-            (if (or (< cy min-kids) (< ca min-kids))
-                (begin
-                  (def y2 (editable ha y o))
-                  (def a2 (editable ha a o))
-                  (even-out! ha a2 y2)
-                  (put-kid! n 0 y2)
-                  (add-kid-at n hb 0 a2 o))
-                (add-kid-at n hb 0 a o))))
+        (cond
+          ((<= (+ cy ca) cap)
+           (def a2 (editable ha a o))
+           (append-slots! ha a2 y)
+           (tidy-seam! ha a2 ca)
+           (put-kid! n 0 a2)
+           (Tuple n no-node #f))
+          ((or (< cy min-kids) (< ca min-kids))
+           (def y2 (editable ha y o))
+           (def a2 (editable ha a o))
+           (even-out! ha a2 y2)
+           (put-kid! n 0 y2)
+           (add-kid-at n hb 0 a2 o))
+          (else (add-kid-at n hb 0 a o))))
       (begin
         (def (Tuple first second split?) (join-left a ha y (- hb 1) o))
         (put-kid! n 0 first)
@@ -1207,59 +1205,59 @@
 (defun (split-tree n h at who o)
   (def (Tuple i k) (slot-ending n at))
   (def count (node-count n))
-  (if (= h 1)
-      (begin
-        (def c (chunk-at (as-leaves n) i))
-        (def cl (string-length c))
-        (check-boundary c k who)
-        (def left (node-part 1 n 0 i o))
-        (set-count! left (+ i 1))
-        (put-chunk! left i (piece c 0 k))
-        (merge-small-chunk! left i)
-        (def rest (- count i 1))
-        (def right
-          (if (< k cl)
-              (begin
-                (def r (new-node 1 o))
-                (set-count! r 1)
-                (put-chunk! r 0 (piece c k cl))
-                (move-slots! 1 n (+ i 1) r 1 rest)
-                (set-count! r (+ rest 1))
-                (merge-small-chunk! r 0)
-                r)
-              (node-part 1 n (+ i 1) count o)))
-        (Tuple left
-               1
-               right
-               (if (= (node-count right) 0)
-                   0
-                   1)))
-      (if (= k (slot-bytes n i))
-          (Tuple (node-part h n 0 (+ i 1) o)
-                 h
-                 (node-part h n (+ i 1) count o)
-                 (if (= (+ i 1) count)
-                     0
-                     h))
-          (begin
-            (def (Tuple ln lh rn rh) (split-tree (kid (as-branch n) i) (- h 1) k who o))
-            (def (Tuple l2 lh2)
-              (join (node-part h n 0 i o)
-                    (if (= i 0)
-                        0
-                        h)
-                    ln
-                    lh
-                    o))
-            (def (Tuple r2 rh2)
-              (join rn
-                    rh
-                    (node-part h n (+ i 1) count o)
-                    (if (= (+ i 1) count)
-                        0
-                        h)
-                    o))
-            (Tuple l2 lh2 r2 rh2)))))
+  (cond
+    ((= h 1)
+     (def c (chunk-at (as-leaves n) i))
+     (def cl (string-length c))
+     (check-boundary c k who)
+     (def left (node-part 1 n 0 i o))
+     (set-count! left (+ i 1))
+     (put-chunk! left i (piece c 0 k))
+     (merge-small-chunk! left i)
+     (def rest (- count i 1))
+     (def right
+       (if (< k cl)
+           (begin
+             (def r (new-node 1 o))
+             (set-count! r 1)
+             (put-chunk! r 0 (piece c k cl))
+             (move-slots! 1 n (+ i 1) r 1 rest)
+             (set-count! r (+ rest 1))
+             (merge-small-chunk! r 0)
+             r)
+           (node-part 1 n (+ i 1) count o)))
+     (Tuple left
+            1
+            right
+            (if (= (node-count right) 0)
+                0
+                1)))
+    ((= k (slot-bytes n i))
+     (Tuple (node-part h n 0 (+ i 1) o)
+            h
+            (node-part h n (+ i 1) count o)
+            (if (= (+ i 1) count)
+                0
+                h)))
+    (else
+     (def (Tuple ln lh rn rh) (split-tree (kid (as-branch n) i) (- h 1) k who o))
+     (def (Tuple l2 lh2)
+       (join (node-part h n 0 i o)
+             (if (= i 0)
+                 0
+                 h)
+             ln
+             lh
+             o))
+     (def (Tuple r2 rh2)
+       (join rn
+             rh
+             (node-part h n (+ i 1) count o)
+             (if (= (+ i 1) count)
+                 0
+                 h)
+             o))
+     (Tuple l2 lh2 r2 rh2))))
 
 (: (-> Text int string long (Tuple Text Text)))
 (defun (split-with r at who o)
@@ -3563,34 +3561,30 @@
     ((= count 0) (Some #"a node of height ${h} is empty"))
     (else
      (let go ((i 0))
-       (if (>= i count)
-           None
-           (if (= h 1)
-               (begin
-                 (def c (chunk-at (as-leaves n) i))
-                 (cond
-                   ((= (string-length c) 0) (Some "an empty chunk"))
-                   ((> (string-length c) chunk-max) (Some #"a chunk of ${(string-length c)} bytes"))
-                   ((not (= (slot-bytes n i) (string-length c)))
-                    (Some "a chunk's byte count is wrong"))
-                   ((not (= (slot-lines n i) (newlines-in c)))
-                    (Some "a chunk's newline count is wrong"))
-                   ((not (= (slot-chars n i) (chars-in c)))
-                    (Some "a chunk's character count is wrong"))
-                   (else (go (+ i 1)))))
-               (begin
-                 (def k (kid (as-branch n) i))
-                 (cond
-                   ((not (= (slot-bytes n i) (sum-bytes k)))
-                    (Some #"a node of height ${h} has a wrong byte count"))
-                   ((not (= (slot-lines n i) (sum-lines k)))
-                    (Some #"a node of height ${h} has a wrong newline count"))
-                   ((not (= (slot-chars n i) (sum-chars k)))
-                    (Some #"a node of height ${h} has a wrong character count"))
-                   (else
-                    (match (check-node k (- h 1) #f)
-                      ((Some why) (Some why))
-                      (None (go (+ i 1)))))))))))))
+       (cond
+         ((>= i count) None)
+         ((= h 1)
+          (def c (chunk-at (as-leaves n) i))
+          (cond
+            ((= (string-length c) 0) (Some "an empty chunk"))
+            ((> (string-length c) chunk-max) (Some #"a chunk of ${(string-length c)} bytes"))
+            ((not (= (slot-bytes n i) (string-length c))) (Some "a chunk's byte count is wrong"))
+            ((not (= (slot-lines n i) (newlines-in c))) (Some "a chunk's newline count is wrong"))
+            ((not (= (slot-chars n i) (chars-in c))) (Some "a chunk's character count is wrong"))
+            (else (go (+ i 1)))))
+         (else
+          (def k (kid (as-branch n) i))
+          (cond
+            ((not (= (slot-bytes n i) (sum-bytes k)))
+             (Some #"a node of height ${h} has a wrong byte count"))
+            ((not (= (slot-lines n i) (sum-lines k)))
+             (Some #"a node of height ${h} has a wrong newline count"))
+            ((not (= (slot-chars n i) (sum-chars k)))
+             (Some #"a node of height ${h} has a wrong character count"))
+            (else
+             (match (check-node k (- h 1) #f)
+               ((Some why) (Some why))
+               (None (go (+ i 1))))))))))))
 
 ;; What is wrong with `r`, if anything. For tests.
 (: (-> Text (Option string)))

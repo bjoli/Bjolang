@@ -1228,11 +1228,10 @@
 (: (-> TimeZoneInfo long long))
 (defun (offset-at z u)
   (def clamped
-    (if (< u 0L)
-        0L
-        (if (> u max-ticks)
-            max-ticks
-            u)))
+    (cond
+      ((< u 0L) 0L)
+      ((> u max-ticks) max-ticks)
+      (else u)))
   (clr-timespan-ticks (clr-tz-utc-offset z (ClrDateTime. clamped DateTimeKind.Utc))))
 
 (: (-> TimeZone Instant Duration))
@@ -1260,30 +1259,29 @@
   (def before (offset-at z (- l ticks-per-day)))
   (def after (offset-at z (+ l ticks-per-day)))
   (def at-before (offset-at z (- l before)))
-  (if (and (= before after) (= at-before before))
-      (Fits before before)
-      (let* ((at-after (offset-at z (- l after)))
-             (candidates (list-foldl (fun (o seen)
-                                       (if (member-long? o seen)
-                                           seen
-                                           (Cons o seen)))
-                                     '()
-                                     (list before after at-before at-after)))
-             (fits (list-filter (fun (o) (= (offset-at z (- l o)) o)) candidates)))
-        (if (list-empty? fits)
-            (Skipped before at-before)
-            (Fits (list-foldl max (list-head fits) fits) (list-foldl min (list-head fits) fits))))))
+  (cond
+    ((and (= before after) (= at-before before)) (Fits before before))
+    (:def at-after (offset-at z (- l after)))
+    (:def candidates
+          (list-foldl (fun (o seen)
+                        (if (member-long? o seen)
+                            seen
+                            (Cons o seen)))
+                      '()
+                      (list before after at-before at-after)))
+    (:def fits (list-filter (fun (o) (= (offset-at z (- l o)) o)) candidates))
+    ((list-empty? fits) (Skipped before at-before))
+    (else (Fits (list-foldl max (list-head fits) fits) (list-foldl min (list-head fits) fits)))))
 
 ;; The first instant at offset `after`, by bisection between an instant still
 ;; before the change and one after it.
 (: (-> TimeZoneInfo long long long long))
 (defun (change-ticks z lo hi after)
-  (if (<= (- hi lo) 1L)
-      hi
-      (let ((mid (+ lo (/ (- hi lo) 2L))))
-        (if (= (offset-at z mid) after)
-            (change-ticks z lo mid after)
-            (change-ticks z mid hi after)))))
+  (cond
+    ((<= (- hi lo) 1L) hi)
+    (:def mid (+ lo (/ (- hi lo) 2L)))
+    ((= (offset-at z mid) after) (change-ticks z lo mid after))
+    (else (change-ticks z mid hi after))))
 
 ;; ===========================================================================
 ;; Moments
@@ -3736,10 +3734,10 @@
   (def o (struct-ref seen offset))
   (cond
     ((not (= u no-ticks))
-     (let ((uo (offset-at zi u)))
-       (if (in-calendar? (+ u uo))
-           (Some (Moment (local (ticks->datetime (+ u uo))) (offset (ticks->duration uo)) (zone z)))
-           None)))
+     (def uo (offset-at zi u))
+     (if (in-calendar? (+ u uo))
+         (Some (Moment (local (ticks->datetime (+ u uo))) (offset (ticks->duration uo)) (zone z)))
+         None))
     (:def (Some l) (seen-local-ticks seen) :propagate)
     ((not (= o no-ticks))
      (if (and (in-calendar? (- l o)) (= (offset-at zi (- l o)) o))

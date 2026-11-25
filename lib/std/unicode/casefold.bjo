@@ -54,14 +54,13 @@
 (defun (fold-index cp)
   (let go ((lo 0)
            (hi fold-count))
-    (if (>= lo hi)
-        -1
-        (let* ((mid (shift-right (+ lo hi) 1))
-               (k (ro-span-ref fold-table mid)))
-          (cond
-            ((< cp k) (go lo mid))
-            ((> cp k) (go (+ mid 1) hi))
-            (else mid))))))
+    (cond
+      ((>= lo hi) -1)
+      (:def mid (shift-right (+ lo hi) 1))
+      (:def k (ro-span-ref fold-table mid))
+      ((< cp k) (go lo mid))
+      ((> cp k) (go (+ mid 1) hi))
+      (else mid))))
 
 (: (-> int bool) #:inline)
 (defun (ascii-upper? cp)
@@ -79,19 +78,18 @@
 (: (-> StringBuilder char void))
 (defun (add-folded! sb ch)
   (def cp (char->int ch))
-  (if (< cp 128)
-      (stringbuilder-add-byte! sb
-                               (if (ascii-upper? cp)
-                                   (+ cp 32)
-                                   cp))
-      (let ((i (fold-index cp)))
-        (if (< i 0)
-            (stringbuilder-add! sb ch)
-            (loop (:for k (range (ro-span-ref fold-table (+ fold-starts i))
-                                 (ro-span-ref fold-table (+ fold-starts i 1))))
-                  (:do (stringbuilder-add! sb
-                                           (int->char (ro-span-ref fold-table
-                                                                   (+ fold-targets k))))))))))
+  (cond
+    ((< cp 128)
+     (stringbuilder-add-byte! sb
+                              (if (ascii-upper? cp)
+                                  (+ cp 32)
+                                  cp)))
+    (:def i (fold-index cp))
+    ((< i 0) (stringbuilder-add! sb ch))
+    (else
+     (loop (:for k (range (ro-span-ref fold-table (+ fold-starts i))
+                          (ro-span-ref fold-table (+ fold-starts i 1))))
+           (:do (stringbuilder-add! sb (int->char (ro-span-ref fold-table (+ fold-targets k)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Strings

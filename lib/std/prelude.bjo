@@ -669,11 +669,11 @@
         (cond
           ((< class 0) None)
           ((>= class 4)
-           (let ((end (FileInfo. (link-end path))))
-             (def end-class (clr-classify end))
-             (if (or (< end-class 0) (>= end-class 4))
-                 (info-of own 0 #t)
-                 (info-of end end-class #t))))
+           (def end (FileInfo. (link-end path)))
+           (def end-class (clr-classify end))
+           (if (or (< end-class 0) (>= end-class 4))
+               (info-of own 0 #t)
+               (info-of end end-class #t)))
           (else (info-of own class #f))))))
 
 ;; The info of `f`, whose kind `clr-classify` gave as `class`, 0 or 1.
@@ -1853,11 +1853,10 @@
 ;; `x` inside `last` `Err`s. One arm has no tag.
 (: (-> int int Syntax Syntax))
 (defun (select-tag i last x)
-  (if (= last 0)
-      x
-      (if (= i 0)
-          #'(Ok ,x)
-          #'(Err ,(select-tag (- i 1) (- last 1) x)))))
+  (cond
+    ((= last 0) x)
+    ((= i 0) #'(Ok ,x))
+    (else #'(Err ,(select-tag (- i 1) (- last 1) x)))))
 
 ;; -------------------------------------------------------------
 ;; Extra thingies for cml

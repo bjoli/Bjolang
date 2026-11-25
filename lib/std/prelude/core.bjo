@@ -590,8 +590,8 @@
 (defun (path-dotted? step)
   (match step
     ((SSym s)
-     (let ((name (symbol->string s)))
-       (and (> (string-length name) 1) (string-starts-with? name "."))))
+     (def name (symbol->string s))
+     (and (> (string-length name) 1) (string-starts-with? name ".")))
     (_ #f)))
 
 ;; A `.-Name` step, which reads a .NET property.
@@ -815,20 +815,21 @@
        (Nil
         ;; cond is not available here.
         (syntax-at
-         (if (not field?)
-             #'(ref-set! ,acc ,key ,new)
-             (if (path-property? step)
-                 (syntax-error
-                  step
-                  (str
-                   (syntax->string step)
-                   " is a .NET property, and set! writes the last step with record-set!, which writes a field of a Bjolang record. Call the property's setter, (.set_Name obj value), instead."))
-                 ;; The write carries the step's position, which is also
-                 ;; what makes it the writing module's: `record-set!` may
-                 ;; write only the fields of a record its own module declared.
-                 (let ((dest (path-temp "dest" 0)))
-                   #'(let ((,dest ,acc))
-                       ,(syntax-at #'(record-set! ,dest (,(path-field inject step) ,new)) step)))))
+         (cond
+           ((not field?) #'(ref-set! ,acc ,key ,new))
+           ((path-property? step)
+            (syntax-error
+             step
+             (str
+              (syntax->string step)
+              " is a .NET property, and set! writes the last step with record-set!, which writes a field of a Bjolang record. Call the property's setter, (.set_Name obj value), instead.")))
+           ;; The write carries the step's position, which is also
+           ;; what makes it the writing module's: `record-set!` may
+           ;; write only the fields of a record its own module declared.
+           (else
+            (let ((dest (path-temp "dest" 0)))
+              #'(let ((,dest ,acc))
+                  ,(syntax-at #'(record-set! ,dest (,(path-field inject step) ,new)) step)))))
          step))
        (_
         (def read
@@ -908,22 +909,24 @@
     (Nil prev)
     ((Cons x Nil) #'(,op ,prev ,x))
     ((Cons x more)
-     (if (syntax-atom? x)
-         #'(if (,op ,prev ,x)
-               ,(chain-forms op x (syntax-constant? x) more use-t)
-               #f)
-         (if (not fixed)
-             #'(let ((s ,prev))
-                 ,(chain-forms op #'s #t rest use-t))
-             (if use-t
-                 #'(let ((t ,x))
-                     (if (,op ,prev t)
-                         ,(chain-forms op #'t #t more #f)
-                         #f))
-                 #'(let ((u ,x))
-                     (if (,op ,prev u)
-                         ,(chain-forms op #'u #t more #t)
-                         #f))))))))
+     (cond
+       ((syntax-atom? x)
+        #'(if (,op ,prev ,x)
+              ,(chain-forms op x (syntax-constant? x) more use-t)
+              #f))
+       ((not fixed)
+        #'(let ((s ,prev))
+            ,(chain-forms op #'s #t rest use-t)))
+       (use-t
+        #'(let ((t ,x))
+            (if (,op ,prev t)
+                ,(chain-forms op #'t #t more #f)
+                #f)))
+       (else
+        #'(let ((u ,x))
+            (if (,op ,prev u)
+                ,(chain-forms op #'u #t more #t)
+                #f)))))))
 
 ;; Cheap to evaluate twice: anything but a list.
 (: (-> Syntax bool))
@@ -1192,11 +1195,10 @@
     (def len (iarray-length a))
     (if (= len (iarray-length b))
         (let go ((i 0))
-          (if (= i len)
-              #t
-              (if (= (iarray-ref a i) (iarray-ref b i))
-                  (go (+ i 1))
-                  #f)))
+          (cond
+            ((= i len) #t)
+            ((= (iarray-ref a i) (iarray-ref b i)) (go (+ i 1)))
+            (else #f)))
         #f))
   (defun (eq-hash xs)
     (def len (iarray-length xs))
@@ -2332,21 +2334,21 @@
 
 (: (-> (-?-> %a %b %b) %b (Seq %a) %b))
 (defun (seq-fold f init s)
-  (let ((e (seq-enumerator s)))
-    (let go ((acc init))
-      (if (seq-enumerator-next! e)
-          (go (f (seq-enumerator-current e) acc))
-          acc))))
+  (def e (seq-enumerator s))
+  (let go ((acc init))
+    (if (seq-enumerator-next! e)
+        (go (f (seq-enumerator-current e) acc))
+        acc)))
 
 (: (-> (-?-> %a Unit) (Seq %a) Unit))
 (defun (seq-for-each f s)
-  (let ((e (seq-enumerator s)))
-    (let go ()
-      (if (seq-enumerator-next! e)
-          (let ()
-            (ignore (f (seq-enumerator-current e)))
-            (go))
-          unit))))
+  (def e (seq-enumerator s))
+  (let go ()
+    (cond
+      ((seq-enumerator-next! e)
+       (ignore (f (seq-enumerator-current e)))
+       (go))
+      (else unit))))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions
@@ -2958,17 +2960,17 @@
 ;; Pad width.
 (: (-> string int (#:with char) string))
 (defun (string-pad-left s width #:with #\space)
-  (let ((b (stringbuilder-empty)))
-    (string-pad-fill! b with (- width (string-count s)))
-    (stringbuilder-add-string! b s)
-    (stringbuilder->string b)))
+  (def b (stringbuilder-empty))
+  (string-pad-fill! b with (- width (string-count s)))
+  (stringbuilder-add-string! b s)
+  (stringbuilder->string b))
 
 (: (-> string int (#:with char) string))
 (defun (string-pad-right s width #:with #\space)
-  (let ((b (stringbuilder-empty)))
-    (stringbuilder-add-string! b s)
-    (string-pad-fill! b with (- width (string-count s)))
-    (stringbuilder->string b)))
+  (def b (stringbuilder-empty))
+  (stringbuilder-add-string! b s)
+  (string-pad-fill! b with (- width (string-count s)))
+  (stringbuilder->string b))
 
 ;; Pad fill.
 (: (-> StringBuilder char int void))
@@ -4478,11 +4480,10 @@
 
 (: (-> Syntax Syntax Syntax (List Syntax)))
 (defun (derive-methods trait head shape)
-  (if (syntax-ident=? trait (derive-sym "Eq"))
-      (derive-eq-methods head shape)
-      (if (syntax-ident=? trait (derive-sym "Ord"))
-          (derive-ord-methods shape)
-          (derive-fail trait "the traits that can be derived are Eq and Ord."))))
+  (cond
+    ((syntax-ident=? trait (derive-sym "Eq")) (derive-eq-methods head shape))
+    ((syntax-ident=? trait (derive-sym "Ord")) (derive-ord-methods shape))
+    (else (derive-fail trait "the traits that can be derived are Eq and Ord."))))
 
 ;; Derive conditional implementation. A newtype's is the type it wraps,
 ;; whatever the trait.
@@ -4602,41 +4603,37 @@
 (: (-> (Vec %a) %a bool) (where (Eq %a)))
 (defun (vec-contains? v x)
   (let go ((c (vec-cursor v)))
-    (if (vec-cursor-done? c)
-        #f
-        (if (= (vec-cursor-current c) x)
-            #t
-            (go (vec-cursor-next c))))))
+    (cond
+      ((vec-cursor-done? c) #f)
+      ((= (vec-cursor-current c) x) #t)
+      (else (go (vec-cursor-next c))))))
 
 (: (-> (Array %a) %a bool) (where (Eq %a)))
 (defun (array-contains? a x)
   (def len (array-length a))
   (let go ((i 0))
-    (if (= i len)
-        #f
-        (if (= (array-ref a i) x)
-            #t
-            (go (+ i 1))))))
+    (cond
+      ((= i len) #f)
+      ((= (array-ref a i) x) #t)
+      (else (go (+ i 1))))))
 
 (: (-> (IArray %a) %a bool) (where (Eq %a)))
 (defun (iarray-contains? a x)
   (def len (iarray-length a))
   (let go ((i 0))
-    (if (= i len)
-        #f
-        (if (= (iarray-ref a i) x)
-            #t
-            (go (+ i 1))))))
+    (cond
+      ((= i len) #f)
+      ((= (iarray-ref a i) x) #t)
+      (else (go (+ i 1))))))
 
 (: (-> (TransientVec %a) %a bool) (where (Eq %a)))
 (defun (transientvec-contains? t x)
   (def len (transientvec-length t))
   (let go ((i 0))
-    (if (= i len)
-        #f
-        (if (= (transientvec-ref t i) x)
-            #t
-            (go (+ i 1))))))
+    (cond
+      ((= i len) #f)
+      ((= (transientvec-ref t i) x) #t)
+      (else (go (+ i 1))))))
 
 ;; The elements in a new array, which the vec does not share. The runtime's,
 ;; which copies the leaves in one pass.

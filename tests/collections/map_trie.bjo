@@ -113,29 +113,28 @@
   (def/mutable kept-ref (copy-ref ref))
   (let go ((i 0)
            (m (map-empty)))
-    (if (= i steps)
-        (and (same? c m ref) (same? c kept kept-ref))
-        (if (and (= (% i 997) 0) (not (same? c m ref)))
-            #f
-            (begin
-              (when (= i phase)
-                (set! kept m)
-                (set! kept-ref (copy-ref ref)))
-              (def k (random-int 0 (- keys 1) #:rng rng))
-              (def v (random-int 0 3 #:rng rng))
-              (def shrink? (= (% (/ i phase) 2) 1))
-              (if (< (random-int 0 3 #:rng rng) (if shrink? 2 1))
-                  (begin
-                    (array-set! ref k -1)
-                    (go (+ i 1) (map-remove m ((.of c) k))))
-                  (begin
-                    (def same-value? (= (array-ref ref k) v))
-                    (def next (map-set m ((.of c) k) v))
-                    (array-set! ref k v)
-                    ;; Setting the value a key has returns the map itself.
-                    (if (and same-value? (not (same-node? next m)))
-                        #f
-                        (go (+ i 1) next)))))))))
+    (cond
+      ((= i steps) (and (same? c m ref) (same? c kept kept-ref)))
+      ((and (= (% i 997) 0) (not (same? c m ref))) #f)
+      (else
+       (when (= i phase)
+         (set! kept m)
+         (set! kept-ref (copy-ref ref)))
+       (def k (random-int 0 (- keys 1) #:rng rng))
+       (def v (random-int 0 3 #:rng rng))
+       (def shrink? (= (% (/ i phase) 2) 1))
+       (if (< (random-int 0 3 #:rng rng) (if shrink? 2 1))
+           (begin
+             (array-set! ref k -1)
+             (go (+ i 1) (map-remove m ((.of c) k))))
+           (begin
+             (def same-value? (= (array-ref ref k) v))
+             (def next (map-set m ((.of c) k) v))
+             (array-set! ref k v)
+             ;; Setting the value a key has returns the map itself.
+             (if (and same-value? (not (same-node? next m)))
+                 #f
+                 (go (+ i 1) next))))))))
 
 (import/extern
   (same-object? (: System.Object.ReferenceEquals (-> System.Object System.Object bool))))
@@ -212,11 +211,10 @@
   (: both (-> (-> int int int) (Array int) (Array int) (Array int)))
   (defun (both f x y)
     (loop (:for i (range 0 keys))
-          (:acc (arraying (if (< (array-ref y i) 0)
-                              (array-ref x i)
-                              (if (< (array-ref x i) 0)
-                                  (array-ref y i)
-                                  (f (array-ref x i) (array-ref y i))))))))
+          (:acc (arraying (cond
+                            ((< (array-ref y i) 0) (array-ref x i))
+                            ((< (array-ref x i) 0) (array-ref y i))
+                            (else (f (array-ref x i) (array-ref y i))))))))
   (def right (fun (l r) r))
   (def add (fun (l r) (+ l r)))
   (def extra

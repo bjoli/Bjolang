@@ -245,12 +245,11 @@
 (defun (gen-such-that pred g)
   (make-gen (fun (c)
               (let go ((tries 0))
-                (if (= tries 100)
-                    (discard! c "gen-such-that found no value in 100 tries")
-                    (let ((x (gen-run g c)))
-                      (if (pred x)
-                          x
-                          (go (+ tries 1)))))))))
+                (cond
+                  ((= tries 100) (discard! c "gen-such-that found no value in 100 tries"))
+                  (:def x (gen-run g c))
+                  ((pred x) x)
+                  (else (go (+ tries 1))))))))
 
 ;; One of the generators. The first is the simplest.
 (: (-> (List (Gen %a)) (Gen %a)))
@@ -489,18 +488,17 @@
                     (list)))))
   (make-gen (fun (c)
               (def kind (draw c 10UL))
-              (if (= kind 9UL)
-                  ;; Padded to the four draws of the other way: sign, distance and
-                  ;; fraction after the kind.
-                  (draw-edge c edges 2)
-                  (let* ((r (reach (choices-size c)))
-                         (whole (draw-long-range c (- 0L r) r))
-                         ;; 53 bits, so every fraction is a double exactly.
-                         (frac (/ (cast System.Double (draw c 9007199254740992UL))
-                                  9007199254740992.0)))
-                    (if (< whole 0L)
-                        (- (cast System.Double whole) frac)
-                        (+ (cast System.Double whole) frac)))))))
+              (cond
+                ((= kind 9UL)
+                 ;; Padded to the four draws of the other way: sign, distance and
+                 ;; fraction after the kind.
+                 (draw-edge c edges 2))
+                (:def r (reach (choices-size c)))
+                (:def whole (draw-long-range c (- 0L r) r))
+                ;; 53 bits, so every fraction is a double exactly.
+                (:def frac (/ (cast System.Double (draw c 9007199254740992UL)) 9007199254740992.0))
+                ((< whole 0L) (- (cast System.Double whole) frac))
+                (else (+ (cast System.Double whole) frac))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Text
@@ -583,26 +581,26 @@
 (: (-> (Gen %a) (Gen %b) (Gen (Tuple %a %b))))
 (defun (gen-tuple2 ga gb)
   (make-gen (fun (c)
-              (let* ((a (gen-run ga c))
-                     (b (gen-run gb c)))
-                (Tuple a b)))))
+              (def a (gen-run ga c))
+              (def b (gen-run gb c))
+              (Tuple a b))))
 
 (: (-> (Gen %a) (Gen %b) (Gen %c) (Gen (Tuple %a %b %c))))
 (defun (gen-tuple3 ga gb gc)
   (make-gen (fun (c)
-              (let* ((a (gen-run ga c))
-                     (b (gen-run gb c))
-                     (x (gen-run gc c)))
-                (Tuple a b x)))))
+              (def a (gen-run ga c))
+              (def b (gen-run gb c))
+              (def x (gen-run gc c))
+              (Tuple a b x))))
 
 (: (-> (Gen %a) (Gen %b) (Gen %c) (Gen %d) (Gen (Tuple %a %b %c %d))))
 (defun (gen-tuple4 ga gb gc gd)
   (make-gen (fun (c)
-              (let* ((a (gen-run ga c))
-                     (b (gen-run gb c))
-                     (x (gen-run gc c))
-                     (d (gen-run gd c)))
-                (Tuple a b x d)))))
+              (def a (gen-run ga c))
+              (def b (gen-run gb c))
+              (def x (gen-run gc c))
+              (def d (gen-run gd c))
+              (Tuple a b x d))))
 
 ;; ---------------------------------------------------------------------------
 ;; Sequences
