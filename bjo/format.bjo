@@ -217,7 +217,32 @@
        :leave ((Err why) (Err why)))
      (Ok (Tuple (TStr (without-continued-indent (text-between cs i e) (column-at cs i))) e)))
     ((and (= c #\#) (= (char-at cs (+ i 1)) #\\)) (Ok (to (char-literal-end cs i))))
-    (else (Ok (to (atom-end cs i))))))
+    (else
+     (Ok (to (match (quantity-end cs i)
+               ((Some e) e)
+               (None (atom-end cs i))))))))
+
+;; Past the end of the quantity literal at `i`, such as `<9.81 m/s^2>`, if there
+;; is one. It ends at the first `>` on its line, and is one token although it
+;; has spaces and perhaps brackets in it. A prefix, as in `,<1 m>`, is included.
+(: quantity-end (-> (Vec char) int (Option int)))
+(defun (quantity-end cs i)
+  (def start
+    (let go ((p i))
+      (if (prefix-char? (char-at cs p))
+          (go (+ p 1))
+          p)))
+  (def c (char-at cs (+ start 1)))
+  (def number?
+    (or (char-numeric? c)
+        (and (or (= c #\.) (= c #\-)) (char-numeric? (char-at cs (+ start 2))))))
+  (if (and (= (char-at cs start) #\<) number?)
+      (let go ((p (+ start 1)))
+        (cond
+          ((or (>= p (vec-length cs)) (line-break? cs p)) None)
+          ((= (vec-ref cs p) #\>) (Some (+ p 1)))
+          (else (go (+ p 1)))))
+      None))
 
 (: tokenize (-> (Vec char) (Result string (List Tok))))
 (defun (tokenize cs)
@@ -1307,6 +1332,12 @@
            ((TAtom _)
             (match rest
               ((Cons (TOpen _) _) #t)
+              ((Cons (TStr _) _) #t)
+              ((Cons (TAtom _) _) #t)
+              (_ #f)))
+           ;; Two strings with nothing between them, as `#""` and `""`.
+           ((TStr _)
+            (match rest
               ((Cons (TStr _) _) #t)
               ((Cons (TAtom _) _) #t)
               (_ #f)))
