@@ -273,13 +273,6 @@
   (arg lo \"The least it may answer.\"))
 ")
 
-(bjo-deftest-indent defun-flag
-  "A flag after a `defun''s head leaves the body two in."
-  "(defun (ripe-value r) #:inline
-  (match r
-    ((MkRipe n) n)))
-")
-
 (bjo-deftest-indent impl-where
   "An `impl''s where clause leaves the body two in."
   "(impl (Iterable (Enumerated %s)) (where (Iterable %s))

@@ -2152,14 +2152,18 @@ EMACS_INDENT = """
 def test_fmt(work, c):
     work.mkdir(parents=True, exist_ok=True)
 
-    for name, snippet in indentation_snippets():
-        # Indented as bjo-mode indents it, but with several bindings on a line,
-        # which bjo fmt also breaks, a binding a line.
-        if name == "let-bindings":
+    # Snippets whose line breaks are not the ones bjo fmt chooses. Emacs checks
+    # how they are indented, with the corpus.
+    rebroken = {"let-bindings", "impl-where", "try", "call-alignment", "match", "match-guard",
+                "def-propagate", "cond", "bjoroutine", "defbjouble", "vec-elements",
+                "comprehension", "loop-clauses", "arrow-elsewhere", "with-return"}
+    snippets = indentation_snippets()
+    for name, snippet in snippets:
+        if name in rebroken:
             continue
         flat = "\n".join(line.lstrip(" \t") for line in snippet.split("\n"))
         laid = fmt_text(work, flat)
-        c.that(f"fmt indents bjo-mode's '{name}' snippet as bjo-mode does", laid.stdout == snippet,
+        c.that(f"fmt lays out bjo-mode's '{name}' snippet as it is", laid.stdout == snippet,
                f"wanted:\n{snippet}\ngot:\n{laid.stdout}{laid.stderr}")
 
     cases = [
@@ -2171,19 +2175,19 @@ def test_fmt(work, c):
          "(defun (f)\n  (g) ; done\n  )\n", "(defun (f)\n  (g) ; done\n  )\n"),
         ("trailing whitespace goes, and the file ends in one newline",
          "(def x 1)   \n\n\n", "(def x 1)\n"),
-        ("three or more blank lines become two",
-         "(def x 1)\n\n\n\n\n(def y 2)\n\n(def z 3)\n", "(def x 1)\n\n\n(def y 2)\n\n(def z 3)\n"),
-        ("no spaces just inside brackets", "( f  x )\n", "(f  x)\n"),
-        ("a tab between tokens becomes spaces", "(f\tx)\n", "(f      x)\n"),
+        ("several blank lines become one",
+         "(def x 1)\n\n\n\n\n(def y 2)\n\n(def z 3)\n", "(def x 1)\n\n(def y 2)\n\n(def z 3)\n"),
+        ("no spaces just inside brackets", "( f  x )\n", "(f x)\n"),
+        ("a tab between tokens becomes a space", "(f\tx)\n", "(f x)\n"),
         ("a ;;; comment keeps its place", "(defun (f)\n      ;;; here\n  1)\n",
          "(defun (f)\n      ;;; here\n  1)\n"),
         ("a string's lines are left as they are",
          '(defun (f)\n(g "one\n   two"\n"three"))\n', '(defun (f)\n  (g "one\n   two"\n     "three"))\n'),
         ("a raw string's too",
          '(def x """\n    a\n      b\n    """)\n', '(def x """\n    a\n      b\n    """)\n'),
-        ("a character literal opens nothing", "(f #\\( #\\;\nx)\n", "(f #\\( #\\;\n   x)\n"),
+        ("a character literal opens nothing", "(f #\\( #\\;\nx)\n", "(f #\\( #\\; x)\n"),
         ("a brace in an interpolation's string is not the hole's",
-         '(f #"a ${(g "}")}"\nx)\n', '(f #"a ${(g "}")}"\n   x)\n'),
+         '(f #"a ${(g "}")}"\nx)\n', '(f #"a ${(g "}")}" x)\n'),
         ("a failure part starts its own line",
          "(def (Ok n) (parse s) :leave-with 0)\n", "(def (Ok n) (parse s)\n  :leave-with 0)\n"),
         ("every failure part with something after it does, in a def* clause too",
@@ -2192,44 +2196,36 @@ def test_fmt(work, c):
         ("a failure part with nothing after it can stay on the line",
          "(def (Ok a) (f x) :propagate)\n(def* ((Ok b) (g a) :propagate))\n",
          "(def (Ok a) (f x) :propagate)\n(def* ((Ok b) (g a) :propagate))\n"),
-        ("and stays on a line of its own when it is written there",
-         "(def (Ok a) (f x)\n:propagate)\n", "(def (Ok a) (f x)\n  :propagate)\n"),
+        ("and goes there when it is written below",
+         "(def (Ok a) (f x)\n:propagate)\n", "(def (Ok a) (f x) :propagate)\n"),
         ("a :leave's arms stay after it",
          "(def (Ok n) (f s) :leave ((Err a) 1)\n((Err b) 2))\n",
          "(def (Ok n) (f s)\n  :leave ((Err a) 1)\n         ((Err b) 2))\n"),
         ("a keyword that is no failure part stays",
          "(f x :default 1)\n", "(f x :default 1)\n"),
-        ("the first clause of a cond over several lines can stay on the line of the head",
-         "(cond ((a) 1)\n(else 2))\n", "(cond ((a) 1)\n      (else 2))\n"),
-        ("or have a line of its own", "(cond\n((a) 1)\n(else 2))\n", "(cond\n  ((a) 1)\n  (else 2))\n"),
-        ("each later clause of a cond over several lines starts a line",
-         "(cond ((a) 1) ((b) 2)\n(else 3))\n", "(cond ((a) 1)\n      ((b) 2)\n      (else 3))\n"),
-        ("the arguments of a call with none on the line of its head go under the head",
-         "(vec-append\n(g x)\n(h x))\n", "(vec-append\n (g x)\n (h x))\n"),
-        ("a list with a list as its head keeps its forms under the head too",
-         "((g)\n1 2)\n", "((g)\n 1 2)\n"),
+        ("so does that of one written over several lines", "(cond\n((a) 1)\n(else 2))\n", "(cond\n  ((a) 1)\n  (else 2))\n"),
+        ("each clause of a cond starts a line",
+         "(cond ((a) 1) ((b) 2)\n(else 3))\n", "(cond\n  ((a) 1)\n  ((b) 2)\n  (else 3))\n"),
+        ("a call that fits is on one line, however it was written",
+         "(vec-append\n(g x)\n(h x))\n", "(vec-append (g x) (h x))\n"),
         ("an else clause keeps its body under its head",
          "(cond\n((a) 1)\n(else\n(f)\n(g)))\n", "(cond\n  ((a) 1)\n  (else\n   (f)\n   (g)))\n"),
-        ("and so does a clause of a match with a name as its pattern",
-         "(match x\n(None\n(f))\n(_\n(g)))\n", "(match x\n  (None\n   (f))\n  (_\n   (g)))\n"),
-        ("a clause with a keyword as its head keeps its body under the head",
-         "(loop (:for i xs)\n(:do\n(f i)\n(g i)))\n", "(loop (:for i xs)\n      (:do\n       (f i)\n       (g i)))\n"),
+        ("a clause with one form in its body is on one line if it fits",
+         "(match x\n(None\n(f))\n(_\n(g)))\n", "(match x\n  (None (f))\n  (_ (g)))\n"),
+        ("each statement of a loop's :do goes on a line of its own",
+         "(loop (:for i xs)\n(:do\n(f i)\n(g i)))\n", "(loop (:for i xs)\n      (:do (f i)\n           (g i)))\n"),
         ("an arm after :leave with a name as its pattern does too",
          "(def (Some x) (f k)\n:leave (None\n(g)\n0))\n", "(def (Some x) (f k)\n  :leave (None\n          (g)\n          0))\n"),
         ("the setters of a record-set too wide for a line go under the first one",
          "(record-set m (field-one (compute-the-first-value 1 2 3)) (field-two (compute-the-second-value 4 5 6)) (field-three #t))\n",
          "(record-set m (field-one (compute-the-first-value 1 2 3))\n              (field-two (compute-the-second-value 4 5 6))\n              (field-three #t))\n"),
-        ("setters written under the first one are kept there",
-         "(record-set! m (a 1)\n(b 2))\n", "(record-set! m (a 1)\n               (b 2))\n"),
-        ("with no setter on the line of the head they go under the record, as a call's arguments do",
-         "(record-set m\n(a 1)\n(b 2))\n", "(record-set m\n            (a 1)\n            (b 2))\n"),
         ("a record-set whose record is not small is broken as a call is",
          "(record-set (some-long-function-that-returns (a-record-from 1 2 3) (and-more 4 5 6)) (field-one (compute 1)) (field-two (compute 2)))\n",
          "(record-set (some-long-function-that-returns (a-record-from 1 2 3) (and-more 4 5 6))\n            (field-one (compute 1))\n            (field-two (compute 2)))\n"),
         ("the list of names after a keyword of a defeffect is data",
          "(defeffect Fs\n  (fs-move (-> Path Unit))\n  #:cold (fs-move fs-list\n fs-info))\n",
          "(defeffect Fs\n  (fs-move (-> Path Unit))\n  #:cold (fs-move fs-list\n          fs-info))\n"),
-        ("but a cond on one line stays on it", "(cond ((a) 1) (else 2))\n", "(cond ((a) 1) (else 2))\n"),
+        ("a cond on one line is broken", "(cond ((a) 1) (else 2))\n", "(cond\n  ((a) 1)\n  (else 2))\n"),
         ("each form of a begin over several lines starts a line",
          "(begin (f 1) (g 2)\n(h 3))\n", "(begin\n  (f 1)\n  (g 2)\n  (h 3))\n"),
         ("bindings over several lines go a line each",
@@ -2237,7 +2233,7 @@ def test_fmt(work, c):
         ("those of a named let too",
          "(let go ((i 0) (acc Nil)\n(n 1))\n(go i acc n))\n",
          "(let go ((i 0)\n         (acc Nil)\n         (n 1))\n  (go i acc n))\n"),
-        ("but bindings on one line stay on it", "(let ((a 1) (b 2))\na)\n", "(let ((a 1) (b 2))\n  a)\n"),
+        ("bindings on one line too", "(let ((a 1) (b 2)) a)\n", "(let ((a 1)\n      (b 2))\n  a)\n"),
         ("a tab in a string is written \\t", '(f "a\tb")\n', '(f "a\\tb")\n'),
         ("but not in an interpolation's hole", '(f #"a\t${(g\t1)}")\n', '(f #"a\\t${(g\t1)}")\n'),
         # The lexer rejects a tab after a backslash; fmt keeps it rather than
@@ -2251,11 +2247,11 @@ def test_fmt(work, c):
          "(defun (f)\n  (some-function-with-a-long-name (another-call (nested alpha) beta gamma)\n"
          "                                  (third-call delta epsilon zeta eta)\n"
          "                                  (fourth-call)))\n"),
-        ("one with small arguments only is filled",
+        ("whatever its arguments are",
          "(defun (f) (str \"one fairly long piece of text \" (int->string count) \" and another long piece \" "
          "name \" and more\"))\n",
-         "(defun (f)\n  (str \"one fairly long piece of text \" (int->string count) \" and another long piece \" name\n"
-         "       \" and more\"))\n"),
+         "(defun (f)\n  (str \"one fairly long piece of text \"\n       (int->string count)\n"
+         "       \" and another long piece \"\n       name\n       \" and more\"))\n"),
         ("an if's arms go four in",
          "(def answer (if (and (> first-number 1000) (< second-number 2000)) (compute-the-result first-number) "
          "(fallback-value 42)))\n",
@@ -2271,12 +2267,12 @@ def test_fmt(work, c):
          "(third-call delta epsilon zeta eta)))\n",
          "(with-scope (some-function-with-a-long-name (another-call alpha beta gamma)\n"
          "                                            (third-call delta epsilon zeta eta)))\n"),
-        ("a line continuing a list is filled in it",
+        ("an export list keeps its lines, and is filled",
          "(export alpha-function beta-function gamma-function delta-function epsilon-function zeta-function\n"
          "  eta-function theta-function iota-function kappa-function lambda-function mu-function nu-function xi-function)\n",
-         "(export alpha-function beta-function gamma-function delta-function epsilon-function zeta-function\n"
-         "        eta-function theta-function iota-function kappa-function lambda-function mu-function\n"
-         "        nu-function xi-function)\n"),
+         "(export\n  alpha-function beta-function gamma-function delta-function epsilon-function zeta-function\n"
+         "  eta-function theta-function iota-function kappa-function lambda-function mu-function nu-function\n"
+         "  xi-function)\n"),
         ("failing that, the list's first argument moves down",
          "(" + "f" * 60 + " a\n\"" + "x" * 62 + "\")\n",
          "(" + "f" * 60 + "\n a\n \"" + "x" * 62 + "\")\n"),
@@ -2288,18 +2284,17 @@ def test_fmt(work, c):
          "(go after (record-set options (alpha p)))))\n",
          "(match v\n  ((Some p) #:when (and (> p 0.0) (< p 1.0) (> p 0.0) (< p 1.0))\n"
          "   (go after (record-set options (alpha p)))))\n"),
-        ("a line too wide for the brackets that end it is broken in its last list",
+        ("of the layouts that fit, the one with the fewest lines is chosen",
          "(Some (Tuple (substring s (string-cursor-start s) c)\n"
          "(substring s (string-cursor-forward s c (string-count sep)) (string-cursor-end s-longer))))\n",
-         "(Some (Tuple (substring s (string-cursor-start s) c)\n"
-         "             (substring s\n                        (string-cursor-forward s c (string-count sep))\n"
-         "                        (string-cursor-end s-longer))))\n"),
+         "(Some (Tuple\n       (substring s (string-cursor-start s) c)\n"
+         "       (substring s (string-cursor-forward s c (string-count sep)) (string-cursor-end s-longer))))\n"),
         ("the first argument that moves down is the one that gains the most",
          "(raise (cast Exception (DurationOverflow. \"" + "z" * 80 + "\")))\n",
          "(raise (cast Exception\n             (DurationOverflow.\n              \"" + "z" * 80 + "\")))\n"),
         ("a string's continued lines move with it, what they keep kept",
          "(f\n      (g \"one \\\n             two \\\n                 three\"))\n",
-         "(f\n (g \"one \\\n        two \\\n            three\"))\n"),
+         "(f (g \"one \\\n          two \\\n              three\"))\n"),
         ("a continued line indented less than the text is lined up with it",
          "(f \"one \\\ntwo\")\n", "(f \"one \\\n    two\")\n"),
         ("as is one in an interpolated string, after its #\", what it keeps kept",
@@ -2311,11 +2306,11 @@ def test_fmt(work, c):
         ("a string too long for its line is not split",
          '(f "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen '
          'seventeen")\n',
-         '(f "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen '
+         '(f\n "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen '
          'seventeen")\n'),
         ("nor is an interpolated string",
          '(f #"one two three four five six seven eight nine ten eleven twelve thirteen fourteen ${(g "a b c d e f")} xx")\n',
-         '(f #"one two three four five six seven eight nine ten eleven twelve thirteen fourteen ${(g "a b c d e f")} xx")\n'),
+         '(f\n #"one two three four five six seven eight nine ten eleven twelve thirteen fourteen ${(g "a b c d e f")} xx")\n'),
         ("a string that fits further left is moved there by moving first arguments down",
          '(f (g (h "' + 'word ' * 18 + 'words!")))\n',
          '(f\n (g\n  (h\n   "' + 'word ' * 18 + 'words!")))\n'),
@@ -2330,7 +2325,7 @@ def test_fmt(work, c):
          '(:doc f\n  (summary\n   "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen"))\n'),
         ("nor is a raw string, which has no escapes",
          '(f """one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen""")\n',
-         '(f """one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen""")\n'),
+         '(f\n """one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen""")\n'),
         # Signatures: the type stays on the first line while it can, the
         # (where ...) has a row, and the markers have a row together.
         ("a signature too wide gives its where and its markers a row each, the type staying",
@@ -2339,26 +2334,52 @@ def test_fmt(work, c):
         ("a signature's markers stay on one row, with no where",
          "(: lookup (-> (Map string (Vec (Tuple int string))) string (Option (Vec (Tuple int string)))) #:sync #:inline #:no-inline)\n",
          "(: lookup (-> (Map string (Vec (Tuple int string))) string (Option (Vec (Tuple int string))))\n   #:sync #:inline #:no-inline)\n"),
-        ("then its type moves under its name, and an arrow too wide is filled",
+        ("then an arrow too wide is filled",
          "(: build (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) (Array int) (Array (Tuple %k %v)) int int int (Tuple (TrieNode (Tuple %k %v)) int)) #:no-inline)\n",
-         "(: build\n   (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) (Array int) (Array (Tuple %k %v)) int\n       int int (Tuple (TrieNode (Tuple %k %v)) int))\n   #:no-inline)\n"),
+         "(: build (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) (Array int) (Array (Tuple %k %v))\n             int int int (Tuple (TrieNode (Tuple %k %v)) int))\n   #:no-inline)\n"),
         ("a signature with no name is broken the same way",
          "(: (-> %s (Map %k %v) (Map %k %v) (Map %k %v) (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v)) (Ord %k)) #:inline)\n",
          "(: (-> %s (Map %k %v) (Map %k %v) (Map %k %v) (Map %k %v))\n   (where (Eq %k) (Iterable %s #:elem (Tuple %k %v)) (Ord %k))\n   #:inline)\n"),
+        ("a marker with a value keeps it, in a signature with no name and no where",
+         "(: (-> (Map string (Vec (Tuple int string))) string (Map string (Vec (Tuple int string))) bool) #:elsewhere f #:inline)\n",
+         "(: (-> (Map string (Vec (Tuple int string))) string (Map string (Vec (Tuple int string))) bool)\n   #:elsewhere f #:inline)\n"),
         ("a signature that fits is left on its line",
          "(: up-from (-> %n (#:by %n) (#:to %n) (UpFrom %n)) (where (Num %n) (Ordered %n)) #:inline)\n",
          "(: up-from (-> %n (#:by %n) (#:to %n) (UpFrom %n)) (where (Num %n) (Ordered %n)) #:inline)\n"),
-        ("an arrow that is not in a signature is a call, filled when its arguments are small",
+        ("an arrow that is not in a signature is a call",
          "(def result (-> (first-step-of-the-pipeline input) (second-step-of-the-pipeline #:option 1) (third-step-of-the-pipeline)))\n",
-         "(def result\n  (-> (first-step-of-the-pipeline input) (second-step-of-the-pipeline #:option 1)\n      (third-step-of-the-pipeline)))\n"),
+         "(def result\n  (-> (first-step-of-the-pipeline input)\n      (second-step-of-the-pipeline #:option 1)\n      (third-step-of-the-pipeline)))\n"),
         ("a loop's => stays with its value",
          "(def total (loop (:for x (range 0 100)) (:for y (range 0 100)) (:when (even? (+ x y))) (:acc total (summing (* x y))) => (/ total 2)))\n",
          "(def total\n  (loop (:for x (range 0 100))\n        (:for y (range 0 100))\n        (:when (even? (+ x y)))\n        (:acc total (summing (* x y)))\n    => (/ total 2)))\n"),
         ("the list of a hash macro stays with its name, an entry a line",
          "(def m #map((\"alpha\" 1) (\"beta\" 2) (\"gamma\" 3) (\"delta\" 4) (\"epsilon\" 5) (\"zeta\" 6) (\"eta\" 7) (\"theta\" 8) (\"iota\" 9)))\n",
          "(def m\n  #map((\"alpha\" 1)\n       (\"beta\" 2)\n       (\"gamma\" 3)\n       (\"delta\" 4)\n       (\"epsilon\" 5)\n       (\"zeta\" 6)\n       (\"eta\" 7)\n       (\"theta\" 8)\n       (\"iota\" 9)))\n"),
-        ("a line with a string too wide for any line is left as it is",
-         "(defun (f) (g \"" + "y" * 110 + "\"))\n", "(defun (f) (g \"" + "y" * 110 + "\"))\n"),
+        ("a string too wide for any line goes as far left as it can",
+         "(defun (f) (g \"" + "y" * 110 + "\"))\n", "(defun (f)\n  (g\n   \"" + "y" * 110 + "\"))\n"),
+        ("no two clauses of a loop share a line, even when they fit",
+         "(loop (:for x xs) (:acc n (counting)) => n)\n",
+         "(loop (:for x xs)\n      (:acc n (counting))\n  => n)\n"),
+        ("those of a subloop neither",
+         "(loop (:for x xs) (:subloop (:for y x) (:do (f y))))\n",
+         "(loop (:for x xs)\n      (:subloop (:for y x)\n                (:do (f y))))\n"),
+        ("a loop with one clause may be on one line", "(loop (:for x xs)\n=> x)\n", "(loop (:for x xs) => x)\n"),
+        ("so may a call of a named let's loop", "(loop rest\n(f 1))\n", "(loop rest (f 1))\n"),
+        ("a comprehension's clauses may share a line",
+         "{listing x\n(:for x xs)\n(:when (p x))}\n", "{listing x (:for x xs) (:when (p x))}\n"),
+        ("an if with a list in it is broken", "(if (p x) 1 2)\n", "(if (p x)\n    1\n    2)\n"),
+        ("one of names only may be on one line", "(if p\n1\n2)\n", "(if p 1 2)\n"),
+        ("a record is a field a line", "(type (: P (Record (: x int) (: y int))))\n",
+         "(type (: P (Record (: x int)\n                   (: y int))))\n"),
+        ("a return type stays with the parameters", "(defun (f x) : int\nx)\n", "(defun (f x) : int\n  x)\n"),
+        ("a cond's :def and :match clauses are laid out as what they are",
+         "(cond (:def x (f)) (:match (Some y) (g) (h y) (k y)) (else 1))\n",
+         "(cond\n  (:def x (f))\n  (:match (Some y) (g)\n   (h y)\n   (k y))\n  (else 1))\n"),
+        ("comments force the line breaks they need",
+         "(f a ; one\n b)\n(g\n;; two\nc)\n", "(f a ; one\n   b)\n(g\n ;; two\n c)\n"),
+        ("a table keeps its columns",
+         "(import/extern\n  (a   (: X.A (-> int)))\n  (bcd (: X.B (-> int))))\n",
+         "(import/extern\n  (a   (: X.A (-> int)))\n  (bcd (: X.B (-> int))))\n"),
     ]
     for label, given, wanted in cases:
         laid = fmt_text(work, given)
@@ -2389,7 +2410,7 @@ def test_fmt(work, c):
     piped = subprocess.run([str(BJO), "fmt", "--diff", "-"], cwd=str(work), input="(f\nx)\n",
                            capture_output=True, text=True, timeout=120)
     c.that("fmt --diff - prints the diff of standard input",
-           piped.stdout == "--- -\n+++ -\n@@ -1,2 +1,2 @@\n (f\n-x)\n+ x)\n", piped.stdout + piped.stderr)
+           piped.stdout == "--- -\n+++ -\n@@ -1,2 +1,1 @@\n-(f\n-x)\n+(f x)\n", piped.stdout + piped.stderr)
     check = run_bjo(app, "fmt", "--check")
     c.failed("fmt --check fails on a file that is not laid out", check)
     c.says("and names it", check, "src/main.bjo: not formatted")
@@ -2416,6 +2437,11 @@ def test_fmt(work, c):
         print("    (no emacs: the comparison with bjo-mode is skipped)")
         return
     copies = []
+    laid = fmt_text(work, "\n".join(snippet for _, snippet in snippets))
+    if c.that("fmt lays out bjo-mode's snippets", laid.returncode == 0, laid.stderr):
+        copy = work / "snippets.bjo"
+        copy.write_text(laid.stdout)
+        copies.append(("snippets", copy))
     for i, rel in enumerate(FMT_CORPUS):
         laid = fmt_text(work, (ROOT / rel).read_text())
         if c.that(f"fmt lays out {rel}", laid.returncode == 0, laid.stderr):

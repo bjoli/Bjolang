@@ -164,8 +164,8 @@ fenced, and a hash macro's name is an expression prefix; see
     ;; Makron biblioteket skriver, som är former för den som skriver bjolang.
     (cond . 0) (time-it . 0) (try . 0)
     ;; A definition: everything after its head is the body, two in, whatever
-    ;; else is on the head's line — `#:inline' after a `defun''s head, a
-    ;; `(where ...)' after an `impl''s, the name after `:doc'.
+    ;; else is on the head's line: a `(where ...)' after an `impl''s, the name
+    ;; after `:doc'.
     (defun . defun) (defbjo . defun) (defbjouble . defun)
     (impl . defun) (impl/extern . defun) (:doc . defun)
     ;; One distinguished form, then the body.
