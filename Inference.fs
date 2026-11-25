@@ -307,7 +307,7 @@ let checkAddendum (initialEnv: Env) (decls: Decl list) : Env * TDecl list =
 /// left, for a tool that reads the types, such as the language server. A
 /// declaration that failed to check is not among them. Called before the
 /// whole-module checks after it, which can still fail the program.
-let mutable observe: (Env -> TDecl list -> unit) option = None
+let observe = Compilation.Per<(Env -> TDecl list -> unit) option>((fun () -> None))
 
 // ---------------------------------------------------------------------------
 // The modules a REPL session imports, checked once
@@ -321,7 +321,7 @@ let mutable observe: (Env -> TDecl list -> unit) option = None
 /// checking their declarations again (each `import/extern` resolved against
 /// .NET, each signature, trait and impl) was about half of what an entry
 /// cost, and more the more it imports.
-let mutable cacheCheckedModules = false
+let cacheCheckedModules = Compilation.Per((fun () -> false), true)
 
 /// One module as `checkProgram` checked it: its declarations, and the
 /// environment, the signatures and the typed module after it.
@@ -341,13 +341,13 @@ let private startKey (env: Env) : StartKey =
 
 /// The modules the last compilation checked, from the first, as far as each
 /// could be kept, and the start it checked them from.
-let private checkedModules = ResizeArray<CheckedModule>()
-let mutable private checkedFrom: StartKey option = None
+let private checkedModules = Compilation.PerList<CheckedModule>()
+let private checkedFrom = Compilation.Per<StartKey option>((fun () -> None))
 
 /// Forgets the checked modules: for a session that loads its modules again.
 let forgetCheckedModules () =
     checkedModules.Clear()
-    checkedFrom <- None
+    checkedFrom.Value <- None
 
 /// The top-level modules, checked one at a time, in order, as
 /// `checkDeclGroup` checks a group of modules: none of its passes before or
@@ -368,9 +368,9 @@ let forgetCheckedModules () =
 let private checkModulesKept (initialEnv: Env) (program: Decl list) : Env * TDecl list =
     let start = startKey initialEnv
 
-    if checkedFrom <> Some start then
+    if checkedFrom.Value <> Some start then
         checkedModules.Clear()
-        checkedFrom <- Some start
+        checkedFrom.Value <- Some start
 
     let rec go (index: int) (taking: bool) (env: Env) (sigs: Sigs) (acc: TDecl list list) (rest: Decl list) =
         match rest with
@@ -412,7 +412,7 @@ let private checkModulesKept (initialEnv: Env) (program: Decl list) : Env * TDec
 
 let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
     let finalEnv, typedDecls =
-        if cacheCheckedModules then
+        if cacheCheckedModules.Value then
             checkModulesKept initialEnv program
         else
             let env, _, typed = checkDeclGroup initialEnv Map.empty program
@@ -422,7 +422,7 @@ let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
     solvePending finalEnv
     // Every case a placeholder stood for is chosen by now.
     let typedDecls = List.map resolveOpenCaseNamesInDecl typedDecls
-    observe |> Option.iter (fun f -> f finalEnv typedDecls)
+    observe.Value |> Option.iter (fun f -> f finalEnv typedDecls)
     checkModuleValuesAreConcrete finalEnv.Registry typedDecls
     warnAboutShadowedMethods finalEnv.Registry typedDecls
 

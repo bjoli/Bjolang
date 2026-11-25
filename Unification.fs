@@ -16,25 +16,25 @@ module Bjolang.Unification
 open Bjolang.TypedAST
 
 // --- UNIFICATION ENGINE ---
-let mutable nextMetaId = 0
+let nextMetaId = Compilation.Per((fun () -> 0))
 
 /// How many generalizing bindings are currently open.
 ///
 /// Zero is the top level. `enterLevel` raises it before the right-hand side of a binding that
 /// is to be generalized is inferred, so that every cell created there is born with a
 /// level that is higher than the environment's.
-let mutable private currentLevel = 0
+let private currentLevel = Compilation.Per((fun () -> 0))
 
 let freshMeta () = 
-    let id = nextMetaId
-    nextMetaId <- nextMetaId + 1
-    TMeta { Id = id; Value = None; Level = currentLevel }
+    let id = nextMetaId.Value
+    nextMetaId.Value <- nextMetaId.Value + 1
+    TMeta { Id = id; Value = None; Level = currentLevel.Value }
 
 /// The level right now. Read by `generalizeWith` and by `demote`.
-let level () : int = currentLevel
+let level () : int = currentLevel.Value
 
-let enterLevel () : unit = currentLevel <- currentLevel + 1
-let exitLevel () : unit = currentLevel <- currentLevel - 1
+let enterLevel () : unit = currentLevel.Value <- currentLevel.Value + 1
+let exitLevel () : unit = currentLevel.Value <- currentLevel.Value - 1
 
 /// Runs `f` one level in, and finds its way back even if `f` throws.
 ///
@@ -62,7 +62,7 @@ let freshMetaInner () : HMType = atLevel freshMeta
 /// the loop's name and range. Recorded by `inferLetRec`. Nothing gives such a
 /// result a type, so an error about an unresolved meta uses this to name the
 /// loop instead.
-let private loopsWithoutExit = ResizeArray<MetaVar * string * Lexer.Range>()
+let private loopsWithoutExit = Compilation.PerList<MetaVar * string * Lexer.Range>()
 
 let recordLoopWithoutExit (result: MetaVar) (name: string) (r: Lexer.Range) : unit =
     loopsWithoutExit.Add(result, name, r)
@@ -85,7 +85,7 @@ let loopWithoutExitFor (t: HMType) : (string * Lexer.Range) option =
         |> Option.map (fun (_, name, r) -> name, r)
     | _ -> None
 
-let mutable private nextEffectId = 0
+let private nextEffectId = Compilation.Per((fun () -> 0))
 
 /// A fresh, unsolved effect: what an `EPoly` becomes at a use site.
 ///
@@ -94,8 +94,8 @@ let mutable private nextEffectId = 0
 /// different kinds of unknown, and one counter would only make each of them
 /// depend on how many of the other happened to be made first.
 let freshEffect () : Effect =
-    let id = nextEffectId
-    nextEffectId <- nextEffectId + 1
+    let id = nextEffectId.Value
+    nextEffectId.Value <- nextEffectId.Value + 1
     EMeta { EId = id; EValue = None }
 
 /// The counter, and a way to put it back.
@@ -105,25 +105,25 @@ let freshEffect () : Effect =
 /// so this is per compilation. It is bracketed rather than left alone because
 /// an id is reachable from a diagnostic, and a number that depends on what was
 /// compiled first is a message that changes for no reason the reader can see.
-let snapshotMetaCounter () : int = nextMetaId
+let snapshotMetaCounter () : int = nextMetaId.Value
 
 /// The effect counter. Not put back on its own: `restoreMetaCounter` sets
 /// both. What reads it is a check that nothing made an effect cell.
-let snapshotEffectCounter () : int = nextEffectId
+let snapshotEffectCounter () : int = nextEffectId.Value
 
 /// Both counters, since an effect cell's id is per-run in exactly the same way.
 let restoreMetaCounter (n: int) : unit =
-    nextMetaId <- n
-    nextEffectId <- n
+    nextMetaId.Value <- n
+    nextEffectId.Value <- n
 
 /// The level counter, bracketed on its own.
 ///
 /// A dependency built in the same process does so in the middle of the outer
 /// compilation. The sub-compilation starts at zero and the outer one must find
 /// its way back to its own level.
-let snapshotLevel () : int = currentLevel
+let snapshotLevel () : int = currentLevel.Value
 
-let restoreLevel (n: int) : unit = currentLevel <- n
+let restoreLevel (n: int) : unit = currentLevel.Value <- n
 
 /// A binding, or the reason there is none.
 ///
@@ -518,7 +518,7 @@ let instantiate
     let unitSubst =
         boundVars
         |> List.filter (fun v -> List.contains v unitVars)
-        |> List.map (fun v -> v, Units.ofAtom (Units.UMeta(Units.freshCell currentLevel)))
+        |> List.map (fun v -> v, Units.ofAtom (Units.UMeta(Units.freshCell currentLevel.Value)))
         |> Map.ofList
 
     let boundFreshTypes =
@@ -670,11 +670,11 @@ let rec private projectionWaits (registry: TraitRegistry) (t: HMType) : bool =
 /// checks it when the implementor is known. Until then, the metavariables it
 /// waits on are not generalized (see `Traits.heldProjections`), so that the
 /// use site can pin them.
-let deferredProjections = ResizeArray<HMType * HMType * Lexer.Range option>()
+let deferredProjections = Compilation.PerList<HMType * HMType * Lexer.Range option>()
 
 /// The expression that inference is in, for the location of a deferred
 /// equation that fails later. `InferExpr.infer` sets it.
-let mutable inferenceSite: Lexer.Range option = None
+let inferenceSite = Compilation.Per<Lexer.Range option>((fun () -> None))
 
 /// Two arrows meet only at the same effect.
 ///
@@ -945,8 +945,8 @@ let rec private unifyIn (registry: TraitRegistry) (place: Place) (t1: HMType) (t
         unitsMeet t1 t2 Units.one u
     // A projection whose implementor is not known yet can not be compared now.
     // The equation waits; see `deferredProjections`.
-    | TAssoc _, _ when projectionWaits registry t1 -> deferredProjections.Add(t1, t2, inferenceSite)
-    | _, TAssoc _ when projectionWaits registry t2 -> deferredProjections.Add(t2, t1, inferenceSite)
+    | TAssoc _, _ when projectionWaits registry t1 -> deferredProjections.Add(t1, t2, inferenceSite.Value)
+    | _, TAssoc _ when projectionWaits registry t2 -> deferredProjections.Add(t2, t1, inferenceSite.Value)
     | _ ->
         // Arity is called out because it is the common case and the hardest to
         // read off two arrows printed one above the other.
@@ -1087,12 +1087,12 @@ let freeVars (registry: TraitRegistry) (t: HMType) : MetaVar list =
 /// unreachable from there. The next sibling binding would have quantified them.
 let demote (registry: TraitRegistry) (t: HMType) : unit =
     for m in freeVars registry t do
-        if m.Level > currentLevel then
-            m.Level <- currentLevel
+        if m.Level > currentLevel.Value then
+            m.Level <- currentLevel.Value
 
     for c in unitCellsOf registry t do
-        if c.ULevel > currentLevel then
-            c.ULevel <- currentLevel
+        if c.ULevel > currentLevel.Value then
+            c.ULevel <- currentLevel.Value
 
 let freeTVars (registry: TraitRegistry) (t: HMType) : string list =
     prune registry t
@@ -1145,7 +1145,7 @@ let mutable heldLocalMetaIds: unit -> Set<int> = fun () -> Set.empty
 /// Quantified, every call instantiated it afresh: a named let's `(vec-empty)`
 /// came out as `Vec<object>`, and C# would not assign it to the `Vec<T_a>` the
 /// loop carries (CS0029).
-let mutable scopedTypeVars: Set<string> = Set.empty
+let scopedTypeVars = Compilation.Per<Set<string>>((fun () -> Set.empty))
 
 /// Quantifies the cells in `t` that lie deeper than the level the binding
 /// ends up at.
@@ -1164,15 +1164,15 @@ let private generalizeWith (held: Set<int>) (scoped: Set<string>) (env: Env) (t:
 
     let generalizable =
         tFv
-        |> List.filter (fun m -> m.Level > currentLevel && not (Set.contains m.Id held))
+        |> List.filter (fun m -> m.Level > currentLevel.Value && not (Set.contains m.Id held))
 
     // A cell held back is monomorphic: it belongs to the level the binding
     // ends up at, as if the environment held it. Left at the inner level, the
     // next sibling binding, checked one level in, found it above its own
     // level and quantified it, and that rewrote this binding's type too.
     for m in tFv do
-        if m.Level > currentLevel && Set.contains m.Id held then
-            m.Level <- currentLevel
+        if m.Level > currentLevel.Value && Set.contains m.Id held then
+            m.Level <- currentLevel.Value
     
     // Find all explicitly named TVars that are already in the type
     let explicitTVars =
@@ -1195,7 +1195,7 @@ let private generalizeWith (held: Set<int>) (scoped: Set<string>) (env: Env) (t:
     let unitCells =
         unitCellsOf env.Registry t
         |> List.distinctBy (fun c -> c.UId)
-        |> List.filter (fun c -> c.ULevel > currentLevel && not (Set.contains c.UId heldUnits))
+        |> List.filter (fun c -> c.ULevel > currentLevel.Value && not (Set.contains c.UId heldUnits))
 
     let unitNames = unitCells |> List.map (fun _ -> Gensym.fresh "'u")
 
@@ -1255,4 +1255,4 @@ let generalizeLocal (env: Env) (t: HMType) : Scheme =
             |> Set.ofList
         | _ -> Set.empty
 
-    generalizeWith (Set.unionMany [ heldMetaIds (); heldLocalMetaIds (); resultOnly ]) scopedTypeVars env t
+    generalizeWith (Set.unionMany [ heldMetaIds (); heldLocalMetaIds (); resultOnly ]) scopedTypeVars.Value env t

@@ -831,12 +831,12 @@ type MissingSignature =
 /// Called with each function that is refused for having no signature, when
 /// the type of its body can be found. With no observer, nothing is inferred
 /// for such a function.
-let mutable observeMissingSignature: (MissingSignature -> unit) option = None
+let observeMissingSignature = Compilation.Per<(MissingSignature -> unit) option>((fun () -> None))
 
 /// Whether `checkDefun` is checking a function with no signature to find the
 /// signature for `observeMissingSignature`. The function is then checked as
 /// `main` is, with a fresh type for each parameter.
-let mutable private inferringSignature = false
+let private inferringSignature = Compilation.Per((fun () -> false))
 
 /// The signature of a function, as source writes it with no name, from the
 /// scheme that its check gave it. `None` when it cannot be written: a type
@@ -1420,15 +1420,15 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
 
     // Enforce mandatory signature for all top-level defuns except 'main'
     let sigOpt = Map.tryFind name sigs
-    if name <> "main" && sigOpt.IsNone && not inferringSignature then
+    if name <> "main" && sigOpt.IsNone && not inferringSignature.Value then
         // For a tool that offers to write the signature: the function is
         // checked as if it could have none, and what that gives is handed
         // over. The function is refused whatever the check gives, and what
         // the check leaves behind is what a failed check of a body leaves.
-        match observeMissingSignature with
+        match observeMissingSignature.Value with
         | Some tell ->
             let level = snapshotLevel ()
-            inferringSignature <- true
+            inferringSignature.Value <- true
 
             try
                 try
@@ -1439,7 +1439,7 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
                 with ex when Diagnostics.isDiagnostic ex ->
                     ()
             finally
-                inferringSignature <- false
+                inferringSignature.Value <- false
                 restoreLevel level
         | None -> ()
 
@@ -1670,10 +1670,10 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
         | _ -> bodyEnv
 
     // The signature's variables are the body's: see `scopedTypeVars`.
-    let outerScoped = Unification.scopedTypeVars
+    let outerScoped = Unification.scopedTypeVars.Value
     // A variable only a pin names, such as `#:cursor %c`, is the signature's
     // too.
-    Unification.scopedTypeVars <-
+    Unification.scopedTypeVars.Value <-
         Set.union
             outerScoped
             (Set.ofList (freeTVars env.Registry funType @ pinOnlyVars env.Registry [] explicitConstraints))
@@ -1705,7 +1705,7 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
 
             typedBody, typedKeywordArgs
         finally
-            Unification.scopedTypeVars <- outerScoped
+            Unification.scopedTypeVars.Value <- outerScoped
 
     solvePending env
 
@@ -1779,7 +1779,7 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
 
     // A function checked for the signature it lacks has no clause yet: the
     // signature that is offered has it.
-    if not undeclared.IsEmpty && not inferringSignature then
+    if not undeclared.IsEmpty && not inferringSignature.Value then
         // The whole clause, explicit ones included, so the message is
         // something to paste rather than something to merge by hand.
         let shown (c: TraitConstraint) =
@@ -2918,7 +2918,7 @@ and private checkExtern (env: Env) (sigs: Sigs) (name: string) (declaredOrigin: 
         addBinding
             name
             { Scheme = schemeWithConstraints
-              IsMutable = origin.IsMutable && TypeEnv.compilingReplEntry }
+              IsMutable = origin.IsMutable && TypeEnv.compilingReplEntry.Value }
             env
 
     // Every imported binding gets a table entry, whether or not a modifier
@@ -4903,7 +4903,7 @@ and internal checkDeclGroup
                 (Some(declRange d))
                 (fun () -> poisonFailed currEnv d, currSigs, [])
                 (reportingHoles (fun () ->
-                    Holes.declaring <- Set.ofList (declaredNames d)
+                    Holes.declaring.Value <- Set.ofList (declaredNames d)
                     refuseUsesAboveDefinitions currEnv index d
 
                     match d with

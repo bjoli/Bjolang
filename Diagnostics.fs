@@ -152,7 +152,7 @@ module Diagnostics =
     /// A REPL entry runs the same pipeline as a build, and six step banners per
     /// keystroke is not what the prompt is for — so the narration is a setting
     /// rather than something the REPL reimplements a quieter pipeline to avoid.
-    let mutable verbose = true
+    let verbose = Compilation.Per((fun () -> true), true)
 
     type Severity =
         | Error
@@ -172,7 +172,7 @@ module Diagnostics =
           Phase: string }
 
     /// Everything collected since the last `reset`.
-    let private collected = ResizeArray<Diagnostic>()
+    let private collected = Compilation.PerList<Diagnostic>()
 
     /// How much of `collected` has already been printed.
     ///
@@ -181,7 +181,7 @@ module Diagnostics =
     /// is normal — a phase gate prints what it collected, and `Build.compile`
     /// prints whatever was collected after it — and each diagnostic has to
     /// appear once across the two.
-    let mutable private reported = 0
+    let private reported = Compilation.Per((fun () -> 0))
 
     /// Names whose declaration failed, and how much had been collected when it
     /// did.
@@ -194,11 +194,11 @@ module Diagnostics =
     /// those. The index is what makes it *later* only: a diagnostic collected
     /// before the declaration failed is about something else that happens to
     /// share the name.
-    let private poisoned = System.Collections.Generic.Dictionary<string, int>()
+    let private poisoned = Compilation.PerDictionary<string, int>()
 
     let reset () =
         collected.Clear()
-        reported <- 0
+        reported.Value <- 0
         poisoned.Clear()
         // The ranges of the locations in the messages that are now gone.
         Lexer.forgetWritten ()
@@ -355,7 +355,7 @@ module Diagnostics =
     /// a generated copy reports the same message twice, and the second adds
     /// nothing.
     let report () =
-        let first = min reported collected.Count
+        let first = min reported.Value collected.Count
 
         let fresh =
             collected
@@ -368,7 +368,7 @@ module Diagnostics =
             |> Seq.map snd
             |> Seq.toList
 
-        reported <- collected.Count
+        reported.Value <- collected.Count
 
         let ordered =
             fresh
@@ -454,7 +454,7 @@ module Diagnostics =
 
         fun () ->
             collected.RemoveRange(collectedBefore, collected.Count - collectedBefore)
-            reported <- min reported collectedBefore
+            reported.Value <- min reported.Value collectedBefore
 
             for name in List.ofSeq poisoned.Keys do
                 if not (poisonedBefore.Contains name) then
@@ -508,7 +508,7 @@ module Diagnostics =
             rollback ()
             None
 
-    let progress (message: string) = if verbose then printfn "%s" message
+    let progress (message: string) = if verbose.Value then printfn "%s" message
 
     /// Records something the compiler accepted and suspects was not meant.
     ///
@@ -600,7 +600,7 @@ module Diagnostics =
     ///
     /// Each entry is the modules that offer the name, and whether it is a type
     /// or a constructor, which arrives with its module and cannot be left out.
-    let mutable ambiguousImports: Map<string, Map<NameSpace * string, string list * bool>> = Map.empty
+    let ambiguousImports = Compilation.Per<Map<string, Map<NameSpace * string, string list * bool>>>((fun () -> Map.empty))
 
     /// Refuses a use of `name` that two imports offer as different things.
     ///
@@ -609,7 +609,7 @@ module Diagnostics =
     /// which it means, because "the later import wins" would choose for it, and
     /// the choice changes whenever an import is added or moved.
     let refuseAmbiguous (space: NameSpace) (r: Lexer.Range) (name: string) : unit =
-        match Map.tryFind r.Module ambiguousImports with
+        match Map.tryFind r.Module ambiguousImports.Value with
         | None -> ()
         | Some names ->
             match Map.tryFind (space, name) names with
@@ -633,12 +633,12 @@ module Diagnostics =
     /// For each module being compiled, the bare type and constructor names that
     /// its imports offer and its `only` and `except` leave out: the module that
     /// offers each, and for a constructor the name of its type.
-    let mutable withheldNames: Map<string, Map<string, string * string option>> = Map.empty
+    let withheldNames = Compilation.Per<Map<string, Map<string, string * string option>>>((fun () -> Map.empty))
 
     /// What a refusal of an unknown type or constructor adds when an `only` or
     /// an `except` left the name out: `. It is a type of xml, ...`, or `""`.
     let withheldNote (moduleKey: string) (name: string) : string =
-        match Map.tryFind moduleKey withheldNames |> Option.bind (Map.tryFind name) with
+        match Map.tryFind moduleKey withheldNames.Value |> Option.bind (Map.tryFind name) with
         | None -> ""
         | Some(provider, None) ->
             $". It is a type of %s{provider}, and the (only ...) or (except ...) on every import of %s{provider} here leaves it out. Name it in the (only ...) list, or take it out of the (except ...)"

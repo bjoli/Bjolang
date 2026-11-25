@@ -1253,8 +1253,8 @@ and private spliceTemplate
             |> List.collect (freeTVars ctx.Env.Registry)
             |> Set.ofList
 
-        let outerScoped = Unification.scopedTypeVars
-        Unification.scopedTypeVars <- Set.union outerScoped callerVars
+        let outerScoped = Unification.scopedTypeVars.Value
+        Unification.scopedTypeVars.Value <- Set.union outerScoped callerVars
 
         let typedBody, typedDefaults =
             try
@@ -1281,7 +1281,7 @@ and private spliceTemplate
                 Traits.solvePending spliceEnv
                 typedBody, typedDefaults
             finally
-                Unification.scopedTypeVars <- outerScoped
+                Unification.scopedTypeVars.Value <- outerScoped
 
         let typedBody = TypeEnv.resolveOpenCaseNames typedBody
 

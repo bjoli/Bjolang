@@ -36,14 +36,14 @@ type Hole =
 
 /// The holes of the declaration being checked. Emptied by the refusal that
 /// reports them.
-let internal pending = ResizeArray<Hole>()
+let internal pending = Compilation.PerList<Hole>()
 
 let clear () : unit = pending.Clear()
 
 /// The names the declaration being checked binds, set by `checkDeclGroup`.
 /// Its own name is bound in its body for recursion, and is listed among the
 /// module's bindings rather than the hole's locals.
-let mutable declaring: Set<string> = Set.empty
+let declaring = Compilation.Per<Set<string>>((fun () -> Set.empty))
 
 /// Whether `name`, written as an expression, is a hole.
 ///
@@ -271,7 +271,7 @@ let private fitsFor
         | None -> Some key
 
     let isLocal (key: string) (binding: Binding) =
-        not (Set.contains key declaring)
+        not (Set.contains key declaring.Value)
         && env.ImplMethod <> Some key
         && (match Map.tryFind key env.Resolved with
             | Some atModule -> not (obj.ReferenceEquals(binding, atModule))
@@ -356,7 +356,7 @@ type Fillers =
       Parameters: int option }
 
 /// Called with each hole as it is refused.
-let mutable observe: (Fillers -> unit) option = None
+let observe = Compilation.Per<(Fillers -> unit) option>((fun () -> None))
 
 /// The values of type `t` the code at `h` may build directly, each with a hole
 /// for what it takes: a union's cases, a record with each field, a newtype
@@ -455,7 +455,7 @@ let describe (clrHolds: string -> HMType -> bool) (waiting: (string * HMType) li
         | TMeta _, [] -> []
         | _ -> fitsFor clrHolds h t waiting (not (namesAType t))
 
-    observe
+    observe.Value
     |> Option.iter (fun f ->
         let rec parameters t =
             match t with

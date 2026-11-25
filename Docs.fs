@@ -870,7 +870,7 @@ let private sources = Collections.Generic.Dictionary<string, string * string[] *
 let private sourceOf (file: string) : (string[] * LexedToken[]) option =
     // Text a host holds changes under the same path, so it is kept with the
     // text it was read from and read again when that differs.
-    let held = Paths.sourceOverrides.TryFind(IO.Path.GetFullPath file)
+    let held = Paths.sourceOverrides.Value.TryFind(IO.Path.GetFullPath file)
 
     match sources.TryGetValue file, held with
     | (true, (_, lines, tokens)), None -> Some(lines, tokens)
@@ -1093,7 +1093,7 @@ let publish (decls: Decl list) (entries: Entry list) : string =
 /// What `Codegen` writes under the metadata key `BjolangDocs`: the published
 /// docs of the module being compiled, or `""` for none. Set by `Pipeline` once
 /// they are checked, and read once, when the module is emitted.
-let mutable published = ""
+let published = Compilation.Per((fun () -> ""))
 
 /// Checks every doc of the module being compiled, and warns about the exports
 /// of a documented module that have none.

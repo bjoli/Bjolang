@@ -305,7 +305,7 @@ let private writeBuildRecord
             |> List.sort
 
         let compilerPath =
-            match Paths.compilerAssembly with
+            match Paths.compilerAssembly.Value with
             | "" -> []
             | loc -> [ $"compiler %s{Path.GetFullPath loc}" ]
 
@@ -780,7 +780,7 @@ let private isStandardLibraryOutput (outputFilePath: string) =
 /// way a library does — through `Exports.metadata` and nothing else. A REPL
 /// that built its own view of "what entry 3 defined" would be a second answer
 /// to a question the compiler already answers, and the two would drift.
-let mutable private lastInterface: string option = None
+let private lastInterface = Compilation.Per<string option>((fun () -> None))
 
 let generateSource
     (env: TypedAST.Env)
@@ -811,9 +811,9 @@ let generateSource
     // What an importer is compiled against: the metadata, and the defaults the
     // C# compiler copies into its call sites. See `BuildRecord.Record.Interface`
     // for why a library with macros has none.
-    lastInterface <-
+    lastInterface.Value <-
         if isLibrary && metadata.Macros.IsEmpty && metadata.PatternMacros.IsEmpty && metadata.HashMacros.IsEmpty && metadata.ClauseMacros.IsEmpty && metadata.AccMacros.IsEmpty then
-            let defaults = List.rev Codegen.emittedConstantDefaults
+            let defaults = List.rev Codegen.emittedConstantDefaults.Value
             Some(BuildRecord.digest (String.concat "\n" (ModuleMetadata.serialize metadata :: defaults)))
         else
             None
@@ -1856,7 +1856,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                 if isLibrary && not options.Debug && Paths.readyToRun && isStandardLibraryOutput outputFilePath then
                     precompile (Path.GetFullPath outputFilePath) linkedAssemblies
 
-                writeBuildRecord options inputFilePath outputFilePath linkedAssemblies links natives lastInterface
+                writeBuildRecord options inputFilePath outputFilePath linkedAssemblies links natives lastInterface.Value
 
             buildStatus
         | None ->
@@ -1885,7 +1885,7 @@ let compile (options: Options) (inputFilePath: string) : int =
 /// cross the boundary. It becomes dead the day that path is deleted.
 let private buildChainVariable = "BJOLANG_BUILD_CHAIN"
 
-let private inFlight = System.Collections.Generic.List<string>()
+let private inFlight = Compilation.PerList<string>()
 
 let private buildChain () =
     let inherited =
@@ -1937,7 +1937,7 @@ let private compileDependencyOutOfProcess (bjoPath: string) : string =
 
     printfn $"Building imported module %s{Path.GetFileName bjoPath}"
 
-    let self = Paths.compilerAssembly
+    let self = Paths.compilerAssembly.Value
 
     // What this process was told about packages and frameworks, forwarded.
     let inherited =
@@ -1989,8 +1989,8 @@ let private compileDependencyInProcess (bjoPath: string) : string =
     printfn $"Building imported module %s{Path.GetFileName bjoPath}"
 
     inFlight.Add bjoPath
-    let narrating = Diagnostics.verbose
-    Diagnostics.verbose <- false
+    let narrating = Diagnostics.verbose.Value
+    Diagnostics.verbose.Value <- false
 
     let exitCode =
         try
@@ -2000,7 +2000,7 @@ let private compileDependencyInProcess (bjoPath: string) : string =
                 Session.isolated (fun () ->
                     compile dependencyOptions bjoPath))
         finally
-            Diagnostics.verbose <- narrating
+            Diagnostics.verbose.Value <- narrating
             inFlight.RemoveAt(inFlight.Count - 1)
 
     if exitCode <> 0 || not (File.Exists dllPath) then
@@ -2252,7 +2252,7 @@ let runWorker () : int =
 
     // Turns off the step-by-step narration of a successful compile. Warnings
     // and errors are still printed, and the graph build shows them.
-    Diagnostics.verbose <- false
+    Diagnostics.verbose.Value <- false
 
     let reply = System.Console.Out
 

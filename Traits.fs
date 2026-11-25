@@ -37,23 +37,23 @@ type Wanted =
       Ref: TraitRef
       Range: Range }
 
-let private wantedQueue = ResizeArray<Wanted>()
+let private wantedQueue = Compilation.PerList<Wanted>()
 
 /// Wanteds that two or more implementations could still answer, because a
 /// type in them is not known yet. `solvePending` tries them again after each
 /// step that can tell it more, and reports those that are left.
-let private undecidedWanteds = ResizeArray<Wanted>()
+let private undecidedWanteds = Compilation.PerList<Wanted>()
 
 /// The constraints over .NET interfaces of the implementations that resolution
 /// chose, each with the type it asks it at, where, and why: the `(Num %a)` of
 /// `(Summing %a)` at the `string` a loop sums. Checked in `solvePending`, so
 /// that the error names the use rather than the implementation's body.
-let private clrObligations = ResizeArray<string * HMType * Range * string>()
+let private clrObligations = Compilation.PerList<string * HMType * Range * string>()
 
 /// The wanteds of .NET-interface traits whose constraint is already queued in
 /// `clrObligations`, so that the solver's later passes over the same wanted do
 /// not queue it again.
-let private clrChecked = System.Collections.Generic.HashSet<Wanted>(HashIdentity.Reference)
+let private clrChecked = Compilation.PerSet<Wanted>(fun () -> System.Collections.Generic.HashSet<Wanted>(HashIdentity.Reference))
 
 /// What the declaration being checked requires at the types it uses, each
 /// with where and why: the `(where ...)` of each constrained binding it refers
@@ -66,7 +66,7 @@ let private clrChecked = System.Collections.Generic.HashSet<Wanted>(HashIdentity
 /// dictionary, but an inlined call has no dictionary, so without this such a
 /// call compiled at a type its impl does not cover; and a type left open made
 /// C# that did not compile.
-let private obligations = ResizeArray<string * HMType * Range * string>()
+let private obligations = Compilation.PerList<string * HMType * Range * string>()
 
 /// The holes an unresolved obligation of `kind` is still watching.
 ///
@@ -350,7 +350,7 @@ let private instantiateImplPrefix (target: ImplTarget) : HMType list * HMType li
 /// projection equals that type"; both sides may still be metavariables when
 /// queued, so they wait in line until resolution has fed them, exactly as a
 /// wanted does.
-let private pinEquations = ResizeArray<HMType * HMType * string * Lexer.Range>()
+let private pinEquations = Compilation.PerList<HMType * HMType * string * Lexer.Range>()
 
 /// Queues the pins of a constraint in an implementation's where clause, at
 /// the types `subst` gives the implementation's variables: the impl of

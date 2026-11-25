@@ -245,20 +245,20 @@ type MacroEntry =
 /// - Published by `Exports.metadata` beside the module's own macros, with the
 ///   module that defines each one, so an importer loads the transformer from
 ///   there.
-let mutable reExportedMacros: MacroEntry list = []
+let reExportedMacros = Compilation.Per<MacroEntry list>((fun () -> []))
 
 /// The same, for the imported `def/pattern`s, `def/hash-extend`s,
 /// `def/loop-clause`s and `def/acc-clause`s the module exports again.
-let mutable reExportedPatternMacros: MacroEntry list = []
-let mutable reExportedHashMacros: MacroEntry list = []
-let mutable reExportedClauseMacros: MacroEntry list = []
-let mutable reExportedAccMacros: MacroEntry list = []
+let reExportedPatternMacros = Compilation.Per<MacroEntry list>((fun () -> []))
+let reExportedHashMacros = Compilation.Per<MacroEntry list>((fun () -> []))
+let reExportedClauseMacros = Compilation.Per<MacroEntry list>((fun () -> []))
+let reExportedAccMacros = Compilation.Per<MacroEntry list>((fun () -> []))
 
 /// What the templates of `reExportedMacros` may name: each binding of their
 /// modules' exports, as (module, name). `Exports.metadata` publishes the ones
 /// this module can see as implicit exports, so an importer that reaches the
 /// macro only through this module can check its expansions.
-let mutable reExportedMacroScope: (string * string) list = []
+let reExportedMacroScope = Compilation.Per<(string * string) list>((fun () -> []))
 
 /// Declaration groups are separate fields because an importer has to read them
 /// in this order: a trait's signature may name a type an `import/class` alias

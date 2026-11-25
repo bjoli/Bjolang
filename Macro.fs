@@ -101,7 +101,7 @@ type MacroBinding =
       TraitMethods: Set<string>
       Method: MethodInfo }
 
-let private table = Dictionary<string, MacroBinding>()
+let private table = Compilation.PerDictionary<string, MacroBinding>()
 
 /// The same, for `def/pattern`.
 ///
@@ -109,43 +109,43 @@ let private table = Dictionary<string, MacroBinding>()
 /// positions and a name may be in both: `Cons` is a function in expression
 /// position and a constructor in pattern position, and a pattern macro is how a
 /// library says the same thing about a name of its own.
-let private patternTable = Dictionary<string, MacroBinding>()
+let private patternTable = Compilation.PerDictionary<string, MacroBinding>()
 
 /// The same, for `def/hash-extend`.
 ///
 /// Keyed on the bare name: `#fl(...)` looks up `fl`. A third table because the
 /// spelling is its own namespace — `#map` beside the prelude's `map`.
-let private hashTable = Dictionary<string, MacroBinding>()
+let private hashTable = Compilation.PerDictionary<string, MacroBinding>()
 
 /// The same, for `def/loop-clause`: a macro for the sequence of a loop's `:for`.
 ///
 /// A table of its own because it is asked in one position only, the head of
 /// the sequence in `(:for pat (head ...))`, and is called with the whole
 /// clause rather than the sequence form: what it returns is loop clauses.
-let private clauseTable = Dictionary<string, MacroBinding>()
+let private clauseTable = Compilation.PerDictionary<string, MacroBinding>()
 
 /// The same, for `def/acc-clause`: a macro for the collector of a loop's
 /// `:acc`, asked at the head of the collector in `(:acc [acc] (head ...))` and
 /// called with the whole clause. A table of its own, so that a clause macro is
 /// not asked in an `:acc` nor a collector macro in a `:for`.
-let private accTable = Dictionary<string, MacroBinding>()
+let private accTable = Compilation.PerDictionary<string, MacroBinding>()
 
 /// Macros defined by the module currently being parsed.
 ///
 /// They are not in `table` and cannot be: the transformer would have to be
 /// compiled before the file defining it has been read. Tracked anyway so that
 /// using one says so, rather than failing later with "Unbound variable".
-let mutable private localMacros: Set<string> = Set.empty
-let mutable private localPatternMacros: Set<string> = Set.empty
-let mutable private localHashMacros: Set<string> = Set.empty
-let mutable private localClauseMacros: Set<string> = Set.empty
-let mutable private localAccMacros: Set<string> = Set.empty
+let private localMacros = Compilation.Per<Set<string>>((fun () -> Set.empty))
+let private localPatternMacros = Compilation.Per<Set<string>>((fun () -> Set.empty))
+let private localHashMacros = Compilation.Per<Set<string>>((fun () -> Set.empty))
+let private localClauseMacros = Compilation.Per<Set<string>>((fun () -> Set.empty))
+let private localAccMacros = Compilation.Per<Set<string>>((fun () -> Set.empty))
 
-let setLocalMacros (names: Set<string>) = localMacros <- names
-let setLocalPatternMacros (names: Set<string>) = localPatternMacros <- names
-let setLocalHashMacros (names: Set<string>) = localHashMacros <- names
-let setLocalClauseMacros (names: Set<string>) = localClauseMacros <- names
-let setLocalAccMacros (names: Set<string>) = localAccMacros <- names
+let setLocalMacros (names: Set<string>) = localMacros.Value <- names
+let setLocalPatternMacros (names: Set<string>) = localPatternMacros.Value <- names
+let setLocalHashMacros (names: Set<string>) = localHashMacros.Value <- names
+let setLocalClauseMacros (names: Set<string>) = localClauseMacros.Value <- names
+let setLocalAccMacros (names: Set<string>) = localAccMacros.Value <- names
 
 /// Registers the macros an imported assembly publishes.
 ///
@@ -179,7 +179,7 @@ let private aliasIn (tbl: Dictionary<string, MacroBinding>) (newName: string) (o
         true
     | _ -> false
 
-let alias (newName: string) (oldName: string) : bool = aliasIn table newName oldName
+let alias (newName: string) (oldName: string) : bool = aliasIn table.Current newName oldName
 
 /// The imported macro a name is bound to, if any. Not the current module's own
 /// macros: those have no transformer yet.
@@ -195,18 +195,18 @@ let private tryIn (tbl: Dictionary<string, MacroBinding>) (name: string) =
 
 /// The same, for the other four kinds. A hash macro is asked with its bare
 /// name, `fl` for `#fl`.
-let tryImportedPattern (name: string) = tryIn patternTable name
-let tryImportedHash (name: string) = tryIn hashTable name
-let tryImportedClause (name: string) = tryIn clauseTable name
-let tryImportedAcc (name: string) = tryIn accTable name
+let tryImportedPattern (name: string) = tryIn patternTable.Current name
+let tryImportedHash (name: string) = tryIn hashTable.Current name
+let tryImportedClause (name: string) = tryIn clauseTable.Current name
+let tryImportedAcc (name: string) = tryIn accTable.Current name
 
-let aliasPattern (newName: string) (oldName: string) : bool = aliasIn patternTable newName oldName
+let aliasPattern (newName: string) (oldName: string) : bool = aliasIn patternTable.Current newName oldName
 
-let aliasHash (newName: string) (oldName: string) : bool = aliasIn hashTable newName oldName
+let aliasHash (newName: string) (oldName: string) : bool = aliasIn hashTable.Current newName oldName
 
-let aliasClause (newName: string) (oldName: string) : bool = aliasIn clauseTable newName oldName
+let aliasClause (newName: string) (oldName: string) : bool = aliasIn clauseTable.Current newName oldName
 
-let aliasAcc (newName: string) (oldName: string) : bool = aliasIn accTable newName oldName
+let aliasAcc (newName: string) (oldName: string) : bool = aliasIn accTable.Current newName oldName
 
 /// Whether a head symbol names a macro — including one a macro wrote.
 ///
@@ -215,30 +215,30 @@ let aliasAcc (newName: string) (oldName: string) : bool = aliasIn accTable newNa
 /// is what `parseBody` asks before deciding how to read a form, and a recursive
 /// macro that expands to a `def` is read wrongly if the answer is no.
 let isMacro (name: string) =
-    let known (n: string) = table.ContainsKey n || Set.contains n localMacros
+    let known (n: string) = table.ContainsKey n || Set.contains n localMacros.Value
     known name || known (Hygiene.headName name)
 
 let isPatternMacro (name: string) =
     let known (n: string) =
-        patternTable.ContainsKey n || Set.contains n localPatternMacros
+        patternTable.ContainsKey n || Set.contains n localPatternMacros.Value
 
     known name || known (Hygiene.headName name)
 
 let isClauseMacro (name: string) =
     let known (n: string) =
-        clauseTable.ContainsKey n || Set.contains n localClauseMacros
+        clauseTable.ContainsKey n || Set.contains n localClauseMacros.Value
 
     known name || known (Hygiene.headName name)
 
 let isAccMacro (name: string) =
     let known (n: string) =
-        accTable.ContainsKey n || Set.contains n localAccMacros
+        accTable.ContainsKey n || Set.contains n localAccMacros.Value
 
     known name || known (Hygiene.headName name)
 
 /// Asked with the bare name, `fl` for `#fl`.
 let isHashMacro (name: string) =
-    hashTable.ContainsKey name || Set.contains name localHashMacros
+    hashTable.ContainsKey name || Set.contains name localHashMacros.Value
 
 // ---------------------------------------------------------------------------
 // Marshalling
@@ -495,7 +495,7 @@ let private resolveIntroduced
 ///
 /// See `maxDepth`: this is what stands in for a depth counter, because the
 /// nesting happens in the parser rather than inside the call this module makes.
-let private expansions = Dictionary<string * Range, int>()
+let private expansions = Compilation.PerDictionary<string * Range, int>()
 
 /// Every place a macro expanded in this compilation, as file, start and end.
 /// Each node an expansion builds carries the call site's range, so a form at
@@ -511,7 +511,7 @@ let expansionSites () : Set<string * Position * Position> =
 /// An expansion that is itself a macro call expands again at the same call
 /// site, since a template's nodes carry the site's range, so one call can be
 /// observed several times, each a step further.
-let mutable observe: (string -> Range -> SExpr -> SExpr -> Map<string, string> -> unit) option = None
+let observe = Compilation.Per<(string -> Range -> SExpr -> SExpr -> Map<string, string> -> unit) option>((fun () -> None))
 
 /// Expands one form against one table.
 ///
@@ -588,7 +588,7 @@ let private expandIn
         // define for itself.
         Hygiene.noteIntroduced memo.Values
 
-        match observe with
+        match observe.Value with
         | Some f ->
             let renamed = memo |> Seq.map (fun kv -> kv.Value, kv.Key) |> Map.ofSeq
             f binding.Name callSite form expanded renamed
@@ -604,7 +604,7 @@ let private expandIn
 /// has failed to match — so a macro can never shadow `if`.
 let expand (form: SExpr) : Expansion option =
     match form with
-    | SList(SAtom { Token = Symbol head } :: _, callSite) -> expandIn table localMacros "macro" form head callSite
+    | SList(SAtom { Token = Symbol head } :: _, callSite) -> expandIn table.Current localMacros.Value "macro" form head callSite
     | _ -> None
 
 /// Expands one *pattern*, if its head names a pattern macro.
@@ -616,9 +616,9 @@ let expand (form: SExpr) : Expansion option =
 let expandPattern (form: SExpr) : Expansion option =
     match form with
     | SList(SAtom { Token = Symbol head } :: _, callSite) ->
-        expandIn patternTable localPatternMacros "pattern macro" form head callSite
+        expandIn patternTable.Current localPatternMacros.Value "pattern macro" form head callSite
     | SAtom { Token = Symbol head; Range = r } when head.Length > 0 && System.Char.IsUpper head[0] ->
-        expandIn patternTable localPatternMacros "pattern macro" form head r
+        expandIn patternTable.Current localPatternMacros.Value "pattern macro" form head r
     | _ -> None
 
 /// Expands one `#name(...)` form, if `name` is a hash macro.
@@ -630,7 +630,7 @@ let expandPattern (form: SExpr) : Expansion option =
 let expandHash (form: SExpr) : Expansion option =
     match form with
     | SList(SAtom { Token = Symbol head } :: _, callSite) when head.StartsWith "#" ->
-        expandIn hashTable localHashMacros "hash macro" form (head.Substring 1) callSite
+        expandIn hashTable.Current localHashMacros.Value "hash macro" form (head.Substring 1) callSite
     | _ -> None
 
 /// Expands one loop clause `(:for pat (head ...))`, if `head` is a clause
@@ -641,7 +641,7 @@ let expandHash (form: SExpr) : Expansion option =
 let expandClause (form: SExpr) : Expansion option =
     match form with
     | SList([ SAtom { Token = Keyword "for" }; _; SList(SAtom { Token = Symbol head } :: _, _) ], callSite) ->
-        expandIn clauseTable localClauseMacros "clause macro" form head callSite
+        expandIn clauseTable.Current localClauseMacros.Value "clause macro" form head callSite
     | _ -> None
 
 /// Expands one loop clause `(:acc [acc] (head ...) [#:when cond])`, if `head`
@@ -650,7 +650,7 @@ let expandClause (form: SExpr) : Expansion option =
 /// site is the clause's range.
 let expandAcc (form: SExpr) : Expansion option =
     let expandHead head callSite =
-        expandIn accTable localAccMacros "collector macro" form head callSite
+        expandIn accTable.Current localAccMacros.Value "collector macro" form head callSite
 
     match form with
     | SList(SAtom { Token = Keyword "acc" } :: SAtom { Token = Symbol _ } :: SList(SAtom { Token = Symbol head } :: _, _) :: _, callSite)
@@ -717,11 +717,11 @@ let snapshot () : State =
       HashBindings = hashTable |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
       ClauseBindings = clauseTable |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
       AccBindings = accTable |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
-      Local = localMacros
-      LocalPatterns = localPatternMacros
-      LocalHashes = localHashMacros
-      LocalClauses = localClauseMacros
-      LocalAccs = localAccMacros
+      Local = localMacros.Value
+      LocalPatterns = localPatternMacros.Value
+      LocalHashes = localHashMacros.Value
+      LocalClauses = localClauseMacros.Value
+      LocalAccs = localAccMacros.Value
       Expansions = expansions |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq }
 
 let restore (state: State) : unit =
@@ -750,11 +750,11 @@ let restore (state: State) : unit =
     for (name, binding) in state.AccBindings do
         accTable[name] <- binding
 
-    localMacros <- state.Local
-    localPatternMacros <- state.LocalPatterns
-    localHashMacros <- state.LocalHashes
-    localClauseMacros <- state.LocalClauses
-    localAccMacros <- state.LocalAccs
+    localMacros.Value <- state.Local
+    localPatternMacros.Value <- state.LocalPatterns
+    localHashMacros.Value <- state.LocalHashes
+    localClauseMacros.Value <- state.LocalClauses
+    localAccMacros.Value <- state.LocalAccs
     expansions.Clear()
 
     for (site, count) in state.Expansions do

@@ -356,7 +356,7 @@ let private guardLoop (guards: (string * string * string * string) list) (loop: 
 /// its module exports, a trait method) are applied to the finished loop
 /// instead. `desugarLoop` saves the list and puts it back, since a clause's
 /// expression may hold another loop.
-let mutable private clauseResolves: (Set<string> -> Expr -> Expr) list = []
+let private clauseResolves = Compilation.Per<(Set<string> -> Expr -> Expr) list>((fun () -> []))
 
 /// Whether a clause is a driver: one that belongs to a level's driver group.
 let private isDriverForm (s: SExpr) =
@@ -487,7 +487,7 @@ let rec private placeClauses (inExpansion: bool) (forms: SExpr list) : SExpr lis
 
         match expansion with
         | Some(AccClause expansion) ->
-            clauseResolves <- expansion.Resolve :: clauseResolves
+            clauseResolves.Value <- expansion.Resolve :: clauseResolves.Value
             let prologue, placed = placeClauses true (spliceBegin expansion.Form)
 
             let misplaced =
@@ -505,7 +505,7 @@ let rec private placeClauses (inExpansion: bool) (forms: SExpr list) : SExpr lis
             flush ()
             out.AddRange placed
         | Some(ForClause expansion) ->
-            clauseResolves <- expansion.Resolve :: clauseResolves
+            clauseResolves.Value <- expansion.Resolve :: clauseResolves.Value
             let prologue, placed = placeClauses true (spliceBegin expansion.Form)
             let drivers = placed |> List.takeWhile isDriverForm
             let rest = placed |> List.skipWhile isDriverForm
@@ -1169,15 +1169,15 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
     // are, `:until-cancelled` included. Their `Resolve`s, those of the
     // `:subloop` forms' macros too, are this loop's; a loop in a clause's
     // expression is desugared later, in `buildGroup`, and keeps its own.
-    let outerResolves = clauseResolves
-    clauseResolves <- []
+    let outerResolves = clauseResolves.Value
+    clauseResolves.Value <- []
 
     let prologue, placed, resolves =
         try
             let prologue, placed = placeClauses false clauseForms
-            prologue, placed, List.rev clauseResolves
+            prologue, placed, List.rev clauseResolves.Value
         finally
-            clauseResolves <- outerResolves
+            clauseResolves.Value <- outerResolves
 
     let resolved (e: Expr) =
         resolves |> List.fold (fun e resolve -> resolve Set.empty e) e

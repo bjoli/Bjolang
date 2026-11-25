@@ -48,7 +48,7 @@ type private Resolved =
       /// (library key, path), one per native library for this machine.
       Native: (string * string) list }
 
-let mutable private resolved: Resolved option = None
+let private resolved = Compilation.Per<Resolved option>((fun () -> None), true)
 
 let private compileList (dir: string) = Path.Combine(dir, "compile.txt")
 let private runtimeList (dir: string) = Path.Combine(dir, "runtime.txt")
@@ -223,7 +223,7 @@ let load (dir: string) : unit =
             failwithf
                 $"--nuget: the assembly %s{name} was resolved from more than one package file:\n  %s{paths}\nThis is a bug in the package resolution, not in the program.")
 
-    resolved <-
+    resolved.Value <-
         Some
             { Dir = full
               Compile = compile
@@ -232,15 +232,15 @@ let load (dir: string) : unit =
               Native = native }
 
 /// The `--nuget` directory, as given.
-let directory () : string option = resolved |> Option.map (fun r -> r.Dir)
+let directory () : string option = resolved.Value |> Option.map (fun r -> r.Dir)
 
 let compileReferences () : string list =
-    match resolved with
+    match resolved.Value with
     | Some r -> r.Compile
     | None -> []
 
 let runtimeAssemblies () : string list =
-    match resolved with
+    match resolved.Value with
     | Some r -> r.Runtime |> List.map snd
     | None -> []
 
@@ -249,20 +249,20 @@ let runtimeAssemblies () : string list =
 /// Native AOT compiles: ILCompiler compiles the code it is given, and a
 /// reference assembly has none.
 let implementationAssemblies () : string list =
-    match resolved with
+    match resolved.Value with
     | Some r -> r.Implementation
     | None -> []
 
 /// (assembly name, path) for every runtime assembly.
 let runtimeByName () : (string * string) list =
-    match resolved with
+    match resolved.Value with
     | Some r -> r.Runtime
     | None -> []
 
 /// (library key, path) for every native library this machine uses. The key is
 /// `nativeKey` of the file.
 let nativeLibraries () : (string * string) list =
-    match resolved with
+    match resolved.Value with
     | Some r -> r.Native
     | None -> []
 
@@ -281,7 +281,7 @@ let installNativeResolver () : unit =
 
 /// The list files, which are inputs of every build that used them.
 let listFiles () : string list =
-    match resolved with
+    match resolved.Value with
     | Some r ->
         [ compileList r.Dir; runtimeList r.Dir ]
         @ (if File.Exists(nativeList r.Dir) then [ nativeList r.Dir ] else [])

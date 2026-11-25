@@ -288,7 +288,7 @@ let private expandIncludeBytes (filePath: string) (form: SExpr) : SExpr * Set<st
             if not (File.Exists target) then
                 failwithf "Include Error: cannot find '%s' of include-bytes at %s (looked for %s)" rel where target
 
-            if not TypeEnv.compilingReplEntry then
+            if not TypeEnv.compilingReplEntry.Value then
                 match Paths.importRefusal filePath target with
                 | Some why -> failwithf $"Include Error at %s{where}: %s{why}"
                 | None -> ()
@@ -368,7 +368,7 @@ let rec private expandIncludes
 
                 // An included file is the including module's code, so it is
                 // under the rule an import is.
-                if not TypeEnv.compilingReplEntry then
+                if not TypeEnv.compilingReplEntry.Value then
                     match Paths.importRefusal filePath target with
                     | Some why -> failwithf $"Include Error at %s{includedFrom r}: %s{why}"
                     | None -> ()
@@ -1669,7 +1669,7 @@ type LoadedModule = {
 ///
 /// What it buys is the whole reason: a REPL entry imports the prelude, and
 /// re-reading the prelude's metadata was about a third of what an entry cost.
-let mutable cacheLoadedModules = false
+let cacheLoadedModules = Compilation.Per((fun () -> false), true)
 
 /// What a `.dll`'s metadata says about its bindings and traits that is not a
 /// declaration, collected for the whole compilation rather than checked.
@@ -1734,7 +1734,7 @@ let mutable compileLibrary: string -> string =
 /// Emptied by the walk that started it rather than kept, so that nothing is
 /// remembered between two builds in one process: what a `.dll`'s timestamp says
 /// is only true until something rebuilds it, and a REPL rebuilds things.
-let private walking = System.Collections.Generic.HashSet<string>()
+let private walking = Compilation.PerSet<string>()
 
 /// `(std prelude)`, which every program gets whether it asks or not.
 let private preludePath = ModulePath [ "std"; "prelude" ]
@@ -1861,7 +1861,7 @@ let private factsOf (bjoPath: string) : SourceFacts =
     let key = bjoPath, File.GetLastWriteTimeUtc(bjoPath).Ticks
     // Text a host holds changes without the file's timestamp, so it is read
     // again each time rather than cached under one.
-    let held = Paths.sourceOverrides.ContainsKey(Path.GetFullPath bjoPath)
+    let held = Paths.sourceOverrides.Value.ContainsKey(Path.GetFullPath bjoPath)
 
     match sourceFacts.TryGetValue key with
     | true, hit when not held -> hit
@@ -1935,7 +1935,7 @@ let private recordedFacts (bjoPath: string) (built: DateTime) (record: BuildReco
         not sources.IsEmpty
         && sources
            |> List.forall (fun s ->
-               not (Paths.sourceOverrides.ContainsKey s) && File.Exists s && File.GetLastWriteTimeUtc s <= built)
+               not (Paths.sourceOverrides.Value.ContainsKey s) && File.Exists s && File.GetLastWriteTimeUtc s <= built)
         ->
         try
             let forms = importTexts |> List.collect (fun text -> Lexer.tokenize bjoPath text |> read |> fst)
@@ -1972,7 +1972,7 @@ let private upToDateAgainst (resolve: ImportSpec -> Result<string, string>) (bjo
     let dllPath = Path.ChangeExtension(bjoPath, ".dll")
 
     let compilerBuilt =
-        let loc = Paths.compilerAssembly
+        let loc = Paths.compilerAssembly.Value
         if loc <> "" && File.Exists loc then File.GetLastWriteTimeUtc loc else DateTime.MinValue
 
     /// The runtime assemblies, for the reason the compiler is an input: a
@@ -2511,7 +2511,7 @@ let loadModuleGraph
             let cacheKey = absPath, File.GetLastWriteTimeUtc(absPath).Ticks
 
             let cached =
-                if cacheLoadedModules && absPath.EndsWith ".dll" then
+                if cacheLoadedModules.Value && absPath.EndsWith ".dll" then
                     match dllCache.TryGetValue cacheKey with
                     | true, hit -> Some hit
                     | _ -> None
@@ -2931,7 +2931,7 @@ let loadModuleGraph
                     // until the trait and impl it belongs to exist.
                     let decls = parsedDecls @ inlineImplDecls
 
-                    if cacheLoadedModules then
+                    if cacheLoadedModules.Value then
                         dllCache[cacheKey] <-
                             { Decls = decls
                               Facts = facts
@@ -3015,7 +3015,7 @@ let loadModuleGraph
                     let importEdges =
                         importsOf forms
                         |> List.map (fun (spec, r) ->
-                            if not TypeEnv.compilingReplEntry then
+                            if not TypeEnv.compilingReplEntry.Value then
                                 match resolveImport false absPath spec with
                                 | Ok p ->
                                     match Paths.importRefusal absPath p with
@@ -3121,8 +3121,8 @@ let loadModuleGraph
                     Macro.setLocalAccMacros localAccMacros
                     // Saved and put back: parsing a module can load and parse
                     // another, and each answers `(current-module)` for itself.
-                    let outerModuleKey = Parser.currentModuleKey
-                    Parser.currentModuleKey <- Naming.moduleKeyOfPath absPath
+                    let outerModuleKey = Parser.currentModuleKey.Value
+                    Parser.currentModuleKey.Value <- Naming.moduleKeyOfPath absPath
 
                     // The names two imports offer as different things, before
                     // parsing, because a macro is expanded while the module is
@@ -3140,30 +3140,30 @@ let loadModuleGraph
 
                         ambiguousNames offers
                         |> Map.filter (fun _ (providers, _) ->
-                            not (TypeEnv.compilingReplEntry && fromEntries providers))
+                            not (TypeEnv.compilingReplEntry.Value && fromEntries providers))
 
                     let setAmbiguous (own: Set<string>) =
                         let kept =
                             ambiguous |> Map.filter (fun (_, name) _ -> not (Set.contains name own))
 
-                        Diagnostics.ambiguousImports <-
+                        Diagnostics.ambiguousImports.Value <-
                             if kept.IsEmpty then
-                                Map.remove ownKey Diagnostics.ambiguousImports
+                                Map.remove ownKey Diagnostics.ambiguousImports.Value
                             else
-                                Map.add ownKey kept Diagnostics.ambiguousImports
+                                Map.add ownKey kept Diagnostics.ambiguousImports.Value
 
                     setAmbiguous (Set.unionMany [ localMacros; localPatternMacros; localHashMacros; localClauseMacros; localAccMacros ])
 
-                    Diagnostics.withheldNames <-
+                    Diagnostics.withheldNames.Value <-
                         match withheldNames edgeSurfaces with
-                        | w when w.IsEmpty -> Map.remove ownKey Diagnostics.withheldNames
-                        | w -> Map.add ownKey w Diagnostics.withheldNames
+                        | w when w.IsEmpty -> Map.remove ownKey Diagnostics.withheldNames.Value
+                        | w -> Map.add ownKey w Diagnostics.withheldNames.Value
 
                     let parsed =
                         try
                             DeclParser.parseModule forms
                         finally
-                            Parser.currentModuleKey <- outerModuleKey
+                            Parser.currentModuleKey.Value <- outerModuleKey
 
                     // And a name this module defines wins over an import (rule
                     // 1), so it is no ambiguity.
@@ -3183,12 +3183,12 @@ let loadModuleGraph
                             let (macros, patterns, hashes, clauses, accs), scope, parsed =
                                 takeMacroExports own (Set.ofSeq plainImports) parsed
 
-                            ModuleMetadata.reExportedMacros <- macros
-                            ModuleMetadata.reExportedPatternMacros <- patterns
-                            ModuleMetadata.reExportedHashMacros <- hashes
-                            ModuleMetadata.reExportedClauseMacros <- clauses
-                            ModuleMetadata.reExportedAccMacros <- accs
-                            ModuleMetadata.reExportedMacroScope <- scope
+                            ModuleMetadata.reExportedMacros.Value <- macros
+                            ModuleMetadata.reExportedPatternMacros.Value <- patterns
+                            ModuleMetadata.reExportedHashMacros.Value <- hashes
+                            ModuleMetadata.reExportedClauseMacros.Value <- clauses
+                            ModuleMetadata.reExportedAccMacros.Value <- accs
+                            ModuleMetadata.reExportedMacroScope.Value <- scope
                             parsed
                         else
                             parsed
@@ -3558,7 +3558,7 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
 
         // A dependency compiled while the graph was loaded has published its
         // own docs and emitted them; nothing of them belongs to this module.
-        Docs.published <- ""
+        Docs.published.Value <- ""
 
         // The macros *this* compilation publishes. The main module is last, and
         // is the only one being compiled — everything before it arrived as a
@@ -3589,7 +3589,7 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         // Before any pass rewrites the module: a binding is then the one the
         // program wrote.
         match List.tryLast parsedModuleDecls with
-        | Some(DModule(_, decls, _)) -> Unused.warn (not TypeEnv.compilingReplEntry) decls
+        | Some(DModule(_, decls, _)) -> Unused.warn (not TypeEnv.compilingReplEntry.Value) decls
         | _ -> ()
 
         Diagnostics.progress "=== Step 2: Normalization ==="
@@ -3727,8 +3727,8 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         match List.tryLast parsedModuleDecls with
         | Some(DModule(moduleKey, mainDecls, _)) ->
             Docs.check env moduleKey mainDecls docEntries
-            Docs.published <- Docs.publish mainDecls docEntries
-        | _ -> Docs.published <- ""
+            Docs.published.Value <- Docs.publish mainDecls docEntries
+        | _ -> Docs.published.Value <- ""
 
         // The type-check gate. Everything from here down rewrites the checked
         // tree, and a declaration that failed to check contributed none of it:

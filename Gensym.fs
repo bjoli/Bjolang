@@ -19,14 +19,14 @@ module Bjolang.Gensym
 /// that already contain `LoopLowering` names into functions where `Codegen`
 /// will later hoist temporaries. A shared counter guarantees these names
 /// remain distinct across passes.
-let private counter = ref 0
+let private counter = Compilation.Per(fun () -> 0)
 
 /// The names of the shape `fresh` makes that source has written.
 ///
 /// `x__1` is an identifier a program may write, so a fresh `x__1` would be a
 /// binder that captures the program's own variable of that name. The lexer
 /// reserves every such name it reads, and `fresh` passes over them.
-let private written = System.Collections.Generic.HashSet<string>()
+let private written = Compilation.PerSet<string>()
 
 /// Is `name` of the shape `fresh` makes: a name, `__`, and digits?
 let private isFreshShaped (name: string) : bool =
@@ -41,7 +41,7 @@ let private isFreshShaped (name: string) : bool =
 /// What tells a program's own local from one the compiler invented, once both
 /// are C# locals in a PDB: `loopcur__75` and `__init__65` are names nobody
 /// writes, and `x__23` is the `x` somebody did (see `PdbNames`).
-let private sourceNames = System.Collections.Generic.HashSet<string>()
+let private sourceNames = Compilation.PerSet<string>()
 
 /// Reserves a name source has written, so that `fresh` never makes it.
 let reserve (name: string) : unit =

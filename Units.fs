@@ -147,12 +147,12 @@ let inv (t: UnitTerm) : UnitTerm = pow t (Rational.ofInt -1)
 
 let div (a: UnitTerm) (b: UnitTerm) : UnitTerm = mul a (inv b)
 
-let mutable private nextUnitId = 0
+let private nextUnitId = Compilation.Per((fun () -> 0))
 
 /// A fresh unsolved unit at a let-level.
 let freshCell (level: int) : UnitCell =
-    let id = nextUnitId
-    nextUnitId <- nextUnitId + 1
+    let id = nextUnitId.Value
+    nextUnitId.Value <- nextUnitId.Value + 1
     { UId = id; UValue = None; ULevel = level }
 
 /// Solved metavariables replaced by their solutions, recursively. Compresses

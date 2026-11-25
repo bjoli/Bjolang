@@ -48,7 +48,7 @@ module Lexer =
     /// - `forgetWritten` empties it. It also empties itself at 20000
     ///   locations, so that a process that compiles many files does not keep
     ///   them all.
-    let private written = System.Collections.Generic.Dictionary<string, Range>()
+    let private written = Compilation.PerDictionary<string, Range>()
 
     /// A location for a diagnostic, as `file.bjo:12:5`: the line, and the
     /// column counted from 1, as editors and Emacs' compilation mode read it.

@@ -799,7 +799,7 @@ let rec private missing (registry: TraitRegistry) (types: HMType list) (matrix: 
 type MissingClauses = { Range: Range; Patterns: string list }
 
 /// Called with each match the check finds incomplete.
-let mutable observe: (MissingClauses -> unit) option = None
+let observe = Compilation.Per<(MissingClauses -> unit) option>((fun () -> None))
 
 /// A missing value as a clause would match it. A value of an integer or a
 /// char column, or a sequence of one length, is widened to all of them, so
@@ -1143,7 +1143,7 @@ let private checkMatch (registry: TraitRegistry) (range: Range) (scrutinee: HMTy
 
         match missing registry [ scrutinee ] covered with
         | Some [ witness ] ->
-            observe
+            observe.Value
             |> Option.iter (fun f ->
                 match (try Some(missingClauses registry scrutinee covered) with Undecidable -> None) with
                 | Some patterns -> f { Range = range; Patterns = patterns }

@@ -569,30 +569,30 @@ let moduleClassName = Naming.moduleClassName
 /// generated has — `core_Module` for `(bjosql core)` and `(bjosqlite core)` —
 /// mapped to nothing: a reference to one of them has to name its namespace,
 /// since `using` both makes the bare name ambiguous. Set per file.
-let mutable private ambiguousModuleClasses: Set<string> = Set.empty
+let private ambiguousModuleClasses = Compilation.Per<Set<string>>((fun () -> Set.empty))
 
 /// Reduces an associated-type projection whose implementor is concrete by now.
 /// Inference can record a projection while its implementor is still open, as
 /// in a local function whose parameter type only its call site says. The tree
 /// then keeps the projection after the implementor is known. Set per file,
 /// because only the file's registry knows the implementations.
-let mutable private reduceProjection: HMType -> HMType option = fun _ -> None
+let private reduceProjection = Compilation.Per<HMType -> HMType option>((fun () -> fun _ -> None))
 
 /// The `(Newtype T)` types the file can see, by key: their parameters and
 /// what each is at run time. Set per file, from the registry.
-let mutable private newtypes: Map<string, string list * HMType> = Map.empty
+let private newtypes = Compilation.Per<Map<string, string list * HMType>>((fun () -> Map.empty))
 
 /// Whether `name` is a newtype's key.
-let private isNewtypeKey (name: string) = Map.containsKey name newtypes
+let private isNewtypeKey (name: string) = Map.containsKey name newtypes.Value
 
 /// What `t` is at run time: see `eraseNewtypesIn`. A newtype exists for the
 /// checker only, so every C# spelling of a type goes through this.
-let eraseNewtypes (t: HMType) : HMType = eraseNewtypesIn newtypes t
+let eraseNewtypes (t: HMType) : HMType = eraseNewtypesIn newtypes.Value t
 
 /// Every keyword default emitted as a C# constant, as `owner #:name = value`.
 /// The C# compiler copies these into callers, so they are part of what an
 /// importer is compiled against without being in the metadata. Set per file.
-let mutable emittedConstantDefaults: string list = []
+let emittedConstantDefaults = Compilation.Per<string list>((fun () -> []))
 
 /// The C# spelling of a module class given as `Namespace.Class` or `Class`.
 let private moduleClassReference (qualified: string) =
@@ -601,7 +601,7 @@ let private moduleClassReference (qualified: string) =
         | -1 -> qualified
         | i -> qualified.Substring(i + 1)
 
-    if qualified.Contains '.' && Set.contains bare ambiguousModuleClasses then
+    if qualified.Contains '.' && Set.contains bare ambiguousModuleClasses.Value then
         "global::" + qualified
     else
         sanitizeIdent bare
@@ -908,7 +908,7 @@ let rec typeToString (hm: HMType) : string =
     | TAssoc (traitName, assocName, TMeta { Value = Some inner }) ->
         typeToString (TAssoc(traitName, assocName, inner))
     | TAssoc _ as projection ->
-        match reduceProjection projection with
+        match reduceProjection.Value projection with
         | Some(TAssoc _)
         | None -> "object /* unresolved assoc */"
         | Some reduced -> typeToString reduced
@@ -3328,7 +3328,7 @@ let private generateParameterList
             // site has to know either.
             match csharpConstantDefault kwType kwDefault with
             | Some constant ->
-                emittedConstantDefaults <- $"%s{ownerName} #:%s{kwName} = %s{constant}" :: emittedConstantDefaults
+                emittedConstantDefaults.Value <- $"%s{ownerName} #:%s{kwName} = %s{constant}" :: emittedConstantDefaults.Value
                 append ctx $"%s{typeToString kwType} "
                 append ctx (keywordParamName kwName)
                 append ctx $" = %s{constant}"
@@ -9239,7 +9239,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 // see `BjolangRuntime.EnterModuleInit`. Not a REPL entry: the
                 // REPL initialises an entry at once, on purpose, in the
                 // session's scope, which owns what the entry opens.
-                let detached = not TypeEnv.compilingReplEntry
+                let detached = not TypeEnv.compilingReplEntry.Value
                 let env = freshName "__moduleEnv"
 
                 if detached then
@@ -9819,14 +9819,14 @@ let generateProgram
     (decls: TDecl list)
     : string =
     let registry = env.Registry
-    emittedConstantDefaults <- []
+    emittedConstantDefaults.Value <- []
 
     // `prune` raises when the implementor has no implementation. That was
     // reported during checking, so here it only means "not reducible".
-    reduceProjection <- fun t -> try Some(Unification.prune registry t) with _ -> None
-    newtypes <- registry.Newtypes
+    reduceProjection.Value <- fun t -> try Some(Unification.prune registry t) with _ -> None
+    newtypes.Value <- registry.Newtypes
 
-    let decls = if newtypes.IsEmpty then decls else List.map eraseNewtypeTerms decls
+    let decls = if newtypes.Value.IsEmpty then decls else List.map eraseNewtypeTerms decls
 
     let unionCases =
         decls
@@ -10077,7 +10077,7 @@ let generateProgram
         |> List.map (fun path -> $"%s{Naming.moduleNamespace path}.%s{moduleClassName path}")
         |> List.distinct
 
-    ambiguousModuleClasses <-
+    ambiguousModuleClasses.Value <-
         moduleUsings
         |> List.countBy (fun q -> q.Substring(q.LastIndexOf '.' + 1))
         |> List.filter (fun (_, n) -> n > 1)
@@ -10107,8 +10107,8 @@ let generateProgram
 
     // A key of its own, so that an importing compilation, which reads the one
     // above, never parses the docs. See Docs/Documentation.org.
-    if Docs.published <> "" then
-        appendLine ctx $"[assembly: System.Reflection.AssemblyMetadata(\"BjolangDocs\", \"%s{escapeAttribute Docs.published}\")]"
+    if Docs.published.Value <> "" then
+        appendLine ctx $"[assembly: System.Reflection.AssemblyMetadata(\"BjolangDocs\", \"%s{escapeAttribute Docs.published.Value}\")]"
 
     
     appendLine ctx ""

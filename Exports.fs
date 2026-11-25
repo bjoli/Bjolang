@@ -541,7 +541,7 @@ let metadata
         if not isLibrary then
             []
         else
-            ModuleMetadata.reExportedMacroScope
+            ModuleMetadata.reExportedMacroScope.Value
             |> List.choose (fun (home, original) ->
                 let qualified = Naming.qualifiedBinding home original
 
@@ -1725,12 +1725,12 @@ let metadata
         else []
 
     let macros =
-        publish declaredMacros @ (if isLibrary then ModuleMetadata.reExportedMacros else [])
+        publish declaredMacros @ (if isLibrary then ModuleMetadata.reExportedMacros.Value else [])
     let reExported (entries: ModuleMetadata.MacroEntry list) = if isLibrary then entries else []
-    let patternMacros = publish declaredPatternMacros @ reExported ModuleMetadata.reExportedPatternMacros
-    let hashMacros = publish declaredHashMacros @ reExported ModuleMetadata.reExportedHashMacros
-    let clauseMacros = publish declaredClauseMacros @ reExported ModuleMetadata.reExportedClauseMacros
-    let accMacros = publish declaredAccMacros @ reExported ModuleMetadata.reExportedAccMacros
+    let patternMacros = publish declaredPatternMacros @ reExported ModuleMetadata.reExportedPatternMacros.Value
+    let hashMacros = publish declaredHashMacros @ reExported ModuleMetadata.reExportedHashMacros.Value
+    let clauseMacros = publish declaredClauseMacros @ reExported ModuleMetadata.reExportedClauseMacros.Value
+    let accMacros = publish declaredAccMacros @ reExported ModuleMetadata.reExportedAccMacros.Value
 
     if isLibrary && not declaredClauseMacros.IsEmpty then
         Diagnostics.progress (

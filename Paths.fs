@@ -78,18 +78,18 @@ let root: string = Path.GetFullPath(Path.Combine(libDir, ".."))
 /// server, names the installed one instead: the host's copy is a different
 /// file, newer than every module, and judged by it the whole library would be
 /// stale and rebuilt under a compiler the command line does not use.
-let mutable compilerAssembly: string =
-    Reflection.Assembly.GetExecutingAssembly().Location
+let compilerAssembly =
+    Compilation.Per<string>((fun () -> Reflection.Assembly.GetExecutingAssembly().Location), true)
 
 /// Source text a host holds in place of what is on disk, by full path. A
 /// language server checks an editor's unsaved buffer this way, under the
 /// file's own path, so that its module name, its includes and its imports
 /// resolve as they will once it is saved. Empty for the command line.
-let mutable sourceOverrides: Map<string, string> = Map.empty
+let sourceOverrides = Compilation.Per<Map<string, string>>((fun () -> Map.empty), true)
 
 /// A source file's text: the host's, if it holds the file, else the disk's.
 let readSource (path: string) : string =
-    match Map.tryFind (Path.GetFullPath path) sourceOverrides with
+    match Map.tryFind (Path.GetFullPath path) sourceOverrides.Value with
     | Some text -> text
     | None -> File.ReadAllText path
 
@@ -142,10 +142,10 @@ let private standardRoots: PackageRoot list =
         []
 
 /// The packages a roots file added, set once before anything is resolved.
-let mutable private configuredRoots: PackageRoot list = []
+let private configuredRoots = Compilation.Per<PackageRoot list>((fun () -> []), true)
 
 /// The file they were read from, kept for the build record.
-let mutable private rootsFilePath: string option = None
+let private rootsFilePath = Compilation.Per<string option>((fun () -> None), true)
 
 /// Installs the packages named by `--roots`.
 ///
@@ -154,16 +154,16 @@ let mutable private rootsFilePath: string option = None
 /// caches — would answer from a stale registry if the roots could change under
 /// them, and a compiler process serves one roots file.
 let setConfiguredRoots (file: string) (roots: PackageRoot list) : unit =
-    rootsFilePath <- Some(Path.GetFullPath file)
-    configuredRoots <- roots
+    rootsFilePath.Value <- Some(Path.GetFullPath file)
+    configuredRoots.Value <- roots
 
 /// The roots file this process was given, which every build it makes has to
 /// record: a dependency compiled on the way to something else is built against
 /// the same packages and needs the same line in its own record.
-let rootsFile () : string option = rootsFilePath
+let rootsFile () : string option = rootsFilePath.Value
 
 /// Every package this build knows, the standard library included.
-let packageRoots () : PackageRoot list = standardRoots @ configuredRoots
+let packageRoots () : PackageRoot list = standardRoots @ configuredRoots.Value
 
 /// What a module path names.
 type ModuleLookup =

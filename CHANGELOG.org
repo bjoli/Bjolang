@@ -3,6 +3,48 @@
 
 What each change guarantees, and what it leaves open.
 
+* The state of a compilation is in a context, not in static fields
+
+- *The compiler kept the state of a compilation in module-level values*:
+  counters, the tables of macros, the queues of the trait solver, the
+  collected diagnostics, settings such as the package roots, and the hooks
+  that a tool sets. A process could thus run one compilation at a time, and
+  ~Session~ saved and restored the values around one that another started.
+- ~Compilation.fs~: each such value is a ~Per~, a ~PerDictionary~, a
+  ~PerSet~ or a ~PerList~, whose storage is in a ~Compilation.Context~.
+  89 values in 26 files. A scalar is read and written as ~x.Value~;
+  a table has the members that it had.
+- Each thread of control has a current context. A process that makes none
+  has one, the root, so the command line does what it did.
+  ~Compilation.inNew f~ runs ~f~ in a context of its own. A value starts
+  there as a new process has it. A setting (~Paths.sourceOverrides~,
+  ~Paths.compilerAssembly~, the package roots, ~Diagnostics.verbose~, the
+  NuGet resolution, the two module caches' switches) starts as the context
+  that called ~inNew~ has it.
+- The current context goes with the thread of control into a task or a
+  thread that a compilation starts. It is read from a thread-static field,
+  which an ~AsyncLocal~ keeps right, so a read costs one load.
+- ~Session~ is as it was, and works in every context.
+- Measured: the test suite takes 66 s, as before. With
+  ~tests/contexts/contexts.fsx~, the 824 files of TestFiles/errors checked
+  in one process give, on 8 and on 16 threads, the diagnostics that each
+  gives alone, in 8 s where one at a time takes 31 s.
+- Not in a context, and thus shared by the compilations of a process:
+  - the caches of what was read from disk or loaded (~Pipeline.dllCache~,
+    ~sourceFacts~, ~assemblyPaths~, ~Frameworks.indexes~, ~Docs.sources~,
+    ~DotNetInterop.extraAssemblies~). They are plain dictionaries with no
+    lock. The test above did not fail on them in its runs, which does not
+    show that they are safe;
+  - the console. ~Diagnostics.captured~ sets the console of the process,
+    so two compilations cannot both use it. The test gives each check a
+    buffer of its own;
+  - the assemblies that are loaded, which .NET does not unload;
+  - the hooks that one module sets once for another (~Hygiene.expandHook~
+    and the like).
+- A tool that sets these values writes ~.Value~: ~Diagnostics.verbose.Value
+  <- false~, ~Holes.observe.Value <- Some ...~. BjolangLsp is changed for
+  it.
+
 * The signature that a function lacks, for an editor
 
 - A function of a module with no signature is refused before its body is

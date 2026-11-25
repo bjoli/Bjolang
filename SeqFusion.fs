@@ -783,7 +783,7 @@ let private fuse (c: Consumer) (producerBody: TypedExpr) : TypedExpr option =
 // Finding the shape
 // ---------------------------------------------------------------------------
 
-let private fusedCount = ref 0
+let private fusedCount = Compilation.Per(fun () -> 0)
 
 /// `Some fused` when `expr` is the prologue of a loop whose source is a seq
 /// literal and the loop fuses.

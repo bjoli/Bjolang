@@ -76,17 +76,17 @@ let private runtimeVersionDir =
 /// Package root directory (absolute, with a trailing separator) and what that
 /// package declared. Longest match wins, which is what makes a dependency
 /// fetched *under* the root project's directory belong to itself.
-let mutable private declaredByRoot: (string * Set<string>) list = []
+let private declaredByRoot = Compilation.Per<(string * Set<string>) list>((fun () -> []))
 
 /// What `--framework` said, for a file no root covers: a single-file build.
-let mutable private declaredGlobally: Set<string> = Set.empty
+let private declaredGlobally = Compilation.Per<Set<string>>((fun () -> Set.empty))
 
 /// The `--frameworks` file, recorded as an input of every module built against
 /// it except those of the standard library (see `appliesTo`) — the same rule
 /// the roots file follows, and for the same reason: a
 /// declaration removed from a manifest has to make the modules that used it
 /// stale, and a file is what a timestamp comparison can see.
-let mutable private declarationFile: string option = None
+let private declarationFile = Compilation.Per<string option>((fun () -> None))
 
 let private withSeparator (dir: string) =
     dir.TrimEnd Path.DirectorySeparatorChar + string Path.DirectorySeparatorChar
@@ -94,9 +94,9 @@ let private withSeparator (dir: string) =
 /// Installs the `--frameworks` file's contents: one (package directory,
 /// framework) pair per line.
 let setDeclared (file: string) (entries: (string * string) list) : unit =
-    declarationFile <- Some(Path.GetFullPath file)
+    declarationFile.Value <- Some(Path.GetFullPath file)
 
-    declaredByRoot <-
+    declaredByRoot.Value <-
         entries
         |> List.map (fun (dir, name) -> withSeparator (Path.GetFullPath dir), name)
         |> List.groupBy fst
@@ -107,9 +107,9 @@ let setDeclared (file: string) (entries: (string * string) list) : unit =
 /// Installs what `--framework` named, which covers every file no line above
 /// does.
 let setGlobal (names: string list) : unit =
-    declaredGlobally <- Set.ofList names
+    declaredGlobally.Value <- Set.ofList names
 
-let declarationFilePath () : string option = declarationFile
+let declarationFilePath () : string option = declarationFile.Value
 
 let private inStandardLibrary (sourceFile: string) =
     match Paths.identityOf sourceFile with
@@ -130,7 +130,7 @@ let appliesTo (sourceFile: string) : bool =
 /// the standard library, also in a single-file build with `--framework`.
 let declaredFor (sourceFile: string) : Set<string> =
     if String.IsNullOrEmpty sourceFile then
-        declaredGlobally
+        declaredGlobally.Value
     elif not (appliesTo sourceFile) then
         Set.empty
     else
@@ -141,9 +141,9 @@ let declaredFor (sourceFile: string) : Set<string> =
         with _ ->
             sourceFile
 
-    match declaredByRoot |> List.tryFind (fun (dir, _) -> full.StartsWith(dir, StringComparison.Ordinal)) with
+    match declaredByRoot.Value |> List.tryFind (fun (dir, _) -> full.StartsWith(dir, StringComparison.Ordinal)) with
     | Some(_, names) -> names
-    | None -> declaredGlobally
+    | None -> declaredGlobally.Value
 
 /// The declared set a module was last built under, read back from the
 /// `framework` lines of its build record. `None` when it has no record.
@@ -185,9 +185,9 @@ let declarationsChanged (sourceFile: string) : bool =
 /// Every framework any package in this build declared, sorted. What the build
 /// record writes down, so that a changed declaration is visible in it.
 let declaredHere () : string list =
-    declaredByRoot
+    declaredByRoot.Value
     |> List.collect (fun (_, names) -> Set.toList names)
-    |> List.append (Set.toList declaredGlobally)
+    |> List.append (Set.toList declaredGlobally.Value)
     |> List.distinct
     |> List.sort
 
@@ -487,15 +487,15 @@ let hintFor (declared: Set<string>) (fullName: string) : string option =
 
 /// The source file being compiled, which says which package's declarations
 /// apply to a lookup that has no range of its own.
-let mutable private currentFile: string = ""
+let private currentFile = Compilation.Per<string>((fun () -> ""))
 
 /// Frameworks a type was actually resolved from, plus what the imports
 /// recorded. This is what goes into the metadata and into the runtimeconfig.
-let mutable private used: Set<string> = Set.empty
+let private used = Compilation.Per<Set<string>>((fun () -> Set.empty))
 
 /// What the imports were built against, which this module is compiled against
 /// too whether or not it names anything out of them.
-let mutable private imported: Set<string> = Set.empty
+let private imported = Compilation.Per<Set<string>>((fun () -> Set.empty))
 
 /// Everything about the module being compiled, for `Session` to put back.
 ///
@@ -513,39 +513,39 @@ let emptyState: State =
       Imported = Set.empty }
 
 let snapshot () : State =
-    { File = currentFile
-      Used = used
-      Imported = imported }
+    { File = currentFile.Value
+      Used = used.Value
+      Imported = imported.Value }
 
 let restore (state: State) : unit =
-    currentFile <- state.File
-    used <- state.Used
-    imported <- state.Imported
+    currentFile.Value <- state.File
+    used.Value <- state.Used
+    imported.Value <- state.Imported
 
 let startModule (file: string) : unit =
-    currentFile <- (if isNull file then "" else file)
-    used <- Set.empty
-    imported <- Set.empty
+    currentFile.Value <- (if isNull file then "" else file)
+    used.Value <- Set.empty
+    imported.Value <- Set.empty
 
-let currentSourceFile () : string = currentFile
+let currentSourceFile () : string = currentFile.Value
 
 /// The frameworks the module now being compiled may name.
-let declaredForCurrent () : Set<string> = declaredFor currentFile
+let declaredForCurrent () : Set<string> = declaredFor currentFile.Value
 
 /// What this module may resolve types from: what its package declared, and
 /// what its imports were built against.
-let compileAgainst () : Set<string> = Set.union (declaredForCurrent ()) imported
+let compileAgainst () : Set<string> = Set.union (declaredForCurrent ()) imported.Value
 
 /// A type was resolved out of a framework, so this module depends on it at run
 /// time.
-let noteUsed (framework: string) : unit = used <- Set.add framework used
+let noteUsed (framework: string) : unit = used.Value <- Set.add framework used.Value
 
 /// An imported module says it uses these.
 let noteImported (frameworks: string list) : unit =
     for framework in frameworks do
-        imported <- Set.add framework imported
-        used <- Set.add framework used
+        imported.Value <- Set.add framework imported.Value
+        used.Value <- Set.add framework used.Value
 
 /// What this module records: sorted, so that metadata and build records do not
 /// differ by the order two lookups happened in.
-let usedHere () : string list = used |> Set.toList |> List.sort
+let usedHere () : string list = used.Value |> Set.toList |> List.sort

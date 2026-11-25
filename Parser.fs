@@ -451,7 +451,7 @@ let private (|Ident|_|) =
 // body is read. Reading is single-threaded, and the names are taken off again
 // however the body is left, so the table is empty between top-level forms.
 
-let private localBinders = System.Collections.Generic.Dictionary<string, Range list>()
+let private localBinders = Compilation.PerDictionary<string, Range list>()
 
 /// Reads `read` with `names` bound around it. `_` binds nothing.
 let withLocals (names: (string * Range) list) (read: unit -> 'a) : 'a =
@@ -478,7 +478,7 @@ let withLocals (names: (string * Range) list) (read: unit -> 'a) : 'a =
 /// by `Pipeline` around the parse of each module, so that a file it includes
 /// answers the including module. Empty elsewhere, where the file of the form
 /// decides.
-let mutable currentModuleKey: string = ""
+let currentModuleKey = Compilation.Per<string>((fun () -> ""))
 
 /// A parameter written `_` gets a name of its own. C# refuses two parameters
 /// named `_` in one method, and the body cannot read it whatever it is called.
@@ -497,7 +497,7 @@ let private patternLocals (p: Pattern) =
 /// The pattern of each parameter written as a pattern, by the fresh name that
 /// stands for it in the parameter list. Filled where a parameter list is read,
 /// and read where the body after it is read.
-let private parameterPatterns = System.Collections.Generic.Dictionary<string, Pattern>()
+let private parameterPatterns = Compilation.PerDictionary<string, Pattern>()
 
 /// Whether a name is the fresh name of a parameter written as a pattern.
 let isPatternParameter (name: string) = parameterPatterns.ContainsKey name
@@ -1124,7 +1124,7 @@ and private parseHeaded (s: SExpr) (r: Range) (head: SExpr) (sym: string) (args:
                 match args with
                 | [] ->
                     let key =
-                        if currentModuleKey <> "" then currentModuleKey
+                        if currentModuleKey.Value <> "" then currentModuleKey.Value
                         else Naming.moduleKeyOfPath r.File
 
                     EString(key, r)

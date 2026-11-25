@@ -80,7 +80,7 @@ let private orList (names: string list) : string =
 
 /// The places already warned about. A body can be inferred more than once,
 /// and a use warns only the first time.
-let private deprecationsWarned = System.Collections.Generic.HashSet<string>()
+let private deprecationsWarned = Compilation.PerSet<string>()
 
 /// Warns when `name` is deprecated and still means the binding that was.
 let private warnIfDeprecated (env: Env) (name: string) (r: Range) =
@@ -655,8 +655,8 @@ let bridgeToSuspending (env: Env) (expected: HMType) (typed: TypedExpr) : TypedE
 /// exception that is not a diagnostic is never caught here and keeps its trace.
 let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
     // The site an equation deferred in here reports, if it fails later.
-    let outer = Unification.inferenceSite
-    Unification.inferenceSite <- Some(exprRange expr)
+    let outer = Unification.inferenceSite.Value
+    Unification.inferenceSite.Value <- Some(exprRange expr)
 
     try
         try
@@ -664,7 +664,7 @@ let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
         with ex when Diagnostics.needsLocation ex ->
             raise (Diagnostics.withLocation (exprRange expr) ex)
     finally
-        Unification.inferenceSite <- outer
+        Unification.inferenceSite.Value <- outer
 
 /// Rewrites a head identifier that is a prefixed spelling of a constructor, a
 /// record type or a trait method back to the name it stands for.
@@ -4223,9 +4223,9 @@ and private inferLocalFunBody
     // whole body. Not scoped, a function nested in this one that mentions
     // `%b` quantified it, and each call could then use a `%b` value at
     // another type.
-    let outerScoped = Unification.scopedTypeVars
+    let outerScoped = Unification.scopedTypeVars.Value
 
-    Unification.scopedTypeVars <-
+    Unification.scopedTypeVars.Value <-
         Set.union outerScoped (Set.ofList (freeTVars env.Registry shape.FunType))
 
     let typedBody, typedKeywords =
@@ -4255,7 +4255,7 @@ and private inferLocalFunBody
 
             typedBody, typedKeywords
         finally
-            Unification.scopedTypeVars <- outerScoped
+            Unification.scopedTypeVars.Value <- outerScoped
 
     let paramNames = allArgNames args
 

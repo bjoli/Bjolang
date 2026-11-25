@@ -24,6 +24,13 @@
 /// is "what a fresh process would have"; what is deliberately left out is state
 /// that is about the process, and would be wrong to reset.
 ///
+/// Where the state is kept is another question, and `Compilation.fs` answers
+/// it: each value of a compilation is in the current `Compilation.Context`,
+/// not in a static field. `capture` and `restore` here read and write that
+/// context, for a compilation that another one starts on the same thread. A
+/// compilation that runs at the same time as another, on a thread of its
+/// own, runs in `Compilation.inNew`, and shares none of these values.
+///
 /// **Per compilation** — captured and restored here:
 ///
 ///   * `Gensym.counter`, and the names of its shape that source has written,
@@ -110,7 +117,7 @@ let capture () : Scope =
       Macros = Macro.snapshot ()
       Introduced = Hygiene.snapshotIntroduced ()
       Frameworks = Frameworks.snapshot ()
-      ReplEntry = TypeEnv.compilingReplEntry }
+      ReplEntry = TypeEnv.compilingReplEntry.Value }
 
 let restore (scope: Scope) : unit =
     Gensym.restore scope.Gensym
@@ -119,7 +126,7 @@ let restore (scope: Scope) : unit =
     Macro.restore scope.Macros
     Hygiene.restoreIntroduced scope.Introduced
     Frameworks.restore scope.Frameworks
-    TypeEnv.compilingReplEntry <- scope.ReplEntry
+    TypeEnv.compilingReplEntry.Value <- scope.ReplEntry
     // Not part of the scope value: the queue is either empty or garbage, and
     // there is never a reason to put a previous compilation's obligations back.
     // The same goes for the numeric literals still waiting to be settled, and

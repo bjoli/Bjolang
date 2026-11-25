@@ -1744,7 +1744,7 @@ let private help () =
 let run () : int =
     // Nothing narrates a REPL entry. Six step banners per keystroke is not what
     // a prompt is for.
-    Diagnostics.verbose <- false
+    Diagnostics.verbose.Value <- false
 
     // This process will emit once per entry, which is the case in-process
     // Roslyn is for: the first emit costs a few hundred milliseconds and every
@@ -1757,10 +1757,10 @@ let run () : int =
     // assembly is thrown away when the next one is typed, so it has nothing to
     // lose by the caveat that keeps this off for builds — see
     // `Pipeline.cacheLoadedModules`.
-    Pipeline.cacheLoadedModules <- true
+    Pipeline.cacheLoadedModules.Value <- true
     // The modules an entry imports, checked once and taken by each entry
     // after: see `Inference.checkModulesKept`.
-    Inference.cacheCheckedModules <- true
+    Inference.cacheCheckedModules.Value <- true
 
     for assemblyPath in Paths.runtimeAssemblies do
         if File.Exists assemblyPath then

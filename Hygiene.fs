@@ -75,10 +75,10 @@ let mutable isMacroName: string -> bool = fun _ -> false
 ///
 /// Never pruned. Every entry is unique by construction, so it can only ever
 /// answer for the expansion that created it.
-let mutable private introducedNames: Set<string> = Set.empty
+let private introducedNames = Compilation.Per<Set<string>>((fun () -> Set.empty))
 
 let noteIntroduced (names: string seq) =
-    introducedNames <- names |> Seq.fold (fun acc n -> Set.add n acc) introducedNames
+    introducedNames.Value <- names |> Seq.fold (fun acc n -> Set.add n acc) introducedNames.Value
 
 /// The set, and a way to put it back.
 ///
@@ -87,9 +87,9 @@ let noteIntroduced (names: string seq) =
 /// answers for an expansion that has already been parsed, so `Session` drops
 /// them at the boundary rather than carrying a REPL session's worth of marks
 /// into every subsequent `headName`.
-let snapshotIntroduced () : Set<string> = introducedNames
+let snapshotIntroduced () : Set<string> = introducedNames.Value
 
-let restoreIntroduced (names: Set<string>) : unit = introducedNames <- names
+let restoreIntroduced (names: Set<string>) : unit = introducedNames.Value <- names
 
 /// The name to dispatch a head symbol on: the third renaming rule, "strip the
 /// rename and dispatch as a special form".
@@ -101,7 +101,7 @@ let restoreIntroduced (names: Set<string>) : unit = introducedNames <- names
 /// template's reference to a binding of its own module is still resolvable by
 /// rule two.
 let headName (sym: string) =
-    if Set.contains sym introducedNames then Gensym.baseName sym else sym
+    if Set.contains sym introducedNames.Value then Gensym.baseName sym else sym
 
 /// The third renaming rule, at a head that is dispatched on rather than bound.
 /// Unconditional, unlike in `parseExpr`: a declaration's head is either one of

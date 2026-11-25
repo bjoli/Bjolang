@@ -288,10 +288,10 @@ let private emittedBySpelling =
 /// local of its name are both `TIdent name`, so a local of a builtin's name
 /// is renamed here too. A template's builtin is an `EResolved`, which keeps
 /// its name.
-let mutable private spelledNames = emittedBySpelling
+let private spelledNames = Compilation.Per((fun () -> emittedBySpelling))
 
 let private freshenOperators (args: DefunArg list) (body: Expr) : DefunArg list * Expr =
-    Hygiene.freshenNamed spelledNames args body
+    Hygiene.freshenNamed spelledNames.Value args body
 
 let private freshenOperatorsIn (body: Expr) : Expr = snd (freshenOperators [] body)
 
@@ -381,5 +381,5 @@ and normalizeModule (decls: Decl list) : Decl list = List.map normalizeDecl decl
 
 /// `normalizeModule`, renaming locals named like any of `builtins` as well.
 let normalizeModuleWith (builtins: Set<string>) (decls: Decl list) : Decl list =
-    spelledNames <- Set.union emittedBySpelling builtins
+    spelledNames.Value <- Set.union emittedBySpelling builtins
     normalizeModule decls

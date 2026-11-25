@@ -178,7 +178,7 @@ let inferNumericType (value: string) : HMType =
 ///
 /// Per compilation, and emptied by every defaulting pass — which leaves the
 /// next one nothing to walk.
-let internal openLiterals = ResizeArray<HMType * string * Range>()
+let internal openLiterals = Compilation.PerList<HMType * string * Range>()
 
 /// The types that an implementation's `(where (Num %a))` asks for and that are
 /// still open, such as the count of a `(counting x)`.
@@ -187,16 +187,16 @@ let internal openLiterals = ResizeArray<HMType * string * Range>()
 /// declaration says what it is. There is no text to check against the type it
 /// ends up at, so a type that is not a number is left to the check of the
 /// constraint itself, which names the constraint.
-let internal openNumbers = ResizeArray<HMType>()
+let internal openNumbers = Compilation.PerList<HMType>()
 
 /// The open carriers of quantity literals, each with the type it settles at
 /// when nothing says otherwise: its dimensions' `#:carrier`, or `double`.
 /// Each carrier is in `openLiterals` too.
-let internal quantityDefaults = ResizeArray<HMType * HMType>()
+let internal quantityDefaults = Compilation.PerList<HMType * HMType>()
 
 /// What to say when an open literal with a fraction settles at a whole-number
 /// type, for the literals the compiler wrote: the factor of a `number-in`.
-let internal fractionNotes = System.Collections.Generic.Dictionary<Range * string, unit -> string>()
+let internal fractionNotes = Compilation.PerDictionary<Range * string, unit -> string>()
 
 /// A use of a case name that cases of several unions in scope have, where the
 /// type does not yet say which union it is.
@@ -219,24 +219,24 @@ type OpenCase =
       CodeModule: string
       InPattern: bool }
 
-let internal openCases = ResizeArray<OpenCase>()
+let internal openCases = Compilation.PerList<OpenCase>()
 
 /// Placeholder -> the key of the case chosen for it and the type arguments its
 /// constructor was instantiated at. Never cleared: a body spliced after
 /// checking is settled and rewritten through it too, and every placeholder of
 /// the process is a new name (`openCaseCounter`).
-let internal settledCases = System.Collections.Generic.Dictionary<string, string * HMType list>()
+let internal settledCases = Compilation.PerDictionary<string, string * HMType list>()
 
 /// (where a case name was written, the name) -> the key of the case chosen
 /// for it, however it was chosen. A body published for an importer to splice
 /// names each of these by its key (`AlphaRename.keyChosenCases`), since the
 /// importer's spellings need not choose the same case.
-let internal chosenCases = System.Collections.Generic.Dictionary<Range * string, string>()
+let internal chosenCases = Compilation.PerDictionary<Range * string, string>()
 
 let internal chooseCase (r: Range) (written: string) (key: string) : unit = chosenCases[(r, written)] <- key
 
 let private openCasePrefix = "#case:"
-let mutable private openCaseCounter = 0
+let private openCaseCounter = Compilation.Per((fun () -> 0))
 
 let isOpenCaseName (name: string) = name.StartsWith openCasePrefix
 
@@ -292,8 +292,8 @@ let internal openCase
     (r: Range)
     (inPattern: bool)
     : string =
-    openCaseCounter <- openCaseCounter + 1
-    let placeholder = $"%s{openCasePrefix}%d{openCaseCounter}:%s{written}"
+    openCaseCounter.Value <- openCaseCounter.Value + 1
+    let placeholder = $"%s{openCasePrefix}%d{openCaseCounter.Value}:%s{written}"
 
     openCases.Add
         { Placeholder = placeholder
@@ -356,7 +356,7 @@ let rec resolveOpenCaseNamesInDecl (d: TDecl) : TDecl =
 /// defines it writes it. At the prompt the entries are one session, so an
 /// entry may `set!` a `def/mutable` an earlier entry made. Set by
 /// `Session.replEntry`, and false for a dependency built on the way.
-let mutable compilingReplEntry = false
+let compilingReplEntry = Compilation.Per((fun () -> false))
 
 /// Drops whatever is still open. For the compilation that *failed*: see
 /// `clearWanteds`, which this is the other half of.
