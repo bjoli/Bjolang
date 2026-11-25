@@ -82,9 +82,12 @@ build_compiler() {
     building "$BUILD_COMPILER" --force
 }
 
+# The compiler precompiles bjo with ReadyToRun (see `isToolOutput` in Build.fs).
+# Tiered PGO is off because it runs hot precompiled methods through an
+# instrumented tier first, and a bjo command is too short to profit from that.
 build_bjo() {
     [ "$QUIET" = 1 ] || echo "Building bjo..." >&2
-    building dotnet "$COMPILER_DLL" "$SOURCE"
+    building dotnet "$COMPILER_DLL" --runtime tiered-pgo=false "$SOURCE"
 }
 
 if [ "$1" = "rebjo" ]; then

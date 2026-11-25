@@ -462,6 +462,11 @@ let private runProcess (fileName: string) (args: string) (env: (string * string)
 // With tiered compilation on, the JIT compiles a hot method again with full
 // optimization, so the precompiled code only replaces the first tier.
 //
+// `bjo` and its modules are precompiled too, because most `bjo` commands end
+// before the JIT has paid for itself. Measured: `bjo help` took 56 ms and takes
+// 43 ms, and `bjo fmt` of a file of 4,000 lines took 0.30 s and takes 0.20 s,
+// of which 0.06 s is tiered PGO being off (see `build_bjo` in bjo/bjo).
+//
 // Each assembly is compiled alone, not as one version bubble with the others.
 // A bubble lets them inline each other, but its code is only valid with the
 // exact assemblies it was compiled with, and it was no faster when measured.
@@ -770,6 +775,11 @@ let precompilePackages (dir: string) (inputsFile: string) : int =
 let private isStandardLibraryOutput (outputFilePath: string) =
     let lib = Paths.libDir.TrimEnd Path.DirectorySeparatorChar + string Path.DirectorySeparatorChar
     Path.GetFullPath(outputFilePath).StartsWith(lib, System.StringComparison.Ordinal)
+
+/// Whether `outputFilePath` is `bjo` or one of its modules: an assembly directly
+/// in the `bjo` directory of this installation.
+let private isToolOutput (outputFilePath: string) =
+    Path.GetDirectoryName(Path.GetFullPath outputFilePath) = Path.Combine(Paths.root, "bjo")
 
 
 /// The C# for a checked program, with the metadata attribute an importer reads
@@ -1853,7 +1863,10 @@ let compile (options: Options) (inputFilePath: string) : int =
                 // After the PDB patch, which renames fields in the assembly:
                 // crossgen2 compiles that assembly, and keeps its pointer to
                 // the PDB. Not a debug build, which is for stepping through.
-                if isLibrary && not options.Debug && Paths.readyToRun && isStandardLibraryOutput outputFilePath then
+                let precompiled =
+                    (isLibrary && isStandardLibraryOutput outputFilePath) || isToolOutput outputFilePath
+
+                if precompiled && not options.Debug && Paths.readyToRun then
                     precompile (Path.GetFullPath outputFilePath) linkedAssemblies
 
                 writeBuildRecord options inputFilePath outputFilePath linkedAssemblies links natives lastInterface.Value
