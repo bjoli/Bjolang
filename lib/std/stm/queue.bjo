@@ -86,14 +86,13 @@
     (None unit)
     ((Some r)
      (def w (tx-ref tx (record-ref r write)))
-     (if (> w 0)
-         (tx-set! tx (record-ref r write) (- w 1))
-         (let ((f (tx-ref tx (record-ref r freed))))
-           (if (= f 0)
-               (tx-retry tx)
-               (begin
-                 (tx-set! tx (record-ref r freed) 0)
-                 (tx-set! tx (record-ref r write) (- f 1)))))))))
+     (cond
+       ((> w 0) (tx-set! tx (record-ref r write) (- w 1)))
+       (:def f (tx-ref tx (record-ref r freed)))
+       ((= f 0) (tx-retry tx))
+       (else
+        (tx-set! tx (record-ref r freed) 0)
+        (tx-set! tx (record-ref r write) (- f 1)))))))
 
 (: (-> Tx (Option Room) int void))
 (defun (free-places! tx room n)
@@ -110,16 +109,15 @@
 (: (-> Tx (TQueue %a) (Side %a)))
 (defun (stocked-front tx q)
   (def f (tx-ref tx (record-ref q front)))
-  (if (> (struct-ref f count) 0)
-      f
-      (let ((b (tx-ref tx (record-ref q back))))
-        (if (= (struct-ref b count) 0)
-            f
-            (let ((moved (Side (count (struct-ref b count))
-                               (items (list-reverse (struct-ref b items))))))
-              (tx-set! tx (record-ref q back) (empty-side))
-              (tx-set! tx (record-ref q front) moved)
-              moved)))))
+  (cond
+    ((> (struct-ref f count) 0) f)
+    (:def b (tx-ref tx (record-ref q back)))
+    ((= (struct-ref b count) 0) f)
+    (else
+     (def moved (Side (count (struct-ref b count)) (items (list-reverse (struct-ref b items)))))
+     (tx-set! tx (record-ref q back) (empty-side))
+     (tx-set! tx (record-ref q front) moved)
+     moved)))
 
 (: (-> Tx (TQueue %a) %a void))
 (defun (queue-push! tx q x)
