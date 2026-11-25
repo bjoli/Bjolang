@@ -3,6 +3,94 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~bjo fmt~: ~:propagate~, the first clause of a ~cond~, ~defeffect~, and a call's arguments
+
+- *A ~:propagate~ was moved to a line of its own*, as each failure part of
+  a ~def~ was. A failure part with nothing after it now stays where it is
+  written: ~(def (Ok x) (parse s) :propagate)~ is one line, and a
+  ~:propagate~ on a line of its own stays there. A failure part with
+  something after it, ~:leave-with 0~, starts a line as before.
+- *The first clause of a ~cond~ over several lines was moved under the
+  head.* It stays where it is written, so both layouts are kept:
+
+  #+BEGIN_SRC scheme
+  (cond ((= a 1) 2)
+        (else 4))
+
+  (cond
+    ((= a 1) 2)
+    (else 4))
+  #+END_SRC
+
+  Each later clause starts a line, as before.
+- *The list of names after a keyword of a ~defeffect~ was indented as a
+  call*, its second line under the second name. It is data: each line goes
+  under the first name.
+- No line of a ~defeffect~ is broken, as none of an ~import/extern~ is.
+  The indentation of both is still set.
+- *The arguments of a call with none on the line of its head were one
+  column in from the bracket*, which is Emacs's rule for Lisp. They are now
+  two in, in ~bjo fmt~ and in bjo-mode:
+
+  #+BEGIN_SRC scheme
+  (vec-append
+    (first-part x)
+    (second-part x))
+  #+END_SRC
+
+  - A form with a rule of its own (~begin~, ~match~, a ~def~...) is as it
+    was.
+  - A clause keeps its forms under its head, one in. A clause is a list
+    with a list as its head, an ~(else ...)~, a list with a keyword as its
+    head, ~(:do ...)~, each form directly in a ~cond~, a ~match~, a ~case~
+    or a ~syntax-match~, and each arm after the ~:leave~ of a ~def~. So
+    ~(None~ and ~(_~ with the body on the next line are clauses too.
+  - *A named ~let~ with an unquoted name in a syntax template,
+    ~(let ,go (...) body)~, was not seen as a named ~let~*, and its body
+    went under the bindings. It is one now, in both.
+  - A quoted list is not known from a call: ~'(a~ with ~b~ on the next line
+    puts ~b~ two in.
+- bjo-mode does not have the rule for the list of a ~defeffect~. The rules
+  for ~:propagate~ and ~cond~ only say where a line breaks, so
+  ~indent-region~ agrees with them.
+- ~run_bjo_tests.py fmt~ has seven more cases.
+
+* ~bjo fmt~: signatures, a loop's ~=>~, and ~#map(...)~
+
+- *A signature too wide for its line was broken as any list*: each form
+  after the name on a line of its own. The type left the first line also
+  when it fitted there, an arrow of ten parameters became ten lines, and
+  the markers were paired by the rule for a keyword and its value:
+  ~#:sync #:inline~ on one line and a third marker on the next.
+- A signature is now broken in steps, and no further than it has to be:
+
+  #+BEGIN_SRC scheme
+  (: in-parts (-> %c (-> %p %r) (#:parts int) (#:size int) (Vec %r))
+     (where (Chunkable %c #:chunk %p))
+     #:elsewhere f #:sync)
+  #+END_SRC
+
+  - first the ~(where ...)~ starts a line and the first marker starts a
+    line, so the markers have one row;
+  - then the type moves under the name;
+  - then the type is broken, and an arrow inside a ~(: ...)~ is filled.
+- The same goes for any ~(: ...)~ with keywords after its type. A field of
+  ~(std argparse)~ that was ~(: title (Option string) #:value "TEXT"~ with
+  ~#:help~ on the next line has its type on the first line and its options
+  on the next.
+- *The value of a loop's ~=>~ was put on a line of its own*, under a lone
+  ~=>~. It stays on the line of the ~=>~.
+- *A ~#map(...)~ too wide was broken between ~#map~ and its bracket.* The
+  list stays with the name. Entries that are lists each start a line, under
+  the first; other entries are filled.
+- An arrow that is not in a ~(: ...)~, the ~->~ of calls, is laid out as it
+  was.
+- The indentation of each line is bjo-mode's, as before: only where a line
+  breaks is new.
+- Over this repository's 150 source files, the new layout has 78 lines
+  fewer than the old one where the two differ.
+- ~run_bjo_tests.py fmt~ has eight cases for it.
+
 * ~Diagnostics.captured~ collects the output of its own context
 
 - *~captured~ set the console of the process*, so two compilations could

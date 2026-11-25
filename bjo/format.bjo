@@ -273,10 +273,12 @@
 ;; so that the tokens are what they were:
 ;;
 ;;   - a `def`'s failure part, `:leave`, `:leave-with`, `:default` or
-;;     `:propagate`, starts a line of its own, so that the way out stands out;
+;;     `:propagate`, starts a line of its own, so that the way out stands out.
+;;     One with nothing after it, `:propagate`, stays where it is written;
 ;;   - in a `cond`, a `begin`, a `seq` or a `try` over several lines, each form
 ;;     after the head starts a line, but a keyword argument's value, which
-;;     stays on the keyword's line: `#:finally (restore)`;
+;;     stays on the keyword's line: `#:finally (restore)`. The first clause
+;;     of a `cond` stays where it is written;
 ;;   - in a `let`'s bindings over several lines, each binding starts a line.
 ;;
 ;; A tab in a string, which is otherwise left as it is, is written `\t`.
@@ -350,15 +352,21 @@
              ((Some o) (= (record-ref o head) "def*"))
              (None #f)))))
 
+;; Whether a form written `raw` after `let` is the name of a named `let`. In a
+;; syntax template the name can be unquoted: `(let ,go (...) ...)`.
+(: let-name? (-> string bool))
+(defun (let-name? raw)
+  (match (list-drop-while #(= & #\,) (string->list raw))
+    ((Cons c _) (char-alphabetic? c))
+    (Nil #f)))
+
 ;; Whether a list opening as the next form of `parent` is that form's bindings.
 (: opens-bindings? (-> Shape string bool))
 (defun (opens-bindings? parent bracket)
   (def head (record-ref parent head))
   (def named?
     (and (= head "let")
-         (match (string->list (record-ref parent second))
-           ((Cons c _) (char-alphabetic? c))
-           (Nil #f))))
+         (let-name? (record-ref parent second))))
   (and (= bracket "(")
        (binding-form? head)
        (= (record-ref parent count) (if named? 2 1))))
@@ -377,10 +385,14 @@
 
 ;; Whether the form at position `n` of `s`, written `raw`, has to start a line.
 ;; One after a keyword argument stays with it.
-(: breaks-before? (-> Shape (Option Shape) int string bool))
-(defun (breaks-before? s outer n raw)
-  (or (and (failure-keyword? raw) (clause? s outer))
-      (and (>= n 1)
+;;
+;; - `ends?`: the form is the last of its list. A failure keyword with nothing
+;;   after it, `:propagate`, can stay on the line.
+;; - The first clause of a `cond` can stay on the line of the head.
+(: breaks-before? (-> Shape (Option Shape) int string bool bool))
+(defun (breaks-before? s outer n raw ends?)
+  (or (and (failure-keyword? raw) (not ends?) (clause? s outer))
+      (and (>= n (if (= (record-ref s head) "cond") 2 1))
            (record-ref s spans)
            (or (body-only? (record-ref s head)) (record-ref s bindings))
            (not (keyword-arg? (record-ref s last))))))
@@ -395,6 +407,13 @@
   (defun (spans? k)
     (def c (vec-ref closes k))
     (and (>= c 0) (> (vec-ref lines c) (vec-ref lines k))))
+  ;; Whether the first token from `j` on that is not space closes a list.
+  (defun (closes-next? j)
+    (and (< j n)
+         (match (vec-ref v j)
+           ((TSpace _) (closes-next? (+ j 1)))
+           ((TClose _) #t)
+           (_ #f))))
   ;; `shapes` are the lists open, the innermost first; `fresh?` whether
   ;; nothing but space is on the line yet; `prefixed?` whether a prefix
   ;; began the form this token belongs to.
@@ -413,7 +432,8 @@
                  (not fresh?)
                  (match shapes
                    ((Cons s outer)
-                    (breaks-before? s (match outer ((Cons o _) (Some o)) (Nil None)) (record-ref s count) raw))
+                    (breaks-before? s (match outer ((Cons o _) (Some o)) (Nil None)) (record-ref s count) raw
+                                    (closes-next? (+ k 1))))
                    (Nil #f))))
           (def counted
             (match shapes
@@ -860,15 +880,24 @@
 ;; when it is a list, under the second when the forms so far are all on the
 ;; first one's line, and otherwise under the first form on the line of the
 ;; last of them.
-(: normal-indent (-> Frame Elem int))
-(defun (normal-indent f head)
+;;
+;; `clause?`: the list is a clause, of a `cond` or a `match`. Its forms go
+;; under its head, one in, as those of a clause with a list as its head do.
+(: normal-indent (-> Frame Elem bool int))
+(defun (normal-indent f head clause?)
   (def last (last-of f head))
   (cond
     ((record-ref head is-list) (record-ref head bracket))
     ((= (record-ref last line) (record-ref head line))
      (match (record-ref f second)
        ((Some s) (record-ref s col))
-       (None (record-ref head col))))
+       ;; A call with no argument on the line of its head: the arguments go
+       ;; two in from the bracket. This is not `calculate-lisp-indent`'s
+       ;; column, which is one in.
+       (None
+        (if (and (= (record-ref f bracket) "(") (not clause?) (symbolic? (record-ref head raw)))
+            (+ (record-ref f col) 2)
+            (record-ref head col)))))
     (else (record-ref last line-first))))
 
 ;; `lisp-indent-specform`: the first two of a form's `n` distinguished forms
@@ -896,9 +925,7 @@
 (defun (named-let? f head)
   (match (record-ref f second)
     ((Some s) #:when (= (record-ref s line) (record-ref head line))
-     (match (string->list (record-ref s raw))
-       ((Cons c _) (char-alphabetic? c))
-       (Nil #f)))
+     (let-name? (record-ref s raw)))
     (_ #f)))
 
 ;; `bjo-indent-function`: what the form's head says, if it says anything.
@@ -1015,9 +1042,7 @@
      (def head (raw-of (record-ref o first)))
      (def named?
        (and (= head "let")
-            (match (string->list (raw-of (record-ref o second)))
-              ((Cons c _) (char-alphabetic? c))
-              (Nil #f))))
+            (let-name? (raw-of (record-ref o second)))))
      ;; `f` is open inside `o`, so it is the last of `o`'s forms so far.
      (and (= (record-ref f bracket) "(")
           (binding-form? head)
@@ -1038,16 +1063,44 @@
 ;; form if `here-form?`.
 (: indent-in (-> Frame (Option Frame) string bool Indent))
 (defun (indent-in f outer here here-form?)
+  ;; Whether the list is the value of a keyword of a `defeffect`,
+  ;; `#:cold (name ...)`: a list of names, which is data.
+  ;; Whether the list, with the head `head`, is a clause:
+  ;;
+  ;; - `(else ...)`;
+  ;; - a list with a keyword as its head, `(:do ...)`;
+  ;; - a form directly in a `cond`, a `match`, a `case` or a `syntax-match`;
+  ;; - an arm after the `:leave` of a `def`.
+  (: clause-of? (-> Elem (Option Frame) bool))
+  (defun (clause-of? head outer)
+    (or (= (record-ref head raw) "else")
+        (string-starts-with? (record-ref head raw) ":")
+        (match outer
+          ((Some o)
+           (or (match (without-prefix (raw-of (record-ref o first)))
+                 ((or "cond" "match" "case" "syntax-match") #t)
+                 (_ #f))
+               (any? #(= (record-ref & raw) ":leave") (record-ref o elems))))
+          (None #f))))
+  (: effect-names? (-> (Option Frame) bool))
+  (defun (effect-names? outer)
+    (match outer
+      ((Some o) (and (= (raw-of (record-ref o first)) "defeffect")
+                     ;; The last form of `o` is this list itself.
+                     (match (record-ref o elems)
+                       ((Cons _ (Cons e _)) (keyword-arg? (record-ref e raw)))
+                       (_ #f))))
+      (None #f)))
   (def calculated
     (match (record-ref f first)
       (None (indent (+ (record-ref f col) 1) #t))
       ;; A vec or an array is data, and a `let`'s bindings are a list of them:
       ;; every element goes under the first, whatever it is. The rules below
       ;; are for code.
-      ((Some head) #:when (or (= (record-ref f bracket) "[") (binding-list? f outer))
+      ((Some head) #:when (or (= (record-ref f bracket) "[") (binding-list? f outer) (effect-names? outer))
        (indent (record-ref head col) #t))
       ((Some head)
-       (def normal (normal-indent f head))
+       (def normal (normal-indent f head (clause-of? head outer)))
        (match (by-head f head normal)
          ((Some i) i)
          (None (indent (keyword-aligned f head normal here) #t))))))
@@ -1355,8 +1408,26 @@
 ;; the text is laid out again and looked at again, until nothing more can be
 ;; broken.
 ;;
-;; A keyword argument's value stays on the keyword's line, and a clause's
-;; `#:when` and guard on the line of its pattern.
+;; A keyword argument's value stays on the keyword's line, a clause's `#:when`
+;; and guard on the line of its pattern, and the value of a loop's `=>` on
+;; the line of the `=>`.
+;;
+;; A signature, `(: name type (where ...) marker ...)`, is broken in steps,
+;; and no further than it has to be:
+;;
+;;   - first the `(where ...)` starts a line, and the first marker starts a
+;;     line, so that the markers have a row together, `#:sync #:inline`, a
+;;     marker's operand with it, `#:elsewhere f`. The type stays on the first
+;;     line;
+;;   - then the type moves under the name, as any list's forms do;
+;;   - then the type itself is broken. An arrow inside a `(: ...)` is filled:
+;;     its parameters are types, most of them small.
+;;
+;; The same goes for any `(: ...)` with keywords after its type, as a field
+;; with its options.
+;;
+;; The list of a hash macro, `#map(...)`, stays with the macro's name. Its
+;; entries each start a line when they are lists, and are filled when not.
 ;;
 ;; A macro is left as it is: what its forms are is its own business. Those of
 ;; the prelude are named here; a head that begins with `with-` is one too. So
@@ -1375,7 +1446,7 @@
 (: table-head? (-> string bool))
 (defun (table-head? head)
   (match head
-    ((or "import/extern" "import/class") #t)
+    ((or "import/extern" "import/class" "defeffect") #t)
     (_ #f)))
 
 ;; How the forms of a list may start lines of their own.
@@ -1419,15 +1490,17 @@
 (type (: Form (Record (: tok int) (: at int) (: from int) (: to int) (: small bool) (: glued bool))))
 
 ;; What the breaking reads of the laid-out tokens: each list's closing token,
-;; each token's line and column, whether it is inside a table, and whether it
+;; each token's line and column, whether it is inside a table, whether it
 ;; is inside a doc, whose strings may not continue lines: a published doc is
-;; bjodat, which has no columns to go by.
+;; bjodat, which has no columns to go by; and whether it is inside a `(: ...)`,
+;; where a list is a type.
 (type (: Placed (Record (: toks (Vec Tok))
                         (: closes (Vec int))
                         (: lines (Vec int))
                         (: cols (Vec int))
                         (: tabled (Vec bool))
-                        (: docked (Vec bool)))))
+                        (: docked (Vec bool))
+                        (: typed (Vec bool)))))
 
 (: placed (-> (List Tok) Placed))
 (defun (placed toks)
@@ -1437,28 +1510,31 @@
   (def cols (vecbuilder-empty))
   (def tabled (vecbuilder-empty))
   (def docked (vecbuilder-empty))
-  ;; `open` holds for each list open whether it is, or is in, a table, and
-  ;; whether it is, or is in, a doc.
+  (def typed (vecbuilder-empty))
+  ;; `open` holds for each list open whether it is, or is in, a table, a doc
+  ;; and a `(: ...)`.
   (let go ((k 0) (line 0) (col 0) (open Nil))
     (when (< k (vec-length v))
       (def t (vec-ref v k))
-      (def (Tuple in-table in-doc) (match open ((Cons b _) b) (Nil (Tuple #f #f))))
+      (def (Tuple in-table in-doc in-type) (match open ((Cons b _) b) (Nil (Tuple #f #f #f))))
       (vecbuilder-add! lines line)
       (vecbuilder-add! cols col)
       (vecbuilder-add! tabled in-table)
       (vecbuilder-add! docked in-doc)
+      (vecbuilder-add! typed in-type)
       (def (Tuple after breaks) (advance (tok-written t col) col))
       (def open-after
         (match t
           ((TOpen _)
            (def head (match (vec-ref v (+ k 1)) ((TAtom s) s) (_ "")))
-           (Cons (Tuple (or in-table (table-head? head)) (or in-doc (= head ":doc"))) open))
+           (Cons (Tuple (or in-table (table-head? head)) (or in-doc (= head ":doc")) (or in-type (= head ":")))
+                 open))
           ((TClose _) (match open ((Cons _ outer) outer) (Nil Nil)))
           (_ open)))
       (go (+ k 1) (+ line breaks) after open-after)))
   (Placed (toks v) (closes closes) (lines (vecbuilder->vec lines))
           (cols (vecbuilder->vec cols)) (tabled (vecbuilder->vec tabled))
-          (docked (vecbuilder->vec docked))))
+          (docked (vecbuilder->vec docked)) (typed (vecbuilder->vec typed))))
 
 (: tok-at (-> Placed int Tok))
 (defun (tok-at p k) (vec-ref (record-ref p toks) k))
@@ -1505,15 +1581,36 @@
       ((or (< close 0) (>= j close)) (list-reverse out))
       ((not (starts-form? (tok-at p j))) (go (+ j 1) at prev out))
       (else
-       ;; A prefix is the start of the form after it.
-       (def body (if (and (< (+ j 1) n) (prefix-of-next? (tok-at p j) (list (tok-at p (+ j 1))))) (+ j 1) j))
+       ;; A prefix is the start of the form after it, and so is the name of a
+       ;; hash macro, `#map(...)`.
+       (def body
+         (if (and (< (+ j 1) n)
+                  (or (prefix-of-next? (tok-at p j) (list (tok-at p (+ j 1))))
+                      (hash-name-of-next? (tok-at p j) (tok-at p (+ j 1)))))
+             (+ j 1)
+             j))
        (def next (if (opens? (tok-at p body)) (+ (vec-ref (record-ref p closes) body) 1) (+ body 1)))
        (def here? (or (= ln -1) (= (vec-ref (record-ref p lines) j) ln)))
        (def text (if (opens? (tok-at p body)) "" (tok-text (tok-at p j))))
        (def form (Form (tok j) (at at) (from (vec-ref (record-ref p cols) j)) (to (form-end p body))
                        (small (small-form? p body))
-                       (glued (or (keyword-arg? prev) (and (= at 1) head-list? (= text "#:when"))))))
+                       (glued (or (keyword-arg? prev)
+                                  ;; The value of a loop's `=>`.
+                                  (= prev "=>")
+                                  (and (= at 1) head-list? (= text "#:when"))))))
        (go next (+ at 1) text (if here? (Cons form out) out))))))
+
+;; Whether `t` is the name of a hash macro written right before its list:
+;; the `#map` of `#map(...)`. A keyword, `#:name`, a boolean and a character
+;; are not.
+(: hash-name-of-next? (-> Tok Tok bool))
+(defun (hash-name-of-next? t next)
+  (match t
+    ((TAtom s) #:when (and (> (string-length s) 2) (string-starts-with? s "#")
+                           (not (string-starts-with? s "#:")) (not (string-starts-with? s "#\\"))
+                           (not (string-starts-with? s "#'")))
+     (opens? next))
+    (_ #f)))
 
 (: head-text (-> Placed (List Form) string))
 (defun (head-text p forms)
@@ -1544,17 +1641,66 @@
 (defun (unglued forms)
   (list-map #(record-ref & tok) (list-filter #(not (record-ref & glued)) forms)))
 
+;; `breaking-of` for the list opening at `k`, with what its place says:
+;; - the list of a hash macro, `#map(...)`, is data;
+;; - an arrow inside a `(: ...)` is a type and not a `->` of calls. Its
+;;   parameters are filled.
+(: breaking-at (-> Placed int (List Form) (Option Breaking)))
+(defun (breaking-at p k all)
+  (def head (head-text p all))
+  (cond
+    ;; Entries that are lists, each on a line: the indentation puts them under
+    ;; the first one. Other data is filled.
+    ((and (> k 0) (hash-name-of-next? (tok-at p (- k 1)) (tok-at p k)))
+     (if (and (not (empty? all)) (all? #(opens? (tok-at p (record-ref & tok))) all))
+         (Some (OneALine 1))
+         (Some (Filled 0))))
+    ((and (vec-ref (record-ref p typed) k)
+          (match (without-prefix head)
+            ((or "->" "-bjo->" "-?->") #t)
+            (_ #f)))
+     (Some (Filled 1)))
+    (else (breaking-of (tok-text (tok-at p k)) head))))
+
+;; The forms of a `(: ...)` to start a line, of those on the line looked at:
+;; its `(where ...)`, and the first of its markers.
+;;
+;; - A signature that is too wide is first broken there: the type stays on
+;;   the first line, the `(where ...)` has a row, and the markers have a row
+;;   together, `#:sync #:inline`, a marker's operand with it, `#:elsewhere f`.
+;; - None when both have rows of their own. The list is then broken as any
+;;   list is, which moves the type under the name.
+(: signature-tail (-> Placed (List Form) (List Form) (List int)))
+(defun (signature-tail p all here)
+  (defun (where? f)
+    (def j (record-ref f tok))
+    (and (opens? (tok-at p j))
+         (match (tok-at p (+ j 1))
+           ((TAtom "where") #t)
+           (_ #f))))
+  (defun (marker? f)
+    (match (tok-at p (record-ref f tok))
+      ((TAtom s) (keyword-arg? s))
+      (_ #f)))
+  (defun (first-of test)
+    (match (list-filter #(and (>= (record-ref & at) 1) (test &)) all)
+      ((Cons f _) (list (record-ref f tok)))
+      (Nil Nil)))
+  (defun (on-line? j)
+    (any? (fun (f) (and (>= (record-ref f at) 1) (= (record-ref f tok) j))) here))
+  (list-filter on-line? (list-append (first-of where?) (first-of marker?))))
+
 ;; Where to break line `ln` in the list opening at `k` on it.
 (: breaks-in-list (-> Placed int int (List int)))
 (defun (breaks-in-list p k ln)
   (def all (forms-of p k -1))
   (def here (forms-of p k ln))
-  (def bracket (tok-text (tok-at p k)))
   (defun (from-on n)
     (list-filter #(and (>= (record-ref & at) n) (> (record-ref & from) (+ (vec-ref (record-ref p cols) k) 1)))
                  here))
-  (match (breaking-of bracket (head-text p all))
-    (None Nil)
+  (def tail (if (= (head-text p all) ":") (signature-tail p all here) Nil))
+  (match (if (empty? tail) (breaking-at p k all) None)
+    (None tail)
     ((Some (OneALine n)) (unglued (from-on n)))
     ((Some (Filled n)) (first-past (from-on n)))
     ((Some (Call n))
@@ -1593,7 +1739,7 @@
 (defun (breaks-continuing p first ln)
   (match (enclosing p first)
     ((Some k) #:when (not (vec-ref (record-ref p tabled) k))
-     (match (breaking-of (tok-text (tok-at p k)) (head-text p (forms-of p k -1)))
+     (match (breaking-at p k (forms-of p k -1))
        (None Nil)
        ((Some _)
         (first-past (list-filter #(> (record-ref & tok) first) (forms-of p k ln))))))
@@ -1608,7 +1754,7 @@
 (: first-argument-down (-> Placed (List int) (List int)))
 (defun (first-argument-down p lists)
   (defun (call? k forms)
-    (match (breaking-of (tok-text (tok-at p k)) (head-text p forms))
+    (match (breaking-at p k forms)
       ((Some (Call _)) #t)
       (_ #f)))
   ;; The argument of the call opening at `k` to move down, and how far left

@@ -204,7 +204,7 @@ call want.")
 (defun bjo-let-indent (state indent-point normal-indent)
   "Indent `let', which binds a name first when it is a named let."
   (skip-chars-forward " \t")
-  (if (looking-at "[[:alpha:]]")
+  (if (looking-at ",?[[:alpha:]]")
       ;; (let loop ((x 0)) body) — the name is a distinguished form of its own.
       (lisp-indent-specform 2 state indent-point normal-indent)
     (lisp-indent-specform 1 state indent-point normal-indent)))
@@ -428,10 +428,41 @@ under the form after its head, as a clause's body does."
           (when (member head bjo--binding-forms)
             (forward-comment (buffer-size))
             ;; A named let has its name before its bindings.
-            (when (and (equal head "let") (looking-at "[[:alpha:]]"))
+            (when (and (equal head "let") (looking-at ",?[[:alpha:]]"))
               (forward-sexp 1)
               (forward-comment (buffer-size)))
             (= (point) open)))))))
+
+(defun bjo--clause-p (open)
+  "Whether the list that opens at OPEN is a clause.
+
+A clause is a form directly in a `cond', a `match', a `case' or a
+`syntax-match', or an arm after the `:leave' of a `def'. Its forms
+go under its head, one column in."
+  (save-excursion
+    (goto-char open)
+    (condition-case nil
+        (progn
+          (backward-up-list 1)
+          (forward-char 1)
+          (skip-chars-forward " \t\n")
+          (or (looking-at "\\(?:cond\\|match\\|case\\|syntax-match\\)\\_>")
+              (bjo--after-leave-p open)))
+      (scan-error nil))))
+
+(defun bjo--after-leave-p (open)
+  "Whether a `:leave' is before OPEN in the list that OPEN is in.
+
+The list at OPEN is then an arm of a `def''s failure part."
+  (save-excursion
+    (goto-char open)
+    (let ((found nil))
+      (condition-case nil
+          (while (not found)
+            (backward-sexp 1)
+            (setq found (looking-at ":leave\\_>")))
+        (scan-error nil))
+      found)))
 
 (defun bjo-indent-function (indent-point state)
   "Indent a Bjolang form at INDENT-POINT, given parser STATE.
@@ -491,6 +522,7 @@ is not decided here; see `bjo--calculate-indent'."
 
      (t
       (let* ((head-column (current-column))
+             (head-point (point))
              (function (buffer-substring (point)
                                          (progn (forward-sexp 1) (point))))
              (method (get (intern-soft function) 'bjo-indent-function)))
@@ -512,7 +544,20 @@ is not decided here; see `bjo--calculate-indent'."
          ((integerp method)
           (lisp-indent-specform method state indent-point normal-indent))
          (method
-          (funcall method state indent-point normal-indent))))))))
+          (funcall method state indent-point normal-indent))
+         ;; A call with no argument on the line of its head: the arguments
+         ;; go two in from the bracket, not one.
+         ((and (eq (char-after (elt state 1)) ?\()
+               (not (equal function "else"))
+               (not (string-prefix-p ":" function))
+               (not (bjo--clause-p (elt state 1)))
+               (save-excursion
+                 (goto-char (elt state 2))
+                 (skip-syntax-forward "'")
+                 (= (point) head-point)))
+          (save-excursion
+            (goto-char (elt state 1))
+            (+ (current-column) 2)))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Font lock
