@@ -11,17 +11,13 @@
  * availability requirements or notice obligations of Section 3 of the MPL 2.0.
  *)
 
-/// Where the compiler looks for things that are installed rather than written
-/// by the user: the standard library and the runtime support assemblies.
+/// Resolves paths to installed compiler resources (the standard library and
+/// runtime support assemblies) as well as package roots and module paths.
 ///
-/// Every one of these paths used to be resolved against the process's working
-/// directory, which meant the answer changed depending on where the user
-/// happened to stand when invoking the compiler. That is how a second copy of
-/// the standard library comes into existence: from a directory without a `lib`
-/// next to it, `(import (std prelude))` finds no `std/prelude.dll`, falls back
-/// to `std/prelude.bjo`, and compiles the whole standard library into the
-/// program all over again. There is exactly one installation, so these are
-/// resolved once, against the compiler itself.
+/// Installation paths are resolved relative to the compiler binary (or env
+/// vars) rather than just the working directory, so invoking the compiler from
+/// an arbitrary directory still finds the prebuilt `lib/std` instead of
+/// falling back to recompiling `std/prelude.bjo` into user programs.
 module Bjolang.Paths
 
 open System
@@ -36,10 +32,9 @@ let private ancestorsOf (start: string) : string list =
 
         walk (DirectoryInfo(Path.GetFullPath start))
 
-/// Candidate `lib` directories, most authoritative first: an explicit override,
-/// then the tree the compiler binary lives in (`<root>/bin/<config>/<tfm>`),
-/// then the working directory, which keeps `dotnet run` from the project root
-/// working as before.
+/// Candidate `lib` directories in priority order: `BJOLANG_LIB`,
+/// `BJOLANG_HOME/lib`, ancestors of the compiler binary, and ancestors of the
+/// current working directory (so `dotnet run` from the repo root works).
 let private libCandidates () : string seq =
     seq {
         match Environment.GetEnvironmentVariable "BJOLANG_LIB" with
@@ -57,37 +52,32 @@ let private libCandidates () : string seq =
             yield Path.Combine(dir, "lib")
     }
 
-/// The one directory that holds the standard library. A candidate only counts
-/// if it actually contains `std`, so an empty `lib` somewhere up the tree does
-/// not shadow the real one.
+/// Directory containing the standard library. Must contain a `std`
+/// subdirectory so an unrelated `lib` folder doesn't shadow the real one.
 let libDir: string =
     libCandidates ()
     |> Seq.tryFind (fun lib -> Directory.Exists(Path.Combine(lib, "std")))
     |> Option.defaultWith (fun () -> Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "lib")))
     |> Path.GetFullPath
 
-/// The installation root: the directory `lib` sits in.
+/// Installation root (the parent directory of `libDir`).
 let root: string = Path.GetFullPath(Path.Combine(libDir, ".."))
 
-/// The compiler binary the builds belong to. A build record names it, a
-/// module built before it was written is stale, and a dependency built out of
-/// process is built by running it. Empty for a compiler published as a native
-/// host, which is its own process.
+/// Path to the compiler assembly used for staleness checks and out-of-process
+/// dependency builds (empty when published as a native single-file host).
 ///
-/// The running compiler, unless a host that embeds it, such as a language
-/// server, names the installed one instead: the host's copy is a different
-/// file, newer than every module, and judged by it the whole library would be
-/// stale and rebuilt under a compiler the command line does not use.
+/// Defaults to the executing assembly, but an embedding host (like an LSP
+/// server) can override this to point at the installed CLI compiler so it
+/// doesn't treat every prebuilt module as stale.
 let compilerAssembly =
     Compilation.Per<string>((fun () -> Reflection.Assembly.GetExecutingAssembly().Location), true)
 
-/// Source text a host holds in place of what is on disk, by full path. A
-/// language server checks an editor's unsaved buffer this way, under the
-/// file's own path, so that its module name, its includes and its imports
-/// resolve as they will once it is saved. Empty for the command line.
+/// In-memory source overrides keyed by full file path. Used by the LSP server
+/// to type-check unsaved editor buffers under their real paths so module names
+/// and imports resolve normally. Empty for CLI runs.
 let sourceOverrides = Compilation.Per<Map<string, string>>((fun () -> Map.empty), true)
 
-/// A source file's text: the host's, if it holds the file, else the disk's.
+/// Reads a source file, preferring an in-memory override if one is registered.
 let readSource (path: string) : string =
     match Map.tryFind (Path.GetFullPath path) sourceOverrides.Value with
     | Some text -> text
@@ -97,38 +87,29 @@ let readSource (path: string) : string =
 // Packages
 // ---------------------------------------------------------------------------
 
-/// A package: one name, one directory, and every module under it.
-///
-/// A package owns exactly the modules under its own name — `(bjorsec)` provides
-/// `(bjorsec core)` and `(bjorsec combine parsers)` and nothing else — so a
-/// module path says which package answers it before it says which file. That is
-/// what lets a fetched dependency live anywhere: the name is stable, the
-/// directory is not.
+/// Maps a package name prefix (e.g. `(bjorsec)`) to its root directory.
+/// Module paths under that prefix resolve to files inside `Directory`, allowing
+/// dependencies to live anywhere on disk while keeping stable module names.
 type PackageRoot =
-    { /// As an import spells it: `[ "std" ]`, `[ "bjolang"; "http" ]`.
+    { /// Module path prefix, e.g. `[ "std" ]` or `[ "bjolang"; "http" ]`.
       Name: string list
-      /// Absolute, without a trailing separator.
+      /// Absolute path without a trailing separator.
       Directory: string
-      /// Whether this is part of the installed standard library, which is
-      /// allowed things user code is not and gets no implicit prelude.
+      /// True for installed standard library packages (no implicit prelude,
+      /// and allowed internal compiler features).
       IsStandardLibrary: bool }
 
-/// A package name as source writes it, for diagnostics.
+/// Formats a package name as S-expression syntax for diagnostics.
 let showPackageName (name: string list) : string =
     "(" + String.concat " " name + ")"
 
-/// A directory path with one trailing separator, which is what containment has
-/// to compare against: `/p/src` is not a prefix of `/p/src2/m.bjo` once both
-/// carry it, and is of `/p/src/m.bjo`.
+/// Ensures `dir` ends with a single directory separator so prefix checks don't
+/// falsely match sibling directories (e.g. `/p/src` vs `/p/src2/m.bjo`).
 let private asPrefix (dir: string) : string =
     dir.TrimEnd Path.DirectorySeparatorChar + string Path.DirectorySeparatorChar
 
-/// The standard library's packages: one per top-level directory of `lib`.
-///
-/// Implicit, and present with or without a roots file — a program that names no
-/// packages at all still imports `(std prelude)`. This is the one place that
-/// knows the standard library is "a `lib` with a `std` in it"; everything else
-/// asks whether a file is under a root marked as such.
+/// Built-in standard library packages: one per top-level directory in `libDir`.
+/// Always available even without a `--roots` file.
 let private standardRoots: PackageRoot list =
     if Directory.Exists libDir then
         Directory.GetDirectories libDir
@@ -141,48 +122,42 @@ let private standardRoots: PackageRoot list =
     else
         []
 
-/// The packages a roots file added, set once before anything is resolved.
+/// Extra package roots loaded from `--roots`.
 let private configuredRoots = Compilation.Per<PackageRoot list>((fun () -> []), true)
 
-/// The file they were read from, kept for the build record.
+/// Path to the `--roots` file, saved for build records.
 let private rootsFilePath = Compilation.Per<string option>((fun () -> None), true)
 
-/// Installs the packages named by `--roots`.
+/// Registers package roots from `--roots`.
 ///
-/// Called by `Program` before the first compile and never again: every cache
-/// keyed by a path — `Naming`'s derived names, `Pipeline`'s module and facts
-/// caches — would answer from a stale registry if the roots could change under
-/// them, and a compiler process serves one roots file.
+/// Must be called once before compilation starts; changing roots later would
+/// invalidate path-keyed caches in `Naming` and `Pipeline`.
 let setConfiguredRoots (file: string) (roots: PackageRoot list) : unit =
     rootsFilePath.Value <- Some(Path.GetFullPath file)
     configuredRoots.Value <- roots
 
-/// The roots file this process was given, which every build it makes has to
-/// record: a dependency compiled on the way to something else is built against
-/// the same packages and needs the same line in its own record.
+/// Returns the active `--roots` file path, if any, so build records for
+/// compiled dependencies can record it too.
 let rootsFile () : string option = rootsFilePath.Value
 
-/// Every package this build knows, the standard library included.
+/// All registered package roots (standard library plus configured roots).
 let packageRoots () : PackageRoot list = standardRoots @ configuredRoots.Value
 
-/// What a module path names.
+/// Result of resolving a module path against registered package roots.
 type ModuleLookup =
-    /// The package that owns the name, and the `.bjo` it names — which may not
-    /// exist. Whether it does is the caller's question, because the answer
-    /// differs for a source module and a prebuilt assembly.
+    /// Matched a package root and computed the `.bjo` path (which may or may
+    /// not exist on disk; callers check depending on source vs. prebuilt DLL).
     | ModuleFile of PackageRoot * string
-    /// No package is a proper prefix of the name. Carries the package that
-    /// would have owned it, which is what the reader has to install or name.
+    /// No registered package is a proper prefix of the module path. Carries
+    /// the expected package name for error messages.
     | NoPackage of string list
-    /// The name *is* a package name. A package is a directory, not a module, so
-    /// there is nothing to import under this spelling.
+    /// The path exactly matches a package name (a directory, not a module).
     | PackageItself of PackageRoot
 
-/// The package that answers a module path, and the file it points at.
+/// Resolves a module path to its owning package and `.bjo` file path.
 ///
-/// The longest package name that is a proper prefix wins, so a `(bjolang http)`
-/// registered beside `(bjolang)` takes `(bjolang http client)` — which is how a
-/// package can be split out of another without every importer being edited.
+/// Uses longest-prefix matching so a sub-package like `(bjolang http)` takes
+/// precedence over `(bjolang)` for `(bjolang http client)`.
 let findModule (parts: string list) : ModuleLookup =
     let isPrefix (name: string list) =
         name.Length <= parts.Length
@@ -204,37 +179,28 @@ let findModule (parts: string list) : ModuleLookup =
         match roots |> List.tryFind (fun r -> r.Name = parts) with
         | Some r -> PackageItself r
         | None ->
-            // The package that would have owned it: everything but the module's
-            // own name, which is what a reader has to register. A one-segment
-            // path names a package that provides nothing, so it is its own.
+            // Guess the missing package name by dropping the final module segment
+            // (or keep the whole path if it's only one segment).
             NoPackage(if parts.Length > 1 then parts |> List.take (parts.Length - 1) else parts)
 
-/// The path below a package a module name points at, as the diagnostic spells
-/// it: `core.bjo`, `combine/parsers.bjo`.
+/// Relative `.bjo` path of a module within its package (e.g. `combine/parsers.bjo`).
 let moduleFileName (root: PackageRoot) (parts: string list) : string =
     (parts |> List.skip (min root.Name.Length parts.Length) |> String.concat "/") + ".bjo"
 
-/// What a file is called, worked out from where it is.
+/// Module identity derived from a file's location on disk.
 type FileIdentity =
     { /// The package the file belongs to.
       Root: PackageRoot
-      /// The whole module name: the package name, then the path below the
-      /// package directory without the extension.
+      /// Full module name: package name followed by relative path segments
+      /// (without the file extension).
       ModuleName: string list }
 
-/// The package a file belongs to, and the module name that gives it.
+/// Determines a file's owning package and canonical module name from its path.
 ///
-/// Derived from the path and never from how an import spelled it, so that one
-/// file is one module however it was reached — `(import "core.bjo")` and
-/// `(import (relocpkg core))` name the same assembly rather than compiling it
-/// twice under two identities.
-///
-/// The *deepest* containing root wins, which is the same rule resolution uses
-/// from the other end: a `(bjolang http)` whose directory sits inside
-/// `(bjolang)`'s owns the files under it.
-///
-/// `None` for a file under no package at all — a script somewhere in the
-/// filesystem — which keeps its hashed identity.
+/// Using the file path (rather than the import spelling) ensures a file always
+/// gets the same identity whether imported by path or by package name. Uses
+/// the deepest containing package root, matching `findModule`. Returns `None`
+/// for standalone files outside any package root.
 let identityOf (file: string) : FileIdentity option =
     let full = Path.GetFullPath file
 
@@ -252,20 +218,18 @@ let identityOf (file: string) : FileIdentity option =
 
         { Root = r; ModuleName = r.Name @ segments })
 
-/// Why the module in `importer` may not import or include the file `target`,
-/// or `None` when it may.
+/// Checks whether `importer` is allowed to import or include `target`.
+/// Returns `Some reason` if forbidden, or `None` if allowed.
 ///
-/// A directory whose name starts with `_` holds what the directory it is in
-/// keeps to itself: a module under `src/_lib/` may be imported by the modules
-/// under `src/`, and by nothing else. A project's `tests/` and `benches/` may
-/// import anything in its own `src/` as well. For a module of a package, only
-/// the `_` directories inside the package count.
+/// Directories starting with `_` are private to their parent directory: e.g.
+/// files under `src/_lib/` can only be imported by files under `src/` (plus
+/// the same project's `tests/` and `benches/`). For package modules, `_`
+/// directories above the package root are ignored.
 ///
-/// Only the `_` directories below the deepest directory the two files share
-/// matter: one above it holds both. Of those, one that is that directory's own
-/// child holds a sibling of the importer, and that is allowed. Any deeper one
-/// is not the importer's. The innermost is named, as it is the one the
-/// importer has to be under.
+/// Any `_` segment above the common ancestor covers both files, and a `_`
+/// segment directly inside the common ancestor is a sibling of the importer
+/// (allowed). Any deeper `_` segment on `target`'s path is forbidden, and we
+/// report the innermost one.
 let importRefusal (importer: string) (target: string) : string option =
     let importer = Path.GetFullPath importer
     let target = Path.GetFullPath target
@@ -294,9 +258,8 @@ let importRefusal (importer: string) (target: string) : string option =
             |> List.exists (fun d -> importer.StartsWith(asPrefix (Path.Combine(project, d)), StringComparison.Ordinal))
         | _ -> false
 
-    // In a package, only its own directories: a `_` directory above its root,
-    // such as a `../deps/_vendor/` a path dependency is kept in, is not the
-    // package's to keep anything in.
+    // For package modules, ignore `_` directories above the package root
+    // (e.g. a dependency living in `../deps/_vendor/`).
     let firstOwn =
         match identityOf target with
         | Some id -> (segments id.Root.Directory).Length
@@ -326,13 +289,13 @@ let importRefusal (importer: string) (target: string) : string option =
                 " A project's tests/ and benches/ may import it as well."
             | _ -> ""
 
-        // The source, where there is one: an import resolves to the module's
-        // `.dll`, and the program wrote the `.bjo`.
+        // Prefer showing the `.bjo` filename if it exists (imports often
+        // resolve to the compiled `.dll`).
         let source = Path.ChangeExtension(target, ".bjo")
         let written = Path.GetFileName(if File.Exists source then source else target)
 
-        // From outside the package's project, it is that package's own
-        // business, and moving the importer is no answer.
+        // If `importer` is outside the target package's project, tailor the
+        // message so it doesn't suggest moving the importer into the package.
         match identityOf target with
         | Some theirs when
             not (importer.StartsWith(asPrefix (Path.GetDirectoryName theirs.Root.Directory), StringComparison.Ordinal))
@@ -349,20 +312,13 @@ let importRefusal (importer: string) (target: string) : string option =
                 $"'%s{written}' is in %s{shown kept}/, so only modules under %s{shown owner}/ may import it, and %s{shown importer} is not one of them. Move %s{shown importer} under %s{shown owner}/, or import a module outside %s{name}/ that exports what it needs.%s{tests}"
             )
 
-/// The package that would answer a file's own module name, when that is not the
-/// package the file is in.
-///
-/// The one thing that can go wrong with deriving a name from a path: a file at
-/// `<(bjolang) root>/http/client.bjo` is named `(bjolang http client)`, and if
-/// a package `(bjolang http)` is also registered then that name resolves into
-/// *its* directory instead. The file would compile under a name that does not
-/// lead back to it, and the module it shadows would be linked by whoever
-/// imported the name. Checked wherever a name is derived rather than once at
-/// startup, because a root's directory may hold files nobody has looked at yet.
+/// Checks whether `file`'s derived module name actually resolves to a different
+/// package (shadowing). For example, `<(bjolang)>/http/client.bjo` derives
+/// `(bjolang http client)`, which is shadowed if a separate `(bjolang http)`
+/// package is registered.
 let shadowedBy (identity: FileIdentity) (file: string) : PackageRoot option =
-    // Extensions are ignored: this is asked about the `.dll` beside a source as
-    // well, and `<root>/core.dll` derives `(pkg core)`, which resolves to
-    // `<root>/core.bjo` — the same module, not a shadowing.
+    // Compare without extensions so `<root>/core.dll` and `<root>/core.bjo`
+    // are recognized as the same module.
     let withoutExtension (p: string) = Path.ChangeExtension(Path.GetFullPath p, null)
 
     match findModule identity.ModuleName with
@@ -372,59 +328,40 @@ let shadowedBy (identity: FileIdentity) (file: string) : PackageRoot option =
         Some owner
     | _ -> None
 
-/// The assemblies every compiled program links against, in link order.
+/// Runtime support assemblies linked by every compiled program, in link order.
+/// Also reflected on at type-check time for `import/class` and `import/extern`.
 ///
-/// The concurrency runtime — fibers, promises, channels and the CML event
-/// combinators that bjoroutines are built on — is compiled into
-/// `BjolangRuntime` and is not a separate assembly. It used to be `Bjoml.dll`
-/// and is named here in neither form: the namespace is still `Bjoml`, but a
-/// namespace is not an assembly, and naming one that no longer exists makes
-/// every compiled program fail to resolve.
-///
-/// They are listed here rather than pulled in on demand because the resolver a
-/// compiled program installs probes exactly these directories, and because the
-/// compiler reflects on them at type-check time to resolve `import/class` and
-/// `import/extern`.
+/// Note: the concurrency runtime (`Bjoml` namespace) is compiled directly into
+/// `BjolangRuntime` — there is no separate `Bjoml.dll`.
 let private runtimeAssemblyNames =
     [ "BjolangRuntime"
       "SchemeList"
       "BjoString"
       "BjoRx" ]
 
-/// Whether programs use precompiled (ReadyToRun) code for the runtime and the
-/// standard library. On unless `BJOLANG_NO_R2R` is set to something other
-/// than `0`. Turning it off, or on again, changes `runtimeDir`, so every
-/// module and program built against the other one is stale and is rebuilt.
+/// Whether to use precompiled (ReadyToRun) runtime/stdlib assemblies. Enabled
+/// by default unless `BJOLANG_NO_R2R` is set to a non-`"0"` value. Toggling
+/// this changes `runtimeDir`, which invalidates cached builds.
 let readyToRun: bool =
     match Environment.GetEnvironmentVariable "BJOLANG_NO_R2R" with
     | null | "" | "0" -> true
     | _ -> false
 
-/// The target framework of the .NET runtime that the compiler runs on, such
-/// as `net11.0`. Programs are compiled against that runtime, so they target
-/// it too, and the Bjolang runtime is built for it.
+/// Target framework of the .NET runtime hosting the compiler (e.g. `net11.0`).
 let targetFramework: string = $"net{Environment.Version.Major}.0"
 
-/// The framework version that a program's runtimeconfig asks for.
-/// - On a released runtime: `<major>.0.0`, such as `11.0.0`. The program runs
-///   on any runtime of that major version.
-/// - On a prerelease runtime: its own version, such as
-///   `11.0.0-rc.3.26522.148`. The host does not roll a request for `11.0.0`
-///   forward to a prerelease of it, because a release is above its
-///   prereleases.
+/// Framework version written into a compiled program's `.runtimeconfig.json`.
+/// Uses `<major>.0.0` on stable runtimes, or the full prerelease version on
+/// prerelease runtimes (since .NET won't roll `11.0.0` forward to `11.0.0-rc.*`).
 let frameworkVersion: string =
     let installed = Path.GetFileName(Path.GetDirectoryName(typeof<obj>.Assembly.Location))
     if installed.Contains '-' then installed else $"{Environment.Version.Major}.0.0"
 
-/// Directory holding the runtime support assemblies every compiled program
-/// links against.
+/// Directory containing the runtime support assemblies.
 ///
-/// With `readyToRun`, the compiler's own directory, `bin/compiler`: the
-/// compiler is published with ReadyToRun, so its copies of these assemblies
-/// are precompiled. They are built from the same project as the ones in
-/// `BjolangRuntime/bin/Release`, which MSBuild owns and which are left as it
-/// wrote them: a precompiled file there would be copied over again by the
-/// next `dotnet build` of anything that references the project.
+/// When `readyToRun` is enabled, prefers `bin/compiler` (which holds the
+/// ReadyToRun-published copies) over `BjolangRuntime/bin/Release` (which
+/// MSBuild overwrites on normal builds).
 let runtimeDir: string =
     let precompiled =
         if readyToRun then [ Path.Combine(root, "bin", "compiler") ] else []
