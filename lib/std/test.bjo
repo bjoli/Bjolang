@@ -43,18 +43,19 @@
 ;; and output snapshots in `(std test expect)`. They hook into a run through
 ;; `running-test`, `current-test-options`, `test-seed` and `at-run-end!`.
 
-(export deftest run-tests
-        check check-match check-raises check-fail check-approx check-output
-        Test TestResult TestStatus registered-tests module-tests run-test run-registered-tests
-        test-name test-module test-file test-line test-result-test test-result-failures
-        test-result-status test-failed!
-        ;; What the extensions of a run read
-        TestOptions parse-test-args current-test-options running-test test-seed
-        test-time-left next-test-index! take-test-output!
-        mix-seed string-hash at-run-end! failures-into
-        ;; Named by the templates of the macros above, so they have to be
-        ;; reachable where those expand.
-        register-test! check-failed! deftest-cases-row check-raises-message approx-close?)
+(export
+  deftest run-tests
+  check check-match check-raises check-fail check-approx check-output
+  Test TestResult TestStatus registered-tests module-tests run-test run-registered-tests
+  test-name test-module test-file test-line test-result-test test-result-failures
+  test-result-status test-failed!
+  ;; What the extensions of a run read
+  TestOptions parse-test-args current-test-options running-test test-seed
+  test-time-left next-test-index! take-test-output!
+  mix-seed string-hash at-run-end! failures-into
+  ;; Named by the templates of the macros above, so they have to be
+  ;; reachable where those expand.
+  register-test! check-failed! deftest-cases-row check-raises-message approx-close?)
 
 (import (std prelude))
 (import (std syntax-match))
@@ -88,16 +89,20 @@
                       (: body (-> void)))))
 
 (: (-> Test string))
-(defun (test-name t) (record-ref t name))
+(defun (test-name t)
+  (record-ref t name))
 
 (: (-> Test string))
-(defun (test-module t) (record-ref t module))
+(defun (test-module t)
+  (record-ref t module))
 
 (: (-> Test string))
-(defun (test-file t) (record-ref t file))
+(defun (test-file t)
+  (record-ref t file))
 
 (: (-> Test int))
-(defun (test-line t) (record-ref t line))
+(defun (test-line t)
+  (record-ref t line))
 
 ;; Newest first. A box rather than a `def/mutable`, so that `register-test!`
 ;; can be inlined into the module that calls it.
@@ -109,15 +114,24 @@
 (: (-> string string string int (Option Duration) bool string string bool bool (-> void) int))
 (defun (register-test! name module file line within open-ok skip todo slow capture body)
   (box-set! registry
-            (cons (Test (name name) (module module) (file file) (line line)
-                        (within within) (open-ok open-ok) (skip skip) (todo todo)
-                        (slow slow) (capture capture) (body body))
+            (cons (Test (name name)
+                        (module module)
+                        (file file)
+                        (line line)
+                        (within within)
+                        (open-ok open-ok)
+                        (skip skip)
+                        (todo todo)
+                        (slow slow)
+                        (capture capture)
+                        (body body))
                   (box-ref registry)))
   0)
 
 ;; Every test registered so far, in the order they were written.
 (: (-> (List Test)))
-(defun (registered-tests) (list-reverse (box-ref registry)))
+(defun (registered-tests)
+  (list-reverse (box-ref registry)))
 
 ;; The tests one module registered, by the key `(current-module)` answers
 ;; there, in the order they were written. Every module that imports this one
@@ -147,20 +161,29 @@
 (: (-> string (Option ulong)))
 (defun (parse-ulong s)
   (def chars (string->list s))
-  (def hex? (match chars ((Cons #\0 (Cons (or #\x #\X) _)) #t) (_ #f)))
-  (def digits (if hex? (list-tail (list-tail chars)) chars))
+  (def hex?
+    (match chars
+      ((Cons #\0 (Cons (or #\x #\X) _)) #t)
+      (_ #f)))
+  (def digits
+    (if hex?
+        (list-tail (list-tail chars))
+        chars))
   (def base (if hex? 16UL 10UL))
   (if (list-empty? digits)
       None
-      (let go ((left digits) (acc 0UL))
+      (let go ((left digits)
+               (acc 0UL))
         (match left
           (Nil (Some acc))
           ((Cons ch more)
            (def d (char->int ch))
-           (def v (cond ((and (>= d 48) (<= d 57)) (- d 48))
-                        ((and hex? (>= d 97) (<= d 102)) (- d 87))
-                        ((and hex? (>= d 65) (<= d 70)) (- d 55))
-                        (else -1)))
+           (def v
+             (cond
+               ((and (>= d 48) (<= d 57)) (- d 48))
+               ((and hex? (>= d 97) (<= d 102)) (- d 87))
+               ((and hex? (>= d 65) (<= d 70)) (- d 55))
+               (else -1)))
            (if (< v 0)
                None
                (go more (+ (* acc base) (cast System.UInt64 v)))))))))
@@ -175,8 +198,7 @@
 (: (-> (Result string ulong)))
 (defun (fresh-seed)
   (match (get-environment-variable "BJO_TEST_SEED")
-    ((Some s)
-     (option->result (parse-ulong s) #"BJO_TEST_SEED is not a number: ${s}"))
+    ((Some s) (option->result (parse-ulong s) #"BJO_TEST_SEED is not a number: ${s}"))
     (None (Ok (random-u64 #:rng (make-random))))))
 
 ;; The arguments of a test program: flags, and name filters. Flags start with
@@ -185,47 +207,61 @@
 (: (-> (Vec string) (Result string TestOptions)))
 (defun (parse-test-args args)
   (def (Ok seed0) (fresh-seed) :propagate)
-  (let go ((left (vec->list args)) (filters (list)) (seed seed0) (runs 0) (shrink 0)
-           (stats #f) (quick #f) (promote #f) (store #t) (junit None))
+  (let go ((left (vec->list args))
+           (filters (list))
+           (seed seed0)
+           (runs 0)
+           (shrink 0)
+           (stats #f)
+           (quick #f)
+           (promote #f)
+           (store #t)
+           (junit None))
     (defun (value-of flag more k)
       (match more
         ((Cons v after) (k v after))
         (Nil (Err #"${flag} needs a value."))))
     (match left
       (Nil
-       (Ok (TestOptions (filters (list->vec (list-reverse filters))) (seed seed) (runs runs)
-                        (shrink-limit shrink) (stats stats) (quick quick) (promote promote)
-                        (store store) (junit junit))))
+       (Ok (TestOptions (filters (list->vec (list-reverse filters)))
+                        (seed seed)
+                        (runs runs)
+                        (shrink-limit shrink)
+                        (stats stats)
+                        (quick quick)
+                        (promote promote)
+                        (store store)
+                        (junit junit))))
       ((Cons a more)
        (case a
          ("--seed"
-          (value-of a more
-            (fun (v after)
-              (match (parse-ulong v)
-                ((Some n) (go after filters n runs shrink stats quick promote store junit))
-                (None (Err #"--seed takes a number, in decimal or 0x hex: ${v}"))))))
+          (value-of a more (fun (v after)
+                             (match (parse-ulong v)
+                               ((Some n)
+                                (go after filters n runs shrink stats quick promote store junit))
+                               (None (Err #"--seed takes a number, in decimal or 0x hex: ${v}"))))))
          ("--runs"
-          (value-of a more
-            (fun (v after)
-              (match (parse-count a v)
-                ((Ok n) (go after filters seed n shrink stats quick promote store junit))
-                ((Err e) (Err e))))))
+          (value-of a more (fun (v after)
+                             (match (parse-count a v)
+                               ((Ok n)
+                                (go after filters seed n shrink stats quick promote store junit))
+                               ((Err e) (Err e))))))
          ("--shrink-limit"
-          (value-of a more
-            (fun (v after)
-              (match (parse-count a v)
-                ((Ok n) (go after filters seed runs n stats quick promote store junit))
-                ((Err e) (Err e))))))
+          (value-of a more (fun (v after)
+                             (match (parse-count a v)
+                               ((Ok n) (go after filters seed runs n stats quick promote store junit))
+                               ((Err e) (Err e))))))
          ("--junit"
-          (value-of a more
-            (fun (v after) (go after filters seed runs shrink stats quick promote store (Some v)))))
+          (value-of a more (fun (v after)
+                             (go after filters seed runs shrink stats quick promote store (Some v)))))
          ("--stats" (go more filters seed runs shrink #t quick promote store junit))
          ("--quick" (go more filters seed runs shrink stats #t promote store junit))
          ("--promote" (go more filters seed runs shrink stats quick #t store junit))
          ("--no-store" (go more filters seed runs shrink stats quick promote #f junit))
          (else
           (if (string-starts-with? a "--")
-              (Err #"unknown flag ${a}. The flags are --seed, --runs, --shrink-limit, --junit, --stats, --quick, --promote and --no-store.")
+              (Err
+               #"unknown flag ${a}. The flags are --seed, --runs, --shrink-limit, --junit, --stats, --quick, --promote and --no-store.")
               (go more (cons a filters) seed runs shrink stats quick promote store junit))))))))
 
 ;; The options of a run with no arguments, for tests run with `run-test`
@@ -241,7 +277,8 @@
 
 ;; The options of the run in progress.
 (: (-> TestOptions))
-(defun (current-test-options) (box-ref options-box))
+(defun (current-test-options)
+  (box-ref options-box))
 
 ;; ---------------------------------------------------------------------------
 ;; Seeds
@@ -251,8 +288,7 @@
 ;; randomizes per process: a test's seed has to be the same in every run.
 (: (-> string ulong))
 (defun (string-hash s)
-  (string-fold (fun (ch h)
-                 (* (bitwise-xor h (cast System.UInt64 (char->int ch))) 1099511628211UL))
+  (string-fold (fun (ch h) (* (bitwise-xor h (cast System.UInt64 (char->int ch))) 1099511628211UL))
                14695981039346656037UL
                s))
 
@@ -285,7 +321,8 @@
 (def running-box (make-box None))
 
 (: (-> (Option Test)))
-(defun (running-test) (box-ref running-box))
+(defun (running-test)
+  (box-ref running-box))
 
 ;; When the running test started, and its deadline in milliseconds.
 (: (Box (Tuple long long)))
@@ -299,8 +336,7 @@
     (None 86400000L)
     ((Some _)
      (match (box-ref running-clock)
-       ((Tuple started within)
-        (- (+ started within) (monotonic-ms)))))))
+       ((Tuple started within) (- (+ started within) (monotonic-ms)))))))
 
 ;; The port a capturing test writes to, and how far `take-test-output!` has
 ;; read it.
@@ -339,8 +375,12 @@
   (def outer (box-ref current-failures))
   (box-set! current-failures (Some failures))
   (match (try (body) #:catch (System.Exception))
-    ((Ok v) (box-set! current-failures outer) v)
-    ((Err e) (box-set! current-failures outer) (raise e))))
+    ((Ok v)
+     (box-set! current-failures outer)
+     v)
+    ((Err e)
+     (box-set! current-failures outer)
+     (raise e))))
 
 ;; A source file as a report names it: by its file name, which is enough to
 ;; find it and short enough to read.
@@ -366,12 +406,16 @@
 (defun (check-failed! file line source seen)
   (def width
     (loop (:for (Tuple src _) seen)
-          (:acc w (folding 0 (let ((n (string-length src))) (if (> n w) n w))))))
+          (:acc w (folding 0
+                           (let ((n (string-length src)))
+                             (if (> n w)
+                                 n
+                                 w))))))
   (def lines
     (loop (:for (Tuple src value) seen)
           (:acc out (listing #"    ${(string-pad-right src width)} => ${value}"))))
-  (test-failed!
-    (string-join (list->vec (cons #"  ${(shown-file file)}:${line}: ${source}" lines)) "\n")))
+  (test-failed! (string-join (list->vec (cons #"  ${(shown-file file)}:${line}: ${source}" lines))
+                             "\n")))
 
 ;; ---------------------------------------------------------------------------
 ;; Checks
@@ -379,13 +423,16 @@
 
 ;; The source position of a form, as literals a template can splice.
 (: (-> Syntax Syntax))
-(defun (file-of form) (SStr (syntax-file form)))
+(defun (file-of form)
+  (SStr (syntax-file form)))
 
 (: (-> Syntax Syntax))
-(defun (line-of form) (SInt (int->string (syntax-line form))))
+(defun (line-of form)
+  (SInt (int->string (syntax-line form))))
 
 (: (-> Syntax Syntax))
-(defun (source-of form) (SStr (syntax->string form)))
+(defun (source-of form)
+  (SStr (syntax->string form)))
 
 ;; A comparison, with both operands evaluated once, in order, and shown when
 ;; it does not hold.
@@ -394,7 +441,9 @@
   #'(let ((left ,a)
           (right ,b))
       (unless (,op left right)
-        (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
+        (check-failed! ,(file-of form)
+                       ,(line-of form)
+                       ,(source-of form)
                        (list (Tuple ,(source-of a) (displayed left))
                              (Tuple ,(source-of b) (displayed right)))))))
 
@@ -410,7 +459,9 @@
     ((_ ('>= a b)) (check-comparison form #'>= a b))
     ((_ expr)
      #'(unless ,expr
-         (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
+         (check-failed! ,(file-of form)
+                        ,(line-of form)
+                        ,(source-of form)
                         (list (Tuple ,(source-of expr) "#f")))))
     (bad (syntax-error bad "check takes one expression: (check (= (f x) 3))."))))
 
@@ -422,17 +473,22 @@
      #'(let ((value ,expr))
          (match value
            (,pattern unit)
-           (_ (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
-                             (list (Tuple ,(source-of expr) (displayed value))))))))
-    (bad (syntax-error bad "check-match takes an expression and a pattern: (check-match (parse \"x\") (Err _))."))))
+           (_
+            (check-failed! ,(file-of form)
+                           ,(line-of form)
+                           ,(source-of form)
+                           (list (Tuple ,(source-of expr) (displayed value))))))))
+    (bad
+     (syntax-error
+      bad
+      "check-match takes an expression and a pattern: (check-match (parse \"x\") (Err _))."))))
 
 ;; The part of `check-raises` that `#:message` adds: the exception was of the
 ;; right type, and now its message has to contain `part`.
 (: (-> string int string string string void))
 (defun (check-raises-message file line source message part)
   (unless (string-contains? message part)
-    (check-failed! file line source
-                   (list (Tuple "message" message) (Tuple "should contain" part)))))
+    (check-failed! file line source (list (Tuple "message" message) (Tuple "should contain" part)))))
 
 ;; `(check-raises Type expr)` passes when evaluating `expr` raises a `Type`,
 ;; a .NET exception type. A failure shows what it answered instead. With
@@ -442,25 +498,39 @@
     ((_ type expr #:message part)
      #'(match (try ,expr #:catch (,type))
          ((Ok value)
-          (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
-                         (list (Tuple ,(source-of expr) (str "answered " (displayed value) " and raised nothing")))))
-         ((Err e) (check-raises-message ,(file-of form) ,(line-of form) ,(source-of form) (.-Message e) ,part))))
+          (check-failed! ,(file-of form)
+                         ,(line-of form)
+                         ,(source-of form)
+                         (list (Tuple ,(source-of expr)
+                                      (str "answered " (displayed value) " and raised nothing")))))
+         ((Err e)
+          (check-raises-message ,(file-of form)
+                                ,(line-of form)
+                                ,(source-of form)
+                                (.-Message e)
+                                ,part))))
     ((_ type expr)
      #'(match (try ,expr #:catch (,type))
          ((Ok value)
-          (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
-                         (list (Tuple ,(source-of expr) (str "answered " (displayed value) " and raised nothing")))))
+          (check-failed! ,(file-of form)
+                         ,(line-of form)
+                         ,(source-of form)
+                         (list (Tuple ,(source-of expr)
+                                      (str "answered " (displayed value) " and raised nothing")))))
          ((Err _) unit)))
-    (bad (syntax-error bad "check-raises takes an exception type and an expression: (check-raises System.FormatException (parse-int \"x\")), optionally #:message \"part\" after them."))))
+    (bad
+     (syntax-error
+      bad
+      "check-raises takes an exception type and an expression: (check-raises System.FormatException (parse-int \"x\")), optionally #:message \"part\" after them."))))
 
 ;; `(check-fail "why")` fails where it stands: for a branch a test must not
 ;; reach.
 (def/macro (check-fail form inject compare)
   (syntax-match form
     ((_ why)
-     #'(check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
-                      (list (Tuple "reason" ,why))))
-    (bad (syntax-error bad "check-fail takes a reason: (check-fail \"this branch is unreachable\")."))))
+     #'(check-failed! ,(file-of form) ,(line-of form) ,(source-of form) (list (Tuple "reason" ,why))))
+    (bad
+     (syntax-error bad "check-fail takes a reason: (check-fail \"this branch is unreachable\")."))))
 
 ;; Whether two doubles are within `eps` of each other: absolutely near 0, and
 ;; relative to the larger of the two away from it. Equal infinities are close;
@@ -476,9 +546,12 @@
 ;; relative to their size when that is above 1. `#:eps e` changes the bound.
 (: (-> Syntax Syntax Syntax Syntax Syntax))
 (defun (check-approx-expansion form a b eps)
-  #'(let ((left ,a) (right ,b))
+  #'(let ((left ,a)
+          (right ,b))
       (unless (approx-close? left right ,eps)
-        (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
+        (check-failed! ,(file-of form)
+                       ,(line-of form)
+                       ,(source-of form)
                        (list (Tuple ,(source-of a) (displayed left))
                              (Tuple ,(source-of b) (displayed right)))))))
 
@@ -486,7 +559,10 @@
   (syntax-match form
     ((_ a b #:eps eps) (check-approx-expansion form a b eps))
     ((_ a b) (check-approx-expansion form a b #'1e-9))
-    (bad (syntax-error bad "check-approx takes two doubles: (check-approx (sqrt 2.0) 1.4142135623730951), optionally #:eps 1e-6 after them."))))
+    (bad
+     (syntax-error
+      bad
+      "check-approx takes two doubles: (check-approx (sqrt 2.0) 1.4142135623730951), optionally #:eps 1e-6 after them."))))
 
 ;; `(check-output expr "text")` passes when what `expr` writes to
 ;; `current-output-port` is the text.
@@ -494,14 +570,21 @@
   (syntax-match form
     ((_ expr text)
      #'(let* ((port (open-output-string))
-              (ignored (parameterize ((current-output-port port)) ,expr unit))
+              (ignored (parameterize ((current-output-port port))
+                         ,expr
+                         unit))
               (written (get-output-string port))
               (wanted ,text))
          (unless (= written wanted)
-           (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
+           (check-failed! ,(file-of form)
+                          ,(line-of form)
+                          ,(source-of form)
                           (list (Tuple "it wrote" (displayed written))
                                 (Tuple "wanted" (displayed wanted)))))))
-    (bad (syntax-error bad "check-output takes an expression and a string: (check-output (display \"hi\") \"hi\")."))))
+    (bad
+     (syntax-error
+      bad
+      "check-output takes an expression and a string: (check-output (display \"hi\") \"hi\")."))))
 
 ;; ---------------------------------------------------------------------------
 ;; deftest
@@ -523,12 +606,18 @@
 
 (: (-> (List Syntax) DeftestOptions))
 (defun (no-options body)
-  (DeftestOptions (within #'None) (open-ok #f) (skip #'"") (todo #'"") (slow #f)
-                  (cases None) (body body)))
+  (DeftestOptions (within #'None)
+                  (open-ok #f)
+                  (skip #'"")
+                  (todo #'"")
+                  (slow #f)
+                  (cases None)
+                  (body body)))
 
 ;; Reads the options after a test's name, in any order, up to the body.
 (: (-> Syntax (List Syntax) DeftestOptions))
-(defun (deftest-options form items) (options-from form items (no-options (list))))
+(defun (deftest-options form items)
+  (options-from form items (no-options (list))))
 
 (: (-> Syntax (List Syntax) DeftestOptions DeftestOptions))
 (defun (options-from form items o)
@@ -541,8 +630,12 @@
       ((#:slow more ...) (go more (record-set o (slow #t))))
       ((#:cases ((column ...) row ...) more ...) (go more (with-cases form column row o)))
       ((first more ...) (record-set o (body (cons first more))))
-      (_ (ignore (syntax-error form "deftest takes a name and a body: (deftest \"name\" body ...), with options such as #:within (seconds 2), #:open-ok, #:skip \"why\", #:todo \"why\", #:slow and #:cases after the name."))
-         o))))
+      (_
+       (ignore
+        (syntax-error
+         form
+         "deftest takes a name and a body: (deftest \"name\" body ...), with options such as #:within (seconds 2), #:open-ok, #:skip \"why\", #:todo \"why\", #:slow and #:cases after the name."))
+       o))))
 
 ;; `#:cases ((a b) row ...)`: the first list names the columns, and each row
 ;; after it gives them values.
@@ -550,50 +643,63 @@
 (defun (with-cases form columns rows o)
   (def width (list-length columns))
   (when (list-empty? rows)
-    (ignore (syntax-error form "#:cases has no rows. It is the column names, then rows of as many values: #:cases ((input expected) (\"1\" 1) (\"2\" 2)).")))
+    (ignore
+     (syntax-error
+      form
+      "#:cases has no rows. It is the column names, then rows of as many values: #:cases ((input expected) (\"1\" 1) (\"2\" 2)).")))
   (loop (:for row rows)
-        (:do (match row
-               ((SList items)
-                (unless (= (list-length items) width)
-                  (ignore (syntax-error row #"This row of #:cases has ${(list-length items)} values, and there are ${width} columns."))))
-               (_ (ignore (syntax-error row "A row of #:cases is a list of values, one for each column."))))))
+        (:do
+         (match row
+           ((SList items)
+            (unless (= (list-length items) width)
+              (ignore
+               (syntax-error
+                row
+                #"This row of #:cases has ${(list-length items)} values, and there are ${width} columns."))))
+           (_
+            (ignore (syntax-error row
+                                  "A row of #:cases is a list of values, one for each column."))))))
   (record-set o (cases (Some (Tuple columns rows)))))
 
 ;; The name of one row of a `#:cases` test, and its values, for its report.
 (: (-> int (List (Tuple string string)) string))
 (defun (deftest-cases-row i seen)
-  (string-join
-    (list->vec (cons #"  case ${i}:"
-                     (list-map (fun (p) (match p ((Tuple n v) #"    ${n} = ${v}"))) seen)))
-    "\n"))
+  (string-join (list->vec (cons #"  case ${i}:"
+                                (list-map (fun (p)
+                                            (match p
+                                              ((Tuple n v) #"    ${n} = ${v}")))
+                                          seen)))
+               "\n"))
 
 ;; One row's body: the columns bound to the row's values. A column that the
 ;; body uses as the pattern of a `check-match` is spliced in instead, so a row
 ;; can hold a pattern such as `(Err _)`.
 (: (-> Syntax int (List Syntax) Syntax (List Syntax) Syntax))
 (defun (case-body form i columns row body)
-  (def values (syntax-match row ((v ...) v) (_ (list))))
+  (def values
+    (syntax-match row
+      ((v ...) v)
+      (_ (list))))
   (def pairs (zip-syntax columns values))
   (def pattern-columns (list-filter (fun (p) (used-as-pattern? (fst p) body)) pairs))
   (def value-columns (list-filter (fun (p) (not (used-as-pattern? (fst p) body))) pairs))
   (def spliced (list-map (fun (b) (splice-patterns pattern-columns b)) body))
   #'(let ((case-failures (make-box (list))))
-      (failures-into case-failures
-                     (fun ()
-                       (let* ,(SList (list-map (fun (p) #'(,(fst p) ,(snd p))) value-columns))
-                         ,@spliced
-                         unit)))
+      (failures-into case-failures (fun ()
+                                     (let* ,(SList
+                                             (list-map (fun (p) #'(,(fst p) ,(snd p))) value-columns))
+                                       ,@spliced
+                                       unit)))
       (unless (list-empty? (box-ref case-failures))
         (test-failed!
-          (string-join
-            (list->vec
-              (cons (deftest-cases-row ,(SInt (int->string i))
-                                       (list ,@(list-map (fun (p) #'(Tuple ,(SStr (syntax->string (fst p)))
-                                                                           ,(SStr (syntax->string (snd p)))))
-                                                         pairs)))
-                    (list-reverse (box-ref case-failures))))
-            "\n")))))
-
+         (string-join
+          (list->vec (cons (deftest-cases-row ,(SInt (int->string i))
+                             (list ,@(list-map (fun (p)
+                                                 #'(Tuple ,(SStr (syntax->string (fst p)))
+                                                          ,(SStr (syntax->string (snd p)))))
+                                               pairs)))
+                           (list-reverse (box-ref case-failures))))
+          "\n")))))
 
 (: (-> (List Syntax) (List Syntax) (List (Tuple Syntax Syntax))))
 (defun (zip-syntax xs ys)
@@ -619,7 +725,9 @@
 (defun (check-match-pattern f)
   (match f
     ((SList (Cons (SSym head) (Cons _ (Cons (SSym p) Nil))))
-     (if (= (symbol->string head) "check-match") (Some (SSym p)) None))
+     (if (= (symbol->string head) "check-match")
+         (Some (SSym p))
+         None))
     (_ None)))
 
 ;; The forms with each pattern column in a `check-match` replaced by its
@@ -649,11 +757,25 @@
              (:for row rows)
              (:acc out (listing (case-body form i columns row (record-ref o body))))))))
   #'(def registered
-      (register-test! ,name (current-module) ,(file-of form) ,(line-of form)
-                      ,(record-ref o within) ,(if (record-ref o open-ok) #'#t #'#f)
-                      ,(record-ref o skip) ,(record-ref o todo) ,(if (record-ref o slow) #'#t #'#f)
-                      ,(if (mentions? "expect-output" body) #'#t #'#f)
-                      (fun () ,@body unit))))
+      (register-test! ,name
+                      (current-module)
+                      ,(file-of form)
+                      ,(line-of form)
+                      ,(record-ref o within)
+                      ,(if (record-ref o open-ok)
+                           #'#t
+                           #'#f)
+                      ,(record-ref o skip)
+                      ,(record-ref o todo)
+                      ,(if (record-ref o slow)
+                           #'#t
+                           #'#f)
+                      ,(if (mentions? "expect-output" body)
+                           #'#t
+                           #'#f)
+                      (fun ()
+                        ,@body
+                        unit))))
 
 ;; Whether a name appears anywhere in the forms.
 (: (-> string (List Syntax) bool))
@@ -670,8 +792,7 @@
 ;; `#:cases ((column ...) row ...)`. Registers the test; `(run-tests)` runs it.
 (def/macro (deftest form inject compare)
   (syntax-match form
-    ((_ name first more ...)
-     (deftest-expansion form name (deftest-options form (cons first more))))
+    ((_ name first more ...) (deftest-expansion form name (deftest-options form (cons first more))))
     (bad (syntax-error bad "deftest takes a name and a body: (deftest \"name\" body ...)."))))
 
 ;; ---------------------------------------------------------------------------
@@ -688,13 +809,16 @@
                             (: failures (List string)))))
 
 (: (-> TestResult Test))
-(defun (test-result-test r) (record-ref r test))
+(defun (test-result-test r)
+  (record-ref r test))
 
 (: (-> TestResult TestStatus))
-(defun (test-result-status r) (record-ref r status))
+(defun (test-result-status r)
+  (record-ref r status))
 
 (: (-> TestResult (List string)))
-(defun (test-result-failures r) (record-ref r failures))
+(defun (test-result-failures r)
+  (record-ref r failures))
 
 ;; Whether the deadline was what ended the scope. A fiber the test leaked is
 ;; cancelled by the deadline rather than failing, so the scope closes cleanly
@@ -725,27 +849,36 @@
   (box-set! running-box (Some t))
   (def holder (make-box None))
   (def body (record-ref t body))
-  (def within (match (record-ref t within) ((Some d) d) (None default-test-deadline)))
+  (def within
+    (match (record-ref t within)
+      ((Some d) d)
+      (None default-test-deadline)))
   (def outer-clock (box-ref running-clock))
   (def outer-index (box-ref index-box))
   (box-set! running-clock (Tuple (monotonic-ms) (duration->timer-ms within)))
   (box-set! index-box (map-empty))
   (def outer-output (box-ref output-box))
   (def port (open-output-string))
-  (box-set! output-box (if (record-ref t capture) (Some (Tuple port (string-cursor-start ""))) None))
-  (match (try (with-deadline within
-                (box-set! holder (Some (current-scope)))
-                (if (record-ref t capture)
-                    (parameterize ((current-output-port port)) (body))
-                    (body))
-                (unless (record-ref t open-ok)
-                  (let ((left (scope-owned-count (current-scope))))
-                    (unless (= left 0)
-                      (test-failed! #"  it left ${left} resource(s) open")))))
-         #:catch (System.Exception))
+  (box-set! output-box
+            (if (record-ref t capture)
+                (Some (Tuple port (string-cursor-start "")))
+                None))
+  (match (try
+           (with-deadline within
+             (box-set! holder (Some (current-scope)))
+             (if (record-ref t capture)
+                 (parameterize ((current-output-port port))
+                   (body))
+                 (body))
+             (unless (record-ref t open-ok)
+               (let ((left (scope-owned-count (current-scope))))
+                 (unless (= left 0)
+                   (test-failed! #"  it left ${left} resource(s) open")))))
+           #:catch (System.Exception))
     ((Ok _)
      (when (overran? holder)
-       (test-failed! #"  it ran past its deadline of ${within}: something it started never finished")))
+       (test-failed!
+        #"  it ran past its deadline of ${within}: something it started never finished")))
     ((Err e) (test-failed! #"  it raised: ${(.-Message e)}")))
   (box-set! current-failures outer)
   (box-set! running-box outer-test)
@@ -755,16 +888,19 @@
   ;; not lost.
   (when (record-ref t capture)
     (match (take-test-output!)
-      ((Some text) (unless (string-empty? text) (display text)))
+      ((Some text)
+       (unless (string-empty? text)
+         (display text)))
       (None unit)))
   (box-set! output-box outer-output)
   (def failed (list-reverse (box-ref failures)))
   (def todo? (not (string-empty? (record-ref t todo))))
   (TestResult (test t)
-              (status (cond ((and todo? (list-empty? failed)) Fixed)
-                            (todo? Todo)
-                            ((list-empty? failed) Passed)
-                            (else Failed)))
+              (status (cond
+                        ((and todo? (list-empty? failed)) Fixed)
+                        (todo? Todo)
+                        ((list-empty? failed) Passed)
+                        (else Failed)))
               (failures failed)))
 
 ;; Whether a test is chosen by the filters: by a name that contains one of
@@ -773,8 +909,7 @@
 (defun (chosen? o t)
   (def filters (record-ref o filters))
   (and (not (and (record-ref o quick) (record-ref t slow)))
-       (or (vec-empty? filters)
-           (any? (fun (f) (string-contains? (record-ref t name) f)) filters))))
+       (or (vec-empty? filters) (any? (fun (f) (string-contains? (record-ref t name) f)) filters))))
 
 ;; What extensions run when a run ends, oldest first: `(std test prop)` writes
 ;; its failure file, `(std test expect)` its promotions.
@@ -782,7 +917,9 @@
 (def run-end-hooks (make-box (list)))
 
 (: (-> (Tuple string (-> void)) string))
-(defun (hook-key h) (match h ((Tuple k _) k)))
+(defun (hook-key h)
+  (match h
+    ((Tuple k _) k)))
 
 ;; Adds `hook` to what runs when `run-registered-tests` ends, once for each
 ;; `key`: a second hook with the same key is ignored.
@@ -794,36 +931,67 @@
 ;; Text for an XML attribute or element.
 (: (-> string string))
 (defun (xml-escape s)
-  (string-replace (string-replace (string-replace (string-replace s "&" "&amp;") "<" "&lt;")
-                                  ">" "&gt;")
-                  "\"" "&quot;"))
+  (string-replace
+   (string-replace (string-replace (string-replace s "&" "&amp;") "<" "&lt;") ">" "&gt;")
+   "\""
+   "&quot;"))
 
 ;; The results as JUnit XML, the format CI servers read.
 (: (-> string (List TestResult) long string))
 (defun (junit-xml module results ms)
-  (def failed (list-length (list-filter (fun (r) (match (record-ref r status) (Failed #t) (_ #f))) results)))
-  (def skipped (list-length (list-filter (fun (r) (match (record-ref r status) ((or Skipped Todo) #t) (_ #f))) results)))
+  (def failed
+    (list-length (list-filter (fun (r)
+                                (match (record-ref r status)
+                                  (Failed #t)
+                                  (_ #f)))
+                              results)))
+  (def skipped
+    (list-length (list-filter (fun (r)
+                                (match (record-ref r status)
+                                  ((or Skipped Todo) #t)
+                                  (_ #f)))
+                              results)))
   (def cases
     (list-map
-      (fun (r)
-        (def t (record-ref r test))
-        (def head #"    <testcase name=\"${(xml-escape (record-ref t name))}\" classname=\"${(xml-escape module)}\" file=\"${(xml-escape (record-ref t file))}\" line=\"${(record-ref t line)}\"")
-        (match (record-ref r status)
-          (Failed
-           (str head ">\n      <failure message=\"failed\">"
-                (xml-escape (string-join (list->vec (record-ref r failures)) "\n"))
-                "</failure>\n    </testcase>"))
-          (Skipped (str head ">\n      <skipped message=\"" (xml-escape (record-ref t skip)) "\"/>\n    </testcase>"))
-          (Todo (str head ">\n      <skipped message=\"todo: " (xml-escape (record-ref t todo)) "\"/>\n    </testcase>"))
-          (_ (str head "/>"))))
-      results))
+     (fun (r)
+       (def t (record-ref r test))
+       (def head
+         #"    <testcase name=\"${(xml-escape (record-ref t name))}\" classname=\"${(xml-escape module)}\" file=\"${(xml-escape (record-ref t file))}\" line=\"${(record-ref t line)}\"")
+       (match (record-ref r status)
+         (Failed
+          (str head
+               ">\n      <failure message=\"failed\">"
+               (xml-escape (string-join (list->vec (record-ref r failures)) "\n"))
+               "</failure>\n    </testcase>"))
+         (Skipped
+          (str head
+               ">\n      <skipped message=\""
+               (xml-escape (record-ref t skip))
+               "\"/>\n    </testcase>"))
+         (Todo
+          (str head
+               ">\n      <skipped message=\"todo: "
+               (xml-escape (record-ref t todo))
+               "\"/>\n    </testcase>"))
+         (_ (str head "/>"))))
+     results))
   (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
        "<testsuites>\n"
-       "  <testsuite name=\"" (xml-escape module) "\" tests=\"" (int->string (list-length results))
-       "\" failures=\"" (int->string failed) "\" skipped=\"" (int->string skipped) "\" time=\""
-       (double->string (/ (cast System.Double ms) 1000.0)) "\">\n"
+       "  <testsuite name=\""
+       (xml-escape module)
+       "\" tests=\""
+       (int->string (list-length results))
+       "\" failures=\""
+       (int->string failed)
+       "\" skipped=\""
+       (int->string skipped)
+       "\" time=\""
+       (double->string (/ (cast System.Double ms) 1000.0))
+       "\">\n"
        (string-join (list->vec cases) "\n")
-       (if (list-empty? cases) "" "\n")
+       (if (list-empty? cases)
+           ""
+           "\n")
        "  </testsuite>\n</testsuites>\n"))
 
 (: (-> TestStatus TestResult bool))
@@ -842,10 +1010,15 @@
   (def total (list-length results))
   (def failed (list-length (list-filter (fun (r) (status-is? Failed r)) results)))
   (def skipped (list-length (list-filter (fun (r) (status-is? Skipped r)) results)))
-  (def todo (list-length (list-filter (fun (r) (or (status-is? Todo r) (status-is? Fixed r))) results)))
+  (def todo
+    (list-length (list-filter (fun (r) (or (status-is? Todo r) (status-is? Fixed r))) results)))
   (def extra
-    (str (if (> skipped 0) #", ${skipped} skipped" "")
-         (if (> todo 0) #", ${todo} todo" "")))
+    (str (if (> skipped 0)
+             #", ${skipped} skipped"
+             "")
+         (if (> todo 0)
+             #", ${todo} todo"
+             "")))
   (if (= failed 0)
       #"${(- total (+ skipped todo))} test(s) passed${extra} in ${ms} ms."
       #"${failed} of ${total} test(s) failed${extra} in ${ms} ms."))
@@ -856,7 +1029,9 @@
 (: (-> string (Vec string) int))
 (defun (run-registered-tests module args)
   (match (parse-test-args args)
-    ((Err why) (println #"test: ${why}") 2)
+    ((Err why)
+     (println #"test: ${why}")
+     2)
     ((Ok o) (run-with-options module o))))
 
 (: (-> string TestOptions int))
@@ -867,16 +1042,21 @@
   (def results
     (loop (:for t tests)
           (:let result (run-test t))
-          (:do (match (record-ref result status)
-                 (Failed
-                  (println #"FAIL ${(record-ref t name)} (${(shown-file (record-ref t file))}:${(record-ref t line)})")
-                  (loop (:for f (record-ref result failures)) (:do (println f))))
-                 (Fixed
-                  (println #"FIXED ${(record-ref t name)} (${(shown-file (record-ref t file))}:${(record-ref t line)}): it passes, so its #:todo can go"))
-                 (_ unit)))
+          (:do
+           (match (record-ref result status)
+             (Failed
+              (println
+               #"FAIL ${(record-ref t name)} (${(shown-file (record-ref t file))}:${(record-ref t line)})")
+              (loop (:for f (record-ref result failures))
+                    (:do (println f))))
+             (Fixed
+              (println
+               #"FIXED ${(record-ref t name)} (${(shown-file (record-ref t file))}:${(record-ref t line)}): it passes, so its #:todo can go"))
+             (_ unit)))
           (:acc out (listing result))))
   (loop (:for h (list-reverse (box-ref run-end-hooks)))
-        (:do (match h ((Tuple _ hook) (hook)))))
+        (:do (match h
+               ((Tuple _ hook) (hook)))))
   (def ms (- (monotonic-ms) started))
   (match (record-ref o junit)
     ((Some path) (file-write-text path (junit-xml module results ms)))
@@ -887,7 +1067,9 @@
                    "There are no tests."
                    "No test's name contains any of the names given."))
       (println (summary-line results ms)))
-  (if (= failed 0) 0 1))
+  (if (= failed 0)
+      0
+      1))
 
 ;; `(run-tests)` — the file's `main`: runs every test this module registered.
 ;; A module that imports another with tests does not run those.
@@ -898,5 +1080,6 @@
      ;; program's entry point has to be the name the compiler looks for.
      #'(begin
          (: ,(inject 'main) (-> (Vec string) int))
-         (defun (,(inject 'main) args) (run-registered-tests (current-module) args))))
+         (defun (,(inject 'main) args)
+           (run-registered-tests (current-module) args))))
     (bad (syntax-error bad "run-tests takes nothing: (run-tests) at the end of a test file."))))
