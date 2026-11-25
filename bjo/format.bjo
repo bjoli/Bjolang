@@ -32,18 +32,17 @@
 ;; ---------------------------------------------------------------------------
 ;; Tokens
 
-(type (: Tok (Union
-              (: TOpen string)
-              (: TClose string)
-              ;; A symbol, a number, a keyword, a character, or a prefix such
-              ;; as ' or #' — anything up to a space, a bracket, a quote or a
-              ;; semicolon.
-              (: TAtom string)
-              ;; A string of any kind, as written, over several lines too.
-              (: TStr string)
-              (: TComment string)
-              (: TSpace string)
-              TNewline)))
+(type (: Tok (Union (: TOpen string)
+                    (: TClose string)
+                    ;; A symbol, a number, a keyword, a character, or a prefix such
+                    ;; as ' or #' — anything up to a space, a bracket, a quote or a
+                    ;; semicolon.
+                    (: TAtom string)
+                    ;; A string of any kind, as written, over several lines too.
+                    (: TStr string)
+                    (: TComment string)
+                    (: TSpace string)
+                    TNewline)))
 
 (: text-between (-> (Vec char) int int string))
 (defun (text-between cs from to)
@@ -56,13 +55,17 @@
 
 (: char-at (-> (Vec char) int char))
 (defun (char-at cs i)
-  (if (< i (vec-length cs)) (vec-ref cs i) #\nul))
+  (if (< i (vec-length cs))
+      (vec-ref cs i)
+      #\nul))
 
 (: opening? (-> char bool))
-(defun (opening? c) (or (= c #\() (= c #\[) (= c #\{)))
+(defun (opening? c)
+  (or (= c #\() (= c #\[) (= c #\{)))
 
 (: closing? (-> char bool))
-(defun (closing? c) (or (= c #\)) (= c #\]) (= c #\})))
+(defun (closing? c)
+  (or (= c #\)) (= c #\]) (= c #\})))
 
 (: line-break? (-> (Vec char) int bool))
 (defun (line-break? cs i)
@@ -77,37 +80,51 @@
 ;; name, `#\space`, is a run of them.
 (: symbol-char? (-> char bool))
 (defun (symbol-char? c)
-  (not (or (char-whitespace? c) (opening? c) (closing? c)
-           (= c #\,) (= c #\:) (= c #\") (= c #\;) (= c #\'))))
+  (not (or (char-whitespace? c)
+           (opening? c)
+           (closing? c)
+           (= c #\,)
+           (= c #\:)
+           (= c #\")
+           (= c #\;)
+           (= c #\'))))
 
 (: atom-end (-> (Vec char) int int))
 (defun (atom-end cs i)
   (def c (char-at cs i))
-  (if (or (>= i (vec-length cs))
-          (char-whitespace? c) (opening? c) (closing? c) (= c #\") (= c #\;))
+  (if (or (>= i (vec-length cs)) (char-whitespace? c) (opening? c) (closing? c) (= c #\") (= c #\;))
       i
       (atom-end cs (+ i 1))))
 
 (: blank-end (-> (Vec char) int int))
 (defun (blank-end cs i)
-  (if (blank-char? cs i) (blank-end cs (+ i 1)) i))
+  (if (blank-char? cs i)
+      (blank-end cs (+ i 1))
+      i))
 
 (: line-end (-> (Vec char) int int))
 (defun (line-end cs i)
-  (if (or (>= i (vec-length cs)) (line-break? cs i)) i (line-end cs (+ i 1))))
+  (if (or (>= i (vec-length cs)) (line-break? cs i))
+      i
+      (line-end cs (+ i 1))))
 
 (: after-break (-> (Vec char) int int))
 (defun (after-break cs i)
-  (if (= (char-at cs i) #\return) (+ i 2) (+ i 1)))
+  (if (= (char-at cs i) #\return)
+      (+ i 2)
+      (+ i 1)))
 
 (: quotes-at (-> (Vec char) int int))
 (defun (quotes-at cs i)
   (let go ((p i))
-    (if (= (char-at cs p) #\") (go (+ p 1)) (- p i))))
+    (if (= (char-at cs p) #\")
+        (go (+ p 1))
+        (- p i))))
 
 (: line-of (-> (Vec char) int int))
 (defun (line-of cs i)
-  (let go ((k 0) (line 1))
+  (let go ((k 0)
+           (line 1))
     (cond
       ((>= k i) line)
       ((= (vec-ref cs k) #\newline) (go (+ k 1) (+ line 1)))
@@ -165,7 +182,8 @@
       ((= (vec-ref cs p) #\") (Ok (+ p 1)))
       ((= (vec-ref cs p) #\\) (outside (+ p 2)))
       ((and (= (vec-ref cs p) #\$) (= (char-at cs (+ p 1)) #\{))
-       (let hole ((q (+ p 2)) (depth 1))
+       (let hole ((q (+ p 2))
+                  (depth 1))
          (def c (char-at cs q))
          (cond
            ((>= q n) (unterminated cs i "an interpolated string"))
@@ -187,7 +205,9 @@
   (def start (+ i 2))
   (def name-end
     (let go ((p start))
-      (if (and (< p (vec-length cs)) (symbol-char? (vec-ref cs p))) (go (+ p 1)) p)))
+      (if (and (< p (vec-length cs)) (symbol-char? (vec-ref cs p)))
+          (go (+ p 1))
+          p)))
   (cond
     ((> (- name-end start) 1) name-end)
     ((< start (vec-length cs)) (+ start 1))
@@ -197,7 +217,8 @@
 (: token-at (-> (Vec char) int (Result string (Tuple Tok int))))
 (defun (token-at cs i)
   (def c (vec-ref cs i))
-  (defun (to e) (Tuple (TAtom (text-between cs i e)) e))
+  (defun (to e)
+    (Tuple (TAtom (text-between cs i e)) e))
   (cond
     ((line-break? cs i) (Ok (Tuple TNewline (after-break cs i))))
     ((blank-char? cs i)
@@ -234,8 +255,7 @@
           p)))
   (def c (char-at cs (+ start 1)))
   (def number?
-    (or (char-numeric? c)
-        (and (or (= c #\.) (= c #\-)) (char-numeric? (char-at cs (+ start 2))))))
+    (or (char-numeric? c) (and (or (= c #\.) (= c #\-)) (char-numeric? (char-at cs (+ start 2))))))
   (if (and (= (char-at cs start) #\<) number?)
       (let go ((p (+ start 1)))
         (cond
@@ -246,7 +266,8 @@
 
 (: tokenize (-> (Vec char) (Result string (List Tok))))
 (defun (tokenize cs)
-  (let go ((i 0) (out Nil))
+  (let go ((i 0)
+           (out Nil))
     (if (>= i (vec-length cs))
         (Ok (list-reverse out))
         (match (token-at cs i)
@@ -298,7 +319,8 @@
      (def cs (string->vec s))
      (def n (vec-length cs))
      (def sb (stringbuilder-empty))
-     (defun (copy from to) (stringbuilder-add-string! sb (text-between cs from to)))
+     (defun (copy from to)
+       (stringbuilder-add-string! sb (text-between cs from to)))
      (let go ((p 0))
        (when (< p n)
          (def c (vec-ref cs p))
@@ -336,12 +358,16 @@
 (: column-at (-> (Vec char) int int))
 (defun (column-at cs i)
   (let go ((k i))
-    (if (or (= k 0) (= (vec-ref cs (- k 1)) #\newline)) (- i k) (go (- k 1)))))
+    (if (or (= k 0) (= (vec-ref cs (- k 1)) #\newline))
+        (- i k)
+        (go (- k 1)))))
 
 ;; The column the text of the string `s` written at `col` starts at.
 (: text-column (-> string int int))
 (defun (text-column s col)
-  (if (string-starts-with? s "#\"") (+ col 2) (+ col 1)))
+  (if (string-starts-with? s "#\"")
+      (+ col 2)
+      (+ col 1)))
 
 ;; Whether the backslash at `p` is a line continuation, and if so where the
 ;; line break after it starts.
@@ -361,11 +387,11 @@
 (defun (without-continued-indent s col)
   (def text-col (text-column s col))
   (rewrite-continuations s #t (fun (sb cs at)
-                             (let skip ((j at))
-                               (if (and (< (- j at) text-col)
-                                        (or (= (char-at cs j) #\space) (= (char-at cs j) #\tab)))
-                                   (skip (+ j 1))
-                                   j)))))
+                                (let skip ((j at))
+                                  (if (and (< (- j at) text-col)
+                                           (or (= (char-at cs j) #\space) (= (char-at cs j) #\tab)))
+                                      (skip (+ j 1))
+                                      j)))))
 
 ;; The string `s`, as `without-continued-indent` reads it, written at `col`:
 ;; each continued line indented to where its text starts.
@@ -373,9 +399,9 @@
 (defun (with-continued-indent s col)
   (def text-col (text-column s col))
   (rewrite-continuations s #t (fun (sb cs at)
-                             (unless (or (>= at (vec-length cs)) (line-break? cs at))
-                               (stringbuilder-add-string! sb (spaces text-col)))
-                             at)))
+                                (unless (or (>= at (vec-length cs)) (line-break? cs at))
+                                  (stringbuilder-add-string! sb (spaces text-col)))
+                                at)))
 
 ;; `s` with each continuation written as `\` and its line break, and after it
 ;; what `after` writes, given where the continued line starts; it answers where
@@ -398,7 +424,10 @@
            ((= c #\\)
             (match (continuation-at cs p)
               ((Some k)
-               (def past (if (= (char-at cs k) #\return) (+ k 2) (+ k 1)))
+               (def past
+                 (if (= (char-at cs k) #\return)
+                     (+ k 2)
+                     (+ k 1)))
                (when keep?
                  (stringbuilder-add! sb #\\)
                  (stringbuilder-add-string! sb (text-between cs k past)))
@@ -434,7 +463,8 @@
 ;; `interpolated-end` reads one.
 (: hole-end (-> (Vec char) int int))
 (defun (hole-end cs q)
-  (let hole ((q q) (depth 1))
+  (let hole ((q q)
+             (depth 1))
     (def c (char-at cs q))
     (cond
       ((>= q (vec-length cs)) q)
@@ -453,11 +483,14 @@
 
 ;; A line's tokens, its own indentation taken off, and that indentation as it
 ;; was, which a `;;;` comment keeps.
-(type (: Line (Record (: toks (List Tok)) (: indent string))))
+(type (: Line (Record (: toks (List Tok))
+                      (: indent string))))
 
 (: lines-of (-> (List Tok) (List Line)))
 (defun (lines-of toks)
-  (let go ((toks toks) (here Nil) (out Nil))
+  (let go ((toks toks)
+           (here Nil)
+           (out Nil))
     (match toks
       (Nil (list-reverse (Cons (tidy (list-reverse here)) out)))
       ((Cons TNewline rest) (go rest Nil (Cons (tidy (list-reverse here)) out)))
@@ -496,8 +529,7 @@
   (match toks
     ((Cons (TOpen o) (Cons s rest)) #:when (and (space? s) (not (starts-comment? rest)))
      (inside-brackets (Cons (TOpen o) rest)))
-    ((Cons s (Cons (TClose c) rest)) #:when (space? s)
-     (inside-brackets (Cons (TClose c) rest)))
+    ((Cons s (Cons (TClose c) rest)) #:when (space? s) (inside-brackets (Cons (TClose c) rest)))
     ((Cons t rest) (Cons t (inside-brackets rest)))
     (Nil Nil)))
 
@@ -508,7 +540,8 @@
     (Nil #f)))
 
 (: blank? (-> Line bool))
-(defun (blank? l) (empty? (record-ref l toks)))
+(defun (blank? l)
+  (empty? (record-ref l toks)))
 
 (: drop-blank-lines (-> (List Line) (List Line)))
 (defun (drop-blank-lines lines)
@@ -520,11 +553,15 @@
 (: squeeze-blank-lines (-> (List Line) (List Line)))
 (defun (squeeze-blank-lines lines)
   (def trimmed (list-reverse (drop-blank-lines (list-reverse (drop-blank-lines lines)))))
-  (let go ((lines trimmed) (run 0) (out Nil))
+  (let go ((lines trimmed)
+           (run 0)
+           (out Nil))
     (match lines
       (Nil (list-reverse out))
       ((Cons l rest) #:when (blank? l)
-       (if (>= run 1) (go rest run out) (go rest (+ run 1) (Cons l out))))
+       (if (>= run 1)
+           (go rest run out)
+           (go rest (+ run 1) (Cons l out))))
       ((Cons l rest) (go rest 0 (Cons l out))))))
 
 ;; ---------------------------------------------------------------------------
@@ -554,10 +591,12 @@
 ;; A column, and whether `lisp-indent-region` keeps it for the following lines
 ;; at the same depth, which it does for a plain number and not for the
 ;; (COLUMN START) a rule answers when the next line may differ.
-(type (: Indent (Record (: col int) (: keep bool))))
+(type (: Indent (Record (: col int)
+                        (: keep bool))))
 
 (: indent (-> int bool Indent))
-(defun (indent col keep) (Indent (col col) (keep keep)))
+(defun (indent col keep)
+  (Indent (col col) (keep keep)))
 
 (: with-elem (-> Frame Elem Frame))
 (defun (with-elem f e)
@@ -567,8 +606,12 @@
          (line (record-ref f line))
          (elems (Cons e (record-ref f elems)))
          (count (+ n 1))
-         (first (if (= n 0) (Some e) (record-ref f first)))
-         (second (if (= n 1) (Some e) (record-ref f second)))))
+         (first (if (= n 0)
+                    (Some e)
+                    (record-ref f first)))
+         (second (if (= n 1)
+                     (Some e)
+                     (record-ref f second)))))
 
 (: raw-of (-> (Option Elem) string))
 (defun (raw-of e)
@@ -589,17 +632,15 @@
 (: rule-of (-> string (Option Rule)))
 (defun (rule-of head)
   (match head
-    ((or "seq" "letrec" "export" "re-export" "import" "import/extern" "import/class"
-         "type" "type-rec" "bjo" "begin" "spawn" "spawn/daemon" "spawn/detached"
-         "with-shield" "cond" "time-it" "try")
+    ((or "seq" "letrec" "export" "re-export" "import" "import/extern" "import/class" "type" "type-rec"
+         "bjo" "begin" "spawn" "spawn/daemon" "spawn/detached" "with-shield" "cond" "time-it" "try")
      (Some (Body 0)))
     ;; A definition: everything after its head is the body, whatever else is on
     ;; the head's line.
     ((or "defun" "defbjo" "defbjouble" "impl" "impl/extern" ":doc") (Some DefForm))
-    ((or "def/mutable" "def/trait" "def/macro" "def/pattern" "type/derive" "when"
-         "unless" "match" "case" "with-open" "parameterize" "parameterize*" "fun" "bjoroutine"
-         "let*" "syntax-match" "when-let" "if-let" "with-cancel" "with-deadline"
-         "with-response" "with-run" "with-return")
+    ((or "def/mutable" "def/trait" "def/macro" "def/pattern" "type/derive" "when" "unless" "match"
+         "case" "with-open" "parameterize" "parameterize*" "fun" "bjoroutine" "let*" "syntax-match"
+         "when-let" "if-let" "with-cancel" "with-deadline" "with-response" "with-run" "with-return")
      (Some (Body 1)))
     ("let/mono" (Some (Body 2)))
     ("if" (Some (Body 3)))
@@ -669,7 +710,11 @@
   (def left (- n args))
   (def body (+ (record-ref f col) 2))
   (cond
-    ((> left 0) (indent (if (<= args 1) (+ (record-ref f col) 4) normal) #f))
+    ((> left 0)
+     (indent (if (<= args 1)
+                 (+ (record-ref f col) 4)
+                 normal)
+             #f))
     ((or (and (= n 0) (= args 0)) (and (= left 0) (<= body normal))) (indent body #t))
     (else (indent normal #t))))
 
@@ -685,8 +730,7 @@
 (: named-let? (-> Frame Elem bool))
 (defun (named-let? f head)
   (match (record-ref f second)
-    ((Some s) #:when (= (record-ref s line) (record-ref head line))
-     (let-name? (record-ref s raw)))
+    ((Some s) #:when (= (record-ref s line) (record-ref head line)) (let-name? (record-ref s raw)))
     (_ #f)))
 
 ;; Returns true if `name` is a form that takes a record followed by
@@ -718,7 +762,8 @@
          ((Cons _ (Cons x _)) (Some x))
          (_ None)))
      (Some (match after
-             ((Some s) #:when (= (record-ref s line) (record-ref head line)) (indent (record-ref s col) #t))
+             ((Some s) #:when (= (record-ref s line) (record-ref head line))
+              (indent (record-ref s col) #t))
              (_ (indent (record-ref head col) #t)))))
     ((= name ":match") (Some (indent head-col #t)))
     ;; `(record-set target (f v) ...)`: if the first setter is on the head's
@@ -733,7 +778,12 @@
      (match (rule-of name)
        ((Some DefForm) (defform f head))
        ((Some (Body n)) (Some (specform n f normal)))
-       ((Some NamedLet) (Some (specform (if (named-let? f head) 2 1) f normal)))
+       ((Some NamedLet)
+        (Some (specform (if (named-let? f head)
+                            2
+                            1)
+                        f
+                        normal)))
        ((Some DefStar) None)
        ;; A head that begins with `def` defines something and one that begins
        ;; with `with-` runs a body in something; both have a body.
@@ -748,8 +798,7 @@
 (: keyword-aligned (-> Frame Elem int string int))
 (defun (keyword-aligned f head normal here)
   (def last (last-of f head))
-  (def on-its-line
-    (list-filter #(= (record-ref & line) (record-ref last line)) (record-ref f elems)))
+  (def on-its-line (list-filter #(= (record-ref & line) (record-ref last line)) (record-ref f elems)))
   (match (list-reverse on-its-line)
     ((Cons s _) #:when (and (string-starts-with? here ":")
                             (not (and (= (record-ref s col) (record-ref head col))
@@ -817,9 +866,7 @@
   (match outer
     ((Some o)
      (def head (raw-of (record-ref o first)))
-     (def named?
-       (and (= head "let")
-            (let-name? (raw-of (record-ref o second)))))
+     (def named? (and (= head "let") (let-name? (raw-of (record-ref o second)))))
      ;; `f` is open inside `o`, so it is the last of `o`'s forms so far.
      (and (= (record-ref f bracket) "(")
           (binding-form? head)
@@ -846,12 +893,13 @@
   (: effect-names? (-> (Option Frame) bool))
   (defun (effect-names? outer)
     (match outer
-      ((Some o) (and (= (raw-of (record-ref o first)) "defeffect")
-                     ;; `o`'s most recent element is the current list, so the
-                     ;; one before it is what precedes the list.
-                     (match (record-ref o elems)
-                       ((Cons _ (Cons e _)) (keyword-arg? (record-ref e raw)))
-                       (_ #f))))
+      ((Some o)
+       (and (= (raw-of (record-ref o first)) "defeffect")
+            ;; `o`'s most recent element is the current list, so the
+            ;; one before it is what precedes the list.
+            (match (record-ref o elems)
+              ((Cons _ (Cons e _)) (keyword-arg? (record-ref e raw)))
+              (_ #f))))
       (None #f)))
   (def calculated
     (match (record-ref f first)
@@ -859,7 +907,8 @@
       ;; A vec or an array is data, and a `let`'s bindings are a list of them:
       ;; every element goes under the first, whatever it is. The rules below
       ;; are for code.
-      ((Some head) #:when (or (= (record-ref f bracket) "[") (binding-list? f outer) (effect-names? outer))
+      ((Some head)
+       #:when (or (= (record-ref f bracket) "[") (binding-list? f outer) (effect-names? outer))
        (indent (record-ref head col) #t))
       ((Some head)
        (def normal (normal-indent f head))
@@ -871,7 +920,8 @@
     (None
      (cond
        ((and (loop-form? f) (= here "=>")) (indent (+ (record-ref f col) 2) #f))
-       ((and (record-ref calculated keep) (no-reuse? f outer)) (indent (record-ref calculated col) #f))
+       ((and (record-ref calculated keep) (no-reuse? f outer))
+        (indent (record-ref calculated col) #f))
        (else calculated)))))
 
 ;; ---------------------------------------------------------------------------
@@ -918,8 +968,11 @@
       => out))
   (def lines (string-split result "\n"))
   (loop (:for i (range 0 (vec-length lines)))
-        (:acc out (listing (Tuple (+ i 1)
-                                  #"${(int->string (columns (vec-ref lines i)))} columns, more than ${(int->string wide)}; break the line"))
+        (:acc out
+              (listing
+               (Tuple
+                (+ i 1)
+                #"${(int->string (columns (vec-ref lines i)))} columns, more than ${(int->string wide)}; break the line"))
               #:when (let ((l (vec-ref lines i)))
                        (and (> (columns l) wide)
                             (not (any? #(string-contains? & (string-trim l)) wide-before)))))
@@ -940,25 +993,26 @@
   (string-fold (fun (c at)
                  (match at
                    ((Tuple column breaks)
-                    (if (= c #\newline) (Tuple 0 (+ breaks 1)) (Tuple (+ column 1) breaks)))))
+                    (if (= c #\newline)
+                        (Tuple 0 (+ breaks 1))
+                        (Tuple (+ column 1) breaks)))))
                (Tuple col 0)
                s))
 
 (: expand-tabs (-> string int string))
 (defun (expand-tabs s col)
   (def sb (stringbuilder-empty))
-  (ignore
-   (string-fold (fun (c at)
-                  (cond
-                    ((= c #\tab)
-                     (def to (* 8 (+ 1 (/ at 8))))
-                     (stringbuilder-add-string! sb (spaces (- to at)))
-                     to)
-                    (else
-                     (stringbuilder-add! sb c)
-                     (+ at 1))))
-                col
-                s))
+  (ignore (string-fold (fun (c at)
+                         (cond
+                           ((= c #\tab)
+                            (def to (* 8 (+ 1 (/ at 8))))
+                            (stringbuilder-add-string! sb (spaces (- to at)))
+                            to)
+                           (else
+                            (stringbuilder-add! sb c)
+                            (+ at 1))))
+                       col
+                       s))
   (stringbuilder->string sb))
 
 ;; The kept columns adjusted from `from` lists open to `depth`, as
@@ -1013,9 +1067,13 @@
       ((Cons None rest) #:when keep (Cons (Some col) rest))
       (_ kept)))
   ;; A `;;;` comment stays where it was, as `lisp-indent-line` leaves it.
-  (def lead (if (string-starts-with? here ";;;") (record-ref l indent) (spaces col)))
+  (def lead
+    (if (string-starts-with? here ";;;")
+        (record-ref l indent)
+        (spaces col)))
   (def buffer (stringbuilder-empty))
-  (unless (empty? toks) (stringbuilder-add-string! buffer lead))
+  (unless (empty? toks)
+    (stringbuilder-add-string! buffer lead))
   (def (Tuple frames-after line-after)
     (write-toks buffer toks frames (string-length lead) (record-ref st line)))
   (stringbuilder-add-string! out (stringbuilder->string buffer))
@@ -1054,12 +1112,20 @@
 (defun (after-tok t frames e)
   (def added
     (match frames
-      ((Cons f outer) (if (starts-form? t) (Cons (with-elem f e) outer) frames))
+      ((Cons f outer)
+       (if (starts-form? t)
+           (Cons (with-elem f e) outer)
+           frames))
       (Nil Nil)))
   (match t
     ((TOpen s)
-     (Cons (Frame (bracket s) (col (record-ref e bracket)) (line (record-ref e line))
-                  (elems Nil) (count 0) (first None) (second None))
+     (Cons (Frame (bracket s)
+                  (col (record-ref e bracket))
+                  (line (record-ref e line))
+                  (elems Nil)
+                  (count 0)
+                  (first None)
+                  (second None))
            added))
     ((TClose _)
      (match frames
@@ -1073,7 +1139,12 @@
 (defun (write-toks out toks frames col line)
   ;; `first` is the column of the first form on the physical line, once there
   ;; is one; `prefix` that of a prefix waiting for the form it belongs to.
-  (let go ((toks toks) (frames frames) (col col) (line line) (first None) (prefix None))
+  (let go ((toks toks)
+           (frames frames)
+           (col col)
+           (line line)
+           (first None)
+           (prefix None))
     (match toks
       (Nil (Tuple frames line))
       ((Cons t rest)
@@ -1093,17 +1164,21 @@
          (match first
            ((Some c) c)
            (None form-col)))
-       (def e (Elem (col form-col)
-                    (line line)
-                    (line-first line-first)
-                    (raw (match t
-                           ((TStr _) "\"")
-                           (_ (tok-text t))))
-                    (is-list (match t
-                               ((TOpen _) #t)
-                               (_ #f)))
-                    (bracket col)))
-       (def frames-after (if waits? frames (after-tok t frames e)))
+       (def e
+         (Elem (col form-col)
+               (line line)
+               (line-first line-first)
+               (raw (match t
+                      ((TStr _) "\"")
+                      (_ (tok-text t))))
+               (is-list (match t
+                          ((TOpen _) #t)
+                          (_ #f)))
+               (bracket col)))
+       (def frames-after
+         (if waits?
+             frames
+             (after-tok t frames e)))
        (def first-after
          (cond
            ((> breaks 0) None)
@@ -1130,13 +1205,14 @@
 (: balanced (-> (List Tok) (Result string Unit)))
 (defun (balanced toks)
   ;; `open` holds each bracket still open and its line, the innermost first.
-  (let go ((toks toks) (open Nil) (line 1))
+  (let go ((toks toks)
+           (open Nil)
+           (line 1))
     (match toks
       (Nil
        (match open
          (Nil (Ok unit))
-         ((Cons (Tuple b at) _)
-          (Err #"line ${(int->string at)}: a ${b} that is never closed"))))
+         ((Cons (Tuple b at) _) (Err #"line ${(int->string at)}: a ${b} that is never closed"))))
       ((Cons t rest)
        (match t
          (TNewline (go rest open (+ line 1)))
@@ -1148,7 +1224,8 @@
             ((Cons (Tuple b at) outer)
              (if (= (partner b) c)
                  (go rest outer line)
-                 (Err #"line ${(int->string line)}: a ${c} where the ${b} of line ${(int->string at)} wants a ${(partner b)}")))))
+                 (Err
+                  #"line ${(int->string line)}: a ${c} where the ${b} of line ${(int->string at)} wants a ${(partner b)}")))))
          (_ (go rest open line)))))))
 
 ;; ---------------------------------------------------------------------------

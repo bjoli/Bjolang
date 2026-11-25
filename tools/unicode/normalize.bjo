@@ -48,11 +48,13 @@
 (def hangul-count 11172)
 
 (: (-> int bool))
-(defun (hangul? c) (and (<= hangul-first c) (< c (+ hangul-first hangul-count))))
+(defun (hangul? c)
+  (and (<= hangul-first c) (< c (+ hangul-first hangul-count))))
 
 ;; The decomposition of a code point in UnicodeData.txt: whether it is a
 ;; compatibility one, and the code points.
-(type (: Decomposition (Record (: compat? bool) (: parts (Vec int)))))
+(type (: Decomposition (Record (: compat? bool)
+                               (: parts (Vec int)))))
 
 ;; The combining class of each code point, and the decompositions, by code
 ;; point. A range of <..., First> and <..., Last> lines is class 0 with no
@@ -78,14 +80,18 @@
 (: (-> string Decomposition))
 (defun (decomposition field)
   (def compat? (string-starts-with? field "<"))
-  (def cps (if compat?
-               (match (string-split-once field ">") ((Some (Tuple _ after)) after) (None field))
-               field))
+  (def cps
+    (if compat?
+        (match (string-split-once field ">")
+          ((Some (Tuple _ after)) after)
+          (None field))
+        field))
   (Decomposition (compat? compat?) (parts (vec-map hex (words cps)))))
 
 ;; The words of `s` between spaces.
 (: (-> string (Vec string)))
-(defun (words s) (vec-filter (fun (w) (not (= w ""))) (string-split s " ")))
+(defun (words s)
+  (vec-filter (fun (w) (not (= w ""))) (string-split s " ")))
 
 ;; The full decomposition of `c`, Hangul syllables left out: canonical
 ;; only, or compatibility too.
@@ -121,21 +127,17 @@
 ;; code point, in order.
 (: (-> (TransientMap int Decomposition) (Vec int) bool (Vec (Tuple int (Vec int)))))
 (defun (decomposing table cps compat?)
-  {vecing (Tuple c d)
-          (:for c cps)
-          (:let d (full table compat? c))
-          (:when (not (= d [c])))})
+  {vecing (Tuple c d) (:for c cps) (:let d (full table compat? c)) (:when (not (= d [c])))})
 
 ;; The fields of a conformance case: one that equals an earlier field of its
 ;; line is that field's number, and the others are code points joined by '.'.
 (: (-> (Vec string) string))
 (defun (case-line fields)
-  (string-join
-   {vecing (match {finding k :when (= (vec-ref fields k) x) (:for k (range 0 i))}
-             ((Some k) (int->string k))
-             (None (string-join (words x) ".")))
-           (:for (Tuple i x) (enumerate fields))}
-   ";"))
+  (string-join {vecing (match {finding k :when (= (vec-ref fields k) x) (:for k (range 0 i))}
+                         ((Some k) (int->string k))
+                         (None (string-join (words x) ".")))
+                       (:for (Tuple i x) (enumerate fields))}
+               ";"))
 
 ;; Writes the tables and the test cases from the UCD in `ucd`.
 (: (-> string void))
@@ -149,28 +151,30 @@
 
   (def (Tuple ccc decompositions) (unicode-data data-file))
   (def table (transientmap-empty))
-  (loop (:for (Tuple c d) decompositions) (:do (transientmap-set! table c d)))
+  (loop (:for (Tuple c d) decompositions)
+        (:do (transientmap-set! table c d)))
 
   ;; The properties: the combining class, then the quick checks.
   (: (Array int))
   (def props (make-array code-point-count))
   (: (Array bool))
   (def excluded (make-array code-point-count))
-  (loop (:for c (range 0 code-point-count)) (:do (array-set! props c (array-ref ccc c))))
+  (loop (:for c (range 0 code-point-count))
+        (:do (array-set! props c (array-ref ccc c))))
   (loop (:for r (ucd-ranges props-file))
         (:let name (vec-ref (record-ref r values) 0))
-        (:do
-         (when (= name "Full_Composition_Exclusion")
-           (loop (:for c (range (record-ref r lo) (+ (record-ref r hi) 1))) (:do (array-set! excluded c #t))))
-         (match (quick-check-bits name)
-           (None unit)
-           ((Some (Tuple shift no-only?))
-            (def value (quick-check (vec-ref (record-ref r values) 1)))
-            (when (and no-only? (not (= value 2)))
-              (panic! #"unicode-tables: ${name} has a value other than N"))
-            (def bits (shift-left (if no-only? 1 value) shift))
-            (loop (:for c (range (record-ref r lo) (+ (record-ref r hi) 1)))
-                  (:do (array-set! props c (bitwise-ior (array-ref props c) bits))))))))
+        (:do (when (= name "Full_Composition_Exclusion")
+               (loop (:for c (range (record-ref r lo) (+ (record-ref r hi) 1)))
+                     (:do (array-set! excluded c #t))))
+             (match (quick-check-bits name)
+               (None unit)
+               ((Some (Tuple shift no-only?))
+                (def value (quick-check (vec-ref (record-ref r values) 1)))
+                (when (and no-only? (not (= value 2)))
+                  (panic! #"unicode-tables: ${name} has a value other than N"))
+                (def bits (shift-left (if no-only? 1 value) shift))
+                (loop (:for c (range (record-ref r lo) (+ (record-ref r hi) 1)))
+                      (:do (array-set! props c (bitwise-ior (array-ref props c) bits))))))))
 
   ;; The tables must agree with the quick checks, which the module trusts: a
   ;; code point is looked up in a table only when its quick check says No.
@@ -178,37 +182,46 @@
   (def canonical (decomposing table cps #f))
   (def compatibility (decomposing table cps #t))
   (def canonical? (transientmap-empty))
-  (loop (:for (Tuple c _) canonical) (:do (transientmap-set! canonical? c #t)))
+  (loop (:for (Tuple c _) canonical)
+        (:do (transientmap-set! canonical? c #t)))
   (def compatibility? (transientmap-empty))
-  (loop (:for (Tuple c _) compatibility) (:do (transientmap-set! compatibility? c #t)))
+  (loop (:for (Tuple c _) compatibility)
+        (:do (transientmap-set! compatibility? c #t)))
   (loop (:for c (range 0 code-point-count))
-        (:do (def p (array-ref props c))
-             (unless (= (= (bitwise-and (shift-right p 8) 1) 1)
-                        (or (transientmap-contains? canonical? c) (hangul? c)))
-               (panic! #"unicode-tables: NFD_QC of ${(int->string c #:radix 16)} does not match its decomposition"))
-             (unless (= (= (bitwise-and (shift-right p 9) 1) 1)
-                        (or (transientmap-contains? compatibility? c) (hangul? c)))
-               (panic! #"unicode-tables: NFKD_QC of ${(int->string c #:radix 16)} does not match its decomposition"))))
+        (:do
+         (def p (array-ref props c))
+         (unless (= (= (bitwise-and (shift-right p 8) 1) 1)
+                    (or (transientmap-contains? canonical? c) (hangul? c)))
+           (panic!
+            #"unicode-tables: NFD_QC of ${(int->string c #:radix 16)} does not match its decomposition"))
+         (unless (= (= (bitwise-and (shift-right p 9) 1) 1)
+                    (or (transientmap-contains? compatibility? c) (hangul? c)))
+           (panic!
+            #"unicode-tables: NFKD_QC of ${(int->string c #:radix 16)} does not match its decomposition"))))
   (unless {anding (<= (vec-length d) 255) (:for (Tuple _ d) compatibility)}
     (panic! "unicode-tables: a compatibility decomposition is longer than 255"))
 
   ;; The second code point of a pair is NFC_QC Maybe, which is what lets the
   ;; module skip the search for every other code point.
   (def compositions
-    (vec-sort
-     {vecing (Tuple (vec-ref parts 0) (vec-ref parts 1) c)
-             (:for (Tuple c d) decompositions)
-             (:let parts (record-ref d parts))
-             (:when (and (not (record-ref d compat?)) (= (vec-length parts) 2) (not (array-ref excluded c))))}))
+    (vec-sort {vecing (Tuple (vec-ref parts 0) (vec-ref parts 1) c)
+                      (:for (Tuple c d) decompositions)
+                      (:let parts (record-ref d parts))
+                      (:when (and (not (record-ref d compat?))
+                                  (= (vec-length parts) 2)
+                                  (not (array-ref excluded c))))}))
   (loop (:for (Tuple _ b _) compositions)
-        (:do (unless (= (bitwise-and (shift-right (array-ref props b) 10) 3) 1)
-               (panic! #"unicode-tables: ${(int->string b #:radix 16)} is the second of a composition and not NFC_QC Maybe"))))
+        (:do
+         (unless (= (bitwise-and (shift-right (array-ref props b) 10) 3) 1)
+           (panic!
+            #"unicode-tables: ${(int->string b #:radix 16)} is the second of a composition and not NFC_QC Maybe"))))
 
   (def kinds (sorted-distinct (array->vec props)))
   (when (> (vec-length kinds) 78)
     (panic! #"unicode-tables: ${(vec-length kinds)} properties, and the module has room for 78"))
   (def kind-of (transientmap-empty))
-  (loop (:for (Tuple i k) (enumerate kinds)) (:do (transientmap-set! kind-of k i)))
+  (loop (:for (Tuple i k) (enumerate kinds))
+        (:do (transientmap-set! kind-of k i)))
   (: (Array int))
   (def kind-index (make-array code-point-count))
   (loop (:for c (range 0 code-point-count))
@@ -226,31 +239,34 @@
                {vecing (+ (* (cast long a) (cast long code-point-count)) (cast long b))
                        (:for (Tuple a b _) compositions)})
   (write-ints (table-path "normalize-composites.bin") {vecing c (:for (Tuple _ _ c) compositions)})
-  (write-text (table-path "normalize-table.protobjo")
-              (str (header "normalize" version
-                           "UnicodeData.txt, CompositionExclusions.txt and DerivedNormalizationProps.txt")
-                   "\n"
-                   ";; The Unicode version the tables are of.\n"
-                   #"(def unicode-version \"${version}\")\n"
-                   "\n"
-                   ";; The number of code points with a full canonical decomposition, Hangul\n"
-                   ";; syllables left out.\n"
-                   #"(def canonical-count ${(vec-length canonical)})\n"
-                   "\n"
-                   ";; The number of code points with a full compatibility decomposition, Hangul\n"
-                   ";; syllables left out.\n"
-                   #"(def compatibility-count ${(vec-length compatibility)})\n"
-                   "\n"
-                   ";; The number of primary composites.\n"
-                   #"(def composition-count ${(vec-length compositions)})\n"))
+  (write-text
+   (table-path "normalize-table.protobjo")
+   (str (header "normalize"
+                version
+                "UnicodeData.txt, CompositionExclusions.txt and DerivedNormalizationProps.txt")
+        "\n"
+        ";; The Unicode version the tables are of.\n"
+        #"(def unicode-version \"${version}\")\n"
+        "\n"
+        ";; The number of code points with a full canonical decomposition, Hangul\n"
+        ";; syllables left out.\n"
+        #"(def canonical-count ${(vec-length canonical)})\n"
+        "\n"
+        ";; The number of code points with a full compatibility decomposition, Hangul\n"
+        ";; syllables left out.\n"
+        #"(def compatibility-count ${(vec-length compatibility)})\n"
+        "\n"
+        ";; The number of primary composites.\n"
+        #"(def composition-count ${(vec-length compositions)})\n"))
 
   ;; The conformance cases, and the code points of part 1.
   (def cases (vecbuilder-empty))
   (def part1 (vecbuilder-empty))
   (loop (:for line (file-read-lines tests))
-        (:with part "" (if (string-starts-with? line "@Part")
-                           (vec-ref (string-split line " ") 0)
-                           part))
+        (:with part ""
+               (if (string-starts-with? line "@Part")
+                   (vec-ref (string-split line " ") 0)
+                   part))
         (:let data (string-trim (match (string-split-once line "#")
                                   ((Some (Tuple before _)) before)
                                   (None line))))
@@ -263,9 +279,10 @@
   (def case-lines (vecbuilder->vec cases))
   (def part1-sorted (vec-sort (vecbuilder->vec part1)))
   (def part1-lines
-    {vecing (str "    " (string-join (vec-map (fun (c) (int->string c #:radix 16))
-                                              (vec-take (vec-drop part1-sorted at) 16))
-                                     " "))
+    {vecing (str "    "
+                 (string-join (vec-map (fun (c) (int->string c #:radix 16))
+                                       (vec-take (vec-drop part1-sorted at) 16))
+                              " "))
             (:for at (range-by 0 (vec-length part1-sorted) 16))})
   (write-text (case-path "normalize-cases.protobjo")
               (str (header "normalize" version "NormalizationTest.txt")
@@ -275,12 +292,15 @@
                    ";; number, from 0. The others are code points in hex, separated by '.'.\n"
                    #"(def normalize-cases-version \"${version}\")\n"
                    "(def normalize-cases \"\"\"\n"
-                   (string-join (vec-map (fun (c) (str "    " c)) case-lines) "\n") "\n"
+                   (string-join (vec-map (fun (c) (str "    " c)) case-lines) "\n")
+                   "\n"
                    "    \"\"\")\n"
                    "\n"
                    ";; The code points of part 1, in hex, in order. Every other code point is\n"
                    ";; its own NFC, NFD, NFKC and NFKD.\n"
                    "(def normalize-part1 \"\"\"\n"
-                   (string-join part1-lines "\n") "\n"
+                   (string-join part1-lines "\n")
+                   "\n"
                    "    \"\"\")\n"))
-  (println #"Unicode ${version}: ${(vec-length kinds)} properties in ${(record-ref stages blocks)} blocks, ${(vec-length canonical)} canonical and ${(vec-length compatibility)} compatibility decompositions, ${(vec-length compositions)} compositions, ${(vec-length case-lines)} test cases"))
+  (println
+   #"Unicode ${version}: ${(vec-length kinds)} properties in ${(record-ref stages blocks)} blocks, ${(vec-length canonical)} canonical and ${(vec-length compatibility)} compatibility decompositions, ${(vec-length compositions)} compositions, ${(vec-length case-lines)} test cases"))

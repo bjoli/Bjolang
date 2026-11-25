@@ -41,10 +41,7 @@
 ;; - #:prefixes may give one prefix twice. The first one is used, and the
 ;;   namespace of the second gets a generated prefix where the two meet.
 
-(export
-  XmlWriteError
-  node->xml node->xml-string
-  document->xml document->xml-string)
+(export XmlWriteError node->xml node->xml-string document->xml document->xml-string)
 
 (import (std prelude))
 (import (text xml))
@@ -98,8 +95,10 @@
 (type (: XmlWriteError (Record (: message string))))
 
 (impl (Displayed XmlWriteError)
-  (defun (displayed e) (record-ref e message))
-  (defun (display-into e b) (stringbuilder-add-string! b (record-ref e message))))
+  (defun (displayed e)
+    (record-ref e message))
+  (defun (display-into e b)
+    (stringbuilder-add-string! b (record-ref e message))))
 
 (: (-> string (Result XmlWriteError %a)))
 (defun (write-error message)
@@ -149,7 +148,10 @@
 (defun (bound-in frame prefix)
   (match frame
     (Nil None)
-    ((Cons (Tuple p u) rest) (if (= p prefix) (Some u) (bound-in rest prefix)))))
+    ((Cons (Tuple p u) rest)
+     (if (= p prefix)
+         (Some u)
+         (bound-in rest prefix)))))
 
 ;; What a prefix means here. "xml" always means the xml namespace, and the
 ;; default namespace is none until something declares one.
@@ -159,7 +161,10 @@
       (Some xml-namespace)
       (let loop ((frames scope))
         (match frames
-          (Nil (if (= prefix "") (Some "") None))
+          (Nil
+           (if (= prefix "")
+               (Some "")
+               None))
           ((Cons frame rest)
            (match (bound-in frame prefix)
              ((Some u) (Some u))
@@ -187,7 +192,10 @@
 (defun (hint-prefix hints uri)
   (match hints
     (Nil None)
-    ((Cons (Tuple p u) rest) (if (= u uri) (Some p) (hint-prefix rest uri)))))
+    ((Cons (Tuple p u) rest)
+     (if (= u uri)
+         (Some p)
+         (hint-prefix rest uri)))))
 
 (: (-> Hints string bool))
 (defun (hinted? hints prefix)
@@ -210,7 +218,10 @@
 (defun (element-prefix scope hints uri)
   (cond
     ((string-empty? uri)
-     (Tuple "" (if (= (scope-uri scope "") (Some "")) Nil (list (Tuple "" "")))))
+     (Tuple ""
+            (if (= (scope-uri scope "") (Some ""))
+                Nil
+                (list (Tuple "" "")))))
     (:match (Some p) (scope-prefix scope uri #t) (Tuple p Nil))
     (:match (Some p) (hint-prefix hints uri) (Tuple p (list (Tuple p uri))))
     (else (Tuple "" (list (Tuple "" uri))))))
@@ -218,8 +229,7 @@
 ;; An attribute's prefix, given the declarations the element has made so far.
 ;; A hinted prefix this element already uses for another namespace cannot be
 ;; declared again on it, so a generated one is used instead.
-(: (-> Scope (List (Tuple string string)) Hints string
-       (Tuple string (List (Tuple string string)))))
+(: (-> Scope (List (Tuple string string)) Hints string (Tuple string (List (Tuple string string)))))
 (defun (attribute-prefix scope frame hints uri)
   (def here (Cons frame scope))
   (cond
@@ -244,7 +254,10 @@
        (match (element-view n)
          ((Some (Tuple name attrs kids))
           (transientmap-set! used (xml-name-ns name) #t)
-          (list-for-each (fun (a) (def (Tuple an _) a) (transientmap-set! used (xml-name-ns an) #t)) attrs)
+          (list-for-each (fun (a)
+                           (def (Tuple an _) a)
+                           (transientmap-set! used (xml-name-ns an) #t))
+                         attrs)
           (loop (Cons kids (Cons more rest))))
          (None (loop (Cons more rest))))))))
 
@@ -252,13 +265,17 @@
 (: (-> Hints void))
 (defun (check-hints hints)
   (list-for-each
-    (fun (h)
-      (def (Tuple p u) h)
-      (when (or (err? (clr-verify-ncname p)) (= p "xml") (= p "xmlns"))
-        (raise (cast Exception (ArgumentException. (str "(text xml write): #:prefixes: \"" p "\" cannot be a prefix")))))
-      (when (or (string-empty? u) (= u xml-namespace) (= u xmlns-namespace))
-        (raise (cast Exception (ArgumentException. (str "(text xml write): #:prefixes: \"" p "\" cannot name \"" u "\""))))))
-    hints))
+   (fun (h)
+     (def (Tuple p u) h)
+     (when (or (err? (clr-verify-ncname p)) (= p "xml") (= p "xmlns"))
+       (raise (cast Exception
+                    (ArgumentException.
+                     (str "(text xml write): #:prefixes: \"" p "\" cannot be a prefix")))))
+     (when (or (string-empty? u) (= u xml-namespace) (= u xmlns-namespace))
+       (raise (cast Exception
+                    (ArgumentException.
+                     (str "(text xml write): #:prefixes: \"" p "\" cannot name \"" u "\""))))))
+   hints))
 
 ;; ===========================================================================
 ;; The walk
@@ -326,16 +343,27 @@
     (if (list-empty? hints)
         Nil
         (let ((used (used-namespaces root)))
-          (list-filter (fun (h) (def (Tuple _ u) h) (transientmap-contains? used u)) hints))))
-  (let loop ((steps (list (Visit root 0 #f (not indent)))) (scope Nil) (first #t))
+          (list-filter (fun (h)
+                         (def (Tuple _ u) h)
+                         (transientmap-contains? used u))
+                       hints))))
+  (let loop ((steps (list (Visit root 0 #f (not indent))))
+             (scope Nil)
+             (first #t))
     (match steps
       (Nil done)
       ((Cons (Leave depth newline declared) rest)
-       (when newline (clr-whitespace w (newline-indent depth)))
+       (when newline
+         (clr-whitespace w (newline-indent depth)))
        (clr-end-element w)
-       (loop rest (match scope ((Cons _ outer) #:when declared outer) (_ scope)) #f))
+       (loop rest
+             (match scope
+               ((Cons _ outer) #:when declared outer)
+               (_ scope))
+             #f))
       ((Cons (Visit n depth newline mixed) rest)
-       (when newline (clr-whitespace w (newline-indent depth)))
+       (when newline
+         (clr-whitespace w (newline-indent depth)))
        (cond
          ((text? n)
           (clr-string w (text-value n))
@@ -343,19 +371,26 @@
          ((comment? n)
           (match (comment-problem (comment-value n))
             ((Some problem) (write-error problem))
-            (None (clr-comment w (comment-value n)) (loop rest scope #f))))
+            (None
+             (clr-comment w (comment-value n))
+             (loop rest scope #f))))
          ((pi? n)
           (match (pi-problem (pi-target n) (pi-data n))
             ((Some problem) (write-error problem))
-            (None (clr-pi w (pi-target n) (pi-data n)) (loop rest scope #f))))
+            (None
+             (clr-pi w (pi-target n) (pi-data n))
+             (loop rest scope #f))))
          (else
           (def kids (element-children n))
-          (def frame (write-start w scope hints (if first root-hints Nil) (element-name n) (element-attrs n)))
+          (def frame
+            (write-start w scope hints (if first root-hints Nil) (element-name n) (element-attrs n)))
           (def inside (indents? n kids mixed))
           (def declared (not (list-empty? frame)))
           (loop (list-append (list-map (fun (k) (Visit k (+ depth 1) inside (not inside))) kids)
                              (Cons (Leave depth inside declared) rest))
-                (if declared (Cons frame scope) scope)
+                (if declared
+                    (Cons frame scope)
+                    scope)
                 #f)))))))
 
 ;; ===========================================================================
@@ -373,7 +408,8 @@
       (None (Ok None))
       ((Some sys)
        (cond
-         ((err? (clr-verify-xml-chars sys)) (write-error "the doctype's system id has a character XML does not allow"))
+         ((err? (clr-verify-xml-chars sys))
+          (write-error "the doctype's system id has a character XML does not allow"))
          ((not (string-contains? sys "\"")) (Ok (Some (str "\"" sys "\""))))
          ((not (string-contains? sys "'")) (Ok (Some (str "'" sys "'"))))
          (else (write-error "the doctype's system id has both kinds of quote in it"))))))
@@ -390,31 +426,41 @@
             (Ok (str "<!DOCTYPE " name " PUBLIC \"" pub "\" " s ">"))))
        ((Tuple (Some _) None) (write-error "a doctype with a public id needs a system id too"))))))
 
-(type (: TopItem (Union (: TopDoctype Doctype) (: TopNode Node))))
+(type (: TopItem (Union (: TopDoctype Doctype)
+                        (: TopNode Node))))
 
 (: (-> Document (List TopItem)))
 (defun (top-items doc)
-  (def nodes (list-map TopNode (list-append (document-prolog doc)
-                                            (Cons (document-root doc) (document-epilog doc)))))
+  (def nodes
+    (list-map TopNode
+              (list-append (document-prolog doc) (Cons (document-root doc) (document-epilog doc)))))
   (match (document-doctype doc)
     ((Some dt) (Cons (TopDoctype dt) nodes))
     (None nodes)))
 
 (: (-> XmlWriter Document bool Hints bool (Result XmlWriteError Unit)))
 (defun (write-document w doc indent hints declaration)
-  (when declaration (clr-pi w "xml" "version=\"1.0\""))
-  (let loop ((items (top-items doc)) (first (not declaration)))
+  (when declaration
+    (clr-pi w "xml" "version=\"1.0\""))
+  (let loop ((items (top-items doc))
+             (first (not declaration)))
     (match items
       (Nil done)
       ((Cons item rest)
-       (when (and indent (not first)) (clr-whitespace w "\n"))
-       (def (Ok _)
-         (match item
-           ((TopDoctype dt)
-            (def (Ok markup) (doctype-markup dt) :propagate)
-            (clr-raw w markup)
-            done)
-           ((TopNode n) (write-tree w n indent (if (element? n) hints Nil))))
+       (when (and indent (not first))
+         (clr-whitespace w "\n"))
+       (def (Ok _) (match item
+                     ((TopDoctype dt)
+                      (def (Ok markup) (doctype-markup dt) :propagate)
+                      (clr-raw w markup)
+                      done)
+                     ((TopNode n)
+                      (write-tree w
+                                  n
+                                  indent
+                                  (if (element? n)
+                                      hints
+                                      Nil))))
          :propagate)
        (loop rest #f)))))
 
@@ -438,11 +484,14 @@
 ;; passes through. What was written before the error stays written.
 (: (-> XmlWriter (-> XmlWriter (Result XmlWriteError Unit)) (Result XmlWriteError Unit)))
 (defun (run-writer writer body)
-  (match (try (with-open ((w writer))
-                (def result (body w))
-                (when (ok? result) (clr-flush w))
-                result)
-              #:catch (System.ArgumentException System.Xml.XmlException System.InvalidOperationException))
+  (match (try
+           (with-open ((w writer))
+             (def result (body w))
+             (when (ok? result)
+               (clr-flush w))
+             result)
+           #:catch (System.ArgumentException System.Xml.XmlException
+                                             System.InvalidOperationException))
     ((Ok result) result)
     ((Err e) (write-error (.-Message e)))))
 
@@ -453,8 +502,7 @@
   (run-writer (clr-writer-over-text (cast TextWriter port) (writer-settings #f #f))
               (fun (w) (write-tree w node indent? prefixes))))
 
-(: (-> Node (#:indent? bool) (#:prefixes (List (Tuple string string)))
-       (Result XmlWriteError string)))
+(: (-> Node (#:indent? bool) (#:prefixes (List (Tuple string string))) (Result XmlWriteError string)))
 (defun (node->xml-string node #:indent? #f #:prefixes Nil)
   (check-hints prefixes)
   (def sb (ClrBuilder.))
@@ -466,15 +514,13 @@
 ;; #:declaration? writes <?xml version="1.0"?>, with no encoding: which one the
 ;; text ends up in is the port's business.
 (: (-> Document OutputPort (#:indent? bool) (#:prefixes (List (Tuple string string)))
-       (#:declaration? bool)
-       (Result XmlWriteError Unit)))
+       (#:declaration? bool) (Result XmlWriteError Unit)))
 (defun (document->xml doc port #:indent? #f #:prefixes Nil #:declaration? #t)
   (check-hints prefixes)
   (run-writer (clr-writer-over-text (cast TextWriter port) (writer-settings #t declaration?))
               (fun (w) (write-document w doc indent? prefixes declaration?))))
 
-(: (-> Document (#:indent? bool) (#:prefixes (List (Tuple string string)))
-       (#:declaration? bool)
+(: (-> Document (#:indent? bool) (#:prefixes (List (Tuple string string))) (#:declaration? bool)
        (Result XmlWriteError string)))
 (defun (document->xml-string doc #:indent? #f #:prefixes Nil #:declaration? #t)
   (check-hints prefixes)

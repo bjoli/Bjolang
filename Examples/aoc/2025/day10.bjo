@@ -7,9 +7,20 @@
 (: (-> string (Tuple int (Vec (Vec int)) (Vec int))))
 (defun (parse-machine line)
   (def (Tuple lights buttons targets)
-    (scan line '("[" (chars ".#") "] " ("(" (int ... #:sep ",") ")") ... #:sep " "
-                 " {" (int ... #:sep ",") "}")))
-  (Tuple {summing (if (char=? c #\#) bit 0) (:for c lights) (:with bit 1 (* bit 2))}
+    (scan line
+          '("[" (chars ".#")
+                "] "
+                ("(" (int ... #:sep ",") ")")
+                ...
+                #:sep " "
+                " {"
+                (int ... #:sep ",")
+                "}")))
+  (Tuple {summing (if (char=? c #\#)
+                      bit
+                      0)
+                  (:for c lights)
+                  (:with bit 1 (* bit 2))}
          buttons
          targets))
 
@@ -21,10 +32,10 @@
         (:let lit (loop (:for i (range 0 nb))
                         (:when (= 1 (bitwise-and (shift-right s i) 1)))
                         (:acc x (folding 0 (bitwise-xor x (ref masks i))))
-                        => x))
+                    => x))
         (:when (= lit lights))
         (:acc best (folding 1000000 (min best (popcount s))))
-        => best))
+    => best))
 
 ;; The buttons pressed an odd number of times must give the targets' parity;
 ;; what is left is even, and is half the problem, pressed twice.
@@ -33,7 +44,8 @@
   (def* (k (length targets))
         (nb (length buttons))
         (none 1000000000))
-  (defun (parity a) {summing (shift-left (bitwise-and (ref a c) 1) c) (:for c (range 0 k))})
+  (defun (parity a)
+    {summing (shift-left (bitwise-and (ref a c) 1) c) (:for c (range 0 k))})
   ;; Every subset of the buttons, pressed once each: what it adds, and how many
   ;; presses. The subsets are grouped by the parity of what they add.
   (def by-parity (mutablemap))
@@ -45,25 +57,30 @@
                    (:for c (ref buttons i))
                    (:do (array-set! adds c (+ 1 (ref adds c))))))
         (:let p (parity adds))
-        (:do (mutablemap-set! by-parity p (Cons (Tuple adds (popcount s))
-                                                (mutablemap-ref-or by-parity p Nil)))))
+        (:do (mutablemap-set! by-parity
+                              p
+                              (Cons (Tuple adds (popcount s)) (mutablemap-ref-or by-parity p Nil)))))
   (def memo (mutablemap))
   (defun (solve (: t (Array int)))
     (def key (string-join {vecing (int->string x) (:for x t)} ","))
-    (cond ((all? #(= & 0) t) 0)
-          ((mutablemap-contains? memo key) (mutablemap-ref memo key))
-          (else
-           (def best
-             (loop (:for (adds . n) (mutablemap-ref-or by-parity (parity t) Nil))
-                   (:when (all? #(<= (ref adds &) (ref t &)) (range 0 k)))
-                   (:let half (make-array k))
-                   (:do (loop (:for c (range 0 k))
-                              (:do (array-set! half c (/ (- (ref t c) (ref adds c)) 2)))))
-                   (:let rest (solve half))
-                   (:acc best (folding none (if (< rest none) (min best (+ n (* 2 rest))) best)))
-                   => best))
-           (mutablemap-set! memo key best)
-           best)))
+    (cond
+      ((all? #(= & 0) t) 0)
+      ((mutablemap-contains? memo key) (mutablemap-ref memo key))
+      (else
+       (def best
+         (loop (:for (adds . n) (mutablemap-ref-or by-parity (parity t) Nil))
+               (:when (all? #(<= (ref adds &) (ref t &)) (range 0 k)))
+               (:let half (make-array k))
+               (:do (loop (:for c (range 0 k))
+                          (:do (array-set! half c (/ (- (ref t c) (ref adds c)) 2)))))
+               (:let rest (solve half))
+               (:acc best (folding none
+                                   (if (< rest none)
+                                       (min best (+ n (* 2 rest)))
+                                       best)))
+           => best))
+       (mutablemap-set! memo key best)
+       best)))
   (solve (vec->array targets)))
 
 (defun (main args)

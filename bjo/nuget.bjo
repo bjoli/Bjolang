@@ -65,7 +65,6 @@
   (substring-from (: System.String.Substring (-> string int string)))
   (substring-range (: System.String.Substring (-> string int int string))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; The generated project
 ;; ---------------------------------------------------------------------------
@@ -73,8 +72,9 @@
 (: (-> string string))
 (defun (xml-escape s)
   (string-replace
-    (string-replace (string-replace (string-replace s "&" "&amp;") "<" "&lt;") ">" "&gt;")
-    "\"" "&quot;"))
+   (string-replace (string-replace (string-replace s "&" "&amp;") "<" "&lt;") ">" "&gt;")
+   "\""
+   "&quot;"))
 
 ;; The target that writes the three lists.
 ;;
@@ -98,32 +98,39 @@
 ;; it, and are there before anything reads the lists.
 (: (-> (List string) string))
 (defun (resolve-target glue-dlls)
-  (str "  <Target Name=\"BjoResolve\" DependsOnTargets=\"ResolveReferences\">\n"
-       "    <ItemGroup>\n"
-       "      <_BjoCompile Include=\"@(ReferencePath)\" Condition=\"'%(ReferencePath.NuGetPackageId)' != '' and '%(ReferencePath.FrameworkReferenceName)' == ''\" />\n"
-       "      <_BjoRuntime Include=\"@(ReferenceCopyLocalPaths)\" Condition=\"'%(ReferenceCopyLocalPaths.NuGetPackageId)' != '' and '%(ReferenceCopyLocalPaths.Extension)' == '.dll' and '%(ReferenceCopyLocalPaths.DestinationSubDirectory)' == ''\" />\n"
-       (string-join (list->vec (list-map #(str "      <_BjoCompile Include=\"" (xml-escape &) "\" />\n"
-                                               "      <_BjoRuntime Include=\"" (xml-escape &) "\" />\n")
-                                         glue-dlls))
-                    "")
-       "      <_BjoNative Include=\"@(NativeCopyLocalItems);@(RuntimeTargetsCopyLocalItems)\" />\n"
-       "    </ItemGroup>\n"
-       "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/compile.txt\" Lines=\"@(_BjoCompile->'%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
-       "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/runtime.txt\" Lines=\"@(_BjoRuntime->'%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
-       "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/native.txt\" Lines=\"@(_BjoNative->'%(NuGetPackageId)&#9;%(AssetType)&#9;%(RuntimeIdentifier)&#9;%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
-       "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/packages.txt\" Lines=\"@(_BjoRuntime->'%(NuGetPackageId)&#9;%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
-       "  </Target>\n"))
+  (str
+   "  <Target Name=\"BjoResolve\" DependsOnTargets=\"ResolveReferences\">\n"
+   "    <ItemGroup>\n"
+   "      <_BjoCompile Include=\"@(ReferencePath)\" Condition=\"'%(ReferencePath.NuGetPackageId)' != '' and '%(ReferencePath.FrameworkReferenceName)' == ''\" />\n"
+   "      <_BjoRuntime Include=\"@(ReferenceCopyLocalPaths)\" Condition=\"'%(ReferenceCopyLocalPaths.NuGetPackageId)' != '' and '%(ReferenceCopyLocalPaths.Extension)' == '.dll' and '%(ReferenceCopyLocalPaths.DestinationSubDirectory)' == ''\" />\n"
+   (string-join (list->vec (list-map #(str "      <_BjoCompile Include=\""
+                                           (xml-escape &)
+                                           "\" />\n"
+                                           "      <_BjoRuntime Include=\""
+                                           (xml-escape &)
+                                           "\" />\n")
+                                     glue-dlls))
+                "")
+   "      <_BjoNative Include=\"@(NativeCopyLocalItems);@(RuntimeTargetsCopyLocalItems)\" />\n"
+   "    </ItemGroup>\n"
+   "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/compile.txt\" Lines=\"@(_BjoCompile->'%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
+   "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/runtime.txt\" Lines=\"@(_BjoRuntime->'%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
+   "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/native.txt\" Lines=\"@(_BjoNative->'%(NuGetPackageId)&#9;%(AssetType)&#9;%(RuntimeIdentifier)&#9;%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
+   "    <WriteLinesToFile File=\"$(MSBuildProjectDirectory)/packages.txt\" Lines=\"@(_BjoRuntime->'%(NuGetPackageId)&#9;%(FullPath)')\" Overwrite=\"true\" WriteOnlyWhenDifferent=\"true\" />\n"
+   "  </Target>\n"))
 
 (: (-> (List NuGetPackage) (List string) string))
 (defun (item-lines packages frameworks)
   (def package-lines
-    (list-map #(str "    <PackageReference Include=\"" (xml-escape (nuget-id &))
-                    "\" Version=\"" (xml-escape (nuget-version &)) "\" />\n")
+    (list-map #(str "    <PackageReference Include=\""
+                    (xml-escape (nuget-id &))
+                    "\" Version=\""
+                    (xml-escape (nuget-version &))
+                    "\" />\n")
               packages))
   (def framework-lines
     (list-map #(str "    <FrameworkReference Include=\"" (xml-escape &) "\" />\n") frameworks))
-  (str (string-join (list->vec package-lines) "")
-       (string-join (list->vec framework-lines) "")))
+  (str (string-join (list->vec package-lines) "") (string-join (list->vec framework-lines) "")))
 
 ;; `Root.csproj`. A library with no sources; `CopyLocalLockFileAssemblies` is
 ;; what puts a library's package runtime assets in `ReferenceCopyLocalPaths`.
@@ -138,12 +145,16 @@
   (str "<!-- Generated by bjo from manifest.bjodat. Do not edit. -->\n"
        "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
        "  <PropertyGroup>\n"
-       "    <TargetFramework>" target-framework "</TargetFramework>\n"
+       "    <TargetFramework>"
+       target-framework
+       "</TargetFramework>\n"
        "    <OutputType>Library</OutputType>\n"
        "    <EnableDefaultItems>false</EnableDefaultItems>\n"
        "    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>\n"
        "    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>\n"
-       "    <NuGetLockFilePath>" (xml-escape lock-file) "</NuGetLockFilePath>\n"
+       "    <NuGetLockFilePath>"
+       (xml-escape lock-file)
+       "</NuGetLockFilePath>\n"
        "  </PropertyGroup>\n"
        "  <ItemGroup>\n"
        (item-lines packages frameworks)
@@ -157,10 +168,14 @@
 ;; restore is run with `BuildProjectReferences=false`.
 (: (-> string (List NuGetPackage) (List string) string))
 (defun (dependency-csproj-text manifest packages frameworks)
-  (str "<!-- Generated by bjo from " (xml-escape manifest) ". Do not edit. -->\n"
+  (str "<!-- Generated by bjo from "
+       (xml-escape manifest)
+       ". Do not edit. -->\n"
        "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
        "  <PropertyGroup>\n"
-       "    <TargetFramework>" target-framework "</TargetFramework>\n"
+       "    <TargetFramework>"
+       target-framework
+       "</TargetFramework>\n"
        "    <OutputType>Library</OutputType>\n"
        "    <EnableDefaultItems>false</EnableDefaultItems>\n"
        "  </PropertyGroup>\n"
@@ -175,14 +190,15 @@
   (unless (and (file-exists? path) (= (file-read-text path) text))
     (file-write-text path text)))
 
-
 ;; ---------------------------------------------------------------------------
 ;; The glue
 ;; ---------------------------------------------------------------------------
 
 ;; A package of the build with C# sources: its name, its directory, and what
 ;; its manifest says.
-(type (: Glue (Record (: name (List Symbol)) (: dir string) (: package Package))))
+(type (: Glue (Record (: name (List Symbol))
+                      (: dir string)
+                      (: package Package))))
 
 ;; The packages of the build that have glue, the project itself included.
 (: (-> (List Root) (List Glue)))
@@ -192,7 +208,7 @@
         (:when-let (Some package) (root-package r))
         (:when (not (empty? (record-ref package csharp))))
         (:acc out (listing (Glue (name (root-name r)) (dir (path-absolute dir)) (package package))))
-        => out))
+    => out))
 
 (: (-> Glue string))
 (defun (glue-slug g)
@@ -200,7 +216,8 @@
 
 ;; The assembly's name, which is also its file's.
 (: (-> Glue string))
-(defun (glue-assembly g) (str "BjoGlue." (glue-slug g)))
+(defun (glue-assembly g)
+  (str "BjoGlue." (glue-slug g)))
 
 (: (-> Project Glue string))
 (defun (glue-project-dir project g)
@@ -219,21 +236,21 @@
 ;; The source directories, as the manifest names them, made absolute.
 (: (-> Glue (List string)))
 (defun (glue-source-dirs g)
-  (list-map #(path-absolute (path-combine (record-ref g dir) &)) (record-ref (record-ref g package) csharp)))
+  (list-map #(path-absolute (path-combine (record-ref g dir) &))
+            (record-ref (record-ref g package) csharp)))
 
 ;; The Bjolang runtime's assemblies, which glue may use: `Option` and
 ;; `Result` from BjolangRuntime, `string` from BjoString, the collections.
 ;; Those the compiler's directory has.
 (: (List string))
-(def runtime-assembly-names
-  (list "BjolangRuntime" "BjoString" "SchemeList" "BjoRx"))
+(def runtime-assembly-names (list "BjolangRuntime" "BjoString" "SchemeList" "BjoRx"))
 
 (: (-> (List string)))
 (defun (runtime-assemblies)
   (loop (:for name runtime-assembly-names)
         (:let path (path-combine (compiler-dir) (str name ".dll")))
         (:acc out (listing path) #:when (file-exists? path))
-        => out))
+    => out))
 
 ;; The glue's project. It compiles every `.cs` file under its source
 ;; directories except those under `bin` and `obj`, against its package's NuGet
@@ -243,21 +260,34 @@
 (defun (glue-csproj-text g)
   (def package (record-ref g package))
   (def compile-lines
-    (list-map #(str "    <Compile Include=\"" (xml-escape (path-combine & "**" "*.cs"))
-                    "\" Exclude=\"" (xml-escape (path-combine & "**" "bin" "**")) ";"
-                    (xml-escape (path-combine & "**" "obj" "**")) "\" />\n")
+    (list-map #(str "    <Compile Include=\""
+                    (xml-escape (path-combine & "**" "*.cs"))
+                    "\" Exclude=\""
+                    (xml-escape (path-combine & "**" "bin" "**"))
+                    ";"
+                    (xml-escape (path-combine & "**" "obj" "**"))
+                    "\" />\n")
               (glue-source-dirs g)))
   (def runtime-lines
-    (list-map #(str "    <Reference Include=\"" (xml-escape (option-ref-or (path-filename &) &)) "\">"
-                    "<HintPath>" (xml-escape &) "</HintPath><Private>false</Private></Reference>\n")
+    (list-map #(str "    <Reference Include=\""
+                    (xml-escape (option-ref-or (path-filename &) &))
+                    "\">"
+                    "<HintPath>"
+                    (xml-escape &)
+                    "</HintPath><Private>false</Private></Reference>\n")
               (runtime-assemblies)))
-  (str "<!-- Generated by bjo from " (xml-escape (path-combine (record-ref g dir) manifest-name))
+  (str "<!-- Generated by bjo from "
+       (xml-escape (path-combine (record-ref g dir) manifest-name))
        ". Do not edit. -->\n"
        "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
        "  <PropertyGroup>\n"
-       "    <TargetFramework>" target-framework "</TargetFramework>\n"
+       "    <TargetFramework>"
+       target-framework
+       "</TargetFramework>\n"
        "    <OutputType>Library</OutputType>\n"
-       "    <AssemblyName>" (xml-escape (glue-assembly g)) "</AssemblyName>\n"
+       "    <AssemblyName>"
+       (xml-escape (glue-assembly g))
+       "</AssemblyName>\n"
        "    <EnableDefaultItems>false</EnableDefaultItems>\n"
        "    <ImplicitUsings>enable</ImplicitUsings>\n"
        "    <Nullable>disable</Nullable>\n"
@@ -281,15 +311,18 @@
   (def sources
     (loop (:for dir (glue-source-dirs g))
           (:when (directory-exists? dir))
-          (:for file (directory-walk dir #:into? (fun (d) (not (any? #(path-has-name? d &)
-                                                                      (list "bin" "obj"))))))
+          (:for file (directory-walk dir #:into? (fun (d)
+                                                   (not (any? #(path-has-name? d &)
+                                                              (list "bin" "obj"))))))
           (:when (path-has-extension? file "cs"))
           (:acc out (listing (str (path->string/lossy file) "\n" (file-read-text file))))
-          => (list-sort out)))
+      => (list-sort out)))
   (def runtime
-    (list-map #(str & " " (match (file-info &)
-                            ((Some info) (long->string (record-ref info modified-ms)))
-                            (None "absent")))
+    (list-map #(str &
+                    " "
+                    (match (file-info &)
+                      ((Some info) (long->string (record-ref info modified-ms)))
+                      (None "absent")))
               (runtime-assemblies)))
   (string-join (list->vec (list-append sources runtime)) "\n"))
 
@@ -302,11 +335,16 @@
           (:let at (index-of line ": error "))
           (:when (>= at 0))
           (:let end (index-of line " ["))
-          (:acc out (listing (string-trim (if (> end at) (substring-range line 0 end) line))))
-          => out))
+          (:acc out (listing (string-trim (if (> end at)
+                                              (substring-range line 0 end)
+                                              line))))
+      => out))
   (loop (:for m found)
-        (:acc out (folding Nil (if (any? #(= & m) out) out (Cons m out))))
-        => (list-reverse out)))
+        (:acc out (folding Nil
+                           (if (any? #(= & m) out)
+                               out
+                               (Cons m out))))
+    => (list-reverse out)))
 
 ;; Builds one glue project, after the restore that resolved its packages.
 (: build-glue (-> Project Glue (Result string Unit)) #:sync)
@@ -314,22 +352,33 @@
   (def dir (glue-project-dir project g))
   (def errors (path-combine dir "build-stderr.txt"))
   (def arguments
-    (list->vec
-      (list "build" (glue-csproj-file project g) "-c" "Release" "--no-restore" "-nologo"
-            "-p:ImportDirectoryBuildProps=false"
-            "-p:ImportDirectoryBuildTargets=false"
-            "-p:ImportDirectoryPackagesProps=false")))
+    (list->vec (list "build"
+                     (glue-csproj-file project g)
+                     "-c"
+                     "Release"
+                     "--no-restore"
+                     "-nologo"
+                     "-p:ImportDirectoryBuildProps=false"
+                     "-p:ImportDirectoryBuildTargets=false"
+                     "-p:ImportDirectoryPackagesProps=false")))
   (match (run/output '(errors-into-file ,errors (dotnet ,arguments)))
     ((Err e) (Err (str "bjo: could not run dotnet: " (error-message e))))
     ((Ok (Tuple 0 _)) (Ok unit))
     ((Ok (Tuple _ out))
-     (def said (string-trim (str out "\n" (if (file-exists? errors) (file-read-text errors) ""))))
+     (def said
+       (string-trim (str out
+                         "\n"
+                         (if (file-exists? errors)
+                             (file-read-text errors)
+                             ""))))
      (def name (name->string (record-ref g name)))
      (Err (match (compile-errors said)
             (Nil (str "bjo: building the C# glue of " name " failed. dotnet said:\n" said))
-            (found (str "bjo: the C# glue of " name " does not compile:\n"
-                        (string-join (list->vec (list-map #(str "  " &) found)) "\n"))))))))
-
+            (found
+             (str "bjo: the C# glue of "
+                  name
+                  " does not compile:\n"
+                  (string-join (list->vec (list-map #(str "  " &) found)) "\n"))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Skipping the restore
@@ -337,7 +386,10 @@
 
 (: (-> string string string))
 (defun (stamp-of csproj lock-file)
-  (def lock (if (file-exists? lock-file) (file-read-text lock-file) ""))
+  (def lock
+    (if (file-exists? lock-file)
+        (file-read-text lock-file)
+        ""))
   (hex (sha256 (encode utf8 (str csproj "\n--- packages.lock.json\n" lock)))))
 
 ;; The paths in a list file, or `None` when there is no such file.
@@ -348,7 +400,7 @@
       (Some (loop (:for line (string-split (file-read-text file) "\n"))
                   (:let path (string-trim line))
                   (:acc out (listing path) #:when (not (= path "")))
-                  => out))))
+              => out))))
 
 (: (-> string bool))
 (defun (list-current? file)
@@ -379,7 +431,6 @@
        ;; Written by a target added later: a restore without it is redone.
        (file-exists? (path-combine dir "packages.txt"))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; Running MSBuild
 ;; ---------------------------------------------------------------------------
@@ -397,19 +448,26 @@
 (defun (run-msbuild dir locked?)
   (def errors (path-combine dir "msbuild-stderr.txt"))
   (def arguments
-    (list->vec
-      (list-append
-        (list "msbuild" (path-combine dir "Root.csproj") "-restore" "-t:BjoResolve" "-nologo"
-              "-p:BuildProjectReferences=false"
-              "-p:ImportDirectoryBuildProps=false"
-              "-p:ImportDirectoryBuildTargets=false"
-              "-p:ImportDirectoryPackagesProps=false")
-        (if locked? (list "-p:RestoreLockedMode=true") Nil))))
+    (list->vec (list-append (list "msbuild"
+                                  (path-combine dir "Root.csproj")
+                                  "-restore"
+                                  "-t:BjoResolve"
+                                  "-nologo"
+                                  "-p:BuildProjectReferences=false"
+                                  "-p:ImportDirectoryBuildProps=false"
+                                  "-p:ImportDirectoryBuildTargets=false"
+                                  "-p:ImportDirectoryPackagesProps=false")
+                            (if locked?
+                                (list "-p:RestoreLockedMode=true")
+                                Nil))))
   (set-environment-variable! "DOTNET_NOLOGO" "1")
   (match (run/output '(errors-into-file ,errors (dotnet ,arguments)))
     ((Err e) (Err (str "bjo: could not run dotnet: " (error-message e))))
     ((Ok (Tuple code out))
-     (def said (if (file-exists? errors) (file-read-text errors) ""))
+     (def said
+       (if (file-exists? errors)
+           (file-read-text errors)
+           ""))
      (Ok (Tuple code (string-trim (str out "\n" said)))))))
 
 ;; Every distinct `NUxxxx: message` MSBuild reported with `code`, from the code
@@ -420,10 +478,13 @@
     (loop (:for line (string-split output "\n"))
           (:let at (index-of line (str code ": ")))
           (:acc out (listing (string-trim (substring-from line at))) #:when (>= at 0))
-          => out))
+      => out))
   (loop (:for m found)
-        (:acc out (folding Nil (if (any? #(= & m) out) out (Cons m out))))
-        => (list-reverse out)))
+        (:acc out (folding Nil
+                           (if (any? #(= & m) out)
+                               out
+                               (Cons m out))))
+    => (list-reverse out)))
 
 ;; What a failed restore is reported as. A NuGet error is quoted with its code
 ;; and a hint about what usually causes it; anything else is MSBuild's own
@@ -432,28 +493,32 @@
 (defun (explain output code hint)
   (match (messages-with output code)
     (Nil None)
-    (found (Some (str (string-join (list->vec (list-map #(str "  " &) found)) "\n")
-                      "\n  hint: " hint)))))
+    (found
+     (Some (str (string-join (list->vec (list-map #(str "  " &) found)) "\n") "\n  hint: " hint)))))
 
 (: (-> string bool string string))
 (defun (failure-message output locked? lock-file)
   (def not-found "Check the package name and version, and the NuGet sources in your NuGet.config.")
   (def explained
-    (loop (:for answer (list (explain output "NU1101" not-found)
-                             (explain output "NU1102" not-found)
-                             (explain output "NU1301"
-                                      "The first restore of a package needs network access, or a local feed in NuGet.config.")
-                             (explain output "NU1004"
-                                      (if locked?
-                                          (str "Run 'bjo build' without --locked to update " lock-file ".")
-                                          (str lock-file " does not match the manifest.")))))
+    (loop (:for answer
+                (list
+                 (explain output "NU1101" not-found)
+                 (explain output "NU1102" not-found)
+                 (explain
+                  output
+                  "NU1301"
+                  "The first restore of a package needs network access, or a local feed in NuGet.config.")
+                 (explain output
+                          "NU1004"
+                          (if locked?
+                              (str "Run 'bjo build' without --locked to update " lock-file ".")
+                              (str lock-file " does not match the manifest.")))))
           (:when-let (Some text) answer)
           (:acc out (listing text))
-          => out))
+      => out))
   (if (empty? explained)
       (str "bjo: restoring the NuGet packages failed. MSBuild said:\n" output)
-      (str "bjo: restoring the NuGet packages failed:\n"
-           (string-join (list->vec explained) "\n"))))
+      (str "bjo: restoring the NuGet packages failed:\n" (string-join (list->vec explained) "\n"))))
 
 ;; ---------------------------------------------------------------------------
 ;; ReadyToRun copies
@@ -479,7 +544,7 @@
         (:when (= (string-downcase (nuget-id p)) key))
         (:when-let (Some b) (nuget-precompile p))
         (:acc out (listing b))
-        => out))
+    => out))
 
 ;; Whether the package `id` is precompiled.
 (: (-> (List NuGetPackage) (List Declaring) string bool))
@@ -491,7 +556,8 @@
 
 ;; The NuGet packages a dependency declares.
 (: (-> Declaring (List NuGetPackage)))
-(defun (declared-by d) (record-ref (record-ref d package) packages))
+(defun (declared-by d)
+  (record-ref (record-ref d package) packages))
 
 ;; The lines of `r2r-inputs.txt`: `r2r` or `il`, a tab, and the path, for each
 ;; package assembly in `packages.txt`. The glue's assemblies have no package
@@ -502,14 +568,16 @@
     (None "")
     ((Some lines)
      (string-join
-       (list->vec
-         (loop (:for line lines)
-               (:let fields (string-split line "\t"))
-               (:when (and (= (vec-length fields) 2) (not (= (vec-ref fields 0) ""))))
-               (:acc out (listing (str (if (precompiled? own deps (vec-ref fields 0)) "r2r" "il")
-                                       "\t" (vec-ref fields 1))))
-               => out))
-       "\n"))))
+      (list->vec (loop (:for line lines)
+                       (:let fields (string-split line "\t"))
+                       (:when (and (= (vec-length fields) 2) (not (= (vec-ref fields 0) ""))))
+                       (:acc out (listing (str (if (precompiled? own deps (vec-ref fields 0))
+                                                   "r2r"
+                                                   "il")
+                                               "\t"
+                                               (vec-ref fields 1))))
+                   => out))
+      "\n"))))
 
 ;; Whether every copy `r2r.txt` names is still there.
 (: (-> string bool))
@@ -528,7 +596,9 @@
 (defun (precompile-packages dir own deps)
   (with-return ret
     (match (get-environment-variable "BJOLANG_NO_R2R")
-      ((Some v) (unless (or (= v "") (= v "0")) (ret (Ok unit))))
+      ((Some v)
+       (unless (or (= v "") (= v "0"))
+         (ret (Ok unit))))
       (None unit))
     (def inputs (precompile-inputs dir own deps))
     (def inputs-file (path-combine dir "r2r-inputs.txt"))
@@ -540,15 +610,20 @@
     ;; a success, so that a failed run is tried again next time.
     (def pending (path-combine dir "r2r-inputs.pending"))
     (file-write-text pending inputs)
-    (def arguments (list->vec (list (path-combine (compiler-dir) "Bjolang.dll") "--precompile-packages" dir pending)))
+    (def arguments
+      (list->vec
+       (list (path-combine (compiler-dir) "Bjolang.dll") "--precompile-packages" dir pending)))
     (match (run/output '(dotnet ,arguments))
       ((Err e) (Err (str "bjo: could not run the compiler: " (error-message e))))
       ((Ok (Tuple 0 out))
-       (unless (= (string-trim out) "") (println (string-trim out)))
+       (unless (= (string-trim out) "")
+         (println (string-trim out)))
        (file-write-text inputs-file inputs)
        (Ok unit))
       ((Ok (Tuple code out))
-       (Err (str "bjo: precompiling the NuGet packages failed (exit code " (int->string code) "):\n"
+       (Err (str "bjo: precompiling the NuGet packages failed (exit code "
+                 (int->string code)
+                 "):\n"
                  (string-trim out)))))))
 
 ;; ---------------------------------------------------------------------------
@@ -557,7 +632,9 @@
 
 ;; A package of the build that declares NuGet packages: its manifest, and what
 ;; the manifest says.
-(type (: Declaring (Record (: name (List Symbol)) (: manifest string) (: package Package))))
+(type (: Declaring (Record (: name (List Symbol))
+                           (: manifest string)
+                           (: package Package))))
 
 ;; The dependencies that declare packages. The project being built is not one
 ;; of them: its packages go in the root project itself.
@@ -572,7 +649,7 @@
         (:acc out (listing (Declaring (name (root-name r))
                                       (manifest (path-combine dir manifest-name))
                                       (package package))))
-        => out))
+    => out))
 
 ;; Where a dependency's generated project goes. The file name becomes the
 ;; project's name in the lock file, and is prefixed so that it cannot be taken
@@ -580,8 +657,7 @@
 (: (-> Project (List Symbol) string))
 (defun (dependency-csproj-file project name)
   (def slug (string-join (list->vec (list-map symbol->string name)) "."))
-  (path-combine (project-dot-bjo project) "nuget" "packages" slug
-                (str "BjoPackage." slug ".csproj")))
+  (path-combine (project-dot-bjo project) "nuget" "packages" slug (str "BjoPackage." slug ".csproj")))
 
 (: (-> (List NuGetPackage) (Option string)))
 (defun (duplicate-id packages)
@@ -589,14 +665,18 @@
   (def ids (list-sort (list-map #(string-downcase (nuget-id &)) packages)))
   (let go ((left ids))
     (match left
-      ((Cons a (Cons b more)) (if (= a b) (Some a) (go (Cons b more))))
+      ((Cons a (Cons b more))
+       (if (= a b)
+           (Some a)
+           (go (Cons b more))))
       (_ None))))
 
 (: (-> string Package (Option string)))
 (defun (duplicate-in manifest package)
-  (option-map (fun (id) (str "bjo: " manifest ": the NuGet package " id
-                             " is listed twice under (packages ...)."))
-              (duplicate-id (record-ref package packages))))
+  (option-map
+   (fun (id)
+     (str "bjo: " manifest ": the NuGet package " id " is listed twice under (packages ...)."))
+   (duplicate-id (record-ref package packages))))
 
 ;; Restores the NuGet packages of the build, and answers the directory to hand
 ;; the compiler with `--nuget` — or `None` when no manifest names any.
@@ -610,16 +690,18 @@
     (def packages (record-ref package packages))
     (def deps (declaring-dependencies project roots))
     (def glues (glues-of roots))
-    (when (and (empty? packages) (empty? deps) (empty? glues)) (ret (Ok None)))
+    (when (and (empty? packages) (empty? deps) (empty? glues))
+      (ret (Ok None)))
 
     (def own-manifest (path-combine (project-dir project) manifest-name))
     (def duplicates
       (loop (:for message (Cons (duplicate-in own-manifest package)
-                                (list-map #(duplicate-in (record-ref & manifest) (record-ref & package))
+                                (list-map #(duplicate-in (record-ref & manifest)
+                                                         (record-ref & package))
                                           deps)))
             (:when-let (Some text) message)
             (:acc out (listing text))
-            => out))
+        => out))
     (match duplicates
       ((Cons text _) (ret (Err text)))
       (Nil unit))
@@ -635,25 +717,30 @@
     (def glue-files (list-map #(glue-csproj-file project &) glues))
     (def glue-texts (list-map glue-csproj-text glues))
     (def glue-dlls (list-sort (list-map #(glue-dll project &) glues)))
-    (def csproj (csproj-text packages (record-ref package frameworks)
-                             (list-sort (list-append dep-files glue-files)) glue-dlls lock-file))
+    (def csproj
+      (csproj-text packages
+                   (record-ref package frameworks)
+                   (list-sort (list-append dep-files glue-files))
+                   glue-dlls
+                   lock-file))
     ;; Everything the restore and the glue's builds read that `bjo` wrote, and
     ;; the glue's sources, in an order that does not depend on the order of the
     ;; roots.
     (def generated
-      (string-join (list->vec (Cons csproj
-                                    (list-sort (list-append
-                                                 (loop (:for file dep-files)
-                                                       (:for text dep-texts)
-                                                       (:acc out (listing (str file "\n" text)))
-                                                       => out)
-                                                 (loop (:for g glues)
-                                                       (:for file glue-files)
-                                                       (:for text glue-texts)
-                                                       (:acc out (listing (str file "\n" text "\n"
-                                                                               (glue-fingerprint g))))
-                                                       => out)))))
-                   "\n"))
+      (string-join
+       (list->vec (Cons csproj
+                        (list-sort
+                         (list-append
+                          (loop (:for file dep-files)
+                                (:for text dep-texts)
+                                (:acc out (listing (str file "\n" text)))
+                            => out)
+                          (loop (:for g glues)
+                                (:for file glue-files)
+                                (:for text glue-texts)
+                                (:acc out (listing (str file "\n" text "\n" (glue-fingerprint g))))
+                            => out)))))
+       "\n"))
 
     (when (restore-current? dir (stamp-of generated lock-file))
       (ret (match (precompile-packages dir packages deps)
@@ -662,9 +749,13 @@
 
     (unless (some? (which "dotnet"))
       (ret (Err (str "bjo: the build "
-                     (if (empty? glues) "names NuGet packages" "has C# glue")
+                     (if (empty? glues)
+                         "names NuGet packages"
+                         "has C# glue")
                      ", and "
-                     (if (empty? glues) "restoring them" "compiling it")
+                     (if (empty? glues)
+                         "restoring them"
+                         "compiling it")
                      " needs the .NET SDK's 'dotnet' command, which is not on PATH."))))
 
     (directory-create dir)

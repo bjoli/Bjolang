@@ -49,9 +49,14 @@
 (def op-put 1)
 
 (type
-  (: Req (Record (: op int) (: key int) (: value int) (: reply (Chan int))))
+  (: Req (Record (: op int)
+                 (: key int)
+                 (: value int)
+                 (: reply (Chan int))))
   ;; samples from the due time, svc from when the client ran: see go/main.go.
-  (: ClientOut (Record (: checksum long) (: samples (MutableVec long)) (: svc (MutableVec long))
+  (: ClientOut (Record (: checksum long)
+                       (: samples (MutableVec long))
+                       (: svc (MutableVec long))
                        (: timeouts int))))
 
 (: (-> void))
@@ -77,7 +82,8 @@
 
 (: (-> int int int))
 (defun (crunch n seed)
-  (let go ((i 0) (x seed))
+  (let go ((i 0)
+           (x seed))
     (if (= i n)
         x
         (go (+ i 1) (% (+ (* x 31) i) 1000003)))))
@@ -113,9 +119,10 @@
 
 (: (-bjo-> (Vec (Chan Req)) int (Chan int) void))
 (defbjo (sub-get chans key results)
-  (def v (match (request chans op-get key 0)
-           ((Some v) v)
-           (None -1)))
+  (def v
+    (match (request chans op-get key 0)
+      ((Some v) v)
+      (None -1)))
   (sync (chan-send results v)))
 
 ;; Four keys from four spawned fibers: the sum of the answers, and how many
@@ -124,7 +131,9 @@
 (defbjo (multi-get chans key results)
   (loop (:for j (range 0 4))
         (:do (ignore (bjo (sub-get chans (% (+ key j) key-space) results)))))
-  (let go ((j 0) (sum 0) (lost 0))
+  (let go ((j 0)
+           (sum 0)
+           (lost 0))
     (if (= j 4)
         (Tuple sum lost)
         (let ((v (sync (chan-recv results))))
@@ -145,8 +154,7 @@
 ;; schedule's start.
 (: (-> int int int int long))
 (defun (due c i clients rate)
-  (/ (* (cast System.Int64 (+ (* i clients) c)) stopwatch-frequency)
-     (cast System.Int64 rate)))
+  (/ (* (cast System.Int64 (+ (* i clients) c)) stopwatch-frequency) (cast System.Int64 rate)))
 
 ;; Waits for request i's due time, if it has not come, and answers when the
 ;; client ran: the due time if it had come, the wake-up if not.
@@ -180,27 +188,30 @@
     (if (= i requests)
         (ClientOut (checksum checksum) (samples samples) (svc svc) (timeouts timeouts))
         (let* ((every-eighth (= (% i 8) 0))
-               (t0 (cond ((> rate 0) (pace c i clients rate start))
-                         (every-eighth (timestamp))
-                         (else 0L)))
-               (at (if (> rate 0) (+ start (due c i clients rate)) t0))
-               (sampled (and every-eighth
-                             (or (= rate 0) (>= (due c i clients rate) warm-ticks))))
+               (t0 (cond
+                     ((> rate 0) (pace c i clients rate start))
+                     (every-eighth (timestamp))
+                     (else 0L)))
+               (at (if (> rate 0)
+                       (+ start (due c i clients rate))
+                       t0))
+               (sampled (and every-eighth (or (= rate 0) (>= (due c i clients rate) warm-ticks))))
                (s2 (% (+ (* s 1103515245L) 12345L) 2147483648L))
                (key (cast System.Int32 (% s2 (cast System.Int64 key-space))))
                (d (crunch decode-work key)))
           (def (answer lost)
             (if (= (% i 10) 9)
                 (multi-get chans key results)
-                (single chans (if (= (% i 5) 0) op-put op-get) key)))
+                (single chans
+                        (if (= (% i 5) 0)
+                            op-put
+                            op-get)
+                        key)))
           (when sampled
             (def finished (timestamp))
             (mutablevec-add! samples (ticks->ns (- finished at)))
             (mutablevec-add! svc (ticks->ns (- finished t0))))
-          (go (+ i 1)
-              s2
-              (+ checksum (cast System.Int64 (+ answer (% d 3))))
-              (+ timeouts lost))))))
+          (go (+ i 1) s2 (+ checksum (cast System.Int64 (+ answer (% d 3)))) (+ timeouts lost))))))
 
 (: (-> (MutableVec long) int int long))
 (defun (percentile sorted per of)
@@ -208,32 +219,46 @@
 
 (: (-bjo-> int int int int void))
 (defbjo (run-rep n clients requests rate)
-  (def chans (loop (:for i (range 0 shards)) (:acc v (vecing (make-chan)))))
-  (def quits (loop (:for i (range 0 shards)) (:acc v (vecing (make-chan)))))
-  (def shard-ps (loop (:for i (range 0 shards))
-                      (:acc v (vecing (bjo (shard i (vec-ref chans i) (vec-ref quits i)))))))
+  (def chans
+    (loop (:for i (range 0 shards))
+          (:acc v (vecing (make-chan)))))
+  (def quits
+    (loop (:for i (range 0 shards))
+          (:acc v (vecing (make-chan)))))
+  (def shard-ps
+    (loop (:for i (range 0 shards))
+          (:acc v (vecing (bjo (shard i (vec-ref chans i) (vec-ref quits i)))))))
   (settle)
 
   (def a0 (total-allocated #t))
   ;; In an open loop the schedule starts 100 ms after this, and the wall time
   ;; is taken from there: see go/main.go.
-  (def t0 (+ (timestamp) (if (> rate 0) lead-ticks 0L)))
+  (def t0
+    (+ (timestamp)
+       (if (> rate 0)
+           lead-ticks
+           0L)))
   (def c0 (cpu-ms))
   (def gc0 (gc-count 0))
   (def pause0 (timespan-ms (gc-pause)))
-  (def client-ps (loop (:for c (range 0 clients))
-                       (:acc v (vecing (bjo (client c clients requests rate t0 chans))))))
+  (def client-ps
+    (loop (:for c (range 0 clients))
+          (:acc v (vecing (bjo (client c clients requests rate t0 chans))))))
   ;; Only the clients' records while the clock runs, as in the Go and Hopac
   ;; twins; their samples are gathered after it stops.
   (def (checksum outs timeouts)
-    (let go ((c 0) (checksum 0L) (outs '()) (timeouts 0))
+    (let go ((c 0)
+             (checksum 0L)
+             (outs '())
+             (timeouts 0))
       (if (= c clients)
           (Tuple checksum outs timeouts)
           (match (sync (promise-join (vec-ref client-ps c)))
-            ((Ok o) (go (+ c 1)
-                        (+ checksum (record-ref o checksum))
-                        (Cons o outs)
-                        (+ timeouts (record-ref o timeouts))))
+            ((Ok o)
+             (go (+ c 1)
+                 (+ checksum (record-ref o checksum))
+                 (Cons o outs)
+                 (+ timeouts (record-ref o timeouts))))
             ((Err e) (go (+ c 1) checksum outs (+ timeouts requests)))))))
   (def wall (/ (ns-since t0) 1000000L))
   (def cpu (- (cpu-ms) c0))
@@ -244,7 +269,8 @@
   (loop (:for i (range 0 shards))
         (:do (sync (chan-send (vec-ref quits i) 0))))
   (def work
-    (let go ((i 0) (work 0L))
+    (let go ((i 0)
+             (work 0L))
       (if (= i shards)
           work
           (match (sync (promise-join (vec-ref shard-ps i)))
@@ -264,30 +290,61 @@
   (mutablevec-sort! sorted)
   (mutablevec-sort! svc-sorted)
   (when (> n 0)
-    (println (str "rep " (->str n)
-                  " wall_ms " (->str wall)
-                  " cpu_ms " (->str cpu)
-                  " p50_ns " (->str (percentile sorted 50 100))
-                  " p99_ns " (->str (percentile sorted 99 100))
-                  " p999_ns " (->str (percentile sorted 999 1000))
-                  " timeouts " (->str timeouts)
-                  " checksum " (->str (+ checksum work))
-                  " alloc_b " (->str alloc)
-                  " gcs " (->str gcs)
-                  " pause_ms " (->str pause)
-                  " svc_p50_ns " (->str (percentile svc-sorted 50 100))
-                  " svc_p99_ns " (->str (percentile svc-sorted 99 100))
-                  " svc_p999_ns " (->str (percentile svc-sorted 999 1000))))))
+    (println (str "rep "
+                  (->str n)
+                  " wall_ms "
+                  (->str wall)
+                  " cpu_ms "
+                  (->str cpu)
+                  " p50_ns "
+                  (->str (percentile sorted 50 100))
+                  " p99_ns "
+                  (->str (percentile sorted 99 100))
+                  " p999_ns "
+                  (->str (percentile sorted 999 1000))
+                  " timeouts "
+                  (->str timeouts)
+                  " checksum "
+                  (->str (+ checksum work))
+                  " alloc_b "
+                  (->str alloc)
+                  " gcs "
+                  (->str gcs)
+                  " pause_ms "
+                  (->str pause)
+                  " svc_p50_ns "
+                  (->str (percentile svc-sorted 50 100))
+                  " svc_p99_ns "
+                  (->str (percentile svc-sorted 99 100))
+                  " svc_p999_ns "
+                  (->str (percentile svc-sorted 999 1000))))))
 
 (defbjo (main args)
   (def argc (vec-length args))
-  (def reps (if (> argc 0) (string->int (vec-ref args 0)) 5))
-  (def clients (if (> argc 1) (string->int (vec-ref args 1)) 1000))
-  (def requests (if (> argc 2) (string->int (vec-ref args 2)) 1000))
-  (def rate (if (> argc 3) (string->int (vec-ref args 3)) 0))
-  (println (str "bjolang ProcessorCount=" (->str processor-count)
-                " clients=" (->str clients) " requests=" (->str requests)
-                " rate=" (->str rate)))
+  (def reps
+    (if (> argc 0)
+        (string->int (vec-ref args 0))
+        5))
+  (def clients
+    (if (> argc 1)
+        (string->int (vec-ref args 1))
+        1000))
+  (def requests
+    (if (> argc 2)
+        (string->int (vec-ref args 2))
+        1000))
+  (def rate
+    (if (> argc 3)
+        (string->int (vec-ref args 3))
+        0))
+  (println (str "bjolang ProcessorCount="
+                (->str processor-count)
+                " clients="
+                (->str clients)
+                " requests="
+                (->str requests)
+                " rate="
+                (->str rate)))
   (loop (:for n (range 0 (+ reps 1)))
         (:do (run-rep n clients requests rate)))
   0)

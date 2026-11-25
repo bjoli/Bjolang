@@ -80,18 +80,22 @@
 ;; ---------------------------------------------------------------------------
 
 (: concat (-> (List string) string))
-(defun (concat parts) (string-join (list->vec parts) ""))
+(defun (concat parts)
+  (string-join (list->vec parts) ""))
 
 (: one (-> At (Vec At)))
-(defun (one item) (vec-add (vec-empty) item))
+(defun (one item)
+  (vec-add (vec-empty) item))
 
 ;; Named apart from `(samizdat expand)`'s `nothing`: a private name here still
 ;; shadows an exported one of the same name in a module importing both.
 (: dropped (-> %a (Vec At)))
-(defun (dropped x) (vec-empty))
+(defun (dropped x)
+  (vec-empty))
 
 (: word-char? (-> char bool))
-(defun (word-char? c) (or (char-alphabetic? c) (char-numeric? c)))
+(defun (word-char? c)
+  (or (char-alphabetic? c) (char-numeric? c)))
 
 (: ends-in-word? (-> string bool))
 (defun (ends-in-word? s)
@@ -103,10 +107,12 @@
 ;; ---------------------------------------------------------------------------
 
 (: top-plain? (-> char bool))
-(defun (top-plain? c) (not (char=? c #\@)))
+(defun (top-plain? c)
+  (not (char=? c #\@)))
 
 (: body-plain? (-> char bool))
-(defun (body-plain? c) (not (or (char=? c #\@) (char=? c #\{) (char=? c #\}))))
+(defun (body-plain? c)
+  (not (or (char=? c #\@) (char=? c #\{) (char=? c #\}))))
 
 ;; An @ that is text because a word comes right before it: one whose name is
 ;; not followed by a `[`, a `{` or a `|`. So linus@example.com is text, and a
@@ -121,15 +127,14 @@
 ;; text too; see `word-at`.
 (: text-run (-> (-> char bool) (Parser (Vec At))))
 (defun (text-run plain?)
-  (pbind (many-satisfy1 plain? "text")
-         (fun (s)
-           (if (ends-in-word? s)
-               (pmap (fun (at)
-                       (match at
-                         ((Some c) (one (Text (str s "@"))))
-                         (None (one (Text s)))))
-                     word-at)
-               (preturn (one (Text s)))))))
+  (pbind (many-satisfy1 plain? "text") (fun (s)
+                                         (if (ends-in-word? s)
+                                             (pmap (fun (at)
+                                                     (match at
+                                                       ((Some c) (one (Text (str s "@"))))
+                                                       (None (one (Text s)))))
+                                                   word-at)
+                                             (preturn (one (Text s)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; A command's name
@@ -156,11 +161,19 @@
 
 (: raw-plain? (-> char bool))
 (defun (raw-plain? c)
-  (not (or (char=? c #\() (char=? c #\)) (char=? c #\[) (char=? c #\])
-           (char=? c #\{) (char=? c #\}) (char=? c #\") (char=? c #\#) (char=? c #\;))))
+  (not (or (char=? c #\()
+           (char=? c #\))
+           (char=? c #\[)
+           (char=? c #\])
+           (char=? c #\{)
+           (char=? c #\})
+           (char=? c #\")
+           (char=? c #\#)
+           (char=? c #\;))))
 
 (: string-char? (-> char bool))
-(defun (string-char? c) (not (or (char=? c #\") (char=? c #\\))))
+(defun (string-char? c)
+  (not (or (char=? c #\") (char=? c #\\))))
 
 (: raw-string (Parser string))
 (def raw-string
@@ -172,13 +185,12 @@
 
 (: raw-hash (Parser string))
 (def raw-hash
-  (por (pmap (fun (c) (str "#\\" (char->string c))) (pright (pstring "#\\") any-char))
-       (pstring "#")))
+  (por (pmap (fun (c) (str "#\\" (char->string c))) (pright (pstring "#\\") any-char)) (pstring "#")))
 
 (: raw-comment (Parser string))
 (def raw-comment
-  (ppipe2 (pchar #\;) (many-satisfy (fun (c) (not (char=? c #\newline))))
-          (fun (semi rest) (str ";" rest))))
+  (ppipe2 (pchar #\;) (many-satisfy (fun (c) (not (char=? c #\newline)))) (fun (semi rest)
+                                                                            (str ";" rest))))
 
 (: raw-item (Parser string))
 (def raw-item
@@ -199,7 +211,8 @@
           (fun (o items c) (str (char->string o) (concat items) (char->string c)))))
 
 (: inside (-> string string))
-(defun (inside s) (.Substring s 1 (- (.-Length s) 2)))
+(defun (inside s)
+  (.Substring s 1 (- (.-Length s) 2)))
 
 ;; bjodat says where in the brackets' contents it stopped, "line 1, column 8:
 ;; ...", and this says where that is in the document. `at` is the `[`.
@@ -212,9 +225,14 @@
       (let* ((numbers (string-split (.Substring place 5) ", column "))
              (l (string->int (vec-ref numbers 0)))
              (c (string->int (vec-ref numbers 1))))
-        (str "at line " (int->string (+ (struct-ref at line) (- l 1)))
-             ", column " (int->string (if (= l 1) (+ (struct-ref at column) c) c))
-             ": " (.Substring e (+ (string-length place) 2))))
+        (str "at line "
+             (int->string (+ (struct-ref at line) (- l 1)))
+             ", column "
+             (int->string (if (= l 1)
+                              (+ (struct-ref at column) c)
+                              c))
+             ": "
+             (.Substring e (+ (string-length place) 2))))
       e))
 
 ;; `[...]`, read as bjodat values.
@@ -245,14 +263,14 @@
 (def literal
   (between (pchar #\")
            (plabel (pchar #\") "'\"' to close the string")
-           (pmap concat (many (por (many-satisfy1 string-char? "text")
-                                   (pright (pchar #\\) (pmap escaped any-char)))))))
+           (pmap concat
+                 (many (por (many-satisfy1 string-char? "text")
+                            (pright (pchar #\\) (pmap escaped any-char)))))))
 
 ;; `@;` to the end of the line, and the newline with it.
 (: line-comment (Parser (Vec At)))
 (def line-comment
-  (pmap dropped (pleft (many-satisfy (fun (c) (not (char=? c #\newline))))
-                       (optional pnewline))))
+  (pmap dropped (pleft (many-satisfy (fun (c) (not (char=? c #\newline)))) (optional pnewline))))
 
 (: bare-call (-> string Call))
 (defun (bare-call n)
@@ -263,7 +281,8 @@
 (defun (placed at items)
   (vec-map (fun (item)
              (match item
-               ((Cmd c) (Cmd (record-set c (line (struct-ref at line)) (column (struct-ref at column)))))
+               ((Cmd c)
+                (Cmd (record-set c (line (struct-ref at line)) (column (struct-ref at column)))))
                ((Text s) item)))
            items))
 
@@ -296,14 +315,15 @@
 ;; What a `{...}` body holds: text, commands, and balanced braces as text.
 (: braced-items (Parser (Vec At)))
 (def braced-items
-  (items-of (choice (list (text-run body-plain?)
-                          (pforwarded at-item-ref)
-                          (pforwarded brace-group-ref)))))
+  (items-of
+   (choice (list (text-run body-plain?) (pforwarded at-item-ref) (pforwarded brace-group-ref)))))
 
 (: brace-group (Parser (Vec At)))
 (def brace-group
   (tie! brace-group-ref
-        (ppipe3 (pchar #\{) braced-items (plabel (pchar #\}) "'}'")
+        (ppipe3 (pchar #\{)
+                braced-items
+                (plabel (pchar #\}) "'}'")
                 (fun (o inner c) (vec-append (one (Text "{")) (vec-add inner (Text "}")))))))
 
 (: braced-body (Parser (Vec At)))
@@ -315,8 +335,12 @@
 ;; What may stand between the | and the { of a verbatim body.
 (: punctuation? (-> char bool))
 (defun (punctuation? c)
-  (not (or (word-char? c) (char-whitespace? c)
-           (char=? c #\{) (char=? c #\}) (char=? c #\|) (char=? c #\@))))
+  (not (or (word-char? c)
+           (char-whitespace? c)
+           (char=? c #\{)
+           (char=? c #\})
+           (char=? c #\|)
+           (char=? c #\@))))
 
 (: flip (-> char char))
 (defun (flip c)
@@ -348,25 +372,26 @@
   (def open (str "|" p "{"))
   (def close (closer p))
   (items-of
-    (choice (list (pmap (fun (s) (one (Text s)))
-                        (many-chars1 (verbatim-char escape open close)))
-                  (ppipe2 (pleft pposition (pstring escape)) (pforwarded after-at-ref) placed)
-                  (ppipe3 (pstring open) (plazy (fun () (verbatim-items p))) (pstring close)
-                          (fun (o inner c) (vec-append (one (Text o)) (vec-add inner (Text c)))))))))
+   (choice (list (pmap (fun (s) (one (Text s))) (many-chars1 (verbatim-char escape open close)))
+                 (ppipe2 (pleft pposition (pstring escape)) (pforwarded after-at-ref) placed)
+                 (ppipe3 (pstring open)
+                         (plazy (fun () (verbatim-items p)))
+                         (pstring close)
+                         (fun (o inner c) (vec-append (one (Text o)) (vec-add inner (Text c)))))))))
 
 ;; `|` and the punctuation, when a `{` follows them. Nothing is consumed
 ;; otherwise, so a `|` after a command is text.
 (: verbatim-opener (Parser string))
-(def verbatim-opener
-  (attempt (between (pchar #\|) (pchar #\{) (many-satisfy punctuation?))))
+(def verbatim-opener (attempt (between (pchar #\|) (pchar #\{) (many-satisfy punctuation?))))
 
 (: verbatim-body (Parser (Vec At)))
 (def verbatim-body
-  (pbind verbatim-opener
-         (fun (p)
-           (def close (closer p))
-           (pmap dedent (pleft (verbatim-items p)
-                               (plabel (pstring close) (str "'" close "' to end the body")))))))
+  (pbind verbatim-opener (fun (p)
+                           (def close (closer p))
+                           (pmap dedent
+                                 (pleft (verbatim-items p)
+                                        (plabel (pstring close)
+                                                (str "'" close "' to end the body")))))))
 
 (: a-body (Parser (Vec At)))
 (def a-body (por braced-body verbatim-body))
@@ -377,7 +402,9 @@
 
 (: command (Parser Call))
 (def command
-  (ppipe3 command-name (opt arguments) (opt a-body)
+  (ppipe3 command-name
+          (opt arguments)
+          (opt a-body)
           (fun (n a b)
             (Call (name n) (args (option-ref-or a (vec-empty))) (body b) (line 0) (column 0)))))
 
@@ -398,21 +425,22 @@
                 "a command name, '|', '\"' or ';' after the @")))
 
 (: at-item (Parser (Vec At)))
-(def at-item
-  (tie! at-item-ref (ppipe2 (pleft pposition (pchar #\@)) after-at placed)))
+(def at-item (tie! at-item-ref (ppipe2 (pleft pposition (pchar #\@)) after-at placed)))
 
 ;; ---------------------------------------------------------------------------
 ;; A document
 ;; ---------------------------------------------------------------------------
 
 (: meta-end? (-> char bool))
-(defun (meta-end? c) (or (char-whitespace? c) (char=? c #\))))
+(defun (meta-end? c)
+  (or (char-whitespace? c) (char=? c #\))))
 
 ;; `(meta` and a space or a `)`, as the first thing in the document.
 (: meta-form (Parser string))
 (def meta-form
-  (pright (attempt (pright spaces (followed-by (pright (pstring "(meta") (satisfy meta-end? "a space"))
-                                               "(meta ...)")))
+  (pright (attempt (pright spaces
+                           (followed-by (pright (pstring "(meta") (satisfy meta-end? "a space"))
+                                        "(meta ...)")))
           (raw-group #\( #\))))
 
 (: top-items (Parser (Vec At)))
@@ -420,14 +448,17 @@
 
 (: document (Parser (Tuple (Option string) (Vec At))))
 (def document
-  (ppipe3 (opt meta-form) top-items eof
-          (fun (m items end) (Tuple m (merge-texts items)))))
+  (ppipe3 (opt meta-form) top-items eof (fun (m items end) (Tuple m (merge-texts items)))))
 
 ;; A byte order mark is dropped, and a line may end in \r\n.
 (: clean (-> string string))
 (defun (clean text)
   (def bom (char->string (int->char 65279)))
-  (string-replace (if (string-starts-with? text bom) (.Substring text 1) text) "\r\n" "\n"))
+  (string-replace (if (string-starts-with? text bom)
+                      (.Substring text 1)
+                      text)
+                  "\r\n"
+                  "\n"))
 
 ;; Reads a document. `#:name` is what a message calls it: the file's name,
 ;; usually. A message says where, and what was expected there.
@@ -496,14 +527,18 @@
 
 (: with-text (-> (Vec At) string (Vec At)))
 (defun (with-text line s)
-  (if (string-empty? s) line (vec-add line (Text s))))
+  (if (string-empty? s)
+      line
+      (vec-add line (Text s))))
 
 (: blank-line? (-> (Vec At) bool))
 (defun (blank-line? line)
   (loop (:for item line)
-        (:acc ok (folding #t (and ok (match item
-                                       ((Text s) (string-empty? (string-trim s)))
-                                       ((Cmd c) #f)))))))
+        (:acc ok (folding #t
+                          (and ok
+                               (match item
+                                 ((Text s) (string-empty? (string-trim s)))
+                                 ((Cmd c) #f)))))))
 
 ;; How far the line's text is indented. A line that begins with a command is
 ;; not indented at all.
@@ -522,7 +557,10 @@
       (match (vec-ref line 0)
         ((Cmd c) line)
         ((Text s)
-         (def cut (if (< (indentation line) margin) (indentation line) margin))
+         (def cut
+           (if (< (indentation line) margin)
+               (indentation line)
+               margin))
          (def rest (.Substring s cut))
          (if (string-empty? rest)
              (vec-remove-at line 0)
@@ -534,17 +572,23 @@
   (def least
     (loop (:for i (range from to))
           (:when (not (blank-line? (vec-ref lines i))))
-          (:acc m (folding -1 (let ((k (indentation (vec-ref lines i))))
-                                (if (or (< m 0) (< k m)) k m))))))
-  (if (< least 0) 0 least))
+          (:acc m (folding -1
+                           (let ((k (indentation (vec-ref lines i))))
+                             (if (or (< m 0) (< k m))
+                                 k
+                                 m))))))
+  (if (< least 0)
+      0
+      least))
 
 (: join-lines (-> (Vec (Vec At)) (Vec At)))
 (defun (join-lines lines)
-  (merge-texts
-    (loop (:for i (range 0 (vec-length lines)))
-          (:acc out (folding (vec-empty)
-                             (vec-append (if (= i 0) out (vec-add out (Text "\n")))
-                                        (vec-ref lines i)))))))
+  (merge-texts (loop (:for i (range 0 (vec-length lines)))
+                     (:acc out (folding (vec-empty)
+                                        (vec-append (if (= i 0)
+                                                        out
+                                                        (vec-add out (Text "\n")))
+                                                    (vec-ref lines i)))))))
 
 ;; A body of more than one line: a blank first line (the one the `{` ends)
 ;; and a blank last line (the one the `}` begins) are dropped, and the
@@ -557,29 +601,39 @@
   (def n (vec-length lines))
   (if (< n 2)
       (merge-texts items)
-      (let* ((from (if (blank-line? (vec-ref lines 0)) 1 0))
-             (to (if (blank-line? (vec-ref lines (- n 1))) (- n 1) n))
-             (margin (common-margin lines (if (= from 0) 1 from) to)))
-        (join-lines
-          (loop (:for i (range from to))
-                (:acc out (vecing (cond
-                                    ((blank-line? (vec-ref lines i)) (vec-empty))
-                                    ((= i 0) (vec-ref lines i))
-                                    (else (outdent (vec-ref lines i) margin))))))))))
+      (let* ((from (if (blank-line? (vec-ref lines 0))
+                       1
+                       0))
+             (to (if (blank-line? (vec-ref lines (- n 1)))
+                     (- n 1)
+                     n))
+             (margin (common-margin lines
+                                    (if (= from 0)
+                                        1
+                                        from)
+                                    to)))
+        (join-lines (loop (:for i (range from to))
+                          (:acc out (vecing (cond
+                                              ((blank-line? (vec-ref lines i)) (vec-empty))
+                                              ((= i 0) (vec-ref lines i))
+                                              (else (outdent (vec-ref lines i) margin))))))))))
 
 ;; --- the same, for a command ------------------------------------------------
 
 ;; Items one line at a time, the newlines taken out and adjacent text joined.
 (: at-lines (-> (Vec At) (Vec (Vec At))))
-(defun (at-lines items) (split-lines (merge-texts items)))
+(defun (at-lines items)
+  (split-lines (merge-texts items)))
 
 ;; Whether a line is space, or nothing.
 (: at-line-blank? (-> (Vec At) bool))
-(defun (at-line-blank? line) (blank-line? line))
+(defun (at-line-blank? line)
+  (blank-line? line))
 
 ;; How far a line's text is indented; one that begins with a command is not.
 (: at-line-indentation (-> (Vec At) int))
-(defun (at-line-indentation line) (indentation line))
+(defun (at-line-indentation line)
+  (indentation line))
 
 ;; ---------------------------------------------------------------------------
 ;; Showing a tree
@@ -597,7 +651,8 @@
   (match item
     ((Text s) (bjodat->string (BjoStr s)))
     ((Cmd c)
-     (str "(" (record-ref c name)
+     (str "("
+          (record-ref c name)
           (string-join (vec-map (fun (a) (str " " (bjodat->string a))) (record-ref c args)) "")
           (match (record-ref c body)
             ((Some items) (str " {" (ats->string items) "}"))

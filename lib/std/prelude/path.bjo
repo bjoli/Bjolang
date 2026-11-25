@@ -52,21 +52,32 @@
 (def/trait (AsPath %p)
   (: as-path (-> %p Path)))
 
-(impl (AsPath Path) (defun (as-path p) p))
-(impl (AsPath ByteString) (defun (as-path b) (Path b)))
-(impl (AsPath string) (defun (as-path s) (Path (string->bytestring s))))
+(impl (AsPath Path)
+  (defun (as-path p)
+    p))
+(impl (AsPath ByteString)
+  (defun (as-path b)
+    (Path b)))
+(impl (AsPath string)
+  (defun (as-path s)
+    (Path (string->bytestring s))))
 
 (: (-> %p Path) (where (AsPath %p)))
-(defun (path x) (as-path x))
+(defun (path x)
+  (as-path x))
 
 (: (-> Path ByteString))
-(defun (path->bytestring p) (match p ((Path b) b)))
+(defun (path->bytestring p)
+  (match p
+    ((Path b) b)))
 
 (: (-> Path (Result DecodeError string)))
-(defun (path->string p) (bytestring->string (path->bytestring p)))
+(defun (path->string p)
+  (bytestring->string (path->bytestring p)))
 
 (: (-> Path string))
-(defun (path->string/lossy p) (bytestring->string/lossy (path->bytestring p)))
+(defun (path->string/lossy p)
+  (bytestring->string/lossy (path->bytestring p)))
 
 ;; ---------------------------------------------------------------------------
 ;; Parts
@@ -96,7 +107,9 @@
     (loop (:for name (bytestring-split b slash))
           (:when (not (or (bytestring-empty? name) (= name dot))))
           (:acc v (vecing name))))
-  (if (absolute-bytes? b) (vec-add-first names root-part) names))
+  (if (absolute-bytes? b)
+      (vec-add-first names root-part)
+      names))
 
 ;; A path of parts as `parts-of` gives them. No parts is `.`.
 (: (-> (Vec ByteString) Path))
@@ -108,13 +121,16 @@
     (else (Path (bytestring-join parts root-part)))))
 
 (: (-> %p (Vec Path)) (where (AsPath %p)))
-(defun (path-parts x) (vec-map Path (parts-of (as-path x))))
+(defun (path-parts x)
+  (vec-map Path (parts-of (as-path x))))
 
 (: (-> %p bool) (where (AsPath %p)))
-(defun (path-absolute? x) (absolute-bytes? (path->bytestring (as-path x))))
+(defun (path-absolute? x)
+  (absolute-bytes? (path->bytestring (as-path x))))
 
 (: (-> %p bool) (where (AsPath %p)))
-(defun (path-relative? x) (not (path-absolute? x)))
+(defun (path-relative? x)
+  (not (path-absolute? x)))
 
 ;; The last part, when it is a name: not the root and not `..`.
 (: (-> (Vec ByteString) (Option ByteString)))
@@ -122,7 +138,9 @@
   (if (vec-empty? parts)
       None
       (let ((last (vec-ref parts (- (vec-length parts) 1))))
-        (if (or (= last root-part) (= last dot-dot)) None (Some last)))))
+        (if (or (= last root-part) (= last dot-dot))
+            None
+            (Some last)))))
 
 (: (-> %p (Option Path)) (where (AsPath %p)))
 (defun (path-parent x)
@@ -134,14 +152,18 @@
     (else (Some (path-of-parts (vec-take parts (- n 1)))))))
 
 (: (-> %p (Option ByteString)) (where (AsPath %p)))
-(defun (path-name x) (last-name (parts-of (as-path x))))
+(defun (path-name x)
+  (last-name (parts-of (as-path x))))
 
 ;; Where the extension of a name starts: after its last `.`, when that dot
 ;; is not the first byte. `.bashrc` has none.
 (: (-> ByteString (Option int)))
 (defun (extension-dot name)
   (match (bytestring-search-byte-backward name 46uy)
-    ((Some at) (if (> at 0) (Some at) None))
+    ((Some at)
+     (if (> at 0)
+         (Some at)
+         None))
     (None None)))
 
 (: (-> %p (Option ByteString)) (where (AsPath %p)))
@@ -201,7 +223,10 @@
 (defun (path-with-name x name)
   (def p (as-path x))
   (match (path-parent p)
-    ((Some parent) (if (some? (path-name p)) (path-join parent (Path name)) (path-join p (Path name))))
+    ((Some parent)
+     (if (some? (path-name p))
+         (path-join parent (Path name))
+         (path-join p (Path name))))
     (None (path-join p (Path name)))))
 
 ;; An empty extension removes the one there is.
@@ -210,9 +235,10 @@
   (def p (as-path x))
   (match (path-stem p)
     ((Some stem)
-     (path-with-name p (if (bytestring-empty? ext)
-                           stem
-                           (bytestring-concat [stem (string->bytestring ".") ext]))))
+     (path-with-name p
+                     (if (bytestring-empty? ext)
+                         stem
+                         (bytestring-concat [stem (string->bytestring ".") ext]))))
     (None p)))
 
 ;; `.` and empty names removed, and each `..` removed with the name before
@@ -225,7 +251,10 @@
 (defun (path-normalize x)
   (def parts (parts-of (as-path x)))
   (def absolute (and (not (vec-empty? parts)) (= (vec-ref parts 0) root-part)))
-  (def names (if absolute (vec-drop parts 1) parts))
+  (def names
+    (if absolute
+        (vec-drop parts 1)
+        parts))
   (def kept
     (loop (:for name names)
           (:acc stack (folding []
@@ -236,7 +265,9 @@
                                   (vec-take stack (- (vec-length stack) 1)))
                                  (absolute stack)
                                  (else (vec-add stack name)))))))
-  (path-of-parts (if absolute (vec-add-first kept root-part) kept)))
+  (path-of-parts (if absolute
+                     (vec-add-first kept root-part)
+                     kept)))
 
 ;; ---------------------------------------------------------------------------
 ;; Comparing
@@ -269,16 +300,20 @@
       ((= i n) (compare (vec-length ps) (vec-length qs)))
       (else
        (def c (compare (vec-ref ps i) (vec-ref qs i)))
-       (if (= c 0) (go (+ i 1)) c)))))
+       (if (= c 0)
+           (go (+ i 1))
+           c)))))
 
 (impl (Eq Path)
-  (defun (= a b) (= (parts-of a) (parts-of b)))
+  (defun (= a b)
+    (= (parts-of a) (parts-of b)))
   (defun (eq-hash p)
     (loop (:for part (parts-of p))
           (:acc h (folding 17 (+ (* h 31) (eq-hash part)))))))
 
 (impl (Ord Path)
-  (defun (compare a b) (compare-parts (parts-of a) (parts-of b))))
+  (defun (compare a b)
+    (compare-parts (parts-of a) (parts-of b))))
 
 ;; `#p"..."`, with the escapes of a written ByteString.
 (impl (Written Path)
@@ -288,4 +323,5 @@
 
 ;; As text, with U+FFFD for each part that is not UTF-8.
 (impl (Displayed Path)
-  (defun (display-into p sb) (stringbuilder-add-string! sb (path->string/lossy p))))
+  (defun (display-into p sb)
+    (stringbuilder-add-string! sb (path->string/lossy p))))

@@ -44,11 +44,15 @@
 (defun (repeat-fasta out source n)
   (def line (make-array (+ line-length 1)))
   (def len (array-length source))
-  (let go ((left n) (k 0))
+  (let go ((left n)
+           (k 0))
     (when (> left 0)
       (def count (min left line-length))
       (loop (:for i (range 0 count))
-            (:with k k (if (= (+ k 1) len) 0 (+ k 1)))
+            (:with k k
+                   (if (= (+ k 1) len)
+                       0
+                       (+ k 1)))
             (:do (array-set! line i (array-ref source k))))
       (write-line out line count)
       (go (- left count) (% (+ k count) len)))))
@@ -63,7 +67,8 @@
       (def count (min left line-length))
       (loop (:for i (range 0 count))
             (:let r (random 1.0))
-            (:do (array-set! line i
+            (:do (array-set! line
+                             i
                              (array-ref codes
                                         (let pick ((j 0))
                                           (if (and (< j last) (>= r (array-ref probs j)))
@@ -89,12 +94,16 @@
   (write-string out ">ONE Homo sapiens alu\n")
   (repeat-fasta out alu (* 2 n))
   (write-string out ">TWO IUB ambiguity codes\n")
-  (random-fasta out (string->bytes "acgtBDHKMNRSVWY")
-                (cumulative #[0.27 0.12 0.12 0.27 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02])
+  (random-fasta out
+                (string->bytes "acgtBDHKMNRSVWY")
+                (cumulative #[0.27 0.12 0.12 0.27 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02
+                              0.02])
                 (* 3 n))
   (write-string out ">THREE Homo sapiens frequency\n")
-  (random-fasta out (string->bytes "acgt")
+  (random-fasta out
+                (string->bytes "acgt")
                 (cumulative #[0.3029549426680 0.1979883004921 0.1975473066391 0.3015094502008])
                 (* 5 n)))
 
-(defun (main args) (bench-main args #f run))
+(defun (main args)
+  (bench-main args #f run))

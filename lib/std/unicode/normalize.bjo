@@ -75,11 +75,16 @@
 (defun (props-of cp)
   (if (< cp 128)
       0
-      (ro-span-ref kinds (cast int (ro-span-ref stage2 (+ (shift-left (cast int (ro-span-ref stage1 (shift-right cp 8))) 8)
-                                                          (bitwise-and cp 255)))))))
+      (ro-span-ref kinds
+                   (cast int
+                         (ro-span-ref
+                          stage2
+                          (+ (shift-left (cast int (ro-span-ref stage1 (shift-right cp 8))) 8)
+                             (bitwise-and cp 255)))))))
 
 (: (-> int int) #:inline)
-(defun (class-of p) (bitwise-and p 255))
+(defun (class-of p)
+  (bitwise-and p 255))
 
 ;; The full decompositions. A table is `count` code points in order, then
 ;; the start of each one's decomposition (`count` + 1 of them, the last the
@@ -94,7 +99,8 @@
 ;; order, or -1.
 (: (-> (RoSpan int) int int int))
 (defun (search table count x)
-  (let go ((lo 0) (hi count))
+  (let go ((lo 0)
+           (hi count))
     (if (>= lo hi)
         -1
         (let* ((mid (shift-right (+ lo hi) 1))
@@ -116,18 +122,28 @@
 ;; Hangul syllables
 ;; ---------------------------------------------------------------------------
 
-(: int) (def s-base 0xAC00)
-(: int) (def l-base 0x1100)
-(: int) (def v-base 0x1161)
-(: int) (def t-base 0x11A7)
-(: int) (def l-count 19)
-(: int) (def v-count 21)
-(: int) (def t-count 28)
-(: int) (def n-count 588)
-(: int) (def s-count 11172)
+(: int)
+(def s-base 0xAC00)
+(: int)
+(def l-base 0x1100)
+(: int)
+(def v-base 0x1161)
+(: int)
+(def t-base 0x11A7)
+(: int)
+(def l-count 19)
+(: int)
+(def v-count 21)
+(: int)
+(def t-count 28)
+(: int)
+(def n-count 588)
+(: int)
+(def s-count 11172)
 
 (: (-> int bool) #:inline)
-(defun (syllable? cp) (and (>= cp s-base) (< cp (+ s-base s-count))))
+(defun (syllable? cp)
+  (and (>= cp s-base) (< cp (+ s-base s-count))))
 
 ;; ---------------------------------------------------------------------------
 ;; The forms
@@ -142,8 +158,14 @@
   (cond
     ((and compose? compat?) (bitwise-and (shift-right p 12) 3))
     (compose? (bitwise-and (shift-right p 10) 3))
-    (compat? (if (= (bitwise-and p 512) 0) 0 2))
-    (else (if (= (bitwise-and p 256) 0) 0 2))))
+    (compat?
+     (if (= (bitwise-and p 512) 0)
+         0
+         2))
+    (else
+     (if (= (bitwise-and p 256) 0)
+         0
+         2))))
 
 ;; The result of the quick check of a string, and where normalization must
 ;; start when it is not Yes: the cursor of the last character before the
@@ -155,7 +177,10 @@
 (: (-> string bool bool Check))
 (defun (check s compat? compose?)
   (def start (string-cursor-start s))
-  (let go ((c start) (safe start) (last-class 0) (verdict 0))
+  (let go ((c start)
+           (safe start)
+           (last-class 0)
+           (verdict 0))
     (if (string-cursor-end? s c)
         (Check (verdict verdict) (restart safe))
         (let* ((r (string-cursor-ref+next s c))
@@ -168,9 +193,13 @@
             ((= qc 2) (Check (verdict 2) (restart safe)))
             (else
              (go (snd r)
-                 (if (and (= verdict 0) (= qc 0) (= cls 0)) c safe)
+                 (if (and (= verdict 0) (= qc 0) (= cls 0))
+                     c
+                     safe)
                  cls
-                 (if (= qc 1) 1 verdict))))))))
+                 (if (= qc 1)
+                     1
+                     verdict))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Normalization
@@ -181,7 +210,8 @@
                         (: size int #:mutable))))
 
 (: (-> int Buffer))
-(defun (make-buffer capacity) (Buffer (data (make-array (max capacity 8))) (size 0)))
+(defun (make-buffer capacity)
+  (Buffer (data (make-array (max capacity 8))) (size 0)))
 
 ;; Adds `cp` in canonical order: a character of a combining class other than
 ;; 0 goes before those of a higher class that end the buffer.
@@ -197,7 +227,9 @@
         n
         (let go ((j n))
           (if (and (> j 0) (> (class-of (props-of (array-ref data (- j 1)))) cls))
-              (begin (array-set! data j (array-ref data (- j 1))) (go (- j 1)))
+              (begin
+                (array-set! data j (array-ref data (- j 1)))
+                (go (- j 1)))
               j))))
   (array-set! data at cp)
   (record-set! buf (size (+ n 1))))
@@ -213,7 +245,8 @@
      (add-ordered! buf (+ l-base (/ s n-count)))
      (add-ordered! buf (+ v-base (/ (% s n-count) t-count)))
      (def t (% s t-count))
-     (when (> t 0) (add-ordered! buf (+ t-base t))))
+     (when (> t 0)
+       (add-ordered! buf (+ t-base t))))
     (compat? (add-mapped! buf compatibility compatibility-count cp))
     (else (add-mapped! buf canonical canonical-count cp))))
 
@@ -232,15 +265,21 @@
 (defun (composite first second)
   (cond
     ;; L + V
-    ((and (>= first l-base) (< first (+ l-base l-count)) (>= second v-base) (< second (+ v-base v-count)))
+    ((and (>= first l-base)
+          (< first (+ l-base l-count))
+          (>= second v-base)
+          (< second (+ v-base v-count)))
      (+ s-base (* (+ (* (- first l-base) v-count) (- second v-base)) t-count)))
     ;; LV + T
-    ((and (syllable? first) (= (% (- first s-base) t-count) 0)
-          (> second t-base) (< second (+ t-base t-count)))
+    ((and (syllable? first)
+          (= (% (- first s-base) t-count) 0)
+          (> second t-base)
+          (< second (+ t-base t-count)))
      (+ first (- second t-base)))
     (else
      (def key (+ (* (cast long first) 1114112L) (cast long second)))
-     (let go ((lo 0) (hi composition-count))
+     (let go ((lo 0)
+              (hi composition-count))
        (if (>= lo hi)
            -1
            (let* ((mid (shift-right (+ lo hi) 1))
@@ -262,7 +301,12 @@
     (def first-class (class-of (props-of (array-ref data 0))))
     ;; A string that starts with a combining character has no starter to
     ;; compose with until the first one: 256 blocks every composition.
-    (let go ((i 1) (out 1) (starter 0) (last-class (if (= first-class 0) 0 256)))
+    (let go ((i 1)
+             (out 1)
+             (starter 0)
+             (last-class (if (= first-class 0)
+                             0
+                             256)))
       (if (= i n)
           (record-set! buf (size out))
           (let* ((cp (array-ref data i))
@@ -275,10 +319,17 @@
                            (composite (array-ref data starter) cp)
                            -1)))
             (if (>= made 0)
-                (begin (array-set! data starter made) (go (+ i 1) out starter last-class))
+                (begin
+                  (array-set! data starter made)
+                  (go (+ i 1) out starter last-class))
                 (begin
                   (array-set! data out cp)
-                  (go (+ i 1) (+ out 1) (if (= cls 0) out starter) cls))))))))
+                  (go (+ i 1)
+                      (+ out 1)
+                      (if (= cls 0)
+                          out
+                          starter)
+                      cls))))))))
 
 ;; The normal form of `s`, whose part before `from` is already normal.
 (: (-> string StringCursor bool bool string))
@@ -289,7 +340,8 @@
       (def r (string-cursor-ref+next s c))
       (add-decomposed! buf (char->int (fst r)) compat?)
       (go (snd r))))
-  (when compose? (compose! buf))
+  (when compose?
+    (compose! buf))
   (def sb (stringbuilder-empty))
   (stringbuilder-add-substring! sb s (string-cursor-start s) from)
   (def data (record-ref buf data))
@@ -317,25 +369,33 @@
 ;; ---------------------------------------------------------------------------
 
 (: (-> string string))
-(defun (string-nfc s) (normalize s #f #t))
+(defun (string-nfc s)
+  (normalize s #f #t))
 
 (: (-> string string))
-(defun (string-nfd s) (normalize s #f #f))
+(defun (string-nfd s)
+  (normalize s #f #f))
 
 (: (-> string string))
-(defun (string-nfkc s) (normalize s #t #t))
+(defun (string-nfkc s)
+  (normalize s #t #t))
 
 (: (-> string string))
-(defun (string-nfkd s) (normalize s #t #f))
+(defun (string-nfkd s)
+  (normalize s #t #f))
 
 (: (-> string bool))
-(defun (string-nfc? s) (normalized? s #f #t))
+(defun (string-nfc? s)
+  (normalized? s #f #t))
 
 (: (-> string bool))
-(defun (string-nfd? s) (normalized? s #f #f))
+(defun (string-nfd? s)
+  (normalized? s #f #f))
 
 (: (-> string bool))
-(defun (string-nfkc? s) (normalized? s #t #t))
+(defun (string-nfkc? s)
+  (normalized? s #t #t))
 
 (: (-> string bool))
-(defun (string-nfkd? s) (normalized? s #t #f))
+(defun (string-nfkd? s)
+  (normalized? s #t #f))

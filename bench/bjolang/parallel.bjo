@@ -121,7 +121,8 @@
 ;; tiering up, and the first row timed came out up to three times slower.
 (: (-bjo-> (-bjo-> void) long))
 (defbjo (median-ns thunk)
-  (loop (:for _ (range 0 5)) (:do (thunk)))
+  (loop (:for _ (range 0 5))
+        (:do (thunk)))
   (def times
     (loop (:for _ (range 0 reps))
           (:do (settle))
@@ -144,53 +145,117 @@
 (defun (report-of name elems seq par)
   (def nn (cast long elems))
   (println (str (string-pad-right name 9)
-                "seq " (hundredths (/ (* seq 100L) nn)) " ns/elem   "
-                "par " (hundredths (/ (* par 100L) nn)) " ns/elem   "
-                "speed-up " (hundredths (/ (* seq 100L) par)) "x")))
+                "seq "
+                (hundredths (/ (* seq 100L) nn))
+                " ns/elem   "
+                "par "
+                (hundredths (/ (* par 100L) nn))
+                " ns/elem   "
+                "speed-up "
+                (hundredths (/ (* seq 100L) par))
+                "x")))
 
 (defbjo (main)
-  (println (str "n = " (displayed n) " doubles, " (displayed processor-count) " processors, "
-                (displayed (* 4 processor-count)) " parts"))
-  (def a (vec->array (loop (:for i (range 0 n)) (:acc v (vecing (* 1e-6 (cast double i)))))))
+  (println (str "n = "
+                (displayed n)
+                " doubles, "
+                (displayed processor-count)
+                " processors, "
+                (displayed (* 4 processor-count))
+                " parts"))
+  (def a
+    (vec->array (loop (:for i (range 0 n))
+                      (:acc v (vecing (* 1e-6 (cast double i)))))))
   (def sink (make-box 0.0))
 
   (report "scale"
           (median-ns (bjoroutine () (scale-span! (array->span a) 1.0000001)))
-          (median-ns (bjoroutine () (ignore (in-parts a (fun (part) (scale-span! (part->span part) 1.0000001)))))))
+          (median-ns (bjoroutine ()
+                       (ignore (in-parts a (fun (part) (scale-span! (part->span part) 1.0000001)))))))
   (report "sum"
           (median-ns (bjoroutine () (ignore (box-set! sink (sum-span (array->ro-span a))))))
-          (median-ns (bjoroutine () (ignore (box-set! sink (vec-fold + 0.0 (in-parts a (fun (part) (sum-span (part->ro-span part))))))))))
+          (median-ns
+           (bjoroutine ()
+             (ignore (box-set!
+                      sink
+                      (vec-fold + 0.0 (in-parts a (fun (part) (sum-span (part->ro-span part))))))))))
   (report "sin-sum"
           (median-ns (bjoroutine () (ignore (box-set! sink (sin-sum-span (array->ro-span a))))))
-          (median-ns (bjoroutine () (ignore (box-set! sink (vec-fold + 0.0 (in-parts a (fun (part) (sin-sum-span (part->ro-span part))))))))))
+          (median-ns
+           (bjoroutine ()
+             (ignore
+              (box-set!
+               sink
+               (vec-fold + 0.0 (in-parts a (fun (part) (sin-sum-span (part->ro-span part))))))))))
   ;; The fixed cost of one call: one part for each processor, parts that do
   ;; nothing.
   (def calls 10000)
   (def overhead
     (median-ns (bjoroutine ()
                  (loop (:for _ (range 0 calls))
-                       (:do (ignore (in-parts (range 0 processor-count) (fun (part) 0) #:parts processor-count)))))))
-  (println (str "overhead " (hundredths (/ (* overhead 100L) (* 1000L (cast long calls))))
-                " us per call of " (displayed processor-count) " parts"))
+                       (:do (ignore (in-parts (range 0 processor-count)
+                                              (fun (part) 0)
+                                              #:parts processor-count)))))))
+  (println (str "overhead "
+                (hundredths (/ (* overhead 100L) (* 1000L (cast long calls))))
+                " us per call of "
+                (displayed processor-count)
+                " parts"))
 
   ;; Maps: a sum of the values of 1M entries, and the split alone.
   (def entries 1000000)
-  (def pairs (loop (:for i (range 0 entries)) (:acc v (vecing (Tuple i (cast long i))))))
+  (def pairs
+    (loop (:for i (range 0 entries))
+          (:acc v (vecing (Tuple i (cast long i))))))
   (def m (vec->map pairs))
   (def om (vec->orderedmap pairs))
   (def total (make-box 0L))
-  (report-of "map-sum" entries
-             (median-ns (bjoroutine () (ignore (box-set! total (loop (:for (Tuple _k v) m) (:acc s (summing v)))))))
-             (median-ns (bjoroutine () (ignore (box-set! total (vec-fold + 0L (in-parts m (fun (part) (loop (:for (Tuple _k v) part) (:acc s (summing v)))))))))))
-  (report-of "omap-sum" entries
-             (median-ns (bjoroutine () (ignore (box-set! total (loop (:for (Tuple _k v) om) (:acc s (summing v)))))))
-             (median-ns (bjoroutine () (ignore (box-set! total (vec-fold + 0L (in-parts om (fun (part) (loop (:for (Tuple _k v) part) (:acc s (summing v)))))))))))
+  (report-of "map-sum"
+             entries
+             (median-ns (bjoroutine ()
+                          (ignore (box-set! total
+                                            (loop (:for (Tuple _k v) m)
+                                                  (:acc s (summing v)))))))
+             (median-ns (bjoroutine ()
+                          (ignore (box-set! total
+                                            (vec-fold +
+                                                      0L
+                                                      (in-parts m
+                                                                (fun (part)
+                                                                  (loop (:for (Tuple _k v) part)
+                                                                        (:acc s (summing v)))))))))))
+  (report-of "omap-sum"
+             entries
+             (median-ns (bjoroutine ()
+                          (ignore (box-set! total
+                                            (loop (:for (Tuple _k v) om)
+                                                  (:acc s (summing v)))))))
+             (median-ns (bjoroutine ()
+                          (ignore (box-set! total
+                                            (vec-fold +
+                                                      0L
+                                                      (in-parts om
+                                                                (fun (part)
+                                                                  (loop (:for (Tuple _k v) part)
+                                                                        (:acc s (summing v)))))))))))
   (def splits 100)
   (def parts (* 4 processor-count))
-  (def map-split (median-ns (bjoroutine () (loop (:for _ (range 0 splits)) (:do (ignore (chunks m parts)))))))
-  (def omap-split (median-ns (bjoroutine () (loop (:for _ (range 0 splits)) (:do (ignore (chunks om parts)))))))
-  (println (str "split    map " (hundredths (/ (* map-split 100L) (* 1000L (cast long splits))))
-                " us, ordered map " (hundredths (/ (* omap-split 100L) (* 1000L (cast long splits))))
-                " us, " (displayed entries) " entries into " (displayed parts) " parts"))
+  (def map-split
+    (median-ns (bjoroutine ()
+                 (loop (:for _ (range 0 splits))
+                       (:do (ignore (chunks m parts)))))))
+  (def omap-split
+    (median-ns (bjoroutine ()
+                 (loop (:for _ (range 0 splits))
+                       (:do (ignore (chunks om parts)))))))
+  (println (str "split    map "
+                (hundredths (/ (* map-split 100L) (* 1000L (cast long splits))))
+                " us, ordered map "
+                (hundredths (/ (* omap-split 100L) (* 1000L (cast long splits))))
+                " us, "
+                (displayed entries)
+                " entries into "
+                (displayed parts)
+                " parts"))
   (println (str "(sink " (displayed (box-ref sink)) " " (displayed (box-ref total)) ")"))
   0)

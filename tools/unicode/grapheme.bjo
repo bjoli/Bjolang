@@ -26,8 +26,8 @@
 ;; The values of Grapheme_Cluster_Break, in the order of their numbers.
 (: (Vec string))
 (def break-classes
-  ["Other" "CR" "LF" "Control" "Extend" "ZWJ" "Regional_Indicator"
-   "Prepend" "SpacingMark" "L" "V" "T" "LV" "LVT"])
+  ["Other" "CR" "LF" "Control" "Extend" "ZWJ" "Regional_Indicator" "Prepend" "SpacingMark" "L" "V" "T"
+   "LV" "LVT"])
 
 ;; The number of a value of Indic_Conjunct_Break.
 (: (-> string int))
@@ -40,9 +40,14 @@
 
 (: (-> string int))
 (defun (break-class value)
-  (match {finding i :when (= (vec-ref break-classes i) value) (:for i (range 0 (vec-length break-classes)))}
+  (match {finding i
+                  :when
+                  (= (vec-ref break-classes i) value)
+                  (:for i (range 0 (vec-length break-classes)))}
     ((Some i) i)
-    (None (panic! #"unicode-tables: Grapheme_Cluster_Break has the value ${value}, which grapheme.bjo does not know"))))
+    (None
+     (panic!
+      #"unicode-tables: Grapheme_Cluster_Break has the value ${value}, which grapheme.bjo does not know"))))
 
 ;; Sets `bits` in the property of each code point of `r`.
 (: (-> (Array int) Range int void))
@@ -77,7 +82,8 @@
     (panic! #"unicode-tables: ${(record-ref table blocks)} blocks do not fit in a byte"))
 
   (write-text (table-path "grapheme-table.protobjo")
-              (str (header "grapheme" version
+              (str (header "grapheme"
+                           version
                            "GraphemeBreakProperty.txt, emoji-data.txt and DerivedCoreProperties.txt")
                    "\n"
                    ";; The Unicode version the table is of.\n"
@@ -95,6 +101,8 @@
                    ";; \"/\" where a cluster boundary is and \"x\" where there is none.\n"
                    #"(def grapheme-cases-version \"${version}\")\n"
                    "(def grapheme-cases \"\"\"\n"
-                   (string-join (vec-map (fun (c) (str "    " c)) cases) "\n") "\n"
+                   (string-join (vec-map (fun (c) (str "    " c)) cases) "\n")
+                   "\n"
                    "    \"\"\")\n"))
-  (println #"Unicode ${version}: ${(vec-length kinds)} property bytes, ${(record-ref table blocks)} blocks, ${(vec-length cases)} cases"))
+  (println
+   #"Unicode ${version}: ${(vec-length kinds)} property bytes, ${(record-ref table blocks)} blocks, ${(vec-length cases)} cases"))

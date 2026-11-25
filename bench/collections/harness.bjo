@@ -57,7 +57,8 @@
 ;; `calls` calls of the case, their results added up and kept.
 (: (-> (-> long) long void))
 (defun (run-calls work calls)
-  (let go ((i 0L) (acc 0L))
+  (let go ((i 0L)
+           (acc 0L))
     (if (< i calls)
         (go (+ i 1L) (+ acc (work)))
         (box-set! sink (+ (box-ref sink) acc)))))
@@ -84,7 +85,9 @@
 (defun (measure work)
   (settle)
   (def calls (calibrate work))
-  (let go ((round 0) (best-ns 9223372036854775807L) (best-bytes 0L))
+  (let go ((round 0)
+           (best-ns 9223372036854775807L)
+           (best-bytes 0L))
     (if (= round rounds)
         (Tuple best-ns best-bytes)
         (let ()
@@ -110,7 +113,10 @@
   (println "allocated per call where there are any.")
   (def floor (floor-ns))
   (println (str "A call that does nothing takes "
-                (if (= floor 0L) "less than 1 ns" (ns->string floor)) ".")))
+                (if (= floor 0L)
+                    "less than 1 ns"
+                    (ns->string floor))
+                ".")))
 
 ;; b / a with two decimals.
 (: (-> long long string))
@@ -119,7 +125,8 @@
       "-"
       (let ()
         (def hundredths (/ (+ (* b 100L) (/ a 2L)) a))
-        (str (->str (/ hundredths 100L)) "."
+        (str (->str (/ hundredths 100L))
+             "."
              (string-pad-left (->str (% hundredths 100L)) 2 #:with #\0)))))
 
 ;; A cell: time per call, and bytes per call when there are any.
@@ -128,7 +135,9 @@
   (match m
     ((Tuple ns bytes)
      (string-pad-left (str (ns->string ns)
-                           (if (= bytes 0L) "" (str " " (->str bytes) " B")))
+                           (if (= bytes 0L)
+                               ""
+                               (str " " (->str bytes) " B")))
                       cell-width))))
 
 ;; The heading of a table: what it compares, and the names of its two columns.
@@ -136,8 +145,10 @@
 (defun (section title a b)
   (println "")
   (println title)
-  (println (str (string-pad-right "operation" op-width) (string-pad-left "n" 8)
-                (string-pad-left a cell-width) (string-pad-left b cell-width)
+  (println (str (string-pad-right "operation" op-width)
+                (string-pad-left "n" 8)
+                (string-pad-left a cell-width)
+                (string-pad-left b cell-width)
                 (string-pad-left (str b "/" a) ratio-width))))
 
 ;; One row: `op` on collections of n items, done the first way and the second.
@@ -147,6 +158,8 @@
   (def mb (measure b))
   (match (Tuple ma mb)
     ((Tuple (Tuple a-ns a-bytes) (Tuple b-ns b-bytes))
-     (println (str (string-pad-right op op-width) (string-pad-left (->str n) 8)
-                   (cell ma) (cell mb)
+     (println (str (string-pad-right op op-width)
+                   (string-pad-left (->str n) 8)
+                   (cell ma)
+                   (cell mb)
                    (string-pad-left (ratio a-ns b-ns) ratio-width))))))

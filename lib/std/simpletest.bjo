@@ -12,14 +12,15 @@
 
 ;; std/simpletest.bjo — basic test assertion module.
 
-(export expect expect-true fail
-        default-test-deadline overran?
-        FakeFs fake-fs fake-fs-written fake-fs-contents fake-fs-set-modified!
-        ;; The handlers, one per `FS` operation. Exported because the
-        ;; `with-fake-fs` templates name them.
-        fake-fs-reader fake-fs-writer fake-fs-info fake-fs-list
-        fake-fs-create-directory fake-fs-delete-file fake-fs-delete-directory
-        fake-fs-move)
+(export
+  expect expect-true fail
+  default-test-deadline overran?
+  FakeFs fake-fs fake-fs-written fake-fs-contents fake-fs-set-modified!
+  ;; The handlers, one per `FS` operation. Exported because the
+  ;; `with-fake-fs` templates name them.
+  fake-fs-reader fake-fs-writer fake-fs-info fake-fs-list
+  fake-fs-create-directory fake-fs-delete-file fake-fs-delete-directory
+  fake-fs-move)
 
 (import (std prelude))
 (import (std effect))
@@ -75,30 +76,33 @@
 ;; several failures in one body are reported together rather than only the
 ;; first.
 ;;
-;; We check if the test left any resources open *before* the scope finishes. 
-;; If we checked after, the scope would have already silently cleaned them up! 
+;; We check if the test left any resources open *before* the scope finishes.
+;; If we checked after, the scope would have already silently cleaned them up!
 ;; We want tests to explicitly fail if they forget to close their files.
 ;;
-;; You can disable this check using `#:open-ok` (useful if you are specifically 
+;; You can disable this check using `#:open-ok` (useful if you are specifically
 ;; testing that cleanup happens on scope-close).
 ;;
 ;; `#:within d`, a Duration, overrides the deadline.
 ;;
 ;; We catch `System.Exception` here to handle `Cancelled` exceptions caused by timeouts.
 ;;
-;; Normally, catching and hiding a cancellation is a terrible idea in structured 
-;; concurrency. But since this is the top-level test runner, we *want* to catch 
-;; it. Doing so lets us report a clean failure with the test's name, instead 
+;; Normally, catching and hiding a cancellation is a terrible idea in structured
+;; concurrency. But since this is the top-level test runner, we *want* to catch
+;; it. Doing so lets us report a clean failure with the test's name, instead
 ;; of crashing and dumping an unhelpful stack trace.
 
 (: (-> Duration))
-(defun (default-test-deadline) (seconds 5))
+(defun (default-test-deadline)
+  (seconds 5))
 
 (: (-> Syntax Syntax))
 (defun (leak-check name)
   #'(let ((left (scope-owned-count (current-scope))))
       (unless (= left 0)
-        (fail (string-append ,name (string-append " left " (string-append (int->string left) " resource(s) open")))))))
+        (fail (string-append
+               ,name
+               (string-append " left " (string-append (int->string left) " resource(s) open")))))))
 
 ;; Whether the deadline was what ended the scope.
 ;;
@@ -118,27 +122,37 @@
 (: (-> Syntax Syntax bool (List Syntax) Syntax))
 (defun (test-expansion name ms check body)
   (let ((core (if check
-                  #'(let () ,@body ,(leak-check name) unit)
-                  #'(let () ,@body unit))))
+                  #'(let ()
+                      ,@body
+                      ,(leak-check name)
+                      unit)
+                  #'(let ()
+                      ,@body
+                      unit))))
     #'(let ((holder (make-box None)))
-        (match (try (with-deadline ,ms (let () (box-set! holder (Some (current-scope))) ,core))
+        (match (try
+                 (with-deadline ,ms
+                   (let ()
+                     (box-set! holder (Some (current-scope)))
+                     ,core))
                  #:catch (System.Exception))
           ((Ok _)
            (when (overran? holder)
-             (fail (string-append ,name " ran past its deadline: something it started never finished"))))
+             (fail (string-append ,name
+                                  " ran past its deadline: something it started never finished"))))
           ((Err e) (fail (string-append ,name (string-append " did not finish: " (.-Message e)))))))))
 
 (def/macro (with-test form inject compare)
   (syntax-match form
-    ((_ name #:within ms #:open-ok first body ...)
-     (test-expansion name ms #f (cons first body)))
-    ((_ name #:within ms first body ...)
-     (test-expansion name ms #t (cons first body)))
+    ((_ name #:within ms #:open-ok first body ...) (test-expansion name ms #f (cons first body)))
+    ((_ name #:within ms first body ...) (test-expansion name ms #t (cons first body)))
     ((_ name #:open-ok first body ...)
      (test-expansion name #'(default-test-deadline) #f (cons first body)))
-    ((_ name first body ...)
-     (test-expansion name #'(default-test-deadline) #t (cons first body)))
-    (bad (syntax-error bad "with-test takes a name and a body: (with-test \"name\" body ...), optionally #:within d, a Duration, and #:open-ok."))))
+    ((_ name first body ...) (test-expansion name #'(default-test-deadline) #t (cons first body)))
+    (bad
+     (syntax-error
+      bad
+      "with-test takes a name and a body: (with-test \"name\" body ...), optionally #:within d, a Duration, and #:open-ok."))))
 
 ;; ---------------------------------------------------------------------------
 ;; A filesystem that is not one
@@ -203,16 +217,18 @@
 ;; through, which is read when the file is: the writer may still be open, and a
 ;; read sees what has reached the stream so far, as a read of a real file sees
 ;; what has been flushed.
-(type (: FakeEntry (Union (: FakeText string) (: FakeWritten MemoryStream) FakeDir)))
+(type (: FakeEntry (Union (: FakeText string)
+                          (: FakeWritten MemoryStream)
+                          FakeDir)))
 
 ;; Mutable because a write has to be visible to a later read. `modified` holds
 ;; the time of every path something stamped; any other path has the clock's
 ;; start.
-(type
-  (: FakeFs #:opaque
-     (Record (: entries (Map string FakeEntry) #:mutable)
-             (: modified (Map string long) #:mutable)
-             (: clock long #:mutable))))
+(type (: FakeFs
+         #:opaque
+         (Record (: entries (Map string FakeEntry) #:mutable)
+                 (: modified (Map string long) #:mutable)
+                 (: clock long #:mutable))))
 
 ;; 2000-01-01T00:00:00Z, in Unix milliseconds.
 (: long)
@@ -221,7 +237,8 @@
 ;; What follows `prefix` in `s`, which starts with it.
 (: (-> string string string))
 (defun (after-prefix s prefix)
-  (let go ((c (string-cursor-start s)) (n (string-count prefix)))
+  (let go ((c (string-cursor-start s))
+           (n (string-count prefix)))
     (if (= n 0)
         (substring s c (string-cursor-end s))
         (go (string-cursor-next s c) (- n 1)))))
@@ -245,13 +262,16 @@
 ;; "" for the root, so that a child of the root is its own name.
 (: (-> string string))
 (defun (fake-prefix path)
-  (if (string-empty? path) "" (str path "/")))
+  (if (string-empty? path)
+      ""
+      (str path "/")))
 
 ;; Every directory above `path` gets an entry of its own, so that it outlives
 ;; its contents: emptying a directory does not delete it.
 (: (-> (Map string FakeEntry) string (Map string FakeEntry)))
 (defun (fake-with-ancestors m path)
-  (let loop ((m m) (dir (fake-parent path)))
+  (let loop ((m m)
+             (dir (fake-parent path)))
     (if (or (string-empty? dir) (map-has-key? m dir))
         m
         (loop (map-set m dir FakeDir) (fake-parent dir)))))
@@ -268,10 +288,12 @@
           (clock fake-epoch-ms)))
 
 (: (-> FakeFs (Map string FakeEntry)))
-(defun (fake-entries fs) (record-ref fs entries))
+(defun (fake-entries fs)
+  (record-ref fs entries))
 
 (: (-> FakeFs (Map string FakeEntry) void))
-(defun (fake-update! fs m) (record-set! fs (entries m)))
+(defun (fake-update! fs m)
+  (record-set! fs (entries m)))
 
 ;; Moves the clock one second on, and gives `path` the new time.
 (: (-> FakeFs string void))
@@ -288,10 +310,12 @@
   (record-set! fs (modified (map-set (record-ref fs modified) (fake-path path) ms))))
 
 (: (-> (Array byte) string))
-(defun (fake-bytes->text bytes) (.GetString (cast Encoding clr-utf8) bytes))
+(defun (fake-bytes->text bytes)
+  (.GetString (cast Encoding clr-utf8) bytes))
 
 (: (-> string (Array byte)))
-(defun (fake-text->bytes text) (.GetBytes (cast Encoding clr-utf8) text))
+(defun (fake-text->bytes text)
+  (.GetBytes (cast Encoding clr-utf8) text))
 
 ;; What a file entry holds. `None` for a directory.
 (: (-> FakeEntry (Option string)))
@@ -333,10 +357,10 @@
       (match (map-try-ref (fake-entries fs) path)
         ((Some FakeDir) (Some FsDirectory))
         ((Some _) (Some FsFile))
-        (None (if (map-any? (fun (k v) (string-starts-with? k (fake-prefix path)))
-                            (fake-entries fs))
-                  (Some FsDirectory)
-                  None)))))
+        (None
+         (if (map-any? (fun (k v) (string-starts-with? k (fake-prefix path))) (fake-entries fs))
+             (Some FsDirectory)
+             None)))))
 
 (: (-> FakeFs string (Option FsInfo)))
 (defun (fake-info fs path)
@@ -370,7 +394,8 @@
   s)
 
 (: (-> Exception (Result Exception %a)))
-(defun (fake-error e) (Err e))
+(defun (fake-error e)
+  (Err e))
 
 (: (-> string (Result Exception %a)))
 (defun (not-found path)
@@ -386,7 +411,8 @@
 
 (: (-> string (Result Exception %a)))
 (defun (access-denied path)
-  (fake-error (cast Exception (AccessDenied. #"the fake filesystem cannot do that to directory ${path}"))))
+  (fake-error (cast Exception
+                    (AccessDenied. #"the fake filesystem cannot do that to directory ${path}"))))
 
 ;; --- The handlers --------------------------------------------------------------
 
@@ -396,10 +422,14 @@
     (def path (fake-path (path->string/lossy raw)))
     (match (fake-kind fs path)
       ((Some FsDirectory) (access-denied path))
-      ((Some _) (match (fake-bytes-at fs path)
-                  ((Some bytes) (Ok (cast ClrStream (fake-memory-stream bytes))))
-                  (None (not-found path))))
-      (None (if (fake-dir? fs (fake-parent path)) (not-found path) (no-directory path))))))
+      ((Some _)
+       (match (fake-bytes-at fs path)
+         ((Some bytes) (Ok (cast ClrStream (fake-memory-stream bytes))))
+         (None (not-found path))))
+      (None
+       (if (fake-dir? fs (fake-parent path))
+           (not-found path)
+           (no-directory path))))))
 
 ;; `Append` starts the new stream with what the path held.
 (: (-> FakeFs (-> Path WriteMode (Result Exception ClrStream))))
@@ -414,11 +444,13 @@
          ((Tuple _ (Some FsDirectory)) (access-denied path))
          ((Tuple CreateNew (Some FsFile)) (io-error #"the fake filesystem already has ${path}"))
          (_
-          (def s (match (Tuple mode (fake-bytes-at fs path))
-                   ((Tuple Append (Some bytes)) (let ((m (fake-memory-stream bytes)))
-                                                 (stream-position! (cast ClrStream m) (.-Length m))
-                                                 m))
-                   (_ (MemoryStream.))))
+          (def s
+            (match (Tuple mode (fake-bytes-at fs path))
+              ((Tuple Append (Some bytes))
+               (let ((m (fake-memory-stream bytes)))
+                 (stream-position! (cast ClrStream m) (.-Length m))
+                 m))
+              (_ (MemoryStream.))))
           (fake-update! fs (map-set (fake-entries fs) path (FakeWritten s)))
           (fake-stamp! fs path)
           (Ok (cast ClrStream s))))))))
@@ -435,19 +467,22 @@
     (def prefix (fake-prefix path))
     (if (not (fake-dir? fs path))
         (no-directory path)
-        (let ((children (map-fold (fun (k v found)
-                                    (if (and (string-starts-with? k prefix) (not (= k path)))
-                                        (let* ((rest (after-prefix k prefix))
-                                               (child (match (string-search rest "/")
-                                                        ((Some at) (substring rest (string-cursor-start rest) at))
-                                                        (None rest))))
-                                          (map-set found (str prefix child) child))
-                                        found))
-                                  (map-empty)
-                                  (fake-entries fs))))
+        (let ((children (map-fold
+                         (fun (k v found)
+                           (if (and (string-starts-with? k prefix) (not (= k path)))
+                               (let* ((rest (after-prefix k prefix))
+                                      (child (match (string-search rest "/")
+                                               ((Some at)
+                                                (substring rest (string-cursor-start rest) at))
+                                               (None rest))))
+                                 (map-set found (str prefix child) child))
+                               found))
+                         (map-empty)
+                         (fake-entries fs))))
           (Ok (list->vec (loop (:for whole (list-sort (->list (map-keys children))))
                                (:acc (listing (FsEntry (entry-path (as-path whole))
-                                                       (entry-name (string->bytestring (map-ref children whole)))
+                                                       (entry-name (string->bytestring
+                                                                    (map-ref children whole)))
                                                        (entry-kind (match (fake-kind fs whole)
                                                                      ((Some k) k)
                                                                      (None FsFile)))))))))))))
@@ -460,9 +495,10 @@
     (match (fake-kind fs path)
       ((Some FsDirectory) (Ok unit))
       ((Some _) (io-error #"the fake filesystem has a file at ${path}"))
-      (None (fake-update! fs (map-set (fake-with-ancestors (fake-entries fs) path) path FakeDir))
-            (fake-stamp! fs path)
-            (Ok unit)))))
+      (None
+       (fake-update! fs (map-set (fake-with-ancestors (fake-entries fs) path) path FakeDir))
+       (fake-stamp! fs path)
+       (Ok unit)))))
 
 ;; A missing file is not an error, as with `File.Delete`.
 (: (-> FakeFs (-> Path (Result Exception Unit))))
@@ -471,9 +507,10 @@
     (def path (fake-path (path->string/lossy raw)))
     (match (fake-kind fs path)
       ((Some FsDirectory) (access-denied path))
-      ((Some _) (fake-update! fs (map-remove (fake-entries fs) path))
-                (fake-forget-time! fs path)
-                (Ok unit))
+      ((Some _)
+       (fake-update! fs (map-remove (fake-entries fs) path))
+       (fake-forget-time! fs path)
+       (Ok unit))
       (None (Ok unit)))))
 
 (: (-> FakeFs (-> Path (Result Exception Unit))))
@@ -488,9 +525,10 @@
          ((string-empty? path) (io-error "the fake filesystem's root cannot be deleted"))
          ((map-any? (fun (k v) (string-starts-with? k prefix)) (fake-entries fs))
           (io-error #"the fake directory ${path} is not empty"))
-         (else (fake-update! fs (map-remove (fake-entries fs) path))
-               (fake-forget-time! fs path)
-               (Ok unit))))
+         (else
+          (fake-update! fs (map-remove (fake-entries fs) path))
+          (fake-forget-time! fs path)
+          (Ok unit))))
       ((Some _) (io-error #"the fake filesystem has a file, not a directory, at ${path}")))))
 
 ;; `m` with `from`, and everything below it, renamed to `to`. Generic, because
@@ -517,9 +555,10 @@
     (def to (fake-path (path->string/lossy raw-to)))
     (def from-kind (fake-kind fs from))
     (def to-kind (fake-kind fs to))
-    (def replacing (match (Tuple mode from-kind to-kind)
-                     ((Tuple MoveReplace (Some FsFile) (Some FsFile)) #t)
-                     (_ #f)))
+    (def replacing
+      (match (Tuple mode from-kind to-kind)
+        ((Tuple MoveReplace (Some FsFile) (Some FsFile)) #t)
+        (_ #f)))
     (cond
       ((none? from-kind) (not-found from))
       ((and (some? to-kind) (not replacing)) (io-error #"the fake filesystem already has ${to}"))
@@ -548,7 +587,8 @@
 ;; declares. Any macro that writes a `with-handler` has to do this.
 
 (: (-> (-> Symbol Syntax) string Syntax))
-(defun (fake-op inject name) (inject (string->symbol name)))
+(defun (fake-op inject name)
+  (inject (string->symbol name)))
 
 ;; `(with-fake-fs-of fs body ...)`: install `fs` for the body.
 (def/macro (with-fake-fs-of form inject compare)
@@ -563,13 +603,19 @@
                         (,(fake-op inject "fs-delete-file") (fake-fs-delete-file the-fs))
                         (,(fake-op inject "fs-delete-directory") (fake-fs-delete-directory the-fs))
                         (,(fake-op inject "fs-move") (fake-fs-move the-fs)))
-           ,first ,@body)))
-    (bad (syntax-error bad "with-fake-fs-of takes a FakeFs and a body: (with-fake-fs-of fs body ...)"))))
+           ,first
+           ,@body)))
+    (bad
+     (syntax-error bad "with-fake-fs-of takes a FakeFs and a body: (with-fake-fs-of fs body ...)"))))
 
 ;; `(with-fake-fs ((path contents) ...) body ...)`: a fresh one, seeded.
 (def/macro (with-fake-fs form inject compare)
   (syntax-match form
     ((_ ((path text) ...) first body ...)
      #'(with-fake-fs-of (fake-fs (list ,@{listing #'(Tuple ,p ,t) (:for p path) (:for t text)}))
-         ,first ,@body))
-    (bad (syntax-error bad "with-fake-fs takes a list of (path contents) pairs and a body: (with-fake-fs ((\"a.txt\" \"hello\")) body ...)"))))
+         ,first
+         ,@body))
+    (bad
+     (syntax-error
+      bad
+      "with-fake-fs takes a list of (path contents) pairs and a body: (with-fake-fs ((\"a.txt\" \"hello\")) body ...)"))))

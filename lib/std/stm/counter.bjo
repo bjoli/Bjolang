@@ -27,30 +27,30 @@
 
 (:doc #:file "counter.bjodoc")
 
-(export
-  TCounter
-  make-tcounter
-  tcounter-add! tcounter-sub! tcounter-ref tcounter-set!)
+(export TCounter make-tcounter tcounter-add! tcounter-sub! tcounter-ref tcounter-set!)
 
 (import/extern
   (processor-id    (: System.Threading.Thread.GetCurrentProcessorId (-> int)))
   (processor-count (: System.Environment.ProcessorCount int #:get)))
 
-(type (: (TCounter %a) #:opaque
-         (Record (: stripes (Vec (Loc %a))))))
+(type (: (TCounter %a) #:opaque (Record (: stripes (Vec (Loc %a))))))
 
 ;; One stripe for each CPU, rounded up to a power of two, so that the stripe of
 ;; a CPU is a mask of its id.
 (: (-> int))
 (defun (stripe-count)
   (let lp ((n 1))
-    (if (>= n processor-count) n (lp (* n 2)))))
+    (if (>= n processor-count)
+        n
+        (lp (* n 2)))))
 
 (: (-> %a (TCounter %a)) (where (Num %a)))
 (defun (make-tcounter initial)
   (def zero (- initial initial))
   (TCounter (stripes (loop (:for i (range 0 (stripe-count)))
-                           (:acc v (vecing (make-loc (if (= i 0) initial zero))))))))
+                           (:acc v (vecing (make-loc (if (= i 0)
+                                                         initial
+                                                         zero))))))))
 
 (: (-> (TCounter %a) (Loc %a)))
 (defun (own-stripe c)
@@ -69,13 +69,16 @@
 (defun (tcounter-ref tx c)
   (def stripes (record-ref c stripes))
   (loop (:for i (range 1 (vec-length stripes)))
-        (:acc sum (folding (tx-ref tx (vec-ref stripes 0))
-                           (+ sum (tx-ref tx (vec-ref stripes i)))))
-        => sum))
+        (:acc sum (folding (tx-ref tx (vec-ref stripes 0)) (+ sum (tx-ref tx (vec-ref stripes i)))))
+    => sum))
 
 (: (-> Tx (TCounter %a) %a void) (where (Num %a)))
 (defun (tcounter-set! tx c value)
   (def stripes (record-ref c stripes))
   (def zero (- value value))
   (loop (:for i (range 0 (vec-length stripes)))
-        (:do (tx-set! tx (vec-ref stripes i) (if (= i 0) value zero)))))
+        (:do (tx-set! tx
+                      (vec-ref stripes i)
+                      (if (= i 0)
+                          value
+                          zero)))))

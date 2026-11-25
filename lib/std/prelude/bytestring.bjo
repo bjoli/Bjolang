@@ -84,7 +84,10 @@
   (clr-utf-8?       (: System.Text.Unicode.Utf8.IsValid (-> (RoSpan byte) bool)))
   (clr-count        (: System.MemoryExtensions.Count (-> (RoSpan byte) byte int))))
 
-(type (: ByteString #:opaque (Struct (: bytes (Array byte)) (: start int) (: end int))))
+(type (: ByteString #:opaque
+         (Struct (: bytes (Array byte))
+                 (: start int)
+                 (: end int))))
 
 ;; The order in which a ByteStringBuilder writes the bytes of a number.
 (type (: ByteOrder (Union LittleEndian BigEndian)))
@@ -125,25 +128,31 @@
 
 ;; A byte string that owns `a`, which nothing else may write to.
 (: (-> (Array byte) ByteString))
-(defun (adopt a) (ByteString (bytes a) (start 0) (end (array-length a))))
+(defun (adopt a)
+  (ByteString (bytes a) (start 0) (end (array-length a))))
 
 (: (-> (RoSpan byte) ByteString))
-(defun (copy-of s) (adopt (ro-span->array s)))
+(defun (copy-of s)
+  (adopt (ro-span->array s)))
 
 ;; The byte at absolute index `i` of the array, as an int.
 (: (-> (Array byte) int int) #:inline)
-(defun (byte-at a i) (cast int (array-ref a i)))
+(defun (byte-at a i)
+  (cast int (array-ref a i)))
 
 ;; Raises unless `from` and `to` are offsets of `b` with `from` <= `to`.
 (: (-> string ByteString int int void))
 (defun (check-range! who b from to)
   (unless (and (<= 0 from) (<= from to) (<= to (bytestring-length b)))
-    (out-of-range who #"the range ${from} to ${to} is not inside a byte string of length ${(bytestring-length b)}")))
+    (out-of-range
+     who
+     #"the range ${from} to ${to} is not inside a byte string of length ${(bytestring-length b)}")))
 
 (: (-> string ByteString int void))
 (defun (check-index! who b i)
   (unless (and (<= 0 i) (< i (bytestring-length b)))
-    (out-of-range who #"the offset ${i} is not inside a byte string of length ${(bytestring-length b)}")))
+    (out-of-range who
+                  #"the offset ${i} is not inside a byte string of length ${(bytestring-length b)}")))
 
 ;; ---------------------------------------------------------------------------
 ;; Making one
@@ -153,12 +162,15 @@
 (def bytestring-empty (ByteString (bytes (make-array 0)) (start 0) (end 0)))
 
 (: (-> #:rest byte ByteString))
-(defun (bytestring #:rest bs) (copy-of (array->ro-span bs)))
+(defun (bytestring #:rest bs)
+  (copy-of (array->ro-span bs)))
 
 (: (-> (Array byte) (#:start int) (#:end int) ByteString))
 (defun (bytes->bytestring a #:start 0 #:end (array-length a))
   (unless (and (<= 0 start) (<= start end) (<= end (array-length a)))
-    (out-of-range "bytes->bytestring" #"the range ${start} to ${end} is not inside an array of length ${(array-length a)}"))
+    (out-of-range
+     "bytes->bytestring"
+     #"the range ${start} to ${end} is not inside an array of length ${(array-length a)}"))
   (copy-of (array->ro-span a #:from start #:to end)))
 
 ;; `string->bytes` returns a new array, so it is not copied again.
@@ -171,7 +183,8 @@
 ;; ---------------------------------------------------------------------------
 
 (: (-> ByteString (Array byte)))
-(defun (bytestring->bytes b) (ro-span->array (span-of b)))
+(defun (bytestring->bytes b)
+  (ro-span->array (span-of b)))
 
 ;; An empty byte string can have no array, and `bytes->string` needs one.
 ;; The offset of an error counts from the start of the byte string.
@@ -179,7 +192,9 @@
 (defun (bytestring->string b #:encoding clr-utf-8)
   (if (bytestring-empty? b)
       (Ok "")
-      (match (bytes->string (struct-ref b bytes) #:start (struct-ref b start) #:end (struct-ref b end)
+      (match (bytes->string (struct-ref b bytes)
+                            #:start (struct-ref b start)
+                            #:end (struct-ref b end)
                             #:encoding encoding)
         ((Ok s) (Ok s))
         ((Err e) (Err (record-set e (offset (- (record-ref e offset) (struct-ref b start)))))))))
@@ -188,15 +203,21 @@
 (defun (bytestring->string/lossy b #:encoding clr-utf-8 #:replace #\xFFFD)
   (if (bytestring-empty? b)
       ""
-      (bytes->string/lossy (struct-ref b bytes) #:start (struct-ref b start) #:end (struct-ref b end)
-                           #:encoding encoding #:replace replace)))
+      (bytes->string/lossy (struct-ref b bytes)
+                           #:start (struct-ref b start)
+                           #:end (struct-ref b end)
+                           #:encoding encoding
+                           #:replace replace)))
 
 (: (-> ByteString bool))
-(defun (bytestring-utf-8? b) (clr-utf-8? (span-of b)))
+(defun (bytestring-utf-8? b)
+  (clr-utf-8? (span-of b)))
 
 (: (-> ByteString int))
 (defun (bytestring-utf-8-valid-end b)
-  (if (bytestring-utf-8? b) (bytestring-length b) (valid-end-by-steps b)))
+  (if (bytestring-utf-8? b)
+      (bytestring-length b)
+      (valid-end-by-steps b)))
 
 ;; The parts from the start, until one is not UTF-8.
 (: (-> ByteString int))
@@ -209,17 +230,21 @@
       ((>= i e) (- e s))
       (else
        (def step (decode-at a i e))
-       (if (< (struct-ref step code) 0) (- i s) (go (+ i (struct-ref step size))))))))
+       (if (< (struct-ref step code) 0)
+           (- i s)
+           (go (+ i (struct-ref step size))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Reading
 ;; ---------------------------------------------------------------------------
 
 (: (-> ByteString int))
-(defun (bytestring-length b) (- (struct-ref b end) (struct-ref b start)))
+(defun (bytestring-length b)
+  (- (struct-ref b end) (struct-ref b start)))
 
 (: (-> ByteString bool))
-(defun (bytestring-empty? b) (= (struct-ref b end) (struct-ref b start)))
+(defun (bytestring-empty? b)
+  (= (struct-ref b end) (struct-ref b start)))
 
 (: (-> ByteString int byte))
 (defun (bytestring-ref b i)
@@ -233,7 +258,8 @@
   (ByteString (bytes (struct-ref b bytes)) (start (+ s from)) (end (+ s to))))
 
 (: (-> ByteString ByteString))
-(defun (bytestring-copy b) (copy-of (span-of b)))
+(defun (bytestring-copy b)
+  (copy-of (span-of b)))
 
 ;; ---------------------------------------------------------------------------
 ;; UTF-8
@@ -241,10 +267,12 @@
 
 ;; One part: `size` bytes, 1 to 4, and the scalar value it encodes, or -1
 ;; when it is not UTF-8.
-(type (: Step (Struct (: size int) (: code int))))
+(type (: Step (Struct (: size int)
+                      (: code int))))
 
 (: (-> int Step) #:inline)
-(defun (bad size) (Step (size size) (code -1)))
+(defun (bad size)
+  (Step (size size) (code -1)))
 
 ;; Whether the array has a byte from `lo` to `hi` at `i`, before `e`.
 (: (-> (Array byte) int int int int bool) #:inline)
@@ -254,7 +282,8 @@
          (and (>= x lo) (<= x hi)))))
 
 (: (-> (Array byte) int int) #:inline)
-(defun (trail a i) (bitwise-and (byte-at a i) 0x3F))
+(defun (trail a i)
+  (bitwise-and (byte-at a i) 0x3F))
 
 ;; The part that starts at absolute index `i`, before `e`.
 ;;
@@ -271,27 +300,41 @@
          (Step (size 2) (code (bitwise-ior (shift-left (bitwise-and b0 0x1F) 6) (trail a (+ i 1)))))
          (bad 1)))
     ((and (>= b0 0xE0) (<= b0 0xEF))
-     (def lo (if (= b0 0xE0) 0xA0 0x80))
-     (def hi (if (= b0 0xED) 0x9F 0xBF))
+     (def lo
+       (if (= b0 0xE0)
+           0xA0
+           0x80))
+     (def hi
+       (if (= b0 0xED)
+           0x9F
+           0xBF))
      (cond
        ((not (byte-in? a (+ i 1) e lo hi)) (bad 1))
        ((not (byte-in? a (+ i 2) e 0x80 0xBF)) (bad 2))
        (else
         (Step (size 3)
               (code (bitwise-ior (shift-left (bitwise-and b0 0x0F) 12)
-                                 (bitwise-ior (shift-left (trail a (+ i 1)) 6) (trail a (+ i 2)))))))))
+                                 (bitwise-ior (shift-left (trail a (+ i 1)) 6)
+                                              (trail a (+ i 2)))))))))
     ((and (>= b0 0xF0) (<= b0 0xF4))
-     (def lo (if (= b0 0xF0) 0x90 0x80))
-     (def hi (if (= b0 0xF4) 0x8F 0xBF))
+     (def lo
+       (if (= b0 0xF0)
+           0x90
+           0x80))
+     (def hi
+       (if (= b0 0xF4)
+           0x8F
+           0xBF))
      (cond
        ((not (byte-in? a (+ i 1) e lo hi)) (bad 1))
        ((not (byte-in? a (+ i 2) e 0x80 0xBF)) (bad 2))
        ((not (byte-in? a (+ i 3) e 0x80 0xBF)) (bad 3))
        (else
         (Step (size 4)
-              (code (bitwise-ior
-                      (bitwise-ior (shift-left (bitwise-and b0 0x07) 18) (shift-left (trail a (+ i 1)) 12))
-                      (bitwise-ior (shift-left (trail a (+ i 2)) 6) (trail a (+ i 3)))))))))
+              (code (bitwise-ior (bitwise-ior (shift-left (bitwise-and b0 0x07) 18)
+                                              (shift-left (trail a (+ i 1)) 12))
+                                 (bitwise-ior (shift-left (trail a (+ i 2)) 6)
+                                              (trail a (+ i 3)))))))))
     (else (bad 1))))
 
 (: (-> ByteString int Step))
@@ -302,7 +345,9 @@
 (defun (bytestring-utf-8-ref b i)
   (check-index! "bytestring-utf-8-ref" b i)
   (def code (struct-ref (step-at b i) code))
-  (if (< code 0) None (Some (int->char code))))
+  (if (< code 0)
+      None
+      (Some (int->char code))))
 
 (: (-> ByteString int int))
 (defun (bytestring-utf-8-next b i)
@@ -310,7 +355,8 @@
   (+ i (struct-ref (step-at b i) size)))
 
 (: (-> int bool))
-(defun (continuation? x) (= (bitwise-and x 0xC0) 0x80))
+(defun (continuation? x)
+  (= (bitwise-and x 0xC0) 0x80))
 
 ;; Every byte that is not a continuation byte starts a part, and a part has
 ;; at most 3 continuation bytes after its first. So the part before `i`
@@ -320,8 +366,9 @@
 (: (-> ByteString int int))
 (defun (bytestring-utf-8-prev b i)
   (unless (and (< 0 i) (<= i (bytestring-length b)))
-    (out-of-range "bytestring-utf-8-prev"
-                  #"the offset ${i} has no byte before it in a byte string of length ${(bytestring-length b)}"))
+    (out-of-range
+     "bytestring-utf-8-prev"
+     #"the offset ${i} has no byte before it in a byte string of length ${(bytestring-length b)}"))
   (def a (struct-ref b bytes))
   (def s (struct-ref b start))
   (def low (max 0 (- i 4)))
@@ -336,7 +383,9 @@
     ((Some j)
      (let forward ((p j))
        (def next (+ p (struct-ref (step-at b p) size)))
-       (if (>= next i) p (forward next))))))
+       (if (>= next i)
+           p
+           (forward next))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Iterating
@@ -346,15 +395,23 @@
 (impl (Iterable ByteString)
   (type %elem byte)
   (type %cursor int)
-  (defun (iterable-start b) (struct-ref b start))
-  (defun (iterable-done? b i) (>= i (struct-ref b end)))
-  (defun (iterable-current b i) (array-ref (struct-ref b bytes) i))
-  (defun (iterable-next b i) (+ i 1))
-  (defun (count b) (bytestring-length b)))
+  (defun (iterable-start b)
+    (struct-ref b start))
+  (defun (iterable-done? b i)
+    (>= i (struct-ref b end)))
+  (defun (iterable-current b i)
+    (array-ref (struct-ref b bytes) i))
+  (defun (iterable-next b i)
+    (+ i 1))
+  (defun (count b)
+    (bytestring-length b)))
 
 ;; The cursor of the two UTF-8 walks: the part at absolute index `at`, decoded
 ;; once, when the walk reaches it. At the end, `size` is 0.
-(type (: ByteStringPart #:opaque (Struct (: at int) (: size int) (: code int))))
+(type (: ByteStringPart #:opaque
+         (Struct (: at int)
+                 (: size int)
+                 (: code int))))
 
 (: (-> ByteString int ByteStringPart))
 (defun (part-at b i)
@@ -365,38 +422,51 @@
         (ByteStringPart (at i) (size (struct-ref step size)) (code (struct-ref step code))))))
 
 (: (-> ByteString ByteStringPart ByteStringPart))
-(defun (part-after b p) (part-at b (+ (struct-ref p at) (struct-ref p size))))
+(defun (part-after b p)
+  (part-at b (+ (struct-ref p at) (struct-ref p size))))
 
 (type (: ByteStringChars #:opaque (Struct (: of ByteString))))
 
 (: (-> ByteString ByteStringChars))
-(defun (in-bytestring-chars b) (ByteStringChars (of b)))
+(defun (in-bytestring-chars b)
+  (ByteStringChars (of b)))
 
 (impl (Iterable ByteStringChars)
   (type %elem char)
   (type %cursor ByteStringPart)
-  (defun (iterable-start w) (part-at (struct-ref w of) (struct-ref (struct-ref w of) start)))
-  (defun (iterable-done? w p) (= (struct-ref p size) 0))
+  (defun (iterable-start w)
+    (part-at (struct-ref w of) (struct-ref (struct-ref w of) start)))
+  (defun (iterable-done? w p)
+    (= (struct-ref p size) 0))
   (defun (iterable-current w p)
     (def code (struct-ref p code))
-    (if (< code 0) #\xFFFD (int->char code)))
-  (defun (iterable-next w p) (part-after (struct-ref w of) p)))
+    (if (< code 0)
+        #\xFFFD
+        (int->char code)))
+  (defun (iterable-next w p)
+    (part-after (struct-ref w of) p)))
 
 (type (: ByteStringUtf8 #:opaque (Struct (: of ByteString))))
 
 (: (-> ByteString ByteStringUtf8))
-(defun (in-bytestring-utf-8 b) (ByteStringUtf8 (of b)))
+(defun (in-bytestring-utf-8 b)
+  (ByteStringUtf8 (of b)))
 
 (impl (Iterable ByteStringUtf8)
   (type %elem (Tuple int (Option char)))
   (type %cursor ByteStringPart)
-  (defun (iterable-start w) (part-at (struct-ref w of) (struct-ref (struct-ref w of) start)))
-  (defun (iterable-done? w p) (= (struct-ref p size) 0))
+  (defun (iterable-start w)
+    (part-at (struct-ref w of) (struct-ref (struct-ref w of) start)))
+  (defun (iterable-done? w p)
+    (= (struct-ref p size) 0))
   (defun (iterable-current w p)
     (def code (struct-ref p code))
     (Tuple (- (struct-ref p at) (struct-ref (struct-ref w of) start))
-           (if (< code 0) None (Some (int->char code)))))
-  (defun (iterable-next w p) (part-after (struct-ref w of) p)))
+           (if (< code 0)
+               None
+               (Some (int->char code)))))
+  (defun (iterable-next w p)
+    (part-after (struct-ref w of) p)))
 
 ;; ---------------------------------------------------------------------------
 ;; Comparing
@@ -407,19 +477,25 @@
 (defun (hash-of b)
   (def a (struct-ref b bytes))
   (def e (struct-ref b end))
-  (let go ((i (struct-ref b start)) (h 2166136261u))
+  (let go ((i (struct-ref b start))
+           (h 2166136261u))
     (if (>= i e)
         (cast int h)
         (go (+ i 1) (* (bitwise-xor h (cast uint (array-ref a i))) 16777619u)))))
 
 (impl (Eq ByteString)
-  (defun (= a b) (clr-equal? (span-of a) (span-of b)))
-  (defun (eq-hash b) (hash-of b)))
+  (defun (= a b)
+    (clr-equal? (span-of a) (span-of b)))
+  (defun (eq-hash b)
+    (hash-of b)))
 
 (impl (Ord ByteString)
   (defun (compare a b)
     (def c (clr-compare (span-of a) (span-of b)))
-    (cond ((< c 0) -1) ((> c 0) 1) (else 0))))
+    (cond
+      ((< c 0) -1)
+      ((> c 0) 1)
+      (else 0))))
 
 ;; `#b"..."`: UTF-8 characters as they are, `\"`, `\\`, `\n`, `\t` and `\r`,
 ;; other control characters as `\u{H}`, and each byte of a part that is not
@@ -470,7 +546,8 @@
 
 ;; Shown as text, with U+FFFD for each part that is not UTF-8.
 (impl (Displayed ByteString)
-  (defun (display-into b sb) (stringbuilder-add-string! sb (bytestring->string/lossy b))))
+  (defun (display-into b sb)
+    (stringbuilder-add-string! sb (bytestring->string/lossy b))))
 
 ;; ---------------------------------------------------------------------------
 ;; Searching
@@ -478,7 +555,10 @@
 
 ;; -1 from a .NET search, or the offset from `from`.
 (: (-> int int (Option int)))
-(defun (found-at index from) (if (< index 0) None (Some (+ index from))))
+(defun (found-at index from)
+  (if (< index 0)
+      None
+      (Some (+ index from))))
 
 (: (-> ByteString ByteString (#:from int) (Option int)))
 (defun (bytestring-search b needle #:from 0)
@@ -501,13 +581,16 @@
   (found-at (clr-last-index-of-byte (ro-span-slice (span-of b) #:to before) x) 0))
 
 (: (-> ByteString ByteString bool))
-(defun (bytestring-contains? b needle) (some? (bytestring-search b needle)))
+(defun (bytestring-contains? b needle)
+  (some? (bytestring-search b needle)))
 
 (: (-> ByteString ByteString bool))
-(defun (bytestring-starts-with? b prefix) (clr-starts-with? (span-of b) (span-of prefix)))
+(defun (bytestring-starts-with? b prefix)
+  (clr-starts-with? (span-of b) (span-of prefix)))
 
 (: (-> ByteString ByteString bool))
-(defun (bytestring-ends-with? b suffix) (clr-ends-with? (span-of b) (span-of suffix)))
+(defun (bytestring-ends-with? b suffix)
+  (clr-ends-with? (span-of b) (span-of suffix)))
 
 ;; ---------------------------------------------------------------------------
 ;; Joining and splitting
@@ -516,7 +599,9 @@
 ;; One array of the total length, each part copied in turn.
 (: (-> (Vec ByteString) ByteString))
 (defun (bytestring-concat parts)
-  (def total (loop (:for p parts) (:acc n (summing (bytestring-length p)))))
+  (def total
+    (loop (:for p parts)
+          (:acc n (summing (bytestring-length p)))))
   (def (: out (Array byte)) (make-array total))
   (loop (:for p parts)
         (:with at 0 (+ at (bytestring-length p)))
@@ -525,11 +610,13 @@
   (adopt out))
 
 (: (-> ByteString ByteString ByteString))
-(defun (bytestring-append a b) (bytestring-concat [a b]))
+(defun (bytestring-append a b)
+  (bytestring-concat [a b]))
 
 (: (-> (Vec ByteString) ByteString ByteString))
 (defun (bytestring-join parts sep)
-  (let go ((i 0) (out []))
+  (let go ((i 0)
+           (out []))
     (cond
       ((>= i (vec-length parts)) (bytestring-concat out))
       ((= i 0) (go 1 (vec-add out (vec-ref parts 0))))
@@ -542,14 +629,16 @@
   (def n (bytestring-length b))
   (def seps (clr-count (span-of b) sep))
   (def (: fields (Array ByteString)) (make-array (+ seps 1)))
-  (let go ((k 0) (from 0))
-    (match (if (< k seps) (bytestring-search-byte b sep #:from from) None)
+  (let go ((k 0)
+           (from 0))
+    (match (if (< k seps)
+               (bytestring-search-byte b sep #:from from)
+               None)
       ((Some at)
        (array-set! fields k (bytestring-slice b from at))
        (go (+ k 1) (+ at 1)))
       (None (array-set! fields k (bytestring-slice b from n)))))
   (array->vec fields))
-
 
 ;; ---------------------------------------------------------------------------
 ;; Building
@@ -563,101 +652,136 @@
 
 (: (-> (#:order ByteOrder) ByteStringBuilder))
 (defun (bytestringbuilder-empty #:order LittleEndian)
-  (ByteStringBuilder. (match order (LittleEndian #f) (BigEndian #t))))
+  (ByteStringBuilder. (match order
+                        (LittleEndian #f)
+                        (BigEndian #t))))
 
 (: (-> ByteStringBuilder ByteOrder))
 (defun (bytestringbuilder-order b)
-  (if (clr-builder-big? b) BigEndian LittleEndian))
+  (if (clr-builder-big? b)
+      BigEndian
+      LittleEndian))
 
 (: (-> ByteStringBuilder int))
-(defun (bytestringbuilder-length b) (clr-builder-length b))
+(defun (bytestringbuilder-length b)
+  (clr-builder-length b))
 
 (: (-> ByteStringBuilder void))
-(defun (bytestringbuilder-clear! b) (clr-builder-clear b))
+(defun (bytestringbuilder-clear! b)
+  (clr-builder-clear b))
 
 (: (-> ByteStringBuilder byte void))
-(defun (bytestringbuilder-add-byte! b n) (clr-builder-add-byte b n))
+(defun (bytestringbuilder-add-byte! b n)
+  (clr-builder-add-byte b n))
 
 (: (-> ByteStringBuilder (Array byte) void))
-(defun (bytestringbuilder-add-bytes! b a) (clr-builder-add-span b (array->ro-span a)))
+(defun (bytestringbuilder-add-bytes! b a)
+  (clr-builder-add-span b (array->ro-span a)))
 
 (: (-> ByteStringBuilder ByteString void))
-(defun (bytestringbuilder-add-bytestring! b s) (clr-builder-add-span b (span-of s)))
+(defun (bytestringbuilder-add-bytestring! b s)
+  (clr-builder-add-span b (span-of s)))
 
 (: (-> ByteStringBuilder ByteString))
-(defun (bytestringbuilder->bytestring b) (adopt (clr-builder-array b)))
+(defun (bytestringbuilder->bytestring b)
+  (adopt (clr-builder-array b)))
 
 (: (-> ByteStringBuilder (Array byte)))
-(defun (bytestringbuilder->bytes b) (clr-builder-array b))
+(defun (bytestringbuilder->bytes b)
+  (clr-builder-array b))
 
 (: (-> ByteStringBuilder short void))
-(defun (bytestringbuilder-add-short! b n) (clr-builder-add-short b n (clr-builder-big? b)))
+(defun (bytestringbuilder-add-short! b n)
+  (clr-builder-add-short b n (clr-builder-big? b)))
 
 (: (-> ByteStringBuilder short void))
-(defun (bytestringbuilder-add-short-le! b n) (clr-builder-add-short b n #f))
+(defun (bytestringbuilder-add-short-le! b n)
+  (clr-builder-add-short b n #f))
 
 (: (-> ByteStringBuilder short void))
-(defun (bytestringbuilder-add-short-be! b n) (clr-builder-add-short b n #t))
+(defun (bytestringbuilder-add-short-be! b n)
+  (clr-builder-add-short b n #t))
 
 (: (-> ByteStringBuilder ushort void))
-(defun (bytestringbuilder-add-ushort! b n) (clr-builder-add-ushort b n (clr-builder-big? b)))
+(defun (bytestringbuilder-add-ushort! b n)
+  (clr-builder-add-ushort b n (clr-builder-big? b)))
 
 (: (-> ByteStringBuilder ushort void))
-(defun (bytestringbuilder-add-ushort-le! b n) (clr-builder-add-ushort b n #f))
+(defun (bytestringbuilder-add-ushort-le! b n)
+  (clr-builder-add-ushort b n #f))
 
 (: (-> ByteStringBuilder ushort void))
-(defun (bytestringbuilder-add-ushort-be! b n) (clr-builder-add-ushort b n #t))
+(defun (bytestringbuilder-add-ushort-be! b n)
+  (clr-builder-add-ushort b n #t))
 
 (: (-> ByteStringBuilder int void))
-(defun (bytestringbuilder-add-int! b n) (clr-builder-add-int b n (clr-builder-big? b)))
+(defun (bytestringbuilder-add-int! b n)
+  (clr-builder-add-int b n (clr-builder-big? b)))
 
 (: (-> ByteStringBuilder int void))
-(defun (bytestringbuilder-add-int-le! b n) (clr-builder-add-int b n #f))
+(defun (bytestringbuilder-add-int-le! b n)
+  (clr-builder-add-int b n #f))
 
 (: (-> ByteStringBuilder int void))
-(defun (bytestringbuilder-add-int-be! b n) (clr-builder-add-int b n #t))
+(defun (bytestringbuilder-add-int-be! b n)
+  (clr-builder-add-int b n #t))
 
 (: (-> ByteStringBuilder uint void))
-(defun (bytestringbuilder-add-uint! b n) (clr-builder-add-uint b n (clr-builder-big? b)))
+(defun (bytestringbuilder-add-uint! b n)
+  (clr-builder-add-uint b n (clr-builder-big? b)))
 
 (: (-> ByteStringBuilder uint void))
-(defun (bytestringbuilder-add-uint-le! b n) (clr-builder-add-uint b n #f))
+(defun (bytestringbuilder-add-uint-le! b n)
+  (clr-builder-add-uint b n #f))
 
 (: (-> ByteStringBuilder uint void))
-(defun (bytestringbuilder-add-uint-be! b n) (clr-builder-add-uint b n #t))
+(defun (bytestringbuilder-add-uint-be! b n)
+  (clr-builder-add-uint b n #t))
 
 (: (-> ByteStringBuilder long void))
-(defun (bytestringbuilder-add-long! b n) (clr-builder-add-long b n (clr-builder-big? b)))
+(defun (bytestringbuilder-add-long! b n)
+  (clr-builder-add-long b n (clr-builder-big? b)))
 
 (: (-> ByteStringBuilder long void))
-(defun (bytestringbuilder-add-long-le! b n) (clr-builder-add-long b n #f))
+(defun (bytestringbuilder-add-long-le! b n)
+  (clr-builder-add-long b n #f))
 
 (: (-> ByteStringBuilder long void))
-(defun (bytestringbuilder-add-long-be! b n) (clr-builder-add-long b n #t))
+(defun (bytestringbuilder-add-long-be! b n)
+  (clr-builder-add-long b n #t))
 
 (: (-> ByteStringBuilder ulong void))
-(defun (bytestringbuilder-add-ulong! b n) (clr-builder-add-ulong b n (clr-builder-big? b)))
+(defun (bytestringbuilder-add-ulong! b n)
+  (clr-builder-add-ulong b n (clr-builder-big? b)))
 
 (: (-> ByteStringBuilder ulong void))
-(defun (bytestringbuilder-add-ulong-le! b n) (clr-builder-add-ulong b n #f))
+(defun (bytestringbuilder-add-ulong-le! b n)
+  (clr-builder-add-ulong b n #f))
 
 (: (-> ByteStringBuilder ulong void))
-(defun (bytestringbuilder-add-ulong-be! b n) (clr-builder-add-ulong b n #t))
+(defun (bytestringbuilder-add-ulong-be! b n)
+  (clr-builder-add-ulong b n #t))
 
 (: (-> ByteStringBuilder float void))
-(defun (bytestringbuilder-add-float! b n) (clr-builder-add-float b n (clr-builder-big? b)))
+(defun (bytestringbuilder-add-float! b n)
+  (clr-builder-add-float b n (clr-builder-big? b)))
 
 (: (-> ByteStringBuilder float void))
-(defun (bytestringbuilder-add-float-le! b n) (clr-builder-add-float b n #f))
+(defun (bytestringbuilder-add-float-le! b n)
+  (clr-builder-add-float b n #f))
 
 (: (-> ByteStringBuilder float void))
-(defun (bytestringbuilder-add-float-be! b n) (clr-builder-add-float b n #t))
+(defun (bytestringbuilder-add-float-be! b n)
+  (clr-builder-add-float b n #t))
 
 (: (-> ByteStringBuilder double void))
-(defun (bytestringbuilder-add-double! b n) (clr-builder-add-double b n (clr-builder-big? b)))
+(defun (bytestringbuilder-add-double! b n)
+  (clr-builder-add-double b n (clr-builder-big? b)))
 
 (: (-> ByteStringBuilder double void))
-(defun (bytestringbuilder-add-double-le! b n) (clr-builder-add-double b n #f))
+(defun (bytestringbuilder-add-double-le! b n)
+  (clr-builder-add-double b n #f))
 
 (: (-> ByteStringBuilder double void))
-(defun (bytestringbuilder-add-double-be! b n) (clr-builder-add-double b n #t))
+(defun (bytestringbuilder-add-double-be! b n)
+  (clr-builder-add-double b n #t))

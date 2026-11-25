@@ -82,13 +82,17 @@
 (type (: XmlName #:opaque (Struct (: v XName))))
 
 (impl (Eq XmlName)
-  (defun (= a b) (eq? (struct-ref a v) (struct-ref b v)))
-  (defun (eq-hash n) (clr-xname-hash (struct-ref n v))))
+  (defun (= a b)
+    (eq? (struct-ref a v) (struct-ref b v)))
+  (defun (eq-hash n)
+    (clr-xname-hash (struct-ref n v))))
 
 ;; Clark notation: {uri}local, or local alone in no namespace.
 (impl (Written XmlName)
-  (defun (written n) (clr-xname-clark (struct-ref n v)))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (clr-xname-clark (struct-ref n v)))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (: string)
 (def xml-namespace "http://www.w3.org/XML/1998/namespace")
@@ -104,18 +108,21 @@
     ((Err e) (argument-error (str "xml-name: " (.-Message e))))))
 
 (: (-> XmlName string))
-(defun (xml-name-local n) (clr-xname-local (struct-ref n v)))
+(defun (xml-name-local n)
+  (clr-xname-local (struct-ref n v)))
 
 ;; "" when the name is in no namespace.
 (: (-> XmlName string))
-(defun (xml-name-ns n) (clr-xname-ns (struct-ref n v)))
+(defun (xml-name-ns n)
+  (clr-xname-ns (struct-ref n v)))
 
 ;; ===========================================================================
 ;; Small types
 ;; ===========================================================================
 
 ;; As .NET reports it: 1-based, and the column of the name after the '<'.
-(type (: XmlPos (Struct (: line int) (: column int))))
+(type (: XmlPos (Struct (: line int)
+                        (: column int))))
 
 ;; In document order.
 (type (: XmlAttrs (Alias (List (Tuple XmlName string)))))
@@ -133,10 +140,12 @@
 ;; The case names are long because an importer receives them along with the
 ;; type, although only this module may use them.
 (type-rec
-  (: Node #:opaque (Union (: XmlNodeElement XmlName XmlAttrs (List Node) (Option XmlPos))
-                          (: XmlNodeText string)
-                          (: XmlNodeComment string)
-                          (: XmlNodePI string string))))
+  (: Node
+     #:opaque
+     (Union (: XmlNodeElement XmlName XmlAttrs (List Node) (Option XmlPos))
+            (: XmlNodeText string)
+            (: XmlNodeComment string)
+            (: XmlNodePI string string))))
 
 (: (-> Node string))
 (defun (variant-name n)
@@ -167,14 +176,18 @@
   (let loop ((xs attrs))
     (match xs
       (Nil None)
-      ((Cons (Tuple n value) rest) (if (= n name) (Some value) (loop rest))))))
+      ((Cons (Tuple n value) rest)
+       (if (= n name)
+           (Some value)
+           (loop rest))))))
 
 (: (-> XmlName void))
 (defun (check-attr-name name)
   (when (namespace-declaration? name)
-    (argument-error
-      (str "xml-element: " (displayed name) " is a namespace declaration, which is not an attribute. "
-           "The writer declares namespaces itself."))))
+    (argument-error (str "xml-element: "
+                         (displayed name)
+                         " is a namespace declaration, which is not an attribute. "
+                         "The writer declares namespaces itself."))))
 
 (: (-> XmlName %a))
 (defun (duplicate-attr name)
@@ -187,7 +200,8 @@
       (Nil unit)
       ((Cons (Tuple name _) rest)
        (check-attr-name name)
-       (when (some? (attr-value name rest)) (duplicate-attr name))
+       (when (some? (attr-value name rest))
+         (duplicate-attr name))
        (loop rest)))))
 
 (: (-> XmlAttrs void))
@@ -198,7 +212,8 @@
       (Nil unit)
       ((Cons (Tuple name _) rest)
        (check-attr-name name)
-       (when (transientmap-contains? seen name) (duplicate-attr name))
+       (when (transientmap-contains? seen name)
+         (duplicate-attr name))
        (transientmap-set! seen name #t)
        (loop rest)))))
 
@@ -214,11 +229,14 @@
 ;; is kept as it is. The parser's always do.
 (: (-> (List Node) bool))
 (defun (children-normal? kids)
-  (let loop ((xs kids) (after-text #f))
+  (let loop ((xs kids)
+             (after-text #f))
     (match xs
       (Nil #t)
       ((Cons (XmlNodeText s) rest)
-       (if (or after-text (string-empty? s)) #f (loop rest #t)))
+       (if (or after-text (string-empty? s))
+           #f
+           (loop rest #t)))
       ((Cons _ rest) (loop rest #f)))))
 
 (: (-> (List Node) (List Node)))
@@ -249,33 +267,53 @@
 (: (-> XmlName XmlAttrs (List Node) (#:pos (Option XmlPos)) Node))
 (defun (xml-element name attrs children #:pos None)
   (check-attrs attrs)
-  (XmlNodeElement name attrs (if (children-normal? children) children (normalize-children children)) pos))
+  (XmlNodeElement name
+                  attrs
+                  (if (children-normal? children)
+                      children
+                      (normalize-children children))
+                  pos))
 
 ;; Empty text is allowed on its own; an element drops it.
 (: (-> string Node))
-(defun (xml-text s) (XmlNodeText s))
+(defun (xml-text s)
+  (XmlNodeText s))
 
 ;; Not checked here: a comment with "--" in it is refused when it is written.
 (: (-> string Node))
-(defun (xml-comment s) (XmlNodeComment s))
+(defun (xml-comment s)
+  (XmlNodeComment s))
 
 ;; Target, then data. Checked when it is written, as a comment is.
 (: (-> string string Node))
-(defun (xml-pi target data) (XmlNodePI target data))
+(defun (xml-pi target data)
+  (XmlNodePI target data))
 
 ;; ---- Views ----------------------------------------------------------------
 
 (: (-> Node bool))
-(defun (element? n) (match n ((XmlNodeElement _ _ _ _) #t) (_ #f)))
+(defun (element? n)
+  (match n
+    ((XmlNodeElement _ _ _ _) #t)
+    (_ #f)))
 
 (: (-> Node bool))
-(defun (text? n) (match n ((XmlNodeText _) #t) (_ #f)))
+(defun (text? n)
+  (match n
+    ((XmlNodeText _) #t)
+    (_ #f)))
 
 (: (-> Node bool))
-(defun (comment? n) (match n ((XmlNodeComment _) #t) (_ #f)))
+(defun (comment? n)
+  (match n
+    ((XmlNodeComment _) #t)
+    (_ #f)))
 
 (: (-> Node bool))
-(defun (pi? n) (match n ((XmlNodePI _ _) #t) (_ #f)))
+(defun (pi? n)
+  (match n
+    ((XmlNodePI _ _) #t)
+    (_ #f)))
 
 (: (-> Node XmlName))
 (defun (element-name n)
@@ -338,13 +376,8 @@
   (argument-error (str "node-case: no clause for " (variant-name n) ", and no #:else")))
 
 ;; #:else is declared first because the other defaults call it.
-(: (-> Node
-       (#:else (-> Node %r))
-       (#:element (-> XmlName XmlAttrs (List Node) (Option XmlPos) %r))
-       (#:text (-> string %r))
-       (#:comment (-> string %r))
-       (#:pi (-> string string %r))
-       %r))
+(: (-> Node (#:else (-> Node %r)) (#:element (-> XmlName XmlAttrs (List Node) (Option XmlPos) %r))
+       (#:text (-> string %r)) (#:comment (-> string %r)) (#:pi (-> string string %r)) %r))
 (defun (node-case n
                   #:else (fun (m) (no-clause m))
                   #:element (fun (name attrs kids pos) (else n))
@@ -388,16 +421,17 @@
          ((Cons (Cons (XmlNodeText s) more) rest)
           (stringbuilder-add-string! sb s)
           (loop (Cons more rest)))
-         ((Cons (Cons (XmlNodeElement _ _ inner _) more) rest)
-          (loop (Cons inner (Cons more rest))))
-         ((Cons (Cons _ more) rest)
-          (loop (Cons more rest))))))
+         ((Cons (Cons (XmlNodeElement _ _ inner _) more) rest) (loop (Cons inner (Cons more rest))))
+         ((Cons (Cons _ more) rest) (loop (Cons more rest))))))
     (_ "")))
 
 ;; Every node below, in document order, not the node itself.
 (: (-> Node (Seq Node)))
 (defun (descendants n)
-  (def top (match n ((XmlNodeElement _ _ kids _) kids) (_ Nil)))
+  (def top
+    (match n
+      ((XmlNodeElement _ _ kids _) kids)
+      (_ Nil)))
   (seq
     (let loop ((stack (list top)))
       (match stack
@@ -414,11 +448,14 @@
 ;; Pair by pair, which is the usual case when the lists are equal at all.
 (: (-> XmlAttrs XmlAttrs bool))
 (defun (attrs-in-order=? xs ys)
-  (let loop ((xs xs) (ys ys))
+  (let loop ((xs xs)
+             (ys ys))
     (match (Tuple xs ys)
       ((Tuple Nil Nil) #t)
       ((Tuple (Cons (Tuple n1 v1) r1) (Cons (Tuple n2 v2) r2))
-       (if (and (= n1 n2) (= v1 v2)) (loop r1 r2) #f))
+       (if (and (= n1 n2) (= v1 v2))
+           (loop r1 r2)
+           #f))
       (_ #f))))
 
 ;; Both lists are free of duplicates, so the same length and every attribute
@@ -429,7 +466,9 @@
     (match xs
       (Nil #t)
       ((Cons (Tuple name value) rest)
-       (if (= (attr-value name ys) (Some value)) (loop rest) #f)))))
+       (if (= (attr-value name ys) (Some value))
+           (loop rest)
+           #f)))))
 
 (: (-> XmlAttrs XmlAttrs bool))
 (defun (attrs-mapped? xs ys)
@@ -444,7 +483,9 @@
     (match xs
       (Nil #t)
       ((Cons (Tuple name value) rest)
-       (if (= (transientmap-try-ref m name) (Some value)) (loop rest) #f)))))
+       (if (= (transientmap-try-ref m name) (Some value))
+           (loop rest)
+           #f)))))
 
 ;; In any order, as XML has them.
 (: (-> XmlAttrs XmlAttrs bool))
@@ -471,18 +512,26 @@
               (loop (Cons (Tuple k1 k2) (Cons (Tuple xs ys) rest)))
               #f))
          ((Tuple (XmlNodeText s1) (XmlNodeText s2))
-          (if (= s1 s2) (loop (Cons (Tuple xs ys) rest)) #f))
+          (if (= s1 s2)
+              (loop (Cons (Tuple xs ys) rest))
+              #f))
          ((Tuple (XmlNodeComment s1) (XmlNodeComment s2))
-          (if (= s1 s2) (loop (Cons (Tuple xs ys) rest)) #f))
+          (if (= s1 s2)
+              (loop (Cons (Tuple xs ys) rest))
+              #f))
          ((Tuple (XmlNodePI t1 d1) (XmlNodePI t2 d2))
-          (if (and (= t1 t2) (= d1 d2)) (loop (Cons (Tuple xs ys) rest)) #f))
+          (if (and (= t1 t2) (= d1 d2))
+              (loop (Cons (Tuple xs ys) rest))
+              #f))
          (_ #f)))
       (_ #f))))
 
 ;; Summed, so that the order of the attributes does not change it.
 (: (-> XmlAttrs int))
 (defun (attrs-hash attrs)
-  (list-foldl (fun (a h) (def (Tuple name value) a) (+ h (hash-combine (eq-hash name) (eq-hash value))))
+  (list-foldl (fun (a h)
+                (def (Tuple name value) a)
+                (+ h (hash-combine (eq-hash name) (eq-hash value))))
               0
               attrs))
 
@@ -490,7 +539,8 @@
 ;; of each child list is hashed too, so that nesting is part of it.
 (: (-> Node int))
 (defun (node-hash n)
-  (let loop ((stack (list (list n))) (h 17))
+  (let loop ((stack (list (list n)))
+             (h 17))
     (match stack
       (Nil h)
       ((Cons Nil rest) (loop rest (hash-combine h 1)))
@@ -503,61 +553,74 @@
          ((XmlNodeComment s) (loop (Cons more rest) (hash-combine (hash-combine h 4) (eq-hash s))))
          ((XmlNodePI target data)
           (loop (Cons more rest)
-                (hash-combine (hash-combine (hash-combine h 5) (eq-hash target)) (eq-hash data)))))))))
+                (hash-combine (hash-combine (hash-combine h 5) (eq-hash target))
+                              (eq-hash data)))))))))
 
 ;; Without this, = on a Node would be the C# record's own Equals, which
 ;; recurses per nesting level and compares positions.
 (impl (Eq Node)
-  (defun (= a b) (node=? a b))
-  (defun (eq-hash n) (node-hash n)))
+  (defun (= a b)
+    (node=? a b))
+  (defun (eq-hash n)
+    (node-hash n)))
 
 ;; ===========================================================================
 ;; Documents
 ;; ===========================================================================
 
-(type (: Document #:opaque (Record (: doctype (Option Doctype))
-                                   (: prolog (List Node))
-                                   (: root Node)
-                                   (: epilog (List Node)))))
+(type (: Document
+         #:opaque
+         (Record (: doctype (Option Doctype))
+                 (: prolog (List Node))
+                 (: root Node)
+                 (: epilog (List Node)))))
 
 (: (-> string (List Node) void))
 (defun (check-misc where nodes)
   (list-for-each
-    (fun (n)
-      (unless (or (comment? n) (pi? n))
-        (argument-error
-          (str "xml-document: the " where " may hold comments and processing instructions, and this is "
-               (variant-name n)))))
-    nodes))
+   (fun (n)
+     (unless (or (comment? n) (pi? n))
+       (argument-error (str "xml-document: the "
+                            where
+                            " may hold comments and processing instructions, and this is "
+                            (variant-name n)))))
+   nodes))
 
 ;; Raises if the root is not an element, or the prolog or epilog holds
 ;; anything but comments and processing instructions.
-(: (-> Node (#:doctype (Option Doctype)) (#:prolog (List Node)) (#:epilog (List Node))
-       Document))
+(: (-> Node (#:doctype (Option Doctype)) (#:prolog (List Node)) (#:epilog (List Node)) Document))
 (defun (xml-document root #:doctype None #:prolog Nil #:epilog Nil)
   (unless (element? root)
-    (argument-error (str "xml-document: the root has to be an element, and this is " (variant-name root))))
+    (argument-error (str "xml-document: the root has to be an element, and this is "
+                         (variant-name root))))
   (check-misc "prolog" prolog)
   (check-misc "epilog" epilog)
   (Document (doctype doctype) (prolog prolog) (root root) (epilog epilog)))
 
 (: (-> Document Node))
-(defun (document-root d) (record-ref d root))
+(defun (document-root d)
+  (record-ref d root))
 
 (: (-> Document (Option Doctype)))
-(defun (document-doctype d) (record-ref d doctype))
+(defun (document-doctype d)
+  (record-ref d doctype))
 
 (: (-> Document (List Node)))
-(defun (document-prolog d) (record-ref d prolog))
+(defun (document-prolog d)
+  (record-ref d prolog))
 
 (: (-> Document (List Node)))
-(defun (document-epilog d) (record-ref d epilog))
+(defun (document-epilog d)
+  (record-ref d epilog))
 
 (: (-> (List Node) (List Node) bool))
 (defun (nodes=? xs ys)
   (match (Tuple xs ys)
     ((Tuple Nil Nil) #t)
-    ((Tuple (Cons x xr) (Cons y yr)) (if (node=? x y) (nodes=? xr yr) #f))
+    ((Tuple (Cons x xr) (Cons y yr))
+     (if (node=? x y)
+         (nodes=? xr yr)
+         #f))
     (_ #f)))
 
 (: (-> Document Document bool))
@@ -568,7 +631,8 @@
        (nodes=? (record-ref a epilog) (record-ref b epilog))))
 
 (impl (Eq Document)
-  (defun (= a b) (document=? a b))
+  (defun (= a b)
+    (document=? a b))
   (defun (eq-hash d)
     (list-foldl (fun (n h) (hash-combine h (node-hash n)))
                 (node-hash (record-ref d root))
@@ -596,13 +660,15 @@
                ((#\\) (stringbuilder-add-string! sb "\\\\"))
                ((#\newline) (stringbuilder-add-string! sb "\\n"))
                ((#\tab) (stringbuilder-add-string! sb "\\t"))
-               (else (if (= (char->int c) 13)
-                         (stringbuilder-add-string! sb "\\r")
-                         (stringbuilder-add! sb c))))))
+               (else
+                (if (= (char->int c) 13)
+                    (stringbuilder-add-string! sb "\\r")
+                    (stringbuilder-add! sb c))))))
   (stringbuilder-add! sb #\"))
 
 ;; A node still to print, or text that closes one.
-(type (: PrintItem (Union (: PrintNode Node) (: PrintText string))))
+(type (: PrintItem (Union (: PrintNode Node)
+                          (: PrintText string))))
 
 (: (-> StringBuilder Node void))
 (defun (print-node! sb n)
@@ -630,7 +696,7 @@
        (write-into name sb)
        (unless (list-empty? attrs)
          (stringbuilder-add-string! sb " (@")
-         ;; todo: rewrite as loop. 
+         ;; todo: rewrite as loop.
          (let each ((as attrs))
            (match as
              (Nil unit)
@@ -647,7 +713,8 @@
                          kids))))))
 
 (impl (Written Node)
-  (defun (write-into n b) (print-node! b n)))
+  (defun (write-into n b)
+    (print-node! b n)))
 
 (: (-> StringBuilder Doctype void))
 (defun (print-doctype! sb dt)

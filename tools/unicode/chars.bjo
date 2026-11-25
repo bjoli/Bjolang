@@ -37,8 +37,8 @@
 ;; The values of General_Category, in the order of their indexes.
 (: (Vec string))
 (def categories
-  ["Lu" "Ll" "Lt" "Lm" "Lo" "Mn" "Mc" "Me" "Nd" "Nl" "No" "Pc" "Pd" "Ps" "Pe"
-   "Pi" "Pf" "Po" "Sm" "Sc" "Sk" "So" "Zs" "Zl" "Zp" "Cc" "Cf" "Cs" "Co" "Cn"])
+  ["Lu" "Ll" "Lt" "Lm" "Lo" "Mn" "Mc" "Me" "Nd" "Nl" "No" "Pc" "Pd" "Ps" "Pe" "Pi" "Pf" "Po" "Sm" "Sc"
+   "Sk" "So" "Zs" "Zl" "Zp" "Cc" "Cf" "Cs" "Co" "Cn"])
 
 ;; The digit value of a code point that has none.
 (: int)
@@ -82,19 +82,28 @@
         (:let fields (string-split line ";"))
         (:let cp (hex (vec-ref fields 0)))
         (:let name (vec-ref fields 1))
-        (:do
-         (if (string-ends-with? name ", First>")
-             (box-set! first cp)
-             (let ((lo (if (string-ends-with? name ", Last>") (box-ref first) cp)))
-               (box-set! first -1)
-               (loop (:for c (range lo (+ cp 1)))
-                     (:do
-                      (def delta (fun (i) (if (= (vec-ref fields i) "") 0 (- (hex (vec-ref fields i)) c))))
-                      (array-set! category c (category-index (vec-ref fields 2)))
-                      (unless (= (vec-ref fields 6) "") (array-set! digit c (string->int (vec-ref fields 6))))
-                      (array-set! upper c (delta 12))
-                      (array-set! lower c (delta 13))
-                      (array-set! title c (if (= (vec-ref fields 14) "") (delta 12) (delta 14)))))))))
+        (:do (if (string-ends-with? name ", First>")
+                 (box-set! first cp)
+                 (let ((lo (if (string-ends-with? name ", Last>")
+                               (box-ref first)
+                               cp)))
+                   (box-set! first -1)
+                   (loop (:for c (range lo (+ cp 1)))
+                         (:do (def delta
+                                (fun (i)
+                                  (if (= (vec-ref fields i) "")
+                                      0
+                                      (- (hex (vec-ref fields i)) c))))
+                              (array-set! category c (category-index (vec-ref fields 2)))
+                              (unless (= (vec-ref fields 6) "")
+                                (array-set! digit c (string->int (vec-ref fields 6))))
+                              (array-set! upper c (delta 12))
+                              (array-set! lower c (delta 13))
+                              (array-set! title
+                                          c
+                                          (if (= (vec-ref fields 14) "")
+                                              (delta 12)
+                                              (delta 14)))))))))
   (Data (category category) (digit digit) (upper upper) (lower lower) (title title)))
 
 ;; The simple case fold of each code point as a delta: the lines of status C
@@ -121,7 +130,10 @@
   has)
 
 (: (-> bool int int))
-(defun (bit-if b shift) (if b (shift-left 1 shift) 0))
+(defun (bit-if b shift)
+  (if b
+      (shift-left 1 shift)
+      0))
 
 ;; A line of the test cases: a name, the number of chars and a sum.
 (: (-> string (Tuple int long) string))
@@ -155,25 +167,29 @@
   ;; is Nd.
   (def nd (category-index "Nd"))
   (loop (:for c (range 0 code-point-count))
-        (:do (unless (= (= (array-ref digit c) no-digit) (not (= (array-ref category c) nd)))
-               (panic! #"unicode-tables: ${(int->string c #:radix 16)} has a digit value and is not Nd, or is Nd with none"))))
+        (:do
+         (unless (= (= (array-ref digit c) no-digit) (not (= (array-ref category c) nd)))
+           (panic!
+            #"unicode-tables: ${(int->string c #:radix 16)} has a digit value and is not Nd, or is Nd with none"))))
 
   ;; The kind of each code point, as (Tuple properties (Tuple upper lower
   ;; title fold)), which orders as the five numbers in turn.
   (def kind-of
-    {vecing (Tuple (bitwise-ior (array-ref category c)
-                                (bit-if (array-ref alphabetic c) 5)
-                                (bit-if (array-ref white c) 6)
-                                (bit-if (array-ref uppercase c) 7)
-                                (bit-if (array-ref lowercase c) 8)
-                                (shift-left (array-ref digit c) 9))
-                   (Tuple (array-ref upper c) (array-ref lower c) (array-ref title c) (array-ref fold c)))
-            (:for c (range 0 code-point-count))})
+    {vecing
+     (Tuple (bitwise-ior (array-ref category c)
+                         (bit-if (array-ref alphabetic c) 5)
+                         (bit-if (array-ref white c) 6)
+                         (bit-if (array-ref uppercase c) 7)
+                         (bit-if (array-ref lowercase c) 8)
+                         (shift-left (array-ref digit c) 9))
+            (Tuple (array-ref upper c) (array-ref lower c) (array-ref title c) (array-ref fold c)))
+     (:for c (range 0 code-point-count))})
   (def kinds (sorted-distinct kind-of))
   (when (> (vec-length kinds) 256)
     (panic! #"unicode-tables: ${(vec-length kinds)} kinds do not fit in a byte"))
   (def index (transientmap-empty))
-  (loop (:for (Tuple i k) (enumerate kinds)) (:do (transientmap-set! index k i)))
+  (loop (:for (Tuple i k) (enumerate kinds))
+        (:do (transientmap-set! index k i)))
   (: (Array int))
   (def kind-index (make-array code-point-count))
   (loop (:for (Tuple c k) (enumerate kind-of))
@@ -186,37 +202,52 @@
   (write-bytes (table-path "chars-stage2.bin") (record-ref table stage2))
   (def rows
     (vec-append (vec-map (fun (k) (fst k)) kinds)
-                (vec-map (fun (k) (match (snd k) ((Tuple u _ _ _) u))) kinds)
-                (vec-map (fun (k) (match (snd k) ((Tuple _ l _ _) l))) kinds)
-                (vec-map (fun (k) (match (snd k) ((Tuple _ _ t _) t))) kinds)
-                (vec-map (fun (k) (match (snd k) ((Tuple _ _ _ f) f))) kinds)))
+                (vec-map (fun (k)
+                           (match (snd k)
+                             ((Tuple u _ _ _) u)))
+                         kinds)
+                (vec-map (fun (k)
+                           (match (snd k)
+                             ((Tuple _ l _ _) l)))
+                         kinds)
+                (vec-map (fun (k)
+                           (match (snd k)
+                             ((Tuple _ _ t _) t)))
+                         kinds)
+                (vec-map (fun (k)
+                           (match (snd k)
+                             ((Tuple _ _ _ f) f)))
+                         kinds)))
   (write-ints (table-path "chars-kinds.bin") rows)
 
   (def last (- (vec-length categories) 1))
-  (write-text (table-path "chars-table.protobjo")
-              (str (header "chars" version
-                           "UnicodeData.txt, DerivedCoreProperties.txt, PropList.txt and CaseFolding.txt")
-                   "\n"
-                   ";; The Unicode version the tables are of.\n"
-                   #"(def unicode-version \"${version}\")\n"
-                   "\n"
-                   ";; The number of kinds: the length of each row of chars-kinds.bin.\n"
-                   #"(def kind-count ${(vec-length kinds)})\n"
-                   "\n"
-                   ";; The general category of an index in bits 0-4 of a kind. A match and not\n"
-                   ";; an array of symbols, so that initializing the module calls nothing.\n"
-                   "(: (-> int Symbol))\n"
-                   "(defun (category-symbol i)\n"
-                   "  (match i\n"
-                   (string-join {vecing #"    (${i} '${(vec-ref categories i)})" (:for i (range 0 last))} "\n")
-                   "\n"
-                   #"    (_ '${(vec-ref categories last)})))\n"))
+  (write-text
+   (table-path "chars-table.protobjo")
+   (str (header "chars"
+                version
+                "UnicodeData.txt, DerivedCoreProperties.txt, PropList.txt and CaseFolding.txt")
+        "\n"
+        ";; The Unicode version the tables are of.\n"
+        #"(def unicode-version \"${version}\")\n"
+        "\n"
+        ";; The number of kinds: the length of each row of chars-kinds.bin.\n"
+        #"(def kind-count ${(vec-length kinds)})\n"
+        "\n"
+        ";; The general category of an index in bits 0-4 of a kind. A match and not\n"
+        ";; an array of symbols, so that initializing the module calls nothing.\n"
+        "(: (-> int Symbol))\n"
+        "(defun (category-symbol i)\n"
+        "  (match i\n"
+        (string-join {vecing #"    (${i} '${(vec-ref categories i)})" (:for i (range 0 last))} "\n")
+        "\n"
+        #"    (_ '${(vec-ref categories last)})))\n"))
 
   ;; The test checks the module against these: for each property, the
   ;; number of chars that have it and the sum of their code points; for each
   ;; mapping, the number of chars it changes and the sum of what they map
   ;; to. Surrogates are left out: they are not chars.
-  (def scalars {vecing c :when (not (and (<= 0xD800 c) (<= c 0xDFFF))) (:for c (range 0 code-point-count))})
+  (def scalars
+    {vecing c :when (not (and (<= 0xD800 c) (<= c 0xDFFF))) (:for c (range 0 code-point-count))})
   (def count-sum
     (fun (has?)
       (Tuple {counting c :when (has? c) (:for c scalars)}
@@ -224,8 +255,14 @@
   (def mapped
     (fun (deltas)
       (Tuple {counting c :when (not (= (array-ref deltas c) 0)) (:for c scalars)}
-             {summing (cast long (+ c (array-ref deltas c))) :when (not (= (array-ref deltas c) 0)) (:for c scalars)})))
-  (def category-is (fun (g) (let ((i (category-index g))) (fun (c) (= (array-ref category c) i)))))
+             {summing (cast long (+ c (array-ref deltas c)))
+                      :when
+                      (not (= (array-ref deltas c) 0))
+                      (:for c scalars)})))
+  (def category-is
+    (fun (g)
+      (let ((i (category-index g)))
+        (fun (c) (= (array-ref category c) i)))))
   (def lines
     (vec-append
      {vecing (case-line (str "category " g) (count-sum (category-is g))) (:for g categories)}
@@ -234,8 +271,12 @@
       (case-line "uppercase" (count-sum (fun (c) (array-ref uppercase c))))
       (case-line "lowercase" (count-sum (fun (c) (array-ref lowercase c))))
       (case-line "title-case" (count-sum (category-is "Lt")))
-      (case-line "numeric" (count-sum (fun (c) (or ((category-is "Nd") c) ((category-is "Nl") c) ((category-is "No") c)))))]
-     {vecing (case-line #"digit ${d}" (count-sum (fun (c) (= (array-ref digit c) d)))) (:for d (range 0 10))}
+      (case-line "numeric"
+                 (count-sum
+                  (fun (c)
+                    (or ((category-is "Nd") c) ((category-is "Nl") c) ((category-is "No") c)))))]
+     {vecing (case-line #"digit ${d}" (count-sum (fun (c) (= (array-ref digit c) d))))
+             (:for d (range 0 10))}
      [(case-line "upcase" (mapped upper))
       (case-line "downcase" (mapped lower))
       (case-line "titlecase" (mapped title))
@@ -248,6 +289,7 @@
                    ";; chars it changes, and the sum of what they map to.\n"
                    #"(def chars-cases-version \"${version}\")\n"
                    "(def chars-cases \"\"\"\n"
-                   (string-join lines "\n") "\n"
+                   (string-join lines "\n")
+                   "\n"
                    "    \"\"\")\n"))
   (println #"Unicode ${version}: ${(vec-length kinds)} kinds in ${(record-ref table blocks)} blocks"))

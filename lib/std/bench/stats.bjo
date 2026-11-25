@@ -63,15 +63,20 @@
     (else
      (def h (* q (cast System.Double (- n 1))))
      (def lo (exact-floor h))
-     (def hi (if (>= (+ lo 1) n) lo (+ lo 1)))
+     (def hi
+       (if (>= (+ lo 1) n)
+           lo
+           (+ lo 1)))
      (def frac (- h (cast System.Double lo)))
      (+ (array-ref a lo) (* frac (- (array-ref a hi) (array-ref a lo)))))))
 
 (: (-> (Vec double) double double))
-(defun (quantile xs q) (sorted-quantile (sorted xs) q))
+(defun (quantile xs q)
+  (sorted-quantile (sorted xs) q))
 
 (: (-> (Vec double) double))
-(defun (median xs) (sorted-quantile (sorted xs) 0.5))
+(defun (median xs)
+  (sorted-quantile (sorted xs) 0.5))
 
 (: (-> (Vec double) double))
 (defun (mean xs)
@@ -128,8 +133,7 @@
 
 ;; A 95% interval for median(b) / median(a), from `resamples` resamplings of
 ;; each, independently, with replacement. Seeded, so a run is repeatable.
-(: (-> (Vec double) (Vec double) (#:resamples int) (#:seed ulong)
-       (Tuple double double)))
+(: (-> (Vec double) (Vec double) (#:resamples int) (#:seed ulong) (Tuple double double)))
 (defun (bootstrap-ratio a b #:resamples 10000 #:seed 1UL)
   (def rng (make-random/seed64 seed))
   (def aa (clr-vec->array a))
@@ -144,8 +148,7 @@
 ;; The same for paired samples, `a[i]` and `b[i]` taken together, as an A/B
 ;; run's rounds are: each resampling draws whole pairs, so that what a round
 ;; shared stays shared.
-(: (-> (Vec double) (Vec double) (#:resamples int) (#:seed ulong)
-       (Tuple double double)))
+(: (-> (Vec double) (Vec double) (#:resamples int) (#:seed ulong) (Tuple double double)))
 (defun (bootstrap-ratio/paired a b #:resamples 10000 #:seed 1UL)
   (def rng (make-random/seed64 seed))
   (def aa (clr-vec->array a))
@@ -176,21 +179,31 @@
   (def t (/ 1.0 (+ 1.0 (* 0.5 z))))
   (def poly
     (+ -1.26551223
-       (* t (+ 1.00002368
-               (* t (+ 0.37409196
-                       (* t (+ 0.09678418
-                               (* t (+ -0.18628806
-                                       (* t (+ 0.27886807
-                                               (* t (+ -1.13520398
-                                                       (* t (+ 1.48851587
-                                                               (* t (+ -0.82215223
-                                                                       (* t 0.17087277)))))))))))))))))))
+       (* t
+          (+ 1.00002368
+             (* t
+                (+ 0.37409196
+                   (* t
+                      (+ 0.09678418
+                         (* t
+                            (+ -0.18628806
+                               (* t
+                                  (+ 0.27886807
+                                     (* t
+                                        (+ -1.13520398
+                                           (* t
+                                              (+ 1.48851587
+                                                 (* t
+                                                    (+ -0.82215223 (* t 0.17087277)))))))))))))))))))
   (def r (* t (exp (+ (- 0.0 (* z z)) poly))))
-  (if (>= x 0.0) r (- 2.0 r)))
+  (if (>= x 0.0)
+      r
+      (- 2.0 r)))
 
 ;; P(Z > z) for a standard normal Z.
 (: (-> double double))
-(defun (normal-sf z) (* 0.5 (erfc (/ z (sqrt 2.0)))))
+(defun (normal-sf z)
+  (* 0.5 (erfc (/ z (sqrt 2.0)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Student's t
@@ -205,28 +218,33 @@
 ;; correct digits.
 (: (-> double double))
 (defun (log-gamma x)
-  (def cs [0.99999999999980993 676.5203681218851 -1259.1392167224028 771.32342877765313
-           -176.61502916214059 12.507343278686905 -0.13857109526572012
-           9.9843695780195716e-6 1.5056327351493116e-7])
+  (def cs
+    [0.99999999999980993 676.5203681218851 -1259.1392167224028 771.32342877765313 -176.61502916214059
+     12.507343278686905 -0.13857109526572012 9.9843695780195716e-6 1.5056327351493116e-7])
   (def y (- x 1.0))
-  (def a (loop (:for i (up-from 1 #:to 9))
-               (:acc s (folding (vec-ref cs 0) (+ s (/ (vec-ref cs i) (+ y (cast System.Double i))))))
-               => s))
+  (def a
+    (loop (:for i (up-from 1 #:to 9))
+          (:acc s (folding (vec-ref cs 0) (+ s (/ (vec-ref cs i) (+ y (cast System.Double i))))))
+      => s))
   (def t (+ y 7.5))
-  (+ (* 0.5 (loge (* 2.0 3.141592653589793)))
-     (- (* (+ y 0.5) (loge t)) t)
-     (loge a)))
+  (+ (* 0.5 (loge (* 2.0 3.141592653589793))) (- (* (+ y 0.5) (loge t)) t) (loge a)))
 
 ;; The continued fraction of the incomplete beta function, by Lentz's method,
 ;; as Numerical Recipes' `betacf`.
 (: (-> double double double double))
 (defun (beta-fraction a b x)
   (def tiny 1e-300)
-  (defun (floor-tiny (: v double)) : double (if (< (abs v) tiny) tiny v))
+  (defun (floor-tiny (: v double)) : double
+    (if (< (abs v) tiny)
+        tiny
+        v))
   (def qab (+ a b))
   (def qap (+ a 1.0))
   (def qam (- a 1.0))
-  (let go ((m 1) (c 1.0) (d (/ 1.0 (floor-tiny (- 1.0 (/ (* qab x) qap))))) (h (/ 1.0 (floor-tiny (- 1.0 (/ (* qab x) qap))))))
+  (let go ((m 1)
+           (c 1.0)
+           (d (/ 1.0 (floor-tiny (- 1.0 (/ (* qab x) qap)))))
+           (h (/ 1.0 (floor-tiny (- 1.0 (/ (* qab x) qap))))))
     (if (> m 300)
         h
         (let ()
@@ -241,7 +259,9 @@
           (def c2 (floor-tiny (+ 1.0 (/ ab c1))))
           (def del (* d2 c2))
           (def h2 (* h1 del))
-          (if (< (abs (- del 1.0)) 1e-15) h2 (go (+ m 1) c2 d2 h2))))))
+          (if (< (abs (- del 1.0)) 1e-15)
+              h2
+              (go (+ m 1) c2 d2 h2))))))
 
 ;; The regularized incomplete beta function I_x(a, b).
 (: (-> double double double double))
@@ -250,8 +270,10 @@
     ((<= x 0.0) 0.0)
     ((>= x 1.0) 1.0)
     (else
-     (def front (exp (+ (- (log-gamma (+ a b)) (log-gamma a) (log-gamma b))
-                        (* a (loge x)) (* b (loge (- 1.0 x))))))
+     (def front
+       (exp (+ (- (log-gamma (+ a b)) (log-gamma a) (log-gamma b))
+               (* a (loge x))
+               (* b (loge (- 1.0 x))))))
      (if (< x (/ (+ a 1.0) (+ a b 2.0)))
          (/ (* front (beta-fraction a b x)) a)
          (- 1.0 (/ (* front (beta-fraction b a (- 1.0 x))) b))))))
@@ -283,7 +305,9 @@
 (: (-> double int double))
 (defun (t-critical alpha df)
   ;; P(|T| > t) falls as t grows; bisect on it.
-  (let go ((lo 0.0) (hi 1e6) (i 0))
+  (let go ((lo 0.0)
+           (hi 1e6)
+           (i 0))
     (def mid (* 0.5 (+ lo hi)))
     (cond
       ((>= i 200) mid)
@@ -307,8 +331,11 @@
   (let go ((i 0))
     (when (< i n)
       (def v (array-ref xs (array-ref order i)))
-      (def j (let run ((j i))
-               (if (and (< (+ j 1) n) (= (array-ref xs (array-ref order (+ j 1))) v)) (run (+ j 1)) j)))
+      (def j
+        (let run ((j i))
+          (if (and (< (+ j 1) n) (= (array-ref xs (array-ref order (+ j 1))) v))
+              (run (+ j 1))
+              j)))
       (def rank (/ (cast System.Double (+ i j 2)) 2.0))
       (loop (:for k (up-from i #:to (+ j 1)))
             (:do (array-set! out (array-ref order k) rank)))
@@ -387,7 +414,10 @@
       (let ()
         (def both (clr-vec->array (vec-append xs ys)))
         (def (Tuple rs ties) (ranks both))
-        (def r1 (loop (:for i (up-from 0 #:to n1)) (:acc s (summing (array-ref rs i))) => s))
+        (def r1
+          (loop (:for i (up-from 0 #:to n1))
+                (:acc s (summing (array-ref rs i)))
+            => s))
         (def a (cast System.Double n1))
         (def b (cast System.Double n2))
         (def n (+ a b))
@@ -411,7 +441,8 @@
   (def m (vec-length ps))
   (def order (arg-sort (clr-vec->array ps)))
   (def out (make-array m #:fill 1.0))
-  (let go ((k 0) (running 0.0))
+  (let go ((k 0)
+           (running 0.0))
     (when (< k m)
       (def i (array-ref order k))
       (def adjusted (min 1.0 (max running (* (cast System.Double (- m k)) (vec-ref ps i)))))

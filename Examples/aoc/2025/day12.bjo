@@ -16,13 +16,21 @@
 (: (-> (List (Tuple int int)) (List (List (Tuple int int)))))
 (defun (orientations cells)
   (def all
-    (let go ((i 0) (cs cells) (acc Nil))
+    (let go ((i 0)
+             (cs cells)
+             (acc Nil))
       (if (= i 4)
           acc
           (go (+ i 1)
               (list-map (fun ((x . y)) (Tuple (- 0 y) x)) cs)
-              (Cons (normalise cs) (Cons (normalise (list-map (fun ((x . y)) (Tuple (- 0 x) y)) cs)) acc))))))
-  (fold (fun (o kept) (if (any? #(= & o) kept) kept (Cons o kept))) Nil all))
+              (Cons (normalise cs)
+                    (Cons (normalise (list-map (fun ((x . y)) (Tuple (- 0 x) y)) cs)) acc))))))
+  (fold (fun (o kept)
+          (if (any? #(= & o) kept)
+              kept
+              (Cons o kept)))
+        Nil
+        all))
 
 ;; Fills the region square by square. The first empty square is covered by
 ;; the first cell of some present, or left empty, which spends one square of
@@ -34,7 +42,8 @@
     (and (>= x 0) (< x w) (>= y 0) (< y h) (not (ref grid (+ x (* y w))))))
   (defun (mark! o x0 y0 v)
     (list-for-each (fun ((dx . dy)) (array-set! grid (+ x0 dx (* (+ y0 dy) w)) v)) o))
-  (defun (take! i n) (array-set! counts i (- (ref counts i) n)))
+  (defun (take! i n)
+    (array-set! counts i (- (ref counts i) n)))
   (defun (go (: at int) (: slack int))
     (def* (x (% at w))
           (y (/ at w)))
@@ -42,32 +51,37 @@
     ;; on, and takes the present away again.
     (defun (place? i o)
       (def ax (- x (fst (list-head o))))
-      (defun (put! n) (mark! o ax y (> n 0)) (take! i n))
-      (cond ((all? (fun ((dx . dy)) (free? (+ ax dx) (+ y dy))) o)
-             (put! 1)
-             (def ok (go (+ at 1) slack))
-             (put! -1)
-             ok)
-            (else #f)))
+      (defun (put! n)
+        (mark! o ax y (> n 0))
+        (take! i n))
+      (cond
+        ((all? (fun ((dx . dy)) (free? (+ ax dx) (+ y dy))) o)
+         (put! 1)
+         (def ok (go (+ at 1) slack))
+         (put! -1)
+         ok)
+        (else #f)))
     ;; Leaves (x, y) empty, which spends one square of slack.
     (defun (skip?)
-      (cond ((> slack 0)
-             (array-set! grid at #t)
-             (def ok (go (+ at 1) (- slack 1)))
-             (array-set! grid at #f)
-             ok)
-            (else #f)))
-    (cond ((all? #(= & 0) counts) #t)
-          ((>= at (* w h)) #f)
-          ((ref grid at) (go (+ at 1) slack))
-          (else
-           (or (loop (:for i (range 0 (length orients)))
-                     (:when (> (ref counts i) 0))
-                     (:subloop)
-                     (:for o (ref orients i))
-                     (:finish (place? i o) #t)
-                     => #f)
-               (skip?)))))
+      (cond
+        ((> slack 0)
+         (array-set! grid at #t)
+         (def ok (go (+ at 1) (- slack 1)))
+         (array-set! grid at #f)
+         ok)
+        (else #f)))
+    (cond
+      ((all? #(= & 0) counts) #t)
+      ((>= at (* w h)) #f)
+      ((ref grid at) (go (+ at 1) slack))
+      (else
+       (or (loop (:for i (range 0 (length orients)))
+                 (:when (> (ref counts i) 0))
+                 (:subloop)
+                 (:for o (ref orients i))
+                 (:finish (place? i o) #t)
+             => #f)
+           (skip?)))))
   (go 0 slack))
 
 (defun (main args)
@@ -80,16 +94,19 @@
                      (:for x (range 0 3))
                      (:when (char=? #\# (ref (string->vec (ref lines (+ i 1 y))) x)))}
             (:for i (range 0 (length lines)))
-            (:when (and (string-ends-with? (ref lines i) ":") (not (string-contains? (ref lines i) "x"))))})
+            (:when (and (string-ends-with? (ref lines i) ":")
+                        (not (string-contains? (ref lines i) "x"))))})
   (def orients (vec-map orientations shapes))
   (defun (fits? w h counts)
-    (def needed {summing (* (ref counts i) (length (ref shapes i))) (:for i (range 0 (length counts)))})
-    (cond ((> needed (* w h)) #f)
-          ((<= {summing c (:for c counts)} (* (/ w 3) (/ h 3))) #t)
-          (else (search orients w h counts (- (* w h) needed)))))
-  (println
-   {counting line
-    (:for line lines)
-    (:when-let (Ok (Tuple w h counts)) (try-scan line '(int "x" int ": " int ... #:sep " ")))
-    (:when (fits? w h (vec->array counts)))})
+    (def needed
+      {summing (* (ref counts i) (length (ref shapes i))) (:for i (range 0 (length counts)))})
+    (cond
+      ((> needed (* w h)) #f)
+      ((<= {summing c (:for c counts)} (* (/ w 3) (/ h 3))) #t)
+      (else (search orients w h counts (- (* w h) needed)))))
+  (println {counting
+            line
+            (:for line lines)
+            (:when-let (Ok (Tuple w h counts)) (try-scan line '(int "x" int ": " int ... #:sep " ")))
+            (:when (fits? w h (vec->array counts)))})
   0)

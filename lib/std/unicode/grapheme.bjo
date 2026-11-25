@@ -77,8 +77,10 @@
 (: (-> char int) #:inline)
 (defun (props-of ch)
   (def cp (char->int ch))
-  (cast int (ro-span-ref stage2 (+ (shift-left (cast int (ro-span-ref stage1 (shift-right cp 8))) 8)
-                                   (bitwise-and cp 255)))))
+  (cast int
+        (ro-span-ref stage2
+                     (+ (shift-left (cast int (ro-span-ref stage1 (shift-right cp 8))) 8)
+                        (bitwise-and cp 255)))))
 
 (def gcb-cr 1)
 (def gcb-lf 2)
@@ -99,23 +101,28 @@
 (def incb-extend 3)
 
 (: (-> int int) #:inline)
-(defun (gcb p) (bitwise-and p 15))
+(defun (gcb p)
+  (bitwise-and p 15))
 
 (: (-> int bool) #:inline)
-(defun (pictographic? p) (not (= (bitwise-and p 16) 0)))
+(defun (pictographic? p)
+  (not (= (bitwise-and p 16) 0)))
 
 (: (-> int int) #:inline)
-(defun (incb p) (bitwise-and (shift-right p 5) 3))
+(defun (incb p)
+  (bitwise-and (shift-right p 5) 3))
 
 ;; Whether a code point is printable ASCII: GCB=Other, and none of the
 ;; other properties.
 (: (-> int bool) #:inline)
-(defun (printable-ascii? cp) (and (>= cp 32) (< cp 127)))
+(defun (printable-ascii? cp)
+  (and (>= cp 32) (< cp 127)))
 
 ;; Whether the rules put a boundary between code points `a` and `b` with no
 ;; context: both are printable ASCII. A front end can test bytes with it.
 (: (-> int int bool) #:inline)
-(defun (grapheme-plain-break? a b) (and (printable-ascii? a) (printable-ascii? b)))
+(defun (grapheme-plain-break? a b)
+  (and (printable-ascii? a) (printable-ascii? b)))
 
 ;; ---------------------------------------------------------------------------
 ;; The rules
@@ -152,7 +159,8 @@
     ((or (= b gcb-extend) (= b gcb-zwj) (= b gcb-spacing-mark)) rule-join)
     ((= a gcb-prepend) rule-join)
     ;; GB9c, GB11, GB12/13
-    ((and (= (incb pb) incb-consonant) (or (= (incb pa) incb-linker) (= (incb pa) incb-extend))) rule-conjunct)
+    ((and (= (incb pb) incb-consonant) (or (= (incb pa) incb-linker) (= (incb pa) incb-extend)))
+     rule-conjunct)
     ((and (= a gcb-zwj) (pictographic? pb)) rule-emoji)
     ((and (= a gcb-ri) (= b gcb-ri)) rule-flag)
     ;; GB999
@@ -176,7 +184,8 @@
 (def fwd-break 2048)
 
 (: (-> int int bool) #:inline)
-(defun (has? st bit) (not (= (bitwise-and st bit) 0)))
+(defun (has? st bit)
+  (not (= (bitwise-and st bit) 0)))
 
 ;; The state after a character of properties `p`, from the state `st` before
 ;; it.
@@ -184,17 +193,25 @@
 (defun (state-after p st brk)
   (def g (gcb p))
   (def i (incb p))
-  (bitwise-ior
-    p
-    (if (or (pictographic? p) (and (= g gcb-extend) (has? st fwd-pict))) fwd-pict 0)
-    (if (and (= g gcb-zwj) (has? st fwd-pict)) fwd-pict-zwj 0)
-    (if (and (= g gcb-ri) (not (and (= (gcb st) gcb-ri) (has? st fwd-odd-ri)))) fwd-odd-ri 0)
-    (if (or (= i incb-linker) (and (= i incb-extend) (has? st fwd-linker))) fwd-linker 0)
-    (if brk fwd-break 0)))
+  (bitwise-ior p
+               (if (or (pictographic? p) (and (= g gcb-extend) (has? st fwd-pict)))
+                   fwd-pict
+                   0)
+               (if (and (= g gcb-zwj) (has? st fwd-pict))
+                   fwd-pict-zwj
+                   0)
+               (if (and (= g gcb-ri) (not (and (= (gcb st) gcb-ri) (has? st fwd-odd-ri))))
+                   fwd-odd-ri
+                   0)
+               (if (or (= i incb-linker) (and (= i incb-extend) (has? st fwd-linker)))
+                   fwd-linker
+                   0)
+               (if brk fwd-break 0)))
 
 ;; The state after the first character of a text, or of a cluster.
 (: (-> char int))
-(defun (grapheme-start ch) (state-after (props-of ch) 0 #t))
+(defun (grapheme-start ch)
+  (state-after (props-of ch) 0 #t))
 
 ;; The state after `ch`, from the state after the character before it.
 ;; - Before printable ASCII, the rules break unless the character before is
@@ -202,24 +219,28 @@
 (: (-> int char int) #:inline)
 (defun (grapheme-step st ch)
   (if (printable-ascii? (char->int ch))
-      (if (= (gcb st) gcb-prepend) 0 fwd-break)
+      (if (= (gcb st) gcb-prepend)
+          0
+          fwd-break)
       (grapheme-step-table st ch)))
 
 (: (-> int char int))
 (defun (grapheme-step-table st ch)
   (def p (props-of ch))
   (def r (pair-rule (bitwise-and st 127) p))
-  (state-after p st
-    (cond
-      ((= r rule-join) #f)
-      ((= r rule-break) #t)
-      ((= r rule-conjunct) (not (has? st fwd-linker)))
-      ((= r rule-emoji) (not (has? st fwd-pict-zwj)))
-      (else (not (has? st fwd-odd-ri))))))
+  (state-after p
+               st
+               (cond
+                 ((= r rule-join) #f)
+                 ((= r rule-break) #t)
+                 ((= r rule-conjunct) (not (has? st fwd-linker)))
+                 ((= r rule-emoji) (not (has? st fwd-pict-zwj)))
+                 (else (not (has? st fwd-odd-ri))))))
 
 ;; Whether there is a boundary before the last character of a state.
 (: (-> int bool) #:inline)
-(defun (grapheme-break? st) (has? st fwd-break))
+(defun (grapheme-break? st)
+  (has? st fwd-break))
 
 ;; ---------------------------------------------------------------------------
 ;; Backward
@@ -247,7 +268,8 @@
 ;; The backward state of a cursor at the end of a text, or of one where
 ;; nothing is known of what follows.
 (: (-> int))
-(defun (grapheme-back-start) 0)
+(defun (grapheme-back-start)
+  0)
 
 ;; Whether the backward state of a cursor needs the character after it, given
 ;; `b`, the character before it: only when `b` is a regional indicator, as
@@ -261,7 +283,9 @@
 ;;   before it, which saves counting them.
 (: (-> char int))
 (defun (grapheme-back-start-before ch)
-  (if (and (not (printable-ascii? (char->int ch))) (= (gcb (props-of ch)) gcb-ri)) back-known 0))
+  (if (and (not (printable-ascii? (char->int ch))) (= (gcb (props-of ch)) gcb-ri))
+      back-known
+      0))
 
 ;; The state for the boundary between `a` and `b`, where `b` is the first
 ;; character given before, or the one before the cursor.
@@ -295,7 +319,8 @@
 
 ;; Whether the state needs the character before the last one given.
 (: (-> int bool) #:inline)
-(defun (grapheme-back-wants? w) (= (bitwise-and w 3) back-wants))
+(defun (grapheme-back-wants? w)
+  (= (bitwise-and w 3) back-wants))
 
 ;; The state after `ch`, the character before the last one given.
 (: (-> int char int))
@@ -327,7 +352,8 @@
 
 ;; Whether the state, once known, is a boundary.
 (: (-> int bool) #:inline)
-(defun (grapheme-back-break? w) (= (bitwise-and w 3) back-break))
+(defun (grapheme-back-break? w)
+  (= (bitwise-and w 3) back-break))
 
 ;; ---------------------------------------------------------------------------
 ;; Strings
@@ -340,21 +366,26 @@
 ;; The cursor after the cluster that starts at `c`, a cluster boundary of `s`.
 (: (-> string StringCursor StringCursor))
 (defun (string-cursor-next-grapheme s c)
-  (when (string-cursor-end? s c) (out-of-range "string-cursor-next-grapheme: the cursor is at the end."))
+  (when (string-cursor-end? s c)
+    (out-of-range "string-cursor-next-grapheme: the cursor is at the end."))
   (def (Tuple ch0 c1) (string-cursor-ref+next s c))
-  (let go ((st (grapheme-start ch0)) (c c1))
+  (let go ((st (grapheme-start ch0))
+           (c c1))
     (if (string-cursor-end? s c)
         c
         (begin
           (def (Tuple ch nxt) (string-cursor-ref+next s c))
           (def st2 (grapheme-step st ch))
-          (if (grapheme-break? st2) c (go st2 nxt))))))
+          (if (grapheme-break? st2)
+              c
+              (go st2 nxt))))))
 
 ;; The state `w` once known, reading back from `k`, the cursor of the last
 ;; character given.
 (: (-> string StringCursor int StringCursor int))
 (defun (string-back-resolve s start w k)
-  (let more ((w w) (k k))
+  (let more ((w w)
+             (k k))
     (cond
       ((not (grapheme-back-wants? w)) w)
       ((string-cursor=? k start) (grapheme-back-sot w))
@@ -367,22 +398,31 @@
 (: (-> string StringCursor StringCursor))
 (defun (string-cursor-prev-grapheme s c)
   (def start (string-cursor-start s))
-  (when (string-cursor=? c start) (out-of-range "string-cursor-prev-grapheme: the cursor is at the start."))
+  (when (string-cursor=? c start)
+    (out-of-range "string-cursor-prev-grapheme: the cursor is at the start."))
   (def c1 (string-cursor-prev s c))
   (def b1 (string-cursor-ref s c1))
-  (def w0 (if (and (grapheme-back-needs-after? b1) (not (string-cursor-end? s c)))
-              (grapheme-back-start-before (string-cursor-ref s c))
-              (grapheme-back-start)))
+  (def w0
+    (if (and (grapheme-back-needs-after? b1) (not (string-cursor-end? s c)))
+        (grapheme-back-start-before (string-cursor-ref s c))
+        (grapheme-back-start)))
   ;; `bc` is the cursor of the earliest character of the cluster so far, `b`.
-  (let go ((w w0) (bc c1) (b b1))
+  (let go ((w w0)
+           (bc c1)
+           (b b1))
     (if (string-cursor=? bc start)
         bc
         (begin
           (def ac (string-cursor-prev s bc))
           (def a (string-cursor-ref s ac))
           (def w1 (grapheme-back-pair w a b))
-          (def w2 (if (grapheme-back-wants? w1) (string-back-resolve s start w1 ac) w1))
-          (if (grapheme-back-break? w2) bc (go w2 ac a))))))
+          (def w2
+            (if (grapheme-back-wants? w1)
+                (string-back-resolve s start w1 ac)
+                w1))
+          (if (grapheme-back-break? w2)
+              bc
+              (go w2 ac a))))))
 
 ;; Whether `c` is on a cluster boundary of `s`.
 (: (-> string StringCursor bool))
@@ -392,8 +432,12 @@
       #t
       (begin
         (def ac (string-cursor-prev s c))
-        (grapheme-back-break?
-          (string-back-resolve s start (grapheme-back-pair (grapheme-back-start) (string-cursor-ref s ac) (string-cursor-ref s c)) ac)))))
+        (grapheme-back-break? (string-back-resolve s
+                                                   start
+                                                   (grapheme-back-pair (grapheme-back-start)
+                                                                       (string-cursor-ref s ac)
+                                                                       (string-cursor-ref s c))
+                                                   ac)))))
 
 ;; The clusters of `s`.
 (: (-> string int))
@@ -403,18 +447,25 @@
       0
       (begin
         (def (Tuple ch0 c1) (string-cursor-ref+next s c0))
-        (let go ((st (grapheme-start ch0)) (c c1) (n 1))
+        (let go ((st (grapheme-start ch0))
+                 (c c1)
+                 (n 1))
           (if (string-cursor-end? s c)
               n
               (begin
                 (def (Tuple ch nxt) (string-cursor-ref+next s c))
                 (def st2 (grapheme-step st ch))
-                (go st2 nxt (if (grapheme-break? st2) (+ n 1) n))))))))
+                (go st2
+                    nxt
+                    (if (grapheme-break? st2)
+                        (+ n 1)
+                        n))))))))
 
 ;; The clusters of `s`, in order.
 (: (-> string (Vec string)))
 (defun (string->graphemes s)
-  (let go ((c (string-cursor-start s)) (acc '()))
+  (let go ((c (string-cursor-start s))
+           (acc '()))
     (if (string-cursor-end? s c)
         (list->vec (list-reverse acc))
         (begin

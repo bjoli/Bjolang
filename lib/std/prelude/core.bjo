@@ -80,7 +80,7 @@
   vec-for-each vec-iter
   ;; Seq operations.
   seq-fold seq-for-each
-  ;; Maps. 
+  ;; Maps.
   map-empty map-ref map-ref-or map-try-ref
   map-set map-add-new map-try-add-new map-set-all map-remove map-remove-all
   map-alter map-update
@@ -170,11 +170,9 @@
   ;; What a grammar's checked literal calls. See (def/grammar ...).
   grammar-checked)
 
-
 (import/extern (clr-panic (: BjolangRuntime.Panic (-> string int %a))))
 
 (import/class (Exception (: System.Exception)))
-
 
 (: (-> string (#:exit-code int) %a))
 (defun (panic! msg #:exit-code 1)
@@ -187,8 +185,8 @@
 (defun (grammar-checked r)
   (match r
     ((Ok v) v)
-    ((Err e) (panic! (str "a check of a grammar gave Err for a literal it gave Ok for when compiled: " e)))))
-
+    ((Err e)
+     (panic! (str "a check of a grammar gave Err for a literal it gave Ok for when compiled: " e)))))
 
 ;; The `written` fallback, invariant. `System.Convert.ToString` reads the ambient
 ;; culture, which is how a `short` or a `float` — types with no conversion of
@@ -217,12 +215,12 @@
 ;; First, and before the includes. = is a trait and needs to be imported
 (import (std eq))
 ;; re-export ord and eq traits, and not
-(re-export = eq-hash not
-           compare less? greater? at-most? at-least?
-                       least greatest list-sort vec-sort vec-sort-by array-sort! array-sort-by!
-                       list-sort-unstable vec-sort-unstable array-sort-unstable!
-                       list-min list-max)
-
+(re-export
+  = eq-hash not
+  compare less? greater? at-most? at-least?
+  least greatest list-sort vec-sort vec-sort-by array-sort! array-sort-by!
+  list-sort-unstable vec-sort-unstable array-sort-unstable!
+  list-min list-max)
 
 ;; List append.
 (: (-> (List %a) (List %a) #:rest (List %a) (List %a)))
@@ -233,9 +231,8 @@
   (if (= n 0)
       (list-foldr Cons ys xs)
       (loop (:for i (down-from (- n 2) #:to 0))
-            (:acc acc (folding (array-ref more (- n 1))
-                               (list-foldr Cons acc (array-ref more i))))
-            => (list-foldr Cons (list-foldr Cons acc ys) xs))))
+            (:acc acc (folding (array-ref more (- n 1)) (list-foldr Cons acc (array-ref more i))))
+        => (list-foldr Cons (list-foldr Cons acc ys) xs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Written and Displayed
@@ -278,93 +275,135 @@
 
 ;; A .NET type is written as it writes itself, in the invariant culture.
 (impl (Written %a)
-  (defun (written x) (clr-show x))
-  (defun (write-into x b) (stringbuilder-add-string! b (clr-show x))))
+  (defun (written x)
+    (clr-show x))
+  (defun (write-into x b)
+    (stringbuilder-add-string! b (clr-show x))))
 
 ;; Every type is displayed as it is written, unless it says otherwise.
 (impl (Displayed %a)
-  (defun (displayed x) (written x))
-  (defun (display-into x b) (write-into x b)))
+  (defun (displayed x)
+    (written x))
+  (defun (display-into x b)
+    (write-into x b)))
 
 ;; A function, as Scheme writes one. No blanket reaches a function type, so it
 ;; is written and displayed by these, inside a container as well.
 (impl (Written Procedure)
-  (defun (written f) "#<procedure>")
-  (defun (write-into f b) (stringbuilder-add-string! b "#<procedure>")))
+  (defun (written f)
+    "#<procedure>")
+  (defun (write-into f b)
+    (stringbuilder-add-string! b "#<procedure>")))
 
 (impl (Displayed Procedure)
-  (defun (displayed f) "#<procedure>")
-  (defun (display-into f b) (stringbuilder-add-string! b "#<procedure>")))
+  (defun (displayed f)
+    "#<procedure>")
+  (defun (display-into f b)
+    (stringbuilder-add-string! b "#<procedure>")))
 
 ;; Each number with the suffix that gives its type back, and displayed
 ;; without it.
 (impl (Written int)
-  (defun (written n) (int->string n))
-  (defun (write-into n b) (stringbuilder-add-string! b (int->string n))))
+  (defun (written n)
+    (int->string n))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (int->string n))))
 
 (impl (Written long)
-  (defun (written n) (clr-written-number n "L"))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (clr-written-number n "L"))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (impl (Displayed long)
-  (defun (displayed n) (long->string n))
-  (defun (display-into n b) (stringbuilder-add-long! b n)))
+  (defun (displayed n)
+    (long->string n))
+  (defun (display-into n b)
+    (stringbuilder-add-long! b n)))
 
 (impl (Written byte)
-  (defun (written n) (clr-written-number n "uy"))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (clr-written-number n "uy"))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (impl (Displayed byte)
-  (defun (displayed n) (byte->string n))
-  (defun (display-into n b) (stringbuilder-add-string! b (byte->string n))))
+  (defun (displayed n)
+    (byte->string n))
+  (defun (display-into n b)
+    (stringbuilder-add-string! b (byte->string n))))
 
 (impl (Written short)
-  (defun (written n) (clr-written-number n "s"))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (clr-written-number n "s"))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (impl (Displayed short)
-  (defun (displayed n) (clr-show n))
-  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+  (defun (displayed n)
+    (clr-show n))
+  (defun (display-into n b)
+    (stringbuilder-add-string! b (clr-show n))))
 
 (impl (Written ushort)
-  (defun (written n) (clr-written-number n "us"))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (clr-written-number n "us"))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (impl (Displayed ushort)
-  (defun (displayed n) (clr-show n))
-  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+  (defun (displayed n)
+    (clr-show n))
+  (defun (display-into n b)
+    (stringbuilder-add-string! b (clr-show n))))
 
 (impl (Written uint)
-  (defun (written n) (clr-written-number n "u"))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (clr-written-number n "u"))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (impl (Displayed uint)
-  (defun (displayed n) (clr-show n))
-  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+  (defun (displayed n)
+    (clr-show n))
+  (defun (display-into n b)
+    (stringbuilder-add-string! b (clr-show n))))
 
 (impl (Written ulong)
-  (defun (written n) (clr-written-number n "UL"))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (clr-written-number n "UL"))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (impl (Displayed ulong)
-  (defun (displayed n) (clr-show n))
-  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+  (defun (displayed n)
+    (clr-show n))
+  (defun (display-into n b)
+    (stringbuilder-add-string! b (clr-show n))))
 
 (impl (Written decimal)
-  (defun (written n) (clr-written-number n "M"))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (clr-written-number n "M"))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (impl (Displayed decimal)
-  (defun (displayed n) (clr-show n))
-  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+  (defun (displayed n)
+    (clr-show n))
+  (defun (display-into n b)
+    (stringbuilder-add-string! b (clr-show n))))
 
 (impl (Written bigint)
-  (defun (written n) (clr-written-number n "I"))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (clr-written-number n "I"))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (impl (Displayed bigint)
-  (defun (displayed n) (clr-show n))
-  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+  (defun (displayed n)
+    (clr-show n))
+  (defun (display-into n b)
+    (stringbuilder-add-string! b (clr-show n))))
 
 ;; A float, an int128 and a uint128 have no suffix, so each is written with
 ;; its type, as a value with its type written is read: `(: 2.5 float)`.
@@ -372,83 +411,117 @@
   (clr-written-single (: Bjolang.Runtime.BjoShow.WrittenSingle)))
 
 (impl (Written float)
-  (defun (written n) (str "(: " (clr-written-single n) " float)"))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (str "(: " (clr-written-single n) " float)"))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (impl (Displayed float)
-  (defun (displayed n) (clr-show n))
-  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+  (defun (displayed n)
+    (clr-show n))
+  (defun (display-into n b)
+    (stringbuilder-add-string! b (clr-show n))))
 
 (import/extern
   (clr-written-rational (: Bjolang.Runtime.BjoRational.Written (-> rational string))))
 
 (impl (Written rational)
-  (defun (written n) (clr-written-rational n))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (clr-written-rational n))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (impl (Displayed rational)
-  (defun (displayed n) (clr-show n))
-  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+  (defun (displayed n)
+    (clr-show n))
+  (defun (display-into n b)
+    (stringbuilder-add-string! b (clr-show n))))
 
 (impl (Written int128)
-  (defun (written n) (str "(: " (clr-written-number n "") " int128)"))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (str "(: " (clr-written-number n "") " int128)"))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (impl (Displayed int128)
-  (defun (displayed n) (clr-show n))
-  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+  (defun (displayed n)
+    (clr-show n))
+  (defun (display-into n b)
+    (stringbuilder-add-string! b (clr-show n))))
 
 (impl (Written uint128)
-  (defun (written n) (str "(: " (clr-written-number n "") " uint128)"))
-  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+  (defun (written n)
+    (str "(: " (clr-written-number n "") " uint128)"))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (written n))))
 
 (impl (Displayed uint128)
-  (defun (displayed n) (clr-show n))
-  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+  (defun (displayed n)
+    (clr-show n))
+  (defun (display-into n b)
+    (stringbuilder-add-string! b (clr-show n))))
 
 ;; A double is written with a point, so that it is not read back as an int.
 (impl (Written double)
-  (defun (written n) (clr-written-double n))
-  (defun (write-into n b) (stringbuilder-add-string! b (clr-written-double n))))
+  (defun (written n)
+    (clr-written-double n))
+  (defun (write-into n b)
+    (stringbuilder-add-string! b (clr-written-double n))))
 
 (impl (Displayed double)
-  (defun (displayed n) (double->string n))
-  (defun (display-into n b) (stringbuilder-add-double! b n)))
+  (defun (displayed n)
+    (double->string n))
+  (defun (display-into n b)
+    (stringbuilder-add-double! b n)))
 
 ;; As the language writes a boolean, not as .NET does.
 (impl (Written bool)
-  (defun (written b) (if b "#t" "#f"))
-  (defun (write-into x b) (stringbuilder-add-string! b (if x "#t" "#f"))))
+  (defun (written b)
+    (if b "#t" "#f"))
+  (defun (write-into x b)
+    (stringbuilder-add-string! b (if x "#t" "#f"))))
 
 ;; A string in quotes, and displayed as its text.
 (impl (Written string)
-  (defun (write-into s b) (clr-write-string-into b s)))
+  (defun (write-into s b)
+    (clr-write-string-into b s)))
 
 (impl (Displayed string)
-  (defun (displayed s) s)
-  (defun (display-into s b) (stringbuilder-add-string! b s)))
+  (defun (displayed s)
+    s)
+  (defun (display-into s b)
+    (stringbuilder-add-string! b s)))
 
 (impl (Written Char)
-  (defun (written c) (clr-written-char c))
-  (defun (write-into c b) (stringbuilder-add-string! b (clr-written-char c))))
+  (defun (written c)
+    (clr-written-char c))
+  (defun (write-into c b)
+    (stringbuilder-add-string! b (clr-written-char c))))
 
 (impl (Displayed Char)
-  (defun (displayed c) (char->string c))
-  (defun (display-into c b) (stringbuilder-add! b c)))
+  (defun (displayed c)
+    (char->string c))
+  (defun (display-into c b)
+    (stringbuilder-add! b c)))
 
 (impl (Written Keyword)
-  (defun (written k) (str "#:" (keyword->string k)))
+  (defun (written k)
+    (str "#:" (keyword->string k)))
   (defun (write-into k b)
     (stringbuilder-add-string! b "#:")
     (stringbuilder-add-string! b (keyword->string k))))
 
 (impl (Displayed Keyword)
-  (defun (displayed k) (keyword->string k))
-  (defun (display-into k b) (stringbuilder-add-string! b (keyword->string k))))
+  (defun (displayed k)
+    (keyword->string k))
+  (defun (display-into k b)
+    (stringbuilder-add-string! b (keyword->string k))))
 
 (impl (Written Symbol)
-  (defun (written s) (symbol->string s))
-  (defun (write-into s b) (stringbuilder-add-string! b (symbol->string s))))
+  (defun (written s)
+    (symbol->string s))
+  (defun (write-into s b)
+    (stringbuilder-add-string! b (symbol->string s))))
 ;; ---------------------------------------------------------------------------
 ;; Paths: get, try-get, set, update and set!
 ;; ---------------------------------------------------------------------------
@@ -477,32 +550,39 @@
 ;; `(get target step ...)`, and `(get target)`, which is `(deref target)`.
 (def/macro (get form inject compare)
   (syntax-match form
-    ((_ target)
-     #'(deref ,target))
-    ((_ target first rest ...)
-     (path-reads target (Cons first rest)))
-    (bad (syntax-error bad "get needs a target: (get target step ...), where a step is .field or a key, or (get target) to read a Box or a Param."))))
+    ((_ target) #'(deref ,target))
+    ((_ target first rest ...) (path-reads target (Cons first rest)))
+    (bad
+     (syntax-error
+      bad
+      "get needs a target: (get target step ...), where a step is .field or a key, or (get target) to read a Box or a Param."))))
 
 ;; `(try-get target step ...)`
 (def/macro (try-get form inject compare)
   (syntax-match form
-    ((_ target first rest ...)
-     (path-tries target (Cons first rest)))
-    (bad (syntax-error bad "try-get reads along a path and needs at least one step: (try-get target step ...), where a step is .field or a key."))))
+    ((_ target first rest ...) (path-tries target (Cons first rest)))
+    (bad
+     (syntax-error
+      bad
+      "try-get reads along a path and needs at least one step: (try-get target step ...), where a step is .field or a key."))))
 
 ;; `(set target step ... value)`
 (def/macro (set form inject compare)
   (syntax-match form
-    ((_ target first second rest ...)
-     (path-write inject target (Cons first (Cons second rest)) #f))
-    (bad (syntax-error bad "set needs a target, at least one step and a value: (set target step ... value)."))))
+    ((_ target first second rest ...) (path-write inject target (Cons first (Cons second rest)) #f))
+    (bad
+     (syntax-error
+      bad
+      "set needs a target, at least one step and a value: (set target step ... value)."))))
 
 ;; `(update target step ... f)`
 (def/macro (update form inject compare)
   (syntax-match form
-    ((_ target first second rest ...)
-     (path-write inject target (Cons first (Cons second rest)) #t))
-    (bad (syntax-error bad "update needs a target, at least one step and a function: (update target step ... f)."))))
+    ((_ target first second rest ...) (path-write inject target (Cons first (Cons second rest)) #t))
+    (bad
+     (syntax-error
+      bad
+      "update needs a target, at least one step and a function: (update target step ... f)."))))
 
 ;; True for a field step: an identifier written with a leading dot. `...` and a
 ;; lone `.` are punctuation, not identifiers, so they never get here.
@@ -532,11 +612,10 @@
 ;; One step's read of `acc`.
 (: (-> Syntax Syntax Syntax))
 (defun (path-read acc step)
-  (syntax-at
-    (if (path-dotted? (path-check step))
-        #'(,step ,acc)
-        #'(ref ,acc ,step))
-    step))
+  (syntax-at (if (path-dotted? (path-check step))
+                 #'(,step ,acc)
+                 #'(ref ,acc ,step))
+             step))
 
 (: (-> Syntax (List Syntax) Syntax))
 (defun (path-reads acc steps)
@@ -557,9 +636,10 @@
          (let ((probe (syntax-at #'(try-ref ,acc ,step) step)))
            (match rest
              (Nil probe)
-             (_ #'(match ,probe
-                    (None None)
-                    ((Some it) ,(path-tries #'it rest))))))))))
+             (_
+              #'(match ,probe
+                  (None None)
+                  ((Some it) ,(path-tries #'it rest))))))))))
 
 ;; A name for the expansion's own temporaries. Built from a string so that each
 ;; depth gets a name of its own: hygiene gives every distinct name one fresh
@@ -578,18 +658,19 @@
     (match step
       ((SSym s)
        (def dotted (symbol->string s))
-       (substring dotted (string-cursor-next dotted (string-cursor-start dotted)) (string-cursor-end dotted)))
+       (substring dotted
+                  (string-cursor-next dotted (string-cursor-start dotted))
+                  (string-cursor-end dotted)))
       (_ "")))
   (def start (string-cursor-start name))
-  (inject
-    (string->symbol
-      (match (string-search-backward name "__")
-        ((Some mark)
-         (if (and (string-cursor>? mark start)
-                  (path-digits? name (string-cursor-next name (string-cursor-next name mark))))
-             (substring name start mark)
-             name))
-        (None name)))))
+  (inject (string->symbol
+           (match (string-search-backward name "__")
+             ((Some mark)
+              (if (and (string-cursor>? mark start)
+                       (path-digits? name (string-cursor-next name (string-cursor-next name mark))))
+                  (substring name start mark)
+                  name))
+             (None name)))))
 
 ;; Is everything in `s` from `c` on an ASCII digit, and is there anything?
 (: (-> string StringCursor bool))
@@ -620,8 +701,11 @@
         (fun (old) new)))
   (def body (path-body inject obj 0 named steps leaf))
   #'(let ((,obj ,target))
-      ,(list-foldr (fun (binding inner) #'(let (,binding) ,inner))
-                   #'(let ((,new ,value)) ,body)
+      ,(list-foldr (fun (binding inner)
+                     #'(let (,binding)
+                         ,inner))
+                   #'(let ((,new ,value))
+                       ,body)
                    (path-key-bindings named steps))))
 
 ;; The steps, each key replaced by the name it is bound to. A field step is
@@ -635,9 +719,13 @@
     ((Cons step rest)
      (if (path-dotted? (path-check step))
          (if (and copying? (path-property? step))
-             (Cons (syntax-error step
-                     (str (syntax->string step) " is a .NET property. set and update copy along the path with record-set, which only copies a Bjolang record or struct; set the property itself, or build the new value with get."))
-                   Nil)
+             (Cons
+              (syntax-error
+               step
+               (str
+                (syntax->string step)
+                " is a .NET property. set and update copy along the path with record-set, which only copies a Bjolang record or struct; set the property itself, or build the new value with get."))
+              Nil)
              (Cons step (path-key-names rest (+ i 1) copying?)))
          (Cons (path-temp "key" i) (path-key-names rest (+ i 1) copying?))))))
 
@@ -665,17 +753,20 @@
      (def rest (list-tail steps))
      (def inner (path-temp "obj" (+ depth 1)))
      (def field? (path-dotted? step))
-     (def old (if field? #'(,step ,obj) #'(ref ,obj ,key)))
+     (def old
+       (if field?
+           #'(,step ,obj)
+           #'(ref ,obj ,key)))
      (def value
        (match rest
          (Nil (leaf old))
-         (_ #'(let ((,inner ,old))
-                ,(path-body inject inner (+ depth 1) names rest leaf)))))
-     (syntax-at
-       (if field?
-           #'(record-set ,obj (,(path-field inject step) ,value))
-           #'(ref-set ,obj ,key ,value))
-       step))))
+         (_
+          #'(let ((,inner ,old))
+              ,(path-body inject inner (+ depth 1) names rest leaf)))))
+     (syntax-at (if field?
+                    #'(record-set ,obj (,(path-field inject step) ,value))
+                    #'(ref-set ,obj ,key ,value))
+                step))))
 
 ;; `(set! target step ... value)`: the parser hands `set!` with three or more
 ;; operands here, and keeps `(set! name value)`, which writes a variable.
@@ -687,9 +778,11 @@
 ;; before anything is read, as in `set`.
 (def/hash-extend (set! form inject compare)
   (syntax-match form
-    ((_ target first second rest ...)
-     (path-write! inject target (Cons first (Cons second rest))))
-    (bad (syntax-error bad "set! writes a variable, (set! name value), or along a path in place, (set! target step ... value), where a step is .field or a key."))))
+    ((_ target first second rest ...) (path-write! inject target (Cons first (Cons second rest))))
+    (bad
+     (syntax-error
+      bad
+      "set! writes a variable, (set! name value), or along a path in place, (set! target step ... value), where a step is .field or a key."))))
 
 (: (-> (-> Symbol Syntax) Syntax (List Syntax) Syntax))
 (defun (path-write! inject target items)
@@ -700,8 +793,11 @@
   (def obj (path-temp "obj" 0))
   (def new (path-temp "new" 0))
   #'(let ((,obj ,target))
-      ,(list-foldr (fun (binding inner) #'(let (,binding) ,inner))
-                   #'(let ((,new ,value)) ,(path-store! inject obj named steps new))
+      ,(list-foldr (fun (binding inner)
+                     #'(let (,binding)
+                         ,inner))
+                   #'(let ((,new ,value))
+                       ,(path-store! inject obj named steps new))
                    (path-key-bindings named steps))))
 
 ;; The reads of the steps before the last, then the write of the last. The
@@ -719,20 +815,27 @@
        (Nil
         ;; cond is not available here.
         (syntax-at
-          (if (not field?)
-              #'(ref-set! ,acc ,key ,new)
-              (if (path-property? step)
-                  (syntax-error step
-                    (str (syntax->string step) " is a .NET property, and set! writes the last step with record-set!, which writes a field of a Bjolang record. Call the property's setter, (.set_Name obj value), instead."))
-                  ;; The write carries the step's position, which is also
-                  ;; what makes it the writing module's: `record-set!` may
-                  ;; write only the fields of a record its own module declared.
-                  (let ((dest (path-temp "dest" 0)))
-                    #'(let ((,dest ,acc))
-                        ,(syntax-at #'(record-set! ,dest (,(path-field inject step) ,new)) step)))))
-          step))
+         (if (not field?)
+             #'(ref-set! ,acc ,key ,new)
+             (if (path-property? step)
+                 (syntax-error
+                  step
+                  (str
+                   (syntax->string step)
+                   " is a .NET property, and set! writes the last step with record-set!, which writes a field of a Bjolang record. Call the property's setter, (.set_Name obj value), instead."))
+                 ;; The write carries the step's position, which is also
+                 ;; what makes it the writing module's: `record-set!` may
+                 ;; write only the fields of a record its own module declared.
+                 (let ((dest (path-temp "dest" 0)))
+                   #'(let ((,dest ,acc))
+                       ,(syntax-at #'(record-set! ,dest (,(path-field inject step) ,new)) step)))))
+         step))
        (_
-        (def read (syntax-at (if field? #'(,step ,acc) #'(ref ,acc ,key)) step))
+        (def read
+          (syntax-at (if field?
+                         #'(,step ,acc)
+                         #'(ref ,acc ,key))
+                     step))
         (path-store! inject read names rest new))))))
 
 ;; ---------------------------------------------------------------------------
@@ -788,7 +891,8 @@
     ((_ op a b rest ...)
      (if (syntax-atom? a)
          (chain-forms op a (syntax-constant? a) (Cons b rest) #t)
-         #'(let ((u ,a)) ,(chain-forms op #'u #t (Cons b rest) #t))))
+         #'(let ((u ,a))
+             ,(chain-forms op #'u #t (Cons b rest) #t))))
     (bad (syntax-error bad "#ch takes an operator and at least two operands: #ch(< a b c)."))))
 
 ;; `prev` is safe to read twice: the first operand, an atom, or a temporary.
@@ -805,12 +909,21 @@
     ((Cons x Nil) #'(,op ,prev ,x))
     ((Cons x more)
      (if (syntax-atom? x)
-         #'(if (,op ,prev ,x) ,(chain-forms op x (syntax-constant? x) more use-t) #f)
+         #'(if (,op ,prev ,x)
+               ,(chain-forms op x (syntax-constant? x) more use-t)
+               #f)
          (if (not fixed)
-             #'(let ((s ,prev)) ,(chain-forms op #'s #t rest use-t))
+             #'(let ((s ,prev))
+                 ,(chain-forms op #'s #t rest use-t))
              (if use-t
-                 #'(let ((t ,x)) (if (,op ,prev t) ,(chain-forms op #'t #t more #f) #f))
-                 #'(let ((u ,x)) (if (,op ,prev u) ,(chain-forms op #'u #t more #t) #f))))))))
+                 #'(let ((t ,x))
+                     (if (,op ,prev t)
+                         ,(chain-forms op #'t #t more #f)
+                         #f))
+                 #'(let ((u ,x))
+                     (if (,op ,prev u)
+                         ,(chain-forms op #'u #t more #t)
+                         #f))))))))
 
 ;; Cheap to evaluate twice: anything but a list.
 (: (-> Syntax bool))
@@ -844,7 +957,6 @@
        ((k v) #'(Cons (Tuple ,k ,v) ,(map-entries rest)))
        (bad (syntax-error bad "A map entry is (key value), [key value] or (key . value)."))))))
 
-
 ;; Container formats are further down.
 
 ;; ---------------------------------------------------------------------------
@@ -858,10 +970,10 @@
   (: ->str (-> %a string)))
 
 (impl (->str %a)
-  (defun (->str x) (displayed x)))
+  (defun (->str x)
+    (displayed x)))
 
 (:deprecated ->str "use `displayed`, and implement `Displayed` or `Written`")
-
 
 ;; ---------------------------------------------------------------------------
 ;; Discard
@@ -871,11 +983,13 @@
   (: ignore (-> %a void)))
 
 (impl (Discard %a)
-  (defun (ignore x) unit))
+  (defun (ignore x)
+    unit))
 
 ;; Detach promise.
 (impl (Discard (Promise %a))
-  (defun (ignore p) (detach p)))
+  (defun (ignore p)
+    (detach p)))
 
 ;; Writes a value as `displayed` gives it.
 (: (-> %a void))
@@ -885,7 +999,6 @@
 (: (-> %a void))
 (defun (println x)
   (displayln (displayed x)))
-
 
 ;; ---------------------------------------------------------------------------
 ;; TransientVec — a vec changed in place
@@ -913,13 +1026,17 @@
 ;; leaves the transient as it was.
 (: (-> (TransientVec %a) (Option %a)))
 (defun (transientvec-try-pop! t)
-  (if (transientvec-empty? t) None (Some (transientvec-pop! t))))
+  (if (transientvec-empty? t)
+      None
+      (Some (transientvec-pop! t))))
 
 ;; The first element, removed, or `None` when the transient is empty. `None`
 ;; leaves the transient as it was.
 (: (-> (TransientVec %a) (Option %a)))
 (defun (transientvec-try-pop-first! t)
-  (if (transientvec-empty? t) None (Some (transientvec-pop-first! t))))
+  (if (transientvec-empty? t)
+      None
+      (Some (transientvec-pop-first! t))))
 
 ;; ---------------------------------------------------------------------------
 ;; IArray — the immutable array
@@ -953,10 +1070,12 @@
   (iarray->seq      (: Bjolang.Runtime.IArrayModule.AsEnumerable   (-> (IArray %a) (Seq %a)))))
 
 (: (-> (Vec %a) (IArray %a)))
-(defun (vec->iarray v) (seq->iarray (vec->seq v)))
+(defun (vec->iarray v)
+  (seq->iarray (vec->seq v)))
 
 (: (-> (List %a) (IArray %a)))
-(defun (list->iarray xs) (seq->iarray (list->seq xs)))
+(defun (list->iarray xs)
+  (seq->iarray (list->seq xs)))
 
 ;; ---------------------------------------------------------------------------
 ;; Arrays
@@ -1001,10 +1120,12 @@
 ;; decimal or a bigint, and a length in bytes that is not a whole number of
 ;; the new elements, is a panic.
 (: (-> (Span %a) (Span %b)) (where (Num %a) (Num %b)))
-(defun (span-> s) (clr-span-> s))
+(defun (span-> s)
+  (clr-span-> s))
 
 (: (-> (RoSpan %a) (RoSpan %b)) (where (Num %a) (Num %b)))
-(defun (ro-span-> s) (clr-ro-span-> s))
+(defun (ro-span-> s)
+  (clr-ro-span-> s))
 
 (: (-> (Array %a) (#:from int) (#:to int) (Span %a)))
 (defun (array->span a #:from 0 #:to (array-length a))
@@ -1033,10 +1154,12 @@
 (include "hashmap.protobjo")
 
 (: (-> (Map %k %v) %k bool))
-(defun (map-has-key? m key) (map-contains? m key))
+(defun (map-has-key? m key)
+  (map-contains? m key))
 
 (: (-> (TransientMap %k %v) %k bool))
-(defun (transientmap-has-key? m key) (transientmap-contains? m key))
+(defun (transientmap-has-key? m key)
+  (transientmap-contains? m key))
 
 ;; `map-add-new` with the failure as a value: `(Err v)` carries the value the
 ;; key already has.
@@ -1077,13 +1200,11 @@
         #f))
   (defun (eq-hash xs)
     (def len (iarray-length xs))
-    (let go ((i 0) (h 17))
+    (let go ((i 0)
+             (h 17))
       (if (= i len)
           h
           (go (+ i 1) (hash-combine h (eq-hash (iarray-ref xs i))))))))
-
-
-
 
 ;; ---------------------------------------------------------------------------
 ;; Collector
@@ -1146,9 +1267,13 @@
   (type %elem %a)
   (type %acc (ListBuilder %a))
   (type %out (List %a))
-  (defun (collector-init c) (listbuilder-empty))
-  (defun (collector-step c acc x) (listbuilder-add! acc x) acc)
-  (defun (collector-finish c acc) (listbuilder->list acc)))
+  (defun (collector-init c)
+    (listbuilder-empty))
+  (defun (collector-step c acc x)
+    (listbuilder-add! acc x)
+    acc)
+  (defun (collector-finish c acc)
+    (listbuilder->list acc)))
 
 ;; Listing in reverse: each value consed onto the list so far, so the list is
 ;; the values last first, and there is no builder to finish.
@@ -1158,9 +1283,12 @@
   (type %elem %a)
   (type %acc (List %a))
   (type %out (List %a))
-  (defun (collector-init c) Nil)
-  (defun (collector-step c acc x) (Cons x acc))
-  (defun (collector-finish c acc) acc))
+  (defun (collector-init c)
+    Nil)
+  (defun (collector-step c acc x)
+    (Cons x acc))
+  (defun (collector-finish c acc)
+    acc))
 
 ;; Vecing.
 (type (: (Vecing %a) (Union vecing)))
@@ -1169,9 +1297,13 @@
   (type %elem %a)
   (type %acc (VecBuilder %a))
   (type %out (Vec %a))
-  (defun (collector-init c) (vecbuilder-empty))
-  (defun (collector-step c acc x) (vecbuilder-add! acc x) acc)
-  (defun (collector-finish c acc) (vecbuilder->vec acc)))
+  (defun (collector-init c)
+    (vecbuilder-empty))
+  (defun (collector-step c acc x)
+    (vecbuilder-add! acc x)
+    acc)
+  (defun (collector-finish c acc)
+    (vecbuilder->vec acc)))
 
 ;; Arraying: the elements in an array. Its accumulator takes a block of
 ;; elements at a time, so a loop of numbers into it can be a vector loop.
@@ -1193,17 +1325,24 @@
   (type %elem %a)
   (type %acc (ArrayBuilder %a))
   (type %out (Array %a))
-  (defun (collector-init c) (arraybuilder-empty))
-  (defun (collector-step c acc x) (arraybuilder-add acc x))
-  (defun (collector-finish c acc) (arraybuilder->array acc)))
+  (defun (collector-init c)
+    (arraybuilder-empty))
+  (defun (collector-step c acc x)
+    (arraybuilder-add acc x))
+  (defun (collector-finish c acc)
+    (arraybuilder->array acc)))
 
 (impl (BlockCollector (Arraying %a))
   (type %value %a)
   (type %acc (ArrayBuilder %a))
-  (defun (block-count c acc) (arraybuilder-count acc))
-  (defun (block-grow c acc n) (arraybuilder-grow acc n))
-  (defun (block-span c acc start n) (arraybuilder-span acc start n))
-  (defun (block-none! c acc i) (arraybuilder-no-none! acc i)))
+  (defun (block-count c acc)
+    (arraybuilder-count acc))
+  (defun (block-grow c acc n)
+    (arraybuilder-grow acc n))
+  (defun (block-span c acc start n)
+    (arraybuilder-span acc start n))
+  (defun (block-none! c acc i)
+    (arraybuilder-no-none! acc i)))
 
 ;; Vecing into a builder for a vec that is likely small: its tail starts at 4
 ;; items and doubles, where `vecing` takes a leaf of 32 at the first item.
@@ -1213,9 +1352,13 @@
   (type %elem %a)
   (type %acc (VecBuilder %a))
   (type %out (Vec %a))
-  (defun (collector-init c) (vecbuilder-empty/small))
-  (defun (collector-step c acc x) (vecbuilder-add! acc x) acc)
-  (defun (collector-finish c acc) (vecbuilder->vec acc)))
+  (defun (collector-init c)
+    (vecbuilder-empty/small))
+  (defun (collector-step c acc x)
+    (vecbuilder-add! acc x)
+    acc)
+  (defun (collector-finish c acc)
+    (vecbuilder->vec acc)))
 
 ;; Mapping.
 (type (: (Mapping %k %v) (Union mapping)))
@@ -1225,12 +1368,14 @@
   (type %elem (Tuple %k %v))
   (type %acc (MapBuilder %k %v))
   (type %out (Map %k %v))
-  (defun (collector-init c) (mapbuilder-empty))
+  (defun (collector-init c)
+    (mapbuilder-empty))
   (defun (collector-step c acc kv)
     (def (k v) kv)
     (mapbuilder-add! acc k v)
     acc)
-  (defun (collector-finish c acc) (mapbuilder->map acc)))
+  (defun (collector-finish c acc)
+    (mapbuilder->map acc)))
 
 ;; --- Starting from a collection: `#:into` ---
 ;;
@@ -1254,20 +1399,26 @@
   (type %elem %a)
   (type %acc (VecBuilder %a))
   (type %out (Vec %a))
-  (defun (collector-init c) (vec->vecbuilder (record-ref c seed)))
-  (defun (collector-step c acc x) (vecbuilder-add! acc x) acc)
-  (defun (collector-finish c acc) (vecbuilder->vec acc)))
+  (defun (collector-init c)
+    (vec->vecbuilder (record-ref c seed)))
+  (defun (collector-step c acc x)
+    (vecbuilder-add! acc x)
+    acc)
+  (defun (collector-finish c acc)
+    (vecbuilder->vec acc)))
 
 (impl (CollectorInto (Vecing %a))
   (type %seed (Vec %a))
   (type %into (VecingInto %a))
-  (defun (collector-into c seed) (VecingInto (seed seed))))
+  (defun (collector-into c seed)
+    (VecingInto (seed seed))))
 
 ;; The vec it starts from says how big it is, so `/small' has nothing to add.
 (impl (CollectorInto (VecingSmall %a))
   (type %seed (Vec %a))
   (type %into (VecingInto %a))
-  (defun (collector-into c seed) (VecingInto (seed seed))))
+  (defun (collector-into c seed)
+    (VecingInto (seed seed))))
 
 ;; A list grows only at the front, so adding to its back copies it, once.
 (type (: (ListingInto %a) (Struct (: seed (List %a)))))
@@ -1276,14 +1427,19 @@
   (type %elem %a)
   (type %acc (ListBuilder %a))
   (type %out (List %a))
-  (defun (collector-init c) (list->listbuilder (record-ref c seed)))
-  (defun (collector-step c acc x) (listbuilder-add! acc x) acc)
-  (defun (collector-finish c acc) (listbuilder->list acc)))
+  (defun (collector-init c)
+    (list->listbuilder (record-ref c seed)))
+  (defun (collector-step c acc x)
+    (listbuilder-add! acc x)
+    acc)
+  (defun (collector-finish c acc)
+    (listbuilder->list acc)))
 
 (impl (CollectorInto (Listing %a))
   (type %seed (List %a))
   (type %into (ListingInto %a))
-  (defun (collector-into c seed) (ListingInto (seed seed))))
+  (defun (collector-into c seed)
+    (ListingInto (seed seed))))
 
 ;; Consing onto the front shares the list it starts from: nothing is copied.
 (type (: (ListingReverseInto %a) (Struct (: seed (List %a)))))
@@ -1292,14 +1448,18 @@
   (type %elem %a)
   (type %acc (List %a))
   (type %out (List %a))
-  (defun (collector-init c) (record-ref c seed))
-  (defun (collector-step c acc x) (Cons x acc))
-  (defun (collector-finish c acc) acc))
+  (defun (collector-init c)
+    (record-ref c seed))
+  (defun (collector-step c acc x)
+    (Cons x acc))
+  (defun (collector-finish c acc)
+    acc))
 
 (impl (CollectorInto (ListingReverse %a))
   (type %seed (List %a))
   (type %into (ListingReverseInto %a))
-  (defun (collector-into c seed) (ListingReverseInto (seed seed))))
+  (defun (collector-into c seed)
+    (ListingReverseInto (seed seed))))
 
 ;; The map's own key comparer goes with it, so no `Eq' is asked for.
 (type (: (MappingInto %k %v) (Struct (: seed (Map %k %v)))))
@@ -1308,17 +1468,20 @@
   (type %elem (Tuple %k %v))
   (type %acc (MapBuilder %k %v))
   (type %out (Map %k %v))
-  (defun (collector-init c) (map->mapbuilder (record-ref c seed)))
+  (defun (collector-init c)
+    (map->mapbuilder (record-ref c seed)))
   (defun (collector-step c acc kv)
     (def (k v) kv)
     (mapbuilder-add! acc k v)
     acc)
-  (defun (collector-finish c acc) (mapbuilder->map acc)))
+  (defun (collector-finish c acc)
+    (mapbuilder->map acc)))
 
 (impl (CollectorInto (Mapping %k %v))
   (type %seed (Map %k %v))
   (type %into (MappingInto %k %v))
-  (defun (collector-into c seed) (MappingInto (seed seed))))
+  (defun (collector-into c seed)
+    (MappingInto (seed seed))))
 
 ;; Stringing.
 (type (: Stringing (Union stringing)))
@@ -1327,9 +1490,13 @@
   (type %elem char)
   (type %acc StringBuilder)
   (type %out string)
-  (defun (collector-init c) (stringbuilder-empty))
-  (defun (collector-step c acc x) (stringbuilder-add! acc x) acc)
-  (defun (collector-finish c acc) (stringbuilder->string acc)))
+  (defun (collector-init c)
+    (stringbuilder-empty))
+  (defun (collector-step c acc x)
+    (stringbuilder-add! acc x)
+    acc)
+  (defun (collector-finish c acc)
+    (stringbuilder->string acc)))
 
 ;; Summing and counting work at every numeric type. A sum has the type of what
 ;; it adds. A count has the type its use asks for, and is an int when nothing
@@ -1341,9 +1508,12 @@
   (type %elem %a)
   (type %acc %a)
   (type %out %a)
-  (defun (collector-init c) 0)
-  (defun (collector-step c acc x) (+ acc x))
-  (defun (collector-finish c acc) acc))
+  (defun (collector-init c)
+    0)
+  (defun (collector-step c acc x)
+    (+ acc x))
+  (defun (collector-finish c acc)
+    acc))
 
 (type (: (Counting %a %n) (Union counting)))
 
@@ -1352,9 +1522,12 @@
   (type %elem %a)
   (type %acc %n)
   (type %out %n)
-  (defun (collector-init c) 0)
-  (defun (collector-step c acc x) (+ acc 1))
-  (defun (collector-finish c acc) acc))
+  (defun (collector-init c)
+    0)
+  (defun (collector-step c acc x)
+    (+ acc 1))
+  (defun (collector-finish c acc)
+    acc))
 
 ;; Folding.
 (type (: (Folding %a) (Union (: folding %a))))
@@ -1363,12 +1536,13 @@
   (type %elem %a)
   (type %acc %a)
   (type %out %a)
-  (defun (collector-init c) (match c ((folding s) s)))
-  (defun (collector-step c acc x) x)
-  (defun (collector-finish c acc) acc))
-
-
-
+  (defun (collector-init c)
+    (match c
+      ((folding s) s)))
+  (defun (collector-step c acc x)
+    x)
+  (defun (collector-finish c acc)
+    acc))
 
 ;; ---------------------------------------------------------------------------
 ;; Iterable
@@ -1398,9 +1572,9 @@
   ;; as well. With the default, which does nothing, the loop has no `try`
   ;; around it and keeps no record of its cursors.
   (: iterable-cleanup (-> %s %cursor void))
-  (: ->seq  (-> %s (Seq %elem)))
+  (: ->seq (-> %s (Seq %elem)))
   (: fold (-> (-> %elem %acc %acc) %acc %s %acc))
-  (: map    (-> (-> %elem %b) %s (Seq %b)))
+  (: map (-> (-> %elem %b) %s (Seq %b)))
   (: filter (-> (-> %elem bool) %s (Seq %elem)))
   (: take (-> int %s (Seq %elem)))
   (: drop (-> int %s (Seq %elem)))
@@ -1421,8 +1595,12 @@
   (: first (-> %s (Option %elem)))
 
   ;; Most cursors hold nothing that needs release.
-  (defun (iterable-end s c) (when #f ()))
-  (defun (iterable-cleanup s c) (when #f ()))
+  (defun (iterable-end s c)
+    (when #f
+      ()))
+  (defun (iterable-cleanup s c)
+    (when #f
+      ()))
   (defun (->seq s)
     (seql (:for e s)
           (:yield e)))
@@ -1442,7 +1620,7 @@
     (seql (:with i 0 (+ i 1) (>= i n))
           (:for elem s)
           (:yield elem)))
-  ;; this is of course not efficient, but hey. 
+  ;; this is of course not efficient, but hey.
   (defun (drop n s)
     (seql (:with i 1 (+ i 1))
           (:for elem s)
@@ -1491,8 +1669,13 @@
 
   (defun (find f s)
     (loop (:for e s)
-          (:acc got (folding None (if (f e) (Some e) None)))
-          (:finish (match got ((Some _) #t) (None #f)))))
+          (:acc got (folding None
+                             (if (f e)
+                                 (Some e)
+                                 None)))
+          (:finish (match got
+                     ((Some _) #t)
+                     (None #f)))))
 
   (defun (for-each f s)
     (loop (:for e s)
@@ -1515,8 +1698,7 @@
   (defun (first s)
     (loop (:for e s)
           (:acc got (folding None (Some e)))
-          (:finish #t)))
-  )
+          (:finish #t))))
 
 ;; Declared before the other implementations because the inherited
 ;; `flat-map` default walks the `(Seq %b)` its callback returns, and an
@@ -1527,70 +1709,101 @@
   ;; once per step, before `current`, so `done?` is where it steps, and
   ;; `next` has nothing left to do.
   (type %cursor (SeqEnumerator %a))
-  (defun (iterable-start s) (seq-enumerator s))
-  (defun (iterable-done? s e) (not (seq-enumerator-next! e)))
-  (defun (iterable-current s e) (seq-enumerator-current e))
-  (defun (iterable-next s e) e)
+  (defun (iterable-start s)
+    (seq-enumerator s))
+  (defun (iterable-done? s e)
+    (not (seq-enumerator-next! e)))
+  (defun (iterable-current s e)
+    (seq-enumerator-current e))
+  (defun (iterable-next s e)
+    e)
   ;; Disposes the enumerator, which closes a file the sequence opened for
   ;; this walk.
-  (defun (iterable-end s e) (seq-enumerator-end! e))
+  (defun (iterable-end s e)
+    (seq-enumerator-end! e))
   ;; The same on an exception, so that a file is closed then too.
-  (defun (iterable-cleanup s e) (seq-enumerator-end! e))
+  (defun (iterable-cleanup s e)
+    (seq-enumerator-end! e))
 
-  (defun (->seq s) s))
+  (defun (->seq s)
+    s))
 
 (impl (Iterable (List %a))
   (type %elem %a)
   (type %cursor (List %a))
-  (defun (iterable-start s) s)
-  (defun (iterable-done? s c) (list-empty? c))
-  (defun (iterable-current s c) (list-head c))
-  (defun (iterable-next s c) (list-tail c))
-  (defun (->list s) s))
+  (defun (iterable-start s)
+    s)
+  (defun (iterable-done? s c)
+    (list-empty? c))
+  (defun (iterable-current s c)
+    (list-head c))
+  (defun (iterable-next s c)
+    (list-tail c))
+  (defun (->list s)
+    s))
 
 ;; A struct cursor that walks the vec's leaf arrays: an array read per
 ;; element, and nothing allocated for the walk.
 (impl (Iterable (Vec %a))
   (type %elem %a)
   (type %cursor (VecCursor %a))
-  (defun (iterable-start s) (vec-cursor s))
-  (defun (iterable-done? s c) (vec-cursor-done? c))
-  (defun (iterable-current s c) (vec-cursor-current c))
-  (defun (iterable-next s c) (vec-cursor-next c))
-  (defun (->vec s) s)
-  (defun (count s) (vec-length s)))
+  (defun (iterable-start s)
+    (vec-cursor s))
+  (defun (iterable-done? s c)
+    (vec-cursor-done? c))
+  (defun (iterable-current s c)
+    (vec-cursor-current c))
+  (defun (iterable-next s c)
+    (vec-cursor-next c))
+  (defun (->vec s)
+    s)
+  (defun (count s)
+    (vec-length s)))
 
 ;; `>=` rather than `=`: the JIT drops the bounds check on `array-ref` only
 ;; when the loop test is `index < length`.
 (impl (Iterable (Array %a))
   (type %elem %a)
   (type %cursor int)
-  (defun (iterable-start s) 0)
-  (defun (iterable-done? s index) (>= index (array-length s)))
-  (defun (iterable-current s index) (array-ref s index))
-  (defun (iterable-next s index) (+ index 1))
-  (defun (count s) (array-length s)))
+  (defun (iterable-start s)
+    0)
+  (defun (iterable-done? s index)
+    (>= index (array-length s)))
+  (defun (iterable-current s index)
+    (array-ref s index))
+  (defun (iterable-next s index)
+    (+ index 1))
+  (defun (count s)
+    (array-length s)))
 
 ;; An `int` cursor, as `Array` has.
 (impl (Iterable (IArray %a))
   (type %elem %a)
   (type %cursor int)
-  (defun (iterable-start s) 0)
-  (defun (iterable-done? s index) (>= index (iarray-length s)))
-  (defun (iterable-current s index) (iarray-ref s index))
-  (defun (iterable-next s index) (+ index 1))
-  (defun (count s) (iarray-length s)))
+  (defun (iterable-start s)
+    0)
+  (defun (iterable-done? s index)
+    (>= index (iarray-length s)))
+  (defun (iterable-current s index)
+    (iarray-ref s index))
+  (defun (iterable-next s index)
+    (+ index 1))
+  (defun (count s)
+    (iarray-length s)))
 
 (: (-> (IArray %a) (Vec %a)))
-(defun (iarray->vec xs) (->vec xs))
+(defun (iarray->vec xs)
+  (->vec xs))
 
 (: (-> (IArray %a) (List %a)))
-(defun (iarray->list xs) (->list xs))
+(defun (iarray->list xs)
+  (->list xs))
 
 ;; Range of ints, in steps of one. A step of one reaches `hi` before it can
 ;; pass `int-max`, so the walk tests `(>= c hi)`, the test the JIT knows from a
 ;; loop over an array's indices.
-(type (: Range (Struct (: lo int) (: hi int))))
+(type (: Range (Struct (: lo int)
+                       (: hi int))))
 
 ;; Inlined, so that a loop over a range has its two ints and no struct (see
 ;; `Simplify`, "A record that is only read").
@@ -1601,16 +1814,22 @@
 (impl (Iterable Range)
   (type %elem int)
   (type %cursor int)
-  (defun (iterable-start s) (record-ref s lo))
-  (defun (iterable-done? s c) (>= c (record-ref s hi)))
-  (defun (iterable-current s c) c)
-  (defun (iterable-next s c) (+ c 1)))
+  (defun (iterable-start s)
+    (record-ref s lo))
+  (defun (iterable-done? s c)
+    (>= c (record-ref s hi)))
+  (defun (iterable-current s c)
+    c)
+  (defun (iterable-next s c)
+    (+ c 1)))
 
 ;; Range of ints, in steps of `by`. A step past the last value can pass
 ;; `int-max`, so the walk counts in a long, where it cannot wrap round below
 ;; `hi`: a value below `hi` and a step of at most `int-max` stay far below
 ;; `long-max`.
-(type (: RangeBy (Struct (: lo int) (: hi int) (: by int))))
+(type (: RangeBy (Struct (: lo int)
+                         (: hi int)
+                         (: by int))))
 
 ;; A range counts up, so a step of zero or less would never reach `hi`. The
 ;; message is made in `range-by-panic`, so that `range-by` is small enough for
@@ -1623,7 +1842,8 @@
 
 (: (-> int void))
 (defun (range-by-panic by)
-  (panic! #"range-by: the step is ${by}, and a range counts up from lo to hi. down-from counts down."))
+  (panic!
+   #"range-by: the step is ${by}, and a range counts up from lo to hi. down-from counts down."))
 
 ;; How many values a non-empty range holds, in longs, where `hi - lo` cannot
 ;; overflow.
@@ -1634,20 +1854,29 @@
 (impl (Iterable RangeBy)
   (type %elem int)
   (type %cursor long)
-  (defun (iterable-start s) (cast long (record-ref s lo)))
-  (defun (iterable-done? s c) (>= c (cast long (record-ref s hi))))
-  (defun (iterable-current s c) (cast int c))
-  (defun (iterable-next s c) (+ c (cast long (record-ref s by)))))
+  (defun (iterable-start s)
+    (cast long (record-ref s lo)))
+  (defun (iterable-done? s c)
+    (>= c (cast long (record-ref s hi))))
+  (defun (iterable-current s c)
+    (cast int c))
+  (defun (iterable-next s c)
+    (+ c (cast long (record-ref s by)))))
 
 ;; Map elements.
 (impl (Iterable (Map %k %v))
   (type %elem (Tuple %k %v))
   (type %cursor (MapCursor %k %v))
-  (defun (iterable-start s) (map-cursor s))
-  (defun (iterable-done? s c) (map-cursor-done? c))
-  (defun (iterable-current s c) (map-cursor-current c))
-  (defun (iterable-next s c) (map-cursor-next c))
-  (defun (count s) (map-length s)))
+  (defun (iterable-start s)
+    (map-cursor s))
+  (defun (iterable-done? s c)
+    (map-cursor-done? c))
+  (defun (iterable-current s c)
+    (map-cursor-current c))
+  (defun (iterable-next s c)
+    (map-cursor-next c))
+  (defun (count s)
+    (map-length s)))
 
 ;; String characters. Not a `StringCursor`, which asks the string at every
 ;; step whether it is a slice: a walk takes its bytes once and decodes each
@@ -1664,10 +1893,14 @@
 (impl (Iterable string)
   (type %elem char)
   (type %cursor StringWalk)
-  (defun (iterable-start s) (string-walk s))
-  (defun (iterable-done? s c) (string-walk-done? c))
-  (defun (iterable-current s c) (string-walk-current c))
-  (defun (iterable-next s c) (string-walk-next c)))
+  (defun (iterable-start s)
+    (string-walk s))
+  (defun (iterable-done? s c)
+    (string-walk-done? c))
+  (defun (iterable-current s c)
+    (string-walk-current c))
+  (defun (iterable-next s c)
+    (string-walk-next c)))
 
 ;; An iterable of pairs as a map. Not a method of `Iterable`: its where clause
 ;; says the element is a pair, and a member may not constrain the
@@ -1696,15 +1929,20 @@
 (type (: (Enumerated %s) (Struct (: inner %s))))
 
 (: (-> %s (Enumerated %s)) (where (Iterable %s)))
-(defun (enumerate s) (Enumerated (inner s)))
+(defun (enumerate s)
+  (Enumerated (inner s)))
 
 (impl (Iterable (Enumerated %s)) (where (Iterable %s))
   (type %elem (Tuple int (assoc Iterable elem %s)))
   (type %cursor (Tuple int (assoc Iterable cursor %s)))
-  (defun (iterable-start e) (Tuple 0 (iterable-start (record-ref e inner))))
-  (defun (iterable-done? e c) (iterable-done? (record-ref e inner) (snd c)))
-  (defun (iterable-current e c) (Tuple (fst c) (iterable-current (record-ref e inner) (snd c))))
-  (defun (iterable-next e c) (Tuple (+ (fst c) 1) (iterable-next (record-ref e inner) (snd c))))
+  (defun (iterable-start e)
+    (Tuple 0 (iterable-start (record-ref e inner))))
+  (defun (iterable-done? e c)
+    (iterable-done? (record-ref e inner) (snd c)))
+  (defun (iterable-current e c)
+    (Tuple (fst c) (iterable-current (record-ref e inner) (snd c))))
+  (defun (iterable-next e c)
+    (Tuple (+ (fst c) 1) (iterable-next (record-ref e inner) (snd c))))
   (defun (iterable-end e c)
     (def (Tuple _ k) c)
     (iterable-end (record-ref e inner) k))
@@ -1713,10 +1951,12 @@
     (iterable-cleanup (record-ref e inner) k)))
 
 ;; The elements of `left` and `right` in pairs, until either ends.
-(type (: (Zipped %l %r) (Struct (: left %l) (: right %r))))
+(type (: (Zipped %l %r) (Struct (: left %l)
+                                (: right %r))))
 
 (: (-> %l %r (Zipped %l %r)) (where (Iterable %l) (Iterable %r)))
-(defun (zip l r) (Zipped (left l) (right r)))
+(defun (zip l r)
+  (Zipped (left l) (right r)))
 
 ;; `done?` asks the left side first. When one side ends, the other is ended
 ;; there and then, so that a sequence holding a file is closed although its
@@ -1734,15 +1974,18 @@
   (defun (iterable-done? z c)
     (def (Tuple kl kr) c)
     (or (and (iterable-done? (record-ref z left) kl)
-             (begin (iterable-end (record-ref z right) kr) #t))
+             (begin
+               (iterable-end (record-ref z right) kr)
+               #t))
         (and (iterable-done? (record-ref z right) kr)
-             (begin (iterable-end (record-ref z left) kl) #t))))
+             (begin
+               (iterable-end (record-ref z left) kl)
+               #t))))
   (defun (iterable-current z c)
     (Tuple (iterable-current (record-ref z left) (fst c))
            (iterable-current (record-ref z right) (snd c))))
   (defun (iterable-next z c)
-    (Tuple (iterable-next (record-ref z left) (fst c))
-           (iterable-next (record-ref z right) (snd c))))
+    (Tuple (iterable-next (record-ref z left) (fst c)) (iterable-next (record-ref z right) (snd c))))
   (defun (iterable-end z c)
     (def (Tuple kl kr) c)
     (iterable-end (record-ref z left) kl)
@@ -1757,7 +2000,8 @@
 (type (: (Pairwise %s) (Struct (: inner %s))))
 
 (: (-> %s (Pairwise %s)) (where (Iterable %s)))
-(defun (pairwise s) (Pairwise (inner s)))
+(defun (pairwise s)
+  (Pairwise (inner s)))
 
 ;; The cursor is the element before and the inner cursor at the one after.
 ;; `start` takes the first element, so it asks the inner `done?` of the first
@@ -1773,8 +2017,12 @@
   (defun (iterable-start w)
     (def k (iterable-start (record-ref w inner)))
     (def empty (iterable-done? (record-ref w inner) k))
-    (Tuple (if empty None (Some (iterable-current (record-ref w inner) k)))
-           (if empty k (iterable-next (record-ref w inner) k))))
+    (Tuple (if empty
+               None
+               (Some (iterable-current (record-ref w inner) k)))
+           (if empty
+               k
+               (iterable-next (record-ref w inner) k))))
   (defun (iterable-done? w c)
     (def (Tuple before k) c)
     (or (none? before) (iterable-done? (record-ref w inner) k)))
@@ -1783,8 +2031,7 @@
     (Tuple (option-ref before) (iterable-current (record-ref w inner) k)))
   (defun (iterable-next w c)
     (def (Tuple _ k) c)
-    (Tuple (Some (iterable-current (record-ref w inner) k))
-           (iterable-next (record-ref w inner) k)))
+    (Tuple (Some (iterable-current (record-ref w inner) k)) (iterable-next (record-ref w inner) k)))
   (defun (iterable-end w c)
     (def (Tuple _ k) c)
     (iterable-end (record-ref w inner) k))
@@ -1794,10 +2041,12 @@
 
 ;; The elements of `first` and then those of `second`: two iterables with one
 ;; element type, of any two kinds.
-(type (: (Chained %a %b) (Struct (: first %a) (: second %b))))
+(type (: (Chained %a %b) (Struct (: first %a)
+                                 (: second %b))))
 
 (: (-> %a %b (Chained %a %b)) (where (Iterable %a #:elem %e) (Iterable %b #:elem %e)))
-(defun (chain a b) (Chained (first a) (second b)))
+(defun (chain a b)
+  (Chained (first a) (second b)))
 
 ;; The cursor is `(Tuple on-second? cur-a cur-b)`.
 ;;
@@ -1844,22 +2093,27 @@
 ;; `item`, `times` times, or without end when `times` is `repeat-endless`,
 ;; which is what `in-repeat` gives when no count is written. It is
 ;; `int-min`, which no count written as a count is.
-(type (: (Repeated %a) (Struct (: item %a) (: times int))))
+(type (: (Repeated %a) (Struct (: item %a)
+                               (: times int))))
 
 (: int)
 (def repeat-endless -2147483648)
 
 (: (-> %a (#:times int) (Repeated %a)))
-(defun (in-repeat x #:times repeat-endless) (Repeated (item x) (times times)))
+(defun (in-repeat x #:times repeat-endless)
+  (Repeated (item x) (times times)))
 
 (impl (Iterable (Repeated %a))
   (type %elem %a)
   (type %cursor int)
-  (defun (iterable-start r) 0)
+  (defun (iterable-start r)
+    0)
   (defun (iterable-done? r i)
     (and (not (= (record-ref r times) repeat-endless)) (>= i (record-ref r times))))
-  (defun (iterable-current r i) (record-ref r item))
-  (defun (iterable-next r i) (+ i 1)))
+  (defun (iterable-current r i)
+    (record-ref r item))
+  (defun (iterable-next r i)
+    (+ i 1)))
 
 ;; The elements of `inner`, over and over: when a walk of it ends, the next
 ;; one starts. It ends when a walk yields nothing, so the cycle of an empty
@@ -1867,7 +2121,8 @@
 (type (: (Cycled %s) (Struct (: inner %s))))
 
 (: (-> %s (Cycled %s)) (where (Iterable %s)))
-(defun (in-cycle s) (Cycled (inner s)))
+(defun (in-cycle s)
+  (Cycled (inner s)))
 
 ;; `done?` of the inner iterable is asked once for each of its cursors, as
 ;; the protocol wants: a cursor over a sequence pulls when asked. So `next`
@@ -1879,11 +2134,13 @@
 (impl (Iterable (Cycled %s)) (where (Iterable %s))
   (type %elem (assoc Iterable elem %s))
   (type %cursor (Tuple bool (assoc Iterable cursor %s)))
-  (defun (iterable-start y) (Tuple #f (iterable-start (record-ref y inner))))
+  (defun (iterable-start y)
+    (Tuple #f (iterable-start (record-ref y inner))))
   (defun (iterable-done? y c)
     (def (Tuple asked k) c)
     (and (not asked) (iterable-done? (record-ref y inner) k)))
-  (defun (iterable-current y c) (iterable-current (record-ref y inner) (snd c)))
+  (defun (iterable-current y c)
+    (iterable-current (record-ref y inner) (snd c)))
   (defun (iterable-next y c)
     (def (Tuple _ k) c)
     (def n (iterable-next (record-ref y inner) k))
@@ -1896,7 +2153,6 @@
   (defun (iterable-cleanup y c)
     (def (Tuple _ k) c)
     (iterable-cleanup (record-ref y inner) k)))
-
 
 ;; ---------------------------------------------------------------------------
 ;; Cursor
@@ -1916,13 +2172,18 @@
 (impl (Cursor string)
   (type %elem char)
   (type %cursor StringCursor)
-  (defun (cursor-start s) (string-cursor-start s))
-  (defun (cursor-end s) (string-cursor-end s))
-  (defun (cursor-end? s c) (string-cursor-end? s c))
-  (defun (cursor-ref s c) (string-cursor-ref s c))
-  (defun (cursor-next s c) (string-cursor-next s c))
-  (defun (cursor-prev s c) (string-cursor-prev s c)))
-
+  (defun (cursor-start s)
+    (string-cursor-start s))
+  (defun (cursor-end s)
+    (string-cursor-end s))
+  (defun (cursor-end? s c)
+    (string-cursor-end? s c))
+  (defun (cursor-ref s c)
+    (string-cursor-ref s c))
+  (defun (cursor-next s c)
+    (string-cursor-next s c))
+  (defun (cursor-prev s c)
+    (string-cursor-prev s c)))
 
 ;; ---------------------------------------------------------------------------
 ;; Lists, where the callback may suspend
@@ -2006,68 +2267,61 @@
 ;; in order, and `clr-vec-map-shape` lays them out as `v` is laid out. So the
 ;; halves of a split, mapped in bjoroutines, merge back into a dense vec.
 (defbjouble (vec-map f v)
-  
+
   (#:sync (clr-vec-map f v))
-  (#:bjo
-    (def out (make-array (vec-length v)))
-    (loop (:for elem v)
-          (:with i 0 (+ i 1))
-          (:do (array-set! out i (f elem))))
-    (clr-vec-map-shape v out)))
+  (#:bjo (def out (make-array (vec-length v))) (loop (:for elem v)
+                                                     (:with i 0 (+ i 1))
+                                                     (:do (array-set! out i (f elem))))
+         (clr-vec-map-shape v out)))
 
 (: (-> (-?-> %a bool) (Vec %a) (Vec %a)) #:inline)
 (defbjouble (vec-filter keep? v)
-  
+
   (#:sync (clr-vec-filter keep? v))
-  (#:bjo
-    (loop (:for elem v)
-          (:when (keep? elem))
-          (:acc acc (vecing/small elem)))))
+  (#:bjo (loop (:for elem v)
+               (:when (keep? elem))
+               (:acc acc (vecing/small elem)))))
 
 (: (-> (-?-> %a %b %b) %b (Vec %a) %b) #:inline)
 (defbjouble (vec-fold f init v)
-  
+
   (#:sync (clr-vec-fold f init v))
-  (#:bjo
-    (loop (:for elem v)
-          (:acc acc (folding init (f elem acc))))))
+  (#:bjo (loop (:for elem v)
+               (:acc acc (folding init (f elem acc))))))
 
 ;; Vec reduce.
 (: (-> (-?-> %a %a %a) (Vec %a) %a))
 (defbjouble (vec-reduce f v)
   (#:sync (clr-vec-reduce f v))
-  (#:bjo
-    (ignore (clr-vec-check-reduce v))
-    (let go ((c (vec-cursor-slice v 1 (- (vec-length v) 1))) (acc (vec-ref v 0)))
-      (if (vec-cursor-done? c)
-          acc
-          (go (vec-cursor-next c) (f (vec-cursor-current c) acc))))))
+  (#:bjo (ignore (clr-vec-check-reduce v)) (let go ((c (vec-cursor-slice v 1 (- (vec-length v) 1)))
+                                                    (acc (vec-ref v 0)))
+                                             (if (vec-cursor-done? c)
+                                                 acc
+                                                 (go (vec-cursor-next c)
+                                                     (f (vec-cursor-current c) acc))))))
 
 ;; The elements from `#:from` up to `#:to`, front to back. Raises
 ;; ArgumentOutOfRangeException, before `f` is first called, unless
 ;; 0 <= from <= to <= length.
 (: (-> (-?-> %a Unit) (Vec %a) (#:from int) (#:to int) Unit) #:inline)
 (defbjouble (vec-for-each f v #:from 0 #:to (vec-length v))
-  
+
   (#:sync (clr-vec-for-each f v from to))
-  (#:bjo
-    (ignore (clr-vec-check-range v from to))
-    (let go ((c (vec-cursor-slice v from (- to from))))
-      (if (vec-cursor-done? c)
-          unit
-          (let ()
-            (ignore (f (vec-cursor-current c)))
-            (go (vec-cursor-next c)))))))
+  (#:bjo (ignore (clr-vec-check-range v from to)) (let go ((c (vec-cursor-slice v from (- to from))))
+                                                    (if (vec-cursor-done? c)
+                                                        unit
+                                                        (let ()
+                                                          (ignore (f (vec-cursor-current c)))
+                                                          (go (vec-cursor-next c)))))))
 
 ;; Vec iter.
 (: (-> (-?-> %a bool) (Vec %a) bool) #:inline)
 (defbjouble (vec-iter f v)
-  
+
   (#:sync (clr-vec-iter f v))
-  (#:bjo
-    (loop (:for elem v)
-          (:acc acc (folding #t (f elem)))
-          (:finish (not acc)))))
+  (#:bjo (loop (:for elem v)
+               (:acc acc (folding #t (f elem)))
+               (:finish (not acc)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Seqs, where the callback may suspend
@@ -2094,7 +2348,6 @@
             (go))
           unit))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; Conversions
 ;; ---------------------------------------------------------------------------
@@ -2104,7 +2357,8 @@
 (defun (list->map xs)
   ;; A builder of the list's length, so that it does not grow.
   (def b (hm-builder-with (eq-comparer) (max 1 (list-length xs))))
-  (loop (:for (Tuple k v) xs) (:do (mapbuilder-add! b k v)))
+  (loop (:for (Tuple k v) xs)
+        (:do (mapbuilder-add! b k v)))
   (mapbuilder->map b))
 
 (: (-> (List %a) (Vec %a)))
@@ -2119,7 +2373,8 @@
 (defun (vec->map v)
   ;; A builder of the vec's length, so that it does not grow.
   (def b (hm-builder-with (eq-comparer) (max 1 (vec-length v))))
-  (loop (:for (Tuple k x) v) (:do (mapbuilder-add! b k x)))
+  (loop (:for (Tuple k x) v)
+        (:do (mapbuilder-add! b k x)))
   (mapbuilder->map b))
 
 ;; Faster than a loop over the indices: `vec-for-each` walks the vec itself,
@@ -2127,7 +2382,7 @@
 (: (-> (Vec %a) (List %a)))
 (defun (vec->list v)
   (def b (listbuilder-empty))
-  (vec-for-each (fun (elem) (listbuilder-add! b elem)) v )
+  (vec-for-each (fun (elem) (listbuilder-add! b elem)) v)
   (listbuilder->list b))
 
 (: (-> (Map %k %v) (Vec (Tuple %k %v))))
@@ -2137,7 +2392,6 @@
 ;; vec-insert, vec-remove-at, vec-slice and vec-split, over the runtime's RRB
 ;; nodes.
 (include "vec.protobjo")
-
 
 ;; --------------------------------------------------------------------------
 ;; Results and options
@@ -2208,7 +2462,10 @@
 (: (-> (-?-> %a bool) (Option %a) (Option %a)))
 (defun (option-filter pred opt)
   (match opt
-    ((Some v) (if (pred v) opt None))
+    ((Some v)
+     (if (pred v)
+         opt
+         None))
     (None None)))
 
 ;; `opt` if it is a `Some`, else `other`. Both are evaluated, as for any
@@ -2230,12 +2487,13 @@
 
 (: (-> (Tuple %a %b) %a))
 (defun (fst p)
-  (match p ((Tuple a _) a)))
+  (match p
+    ((Tuple a _) a)))
 
 (: (-> (Tuple %a %b) %b))
 (defun (snd p)
-  (match p ((Tuple _ b) b)))
-
+  (match p
+    ((Tuple _ b) b)))
 
 ;; --------------------------------------------------------------------------
 ;; Boxes - a 1-width array
@@ -2263,15 +2521,12 @@
 
 (: (-> (Box %a) %a))
 (defun (box-ref b)
-  (-> (struct-ref b field)
-      (array-ref & 0)))
+  (-> (struct-ref b field) (array-ref & 0)))
 
 (: (-> (Box %a) %a Unit))
 (defun (box-set! box val)
   (def arr (struct-ref box field))
   (array-set! arr 0 val))
-
-
 
 ;; --------------------------------------------------------------------------
 ;; Refable and Derefable trait - a "generic" ref function
@@ -2428,15 +2683,18 @@
   (type %out)
   (: deref (-> %a %out))
   (: try-deref (-> %a (Option %out)))
-  (defun (try-deref p) (Some (deref p))))
+  (defun (try-deref p)
+    (Some (deref p))))
 
 (impl (Derefable (Param %b))
   (type %out %b)
-  (defun (deref p) (parameter-ref p)))
+  (defun (deref p)
+    (parameter-ref p)))
 
 (impl (Derefable (Box %b))
   (type %out %b)
-  (defun (deref b) (box-ref b)))
+  (defun (deref b)
+    (box-ref b)))
 
 ;; Derefable! — the write in place that goes with `deref`
 ;;
@@ -2451,8 +2709,8 @@
 
 (impl (Derefable! (Box %b))
   (type %in %b)
-  (defun (deref-set! b x) (box-set! b x)))
-
+  (defun (deref-set! b x)
+    (box-set! b x)))
 
 ;; ---------------------------------------------------------------------------
 ;; Maths
@@ -2470,7 +2728,8 @@
   (clr-sqrt (: System.Math.Sqrt (-> double double))))
 
 (: sqrt (-> (double %u^2) (double %u)))
-(defun (sqrt x) (cast (double %u) (clr-sqrt (cast double x))))
+(defun (sqrt x)
+  (cast (double %u) (clr-sqrt (cast double x))))
 
 ;; ---------------------------------------------------------------------------
 ;; Strings, conversions, files and paths
@@ -2504,15 +2763,18 @@
   (clr-parse-long-radix (: Bjolang.Runtime.BjoNum.ParseRadixLong (-> string int long))))
 
 (: (-> string string string))
-(defun (string-append a b) (clr-concat a b))
+(defun (string-append a b)
+  (clr-concat a b))
 
 ;; Variadic concatenation.
 (: (-> #:rest string string))
-(defun (str #:rest parts) (clr-concat-all parts))
+(defun (str #:rest parts)
+  (clr-concat-all parts))
 
 ;; String length in storage units: bytes of UTF-8.
 (: (-> string int))
-(defun (string-length s) (.-ByteLength s))
+(defun (string-length s)
+  (.-ByteLength s))
 
 ;; --- Searching and rewriting -----------------------------------------------
 ;; Ordinal: bytes of UTF-8 compared as they are.
@@ -2524,51 +2786,64 @@
   (clr-replace     (: BjolangRuntime.StringReplace)))
 
 (: (-> string string bool))
-(defun (string-contains? s needle) (clr-contains s needle))
+(defun (string-contains? s needle)
+  (clr-contains s needle))
 
 (: (-> string string bool))
-(defun (string-starts-with? s prefix) (clr-starts-with s prefix))
+(defun (string-starts-with? s prefix)
+  (clr-starts-with s prefix))
 
 (: (-> string string bool))
-(defun (string-ends-with? s suffix) (clr-ends-with s suffix))
+(defun (string-ends-with? s suffix)
+  (clr-ends-with s suffix))
 
 ;; String replace.
 (: (-> string string string string))
-(defun (string-replace s old new) (clr-replace s old new))
+(defun (string-replace s old new)
+  (clr-replace s old new))
 
 ;; --- Case ------------------------------------------------------------------
 ;; Invariant case.
 (: (-> string string))
-(defun (string-upcase s) (.ToUpperInvariant s))
+(defun (string-upcase s)
+  (.ToUpperInvariant s))
 
 (: (-> string string))
-(defun (string-downcase s) (.ToLowerInvariant s))
+(defun (string-downcase s)
+  (.ToLowerInvariant s))
 
 ;; --- Trimming and padding --------------------------------------------------
 ;; Trim whitespace.
 (: (-> string string))
-(defun (string-trim s) (.Trim s))
+(defun (string-trim s)
+  (.Trim s))
 
 (: (-> string string))
-(defun (string-trim-left s) (.TrimStart s))
+(defun (string-trim-left s)
+  (.TrimStart s))
 
 (: (-> string string))
-(defun (string-trim-right s) (.TrimEnd s))
+(defun (string-trim-right s)
+  (.TrimEnd s))
 
 ;; The /slice forms share the string's bytes rather than copying them, so
 ;; what they answer keeps the whole string alive. `string-copy` gives such a
 ;; string bytes of its own, and is the string itself when it has them.
 (: (-> string string))
-(defun (string-trim/slice s) (.TrimSlice s))
+(defun (string-trim/slice s)
+  (.TrimSlice s))
 
 (: (-> string string))
-(defun (string-trim-left/slice s) (.TrimStartSlice s))
+(defun (string-trim-left/slice s)
+  (.TrimStartSlice s))
 
 (: (-> string string))
-(defun (string-trim-right/slice s) (.TrimEndSlice s))
+(defun (string-trim-right/slice s)
+  (.TrimEndSlice s))
 
 (: (-> string string))
-(defun (string-copy s) (.Copy s))
+(defun (string-copy s)
+  (.Copy s))
 
 ;; --- Taking and dropping characters ----------------------------------------
 ;; A count of characters from one end of a string. The cursors walk the count,
@@ -2588,7 +2863,8 @@
 ;; The cursor n characters after c, or the end when there are fewer.
 (: (-> string StringCursor int StringCursor))
 (defun (forward-at-most s c n)
-  (let go ((c c) (k n))
+  (let go ((c c)
+           (k n))
     (if (or (= k 0) (string-cursor-end? s c))
         c
         (go (string-cursor-next s c) (- k 1)))))
@@ -2597,7 +2873,8 @@
 (: (-> string StringCursor int StringCursor))
 (defun (back-at-most s c n)
   (def start (string-cursor-start s))
-  (let go ((c c) (k n))
+  (let go ((c c)
+           (k n))
     (if (or (= k 0) (string-cursor=? c start))
         c
         (go (string-cursor-prev s c) (- k 1)))))
@@ -2605,14 +2882,20 @@
 (: (-> string StringCursor int StringCursor))
 (defun (string-cursor-forward s c n)
   (check-count "string-cursor-forward" n)
-  (let go ((c c) (k n))
-    (if (= k 0) c (go (string-cursor-next s c) (- k 1)))))
+  (let go ((c c)
+           (k n))
+    (if (= k 0)
+        c
+        (go (string-cursor-next s c) (- k 1)))))
 
 (: (-> string StringCursor int StringCursor))
 (defun (string-cursor-back s c n)
   (check-count "string-cursor-back" n)
-  (let go ((c c) (k n))
-    (if (= k 0) c (go (string-cursor-prev s c) (- k 1)))))
+  (let go ((c c)
+           (k n))
+    (if (= k 0)
+        c
+        (go (string-cursor-prev s c) (- k 1)))))
 
 (: (-> string int string))
 (defun (string-take s n)
@@ -2658,17 +2941,19 @@
 ;; not in s.
 (: (-> string string (Option (Tuple string string))))
 (defun (string-split-once s sep)
-  (option-map (fun (c)
-                (Tuple (substring s (string-cursor-start s) c)
-                       (substring s (string-cursor-forward s c (string-count sep)) (string-cursor-end s))))
-              (string-search s sep)))
+  (option-map
+   (fun (c)
+     (Tuple (substring s (string-cursor-start s) c)
+            (substring s (string-cursor-forward s c (string-count sep)) (string-cursor-end s))))
+   (string-search s sep)))
 
 (: (-> string string (Option (Tuple string string))))
 (defun (string-split-once/slice s sep)
-  (option-map (fun (c)
-                (Tuple (substring/slice s (string-cursor-start s) c)
-                       (substring/slice s (string-cursor-forward s c (string-count sep)) (string-cursor-end s))))
-              (string-search s sep)))
+  (option-map
+   (fun (c)
+     (Tuple (substring/slice s (string-cursor-start s) c)
+            (substring/slice s (string-cursor-forward s c (string-count sep)) (string-cursor-end s))))
+   (string-search s sep)))
 
 ;; Pad width.
 (: (-> string int (#:with char) string))
@@ -2702,18 +2987,21 @@
   (clr-split/slices (: BjolangRuntime.SplitSlicesToVec (-> string string (Vec string)))))
 
 (: (-> string string (Vec string)))
-(defun (string-split s sep) (clr-split s sep))
+(defun (string-split s sep)
+  (clr-split s sep))
 
 ;; The fields as slices of `s`, sharing its bytes.
 (: (-> string string (Vec string)))
-(defun (string-split/slice s sep) (clr-split/slices s sep))
+(defun (string-split/slice s sep)
+  (clr-split/slices s sep))
 
 (: (-> (Vec string) string string))
 (defun (string-join parts sep)
   (def b (stringbuilder-empty))
   (loop (:with first? #t #f)
         (:for part parts)
-        (:do (unless first? (stringbuilder-add-string! b sep))
+        (:do (unless first?
+               (stringbuilder-add-string! b sep))
              (stringbuilder-add-string! b part)))
   (stringbuilder->string b))
 
@@ -2727,59 +3015,79 @@
 
 (: (-> int (#:radix int) (#:upper bool) string))
 (defun (int->string n #:radix 10 #:upper #f)
-  (if (= radix 10) (clr-int-string n) (clr-int-radix n radix upper)))
+  (if (= radix 10)
+      (clr-int-string n)
+      (clr-int-radix n radix upper)))
 
 (: (-> long (#:radix int) (#:upper bool) string))
 (defun (long->string n #:radix 10 #:upper #f)
-  (if (= radix 10) (clr-long-string n) (clr-long-radix n radix upper)))
+  (if (= radix 10)
+      (clr-long-string n)
+      (clr-long-radix n radix upper)))
 
 (: (-> double string))
-(defun (double->string n) (clr-double-string n))
+(defun (double->string n)
+  (clr-double-string n))
 
 (: (-> byte string))
-(defun (byte->string n) (clr-byte-string n))
+(defun (byte->string n)
+  (clr-byte-string n))
 
 ;; Number to string.
 (: (-> int string))
-(defun (number->string n) (int->string n))
+(defun (number->string n)
+  (int->string n))
 
 (: (-> string (#:radix int) int))
 (defun (string->int s #:radix 10)
-  (if (= radix 10) (clr-parse-int s) (clr-parse-int-radix s radix)))
+  (if (= radix 10)
+      (clr-parse-int s)
+      (clr-parse-int-radix s radix)))
 
 (: (-> string (#:radix int) long))
 (defun (string->long s #:radix 10)
-  (if (= radix 10) (clr-parse-long s) (clr-parse-long-radix s radix)))
+  (if (= radix 10)
+      (clr-parse-long s)
+      (clr-parse-long-radix s radix)))
 
 (: (-> string double))
-(defun (string->double s) (clr-parse-double s))
+(defun (string->double s)
+  (clr-parse-double s))
 
 ;; The four numbers past the eight. A decimal is written and read with a point
 ;; and no exponent when it has none: (decimal->string 1.50M) is "1.50", as
 ;; .NET keeps a decimal's scale.
 (: (-> decimal string))
-(defun (decimal->string n) (clr-format-number n))
+(defun (decimal->string n)
+  (clr-format-number n))
 
 (: (-> string decimal))
-(defun (string->decimal s) (clr-parse-decimal s))
+(defun (string->decimal s)
+  (clr-parse-decimal s))
 
 (: (-> bigint string))
-(defun (bigint->string n) (clr-format-number n))
+(defun (bigint->string n)
+  (clr-format-number n))
 
 (: (-> string bigint))
-(defun (string->bigint s) (clr-parse-bigint s))
+(defun (string->bigint s)
+  (clr-parse-bigint s))
 
 (: (-> int128 string))
-(defun (int128->string n) (clr-format-number n))
+(defun (int128->string n)
+  (clr-format-number n))
 
 (: (-> string int128))
-(defun (string->int128 s) (clr-parse-int128 s))
+(defun (string->int128 s)
+  (clr-parse-int128 s))
 
 (: (-> uint128 string))
-(defun (uint128->string n) (clr-format-number n))
+(defun (uint128->string n)
+  (clr-format-number n))
 
 (: (-> string uint128))
-(defun (string->uint128 s) (clr-parse-uint128 s))
+(defun (string->uint128 s)
+  (clr-parse-uint128 s))
 
 ;; --- Bytes and strings ---
 ;;
@@ -2801,7 +3109,9 @@
 
 ;; Why bytes did not decode: the offset of the first bytes that did not, in
 ;; the array that was given, those bytes, and the name of the encoding.
-(type (: DecodeError (Record (: offset int) (: bytes (Vec byte)) (: encoding string))))
+(type (: DecodeError (Record (: offset int)
+                             (: bytes (Vec byte))
+                             (: encoding string))))
 
 (import/extern
   (clr-utf-8          (: Bjolang.Runtime.Encodings.Cp65001 #:get))
@@ -2849,7 +3159,11 @@
 ;; As `bytes->string`, with `replace` for each sequence that does not
 ;; decode, so it never fails.
 (: (-> (Array byte) (#:encoding Encoding) (#:start int) (#:end int) (#:replace char) string))
-(defun (bytes->string/lossy bytes #:encoding clr-utf-8 #:start 0 #:end (array-length bytes) #:replace #\xFFFD)
+(defun (bytes->string/lossy bytes
+                            #:encoding clr-utf-8
+                            #:start 0
+                            #:end (array-length bytes)
+                            #:replace #\xFFFD)
   (clr-decode/replace bytes start end encoding replace))
 
 ;; The string's bytes in `#:encoding`, without a byte order mark. To UTF-8
@@ -2882,39 +3196,48 @@
 ;; ---------------------------------------------------------------------------
 ;; Character ordering.
 (: (-> char char bool))
-(defun (char=? a b) (= a b))
+(defun (char=? a b)
+  (= a b))
 
 (: (-> char char bool))
-(defun (char<? a b) (< a b))
+(defun (char<? a b)
+  (< a b))
 
 (: (-> char char bool))
-(defun (char>? a b) (> a b))
+(defun (char>? a b)
+  (> a b))
 
 (: (-> char char bool))
-(defun (char<=? a b) (<= a b))
+(defun (char<=? a b)
+  (<= a b))
 
 (: (-> char char bool))
-(defun (char>=? a b) (>= a b))
-
+(defun (char>=? a b)
+  (>= a b))
 
 ;; ---------------------------------------------------------------------------
 ;; String cursors
 ;; ---------------------------------------------------------------------------
 ;; String cursors.
 (: (-> StringCursor StringCursor bool))
-(defun (string-cursor=? a b) (= a b))
+(defun (string-cursor=? a b)
+  (= a b))
 
 (: (-> StringCursor StringCursor bool))
-(defun (string-cursor<? a b) (< a b))
+(defun (string-cursor<? a b)
+  (< a b))
 
 (: (-> StringCursor StringCursor bool))
-(defun (string-cursor>? a b) (> a b))
+(defun (string-cursor>? a b)
+  (> a b))
 
 (: (-> StringCursor StringCursor bool))
-(defun (string-cursor<=? a b) (<= a b))
+(defun (string-cursor<=? a b)
+  (<= a b))
 
 (: (-> StringCursor StringCursor bool))
-(defun (string-cursor>=? a b) (>= a b))
+(defun (string-cursor>=? a b)
+  (>= a b))
 
 ;; --- Traversal -------------------------------------------------------------
 
@@ -2924,7 +3247,8 @@
 ;; rather than twice.
 (: (-> (-> char %a %a) %a string %a))
 (defun (string-fold f init s)
-  (let loop ((c (string-cursor-start s)) (acc init))
+  (let loop ((c (string-cursor-start s))
+             (acc init))
     (if (string-cursor-end? s c)
         acc
         (match (string-cursor-ref+next s c)
@@ -2933,7 +3257,8 @@
 ;; String fold right.
 (: (-> (-> char %a %a) %a string %a))
 (defun (string-fold-right f init s)
-  (let loop ((c (string-cursor-end s)) (acc init))
+  (let loop ((c (string-cursor-end s))
+             (acc init))
     (if (string-cursor=? c (string-cursor-start s))
         acc
         (let ((p (string-cursor-prev s c)))
@@ -2981,7 +3306,8 @@
 
 ;; Reverse string.
 (: (-> string string))
-(defun (string-reverse s) (.Reverse s))
+(defun (string-reverse s)
+  (.Reverse s))
 ;; One input port type and one output port type, as in Racket: a port is
 ;; bytes. Text reads decode UTF-8 from an input port, and text writes encode
 ;; UTF-8 into an output port, so byte and text operations mix on one port.
@@ -3004,7 +3330,6 @@
 ;; Here rather than beside those implementations because `in-port` names
 ;; `InputPort`, which is declared just above.
 (include "iterators.protobjo")
-
 
 ;; ---------------------------------------------------------------------------
 ;; Collection
@@ -3133,7 +3458,6 @@
   (defun (empty? s)
     (seq-empty? s)))
 
-
 ;;----------------------------------------------------------------------------
 ;; Addable! trait
 ;; ---------------------------------------------------------------------------
@@ -3152,8 +3476,7 @@
   ;; yields *is* the element the sink takes, which no function-level clause
   ;; can say. The cursor is nobody's business, so it is pinned to a fresh
   ;; variable.
-  (: add-all! (-> %coll %s void)
-     (where (Iterable %s #:elem %elem #:cursor %k)))
+  (: add-all! (-> %coll %s void) (where (Iterable %s #:elem %elem #:cursor %k)))
   (defun (add-all! coll xs)
     (let go ((cur (iterable-start xs)))
       (unless (iterable-done? xs cur)
@@ -3208,8 +3531,7 @@
 (def/trait (Addable %coll)
   (type %elem)
   (: add (-> %coll %elem %coll))
-  (: add-all (-> %coll %s %coll)
-     (where (Iterable %s #:elem %elem #:cursor %k)))
+  (: add-all (-> %coll %s %coll) (where (Iterable %s #:elem %elem #:cursor %k)))
   ;; A mutable cell rather than a named-let accumulator, deliberately: the
   ;; cell is initialised from `coll`, so its type is the implementor's from
   ;; the first line, and `(add acc e)` resolves before the loop is even
@@ -3238,8 +3560,6 @@
 ;; As with the sinks, the set and ordered-collection impls live with their
 ;; types, in (std hashset), (std orderedset) and (std orderedmap).
 
-
-
 ;; ---------------------------------------------------------------------------
 ;; Control
 ;; ---------------------------------------------------------------------------
@@ -3250,15 +3570,23 @@
 ;; `(if-let ((name expr)) then else)`
 ;;
 ;; `name` bound to the `Some` value of `expr`, or `else` on a `None`.
-(def/macro (if-let form inject compare)
+(def/macro (if-let form
+             inject
+             compare)
   (syntax-match form
     ((_ (name value) then else)
-     #'(match ,value ((Some ,name) ,then) (None ,else)))
-    (bad (syntax-error bad "if-let takes one binding, a then and an else: (if-let (name expr) then else)"))))
+     #'(match ,value
+         ((Some ,name) ,then)
+         (None ,else)))
+    (bad
+     (syntax-error bad
+                   "if-let takes one binding, a then and an else: (if-let (name expr) then else)"))))
 
 ;; `(when-let (name expr) body ...)`
 ;; The body run with `name` bound to a `Some` value, and nothing on `None`.
-(def/macro (when-let form inject compare)
+(def/macro (when-let form
+             inject
+             compare)
   (syntax-match form
     ((_ (name value) first body ...)
      ;; Evaluate value once.
@@ -3267,7 +3595,8 @@
            (let ((,name (option-ref found)))
              ,first
              ,@body))))
-    (bad (syntax-error bad "when-let takes one binding and a body: (when-let (name expr) body ...)"))))
+    (bad
+     (syntax-error bad "when-let takes one binding and a body: (when-let (name expr) body ...)"))))
 
 ;; `(some-> value step ...)` — `->`, stopping at the first `None`.
 ;;
@@ -3287,8 +3616,8 @@
     ((Cons step rest)
      ;; Step binding.
      #'(match (-> ,value ,step)
-        (None None)
-        ((Some it) ,(some-steps #'it rest))))))
+         (None None)
+         ((Some it) ,(some-steps #'it rest))))))
 
 ;; `(try-> value step ...)` — `->`, stopping at the first `Err`.
 ;;
@@ -3309,8 +3638,8 @@
      ;; The error is rebuilt rather than passed along, because the two Results
      ;; differ in their Ok type.
      #'(match (-> ,value ,step)
-        ((Err e) (Err e))
-        ((Ok it) ,(try-steps #'it rest))))))
+         ((Err e) (Err e))
+         ((Ok it) ,(try-steps #'it rest))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Collector macros and the collectors they expand to
@@ -3357,14 +3686,17 @@
 ;; - `expr` is evaluated once a round. With `#:when cond`, a round `cond` does
 ;;   not hold for does not evaluate it.
 (def/acc-clause (someing form inject compare)
-  (expand-acc-clause form "someing takes one Option: (:acc found (someing (map-try-ref m k))), or {someing (map-try-ref m k) (:for k ks)}"
-    (fun (name args when)
-      (match args
-        ((Cons expr Nil)
-         (Some #'(begin (:let got ,(acc-gated when expr #'None))
-                        (:acc ,@name (folding None got))
-                        (:finish (some? got)))))
-        (_ None)))))
+  (expand-acc-clause
+   form
+   "someing takes one Option: (:acc found (someing (map-try-ref m k))), or {someing (map-try-ref m k) (:for k ks)}"
+   (fun (name args when)
+     (match args
+       ((Cons expr Nil)
+        (Some #'(begin
+                  (:let got ,(acc-gated when expr #'None))
+                  (:acc ,@name (folding None got))
+                  (:finish (some? got)))))
+       (_ None)))))
 
 ;; `(:acc found (finding x))`: `(Some x)` for the first round that reaches it,
 ;; which ends the loop, or `None` when the loop ends first.
@@ -3373,39 +3705,47 @@
 ;; - With `#:when cond`, `cond` is evaluated once, and gates both: a round it
 ;;   does not hold for neither finds nor finishes.
 (def/acc-clause (finding form inject compare)
-  (expand-acc-clause form "finding takes one expression: (:acc found (finding x)), or {finding x (:for x xs)}"
-    (fun (name args when)
-      (match args
-        ((Cons x Nil) (Some (acc-form name #'(someing (Some ,x)) when)))
-        (_ None)))))
+  (expand-acc-clause
+   form
+   "finding takes one expression: (:acc found (finding x)), or {finding x (:for x xs)}"
+   (fun (name args when)
+     (match args
+       ((Cons x Nil) (Some (acc-form name #'(someing (Some ,x)) when)))
+       (_ None)))))
 
 ;; `(:acc all? (anding test))`: whether `test` holds in every round. The
 ;; first round it does not hold in ends the loop. #t for no rounds.
 ;;
 ;; - With `#:when cond`, a round `cond` does not hold for is not tested.
 (def/acc-clause (anding form inject compare)
-  (expand-acc-clause form "anding takes one test: (:acc all? (anding (even? x))), or {anding (even? x) (:for x xs)}"
-    (fun (name args when)
-      (match args
-        ((Cons test Nil)
-         (Some #'(begin (:let ok? ,(acc-gated when test #'#t))
-                        (:acc ,@name (folding #t ok?))
-                        (:finish (not ok?)))))
-        (_ None)))))
+  (expand-acc-clause
+   form
+   "anding takes one test: (:acc all? (anding (even? x))), or {anding (even? x) (:for x xs)}"
+   (fun (name args when)
+     (match args
+       ((Cons test Nil)
+        (Some #'(begin
+                  (:let ok? ,(acc-gated when test #'#t))
+                  (:acc ,@name (folding #t ok?))
+                  (:finish (not ok?)))))
+       (_ None)))))
 
 ;; `(:acc any? (oring test))`: whether `test` holds in some round. The first
 ;; round it holds in ends the loop. #f for no rounds.
 ;;
 ;; - With `#:when cond`, a round `cond` does not hold for is not tested.
 (def/acc-clause (oring form inject compare)
-  (expand-acc-clause form "oring takes one test: (:acc any? (oring (even? x))), or {oring (even? x) (:for x xs)}"
-    (fun (name args when)
-      (match args
-        ((Cons test Nil)
-         (Some #'(begin (:let ok? ,(acc-gated when test #'#f))
-                        (:acc ,@name (folding #f ok?))
-                        (:finish ok?))))
-        (_ None)))))
+  (expand-acc-clause
+   form
+   "oring takes one test: (:acc any? (oring (even? x))), or {oring (even? x) (:for x xs)}"
+   (fun (name args when)
+     (match args
+       ((Cons test Nil)
+        (Some #'(begin
+                  (:let ok? ,(acc-gated when test #'#f))
+                  (:acc ,@name (folding #f ok?))
+                  (:finish ok?))))
+       (_ None)))))
 
 ;; `(:acc firsts (taking n x))`: a list of the first `n` values, in order. The
 ;; round that takes the `n`th ends the loop.
@@ -3415,16 +3755,23 @@
 ;; - An `n` of 0 or less takes nothing, but still ends the loop only after
 ;;   its first round.
 (def/acc-clause (taking form inject compare)
-  (expand-acc-clause form "taking takes a count and an expression: (:acc firsts (taking 3 x)), or {taking 3 x (:for x xs)}"
-    (fun (name args when)
-      (def acc (match name ((Cons n Nil) n) (_ #'taken)))
-      (match args
-        ((Cons n (Cons x Nil))
-         (Some #'(begin (:let limit ,n)
-                        ,(acc-form (list acc) #'(listing ,x)
-                                   (Some (acc-gated when #'(< (length ,acc) limit) #'#f)))
-                        (:finish (>= (length ,acc) limit)))))
-        (_ None)))))
+  (expand-acc-clause
+   form
+   "taking takes a count and an expression: (:acc firsts (taking 3 x)), or {taking 3 x (:for x xs)}"
+   (fun (name args when)
+     (def acc
+       (match name
+         ((Cons n Nil) n)
+         (_ #'taken)))
+     (match args
+       ((Cons n (Cons x Nil))
+        (Some #'(begin
+                  (:let limit ,n)
+                  ,(acc-form (list acc)
+                             #'(listing ,x)
+                             (Some (acc-gated when #'(< (length ,acc) limit) #'#f)))
+                  (:finish (>= (length ,acc) limit)))))
+       (_ None)))))
 
 ;; `(:acc best (maximizing-by key x))`: `(Some x)` of the greatest `key`, or
 ;; `None` for no rounds. Of equal keys the first is kept.
@@ -3432,11 +3779,13 @@
 ;; - `key` is evaluated once a round, and is compared by Ord.
 ;; - `maximizing/pairs` of `(Tuple key x)`.
 (def/acc-clause (maximizing-by form inject compare)
-  (expand-acc-clause form "maximizing-by takes a key and an expression: (:acc best (maximizing-by (score x) x))"
-    (fun (name args when)
-      (match args
-        ((Cons key (Cons x Nil)) (Some (acc-form name #'(maximizing/pairs (Tuple ,key ,x)) when)))
-        (_ None)))))
+  (expand-acc-clause
+   form
+   "maximizing-by takes a key and an expression: (:acc best (maximizing-by (score x) x))"
+   (fun (name args when)
+     (match args
+       ((Cons key (Cons x Nil)) (Some (acc-form name #'(maximizing/pairs (Tuple ,key ,x)) when)))
+       (_ None)))))
 
 ;; `(:acc best (minimizing-by key x))`: `(Some x)` of the least `key`, or
 ;; `None` for no rounds. Of equal keys the first is kept.
@@ -3444,11 +3793,13 @@
 ;; - `key` is evaluated once a round, and is compared by Ord.
 ;; - `minimizing/pairs` of `(Tuple key x)`.
 (def/acc-clause (minimizing-by form inject compare)
-  (expand-acc-clause form "minimizing-by takes a key and an expression: (:acc best (minimizing-by (cost x) x))"
-    (fun (name args when)
-      (match args
-        ((Cons key (Cons x Nil)) (Some (acc-form name #'(minimizing/pairs (Tuple ,key ,x)) when)))
-        (_ None)))))
+  (expand-acc-clause
+   form
+   "minimizing-by takes a key and an expression: (:acc best (minimizing-by (cost x) x))"
+   (fun (name args when)
+     (match args
+       ((Cons key (Cons x Nil)) (Some (acc-form name #'(minimizing/pairs (Tuple ,key ,x)) when)))
+       (_ None)))))
 
 ;; `(:acc groups (grouping key x))`: a map from each `key` to the list of its
 ;; `x`s, in the order they came.
@@ -3456,11 +3807,13 @@
 ;; - `key` is evaluated once a round, and is compared by Eq.
 ;; - `grouping/pairs` of `(Tuple key x)`.
 (def/acc-clause (grouping form inject compare)
-  (expand-acc-clause form "grouping takes a key and an expression: (:acc groups (grouping (string-length w) w))"
-    (fun (name args when)
-      (match args
-        ((Cons key (Cons x Nil)) (Some (acc-form name #'(grouping/pairs (Tuple ,key ,x)) when)))
-        (_ None)))))
+  (expand-acc-clause
+   form
+   "grouping takes a key and an expression: (:acc groups (grouping (string-length w) w))"
+   (fun (name args when)
+     (match args
+       ((Cons key (Cons x Nil)) (Some (acc-form name #'(grouping/pairs (Tuple ,key ,x)) when)))
+       (_ None)))))
 
 ;; The greatest or least value by Ord, or None. Of equal ones the first is kept.
 (type (: (Maximizing %a) (Union maximizing)))
@@ -3470,12 +3823,17 @@
   (type %elem %a)
   (type %acc (Option %a))
   (type %out (Option %a))
-  (defun (collector-init c) None)
+  (defun (collector-init c)
+    None)
   (defun (collector-step c acc x)
     (match acc
-      ((Some best) (if (greater? x best) (Some x) acc))
+      ((Some best)
+       (if (greater? x best)
+           (Some x)
+           acc))
       (None (Some x))))
-  (defun (collector-finish c acc) acc))
+  (defun (collector-finish c acc)
+    acc))
 
 (type (: (Minimizing %a) (Union minimizing)))
 
@@ -3484,12 +3842,17 @@
   (type %elem %a)
   (type %acc (Option %a))
   (type %out (Option %a))
-  (defun (collector-init c) None)
+  (defun (collector-init c)
+    None)
   (defun (collector-step c acc x)
     (match acc
-      ((Some best) (if (less? x best) (Some x) acc))
+      ((Some best)
+       (if (less? x best)
+           (Some x)
+           acc))
       (None (Some x))))
-  (defun (collector-finish c acc) acc))
+  (defun (collector-finish c acc)
+    acc))
 
 ;; Of `(Tuple key value)`s: the value of the greatest or least key by Ord, or
 ;; None. Of equal keys the first is kept.
@@ -3500,10 +3863,14 @@
   (type %elem (Tuple %k %v))
   (type %acc (Option (Tuple %k %v)))
   (type %out (Option %v))
-  (defun (collector-init c) None)
+  (defun (collector-init c)
+    None)
   (defun (collector-step c acc kv)
     (match acc
-      ((Some best) (if (greater? (fst kv) (fst best)) (Some kv) acc))
+      ((Some best)
+       (if (greater? (fst kv) (fst best))
+           (Some kv)
+           acc))
       (None (Some kv))))
   (defun (collector-finish c acc)
     (match acc
@@ -3517,10 +3884,14 @@
   (type %elem (Tuple %k %v))
   (type %acc (Option (Tuple %k %v)))
   (type %out (Option %v))
-  (defun (collector-init c) None)
+  (defun (collector-init c)
+    None)
   (defun (collector-step c acc kv)
     (match acc
-      ((Some best) (if (less? (fst kv) (fst best)) (Some kv) acc))
+      ((Some best)
+       (if (less? (fst kv) (fst best))
+           (Some kv)
+           acc))
       (None (Some kv))))
   (defun (collector-finish c acc)
     (match acc
@@ -3535,11 +3906,13 @@
   (type %elem %a)
   (type %acc (TransientMap %a int))
   (type %out (Map %a int))
-  (defun (collector-init c) (transientmap-empty))
+  (defun (collector-init c)
+    (transientmap-empty))
   (defun (collector-step c acc x)
     (transientmap-set! acc x (+ (transientmap-ref-or acc x 0) 1))
     acc)
-  (defun (collector-finish c acc) (transientmap->map acc)))
+  (defun (collector-finish c acc)
+    (transientmap->map acc)))
 
 ;; Of `(Tuple key value)`s: a map from each key to the list of its values, in
 ;; the order they came.
@@ -3550,7 +3923,8 @@
   (type %elem (Tuple %k %v))
   (type %acc (TransientMap %k (ListBuilder %v)))
   (type %out (Map %k (List %v)))
-  (defun (collector-init c) (transientmap-empty))
+  (defun (collector-init c)
+    (transientmap-empty))
   (defun (collector-step c acc kv)
     (def (k v) kv)
     (match (transientmap-try-ref acc k)
@@ -3578,7 +3952,8 @@
   (stringbuilder-add-string! b open)
   (loop (:with first? #t #f)
         (:for x xs)
-        (:do (unless first? (stringbuilder-add-string! b " "))
+        (:do (unless first?
+               (stringbuilder-add-string! b " "))
              (each x b)))
   (stringbuilder-add-string! b close))
 
@@ -3586,43 +3961,53 @@
 ;; is `()`.
 (impl (Written (List %a))
   (where (Written %a))
-  (defun (write-into l b) (elements-print-into "(" l ")" b (fun (x b) (write-into x b)))))
+  (defun (write-into l b)
+    (elements-print-into "(" l ")" b (fun (x b) (write-into x b)))))
 
 (impl (Displayed (List %a))
   (where (Displayed %a))
-  (defun (display-into l b) (elements-print-into "(" l ")" b (fun (x b) (display-into x b)))))
+  (defun (display-into l b)
+    (elements-print-into "(" l ")" b (fun (x b) (display-into x b)))))
 
 ;; `[1 2 3]`, as the literal writes it.
 (impl (Written (Vec %a))
   (where (Written %a))
-  (defun (write-into v b) (elements-print-into "[" v "]" b (fun (x b) (write-into x b)))))
+  (defun (write-into v b)
+    (elements-print-into "[" v "]" b (fun (x b) (write-into x b)))))
 
 (impl (Displayed (Vec %a))
   (where (Displayed %a))
-  (defun (display-into v b) (elements-print-into "[" v "]" b (fun (x b) (display-into x b)))))
+  (defun (display-into v b)
+    (elements-print-into "[" v "]" b (fun (x b) (display-into x b)))))
 
 ;; `#[1 2 3]`, as the literal writes it.
 (impl (Written (Array %a))
   (where (Written %a))
-  (defun (write-into a b) (elements-print-into "#[" a "]" b (fun (x b) (write-into x b)))))
+  (defun (write-into a b)
+    (elements-print-into "#[" a "]" b (fun (x b) (write-into x b)))))
 
 (impl (Displayed (Array %a))
   (where (Displayed %a))
-  (defun (display-into a b) (elements-print-into "#[" a "]" b (fun (x b) (display-into x b)))))
+  (defun (display-into a b)
+    (elements-print-into "#[" a "]" b (fun (x b) (display-into x b)))))
 
 ;; `#iarray[1 2 3]`. There is no literal; the name says which collection it is.
 (impl (Written (IArray %a))
   (where (Written %a))
-  (defun (write-into a b) (elements-print-into "#iarray[" a "]" b (fun (x b) (write-into x b)))))
+  (defun (write-into a b)
+    (elements-print-into "#iarray[" a "]" b (fun (x b) (write-into x b)))))
 
 (impl (Displayed (IArray %a))
   (where (Displayed %a))
-  (defun (display-into a b) (elements-print-into "#iarray[" a "]" b (fun (x b) (display-into x b)))))
+  (defun (display-into a b)
+    (elements-print-into "#iarray[" a "]" b (fun (x b) (display-into x b)))))
 
 ;; A sequence is not walked: walking it could do anything, or never end.
 (impl (Written (Seq %a))
-  (defun (written s) "(Seq ...)")
-  (defun (write-into s b) (stringbuilder-add-string! b "(Seq ...)")))
+  (defun (written s)
+    "(Seq ...)")
+  (defun (write-into s b)
+    (stringbuilder-add-string! b "(Seq ...)")))
 
 ;; The entries of `xs` between `open` and `close`, each in parentheses, a key
 ;; and its value with a space between.
@@ -3633,7 +4018,8 @@
   (loop (:with first? #t #f)
         (:for entry xs)
         (:do (def (k v) entry)
-             (unless first? (stringbuilder-add-string! b " "))
+             (unless first?
+               (stringbuilder-add-string! b " "))
              (stringbuilder-add-string! b "(")
              (each-key k b)
              (stringbuilder-add-string! b " ")
@@ -3650,7 +4036,8 @@
 (impl (Displayed (Map %k %v))
   (where (Displayed %k) (Displayed %v))
   (defun (display-into m b)
-    (entries-print-into "#map(" m ")" b (fun (k b) (display-into k b)) (fun (v b) (display-into v b)))))
+    (entries-print-into "#map(" m ")" b (fun (k b) (display-into k b)) (fun (v b)
+                                                                         (display-into v b)))))
 
 ;; A case of a union the runtime declares, in constructor syntax: `(Some 1)`
 ;; and `None`, `(Ok 1)` and `(Err "no")`.
@@ -3766,10 +4153,12 @@
 
 ;; What `displayed` was called for these before it took every type.
 (: (-> (List %a) string) (where (Displayed %a)))
-(defun (list->str l) (displayed l))
+(defun (list->str l)
+  (displayed l))
 
 (: (-> (Map %k %v) string) (where (Displayed %k) (Displayed %v)))
-(defun (map->str m) (displayed m))
+(defun (map->str m)
+  (displayed m))
 
 (: (-> (Tuple %k %v) string) (where (Displayed %k) (Displayed %v)))
 (defun (map-entry->str entry)
@@ -3785,33 +4174,44 @@
 ;; Sequential binding macros.
 
 ;; `(let* ((a 1) (b (+ a 1))) ...)` — each binding is in scope for the next.
-(def/macro (let* form compare inject)
+(def/macro (let* form
+             compare
+             inject)
   (syntax-match form
     ((_ () body ...)
-     #'(let () ,@body))
+     #'(let ()
+         ,@body))
     ((_ (bind) body ...)
-     #'(let (,bind) ,@body))
+     #'(let (,bind)
+         ,@body))
     ((_ (bind binds ...) body ...)
      #'(let (,bind)
-         (let* (,@binds) ,@body)))))
+         (let* (,@binds)
+           ,@body)))))
 
 ;; parameterize* behavior.
-(def/macro (parameterize* form compare inject)
+(def/macro (parameterize* form
+             compare
+             inject)
   (syntax-match form
     ((_ () body ...)
-     #'(let () ,@body))
+     #'(let ()
+         ,@body))
     ((_ (bind) body ...)
-     #'(parameterize (,bind) ,@body))
+     #'(parameterize (,bind)
+         ,@body))
     ((_ (bind binds ...) body ...)
      #'(parameterize (,bind)
-        (parameterize* (,@binds) ,@body)))))
+         (parameterize* (,@binds)
+           ,@body)))))
 
 ;; ---------------------------------------------------------------------------
 ;; type/derive
 ;; ---------------------------------------------------------------------------
 
 (: (-> string Syntax))
-(defun (derive-sym name) (SSym (string->symbol name)))
+(defun (derive-sym name)
+  (SSym (string->symbol name)))
 
 ;; Refuse invalid syntax.
 (: (-> Syntax string (List Syntax)))
@@ -3851,11 +4251,14 @@
 ;; Field names.
 (: (-> (List Syntax) (List Syntax)))
 (defun (derive-field-names fields)
-  (list-map (fun (f)
-              (syntax-match f
-                ((_ name _ marker ...) name)
-                (bad (syntax-error bad "a record field is written (: name type), optionally followed by #:mutable."))))
-            fields))
+  (list-map
+   (fun (f)
+     (syntax-match f
+       ((_ name _ marker ...) name)
+       (bad
+        (syntax-error bad
+                      "a record field is written (: name type), optionally followed by #:mutable."))))
+   fields))
 
 ;; Any mutable fields.
 (: (-> (List Syntax) bool))
@@ -3876,7 +4279,8 @@
         (and ,@(list-map (fun (n) #'(= (record-ref a ,n) (record-ref b ,n))) names))))
   (def hashed
     (if mutable?
-        #'(defun (eq-hash v) (unhashable ,(SStr (syntax->string (derive-head-name head)))))
+        #'(defun (eq-hash v)
+            (unhashable ,(SStr (syntax->string (derive-head-name head)))))
         #'(defun (eq-hash v)
             ,(derive-hash-fold (list-map (fun (n) #'(eq-hash (record-ref v ,n))) names) #'17))))
   (Cons equals (Cons hashed Nil)))
@@ -3886,16 +4290,20 @@
 ;; A case is a bare name or `(: Name type ... markers ...)`.
 (: (-> Syntax Syntax))
 (defun (derive-case-name c)
-  (def* ((SList items) c :leave-with c)
-        ((Cons _ (Cons name _)) items :leave-with c))
+  (def* ((SList items) c
+          :leave-with c)
+        ((Cons _ (Cons name _)) items
+          :leave-with c))
   name)
 
 ;; The payload types, which end at the first marker: `#:tag` takes a name after
 ;; it, which is not a type.
 (: (-> Syntax (List Syntax)))
 (defun (derive-payload c)
-  (def* ((SList items) c :leave-with Nil)
-        ((Cons _ (Cons _ rest)) items :leave-with Nil))
+  (def* ((SList items) c
+          :leave-with Nil)
+        ((Cons _ (Cons _ rest)) items
+          :leave-with Nil))
   (derive-types-before-markers rest))
 
 (: (-> (List Syntax) (List Syntax)))
@@ -3910,13 +4318,14 @@
 (defun (derive-binders side i n)
   (if (= i n)
       Nil
-      (Cons (derive-sym (string-append side (int->string i)))
-            (derive-binders side (+ i 1) n))))
+      (Cons (derive-sym (string-append side (int->string i))) (derive-binders side (+ i 1) n))))
 
 (: (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (derive-eq-pairs ls rs)
-  (def* ((Cons l lrest) ls :leave-with Nil)
-        ((Cons r rrest) rs :leave-with Nil))
+  (def* ((Cons l lrest) ls
+          :leave-with Nil)
+        ((Cons r rrest) rs
+          :leave-with Nil))
   (Cons #'(= ,l ,r) (derive-eq-pairs lrest rrest)))
 
 ;; Union arm eq.
@@ -3926,28 +4335,35 @@
   (def n (list-length (derive-payload c)))
   (def ls (derive-binders "__derived-l" 0 n))
   (def rs (derive-binders "__derived-r" 0 n))
-  #'((,name ,@ls)
-     (match b
-       ((,name ,@rs) (and ,@(derive-eq-pairs ls rs)))
-       (,(derive-sym "_") #f))))
+  #'((,name ,@ls) (match b
+                    ((,name ,@rs) (and ,@(derive-eq-pairs ls rs)))
+                    (,(derive-sym "_") #f))))
 
 ;; Hash union arms.
 (: (-> (List Syntax) int (List Syntax)))
 (defun (derive-hash-union-arms cases index)
-  (def (Cons c rest) cases :leave-with Nil)
+  (def (Cons c rest) cases
+    :leave-with Nil)
   (def name (derive-case-name c))
   (def ls (derive-binders "__derived-l" 0 (list-length (derive-payload c))))
   (def tag (SInt (int->string index)))
-  (Cons #'((,name ,@ls)
-           ,(derive-hash-fold (list-map (fun (l) #'(eq-hash ,l)) ls) tag))
+  (Cons #'((,name ,@ls) ,(derive-hash-fold (list-map (fun (l) #'(eq-hash ,l)) ls) tag))
         (derive-hash-union-arms rest (+ index 1))))
 
 (: (-> (List Syntax) (List Syntax)))
 (defun (derive-eq-union cases)
   (def equals
-    #'(defun (= a b) (match a ,@(list-map derive-eq-union-arm cases))))
+    #'(defun (= a b)
+        (match a
+          ,@(list-map
+             derive-eq-union-arm
+             cases))))
   (def hashed
-    #'(defun (eq-hash v) (match v ,@(derive-hash-union-arms cases 0))))
+    #'(defun (eq-hash v)
+        (match v
+          ,@(derive-hash-union-arms
+             cases
+             0))))
   (Cons equals (Cons hashed Nil)))
 
 ;; --- Ordering ---
@@ -3955,20 +4371,23 @@
 ;; Ord chain.
 (: (-> (List Syntax) int Syntax))
 (defun (derive-ord-chain parts i)
-  (def* ((Cons p rest) parts :leave-with #'0)
+  (def* ((Cons p rest) parts
+          :leave-with #'0)
         (c (derive-sym (string-append "__derived-c" (int->string i)))))
   (if (list-empty? rest)
       p
       #'(let ((,c ,p))
-          (if (= ,c 0) ,(derive-ord-chain rest (+ i 1)) ,c))))
+          (if (= ,c 0)
+              ,(derive-ord-chain rest (+ i 1))
+              ,c))))
 
 ;; Ord record.
 (: (-> (List Syntax) (List Syntax)))
 (defun (derive-ord-record names)
   (Cons #'(defun (compare a b)
-            ,(derive-ord-chain
-              (list-map (fun (n) #'(compare (record-ref a ,n) (record-ref b ,n))) names)
-              0))
+            ,(derive-ord-chain (list-map (fun (n) #'(compare (record-ref a ,n) (record-ref b ,n)))
+                                         names)
+                               0))
         Nil))
 
 ;; Wildcards.
@@ -3981,15 +4400,18 @@
 ;; Index arms.
 (: (-> (List Syntax) int (List Syntax)))
 (defun (derive-ord-index-arms cases index)
-  (def (Cons c rest) cases :leave-with Nil)
+  (def (Cons c rest) cases
+    :leave-with Nil)
   (Cons #'((,(derive-case-name c) ,@(derive-wildcards (list-length (derive-payload c))))
            ,(SInt (int->string index)))
         (derive-ord-index-arms rest (+ index 1))))
 
 (: (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (derive-ord-pairs ls rs)
-  (def* ((Cons l lrest) ls :leave-with Nil)
-        ((Cons r rrest) rs :leave-with Nil))
+  (def* ((Cons l lrest) ls
+          :leave-with Nil)
+        ((Cons r rrest) rs
+          :leave-with Nil))
   (Cons #'(compare ,l ,r) (derive-ord-pairs lrest rrest)))
 
 ;; Ord union arm.
@@ -3999,10 +4421,9 @@
   (def n (list-length (derive-payload c)))
   (def ls (derive-binders "__derived-l" 0 n))
   (def rs (derive-binders "__derived-r" 0 n))
-  #'((,name ,@ls)
-     (match b
-       ((,name ,@rs) ,(derive-ord-chain (derive-ord-pairs ls rs) 0))
-       (,(derive-sym "_") 0))))
+  #'((,name ,@ls) (match b
+                    ((,name ,@rs) ,(derive-ord-chain (derive-ord-pairs ls rs) 0))
+                    (,(derive-sym "_") 0))))
 
 ;; Ord union.
 (: (-> (List Syntax) (List Syntax)))
@@ -4011,10 +4432,15 @@
   (def ib (derive-sym "__derived-ib"))
   (def index-arms (derive-ord-index-arms cases 0))
   (Cons #'(defun (compare a b)
-            (let ((,ia (match a ,@index-arms))
-                  (,ib (match b ,@index-arms)))
+            (let ((,ia (match a
+                         ,@index-arms))
+                  (,ib (match b
+                         ,@index-arms)))
               (if (= ,ia ,ib)
-                  (match a ,@(list-map derive-ord-union-arm cases))
+                  (match a
+                    ,@(list-map
+                       derive-ord-union-arm
+                       cases))
                   (compare ,ia ,ib))))
         Nil))
 
@@ -4023,14 +4449,18 @@
 ;; Shape error.
 (: (-> Syntax (List Syntax)))
 (defun (derive-shape-error bad)
-  (derive-fail bad "a type that derives has to be a Record, a Struct or a Union. An alias is a second spelling of a type rather than a type of its own — derive for the type it names."))
+  (derive-fail
+   bad
+   "a type that derives has to be a Record, a Struct or a Union. An alias is a second spelling of a type rather than a type of its own — derive for the type it names."))
 
 ;; Eq methods.
 (: (-> Syntax Syntax (List Syntax)))
 (defun (derive-eq-methods head shape)
   (syntax-match shape
-    (('Record fields ...) (derive-eq-record head (derive-field-names fields) (derive-any-mutable? fields)))
-    (('Struct fields ...) (derive-eq-record head (derive-field-names fields) (derive-any-mutable? fields)))
+    (('Record fields ...)
+     (derive-eq-record head (derive-field-names fields) (derive-any-mutable? fields)))
+    (('Struct fields ...)
+     (derive-eq-record head (derive-field-names fields) (derive-any-mutable? fields)))
     (('Union cases ...) (derive-eq-union cases))
     (('Enum cases ...) (derive-eq-union cases))
     (('Sum cases ...) (derive-eq-union cases))
@@ -4059,12 +4489,11 @@
 (: (-> Syntax Syntax Syntax))
 (defun (derive-impl trait typedef)
   (syntax-match typedef
-    ((_ head ('Newtype underlying))
-     #'(impl (,trait ,head) #:via ,underlying))
+    ((_ head ('Newtype underlying)) #'(impl (,trait ,head) #:via ,underlying))
     ((_ head shape)
      #'(impl (,trait ,head)
-        (where ,@(list-map (fun (v) #'(,trait ,v)) (derive-head-vars head)))
-        ,@(derive-methods trait head shape)))
+         (where ,@(list-map (fun (v) #'(,trait ,v)) (derive-head-vars head)))
+         ,@(derive-methods trait head shape)))
     (bad (syntax-error bad "a type declaration is written (: Name (Record ...))."))))
 
 (: (-> (List Syntax) (List Syntax) (List Syntax)))
@@ -4072,16 +4501,20 @@
   (match traits
     (Nil Nil)
     ((Cons t rest)
-     (list-append (list-map (fun (td) (derive-impl t td)) typedefs)
-                  (derive-impls rest typedefs)))))
+     (list-append (list-map (fun (td) (derive-impl t td)) typedefs) (derive-impls rest typedefs)))))
 
-(def/macro (type/derive form inject compare)
+(def/macro (type/derive form
+             inject
+             compare)
   (syntax-match form
     ((_ (trait ...) typedef ...)
      #'(begin
          (type ,@typedef)
          ,@(derive-impls trait typedef)))
-    (bad (syntax-error bad "type/derive takes a list of traits and one or more type declarations, as in (type/derive (Eq) (: Point (Record (: x int))))."))))
+    (bad
+     (syntax-error
+      bad
+      "type/derive takes a list of traits and one or more type declarations, as in (type/derive (Eq) (: Point (Record (: x int))))."))))
 
 ;; ---------------------------------------------------------------------------
 ;; Patterns
@@ -4100,8 +4533,7 @@
 (def/pattern (Has* form inject compare)
   (syntax-match form
     ((_) (syntax-error form "(Has* (key pattern) ...) needs at least one key."))
-    ((_ (key pat) ...)
-     #'(and ,@{listing #'(Has ,k ,p) (:for k key) (:for p pat)}))
+    ((_ (key pat) ...) #'(and ,@{listing #'(Has ,k ,p) (:for k key) (:for p pat)}))
     (bad (syntax-error bad "(Has* (key pattern) ...) pairs each key with a pattern for its value."))))
 
 ;; ---------------------------------------------------------------------------
@@ -4115,13 +4547,20 @@
 (defun (vec-take v n)
   (check-count "vec-take" n)
   (def len (vec-length v))
-  (vec-slice v 0 (if (< n len) n len)))
+  (vec-slice v
+             0
+             (if (< n len)
+                 n
+                 len)))
 
 (: (-> (Vec %a) int (Vec %a)))
 (defun (vec-drop v n)
   (check-count "vec-drop" n)
   (def len (vec-length v))
-  (def k (if (< n len) n len))
+  (def k
+    (if (< n len)
+        n
+        len))
   (vec-slice v k (- len k)))
 
 (: (-> (Vec %a) (Vec %a)))
@@ -4132,12 +4571,16 @@
 ;; `vec-pop`, which raises on an empty vec, is a compiler builtin.
 (: (-> (Vec %a) (Option (Vec %a))))
 (defun (vec-try-pop v)
-  (if (vec-empty? v) None (Some (vec-pop v))))
+  (if (vec-empty? v)
+      None
+      (Some (vec-pop v))))
 
 ;; The vec without its first element, or `None` when it is empty.
 (: (-> (Vec %a) (Option (Vec %a))))
 (defun (vec-try-pop-first v)
-  (if (vec-empty? v) None (Some (vec-pop-first v))))
+  (if (vec-empty? v)
+      None
+      (Some (vec-pop-first v))))
 
 ;; ---------------------------------------------------------------------------
 ;; Membership
@@ -4151,14 +4594,19 @@
 (defun (list-contains? xs x)
   (match xs
     (Nil #f)
-    ((Cons y rest) (if (= y x) #t (list-contains? rest x)))))
+    ((Cons y rest)
+     (if (= y x)
+         #t
+         (list-contains? rest x)))))
 
 (: (-> (Vec %a) %a bool) (where (Eq %a)))
 (defun (vec-contains? v x)
   (let go ((c (vec-cursor v)))
     (if (vec-cursor-done? c)
         #f
-        (if (= (vec-cursor-current c) x) #t (go (vec-cursor-next c))))))
+        (if (= (vec-cursor-current c) x)
+            #t
+            (go (vec-cursor-next c))))))
 
 (: (-> (Array %a) %a bool) (where (Eq %a)))
 (defun (array-contains? a x)
@@ -4166,7 +4614,9 @@
   (let go ((i 0))
     (if (= i len)
         #f
-        (if (= (array-ref a i) x) #t (go (+ i 1))))))
+        (if (= (array-ref a i) x)
+            #t
+            (go (+ i 1))))))
 
 (: (-> (IArray %a) %a bool) (where (Eq %a)))
 (defun (iarray-contains? a x)
@@ -4174,7 +4624,9 @@
   (let go ((i 0))
     (if (= i len)
         #f
-        (if (= (iarray-ref a i) x) #t (go (+ i 1))))))
+        (if (= (iarray-ref a i) x)
+            #t
+            (go (+ i 1))))))
 
 (: (-> (TransientVec %a) %a bool) (where (Eq %a)))
 (defun (transientvec-contains? t x)
@@ -4182,7 +4634,9 @@
   (let go ((i 0))
     (if (= i len)
         #f
-        (if (= (transientvec-ref t i) x) #t (go (+ i 1))))))
+        (if (= (transientvec-ref t i) x)
+            #t
+            (go (+ i 1))))))
 
 ;; The elements in a new array, which the vec does not share. The runtime's,
 ;; which copies the leaves in one pass.

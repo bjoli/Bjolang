@@ -3,12 +3,14 @@
 
 (import (std units))
 
-(def g <9.80665 m/s^2>)                   ; (double m/s^2)
+(def g <9.80665 m/s^2>) ; (double m/s^2)
 
 ;; 1. A struct per state.
 
-(type (: State (Struct (: x (double m)) (: y (double m))
-                       (: vx (double m/s)) (: vy (double m/s)))))
+(type (: State (Struct (: x (double m))
+                       (: y (double m))
+                       (: vx (double m/s))
+                       (: vy (double m/s)))))
 
 (: step (-> (double s) State State))
 (defun (step dt s)
@@ -19,13 +21,17 @@
 
 (: flight (-> (double m/s) double (double s) (double m)))
 (defun (flight speed angle dt)
-  (def start (State (x 0) (y 0)           ; 0 is a number of every unit
-                    (vx (* speed (cos angle)))
-                    (vy (* speed (sin angle)))))
+  (def start
+    (State (x 0)
+           (y 0) ; 0 is a number of every unit
+           (vx (* speed (cos angle)))
+           (vy (* speed (sin angle)))))
   (let go ((s start))
-    (if (< (.y s) 0) (.x s) (go (step dt s)))))
+    (if (< (.y s) 0)
+        (.x s)
+        (go (step dt s)))))
 
-(flight <30 m/s> <45 deg> <1 ms>)         ; (double m), ~91.8
+(flight <30 m/s> <45 deg> <1 ms>) ; (double m), ~91.8
 ;; <45 deg> is 0.7854: deg is dimensionless, so cos takes it.
 
 ;; An error the types catch:
@@ -42,7 +48,7 @@
 (defun (flight-rk4 speed angle dt)
   (def v0 [0.0 0.0 (number-in (* speed (cos angle)) m/s) (number-in (* speed (sin angle)) m/s)])
   (def end (rk4-until deriv (number-in dt s) v0 (fun (v) (< (ref v 1) 0.0))))
-  (* (ref end 0) <1 m>))                  ; attaches m; the 1 is not emitted
+  (* (ref end 0) <1 m>)) ; attaches m; the 1 is not emitted
 
 ;; Count: 3 annotations and 0 in for the struct version.
 ;; 2 annotations, 4 in and 1 attaching literal for the vector version.

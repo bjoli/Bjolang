@@ -64,7 +64,8 @@
 (type (: PriorityQueueOwner #:opaque (Record (: transient bool))))
 
 (: (-> PriorityQueueOwner))
-(defun (new-owner) (PriorityQueueOwner (transient #t)))
+(defun (new-owner)
+  (PriorityQueueOwner (transient #t)))
 
 ;; A cell's children are a chain: `child` is the first, and each child's
 ;; `sibling` the next. Linking two cells then changes two fields and
@@ -72,9 +73,9 @@
 ;; `null`; a cell is reached through its `Node`, which an operation keeps
 ;; when it changes the cell in place.
 (type-rec
-  (: (PriorityQueueTree %a %p) #:opaque
-     (Union Tip (: Node (PriorityQueueCell %a %p))))
-  (: (PriorityQueueCell %a %p) #:opaque
+  (: (PriorityQueueTree %a %p) #:opaque (Union Tip (: Node (PriorityQueueCell %a %p))))
+  (: (PriorityQueueCell %a %p)
+     #:opaque
      (Record (: item %a)
              (: priority %p)
              (: seq long)
@@ -96,38 +97,34 @@
 ;; `t`, whose cell is `c`, with a new first child and next sibling. In place
 ;; when `owner` owns the cell; otherwise a copy that `owner` owns.
 (: (-> PriorityQueueOwner (PriorityQueueTree %a %p) (PriorityQueueCell %a %p)
-       (PriorityQueueTree %a %p) (PriorityQueueTree %a %p)
-       (PriorityQueueTree %a %p)))
+       (PriorityQueueTree %a %p) (PriorityQueueTree %a %p) (PriorityQueueTree %a %p)))
 (defun (relinked owner t c first next)
   (if (eq? (record-ref c owner) owner)
       (begin
         (record-set! c (child first) (sibling next))
         t)
-      (Node (PriorityQueueCell (item (record-ref c item)) (priority (record-ref c priority))
-                               (seq (record-ref c seq)) (child first) (sibling next)
+      (Node (PriorityQueueCell (item (record-ref c item))
+                               (priority (record-ref c priority))
+                               (seq (record-ref c seq))
+                               (child first)
+                               (sibling next)
                                (owner owner)))))
 
 ;; Two cells as one heap whose next sibling is `next`: the one that comes out
 ;; later becomes the first child of the other.
-(: (-> (-> %p %p int) PriorityQueueOwner
-       (PriorityQueueTree %a %p) (PriorityQueueCell %a %p)
-       (PriorityQueueTree %a %p) (PriorityQueueCell %a %p)
-       (PriorityQueueTree %a %p)
+(: (-> (-> %p %p int) PriorityQueueOwner (PriorityQueueTree %a %p) (PriorityQueueCell %a %p)
+       (PriorityQueueTree %a %p) (PriorityQueueCell %a %p) (PriorityQueueTree %a %p)
        (PriorityQueueTree %a %p)))
 (defun (link order owner a ca b cb next)
   (if (before? order cb ca)
       (adopt owner b cb a ca next)
       (adopt owner a ca b cb next)))
 
-(: (-> PriorityQueueOwner
-       (PriorityQueueTree %a %p) (PriorityQueueCell %a %p)
-       (PriorityQueueTree %a %p) (PriorityQueueCell %a %p)
-       (PriorityQueueTree %a %p)
+(: (-> PriorityQueueOwner (PriorityQueueTree %a %p) (PriorityQueueCell %a %p)
+       (PriorityQueueTree %a %p) (PriorityQueueCell %a %p) (PriorityQueueTree %a %p)
        (PriorityQueueTree %a %p)))
 (defun (adopt owner w cw l cl next)
-  (relinked owner w cw
-            (relinked owner l cl (record-ref cl child) (record-ref cw child))
-            next))
+  (relinked owner w cw (relinked owner l cl (record-ref cl child) (record-ref cw child)) next))
 
 (: (-> (PriorityQueueTree %a %p) (PriorityQueueCell %a %p)))
 (defun (cell-of t)
@@ -147,19 +144,22 @@
 (: (-> (-> %p %p int) PriorityQueueOwner (PriorityQueueTree %a %p) (PriorityQueueTree %a %p)
        (PriorityQueueTree %a %p)))
 (defun (merge order owner a b)
-  (def (Node ca) a :leave-with b)
-  (def (Node cb) b :leave-with a)
+  (def (Node ca) a
+    :leave-with b)
+  (def (Node cb) b
+    :leave-with a)
   (link order owner a ca b cb Tip))
 
 ;; A chain of children as one heap, in two passes. The first links
 ;; neighbours and chains the results through their siblings, last first; the
 ;; second links that chain from its head, which is the last pair to the
 ;; first. A link reads the next sibling before it changes it.
-(: (-> (-> %p %p int) PriorityQueueOwner (PriorityQueueTree %a %p)
-       (PriorityQueueTree %a %p)))
+(: (-> (-> %p %p int) PriorityQueueOwner (PriorityQueueTree %a %p) (PriorityQueueTree %a %p)))
 (defun (link-pairs order owner chain)
-  (let pair ((t chain) (done Tip))
-    (def (Node ca) t :leave-with (combine order owner done))
+  (let pair ((t chain)
+             (done Tip))
+    (def (Node ca) t
+      :leave-with (combine order owner done))
     (def b (record-ref ca sibling))
     (match b
       (Tip (combine order owner (relinked owner t ca (record-ref ca child) done)))
@@ -167,32 +167,36 @@
        (def rest (record-ref cb sibling))
        (pair rest (link order owner t ca b cb done))))))
 
-(: (-> (-> %p %p int) PriorityQueueOwner (PriorityQueueTree %a %p)
-       (PriorityQueueTree %a %p)))
+(: (-> (-> %p %p int) PriorityQueueOwner (PriorityQueueTree %a %p) (PriorityQueueTree %a %p)))
 (defun (combine order owner done)
   (def (Node first) done :propagate)
-  (let go ((acc done) (cacc first) (rest (record-ref first sibling)))
-    (def (Node cr) rest :leave-with (alone owner acc))
+  (let go ((acc done)
+           (cacc first)
+           (rest (record-ref first sibling)))
+    (def (Node cr) rest
+      :leave-with (alone owner acc))
     (def more (record-ref cr sibling))
     (def linked (link order owner rest cr acc cacc Tip))
     (go linked (cell-of linked) more)))
 
-(: (-> (-> %p %p int) PriorityQueueOwner (PriorityQueueTree %a %p)
-       (PriorityQueueTree %a %p)))
+(: (-> (-> %p %p int) PriorityQueueOwner (PriorityQueueTree %a %p) (PriorityQueueTree %a %p)))
 (defun (without-root order owner t)
-  (def (Node c) t :leave-with Tip)
+  (def (Node c) t
+    :leave-with Tip)
   (link-pairs order owner (record-ref c child)))
 
 (: (-> (PriorityQueueTree %a %p) (Option (Tuple %a %p))))
 (defun (root-entry t)
-  (def (Node c) t :leave-with None)
+  (def (Node c) t
+    :leave-with None)
   (Some (Tuple (record-ref c item) (record-ref c priority))))
 
 ;; One round of a tournament: neighbours linked, so the list is half as long.
 (: (-> (-> %p %p int) PriorityQueueOwner (List (PriorityQueueTree %a %p))
        (List (PriorityQueueTree %a %p))))
 (defun (link-round order owner ts)
-  (let go ((rest ts) (out Nil))
+  (let go ((rest ts)
+           (out Nil))
     (match rest
       (Nil out)
       ((Cons t Nil) (Cons t out))
@@ -202,8 +206,7 @@
 ;; Rounds until one tree is left. Round k makes roots with k children, so the
 ;; winner has about log2(n) children and the tree is about log2(n) deep. n-1
 ;; links in all.
-(: (-> (-> %p %p int) PriorityQueueOwner (List (PriorityQueueTree %a %p))
-       (PriorityQueueTree %a %p)))
+(: (-> (-> %p %p int) PriorityQueueOwner (List (PriorityQueueTree %a %p)) (PriorityQueueTree %a %p)))
 (defun (tournament order owner ts)
   (match ts
     (Nil Tip)
@@ -211,21 +214,21 @@
     (_ (tournament order owner (link-round order owner ts)))))
 
 ;; The entries as a balanced tree, numbered from `first` in the order given.
-(: (-> (-> %p %p int) PriorityQueueOwner (List (Tuple %a %p)) long
-       (PriorityQueueTree %a %p)))
+(: (-> (-> %p %p int) PriorityQueueOwner (List (Tuple %a %p)) long (PriorityQueueTree %a %p)))
 (defun (build order owner entries first)
   (def leaves
-     (loop (:for rest entries)
-           (:with seq first (+ seq 1L))
-           (:let (x . p) rest)
-           (:acc out (listing/reverse (leaf owner x p seq)))))
+    (loop (:for rest entries)
+          (:with seq first (+ seq 1L))
+          (:let (x . p) rest)
+          (:acc out (listing/reverse (leaf owner x p seq)))))
   (tournament order owner leaves))
 
 ;; Every cell, in no useful order. A worklist rather than recursion: a chain
 ;; of children can be as long as the queue.
 (: (-> (PriorityQueueTree %a %p) (List (PriorityQueueCell %a %p))))
 (defun (tree-cells t)
-  (let walk ((todo (Cons t Nil)) (out Nil))
+  (let walk ((todo (Cons t Nil))
+             (out Nil))
     (match todo
       (Nil out)
       ((Cons Tip rest) (walk rest out))
@@ -238,7 +241,8 @@
 
 ;; `next` is the number the next entry gets. `balanced` is #t when the tree
 ;; came out of a tournament and nothing has been done to it since.
-(type (: (PriorityQueue %a %p) #:opaque
+(type (: (PriorityQueue %a %p)
+         #:opaque
          (Record (: tree (PriorityQueueTree %a %p))
                  (: order (-> %p %p int))
                  (: size int)
@@ -254,16 +258,20 @@
   (priorityqueue-by (fun (a b) (compare a b))))
 
 (: (-> (PriorityQueue %a %p) int))
-(defun (priorityqueue-length q) (record-ref q size))
+(defun (priorityqueue-length q)
+  (record-ref q size))
 
 (: (-> (PriorityQueue %a %p) bool))
-(defun (priorityqueue-empty? q) (= (record-ref q size) 0))
+(defun (priorityqueue-empty? q)
+  (= (record-ref q size) 0))
 
 (: (-> (PriorityQueue %a %p) (Option (Tuple %a %p))))
-(defun (priorityqueue-peek q) (root-entry (record-ref q tree)))
+(defun (priorityqueue-peek q)
+  (root-entry (record-ref q tree)))
 
 (: (-> (PriorityQueue %a %p) bool))
-(defun (priorityqueue-balanced? q) (record-ref q balanced))
+(defun (priorityqueue-balanced? q)
+  (record-ref q balanced))
 
 (: (-> (PriorityQueue %a %p) (PriorityQueueTree %a %p) int long bool (PriorityQueue %a %p)))
 (defun (changed q t size next balanced)
@@ -275,7 +283,9 @@
   (changed q
            (let ((owner (new-owner)))
              (merge (record-ref q order) owner (record-ref q tree) (leaf owner x p next)))
-           (+ (record-ref q size) 1) (+ next 1L) #f))
+           (+ (record-ref q size) 1)
+           (+ next 1L)
+           #f))
 
 ;; The entries are built into a balanced tree of their own, with an owner of
 ;; their own so that the build links in place, and that tree is linked in.
@@ -287,28 +297,37 @@
   (changed q
            (let ((owner (new-owner)))
              (merge order owner (record-ref q tree) (build order owner entries next)))
-           (+ (record-ref q size) n) (+ next (cast long n))
+           (+ (record-ref q size) n)
+           (+ next (cast long n))
            (or (= n 0) (and (priorityqueue-empty? q) (record-ref q balanced)))))
 
 (: (-> (PriorityQueue %a %p) (PriorityQueue %a %p) (PriorityQueue %a %p)))
 (defun (priorityqueue-merge a b)
   (cond
     ((priorityqueue-empty? b) a)
-    ((priorityqueue-empty? a) (changed a (record-ref b tree) (record-ref b size)
-                                       (record-ref b next) (record-ref b balanced)))
+    ((priorityqueue-empty? a)
+     (changed a (record-ref b tree) (record-ref b size) (record-ref b next) (record-ref b balanced)))
     (else
      (def na (record-ref a next))
      (def nb (record-ref b next))
      (changed a
               (merge (record-ref a order) (new-owner) (record-ref a tree) (record-ref b tree))
-              (+ (record-ref a size) (record-ref b size)) (if (> na nb) na nb) #f))))
+              (+ (record-ref a size) (record-ref b size))
+              (if (> na nb)
+                  na
+                  nb)
+              #f))))
 
 (: (-> (PriorityQueue %a %p) (PriorityQueue %a %p)))
 (defun (priorityqueue-remove-min q)
   (match (record-ref q tree)
     (Tip q)
-    (t (changed q (without-root (record-ref q order) (new-owner) t)
-                (- (record-ref q size) 1) (record-ref q next) #f))))
+    (t
+     (changed q
+              (without-root (record-ref q order) (new-owner) t)
+              (- (record-ref q size) 1)
+              (record-ref q next)
+              #f))))
 
 (: (-> (PriorityQueue %a %p) (Option (Tuple %a %p (PriorityQueue %a %p)))))
 (defun (priorityqueue-try-pop q)
@@ -335,12 +354,17 @@
   (if (record-ref q balanced)
       q
       (let ((owner (new-owner)))
-        (changed q
-                 (tournament (record-ref q order) owner
-                             (list-map (fun (c) (leaf owner (record-ref c item) (record-ref c priority)
-                                                      (record-ref c seq)))
-                                       (tree-cells (record-ref q tree))))
-                 (record-ref q size) (record-ref q next) #t))))
+        (changed
+         q
+         (tournament
+          (record-ref q order)
+          owner
+          (list-map (fun (c)
+                      (leaf owner (record-ref c item) (record-ref c priority) (record-ref c seq)))
+                    (tree-cells (record-ref q tree))))
+         (record-ref q size)
+         (record-ref q next)
+         #t))))
 
 (: (-> (List (Tuple %a %p)) (PriorityQueue %a %p)) (where (Ord %p)))
 (defun (list->priorityqueue entries)
@@ -366,7 +390,8 @@
 ;; The transient
 ;; ---------------------------------------------------------------------------
 
-(type (: (TransientPriorityQueue %a %p) #:opaque
+(type (: (TransientPriorityQueue %a %p)
+         #:opaque
          (Record (: tree (PriorityQueueTree %a %p) #:mutable)
                  (: order (-> %p %p int))
                  (: size int #:mutable)
@@ -375,8 +400,10 @@
 
 (: (-> (PriorityQueue %a %p) (TransientPriorityQueue %a %p)))
 (defun (priorityqueue->transientpriorityqueue q)
-  (TransientPriorityQueue (tree (record-ref q tree)) (order (record-ref q order))
-                          (size (record-ref q size)) (next (record-ref q next))
+  (TransientPriorityQueue (tree (record-ref q tree))
+                          (order (record-ref q order))
+                          (size (record-ref q size))
+                          (next (record-ref q next))
                           (owner (new-owner))))
 
 (: (-> (-> %p %p int) (TransientPriorityQueue %a %p)))
@@ -392,26 +419,31 @@
 (: (-> (TransientPriorityQueue %a %p) (PriorityQueue %a %p)))
 (defun (transientpriorityqueue->priorityqueue t)
   (record-set! t (owner (new-owner)))
-  (PriorityQueue (tree (record-ref t tree)) (order (record-ref t order))
-                 (size (record-ref t size)) (next (record-ref t next)) (balanced #f)))
+  (PriorityQueue (tree (record-ref t tree))
+                 (order (record-ref t order))
+                 (size (record-ref t size))
+                 (next (record-ref t next))
+                 (balanced #f)))
 
 (: (-> (TransientPriorityQueue %a %p) int))
-(defun (transientpriorityqueue-length t) (record-ref t size))
+(defun (transientpriorityqueue-length t)
+  (record-ref t size))
 
 (: (-> (TransientPriorityQueue %a %p) bool))
-(defun (transientpriorityqueue-empty? t) (= (record-ref t size) 0))
+(defun (transientpriorityqueue-empty? t)
+  (= (record-ref t size) 0))
 
 (: (-> (TransientPriorityQueue %a %p) (Option (Tuple %a %p))))
-(defun (transientpriorityqueue-peek t) (root-entry (record-ref t tree)))
+(defun (transientpriorityqueue-peek t)
+  (root-entry (record-ref t tree)))
 
 (: (-> (TransientPriorityQueue %a %p) %a %p void))
 (defun (transientpriorityqueue-add! t x p)
   (def owner (record-ref t owner))
   (def next (record-ref t next))
-  (record-set! t
-               (tree (merge (record-ref t order) owner (record-ref t tree) (leaf owner x p next)))
-               (size (+ (record-ref t size) 1))
-               (next (+ next 1L))))
+  (record-set! t (tree (merge (record-ref t order) owner (record-ref t tree) (leaf owner x p next)))
+                 (size (+ (record-ref t size) 1))
+                 (next (+ next 1L))))
 
 (: (-> (TransientPriorityQueue %a %p) (List (Tuple %a %p)) void))
 (defun (transientpriorityqueue-add-all! t entries)
@@ -419,10 +451,9 @@
   (def owner (record-ref t owner))
   (def next (record-ref t next))
   (def n (list-length entries))
-  (record-set! t
-               (tree (merge order owner (record-ref t tree) (build order owner entries next)))
-               (size (+ (record-ref t size) n))
-               (next (+ next (cast long n)))))
+  (record-set! t (tree (merge order owner (record-ref t tree) (build order owner entries next)))
+                 (size (+ (record-ref t size) n))
+                 (next (+ next (cast long n)))))
 
 ;; `None` leaves the transient as it was.
 (: (-> (TransientPriorityQueue %a %p) (Option (Tuple %a %p))))
@@ -430,9 +461,8 @@
   (match (record-ref t tree)
     (Tip None)
     ((Node c)
-     (record-set! t
-                  (tree (link-pairs (record-ref t order) (record-ref t owner) (record-ref c child)))
-                  (size (- (record-ref t size) 1)))
+     (record-set! t (tree (link-pairs (record-ref t order) (record-ref t owner) (record-ref c child)))
+                    (size (- (record-ref t size) 1)))
      (Some (Tuple (record-ref c item) (record-ref c priority))))))
 
 ;; The entry that comes out first, removed in place.
@@ -448,7 +478,8 @@
 ;; ---------------------------------------------------------------------------
 
 ;; The entries, last first, and how many.
-(type (: (PriorityQueueBuilder %a %p) #:opaque
+(type (: (PriorityQueueBuilder %a %p)
+         #:opaque
          (Record (: entries (List (Tuple %a %p)) #:mutable)
                  (: count int #:mutable)
                  (: order (-> %p %p int)))))
@@ -463,12 +494,12 @@
 
 (: (-> (PriorityQueueBuilder %a %p) %a %p void))
 (defun (priorityqueuebuilder-add! b x p)
-  (record-set! b
-               (entries (Cons (Tuple x p) (record-ref b entries)))
-               (count (+ (record-ref b count) 1))))
+  (record-set! b (entries (Cons (Tuple x p) (record-ref b entries)))
+                 (count (+ (record-ref b count) 1))))
 
 (: (-> (PriorityQueueBuilder %a %p) int))
-(defun (priorityqueuebuilder-length b) (record-ref b count))
+(defun (priorityqueuebuilder-length b)
+  (record-ref b count))
 
 ;; O(n), and balanced. The builder keeps its entries, and may be added to and
 ;; built again.
@@ -483,8 +514,10 @@
 
 (impl (Collection (PriorityQueue %a %p))
   (type %content (Tuple %a %p))
-  (defun (length q) (priorityqueue-length q))
-  (defun (empty? q) (priorityqueue-empty? q)))
+  (defun (length q)
+    (priorityqueue-length q))
+  (defun (empty? q)
+    (priorityqueue-empty? q)))
 
 ;; In the order the entries come out. The cursor is the rest of the queue, so
 ;; a walk leaves the queue itself alone. Each cursor is used once, so the
@@ -492,13 +525,16 @@
 (impl (Iterable (PriorityQueue %a %p))
   (type %elem (Tuple %a %p))
   (type %cursor (PriorityQueue %a %p))
-  (defun (iterable-start q) q)
-  (defun (iterable-done? q c) (priorityqueue-empty? c))
+  (defun (iterable-start q)
+    q)
+  (defun (iterable-done? q c)
+    (priorityqueue-empty? c))
   (defun (iterable-current q c)
     (match (priorityqueue-peek c)
       ((Some entry) entry)
       (None (panic! "priority-queue: iterable-current past the end"))))
-  (defun (iterable-next q c) (priorityqueue-remove-min c)))
+  (defun (iterable-next q c)
+    (priorityqueue-remove-min c)))
 
 ;; Equal when the same entries come out in the same order. The shape of the
 ;; tree, and the numbers that break ties, are not compared.
@@ -512,13 +548,15 @@
 
 ;; `#priorityqueue(element priority ...)`, in the order they come out. Each
 ;; element and priority is added by the function given for it.
-(: (-> (PriorityQueue %a %p) StringBuilder (-> %a StringBuilder void) (-> %p StringBuilder void) void))
+(: (-> (PriorityQueue %a %p) StringBuilder (-> %a StringBuilder void) (-> %p StringBuilder void)
+       void))
 (defun (priorityqueue-print-into q b each-elem each-priority)
   (stringbuilder-add-string! b "#priorityqueue(")
   (loop (:with first? #t #f)
         (:for entry q)
         (:do (def (x p) entry)
-             (unless first? (stringbuilder-add-string! b " "))
+             (unless first?
+               (stringbuilder-add-string! b " "))
              (each-elem x b)
              (stringbuilder-add-string! b " ")
              (each-priority p b)))
@@ -535,6 +573,7 @@
     (priorityqueue-print-into q b (fun (x b) (display-into x b)) (fun (p b) (display-into p b)))))
 
 (: (-> (PriorityQueue %a %p) string) (where (Displayed %a) (Displayed %p)))
-(defun (priorityqueue->str q) (displayed q))
+(defun (priorityqueue->str q)
+  (displayed q))
 
 (:deprecated priorityqueue->str "use `displayed`")

@@ -19,14 +19,14 @@
 ;; binds the parameter and changes no call site.
 ;;
 ;; By default, a thread get's it's own generator, so that reading from the
-;; RandomSource is unconstrained and not risky. 
+;; RandomSource is unconstrained and not risky.
 ;;
 ;; **`current-random` holds no generator.** Its value is the *ambient* source,
 ;; which resolves to the calling thread's generator at each draw. That is what
 ;; makes the default safe on a bjoroutine: a fiber may resume on a different
 ;; thread than it suspended on, so a source read out of the parameter before a
 ;; suspension would otherwise go on drawing from the old thread's generator
-;; while another fiber ran on that thread and drew from it too. 
+;; while another fiber ran on that thread and drew from it too.
 ;;
 ;; A source from `make-random` and its neighbours does name a generator, and two
 ;; fibers may hold it at once, so every operation on one takes its lock. The
@@ -70,7 +70,7 @@
   (make-random        (: Bjolang.Runtime.RandomModule.Fresh       (-> RandomSource)))
   (make-random/seed64 (: Bjolang.Runtime.RandomModule.FromSeed64  (-> ulong RandomSource)))
   (make-random/seed256
-    (: Bjolang.Runtime.RandomModule.FromSeed256 (-> ulong ulong ulong ulong RandomSource)))
+   (: Bjolang.Runtime.RandomModule.FromSeed256 (-> ulong ulong ulong ulong RandomSource)))
   (random-split       (: Bjolang.Runtime.RandomModule.Split       (-> RandomSource RandomSource)))
 
   (clr-random-range   (: Bjolang.Runtime.RandomModule.Range   (-> RandomSource int int int)))
@@ -137,18 +137,18 @@
 ;; A `Vec` is persistent, so this answers a new one and leaves `v` alone.
 ;;
 ;; Walks the vec, and places it's elements into an array of the
-;; same size randomly. 
+;; same size randomly.
 (: (-> (Vec %a) (#:rng RandomSource) (Vec %a)))
 (defun (shuffle-vec v #:rng (parameter-ref current-random))
   (cond
     ((< (vec-length v) 2) v)
     (else
-      (def a (make-array (vec-length v)))
-      (loop (:with i 0 (+ i 1))
-            (:for x v)
-            (:do (array-set! a i x)))
-      (clr-random-shuffle rng a)
-      (array->vec a))))
+     (def a (make-array (vec-length v)))
+     (loop (:with i 0 (+ i 1))
+           (:for x v)
+           (:do (array-set! a i x)))
+     (clr-random-shuffle rng a)
+     (array->vec a))))
 
 ;; A string over `[A-Za-z0-9-_]`. The shim writes the UTF-8 bytes directly.
 (: (-> int (#:rng RandomSource) string))
@@ -185,8 +185,8 @@
     (cond
       ((= i length) (stringbuilder->string sb))
       (else
-        (stringbuilder-add! sb (vec-ref alphabet (clr-random-range rng 0 top)))
-        (go (+ i 1))))))
+       (stringbuilder-add! sb (vec-ref alphabet (clr-random-range rng 0 top)))
+       (go (+ i 1))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Binding a source
@@ -206,4 +206,6 @@
      #'(parameterize ((current-random (make-random/seed64 ,seed)))
          ,first
          ,@body))
-    (bad (syntax-error bad "with-random-seed takes a seed and a body: (with-random-seed 42UL body ...)"))))
+    (bad
+     (syntax-error bad
+                   "with-random-seed takes a seed and a body: (with-random-seed 42UL body ...)"))))

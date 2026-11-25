@@ -176,7 +176,6 @@
 (:doc #:file "prelude-concurrency.bjodoc")
 (:doc #:file "prelude-syntax.bjodoc")
 
-
 ;; --- File operations.
 ;;
 ;; Everything in this section and the directory one below reaches the disk
@@ -206,7 +205,9 @@
 ;; - `entry-name`: the bytes the OS gave.
 ;; - `entry-kind`: the entry's own kind, as the listing reported it. A symbolic
 ;;   link is `FsLink`, so a caller that follows links asks `fs-info`.
-(type (: FsEntry (Record (: entry-path Path) (: entry-name ByteString) (: entry-kind FsKind))))
+(type (: FsEntry (Record (: entry-path Path)
+                         (: entry-name ByteString)
+                         (: entry-kind FsKind))))
 
 ;; What a move does when something is already at the target.
 ;;
@@ -244,7 +245,9 @@
 (: (-> %p string) (where (AsPath %p)))
 (defun (file-read-text path)
   (match (open-input-file path)
-    ((Ok opened) (with-open ((p opened)) (read-all p)))
+    ((Ok opened)
+     (with-open ((p opened))
+       (read-all p)))
     ((Err e) (raise e))))
 
 ;; The flush is explicit so that the suspending copy awaits it. Closing would
@@ -252,20 +255,24 @@
 (: (-> Path string WriteMode void))
 (defun (write-whole-file path contents mode)
   (match (open-output-file path #:mode mode)
-    ((Ok opened) (with-open ((p opened))
-                   (write-string p contents)
-                   (flush-port p)))
+    ((Ok opened)
+     (with-open ((p opened))
+       (write-string p contents)
+       (flush-port p)))
     ((Err e) (raise e))))
 
 ;; Write text.
 (: (-> %p string void) (where (AsPath %p)))
-(defun (file-write-text path contents) (write-whole-file (as-path path) contents Truncate))
+(defun (file-write-text path contents)
+  (write-whole-file (as-path path) contents Truncate))
 
 (: (-> %p string void) (where (AsPath %p)))
-(defun (file-append-text path contents) (write-whole-file (as-path path) contents Append))
+(defun (file-append-text path contents)
+  (write-whole-file (as-path path) contents Append))
 
 (: (-> %p (Option FsInfo)) (where (AsPath %p)))
-(defun (file-info path) (fs-info (as-path path)))
+(defun (file-info path)
+  (fs-info (as-path path)))
 
 ;; What a path names, for the functions below that only ask that.
 (: (-> Path (Option FsKind)))
@@ -280,12 +287,14 @@
 
 ;; A missing file is not an error, as with `File.Delete`.
 (: (-> %p void) (where (AsPath %p)))
-(defun (file-delete path) (raise-err (fs-delete-file (as-path path))))
+(defun (file-delete path)
+  (raise-err (fs-delete-file (as-path path))))
 
 ;; Moves or renames a file or a directory. Fails if `to` exists, unless
 ;; `#:mode MoveReplace` says to replace a file there.
 (: (-> %p %q (#:mode MoveMode) void) (where (AsPath %p) (AsPath %q)))
-(defun (file-move from to #:mode MoveNew) (raise-err (fs-move (as-path from) (as-path to) mode)))
+(defun (file-move from to #:mode MoveNew)
+  (raise-err (fs-move (as-path from) (as-path to) mode)))
 
 ;; --- Paths ---
 ;; Path strings.
@@ -297,23 +306,29 @@
   (clr-file-extension (: System.IO.Path.GetExtension)))
 
 (: (-> %p string) (where (AsPath %p)))
-(defun (path-absolute path) (clr-full-path (raise-err (os-path (as-path path)))))
+(defun (path-absolute path)
+  (clr-full-path (raise-err (os-path (as-path path)))))
 
 ;; Path combine.
 (: (-> #:rest string string))
-(defun (path-combine #:rest parts) (clr-path-combine parts))
+(defun (path-combine #:rest parts)
+  (clr-path-combine parts))
 
 ;; Path filename.
 (: (-> string (Option string)))
 (defun (path-filename path)
   (def name (clr-file-name path))
-  (if (string-empty? name) None (Some name)))
+  (if (string-empty? name)
+      None
+      (Some name)))
 
 ;; File extension.
 (: (-> string (Option string)))
 (defun (path-file-extension path)
   (def ext (clr-file-extension path))
-  (if (string-empty? ext) None (Some ext)))
+  (if (string-empty? ext)
+      None
+      (Some ext)))
 
 ;; --- Directories ---
 
@@ -325,11 +340,13 @@
 
 ;; Create directory.
 (: (-> %p void) (where (AsPath %p)))
-(defun (directory-create path) (raise-err (fs-create-directory (as-path path))))
+(defun (directory-create path)
+  (raise-err (fs-create-directory (as-path path))))
 
 ;; Delete directory.
 (: (-> %p void) (where (AsPath %p)))
-(defun (directory-delete path) (raise-err (fs-delete-directory (as-path path))))
+(defun (directory-delete path)
+  (raise-err (fs-delete-directory (as-path path))))
 
 ;; Built from the operations rather than handed to `Directory.Delete` with its
 ;; recursive flag, so that a handler sees every deletion.
@@ -339,7 +356,8 @@
 ;; link to the home directory inside a build directory would empty the home
 ;; directory, and a link back up the tree would never end.
 (: (-> %p void) (where (AsPath %p)))
-(defun (directory-delete-tree path) (delete-tree (as-path path)))
+(defun (directory-delete-tree path)
+  (delete-tree (as-path path)))
 
 (: (-> Path void))
 (defun (delete-tree path)
@@ -378,10 +396,12 @@
         (:acc found (vecing (record-ref entry entry-path)))))
 
 (: (-> %p (Vec Path)) (where (AsPath %p)))
-(defun (directory-files path) (entries-of-kind (as-path path) FsFile))
+(defun (directory-files path)
+  (entries-of-kind (as-path path) FsFile))
 
 (: (-> %p (Vec Path)) (where (AsPath %p)))
-(defun (directory-subdirectories path) (entries-of-kind (as-path path) FsDirectory))
+(defun (directory-subdirectories path)
+  (entries-of-kind (as-path path) FsDirectory))
 
 ;; --- The environment ---
 
@@ -401,13 +421,16 @@
 
 ;; Set environment variable.
 (: (-> string string void))
-(defun (set-environment-variable! name value) (clr-set-env name value))
+(defun (set-environment-variable! name value)
+  (clr-set-env name value))
 
 (: (-> string))
-(defun (current-directory) clr-cwd)
+(defun (current-directory)
+  clr-cwd)
 
 (: (-> %p void) (where (AsPath %p)))
-(defun (set-current-directory! path) (clr-set-cwd (raise-err (os-path (as-path path)))))
+(defun (set-current-directory! path)
+  (clr-set-cwd (raise-err (os-path (as-path path)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Ports
@@ -492,7 +515,8 @@
 ;; one of the standard ports it flushes and stops: nothing in the language
 ;; should be able to take stdout away from the rest of the program.
 (: (-> InputPort void))
-(defun (close-input-port p) (close-in p))
+(defun (close-input-port p)
+  (close-in p))
 
 ;; What is still buffered goes out first. On a fiber that write suspends, so the
 ;; close works over a stream that refuses blocking I/O, as Kestrel's do; the
@@ -502,7 +526,7 @@
 (: (-> OutputPort void))
 (defbjouble (close-output-port p)
   (#:sync (close-out p))
-  (#:bjo  (close-out-await p)))
+  (#:bjo (close-out-await p)))
 
 ;; --- The filesystem is an effect ---
 ;;
@@ -557,8 +581,12 @@
 (defun (os-path p)
   (match (path->string p)
     ((Ok s) (Ok s))
-    ((Err e) (Err (cast Exception (ArgumentException.
-                                   #"the path ${(path->string/lossy p)} cannot be given to .NET: ${(decode-error-message e)}"))))))
+    ((Err e)
+     (Err
+      (cast
+       Exception
+       (ArgumentException.
+        #"the path ${(path->string/lossy p)} cannot be given to .NET: ${(decode-error-message e)}"))))))
 
 ;; `(f name)` with the .NET name of `p`, or the error of `os-path`.
 (: (-> Path (-> string (Result Exception %a)) (Result Exception %a)))
@@ -572,9 +600,9 @@
 (: (-> Path (Result Exception ClrStream)))
 (defun (open-read-stream/raw path)
   (with-os-path path (fun (name)
-                      (match (FileStream. name FileMode.Open FileAccess.Read FileShare.Read)
-                        ((Ok s) (Ok (cast ClrStream s)))
-                        ((Err e) (Err e))))))
+                       (match (FileStream. name FileMode.Open FileAccess.Read FileShare.Read)
+                         ((Ok s) (Ok (cast ClrStream s)))
+                         ((Err e) (Err e))))))
 
 (: (-> WriteMode FileMode))
 (defun (write-mode->file-mode mode)
@@ -587,10 +615,11 @@
 ;; opens.
 (: (-> Path WriteMode (Result Exception ClrStream)))
 (defun (open-write-stream/raw path mode)
-  (with-os-path path (fun (name)
-                      (match (FileStream. name (write-mode->file-mode mode) FileAccess.Write FileShare.Read)
-                        ((Ok s) (Ok (cast ClrStream s)))
-                        ((Err e) (Err e))))))
+  (with-os-path path
+    (fun (name)
+      (match (FileStream. name (write-mode->file-mode mode) FileAccess.Write FileShare.Read)
+        ((Ok s) (Ok (cast ClrStream s)))
+        ((Err e) (Err e))))))
 
 ;; .NET ticks at 1970-01-01T00:00Z, and per millisecond.
 (: long)
@@ -601,7 +630,9 @@
 (defun (ticks->unix-ms ticks)
   (def d (- ticks unix-epoch-ticks))
   (def q (/ d 10000L))
-  (if (< (% d 10000L) 0L) (- q 1L) q))
+  (if (< (% d 10000L) 0L)
+      (- q 1L)
+      q))
 
 ;; Where a chain of symbolic links ends: `path` itself when it is no link. A
 ;; link's target is relative to the directory the link is in. At most 40
@@ -610,7 +641,8 @@
 ;; no null to test here.
 (: (-> string string))
 (defun (link-end path)
-  (let loop ((p path) (steps 0))
+  (let loop ((p path)
+             (steps 0))
     (def target (.-LinkTarget (FileInfo. p)))
     (if (or (clr-empty? target) (= steps 40))
         p
@@ -649,14 +681,17 @@
 (defun (info-of f class link)
   (def directory (= class 1))
   (Some (FsInfo (kind (if directory FsDirectory FsFile))
-                (size (if directory 0L (.-Length f)))
+                (size (if directory
+                          0L
+                          (.-Length f)))
                 (modified-ms (ticks->unix-ms (.-Ticks (.-LastWriteTimeUtc f))))
                 (link? link))))
 
 ;; Raises the `ArgumentException` of `os-path` for a path that is not UTF-8,
 ;; because `None` would say that nothing is there.
 (: (-> Path (Option FsInfo)))
-(defun (fs-info/raw path) (os-info (raise-err (os-path path))))
+(defun (fs-info/raw path)
+  (os-info (raise-err (os-path path))))
 
 ;; The entries of a directory, in the order the OS gives them, with the
 ;; kinds the listing reports. On Linux, the path and the names are bytes,
@@ -686,9 +721,9 @@
 (: (-> Path (Result Exception Unit)))
 (defun (fs-create-directory/raw path)
   (with-os-path path (fun (name)
-                      (match (clr-dir-create name)
-                        ((Ok _) (Ok unit))
-                        ((Err e) (Err e))))))
+                       (match (clr-dir-create name)
+                         ((Ok _) (Ok unit))
+                         ((Err e) (Err e))))))
 
 ;; What a guarded `void` call answers, as the `Unit` an operation declares.
 (: (-> (Result Exception %a) (Result Exception Unit)))
@@ -717,7 +752,11 @@
         (fun (to-name)
           (unit-result (if (clr-dir-exists from-name)
                            (clr-dir-move from-name to-name)
-                           (clr-file-move from-name to-name (match mode (MoveNew #f) (MoveReplace #t))))))))))
+                           (clr-file-move from-name
+                                          to-name
+                                          (match mode
+                                            (MoveNew #f)
+                                            (MoveReplace #t))))))))))
 
 (defeffect FS
   (open-read-stream    (-> Path (Result Exception ClrStream)))
@@ -778,13 +817,17 @@
 (: (-> %p (-?-> InputPort %a) (Result Exception %a)) (where (AsPath %p)))
 (defun (call-with-input-file path proc)
   (match (open-input-file path)
-    ((Ok p) (with-open ((it p)) (Ok (proc it))))
+    ((Ok p)
+     (with-open ((it p))
+       (Ok (proc it))))
     ((Err e) (Err e))))
 
 (: (-> %p (-?-> OutputPort %a) (#:mode WriteMode) (Result Exception %a)) (where (AsPath %p)))
 (defun (call-with-output-file path proc #:mode Truncate)
   (match (open-output-file path #:mode mode)
-    ((Ok p) (with-open ((it p)) (Ok (proc it))))
+    ((Ok p)
+     (with-open ((it p))
+       (Ok (proc it))))
     ((Err e) (Err e))))
 
 ;; --- Bytes, copies and lines ---
@@ -813,17 +856,17 @@
 (: (-> ClrStream ClrStream void))
 (defbjouble (stream-copy! from to)
   (#:sync (clr-copy-to from to))
-  (#:bjo  (clr-copy-to-await from to)))
+  (#:bjo (clr-copy-to-await from to)))
 
 (: (-> ClrStream (Array byte) void))
 (defbjouble (stream-write! s bytes)
   (#:sync (clr-stream-write s bytes 0 (array-length bytes)))
-  (#:bjo  (clr-stream-write-await s bytes 0 (array-length bytes))))
+  (#:bjo (clr-stream-write-await s bytes 0 (array-length bytes))))
 
 (: (-> ClrStream void))
 (defbjouble (stream-flush! s)
   (#:sync (clr-stream-flush s))
-  (#:bjo  (clr-stream-flush-await s)))
+  (#:bjo (clr-stream-flush-await s)))
 
 (import/extern
   (clr-stream-read       (: System.IO.Stream.Read      (-> ClrStream (Array byte) int int int) #:blocking))
@@ -836,13 +879,13 @@
 (: (-> ClrStream (Array byte) int int))
 (defbjouble (stream-read-some! s buffer n)
   (#:sync (clr-stream-read s buffer 0 n))
-  (#:bjo  (clr-stream-read-await s buffer 0 n)))
+  (#:bjo (clr-stream-read-await s buffer 0 n)))
 
 ;; The first `n` bytes of `buffer`.
 (: (-> ClrStream (Array byte) int void))
 (defbjouble (stream-write-some! s buffer n)
   (#:sync (clr-stream-write s buffer 0 n))
-  (#:bjo  (clr-stream-write-await s buffer 0 n)))
+  (#:bjo (clr-stream-write-await s buffer 0 n)))
 
 ;; At most `count` bytes: what the source held when it was opened.
 ;;
@@ -878,29 +921,35 @@
 ;;   * `Append` copies only the source's initial byte length, preventing an
 ;;     infinite loop when appending a file to itself.
 (: (-> %p %q (#:mode WriteMode) void) (where (AsPath %p) (AsPath %q)))
-(defun (file-copy from to #:mode CreateNew) (copy-file (as-path from) (as-path to) mode))
+(defun (file-copy from to #:mode CreateNew)
+  (copy-file (as-path from) (as-path to) mode))
 
 ;; `p` from the root, without `.` and `..`, as `Path.GetFullPath` gives it.
 (: (-> Path Path))
-(defun (full-path p) (path-normalize (path-join (current-directory) p)))
+(defun (full-path p)
+  (path-normalize (path-join (current-directory) p)))
 
 (: (-> Path Path WriteMode void))
 (defun (copy-file from to mode)
   (when (= (full-path from) (full-path to))
-    (raise (cast Exception (IOException. (string-append "cannot copy a file onto itself: "
-                                                        (path->string/lossy from))))))
+    (raise (cast Exception
+                 (IOException. (string-append "cannot copy a file onto itself: "
+                                              (path->string/lossy from))))))
   (with-open ((in (raise-err (open-read-stream from))))
     (def count (clr-stream-length in))
     (match mode
       (Truncate
-       (def fresh (as-path (bytestring-append (path->bytestring to)
-                                              (string->bytestring (str ".copy-" (clr-guid-text (clr-new-guid) "N"))))))
-       (match (try (begin
-                     (with-open ((out (raise-err (open-write-stream fresh CreateNew))))
-                       (stream-copy-count! in out count)
-                       (stream-flush! out))
-                     (raise-err (fs-move fresh to MoveReplace)))
-                   #:catch (System.Exception))
+       (def fresh
+         (as-path (bytestring-append (path->bytestring to)
+                                     (string->bytestring (str ".copy-"
+                                                              (clr-guid-text (clr-new-guid) "N"))))))
+       (match (try
+                (begin
+                  (with-open ((out (raise-err (open-write-stream fresh CreateNew))))
+                    (stream-copy-count! in out count)
+                    (stream-flush! out))
+                  (raise-err (fs-move fresh to MoveReplace)))
+                #:catch (System.Exception))
          ((Ok _) unit)
          ((Err e)
           (ignore (fs-delete-file fresh))
@@ -924,10 +973,12 @@
     (stream-flush! out)))
 
 (: (-> %p (Array byte) void) (where (AsPath %p)))
-(defun (file-write-bytes path bytes) (write-whole-bytes (as-path path) bytes Truncate))
+(defun (file-write-bytes path bytes)
+  (write-whole-bytes (as-path path) bytes Truncate))
 
 (: (-> %p (Array byte) void) (where (AsPath %p)))
-(defun (file-append-bytes path bytes) (write-whole-bytes (as-path path) bytes Append))
+(defun (file-append-bytes path bytes)
+  (write-whole-bytes (as-path path) bytes Append))
 
 ;; The lines, without their line ends. What ends a line is `#:mode`'s to say;
 ;; by default "\n", "\r" and "\r\n" all do. A last line needs no end, and a
@@ -935,13 +986,14 @@
 (: (-> %p (#:mode LineMode) (Vec string)) (where (AsPath %p)))
 (defun (file-read-lines path #:mode Any)
   (match (open-input-file path)
-    ((Ok opened) (with-open ((p opened))
-                   (def lines (vecbuilder-empty))
-                   (let next ()
-                     (unless (port-eof? p)
-                       (vecbuilder-add! lines (read-line p #:mode mode))
-                       (next)))
-                   (vecbuilder->vec lines)))
+    ((Ok opened)
+     (with-open ((p opened))
+       (def lines (vecbuilder-empty))
+       (let next ()
+         (unless (port-eof? p)
+           (vecbuilder-add! lines (read-line p #:mode mode))
+           (next)))
+       (vecbuilder->vec lines)))
     ((Err e) (raise e))))
 
 ;; Each line followed by "\n", the last one too, on every OS: the same lines
@@ -950,13 +1002,14 @@
 (: (-> %p (Vec string) void) (where (AsPath %p)))
 (defun (file-write-lines path lines)
   (match (open-output-file path)
-    ((Ok opened) (with-open ((p opened))
-                   (loop (:for line lines)
-                         (:do (write-string p line)
-                              (write-string p "\n")))
-                   (flush-port p)))
+    ((Ok opened)
+     (with-open ((p opened))
+       (loop (:for line lines)
+             (:do (write-string p line)
+                  (write-string p "\n")))
+       (flush-port p)))
     ((Err e) (raise e))))
- 
+
 ;; Returns a lazy `Seq` of items produced by repeatedly calling `(reader port)`.
 ;;
 ;; The file is opened inside the `seq`, meaning each iteration re-opens the file
@@ -1011,10 +1064,13 @@
           ;; A link is followed to a file, and never into a directory.
           (FsLink
            (match (kind-of p)
-             ((Some FsFile) (yield p) (loop rest))
+             ((Some FsFile)
+              (yield p)
+              (loop rest))
              (_ (loop rest))))
-          (_ (yield p)
-             (loop rest)))))))
+          (_
+           (yield p)
+           (loop rest)))))))
 
 ;; Flush.
 (import/extern
@@ -1024,10 +1080,10 @@
 (: (-> OutputPort void))
 (defbjouble (flush-port p)
   (#:sync (clr-flush p))
-  (#:bjo  (clr-flush-await p)))
+  (#:bjo (clr-flush-await p)))
 
 ;; --- Input ---
-;; These are the leaves of our IO. The bottom calls, so to say. 
+;; These are the leaves of our IO. The bottom calls, so to say.
 (import/extern
   (clr-eof        (: Bjolang.Runtime.BjoInputPort.Eof                 (-> InputPort bool)   #:blocking))
   (clr-eof-await  (: Bjolang.Runtime.BjoInputPort.EofAsync            (-> InputPort bool)   #:async))
@@ -1050,7 +1106,7 @@
 (: (-> InputPort bool))
 (defbjouble (port-eof? p)
   (#:sync (clr-eof p))
-  (#:bjo  (clr-eof-await p)))
+  (#:bjo (clr-eof-await p)))
 
 ;; `LineMode` as `Bjolang.Runtime.LineMode` numbers it.
 (: (-> LineMode int))
@@ -1068,25 +1124,25 @@
 (: (-> InputPort (#:mode LineMode) string))
 (defbjouble (read-line p #:mode Any)
   (#:sync (clr-line p (line-mode-code mode)))
-  (#:bjo  (clr-line-await p (line-mode-code mode))))
+  (#:bjo (clr-line-await p (line-mode-code mode))))
 
 ;; One read, not `port-eof?` and then `read-line`: between those two another
 ;; fiber reading the same port can take the last line.
 (: (-> InputPort (#:mode LineMode) (Option string)))
 (defbjouble (read-line/opt p #:mode Any)
   (#:sync (clr-line-opt p (line-mode-code mode)))
-  (#:bjo  (clr-line-opt-await p (line-mode-code mode))))
+  (#:bjo (clr-line-opt-await p (line-mode-code mode))))
 
 (: (-> InputPort char))
 (defbjouble (read-char p)
   (#:sync (clr-char p))
-  (#:bjo  (clr-char-await p)))
+  (#:bjo (clr-char-await p)))
 
 ;; One read, for the reason `read-line/opt` is.
 (: (-> InputPort (Option char)))
 (defbjouble (read-char/opt p)
   (#:sync (clr-char-opt p))
-  (#:bjo  (clr-char-opt-await p)))
+  (#:bjo (clr-char-opt-await p)))
 
 ;; The character `read-char` would answer, left in the port, as Racket's
 ;; `peek-char`. Decoded from the port's buffer: it waits for the bytes a
@@ -1094,18 +1150,18 @@
 (: (-> InputPort char))
 (defbjouble (peek-char p)
   (#:sync (clr-peek-char p))
-  (#:bjo  (clr-peek-char-await p)))
+  (#:bjo (clr-peek-char-await p)))
 
 (: (-> InputPort (Option char)))
 (defbjouble (peek-char/opt p)
   (#:sync (clr-peek-char-opt p))
-  (#:bjo  (clr-peek-char-opt-await p)))
+  (#:bjo (clr-peek-char-opt-await p)))
 
 ;; Drains a port
 (: (-> InputPort string))
 (defbjouble (read-all p)
   (#:sync (clr-rest p))
-  (#:bjo  (clr-rest-await p)))
+  (#:bjo (clr-rest-await p)))
 
 ;; Port fold.
 (: (-> (-?-> InputPort %a %a) %a InputPort %a))
@@ -1137,28 +1193,29 @@
 (: (-> OutputPort string void))
 (defbjouble (write-string p s)
   (#:sync (clr-write p s))
-  (#:bjo  (clr-write-await p s)))
+  (#:bjo (clr-write-await p s)))
 
 ;; Write char.
 (: (-> OutputPort char void))
 (defbjouble (write-char p c)
   (#:sync (clr-writec p c))
-  (#:bjo  (clr-writec-await p c)))
+  (#:bjo (clr-writec-await p c)))
 
 (: (-> OutputPort string void))
 (defbjouble (writeln p s)
   (#:sync (clr-writeln p s))
-  (#:bjo  (clr-writeln-await p s)))
+  (#:bjo (clr-writeln-await p s)))
 
 ;; What a string port has been given, as text. Bytes written to it with
 ;; `write-bytes!` that are not UTF-8 read as U+FFFD, as Racket's do.
 (: (-> OutputPort string))
-(defun (get-output-string p) (writer->string p))
+(defun (get-output-string p)
+  (writer->string p))
 
 ;; What a string port has been given, as bytes.
 (: (-> OutputPort (Array byte)))
-(defun (get-output-bytes p) (output-bytes p))
-
+(defun (get-output-bytes p)
+  (output-bytes p))
 
 ;; ---------------------------------------------------------------------------
 ;; Effects
@@ -1207,7 +1264,6 @@
   #:default ((getenv get-environment-variable))
   #:cold (getenv))
 
-
 ;; ---------------------------------------------------------------------------
 ;; The clock
 ;; ---------------------------------------------------------------------------
@@ -1240,20 +1296,18 @@
   (clr-local-zone (: System.TimeZoneInfo.Local #:get)))
 
 (: (-> long))
-(defun (system-utc-ticks) (.-Ticks clr-utc-now))
+(defun (system-utc-ticks)
+  (.-Ticks clr-utc-now))
 
 (: (-> System.TimeZoneInfo))
-(defun (system-zone) clr-local-zone)
+(defun (system-zone)
+  clr-local-zone)
 
 ;; Each part not given is the system clock's, but for the nanoseconds: when
 ;; `#:monotonic-ns` is not given, they are read from the milliseconds, so that
 ;; a clock given only `#:monotonic-ms` agrees with itself.
-(: (-> (#:monotonic-ms (-> long))
-       (#:monotonic-ns (Option (-> long)))
-       (#:utc-ticks (-> long))
-       (#:zone (-> System.TimeZoneInfo))
-       (#:advance (Option (-> long void)))
-       Clock))
+(: (-> (#:monotonic-ms (-> long)) (#:monotonic-ns (Option (-> long))) (#:utc-ticks (-> long))
+       (#:zone (-> System.TimeZoneInfo)) (#:advance (Option (-> long void))) Clock))
 (defun (make-clock #:monotonic-ms clock-ms #:monotonic-ns None #:utc-ticks system-utc-ticks
                    #:zone system-zone #:advance None)
   (Clock (read-monotonic-ms monotonic-ms)
@@ -1282,8 +1336,6 @@
 (: (-> (#:clock Clock) long))
 (defun (monotonic-ns #:clock (parameter-ref current-clock))
   ((record-ref clock read-monotonic-ns)))
-
-
 
 ;; ---------------------------------------------------------------------------
 ;; Cancellation scopes
@@ -1340,17 +1392,24 @@
          (def saved (scope-push! scope))
          (def ,cancel (scope-canceller scope))
          (try
-             (match (try (let () ,first ,@body) #:catch (System.Exception))
-               ((Ok answer)
-                (by-colour (#:sync (scope-close!/blocking scope None))
-                           (#:bjo (scope-close! scope None)))
-                answer)
-               ((Err failure)
-                (by-colour (#:sync (scope-close!/blocking scope (Some failure)))
-                           (#:bjo (scope-close! scope (Some failure))))
-                (raise failure)))
+           (match (try
+                    (let ()
+                      ,first
+                      ,@body)
+                    #:catch (System.Exception))
+             ((Ok answer)
+              (by-colour (#:sync (scope-close!/blocking scope None))
+                         (#:bjo (scope-close! scope None)))
+              answer)
+             ((Err failure)
+              (by-colour (#:sync (scope-close!/blocking scope (Some failure)))
+                         (#:bjo (scope-close! scope (Some failure))))
+              (raise failure)))
            #:finally (dyn-restore! saved))))
-    (bad (syntax-error bad "scope-form takes an opener, a cancel thunk name and a body. It is what with-scope, with-cancel, with-deadline and with-shield expand to; write one of those."))))
+    (bad
+     (syntax-error
+      bad
+      "scope-form takes an opener, a cancel thunk name and a body. It is what with-scope, with-cancel, with-deadline and with-shield expand to; write one of those."))))
 
 ;; `(with-scope body ...)` - a scope with no cancel thunk.
 ;;
@@ -1363,16 +1422,22 @@
 ;; `with-cancel`; a scope that only wants ownership says so with this.
 (def/macro (with-scope form inject compare)
   (syntax-match form
-    ((_ first body ...)
-     #'(scope-form (scope-open! 0) (no-cancel) ,first ,@body))
-    (bad (syntax-error bad "with-scope takes a body: (with-scope body ...). For a cancel thunk write with-cancel."))))
+    ((_ first body ...) #'(scope-form (scope-open! 0) (no-cancel) ,first ,@body))
+    (bad
+     (syntax-error
+      bad
+      "with-scope takes a body: (with-scope body ...). For a cancel thunk write with-cancel."))))
 
 ;; `(with-cancel (cancel) body ...)` — a scope that owns what it starts.
-(def/macro (with-cancel form inject compare)
+(def/macro (with-cancel form
+             inject
+             compare)
   (syntax-match form
-    ((_ (cancel) first body ...)
-     #'(scope-form (scope-open! 0) (,cancel) ,first ,@body))
-    (bad (syntax-error bad "with-cancel names its cancel thunk and takes a body: (with-cancel (cancel) body ...)"))))
+    ((_ (cancel) first body ...) #'(scope-form (scope-open! 0) (,cancel) ,first ,@body))
+    (bad
+     (syntax-error
+      bad
+      "with-cancel names its cancel thunk and takes a body: (with-cancel (cancel) body ...)"))))
 
 ;; `(with-deadline duration body ...)` — the same scope, whose token also fires
 ;; on its own once `duration` has passed, with `Deadline`.
@@ -1381,11 +1446,16 @@
 ;; fiber cannot work here: the scope waits for its children before it fires its
 ;; token, and the watcher would be waiting for that token — so each would be
 ;; waiting for the other.
-(def/macro (with-deadline form inject compare)
+(def/macro (with-deadline form
+             inject
+             compare)
   (syntax-match form
     ((_ ms first body ...)
      #'(scope-form (deadline-open! (duration->timer-ms ,ms)) (fire) ,first ,@body))
-    (bad (syntax-error bad "with-deadline takes a Duration and a body: (with-deadline (seconds 5) body ...)"))))
+    (bad
+     (syntax-error
+      bad
+      "with-deadline takes a Duration and a body: (with-deadline (seconds 5) body ...)"))))
 
 ;; ---------------------------------------------------------------------------
 ;; The dynamic environment, for another thread
@@ -1422,13 +1492,22 @@
 ;; program impossible to kill.
 ;;
 ;; A shield is a scope, so it waits for its own children like any other.
-(def/macro (with-shield form inject compare)
+(def/macro (with-shield
+             form
+             inject
+             compare)
   (syntax-match form
     ((_ #:within ms first body ...)
      #'(scope-form (shield-open! (duration->timer-ms ,ms)) (fire) ,first ,@body))
     ((_ first body ...)
-     #'(with-shield #:within (seconds 30) ,first ,@body))
-    (bad (syntax-error bad "with-shield takes a body and an optional deadline: (with-shield #:within (seconds 5) body ...)"))))
+     #'(with-shield
+         #:within (seconds 30)
+         ,first
+         ,@body))
+    (bad
+     (syntax-error
+      bad
+      "with-shield takes a body and an optional deadline: (with-shield #:within (seconds 5) body ...)"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Scope Resource Management
@@ -1473,7 +1552,10 @@
     ((_ scope first body ...)
      #'(let ()
          (def saved (scope-push! ,scope))
-         (try (let () ,first ,@body)
+         (try
+           (let ()
+             ,first
+             ,@body)
            #:finally (dyn-restore! saved))))
     (bad (syntax-error bad "in-scope takes a scope and a body: (in-scope s body ...)"))))
 
@@ -1492,9 +1574,13 @@
      ;; `unit` after the call, not the call itself: `.Dispose` is a void .NET
      ;; method, so it has no value for the thunk to return.
      #'(let ((it ,x))
-         (ignore (own! (fun () (.Dispose it) unit)))
+         (ignore (own! (fun ()
+                         (.Dispose it)
+                         unit)))
          it))
-    (bad (syntax-error bad "own-disposable takes one expression: (own-disposable (StreamReader. path))"))))
+    (bad
+     (syntax-error bad
+                   "own-disposable takes one expression: (own-disposable (StreamReader. path))"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Durations
@@ -1520,62 +1606,82 @@
 
 (: (-> %a))
 (defun (duration-overflow)
-  (raise (cast Exception (DurationOverflow. "a duration is outside ±29 227 years (±9 223 372 036 854 775 807 ticks)"))))
+  (raise (cast Exception
+               (DurationOverflow.
+                "a duration is outside ±29 227 years (±9 223 372 036 854 775 807 ticks)"))))
 
 ;; The duration of `t` ticks. Raises at long's minimum, the one tick count
 ;; with no negation.
 (: (-> long Duration))
 (defun (ticks->duration t)
-  (when (= t -9223372036854775808L) (duration-overflow))
+  (when (= t -9223372036854775808L)
+    (duration-overflow))
   (Duration (v (DurationSpan. t))))
 
 (: (-> Duration long))
-(defun (duration-ticks d) (clr-duration-span-ticks (struct-ref d v)))
+(defun (duration-ticks d)
+  (clr-duration-span-ticks (struct-ref d v)))
 
 ;; n units of `unit` ticks, or a raise past the range of a Duration.
 (: (-> long long Duration))
 (defun (units->duration n unit)
   (def limit (/ 9223372036854775807L unit))
-  (when (or (> n limit) (< n (- limit))) (duration-overflow))
+  (when (or (> n limit) (< n (- limit)))
+    (duration-overflow))
   (Duration (v (DurationSpan. (* n unit)))))
 
 (: (-> long Duration))
-(defun (milliseconds n) (units->duration n 10000L))
+(defun (milliseconds n)
+  (units->duration n 10000L))
 
 (: (-> long Duration))
-(defun (seconds n) (units->duration n 10000000L))
+(defun (seconds n)
+  (units->duration n 10000000L))
 
 (: (-> long Duration))
-(defun (minutes n) (units->duration n 600000000L))
+(defun (minutes n)
+  (units->duration n 600000000L))
 
 (: (-> long Duration))
-(defun (hours n) (units->duration n 36000000000L))
+(defun (hours n)
+  (units->duration n 36000000000L))
 
 (impl (Ord Duration)
-  (defun (compare a b) (compare (duration-ticks a) (duration-ticks b))))
+  (defun (compare a b)
+    (compare (duration-ticks a) (duration-ticks b))))
 
 ;; ISO 8601: PT26H30M, PT0.5S, with one leading sign: -PT1H30M.
 (impl (Written Duration)
-  (defun (written d) (duration->iso (duration-ticks d)))
-  (defun (write-into d b) (stringbuilder-add-string! b (written d))))
+  (defun (written d)
+    (duration->iso (duration-ticks d)))
+  (defun (write-into d b)
+    (stringbuilder-add-string! b (written d))))
 
 (: (-> long string))
 (defun (duration->iso t)
   (if (= t 0L)
       "PT0S"
       (let ()
-        (def a (if (< t 0L) (- t) t))
+        (def a
+          (if (< t 0L)
+              (- t)
+              t))
         (def h (/ a 36000000000L))
         (def m (% (/ a 600000000L) 60L))
         (def s (% (/ a 10000000L) 60L))
         (def f (% a 10000000L))
-        (string-append
-          (if (< t 0L) "-PT" "PT")
-          (string-append
-            (if (= h 0L) "" #"${h}H")
-            (string-append
-              (if (= m 0L) "" #"${m}M")
-              (if (and (= s 0L) (= f 0L)) "" #"${s}${(tick-fraction f)}S")))))))
+        (string-append (if (< t 0L)
+                           "-PT"
+                           "PT")
+                       (string-append (if (= h 0L)
+                                          ""
+                                          #"${h}H")
+                                      (string-append (if (= m 0L)
+                                                         ""
+                                                         #"${m}M")
+                                                     (if (and (= s 0L) (= f 0L))
+                                                         ""
+                                                         #"${s}${(tick-fraction f)}S")))))))
 
 ;; ".5" for half a second: up to seven digits, without trailing zeros, and
 ;; nothing for a whole second.
@@ -1583,7 +1689,8 @@
 (defun (tick-fraction f)
   (if (= f 0L)
       ""
-      (let trim ((f f) (width 7))
+      (let trim ((f f)
+                 (width 7))
         (if (= (% f 10L) 0L)
             (trim (/ f 10L) (- width 1))
             (let pad ((digits (displayed f)))
@@ -1597,7 +1704,9 @@
 (: (-> Duration long))
 (defun (duration->timer-ms d)
   (def t (duration-ticks d))
-  (if (<= t 0L) 0L (+ (/ (- t 1L) 10000L) 1L)))
+  (if (<= t 0L)
+      0L
+      (+ (/ (- t 1L) 10000L) 1L)))
 
 (import/extern
   (clr-timeout-ms (: BjolangRuntime.timeout (-> long (Event Unit)))))
@@ -1605,8 +1714,8 @@
 ;; An event that is ready `d` after each sync of it. Zero or less is ready at
 ;; once.
 (: (-> Duration (Event Unit)))
-(defun (timeout d) (clr-timeout-ms (duration->timer-ms d)))
-
+(defun (timeout d)
+  (clr-timeout-ms (duration->timer-ms d)))
 
 ;; ---------------------------------------------------------------------------
 ;; Select
@@ -1618,7 +1727,9 @@
   (match body
     (Nil (syntax-error whole "This clause has nothing to do."))
     ((Cons only Nil) only)
-    (_ #'(let () ,@body))))
+    (_
+     #'(let ()
+         ,@body))))
 
 ;; `(select branch ...)` - sync on the events of the branches, then run the
 ;; body of the branch whose event committed.
@@ -1648,10 +1759,19 @@
 ;; allocates nothing.
 (def/macro (select form inject compare)
   (syntax-match form
-    ((_) (syntax-error form "select takes branches: (select (event pattern body ...) ... (#:timeout duration body ...) (#:else body ...))"))
-    ((_ (#:else body ...)) (syntax-error form "select needs a branch with an event, not only (#:else ...). Without one, write the body."))
+    ((_)
+     (syntax-error
+      form
+      "select takes branches: (select (event pattern body ...) ... (#:timeout duration body ...) (#:else body ...))"))
+    ((_ (#:else body ...))
+     (syntax-error
+      form
+      "select needs a branch with an event, not only (#:else ...). Without one, write the body."))
     ((_ branch ...) (select-form (select-arms branch)))
-    (bad (syntax-error bad "select takes branches: (select (event pattern body ...) ... (#:timeout duration body ...) (#:else body ...))"))))
+    (bad
+     (syntax-error
+      bad
+      "select takes branches: (select (event pattern body ...) ... (#:timeout duration body ...) (#:else body ...))"))))
 
 ;; One branch of a `select`: its event, its pattern and its body as one form.
 (type (: SelectArm (Union (: Arm Syntax Syntax Syntax))))
@@ -1667,7 +1787,10 @@
         (match rest
           (Nil (list (Arm #'(always unit) (SSym (string->symbol "_")) (one-form body branch))))
           ((Cons after _)
-           (list (select-arm-error after "(#:else ...) must be the last branch of a select: it runs only when no branch above it can commit at once.")))))
+           (list
+            (select-arm-error
+             after
+             "(#:else ...) must be the last branch of a select: it runs only when no branch above it can commit at once.")))))
        ((#:timeout duration body ...)
         (Cons (Arm #'(timeout ,duration) (SSym (string->symbol "_")) (one-form body branch))
               (select-arms rest)))
@@ -1676,10 +1799,14 @@
        ((event pattern body ...)
         (match event
           ((SKey _)
-           (list (select-arm-error event "A select branch starts with an event, #:timeout or #:else.")))
+           (list (select-arm-error event
+                                   "A select branch starts with an event, #:timeout or #:else.")))
           (_ (Cons (Arm event pattern (one-form body branch)) (select-arms rest)))))
        (bad
-        (list (select-arm-error bad "A select branch is (event pattern body ...), (#:timeout duration body ...) or (#:else body ...).")))))))
+        (list
+         (select-arm-error
+          bad
+          "A select branch is (event pattern body ...), (#:timeout duration body ...) or (#:else body ...).")))))))
 
 ;; Raises the syntax error. Typed as an arm, for the lists above.
 (: (-> Syntax string SelectArm))
@@ -1696,7 +1823,10 @@
       ((Cons (Arm only _ _) Nil) only)
       (_ #'(choose ,@(select-wraps arms 0 last)))))
   #'(match (by-colour (#:sync (sync/blocking ,event)) (#:bjo (sync ,event)))
-      ,@(select-clauses arms 0 last)))
+      ,@(select-clauses
+         arms
+         0
+         last)))
 
 ;; Each arm's event, with its value tagged by `select-tag`.
 (: (-> (List SelectArm) int int (List Syntax)))
@@ -1704,8 +1834,7 @@
   (match arms
     (Nil Nil)
     ((Cons (Arm event _ _) rest)
-     (Cons #'(wrap ,event (fun (v) ,(select-tag i last #'v)))
-           (select-wraps rest (+ i 1) last)))))
+     (Cons #'(wrap ,event (fun (v) ,(select-tag i last #'v))) (select-wraps rest (+ i 1) last)))))
 
 ;; Each arm's `match` clause: the arm's tag, and a `match` of the value on the
 ;; arm's pattern. The inner `match` is what a pattern that can fail is
@@ -1715,7 +1844,8 @@
   (match arms
     (Nil Nil)
     ((Cons (Arm _ pattern body) rest)
-     (Cons #'(,(select-tag i last #'v) (match v (,pattern ,body)))
+     (Cons #'(,(select-tag i last #'v) (match v
+                                         (,pattern ,body)))
            (select-clauses rest (+ i 1) last)))))
 
 ;; The tag of arm `i` of `last + 1` arms around `x`, as an expression or a
@@ -1729,7 +1859,6 @@
           #'(Ok ,x)
           #'(Err ,(select-tag (- i 1) (- last 1) x)))))
 
-
 ;; -------------------------------------------------------------
 ;; Extra thingies for cml
 ;;
@@ -1739,5 +1868,3 @@
   (match (sync/blocking (promise-join p))
     ((Err e) (raise e))
     ((Ok v) v)))
-
-

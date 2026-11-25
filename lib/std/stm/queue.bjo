@@ -42,11 +42,14 @@
 (import/class
   (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
 
-(type (: (Side %a) (Struct (: count int) (: items (List %a)))))
+(type (: (Side %a) (Struct (: count int)
+                           (: items (List %a)))))
 
-(type (: Room (Record (: write (Loc int)) (: freed (Loc int)))))
+(type (: Room (Record (: write (Loc int))
+                      (: freed (Loc int)))))
 
-(type (: (TQueue %a) #:opaque
+(type (: (TQueue %a)
+         #:opaque
          (Record (: front (Loc (Side %a)))
                  (: back (Loc (Side %a)))
                  (: room (Option Room)))))
@@ -56,18 +59,18 @@
 ;; ---------------------------------------------------------------------------
 
 (: (-> (Side %a)))
-(defun (empty-side) (Side (count 0) (items (list))))
+(defun (empty-side)
+  (Side (count 0) (items (list))))
 
 (: (-> (TQueue %a)))
 (defun (make-queue)
-  (TQueue (front (make-loc (empty-side)))
-          (back (make-loc (empty-side)))
-          (room None)))
+  (TQueue (front (make-loc (empty-side))) (back (make-loc (empty-side))) (room None)))
 
 (: (-> int (TQueue %a)))
 (defun (make-bounded-queue capacity)
   (when (< capacity 1)
-    (raise (cast Exception (ArgumentException. "make-bounded-queue: the capacity must be at least 1"))))
+    (raise (cast Exception
+                 (ArgumentException. "make-bounded-queue: the capacity must be at least 1"))))
   (TQueue (front (make-loc (empty-side)))
           (back (make-loc (empty-side)))
           (room (Some (Room (write (make-loc capacity)) (freed (make-loc 0)))))))
@@ -122,9 +125,9 @@
 (defun (queue-push! tx q x)
   (take-place! tx (record-ref q room))
   (def b (tx-ref tx (record-ref q back)))
-  (tx-set! tx (record-ref q back)
-           (Side (count (+ (struct-ref b count) 1))
-                 (items (Cons x (struct-ref b items))))))
+  (tx-set! tx
+           (record-ref q back)
+           (Side (count (+ (struct-ref b count) 1)) (items (Cons x (struct-ref b items))))))
 
 (: (-> Tx (TQueue %a) (Option %a)))
 (defun (queue-try-pop! tx q)
@@ -173,7 +176,8 @@
      (struct-ref (tx-ref tx (record-ref q back)) count)))
 
 (: (-> Tx (TQueue %a) bool))
-(defun (queue-empty? tx q) (= (queue-length tx q) 0))
+(defun (queue-empty? tx q)
+  (= (queue-length tx q) 0))
 
 ;; ---------------------------------------------------------------------------
 ;; Outside a transaction
@@ -190,9 +194,9 @@
 (: (-> (TQueue %a) %a void))
 (defbjouble (queue-put q x)
   (#:sync (sync/blocking (queue-send q x)))
-  (#:bjo  (sync (queue-send q x))))
+  (#:bjo (sync (queue-send q x))))
 
 (: (-> (TQueue %a) %a))
 (defbjouble (queue-get q)
   (#:sync (sync/blocking (queue-recv q)))
-  (#:bjo  (sync (queue-recv q))))
+  (#:bjo (sync (queue-recv q))))

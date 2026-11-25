@@ -7,7 +7,11 @@
 ;; Whether the point (cr, ci) stays inside radius 2 for 50 iterations.
 (: (-> double double bool))
 (defun (inside? cr ci)
-  (let go ((i 0) (zr 0.0) (zi 0.0) (tr 0.0) (ti 0.0))
+  (let go ((i 0)
+           (zr 0.0)
+           (zi 0.0)
+           (tr 0.0)
+           (ti 0.0))
     (if (and (< i 50) (<= (+ tr ti) 4.0))
         (let* ((zi (+ (* 2.0 (* zr zi)) ci))
                (zr (+ (- tr ti) cr)))
@@ -22,14 +26,20 @@
   (def size (cast System.Double n))
   (loop (:for y (range 0 n))
         (:let ci (- (/ (* 2.0 (cast System.Double y)) size) 1.0))
-        (:do (let go ((x 0) (bits 0) (at (* y row-bytes)))
+        (:do (let go ((x 0)
+                      (bits 0)
+                      (at (* y row-bytes)))
                (cond
                  ((= x n)
                   (when (not (= 0 (% n 8)))
                     (array-set! bitmap at (cast System.Byte (shift-left bits (- 8 (% n 8)))))))
                  (else
                   (def cr (- (/ (* 2.0 (cast System.Double x)) size) 1.5))
-                  (def bits (+ (shift-left bits 1) (if (inside? cr ci) 1 0)))
+                  (def bits
+                    (+ (shift-left bits 1)
+                       (if (inside? cr ci)
+                           1
+                           0)))
                   (if (= 7 (% x 8))
                       (let ()
                         (array-set! bitmap at (cast System.Byte bits))
@@ -39,4 +49,5 @@
   (write-string out #"P4\n${n} ${n}\n")
   (write-bytes! out bitmap))
 
-(defun (main args) (bench-main args #f run))
+(defun (main args)
+  (bench-main args #f run))

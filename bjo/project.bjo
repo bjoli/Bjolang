@@ -70,7 +70,6 @@
   (clr-runtime-version (: System.Environment.Version #:get))
   (version-major (: System.Version.Major (-> System.Version int) #:get)))
 
-
 ;; ---------------------------------------------------------------------------
 ;; Saying no
 ;; ---------------------------------------------------------------------------
@@ -83,7 +82,6 @@
   (println message)
   1)
 
-
 ;; ---------------------------------------------------------------------------
 ;; Paths
 ;; ---------------------------------------------------------------------------
@@ -93,15 +91,17 @@
 (: (-> string (Option string)))
 (defun (parent-directory dir)
   (def up (clr-directory-name (path-absolute dir)))
-  (if (clr-null-or-empty? up) None (Some up)))
+  (if (clr-null-or-empty? up)
+      None
+      (Some up)))
 
 ;; A program on PATH, if there is one. Two ways to have no answer — no PATH at
 ;; all, and nothing on it by that name — and both of them propagate.
 (: (-> string (Option string)))
 (defun (which program)
   (def* ((Some path) (get-environment-variable "PATH") :propagate)
-        ((Some dir) (find #(file-exists? (path-combine & program))
-                          (string-split path ":")) :propagate))
+        ((Some dir) (find #(file-exists? (path-combine & program)) (string-split path ":"))
+          :propagate))
   (Some (path-combine dir program)))
 
 (: string)
@@ -120,45 +120,54 @@
           ((Some up) (go up))
           (None None)))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; The manifest
 ;; ---------------------------------------------------------------------------
 
 ;; A project: the directory, and what its manifest says.
-(type (: Project (Record (: dir string) (: package Package))))
+(type (: Project (Record (: dir string)
+                         (: package Package))))
 
 (: (-> Project string))
-(defun (project-dir p) (record-ref p dir))
+(defun (project-dir p)
+  (record-ref p dir))
 
 (: (-> Project Package))
-(defun (project-package p) (record-ref p package))
+(defun (project-package p)
+  (record-ref p package))
 
 (: (-> Project string))
-(defun (project-src p) (path-combine (project-dir p) "src"))
+(defun (project-src p)
+  (path-combine (project-dir p) "src"))
 
 (: (-> Project string))
-(defun (project-dot-bjo p) (path-combine (project-dir p) ".bjo"))
+(defun (project-dot-bjo p)
+  (path-combine (project-dir p) ".bjo"))
 
 (: (-> Project string))
-(defun (project-tmp p) (path-combine (project-dot-bjo p) "tmp"))
+(defun (project-tmp p)
+  (path-combine (project-dot-bjo p) "tmp"))
 
 (: (-> Project string))
-(defun (project-roots-file p) (path-combine (project-dot-bjo p) "roots"))
+(defun (project-roots-file p)
+  (path-combine (project-dot-bjo p) "roots"))
 
 ;; Which package declared which .NET shared framework. Beside the roots file,
 ;; because it answers the same kind of question about the same set of packages.
 (: (-> Project string))
-(defun (project-frameworks-file p) (path-combine (project-dot-bjo p) "frameworks"))
+(defun (project-frameworks-file p)
+  (path-combine (project-dot-bjo p) "frameworks"))
 
 ;; The generated project the root package's NuGet packages are restored with.
 ;; `root/` because a later dependency with packages gets a directory of its own.
 (: (-> Project string))
-(defun (project-nuget-dir p) (path-combine (project-dot-bjo p) "nuget" "root"))
+(defun (project-nuget-dir p)
+  (path-combine (project-dot-bjo p) "nuget" "root"))
 
 ;; The NuGet lock file. At the project root, beside the manifest, and committed.
 (: (-> Project string))
-(defun (project-nuget-lock-file p) (path-combine (project-dir p) "packages.lock.json"))
+(defun (project-nuget-lock-file p)
+  (path-combine (project-dir p) "packages.lock.json"))
 
 ;; The target framework the compiler is built for and compiles programs for,
 ;; such as `net11.0`. The compiler's own directory is named after it, and a
@@ -180,10 +189,12 @@
      (path-combine (match (get-environment-variable "BJO_ROOT")
                      ((Some dir) dir)
                      (None (path-absolute (path-combine clr-base-dir ".."))))
-                   "bin" "compiler"))))
+                   "bin"
+                   "compiler"))))
 
 (: (-> Project string))
-(defun (project-lock-file p) (path-combine (project-dir p) "bjo.lock"))
+(defun (project-lock-file p)
+  (path-combine (project-dir p) "bjo.lock"))
 
 ;; What the manifest says to build. Relative to the manifest, so that a project
 ;; means the same thing wherever it is checked out.
@@ -195,7 +206,8 @@
 ;; from a flag in the manifest: `entry` has a default, and a library would
 ;; otherwise have to say twice that it has no program.
 (: (-> Project bool))
-(defun (project-has-entry? p) (file-exists? (project-entry p)))
+(defun (project-has-entry? p)
+  (file-exists? (project-entry p)))
 
 ;; The manifest at `file`, read into the types in `manifest.bjo`.
 ;;
@@ -214,14 +226,14 @@
   (def (Ok package) (read-package (path-combine dir manifest-name)) :propagate)
   (Ok (Project (dir (path-absolute dir)) (package package))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; Package names
 ;; ---------------------------------------------------------------------------
 
 ;; `(myapp lexer)`, for a message.
 (: (-> (List Symbol) string))
-(defun (name->string name) (module-name->string name))
+(defun (name->string name)
+  (module-name->string name))
 
 ;; The installed `lib`, found the way the compiler finds it: an override first,
 ;; then the tree the binary is in, then the working directory, and a candidate
@@ -230,16 +242,14 @@
 (: (-> (List string)))
 (defun (lib-candidates)
   (def from-env
-    (list-append
-      (match (get-environment-variable "BJOLANG_LIB")
-        ((Some dir) (Cons (path-absolute dir) Nil))
-        (None Nil))
-      (match (get-environment-variable "BJOLANG_HOME")
-        ((Some dir) (Cons (path-absolute (path-combine dir "lib")) Nil))
-        (None Nil))))
+    (list-append (match (get-environment-variable "BJOLANG_LIB")
+                   ((Some dir) (Cons (path-absolute dir) Nil))
+                   (None Nil))
+                 (match (get-environment-variable "BJOLANG_HOME")
+                   ((Some dir) (Cons (path-absolute (path-combine dir "lib")) Nil))
+                   (None Nil))))
   (list-append from-env
-               (list-append (ancestor-libs clr-base-dir)
-                            (ancestor-libs (current-directory)))))
+               (list-append (ancestor-libs clr-base-dir) (ancestor-libs (current-directory)))))
 
 ;; `<dir>/lib` for `dir` and every directory above it, deepest first.
 (: (-> string (List string)))
@@ -297,14 +307,16 @@
 (: (-> string (Result string (List Symbol))))
 (defun (parse-package-name written)
   (def trimmed (string-trim written))
-  (def inner (if (and (string-starts-with? trimmed "(") (string-ends-with? trimmed ")"))
-                 (string-trim (substring trimmed
-                                         (string-cursor-next trimmed (string-cursor-start trimmed))
-                                         (string-cursor-prev trimmed (string-cursor-end trimmed))))
-                 trimmed))
-  (def segments (loop (:for part (string-split inner " "))
-                      (:acc out (listing part) #:when (not (= part "")))
-                      => out))
+  (def inner
+    (if (and (string-starts-with? trimmed "(") (string-ends-with? trimmed ")"))
+        (string-trim (substring trimmed
+                                (string-cursor-next trimmed (string-cursor-start trimmed))
+                                (string-cursor-prev trimmed (string-cursor-end trimmed))))
+        trimmed))
+  (def segments
+    (loop (:for part (string-split inner " "))
+          (:acc out (listing part) #:when (not (= part "")))
+      => out))
   (cond
     ((empty? segments) (Err #"bjo init: '${written}' is not a package name."))
     ((not (all? valid-segment? segments))
@@ -313,19 +325,21 @@
                "written (my app) when there are several.")))
     (else (Ok (list-map string->symbol segments)))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; The roots file
 ;; ---------------------------------------------------------------------------
 
 ;; One package, and the directory its modules are in.
-(type (: Root (Record (: name (List Symbol)) (: dir string))))
+(type (: Root (Record (: name (List Symbol))
+                      (: dir string))))
 
 (: (-> Root (List Symbol)))
-(defun (root-name r) (record-ref r name))
+(defun (root-name r)
+  (record-ref r name))
 
 (: (-> Root string))
-(defun (root-dir r) (record-ref r dir))
+(defun (root-dir r)
+  (record-ref r dir))
 
 ;; A directory as a Bjolang string literal.
 (: (-> string string))
@@ -337,9 +351,9 @@
 ;; the lines sorts by name.
 (: (-> (List Root) string))
 (defun (roots-text roots)
-  (def lines (list-sort (list-map #(str "  (root " (name->string (root-name &))
-                                        " " (quoted (root-dir &)) ")")
-                                  roots)))
+  (def lines
+    (list-sort (list-map #(str "  (root " (name->string (root-name &)) " " (quoted (root-dir &)) ")")
+                         roots)))
   (str "(roots\n" (string-join (list->vec lines) "\n") ")\n"))
 
 ;; Writes the roots file, and answers whether it had to.
@@ -350,7 +364,10 @@
 (: write-roots (-> string (List Root) bool) #:sync)
 (defun (write-roots path roots)
   (def text (roots-text roots))
-  (def current (if (file-exists? path) (file-read-text path) ""))
+  (def current
+    (if (file-exists? path)
+        (file-read-text path)
+        ""))
   (cond
     ((= current text) #f)
     (else
@@ -359,7 +376,6 @@
        (None unit))
      (file-write-text path text)
      #t)))
-
 
 ;; ---------------------------------------------------------------------------
 ;; The frameworks file
@@ -418,8 +434,8 @@
                                ((Some dir)
                                 (loop (:for name (root-frameworks r))
                                       (:acc inner (folding out (Cons (str dir "\t" name) inner)))
-                                      => inner)))))
-          => out))
+                                  => inner)))))
+      => out))
   (if (empty? lines)
       ""
       (str (string-join (list->vec (list-sort lines)) "\n") "\n")))
@@ -433,10 +449,14 @@
 (: write-frameworks (-> string (List Root) bool) #:sync)
 (defun (write-frameworks path roots)
   (def text (frameworks-text roots))
-  (def current (if (file-exists? path) (file-read-text path) ""))
+  (def current
+    (if (file-exists? path)
+        (file-read-text path)
+        ""))
   (cond
     ((= text "")
-     (when (file-exists? path) (file-delete path))
+     (when (file-exists? path)
+       (file-delete path))
      #f)
     ((= current text) #t)
     (else
@@ -445,7 +465,6 @@
        (None unit))
      (file-write-text path text)
      #t)))
-
 
 ;; ---------------------------------------------------------------------------
 ;; Sources
@@ -465,13 +484,13 @@
   (if (not (directory-exists? dir))
       Nil
       (let ((here (loop (:for file (directory-files dir))
-                        (:acc out (listing (path->string/lossy file)) #:when (path-has-extension? file "bjo"))
-                        => out)))
+                        (:acc out (listing (path->string/lossy file))
+                              #:when (path-has-extension? file "bjo"))
+                    => out)))
         (list-append here
                      (loop (:for sub (directory-subdirectories dir))
                            (:acc out (folding Nil (list-append out (collect-sources sub))))
-                           => out)))))
-
+                       => out)))))
 
 ;; ---------------------------------------------------------------------------
 ;; init
@@ -494,7 +513,9 @@
 (: (-> (List Symbol) string))
 (defun (manifest-template name)
   (str "(package\n"
-       "  (name " (name->string name) ")\n"
+       "  (name "
+       (name->string name)
+       ")\n"
        "  (version \"0.1.0\")\n"
        "\n"
        "  ;; What this package needs. One (package ...) clause each:\n"
@@ -518,17 +539,25 @@
 
 (: (-> (List Symbol) string))
 (defun (main-template name)
-  (str ";; " (name->string name) " — the program.\n"
+  (str ";; "
+       (name->string name)
+       " — the program.\n"
        "\n"
        "(import (std prelude))\n"
        "\n"
        "(defun (main)\n"
-       "  (println \"hello from " (plain-name name) "\")\n"
+       "  (println \"hello from "
+       (plain-name name)
+       "\")\n"
        "  0)\n"))
 
 (: (-> (List Symbol) string))
 (defun (core-template name)
-  (str ";; " (name->string name) " — imported as " (name->string (list-append name (Cons (string->symbol "core") Nil))) ".\n"
+  (str ";; "
+       (name->string name)
+       " — imported as "
+       (name->string (list-append name (Cons (string->symbol "core") Nil)))
+       ".\n"
        "\n"
        "(import (std prelude))\n"
        "(export greet)\n"
@@ -571,15 +600,17 @@
     (def* ((None) (find #(and (string-starts-with? & "-") (not (= & "--lib"))) arguments)
             :leave ((Some flag) (fail #"bjo init: unknown flag '${flag}'.")))
           (library? (or lib? (any? #(= & "--lib") arguments)))
-          (names (loop (:for a arguments)
-                       (:acc out (listing a) #:when (not (string-starts-with? a "-")))
-                       => out)))
+          (names
+           (loop (:for a arguments)
+                 (:acc out (listing a) #:when (not (string-starts-with? a "-")))
+             => out)))
 
     (def written
       (match names
-        (Nil (match (path-filename here)
-               ((Some dir-name) dir-name)
-               (None "")))
+        (Nil
+         (match (path-filename here)
+           ((Some dir-name) dir-name)
+           (None "")))
         ((Cons only Nil) only)
         (_ "")))
 

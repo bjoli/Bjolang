@@ -22,29 +22,30 @@
 (def paper 40)
 (def money-column 9)
 
-
 ;; First we define the line.
 ;; what is the grocery
 ;; qty is how much
 ;; and unit is unit price
-(type
-  (: Line (Record (: what string)
-                  (: qty double)
-                  (: unit double))))
+(type (: Line (Record (: what string)
+                      (: qty double)
+                      (: unit double))))
 
 ;; Simple accessors
 (: (-> Line string))
-(defun (what-of l) (record-ref l what))
+(defun (what-of l)
+  (record-ref l what))
 
 (: (-> Line double))
-(defun (qty-of l) (record-ref l qty))
+(defun (qty-of l)
+  (record-ref l qty))
 
 (: (-> Line double))
-(defun (unit-of l) (record-ref l unit))
+(defun (unit-of l)
+  (record-ref l unit))
 
 (: (-> Line double))
-(defun (amount-of l) (* (qty-of l) (unit-of l)))
-
+(defun (amount-of l)
+  (* (qty-of l) (unit-of l)))
 
 ;; --- The pieces ------------------------------------------------------------
 
@@ -70,8 +71,7 @@
 ;; trim.
 (: (-> (Vec Block) (Vec Block) Block))
 (defun (spread left right)
-  (captured #(each [(fitted/right (- paper (width-of &)) left) (BStr &) nl])
-            right))
+  (captured #(each [(fitted/right (- paper (width-of &)) left) (BStr &) nl]) right))
 
 ;; A labelled amount. The money is padded to a fixed column, so every amount
 ;; ends where the one above it did however many digits it has.
@@ -84,11 +84,7 @@
 (defun (detail l)
   (if (= (qty-of l) 1.0)
       nothing
-      (each ["  "
-             (numeric (qty-of l) #:precision 2)
-             " x "
-             (numeric (unit-of l) #:precision 2)
-             nl])))
+      (each ["  " (numeric (qty-of l) #:precision 2) " x " (numeric (unit-of l) #:precision 2) nl])))
 
 (: (-> Line Block))
 (defun (item l)
@@ -106,37 +102,35 @@
             [(numeric x #:precision 2 #:comma 3)]))
 
 ;; The tax summary. Three columns, each as wide as its own content: that is
-;; `tabular`. 
+;; `tabular`.
 (: (-> double double Block))
 (defun (vat-summary net vat)
-  (tabular [["Rate" nl "12 %"]
-            ["Net" nl (numeric net #:precision 2)]
-            ["VAT" nl (numeric vat #:precision 2)]]
-           #:sep "   "))
+  (tabular
+   [["Rate" nl "12 %"] ["Net" nl (numeric net #:precision 2)] ["VAT" nl (numeric vat #:precision 2)]]
+   #:sep "   "))
 
 ;; The shop against the left margin, the transaction against the right.
 (: Block)
 (def masthead
-  (each [(spread ["Fruktgatan 12"] ["2026-08-21 14:32"])
-         (spread ["211 41 Malmo"] ["Receipt 1042"])]))
+  (each [(spread ["Fruktgatan 12"] ["2026-08-21 14:32"]) (spread ["211 41 Malmo"] ["Receipt 1042"])]))
 
 ;; justifies the footer so that it fits the paper
 (: Block)
 (def footer
   (with-fmt current-width paper
-            [(justified ["Thank you for shopping with us. Please keep the receipt: it is your proof of purchase, and anything unopened may be returned within thirty days."])
-             nl]))
-
+    [(justified
+      ["Thank you for shopping with us. Please keep the receipt: it is your proof of purchase, and anything unopened may be returned within thirty days."])
+     nl]))
 
 ;; --- The receipt -----------------------------------------------------------
 
 (: (List Line))
 (def basket
-  (list (Line (what "Bananas, organic")                           (qty 1.24) (unit 24.90))
-        (Line (what "Coffee beans, dark roast, whole")            (qty 2.0)  (unit 89.00))
-        (Line (what "Rye bread")                                  (qty 1.0)  (unit 32.50))
-        (Line (what "Oat milk")                                   (qty 3.0)  (unit 18.95))
-        (Line (what "Cloudberry jam from Lapland, the small jar") (qty 1.0)  (unit 64.00))))
+  (list (Line (what "Bananas, organic") (qty 1.24) (unit 24.90))
+        (Line (what "Coffee beans, dark roast, whole") (qty 2.0) (unit 89.00))
+        (Line (what "Rye bread") (qty 1.0) (unit 32.50))
+        (Line (what "Oat milk") (qty 3.0) (unit 18.95))
+        (Line (what "Cloudberry jam from Lapland, the small jar") (qty 1.0) (unit 64.00))))
 
 (: (-> (List Line) (Vec Block)))
 (defun (receipt ls)
@@ -146,20 +140,20 @@
   ;; One `with` over the whole receipt: a name too long for its column is cut
   ;; and says so, wherever on the paper it appears.
   [(with-fmt current-ellipsis "..."
-             [(heading ["BJOLI'S GROCERY"])
-              nl
-              masthead
-              (rule #\=)
-              (joined item ls [])
-              (rule #\-)
-              (labelled ["Net"] net)
-              (labelled ["VAT 12%"] vat)
-              (rule #\=)
-              (total-line total)
-              nl
-              (vat-summary net vat)
-              nl
-              footer])])
+     [(heading ["BJOLI'S GROCERY"])
+      nl
+      masthead
+      (rule #\=)
+      (joined item ls [])
+      (rule #\-)
+      (labelled ["Net"] net)
+      (labelled ["VAT 12%"] vat)
+      (rule #\=)
+      (total-line total)
+      nl
+      (vat-summary net vat)
+      nl
+      footer])])
 
 (defun (main args)
   (parameterize ((current-decimal-sep #\,))

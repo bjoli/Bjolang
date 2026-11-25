@@ -13,7 +13,7 @@
 ;; std/http.bjo — HTTP requests.
 ;;
 ;; A wrapper over System.Net.Http
-;; 
+;;
 ;; Two things are deliberately not what .NET does. A status code is a value,
 ;; never an exception — `EnsureSuccessStatusCode` is not imported and 404 is
 ;; not a failure. And `HttpClient.Timeout` is switched off, because a deadline
@@ -134,8 +134,8 @@
 ;; that is not there. A .NET string becomes a Bjolang one at the call, and a
 ;; null becomes "" there.
 (: (-> string string))
-(defun (text-or-empty s) s)
-
+(defun (text-or-empty s)
+  s)
 
 ;; ===========================================================================
 ;; The client
@@ -162,7 +162,6 @@
 (: (Param Client))
 (def current-http-client (make-parameter (make-client)))
 
-
 ;; ===========================================================================
 ;; What you write
 ;; ===========================================================================
@@ -174,7 +173,8 @@
 (type (: Method (Enum GET POST PUT PATCH DELETE HEAD)))
 
 ;; A body .NET has no name for: your own content type, your own text.
-(type (: Custom (Record (: content-type string) (: text string))))
+(type (: Custom (Record (: content-type string)
+                        (: text string))))
 
 (type (: Body (Union Empty
                      (: Text string)
@@ -213,7 +213,6 @@
     (DELETE "DELETE")
     (HEAD "HEAD")))
 
-
 ;; ===========================================================================
 ;; Turning one into an HttpRequestMessage
 ;; ===========================================================================
@@ -240,9 +239,15 @@
      ;; the fragment, which is not sent.
      (def parts (string-split base "#"))
      (def head (vec-ref parts 0))
-     (def fragment (if (> (vec-length parts) 1) (str "#" (string-join (vec-slice parts 1 (- (vec-length parts) 1)) "#")) ""))
+     (def fragment
+       (if (> (vec-length parts) 1)
+           (str "#" (string-join (vec-slice parts 1 (- (vec-length parts) 1)) "#"))
+           ""))
      ;; A url may already carry a query, in which case ours is more of it.
-     (str head (if (string-contains? head "?") "&" "?")
+     (str head
+          (if (string-contains? head "?")
+              "&"
+              "?")
           (encode-pairs encode-query-part query)
           fragment))))
 
@@ -253,11 +258,10 @@
     (Empty None)
     ((Text text) (Some (attach! message text "text/plain; charset=utf-8")))
     ((JsonText text) (Some (attach! message text "application/json; charset=utf-8")))
-    ((Form fields) (Some (attach! message (encode-pairs encode-form fields)
-                                  "application/x-www-form-urlencoded")))
-    ((Other custom) (Some (attach! message
-                                   (record-ref custom text)
-                                   (record-ref custom content-type))))))
+    ((Form fields)
+     (Some (attach! message (encode-pairs encode-form fields) "application/x-www-form-urlencoded")))
+    ((Other custom)
+     (Some (attach! message (record-ref custom text) (record-ref custom content-type))))))
 
 (: (-> Message string string Content))
 (defun (attach! message text content-type)
@@ -278,8 +282,8 @@
      (if (header-add! (cast Headers (message-headers message)) name value)
          (Ok unit)
          (match content
-           (None (Err (http-error
-                       (str "'" name "' is a header about a body, and this request has none"))))
+           (None
+            (Err (http-error (str "'" name "' is a header about a body, and this request has none"))))
            ((Some body)
             ;; Remove first, or the content type set above is sent twice.
             (ignore (header-remove! (cast Headers (content-headers body)) name))
@@ -315,26 +319,27 @@
              ((Err e) (Err e))
              ((Ok added) (Ok message))))))))
 
-
 ;; ===========================================================================
 ;; The answer
 ;; ===========================================================================
 
 ;; Opaque: the CLR reply inside owns a live connection, and handing it out
 ;; would make closing it somebody else's problem by accident.
-(type
-  (: Response #:opaque
-     (Record (: status int)
-             (: reason string)
-             (: headers (Map string string))
-             (: raw Reply))))
+(type (: Response
+         #:opaque
+         (Record (: status int)
+                 (: reason string)
+                 (: headers (Map string string))
+                 (: raw Reply))))
 
 (: (-> (Seq System.String) string))
 (defun (join-values values)
-  (string-join (loop (:for value values) (:acc all (vecing (clr-string->string value)))) ", "))
+  (string-join (loop (:for value values)
+                     (:acc all (vecing (clr-string->string value))))
+               ", "))
 
 ;; Makes both headers and into  lower-cased, folded with ", ". Header names are
-;; case-insensitive on the wire 
+;; case-insensitive on the wire
 ;;
 ;; Set-Cookie is the exception the RFC makes and this does not: folded cookies
 ;; cannot be taken apart again. When something here reads cookies it needs a
@@ -342,24 +347,25 @@
 (: (-> (Seq (Pairing System.String (Seq System.String))) (Map string string) (Map string string)))
 (defun (collect-headers headers into)
   (loop (:for header headers)
-        (:acc all (folding into
-                           (map-set all
-                                    (string-downcase (.-Key header))
-                                    (join-values (.-Value header)))))))
+        (:acc all (folding
+                   into
+                   (map-set all (string-downcase (.-Key header)) (join-values (.-Value header)))))))
 
 (: (-> Reply Response))
 (defun (response-of raw)
   (Response (status (cast int (reply-status raw)))
             (reason (text-or-empty (reply-reason raw)))
-            (headers (collect-headers
-                      (cast (Seq (Pairing System.String (Seq System.String))) (content-headers (reply-content raw)))
-                      (collect-headers
-                       (cast (Seq (Pairing System.String (Seq System.String))) (reply-headers raw))
-                       (map-empty))))
+            (headers (collect-headers (cast (Seq (Pairing System.String (Seq System.String)))
+                                            (content-headers (reply-content raw)))
+                                      (collect-headers (cast (Seq (Pairing System.String
+                                                                           (Seq System.String)))
+                                                             (reply-headers raw))
+                                                       (map-empty))))
             (raw raw)))
 
 (: (-> Response int))
-(defun (response-status r) (record-ref r status))
+(defun (response-status r)
+  (record-ref r status))
 
 ;; 2xx. Nothing here throws on a 404: which codes are failures is the caller's
 ;; business, and plenty of them are not.
@@ -370,17 +376,18 @@
 
 ;; Empty over HTTP/2, which has no reason phrase. Do not parse it.
 (: (-> Response string))
-(defun (response-reason r) (record-ref r reason))
+(defun (response-reason r)
+  (record-ref r reason))
 
 (: (-> Response (Map string string)))
-(defun (response-headers r) (record-ref r headers))
+(defun (response-headers r)
+  (record-ref r headers))
 
 ;; The name is lower-cased for you, so "Content-Type" and "content-type"
 ;; find the same header.
 (: (-> Response string (Option string)))
 (defun (response-header r name)
   (map-try-ref (record-ref r headers) (string-downcase name)))
-
 
 ;; ===========================================================================
 ;; The body
@@ -389,7 +396,7 @@
 (: (-> Content ClrStream))
 (defbjouble (body-stream content)
   (#:sync (clr-stream content))
-  (#:bjo  (clr-stream-await content)))
+  (#:bjo (clr-stream-await content)))
 
 ;; What the server said the body was encoded as: any name or alias
 ;; `encoding-named` knows, and UTF-8 when it named none. A charset nothing
@@ -406,10 +413,10 @@
         (match (encoding-named name)
           ((Some found) found)
           (None
-           (raise (http-error
-                   (str "the response declares charset=" name
-                        ", which is not an encoding (text encodings) knows. "
-                        "response-bytes-port reads its bytes as they are"))))))))))
+           (raise (http-error (str "the response declares charset="
+                                   name
+                                   ", which is not an encoding (text encodings) knows. "
+                                   "response-bytes-port reads its bytes as they are"))))))))))
 
 (: (-> string (Option string)))
 (defun (charset-name content-type)
@@ -465,8 +472,8 @@
   (.Dispose (record-ref r raw)))
 
 (impl (Discard Response)
-  (defun (ignore r) (response-close r)))
-
+  (defun (ignore r)
+    (response-close r)))
 
 ;; ===========================================================================
 ;; Sending one
@@ -481,23 +488,21 @@
 ;; the second sync work.
 (: (-> Request (Event (Result Exception Response))))
 (defun (fetching req)
-  (guard
-   (fun ()
-     (match (message-of req)
-       ((Err e) (always (Err e)))
-       ((Ok message)
-        (wrap (task->event (send (parameter-ref current-http-client) message headers-read))
-              (fun (outcome)
-                (match outcome
-                  ((Ok raw) (Ok (response-of raw)))
-                  ((Err e) (Err e))))))))))
+  (guard (fun ()
+           (match (message-of req)
+             ((Err e) (always (Err e)))
+             ((Ok message)
+              (wrap (task->event (send (parameter-ref current-http-client) message headers-read))
+                    (fun (outcome)
+                      (match outcome
+                        ((Ok raw) (Ok (response-of raw)))
+                        ((Err e) (Err e))))))))))
 
 ;; Send it and wait for the answer, in whichever colour the caller is.
 (: (-> Request (Result Exception Response)))
 (defbjouble (fetch req)
   (#:sync (sync/blocking (fetching req)))
-  (#:bjo  (sync (fetching req))))
-
+  (#:bjo (sync (fetching req))))
 
 ;; ===========================================================================
 ;; Scoped
@@ -505,7 +510,9 @@
 
 ;; `(with-response (r (fetch (http-get url))) body ...)` — closes the response on
 ;; the way out, however the body leaves.
-(def/macro (with-response form inject compare)
+(def/macro (with-response form
+             inject
+             compare)
   (syntax-match form
     ((_ (name spec) first body ...)
      #'(let ()
@@ -517,4 +524,7 @@
            #:finally (match answer
                        ((Ok got) (response-close got))
                        ((Err failed) unit)))))
-    (bad (syntax-error bad "with-response names a response and takes a body: (with-response (r (fetch (http-get url))) body ...)"))))
+    (bad
+     (syntax-error
+      bad
+      "with-response names a response and takes a body: (with-response (r (fetch (http-get url))) body ...)"))))

@@ -32,8 +32,7 @@
 (def ucd-files
   ["UnicodeData.txt" "DerivedCoreProperties.txt" "PropList.txt" "CaseFolding.txt"
    "CompositionExclusions.txt" "DerivedNormalizationProps.txt" "NormalizationTest.txt"
-   "auxiliary/GraphemeBreakProperty.txt" "auxiliary/GraphemeBreakTest.txt"
-   "emoji/emoji-data.txt"])
+   "auxiliary/GraphemeBreakProperty.txt" "auxiliary/GraphemeBreakTest.txt" "emoji/emoji-data.txt"])
 
 ;; The URL of the `ucd` directory of `version`: "latest", or a number such
 ;; as "17.0.0".
@@ -50,8 +49,15 @@
   (def base (ucd-url version))
   (println #"Downloading the UCD from ${base}")
   (loop (:for f ucd-files)
-        (:do (task-run! ["curl" "--fail" "--silent" "--show-error" "--location" "--create-dirs"
-                         "-o" (path->string/lossy (path-join dir f)) (str base f)]))))
+        (:do (task-run! ["curl"
+                         "--fail"
+                         "--silent"
+                         "--show-error"
+                         "--location"
+                         "--create-dirs"
+                         "-o"
+                         (path->string/lossy (path-join dir f))
+                         (str base f)]))))
 
 (:doc unicode-tables
   (summary "Generates the Unicode tables of (std unicode) from the UCD, and builds the library.")
@@ -62,17 +68,21 @@
 (defun (unicode-tables #:version "latest" #:ucd None #:build #t)
   ;; A download goes into a temporary directory. It is deleted when the
   ;; generators have run; a step that fails ends the task and leaves it.
-  (def dir (match ucd
-             ((Some d) d)
-             (None (let ((d (make-temp-directory #:prefix "bjolang-ucd-")))
-                     (download-ucd version d)
-                     d))))
+  (def dir
+    (match ucd
+      ((Some d) d)
+      (None
+       (let ((d (make-temp-directory #:prefix "bjolang-ucd-")))
+         (download-ucd version d)
+         d))))
   (casefold-tables dir)
   (chars-tables dir)
   (grapheme-tables dir)
   (normalize-tables dir)
-  (when (none? ucd) (directory-delete-tree dir))
-  (when build (task-run! ["./build_std.sh"]))
+  (when (none? ucd)
+    (directory-delete-tree dir))
+  (when build
+    (task-run! ["./build_std.sh"]))
   (println "The tables are written. Run ./run_tests.py, then look at git diff."))
 
 ;; ---------------------------------------------------------------------------
@@ -87,12 +97,11 @@
 ;; Downloads `url` to `file`. Ends the task when the download fails.
 (: (-> string string void))
 (defun (download url file)
-  (task-run! ["curl" "--fail" "--silent" "--show-error" "--location" "--create-dirs"
-              "-o" file url]))
+  (task-run! ["curl" "--fail" "--silent" "--show-error" "--location" "--create-dirs" "-o" file url]))
 
 (:doc markdown-data
   (summary
-    "Downloads the data of (text markdown): the HTML entities, and the spec examples its tests run.")
+   "Downloads the data of (text markdown): the HTML entities, and the spec examples its tests run.")
   (key #:build "Run build_std.sh after the entity table is written.")
   (reference """
     It writes @code{lib/text/markdown-entities.protobjo} from WHATWG's
@@ -111,7 +120,8 @@
             "TestFiles/assets/markdown/commonmark-spec.json")
   (download "https://raw.githubusercontent.com/github/cmark-gfm/master/test/spec.txt"
             "TestFiles/assets/markdown/gfm-spec.txt")
-  (when build (task-run! ["./build_std.sh"])))
+  (when build
+    (task-run! ["./build_std.sh"])))
 
 ;; ---------------------------------------------------------------------------
 ;; bench
@@ -146,8 +156,8 @@
 ;; Ignored paths that clean never deletes: what builds and runs the compiler
 ;; and bjo, and the tasks that are running.
 (: (Vec string))
-(def kept-prefixes ["bin/" "obj/" "BjolangRuntime/bin/" "BjolangRuntime/obj/" "bjo/" ".bjo/" "tasks."
-                    ".test-lock"])
+(def kept-prefixes
+  ["bin/" "obj/" "BjolangRuntime/bin/" "BjolangRuntime/obj/" "bjo/" ".bjo/" "tasks." ".test-lock"])
 
 ;; Ignored directories that clean deletes whole.
 (: (Vec string))
@@ -155,8 +165,7 @@
 
 ;; The build output of the compiler, of the test runner and of dotnet.
 (: Glob)
-(def output-files
-  (glob-pattern "**/*.{exe,dll,pdb,bjobuild,deps.json,runtimeconfig.json}" #:dot? #t))
+(def output-files (glob-pattern "**/*.{exe,dll,pdb,bjobuild,deps.json,runtimeconfig.json}" #:dot? #t))
 
 ;; The directories that hold a file git does not ignore: a tracked file, or
 ;; an untracked one that no ignore rule matches. Each ends in /.
@@ -183,15 +192,17 @@
   (def parts (string-split p "/"))
   (def whole
     {finding dir
-             :when (and (let ((name (vec-ref parts i)))
-                          (or (= name "bin") (= name "obj") (= name "__pycache__")))
-                        (not (transientmap-contains? protected dir)))
+             :when
+             (and (let ((name (vec-ref parts i)))
+                    (or (= name "bin") (= name "obj") (= name "__pycache__")))
+                  (not (transientmap-contains? protected dir)))
              (:for i (range 0 (- (vec-length parts) 1)))
              (:let dir (str (string-join (vec-take parts (+ i 1)) "/") "/"))})
-  (def deleted {finding d
-                        :when (and (string-starts-with? p d)
-                                   (not (transientmap-contains? protected d)))
-                        (:for d deleted-directories)})
+  (def deleted
+    {finding d
+             :when
+             (and (string-starts-with? p d) (not (transientmap-contains? protected d)))
+             (:for d deleted-directories)})
   (cond
     ((any? (fun (k) (string-starts-with? p k)) kept-prefixes) None)
     ((and (not lib?) (string-starts-with? p "lib/")) None)
@@ -206,14 +217,20 @@
 (: (-> bool (TransientMap string bool) (Vec string) (List string)))
 (defun (targets-of lib? protected paths)
   (def found {listing t (:for p paths) (:when-let (Some t) (target-of lib? protected p))})
-  (let go ((ts found) (last "") (acc Nil))
+  (let go ((ts found)
+           (last "")
+           (acc Nil))
     (match ts
       (Nil (list-reverse acc))
-      ((Cons t rest) (if (= t last) (go rest last acc) (go rest t (Cons t acc)))))))
+      ((Cons t rest)
+       (if (= t last)
+           (go rest last acc)
+           (go rest t (Cons t acc)))))))
 
 ;; The size of the file `p` in bytes, or 0 when it is gone.
 (: (-> Path long))
-(defun (file-size p) (option-ref-or (option-map (fun (i) (record-ref i size)) (fs-info p)) 0L))
+(defun (file-size p)
+  (option-ref-or (option-map (fun (i) (record-ref i size)) (fs-info p)) 0L))
 
 ;; The size of what `target` names, in bytes: a file, or a directory with
 ;; everything below it.
@@ -245,14 +262,18 @@
 
 ;; `size-text`, padded on the left to a column of 7 characters.
 (: (-> long string))
-(defun (size-column n) (string-pad-left (size-text n) 7))
+(defun (size-column n)
+  (string-pad-left (size-text n) 7))
 
 ;; Prints one line for each top directory of `targets`: how many targets
 ;; are under it, and their size. `targets` is sorted, so each top directory
 ;; is one run.
 (: (-> (List (Tuple string long)) void))
 (defun (print-summary sized)
-  (let go ((rest sized) (top "") (count 0) (bytes 0L))
+  (let go ((rest sized)
+           (top "")
+           (count 0)
+           (bytes 0L))
     (match rest
       (Nil (print-group top count bytes))
       ((Cons (Tuple t n) more)
@@ -269,12 +290,11 @@
 
 ;; The paths that a `git ls-files -z` command prints, or a message when git
 ;; cannot be run or fails.
-(:  (-> Form (Result string (Vec string))))
+(: (-> Form (Result string (Vec string))))
 (defun (git-files form)
   (match (run/output form)
     ((Err e) (Err #"clean: could not run git: ${(written e)}"))
-    ((Ok (Tuple 0 listed))
-     (Ok (vec-filter (fun (p) (not (= p ""))) (string-split listed "\u{0}"))))
+    ((Ok (Tuple 0 listed)) (Ok (vec-filter (fun (p) (not (= p ""))) (string-split listed "\u{0}"))))
     ((Ok _) (Err "clean: git ls-files failed"))))
 
 ;; Ok when the working directory is the top of the git repository. The paths
@@ -297,27 +317,36 @@
   (key #:lib "Also the build output under lib/. Run build_std.sh afterwards.")
   (key #:verbose "List each file and directory, not only a line for each top directory.")
   (returns
-    "0, or 1 when git cannot list the files, or tasks.bjo is not at the top of its git repository."))
+   "0, or 1 when git cannot list the files, or tasks.bjo is not at the top of its git repository."))
 (: (-> (#:delete bool) (#:lib bool) (#:verbose bool) int) #:sync)
 (defun (clean #:delete #f #:lib #f #:verbose #f)
   (def (Ok _) (at-repository-top)
-    :leave ((Err why) (writeln (parameter-ref current-error-port) why) 1))
+    :leave ((Err why)
+            (writeln (parameter-ref current-error-port) why)
+            1))
   (match (Tuple (git-files '(git ls-files -z --others --ignored --exclude-standard))
                 (git-files '(git ls-files -z --cached --others --exclude-standard)))
-    ((Tuple (Err why) _) (writeln (parameter-ref current-error-port) why) 1)
-    ((Tuple _ (Err why)) (writeln (parameter-ref current-error-port) why) 1)
+    ((Tuple (Err why) _)
+     (writeln (parameter-ref current-error-port) why)
+     1)
+    ((Tuple _ (Err why))
+     (writeln (parameter-ref current-error-port) why)
+     1)
     ((Tuple (Ok paths) (Ok not-ignored))
      (def protected (directories-of not-ignored))
      (def sized (list-map (fun (t) (Tuple t (size-of t))) (targets-of lib protected paths)))
      (if verbose
-         (loop (:for (Tuple t n) sized) (:do (println #"${(size-column n)}  ${t}")))
+         (loop (:for (Tuple t n) sized)
+               (:do (println #"${(size-column n)}  ${t}")))
          (print-summary sized))
      (def total {summing n (:for (Tuple _ n) sized)})
      (cond
        ((list-empty? sized) (println "Nothing to clean."))
        (delete
         (loop (:for (Tuple t _) sized)
-              (:do (if (string-ends-with? t "/") (directory-delete-tree t) (file-delete t))))
+              (:do (if (string-ends-with? t "/")
+                       (directory-delete-tree t)
+                       (file-delete t))))
         (println #"Deleted ${(list-length sized)}, ${(size-text total)}."))
        (else
         (println #"${(list-length sized)} to delete, ${(size-text total)}. Run with --delete to \

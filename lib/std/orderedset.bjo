@@ -107,7 +107,8 @@
 ;; Raises the .NET exception the C# set raised, so that a caller's handler
 ;; still catches it.
 (: (-> string %a))
-(defun (bad-argument why) (raise (cast Exception (ArgumentException. why))))
+(defun (bad-argument why)
+  (raise (cast Exception (ArgumentException. why))))
 
 (def leaf-capacity 64)
 (def internal-capacity 32)
@@ -117,7 +118,8 @@
 ;; The set
 ;; ---------------------------------------------------------------------------
 
-(type (: (OrderedSet %a) #:opaque
+(type (: (OrderedSet %a)
+         #:opaque
          (Record (: root (Node %a))
                  (: count int)
                  (: comparer (Comparer %a)))))
@@ -128,17 +130,21 @@
   (OrderedSet (root (leaf-node l)) (count 0) (comparer cmp)))
 
 (: (-> (OrderedSet %a)) (where (Ord %a)))
-(defun (orderedset-empty) (empty-with (ord-comparer)))
+(defun (orderedset-empty)
+  (empty-with (ord-comparer)))
 
 ;; An empty set with the order of `s`.
 (: (-> (OrderedSet %a) (OrderedSet %a)))
-(defun (orderedset-clear s) (empty-with (.comparer s)))
+(defun (orderedset-clear s)
+  (empty-with (.comparer s)))
 
 (: (-> (OrderedSet %a) int))
-(defun (orderedset-length s) (.count s))
+(defun (orderedset-length s)
+  (.count s))
 
 (: (-> (OrderedSet %a) bool))
-(defun (orderedset-empty? s) (= (.count s) 0))
+(defun (orderedset-empty? s)
+  (= (.count s) 0))
 
 ;; ---------------------------------------------------------------------------
 ;; Lookups
@@ -156,37 +162,52 @@
   (>= (leaf-find (leaf-for cmp root key) key cmp) 0))
 
 (: (-> (OrderedSet %a) %a bool))
-(defun (orderedset-contains? s x) (contains-in? (.comparer s) (.root s) x))
+(defun (orderedset-contains? s x)
+  (contains-in? (.comparer s) (.root s) x))
 
 (: (-> (Node %k) (Node %k)))
-(defun (leftmost node) (if (leaf? node) node (leftmost (child node 0))))
+(defun (leftmost node)
+  (if (leaf? node)
+      node
+      (leftmost (child node 0))))
 
 (: (-> (Node %k) (Node %k)))
-(defun (rightmost node) (if (leaf? node) node (rightmost (child node (node-count node)))))
+(defun (rightmost node)
+  (if (leaf? node)
+      node
+      (rightmost (child node (node-count node)))))
 
 (: (-> (Node %k) %k))
-(defun (first-key node) (key-of (leftmost node) 0))
+(defun (first-key node)
+  (key-of (leftmost node) 0))
 
 (: (-> (Node %k) (Option %k)))
 (defun (min-in node)
   (def l (as-leaf (leftmost node)))
-  (if (= (leaf-count l) 0) None (Some (leaf-key l 0))))
+  (if (= (leaf-count l) 0)
+      None
+      (Some (leaf-key l 0))))
 
 (: (-> (Node %k) (Option %k)))
 (defun (max-in node)
   (def l (as-leaf (rightmost node)))
   (def n (leaf-count l))
-  (if (= n 0) None (Some (leaf-key l (- n 1)))))
+  (if (= n 0)
+      None
+      (Some (leaf-key l (- n 1)))))
 
 (: (-> (OrderedSet %a) (Option %a)))
-(defun (orderedset-min s) (min-in (.root s)))
+(defun (orderedset-min s)
+  (min-in (.root s)))
 
 (: (-> (OrderedSet %a) (Option %a)))
-(defun (orderedset-max s) (max-in (.root s)))
+(defun (orderedset-max s)
+  (max-in (.root s)))
 
 ;; The least element greater than `x`.
 (: (-> (OrderedSet %a) %a (Option %a)))
-(defun (orderedset-successor s x) (successor-in (.comparer s) (.root s) x))
+(defun (orderedset-successor s x)
+  (successor-in (.comparer s) (.root s) x))
 
 (: (-> (Comparer %k) (Node %k) %k (Option %k)))
 (defun (successor-in cmp node key)
@@ -194,8 +215,13 @@
       (begin
         (def l (as-leaf node))
         (def i (leaf-find l key cmp))
-        (def at (if (>= i 0) (+ i 1) (- -1 i)))
-        (if (< at (leaf-count l)) (Some (leaf-key l at)) None))
+        (def at
+          (if (>= i 0)
+              (+ i 1)
+              (- -1 i)))
+        (if (< at (leaf-count l))
+            (Some (leaf-key l at))
+            None))
       (begin
         (def r (route node key cmp))
         (def found (successor-in cmp (child node r) key))
@@ -205,7 +231,8 @@
 
 ;; The greatest element less than `x`.
 (: (-> (OrderedSet %a) %a (Option %a)))
-(defun (orderedset-predecessor s x) (predecessor-in (.comparer s) (.root s) x))
+(defun (orderedset-predecessor s x)
+  (predecessor-in (.comparer s) (.root s) x))
 
 (: (-> (Comparer %k) (Node %k) %k (Option %k)))
 (defun (predecessor-in cmp node key)
@@ -213,8 +240,13 @@
       (begin
         (def l (as-leaf node))
         (def i (leaf-find l key cmp))
-        (def at (if (>= i 0) i (- -1 i)))
-        (if (> at 0) (Some (leaf-key l (- at 1))) None))
+        (def at
+          (if (>= i 0)
+              i
+              (- -1 i)))
+        (if (> at 0)
+            (Some (leaf-key l (- at 1)))
+            None))
       (begin
         (def r (route node key cmp))
         (def found (predecessor-in cmp (child node r) key))
@@ -227,19 +259,22 @@
 ;; ---------------------------------------------------------------------------
 
 (: (-> (Leaf %k) int))
-(defun (leaf-count l) (node-count (leaf-node l)))
+(defun (leaf-count l)
+  (node-count (leaf-node l)))
 
 (: (-> (Leaf %k) int %k void))
 (defun (leaf-insert! l i key)
   (def n (leaf-count l))
-  (when (< i n) (leaf-move! l i l (+ i 1) (- n i)))
+  (when (< i n)
+    (leaf-move! l i l (+ i 1) (- n i)))
   (leaf-set! l i key)
   (set-count! (leaf-node l) (+ n 1)))
 
 (: (-> (Leaf %k) int void))
 (defun (leaf-remove! l i)
   (def n (leaf-count l))
-  (when (> (- n i 1) 0) (leaf-move! l (+ i 1) l i (- n i 1)))
+  (when (> (- n i 1) 0)
+    (leaf-move! l (+ i 1) l i (- n i 1)))
   (set-count! (leaf-node l) (- n 1)))
 
 ;; Puts `sep` at key slot `i` and `right` at child slot `i + 1`.
@@ -296,9 +331,14 @@
 (defun (split-leaf! left i key owner)
   (def (: right (Leaf %k)) (new-leaf owner))
   (def total (leaf-count left))
-  (def at (cond ((= i total) total) ((= i 0) 0) (else (shift-right-logical total 1))))
+  (def at
+    (cond
+      ((= i total) total)
+      ((= i 0) 0)
+      (else (shift-right-logical total 1))))
   (def moving (- total at))
-  (when (> moving 0) (leaf-move! left at right 0 moving))
+  (when (> moving 0)
+    (leaf-move! left at right 0 moving))
   (set-count! (leaf-node left) at)
   (set-count! (leaf-node right) moving)
   (if (or (< i at) (and (= at 0) (= i 0)))
@@ -347,7 +387,9 @@
 (defun (orderedset-add s x)
   (def (Tuple root added?) (add-in (.comparer s) (.root s) x (owner-none)))
   (OrderedSet (root root)
-              (count (if added? (+ (.count s) 1) (.count s)))
+              (count (if added?
+                         (+ (.count s) 1)
+                         (.count s)))
               (comparer (.comparer s))))
 
 ;; ---------------------------------------------------------------------------
@@ -367,7 +409,9 @@
           ((< i 0) 0)
           (else
            (leaf-remove! l i)
-           (if (< (leaf-count l) merge-threshold) 2 1))))
+           (if (< (leaf-count l) merge-threshold)
+               2
+               1))))
       (begin
         (def i (route node key cmp))
         (def c (editable (child node i) owner))
@@ -379,7 +423,8 @@
           (else 1)))))
 
 (: (-> (Node %k) bool))
-(defun (can-lend? node) (> (node-count node) (+ merge-threshold 1)))
+(defun (can-lend? node)
+  (> (node-count node) (+ merge-threshold 1)))
 
 ;; Child `i` of `parent` has too few keys. Takes one from a sibling that has
 ;; enough, or else merges with a sibling. Returns whether `parent` has too few
@@ -402,8 +447,12 @@
 (: (-> (Node %k) int (Node %k) (Node %k) bool bool))
 (defun (balance! parent s left right from-right?)
   (cond
-    ((and from-right? (can-lend? right)) (rotate-left! parent s left right) #f)
-    ((and (not from-right?) (can-lend? left)) (rotate-right! parent s left right) #f)
+    ((and from-right? (can-lend? right))
+     (rotate-left! parent s left right)
+     #f)
+    ((and (not from-right?) (can-lend? left))
+     (rotate-right! parent s left right)
+     #f)
     (else
      (merge! parent s left right)
      (< (node-count parent) merge-threshold))))
@@ -423,7 +472,8 @@
         (set-key! parent s (node-key right 0))
         (def rn (node-count right))
         (child-move! right 1 right 0 rn)
-        (when (> rn 1) (key-move! right 1 right 0 (- rn 1)))
+        (when (> rn 1)
+          (key-move! right 1 right 0 (- rn 1)))
         (set-count! right (- rn 1)))))
 
 ;; Moves the last key of `left` to the front of `right`.
@@ -501,7 +551,8 @@
 ;;   above the low 4 bits, which hold the leaf's depth. `last-leaf` marks a
 ;;   leaf with no leaf after it.
 ;; - At the end of a leaf, `cursor-after` follows `path` from the root again.
-(type (: (OrderedSetCursor %a) #:opaque
+(type (: (OrderedSetCursor %a)
+         #:opaque
          (Struct (: keys (Array %a))
                  (: i int)
                  (: end int)
@@ -522,8 +573,7 @@
 (defun (with-index path level index)
   (def shift (+ depth-bits (* index-bits level)))
   (def (: mask long) (shift-left 63 shift))
-  (bitwise-ior (bitwise-and path (bitwise-not mask))
-               (shift-left (cast System.Int64 index) shift)))
+  (bitwise-ior (bitwise-and path (bitwise-not mask)) (shift-left (cast System.Int64 index) shift)))
 
 (: (-> long int long))
 (defun (with-depth path depth)
@@ -552,7 +602,8 @@
          (cursor-at l 0 root at)
          (advance l root at)))
     ((= level max-depth)
-     (raise (cast Exception (InvalidOperationException. "The set is deeper than a cursor can walk."))))
+     (raise (cast Exception
+                  (InvalidOperationException. "The set is deeper than a cursor can walk."))))
     (else (descend (child node 0) root (+ level 1) (with-index path level 0)))))
 
 ;; The cursor on the first key after the leaf `l` at `path`, or a done
@@ -584,8 +635,15 @@
       (begin
         (def l (as-leaf node))
         (def i (leaf-find l key cmp))
-        (def at (cond ((< i 0) (- -1 i)) (after? (+ i 1)) (else i)))
-        (def p (if (= level 0) last-leaf (with-depth path level)))
+        (def at
+          (cond
+            ((< i 0) (- -1 i))
+            (after? (+ i 1))
+            (else i)))
+        (def p
+          (if (= level 0)
+              last-leaf
+              (with-depth path level)))
         (if (or (< at (leaf-count l)) (= level 0))
             (cursor-at l at root p)
             (advance l root p)))
@@ -594,10 +652,12 @@
         (cursor-from cmp (child node r) root key after? (+ level 1) (with-index path level r)))))
 
 (: (-> (OrderedSetCursor %k) bool))
-(defun (cursor-done? c) (>= (.i c) (.end c)))
+(defun (cursor-done? c)
+  (>= (.i c) (.end c)))
 
 (: (-> (OrderedSetCursor %k) %k))
-(defun (cursor-key c) (array-ref (.keys c) (.i c)))
+(defun (cursor-key c)
+  (array-ref (.keys c) (.i c)))
 
 (: (-> (OrderedSetCursor %k) (OrderedSetCursor %k)))
 (defun (cursor-step c)
@@ -612,17 +672,23 @@
   (def root (.root c))
   (def depth (cast System.Int32 (bitwise-and (.path c) 15)))
   (def/mutable node root)
-  (loop (:for d (range 0 depth)) (:do (set! node (child node (index-at (.path c) d)))))
+  (loop (:for d (range 0 depth))
+        (:do (set! node (child node (index-at (.path c) d)))))
   (advance (as-leaf node) root (.path c)))
 
 (impl (Iterable (OrderedSet %a))
   (type %elem %a)
   (type %cursor (OrderedSetCursor %a))
-  (defun (iterable-start s) (cursor-of (.root s)))
-  (defun (iterable-done? s c) (cursor-done? c))
-  (defun (iterable-current s c) (cursor-key c))
-  (defun (iterable-next s c) (cursor-step c))
-  (defun (count s) (orderedset-length s)))
+  (defun (iterable-start s)
+    (cursor-of (.root s)))
+  (defun (iterable-done? s c)
+    (cursor-done? c))
+  (defun (iterable-current s c)
+    (cursor-key c))
+  (defun (iterable-next s c)
+    (cursor-step c))
+  (defun (count s)
+    (orderedset-length s)))
 
 ;; ---------------------------------------------------------------------------
 ;; Ranges
@@ -639,20 +705,27 @@
 ;;   element.
 ;; - With no upper bound, `end-i` is -1, which no cursor has.
 ;; - When the lower bound is greater than the upper, `start` is the end.
-(type (: (OrderedSetRange %a) #:opaque
-         (Struct (: start (OrderedSetCursor %a)) (: end-i int) (: end-path long))))
+(type (: (OrderedSetRange %a)
+         #:opaque
+         (Struct (: start (OrderedSetCursor %a))
+                 (: end-i int)
+                 (: end-path long))))
 
 (impl (Iterable (OrderedSetRange %a))
   (type %elem %a)
   (type %cursor (OrderedSetCursor %a))
-  (defun (iterable-start r) (.start r))
+  (defun (iterable-start r)
+    (.start r))
   (defun (iterable-done? r c)
     (or (cursor-done? c) (and (= (.i c) (.end-i r)) (= (.path c) (.end-path r)))))
-  (defun (iterable-current r c) (cursor-key c))
-  (defun (iterable-next r c) (cursor-step c)))
+  (defun (iterable-current r c)
+    (cursor-key c))
+  (defun (iterable-next r c)
+    (cursor-step c)))
 
 (: (-> (OrderedSet %a) %a bool (OrderedSetCursor %a)))
-(defun (cursor-at-key s key after?) (cursor-from (.comparer s) (.root s) (.root s) key after? 0 0))
+(defun (cursor-at-key s key after?)
+  (cursor-from (.comparer s) (.root s) (.root s) key after? 0 0))
 
 (: (-> (OrderedSetCursor %a) (OrderedSetCursor %a) (OrderedSetRange %a)))
 (defun (range-of start end)
@@ -661,14 +734,18 @@
 (: (-> (OrderedSet %a) %a %a (OrderedSetRange %a)))
 (defun (orderedset-range s lo hi)
   (def end (cursor-at-key s hi #t))
-  (range-of (if (> (compare-keys (.comparer s) lo hi) 0) end (cursor-at-key s lo #f)) end))
+  (range-of (if (> (compare-keys (.comparer s) lo hi) 0)
+                end
+                (cursor-at-key s lo #f))
+            end))
 
 (: (-> (OrderedSet %a) %a (OrderedSetRange %a)))
 (defun (orderedset-from s lo)
   (OrderedSetRange (start (cursor-at-key s lo #f)) (end-i -1) (end-path 0)))
 
 (: (-> (OrderedSet %a) %a (OrderedSetRange %a)))
-(defun (orderedset-until s hi) (range-of (cursor-of (.root s)) (cursor-at-key s hi #t)))
+(defun (orderedset-until s hi)
+  (range-of (cursor-of (.root s)) (cursor-at-key s hi #t)))
 
 ;; ---------------------------------------------------------------------------
 ;; Building trees
@@ -686,12 +763,17 @@
         (def up (make-array parents))
         (def/mutable offset 0)
         (loop (:for p (range 0 parents))
-              (:do (def size (+ (/ n parents) (if (< p (% n parents)) 1 0)))
+              (:do (def size
+                     (+ (/ n parents)
+                        (if (< p (% n parents))
+                            1
+                            0)))
                    (def parent (new-internal (owner-none)))
                    (loop (:for c (range 0 size))
                          (:do (def node (array-ref nodes (+ offset c)))
                               (set-child! parent c node)
-                              (when (> c 0) (set-key! parent (- c 1) (first-key node)))))
+                              (when (> c 0)
+                                (set-key! parent (- c 1) (first-key node)))))
                    (set-count! parent (- size 1))
                    (array-set! up p parent)
                    (set! offset (+ offset size))))
@@ -720,7 +802,9 @@
 (defun (elements-of s)
   (def (: out (Array %a)) (make-array (.count s)))
   (def/mutable i 0)
-  (loop (:for x s) (:do (array-set! out i x) (set! i (+ i 1))))
+  (loop (:for x s)
+        (:do (array-set! out i x)
+             (set! i (+ i 1))))
   out)
 
 ;; ---------------------------------------------------------------------------
@@ -729,7 +813,8 @@
 
 ;; Elements added in any order, made into a set at the end. Elements added
 ;; in ascending order need no sort.
-(type (: (OrderedSetBuilder %a) #:opaque
+(type (: (OrderedSetBuilder %a)
+         #:opaque
          (Record (: keys (Array %a) #:mutable)
                  (: count int #:mutable)
                  (: ascending? bool #:mutable)
@@ -740,13 +825,15 @@
   (OrderedSetBuilder (keys (make-array capacity)) (count 0) (ascending? #t) (comparer cmp)))
 
 (: (-> (OrderedSetBuilder %a)) (where (Ord %a)))
-(defun (orderedsetbuilder-empty) (builder-with (ord-comparer) 16))
+(defun (orderedsetbuilder-empty)
+  (builder-with (ord-comparer) 16))
 
 ;; A builder that holds the elements of `s`.
 (: (-> (OrderedSet %a) (OrderedSetBuilder %a)))
 (defun (orderedset->orderedsetbuilder s)
   (def b (builder-with (.comparer s) (max 16 (.count s))))
-  (loop (:for x s) (:do (orderedsetbuilder-add! b x)))
+  (loop (:for x s)
+        (:do (orderedsetbuilder-add! b x)))
   b)
 
 ;; "Ascending" means strictly: an element equal to the one before makes the
@@ -756,7 +843,8 @@
   (def n (.count b))
   (when (= n (array-length (.keys b)))
     (record-set! b (keys (array-resize (.keys b) (* 2 n)))))
-  (when (and (.ascending? b) (> n 0)
+  (when (and (.ascending? b)
+             (> n 0)
              (>= (compare-keys (.comparer b) (array-ref (.keys b) (- n 1)) x) 0))
     (record-set! b (ascending? #f)))
   (array-set! (.keys b) n x)
@@ -764,11 +852,13 @@
 
 (: (-> (OrderedSetBuilder %a) (Seq %a) void))
 (defun (orderedsetbuilder-add-all! b xs)
-  (loop (:for x xs) (:do (orderedsetbuilder-add! b x))))
+  (loop (:for x xs)
+        (:do (orderedsetbuilder-add! b x))))
 
 ;; The number of elements added, an element added twice counted twice.
 (: (-> (OrderedSetBuilder %a) int))
-(defun (orderedsetbuilder-length b) (.count b))
+(defun (orderedsetbuilder-length b)
+  (.count b))
 
 (: (-> (OrderedSetBuilder %a) (OrderedSet %a)))
 (defun (orderedsetbuilder->orderedset b)
@@ -782,7 +872,8 @@
         ;; Drops repeats in place.
         (def/mutable u 0)
         (loop (:for i (range 0 n))
-              (:do (when (or (= u 0) (not (= (compare-keys cmp (array-ref ks i) (array-ref ks (- u 1))) 0)))
+              (:do (when (or (= u 0)
+                             (not (= (compare-keys cmp (array-ref ks i) (array-ref ks (- u 1))) 0)))
                      (array-set! ks u (array-ref ks i))
                      (set! u (+ u 1)))))
         (from-sorted ks u cmp))))
@@ -794,18 +885,23 @@
 ;; A set that edits in place the nodes it copied.
 ;; `transientorderedset->orderedset` returns a set of its contents and gives
 ;; it a new owner, so that the set does not change after.
-(type (: (TransientOrderedSet %a) #:opaque
+(type (: (TransientOrderedSet %a)
+         #:opaque
          (Record (: root (Node %a) #:mutable)
                  (: count int #:mutable)
                  (: owner Owner #:mutable)
                  (: comparer (Comparer %a)))))
 
 (: (-> (TransientOrderedSet %a)) (where (Ord %a)))
-(defun (transientorderedset-empty) (orderedset->transientorderedset (orderedset-empty)))
+(defun (transientorderedset-empty)
+  (orderedset->transientorderedset (orderedset-empty)))
 
 (: (-> (OrderedSet %a) (TransientOrderedSet %a)))
 (defun (orderedset->transientorderedset s)
-  (TransientOrderedSet (root (.root s)) (count (.count s)) (owner (owner-next)) (comparer (.comparer s))))
+  (TransientOrderedSet (root (.root s))
+                       (count (.count s))
+                       (owner (owner-next))
+                       (comparer (.comparer s))))
 
 (: (-> (TransientOrderedSet %a) (OrderedSet %a)))
 (defun (transientorderedset->orderedset t)
@@ -816,35 +912,44 @@
 (defun (transientorderedset-add! t x)
   (def (Tuple root added?) (add-in (.comparer t) (.root t) x (.owner t)))
   (record-set! t (root root))
-  (when added? (record-set! t (count (+ (.count t) 1)))))
+  (when added?
+    (record-set! t (count (+ (.count t) 1)))))
 
 (: (-> (TransientOrderedSet %a) %a void))
 (defun (transientorderedset-remove! t x)
   (def (Tuple root removed?) (remove-in (.comparer t) (.root t) x (.owner t)))
-  (when removed? (record-set! t (root root) (count (- (.count t) 1)))))
+  (when removed?
+    (record-set! t (root root) (count (- (.count t) 1)))))
 
 (: (-> (TransientOrderedSet %a) (Seq %a) void))
 (defun (transientorderedset-add-all! t xs)
-  (loop (:for x xs) (:do (transientorderedset-add! t x))))
+  (loop (:for x xs)
+        (:do (transientorderedset-add! t x))))
 
 (: (-> (TransientOrderedSet %a) (Seq %a) void))
 (defun (transientorderedset-remove-all! t xs)
-  (loop (:for x xs) (:do (transientorderedset-remove! t x))))
+  (loop (:for x xs)
+        (:do (transientorderedset-remove! t x))))
 
 (: (-> (TransientOrderedSet %a) %a bool))
-(defun (transientorderedset-contains? t x) (contains-in? (.comparer t) (.root t) x))
+(defun (transientorderedset-contains? t x)
+  (contains-in? (.comparer t) (.root t) x))
 
 (: (-> (TransientOrderedSet %a) int))
-(defun (transientorderedset-length t) (.count t))
+(defun (transientorderedset-length t)
+  (.count t))
 
 (: (-> (TransientOrderedSet %a) bool))
-(defun (transientorderedset-empty? t) (= (.count t) 0))
+(defun (transientorderedset-empty? t)
+  (= (.count t) 0))
 
 (: (-> (TransientOrderedSet %a) (Option %a)))
-(defun (transientorderedset-min t) (min-in (.root t)))
+(defun (transientorderedset-min t)
+  (min-in (.root t)))
 
 (: (-> (TransientOrderedSet %a) (Option %a)))
-(defun (transientorderedset-max t) (max-in (.root t)))
+(defun (transientorderedset-max t)
+  (max-in (.root t)))
 
 ;; Removes the elements `keep?` rejects. Calls it in order, before it
 ;; removes any.
@@ -852,8 +957,10 @@
 (defun (transientorderedset-filter! keep? t)
   (def/mutable dropped '())
   (loop (:for x (OrderedSet (root (.root t)) (count (.count t)) (comparer (.comparer t))))
-        (:do (unless (keep? x) (set! dropped (cons x dropped)))))
-  (loop (:for x dropped) (:do (transientorderedset-remove! t x))))
+        (:do (unless (keep? x)
+               (set! dropped (cons x dropped)))))
+  (loop (:for x dropped)
+        (:do (transientorderedset-remove! t x))))
 
 (: (-> (OrderedSet %a) (Seq %a) (OrderedSet %a)))
 (defun (orderedset-add-all s xs)
@@ -874,7 +981,8 @@
 ;; Folds `f` over the elements in order. Recursive over the tree, which is
 ;; about twice as fast as the cursor: it reads each leaf's array once.
 (: (-> (-?-> %a %s %s) %s (OrderedSet %a) %s))
-(defun (orderedset-fold f init s) (fold-node f init (.root s)))
+(defun (orderedset-fold f init s)
+  (fold-node f init (.root s)))
 
 (: (-> (-?-> %a %s %s) %s (Node %a) %s))
 (defun (fold-node f acc node)
@@ -884,14 +992,15 @@
         (def ks (leaf-keys l))
         (loop (:for i (range 0 (leaf-count l)))
               (:acc s (folding acc (f (array-ref ks i) s)))
-              => s))
+          => s))
       (loop (:for i (range 0 (+ (node-count node) 1)))
             (:acc s (folding acc (fold-node f s (child node i))))
-            => s)))
+        => s)))
 
 (: (-> (-?-> %a void) (OrderedSet %a) void))
 (defun (orderedset-for-each f s)
-  (loop (:for x s) (:do (f x))))
+  (loop (:for x s)
+        (:do (f x))))
 
 ;; Calls `f` in order until it returns #f. Returns whether it never did.
 (: (-> (-?-> %a bool) (OrderedSet %a) bool))
@@ -924,7 +1033,8 @@
 (: (-> (-?-> %a %b) (OrderedSet %a) (OrderedSet %b)) (where (Ord %b)))
 (defun (orderedset-map f s)
   (def b (builder-with (ord-comparer) (max 16 (.count s))))
-  (loop (:for x s) (:do (orderedsetbuilder-add! b (f x))))
+  (loop (:for x s)
+        (:do (orderedsetbuilder-add! b (f x))))
   (orderedsetbuilder->orderedset b))
 
 ;; The elements `keep?` accepts, in new leaves filled one after the other.
@@ -938,7 +1048,9 @@
         (:do (when (keep? x)
                (array-set! ks kept x)
                (set! kept (+ kept 1)))))
-  (if (= kept n) s (from-sorted ks kept (.comparer s))))
+  (if (= kept n)
+      s
+      (from-sorted ks kept (.comparer s))))
 
 ;; ---------------------------------------------------------------------------
 ;; Set algebra
@@ -947,9 +1059,18 @@
 ;; The sets that have elements, or `s` alone when none has.
 (: (-> (OrderedSet %a) (OrderedSet %a) (Array (OrderedSet %a)) (Array (OrderedSet %a))))
 (defun (inputs-of s other more)
-  (def all (cons s (cons other (loop (:for x more) (:acc (listing x))))))
-  (def kept (loop (:for x all) (:when (> (.count x) 0)) (:acc (arraying x))))
-  (if (= (array-length kept) 0) (vec->array [s]) kept))
+  (def all
+    (cons s
+          (cons other
+                (loop (:for x more)
+                      (:acc (listing x))))))
+  (def kept
+    (loop (:for x all)
+          (:when (> (.count x) 0))
+          (:acc (arraying x))))
+  (if (= (array-length kept) 0)
+      (vec->array [s])
+      kept))
 
 ;; At most this many sets are iterated at once, and only when the sets other
 ;; than the biggest hold this percent of the elements or more. Else the
@@ -965,7 +1086,9 @@
   (cond
     ((= k 1) (array-ref inputs 0))
     (else
-     (def total (loop (:for x inputs) (:acc (summing (.count x)))))
+     (def total
+       (loop (:for x inputs)
+             (:acc (summing (.count x)))))
      (def/mutable biggest 0)
      (loop (:for i (range 1 k))
            (:do (when (> (.count (array-ref inputs i)) (.count (array-ref inputs biggest)))
@@ -981,7 +1104,8 @@
   (def t (orderedset->transientorderedset (array-ref inputs biggest)))
   (loop (:for i (range 0 (array-length inputs)))
         (:do (unless (= i biggest)
-               (loop (:for x (array-ref inputs i)) (:do (transientorderedset-add! t x))))))
+               (loop (:for x (array-ref inputs i))
+                     (:do (transientorderedset-add! t x))))))
   (transientorderedset->orderedset t))
 
 ;; The sets iterated in order at once into an array. The least element is
@@ -990,29 +1114,34 @@
 (defun (union-walk inputs total)
   (def k (array-length inputs))
   (def cmp (.comparer (array-ref inputs 0)))
-  (def cursors (loop (:for x inputs) (:acc (arraying (cursor-of (.root x))))))
+  (def cursors
+    (loop (:for x inputs)
+          (:acc (arraying (cursor-of (.root x))))))
   (def (: out (Array %a)) (make-array total))
   (def/mutable n 0)
   (def/mutable live k)
   (loop (:while (> live 0))
-        (:do
-         (def/mutable least -1)
-         (loop (:for i (range 0 k))
-               (:do (def c (array-ref cursors i))
-                    (when (and (not (cursor-done? c))
-                               (or (< least 0)
-                                   (< (compare-keys cmp (cursor-key c) (cursor-key (array-ref cursors least))) 0)))
-                      (set! least i))))
-         (def x (cursor-key (array-ref cursors least)))
-         (array-set! out n x)
-         (set! n (+ n 1))
-         ;; Every cursor on `x` steps past it.
-         (loop (:for i (range least k))
-               (:do (def c (array-ref cursors i))
-                    (when (and (not (cursor-done? c)) (= (compare-keys cmp (cursor-key c) x) 0))
-                      (def next (cursor-step c))
-                      (array-set! cursors i next)
-                      (when (cursor-done? next) (set! live (- live 1))))))))
+        (:do (def/mutable least -1)
+             (loop (:for i (range 0 k))
+                   (:do (def c (array-ref cursors i))
+                        (when (and (not (cursor-done? c))
+                                   (or (< least 0)
+                                       (< (compare-keys cmp
+                                                        (cursor-key c)
+                                                        (cursor-key (array-ref cursors least)))
+                                          0)))
+                          (set! least i))))
+             (def x (cursor-key (array-ref cursors least)))
+             (array-set! out n x)
+             (set! n (+ n 1))
+             ;; Every cursor on `x` steps past it.
+             (loop (:for i (range least k))
+                   (:do (def c (array-ref cursors i))
+                        (when (and (not (cursor-done? c)) (= (compare-keys cmp (cursor-key c) x) 0))
+                          (def next (cursor-step c))
+                          (array-set! cursors i next)
+                          (when (cursor-done? next)
+                            (set! live (- live 1))))))))
   (from-sorted out n cmp))
 
 ;; Keeps the first `n` elements of `kept`, in order, that `against` has
@@ -1035,7 +1164,8 @@
         (def/mutable c (cursor-of (.root against)))
         (loop (:for i (range 0 n))
               (:do (def x (array-ref kept i))
-                   (loop (:while (and (not (cursor-done? c)) (< (compare-keys cmp (cursor-key c) x) 0)))
+                   (loop (:while (and (not (cursor-done? c))
+                                      (< (compare-keys cmp (cursor-key c) x) 0)))
                          (:do (set! c (cursor-step c))))
                    (def there? (and (not (cursor-done? c)) (= (compare-keys cmp (cursor-key c) x) 0)))
                    (when (= there? keep?)
@@ -1047,7 +1177,12 @@
 ;; can only shrink, and keeps what each other set has.
 (: (-> (OrderedSet %a) (OrderedSet %a) #:rest (OrderedSet %a) (OrderedSet %a)))
 (defun (orderedset-intersection s other #:rest more)
-  (def all (loop (:for x (cons s (cons other (loop (:for x more) (:acc (listing x)))))) (:acc (arraying x))))
+  (def all
+    (loop (:for x (cons s
+                        (cons other
+                              (loop (:for x more)
+                                    (:acc (listing x))))))
+          (:acc (arraying x))))
   (def/mutable least 0)
   (loop (:for i (range 1 (array-length all)))
         (:do (when (< (.count (array-ref all i)) (.count (array-ref all least)))
@@ -1058,8 +1193,11 @@
   (def/mutable n size)
   (loop (:for i (range 0 (array-length all)))
         (:while (> n 0))
-        (:do (unless (= i least) (set! n (keep-in! kept n (array-ref all i) #t)))))
-  (if (= n size) smallest (from-sorted kept n (.comparer smallest))))
+        (:do (unless (= i least)
+               (set! n (keep-in! kept n (array-ref all i) #t)))))
+  (if (= n size)
+      smallest
+      (from-sorted kept n (.comparer smallest))))
 
 ;; The elements of `s` that no other set has.
 ;;
@@ -1069,7 +1207,9 @@
 (: (-> (OrderedSet %a) (OrderedSet %a) #:rest (OrderedSet %a) (OrderedSet %a)))
 (defun (orderedset-difference s other #:rest more)
   (def others
-    (loop (:for x (cons other (loop (:for x more) (:acc (listing x)))))
+    (loop (:for x (cons other
+                        (loop (:for x more)
+                              (:acc (listing x)))))
           (:when (> (.count x) 0))
           (:acc (arraying x))))
   (def size (.count s))
@@ -1078,7 +1218,8 @@
     (else
      (def depth (log2 (cast double (+ size 2))))
      (def removing
-       (loop (:for o others) (:acc (summing (* 3.0 (cast double (.count o)) depth)))))
+       (loop (:for o others)
+             (:acc (summing (* 3.0 (cast double (.count o)) depth)))))
      (def filtering
        (loop (:for o others)
              (:acc (summing (min (* (cast double size) (log2 (cast double (+ (.count o) 2))))
@@ -1086,7 +1227,9 @@
      (if (< removing filtering)
          (begin
            (def t (orderedset->transientorderedset s))
-           (loop (:for o others) (:do (loop (:for x o) (:do (transientorderedset-remove! t x)))))
+           (loop (:for o others)
+                 (:do (loop (:for x o)
+                            (:do (transientorderedset-remove! t x)))))
            (transientorderedset->orderedset t))
          (begin
            (def kept (elements-of s))
@@ -1094,7 +1237,9 @@
            (loop (:for o others)
                  (:while (> n 0))
                  (:do (set! n (keep-in! kept n o #f))))
-           (if (= n size) s (from-sorted kept n (.comparer s))))))))
+           (if (= n size)
+               s
+               (from-sorted kept n (.comparer s))))))))
 
 ;; The elements of one of the two sets and not of both, by an iteration of
 ;; both in order.
@@ -1104,17 +1249,28 @@
   (def (: out (Array %a)) (make-array (+ (.count s) (.count other))))
   (def/mutable n 0)
   (: put! (-> %a void))
-  (defun (put! x) (array-set! out n x) (set! n (+ n 1)))
-  (let go ((a (cursor-of (.root s))) (c (cursor-of (.root other))))
+  (defun (put! x)
+    (array-set! out n x)
+    (set! n (+ n 1)))
+  (let go ((a (cursor-of (.root s)))
+           (c (cursor-of (.root other))))
     (cond
       ((and (cursor-done? a) (cursor-done? c)) unit)
-      ((cursor-done? a) (put! (cursor-key c)) (go a (cursor-step c)))
-      ((cursor-done? c) (put! (cursor-key a)) (go (cursor-step a) c))
+      ((cursor-done? a)
+       (put! (cursor-key c))
+       (go a (cursor-step c)))
+      ((cursor-done? c)
+       (put! (cursor-key a))
+       (go (cursor-step a) c))
       (else
        (def order (compare-keys cmp (cursor-key a) (cursor-key c)))
        (cond
-         ((< order 0) (put! (cursor-key a)) (go (cursor-step a) c))
-         ((> order 0) (put! (cursor-key c)) (go a (cursor-step c)))
+         ((< order 0)
+          (put! (cursor-key a))
+          (go (cursor-step a) c))
+         ((> order 0)
+          (put! (cursor-key c))
+          (go a (cursor-step c)))
          (else (go (cursor-step a) (cursor-step c)))))))
   (from-sorted out n cmp))
 
@@ -1126,7 +1282,8 @@
 (defun (count-keys node)
   (if (leaf? node)
       (node-count node)
-      (loop (:for i (range 0 (+ (node-count node) 1))) (:acc (summing (count-keys (child node i)))))))
+      (loop (:for i (range 0 (+ (node-count node) 1)))
+            (:acc (summing (count-keys (child node i)))))))
 
 ;; The leaves under an internal node, or the keys of a leaf.
 (: (-> (Node %k) int))
@@ -1134,7 +1291,9 @@
   (cond
     ((leaf? node) (node-count node))
     ((leaf? (child node 0)) (+ (node-count node) 1))
-    (else (loop (:for i (range 0 (+ (node-count node) 1))) (:acc (summing (weight (child node i))))))))
+    (else
+     (loop (:for i (range 0 (+ (node-count node) 1)))
+           (:acc (summing (weight (child node i))))))))
 
 ;; About `k` sets in order that together hold the elements of `s` once.
 ;; They share its nodes: a part is a run of the nodes of the highest level
@@ -1151,8 +1310,12 @@
         (if (= n 1)
             (vec->array [s])
             (begin
-              (def weights (loop (:for x level) (:acc (arraying (weight x)))))
-              (def total (loop (:for w weights) (:acc (summing w))))
+              (def weights
+                (loop (:for x level)
+                      (:acc (arraying (weight x)))))
+              (def total
+                (loop (:for w weights)
+                      (:acc (summing w))))
               (def parts (min k n))
               (def/mutable out '())
               (def/mutable made 0)
@@ -1163,12 +1326,20 @@
                          (when (or (= j (- n 1))
                                    (and (< made (- parts 1))
                                         (>= (* (cast System.Int64 done) (cast System.Int64 parts))
-                                            (* (cast System.Int64 total) (cast System.Int64 (+ made 1))))))
-                           (def node (over (loop (:for x (range start (+ j 1))) (:acc (arraying (array-ref level x))))))
-                           (set! out (cons (OrderedSet (root node) (count (count-keys node)) (comparer (.comparer s))) out))
+                                            (* (cast System.Int64 total)
+                                               (cast System.Int64 (+ made 1))))))
+                           (def node
+                             (over (loop (:for x (range start (+ j 1)))
+                                         (:acc (arraying (array-ref level x))))))
+                           (set! out
+                                 (cons (OrderedSet (root node)
+                                                   (count (count-keys node))
+                                                   (comparer (.comparer s)))
+                                       out))
                            (set! made (+ made 1))
                            (set! start (+ j 1)))))
-              (loop (:for x (list-reverse out)) (:acc (arraying x))))))))
+              (loop (:for x (list-reverse out))
+                    (:acc (arraying x))))))))
 
 ;; The highest level, from `level` down, with at least `k` nodes, or the
 ;; leaves.
@@ -1189,51 +1360,60 @@
 ;; two fit in one leaf.
 (: (-> (Array (OrderedSet %a)) (OrderedSet %a)))
 (defun (orderedset-concat sets)
-  (when (= (array-length sets) 0) (bad-argument "orderedset-concat needs at least one set."))
+  (when (= (array-length sets) 0)
+    (bad-argument "orderedset-concat needs at least one set."))
   (def cmp (.comparer (array-ref sets 0)))
   (def/mutable leaves '())
   (def/mutable count 0)
   (def/mutable (: last (Option %a)) None)
   (loop (:for s sets)
         (:when (> (.count s) 0))
-        (:do (def lo (first-key (.root s)))
-             (when (and (some? last) (>= (compare-keys cmp (option-ref-or last lo) lo) 0))
-               (bad-argument "The sets are not in order: an element of one is not less than every element of the next."))
-             (def hi (key-of (rightmost (.root s)) (- (node-count (rightmost (.root s))) 1)))
-             (set! last (Some hi))
-             (set! leaves (leaves-of (.root s) leaves))
-             (set! count (+ count (.count s)))))
+        (:do
+         (def lo (first-key (.root s)))
+         (when (and (some? last) (>= (compare-keys cmp (option-ref-or last lo) lo) 0))
+           (bad-argument
+            "The sets are not in order: an element of one is not less than every element of the next."))
+         (def hi (key-of (rightmost (.root s)) (- (node-count (rightmost (.root s))) 1)))
+         (set! last (Some hi))
+         (set! leaves (leaves-of (.root s) leaves))
+         (set! count (+ count (.count s)))))
   (def joined (join-small (list-reverse leaves)))
   (if (list-empty? joined)
       (empty-with cmp)
       (OrderedSet (root (over (list->nodes joined))) (count count) (comparer cmp))))
 
 (: (-> (List (Node %k)) (Array (Node %k))))
-(defun (list->nodes xs) (loop (:for x xs) (:acc (arraying x))))
+(defun (list->nodes xs)
+  (loop (:for x xs)
+        (:acc (arraying x))))
 
 ;; The non-empty leaves under `node`, in reverse order, onto `acc`.
 (: (-> (Node %k) (List (Node %k)) (List (Node %k))))
 (defun (leaves-of node acc)
   (cond
-    ((leaf? node) (if (> (node-count node) 0) (cons node acc) acc))
-    (else (loop (:for i (range 0 (+ (node-count node) 1)))
-                (:acc a (folding acc (leaves-of (child node i) a)))
-                => a))))
+    ((leaf? node)
+     (if (> (node-count node) 0)
+         (cons node acc)
+         acc))
+    (else
+     (loop (:for i (range 0 (+ (node-count node) 1)))
+           (:acc a (folding acc (leaves-of (child node i) a)))
+       => a))))
 
 ;; `leaves` with each small leaf copied together with the one before it when
 ;; the two fit in one leaf.
 (: (-> (List (Node %k)) (List (Node %k))))
 (defun (join-small leaves)
-  (list-reverse
-   (loop (:for x leaves)
-         (:acc out (folding '()
-                            (if (and (not (list-empty? out))
-                                     (or (< (node-count (list-head out)) merge-threshold)
-                                         (< (node-count x) merge-threshold))
-                                     (<= (+ (node-count (list-head out)) (node-count x)) leaf-capacity))
-                                (cons (both (list-head out) x) (list-tail out))
-                                (cons x out))))
-         => out)))
+  (list-reverse (loop (:for x leaves)
+                      (:acc out (folding '()
+                                         (if (and (not (list-empty? out))
+                                                  (or (< (node-count (list-head out)) merge-threshold)
+                                                      (< (node-count x) merge-threshold))
+                                                  (<= (+ (node-count (list-head out)) (node-count x))
+                                                      leaf-capacity))
+                                             (cons (both (list-head out) x) (list-tail out))
+                                             (cons x out))))
+                  => out)))
 
 ;; A new leaf with the keys of `a` and then those of `b`.
 (: (-> (Node %k) (Node %k) (Node %k)))
@@ -1255,20 +1435,24 @@
 (: (-> (List %a) (OrderedSet %a)) (where (Ord %a)))
 (defun (list->orderedset xs)
   (def b (orderedsetbuilder-empty))
-  (loop (:for x xs) (:do (orderedsetbuilder-add! b x)))
+  (loop (:for x xs)
+        (:do (orderedsetbuilder-add! b x)))
   (orderedsetbuilder->orderedset b))
 
 (: (-> (OrderedSet %a) (List %a)))
-(defun (orderedset->list s) (->list s))
+(defun (orderedset->list s)
+  (->list s))
 
 (: (-> (Vec %a) (OrderedSet %a)) (where (Ord %a)))
 (defun (vec->orderedset v)
   (def b (orderedsetbuilder-empty))
-  (loop (:for x v) (:do (orderedsetbuilder-add! b x)))
+  (loop (:for x v)
+        (:do (orderedsetbuilder-add! b x)))
   (orderedsetbuilder->orderedset b))
 
 (: (-> (OrderedSet %a) (Vec %a)))
-(defun (orderedset->vec s) (->vec s))
+(defun (orderedset->vec s)
+  (->vec s))
 
 (: (-> (Seq %a) (OrderedSet %a)) (where (Ord %a)))
 (defun (seq->orderedset xs)
@@ -1277,7 +1461,8 @@
   (orderedsetbuilder->orderedset b))
 
 (: (-> (OrderedSet %a) (Seq %a)))
-(defun (orderedset->seq s) (->seq s))
+(defun (orderedset->seq s)
+  (->seq s))
 
 ;; ---------------------------------------------------------------------------
 ;; The traits
@@ -1297,8 +1482,10 @@
 
 (impl (Collection (OrderedSet %a))
   (type %content %a)
-  (defun (length s) (orderedset-length s))
-  (defun (empty? s) (orderedset-empty? s)))
+  (defun (length s)
+    (orderedset-length s))
+  (defun (empty? s)
+    (orderedset-empty? s)))
 
 (type (: (OrderedSetting %a) (Union ordered-setting)))
 
@@ -1307,9 +1494,13 @@
   (type %elem %a)
   (type %acc (OrderedSetBuilder %a))
   (type %out (OrderedSet %a))
-  (defun (collector-init c) (orderedsetbuilder-empty))
-  (defun (collector-step c acc x) (orderedsetbuilder-add! acc x) acc)
-  (defun (collector-finish c acc) (orderedsetbuilder->orderedset acc)))
+  (defun (collector-init c)
+    (orderedsetbuilder-empty))
+  (defun (collector-step c acc x)
+    (orderedsetbuilder-add! acc x)
+    acc)
+  (defun (collector-finish c acc)
+    (orderedsetbuilder->orderedset acc)))
 
 ;; `Addable!`, adds an element at a time.
 (impl (Addable! (OrderedSetBuilder %a))
@@ -1341,13 +1532,16 @@
 ;; `#{a b c}`, in ascending order.
 (impl (Written (OrderedSet %a))
   (where (Written %a))
-  (defun (write-into s b) (elements-print-into "#{" s "}" b (fun (x b) (write-into x b)))))
+  (defun (write-into s b)
+    (elements-print-into "#{" s "}" b (fun (x b) (write-into x b)))))
 
 (impl (Displayed (OrderedSet %a))
   (where (Displayed %a))
-  (defun (display-into s b) (elements-print-into "#{" s "}" b (fun (x b) (display-into x b)))))
+  (defun (display-into s b)
+    (elements-print-into "#{" s "}" b (fun (x b) (display-into x b)))))
 
 (: (-> (OrderedSet %a) string) (where (Displayed %a)))
-(defun (orderedset->str s) (displayed s))
+(defun (orderedset->str s)
+  (displayed s))
 
 (:deprecated orderedset->str "use `displayed`")

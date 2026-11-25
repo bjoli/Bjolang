@@ -68,7 +68,9 @@
   (if (file-exists? candidate)
       (Some candidate)
       (let ((up (directory-name dir)))
-        (if (null-or-empty? up) None (roots-above up)))))
+        (if (null-or-empty? up)
+            None
+            (roots-above up)))))
 
 (: roots-for (-> Ctx Call (List PackageRoot)))
 (defun (roots-for cx c)
@@ -96,9 +98,7 @@
   (match written
     ((BjoStr path)
      (def source (path-absolute (relative-path cx path)))
-     (ApiModule (dll (change-extension source ".dll"))
-                (shown path)
-                (prefix (file-stem source))))
+     (ApiModule (dll (change-extension source ".dll")) (shown path) (prefix (file-stem source))))
     ((BjoList parts)
      (match (symbols-of parts)
        ((Some (Cons first rest))
@@ -109,10 +109,16 @@
            (ApiModule (dll dll)
                       (shown (module-name->string name))
                       (prefix (string-join (list->vec (list-map symbol->string name)) " "))))))
-       (_ (refuse cx c (str "a module is a name, (std random), or the path of its source, and not "
-                            (bjodat->string written))))))
-    (_ (refuse cx c (str "a module is a name, (std random), or the path of its source, and not "
-                         (bjodat->string written))))))
+       (_
+        (refuse cx
+                c
+                (str "a module is a name, (std random), or the path of its source, and not "
+                     (bjodat->string written))))))
+    (_
+     (refuse cx
+             c
+             (str "a module is a name, (std random), or the path of its source, and not "
+                  (bjodat->string written))))))
 
 (: current-key string)
 (def current-key "defmodule:current")
@@ -125,7 +131,10 @@
     (None
      (match (state-ref cx current-key)
        ((Some written) (module-of cx c written))
-       (None (refuse cx c "names no module: write @defmodule[(the module)] before it, or give it #:module"))))))
+       (None
+        (refuse cx
+                c
+                "names no module: write @defmodule[(the module)] before it, or give it #:module"))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The docs
@@ -148,9 +157,13 @@
     (refuse cx c (str (record-ref m shown) " is not compiled: there is no " dll)))
   (add-source! cx dll)
   (def stamp (modified-ms dll))
-  (def cached (match (map-try-ref (box-ref read-cache) dll)
-                ((Some (Tuple at docs)) (if (= at stamp) (Some docs) None))
-                (None None)))
+  (def cached
+    (match (map-try-ref (box-ref read-cache) dll)
+      ((Some (Tuple at docs))
+       (if (= at stamp)
+           (Some docs)
+           None))
+      (None None)))
   (match cached
     ((Some docs) docs)
     (None
@@ -164,7 +177,8 @@
 ;; is how a reader extension is named: "#pair".
 (: name-arg (-> Ctx Call string))
 (defun (name-arg cx c)
-  (when (< (arg-count c) 1) (refuse cx c "needs the name of a definition in its [...]"))
+  (when (< (arg-count c) 1)
+    (refuse cx c "needs the name of a definition in its [...]"))
   (arg-string cx c 0))
 
 (: doc-of (-> Ctx Call ApiModule string Doc))
@@ -175,7 +189,8 @@
 
 ;; Where a shown definition's id is kept, so that @docref finds it.
 (: shown-key (-> ApiModule string string))
-(defun (shown-key m name) (str "defdoc:" (record-ref m dll) " " name))
+(defun (shown-key m name)
+  (str "defdoc:" (record-ref m dll) " " name))
 
 ;; ---------------------------------------------------------------------------
 ;; Text in a doc
@@ -189,10 +204,12 @@
     ((Ok src) (record-ref src content))))
 
 (: markup-inlines (-> Ctx Call string (Vec Inline)))
-(defun (markup-inlines cx c text) (items->inlines cx c (markup-items cx c text)))
+(defun (markup-inlines cx c text)
+  (items->inlines cx c (markup-items cx c text)))
 
 (: markup-blocks (-> Ctx Call string (Vec Block)))
-(defun (markup-blocks cx c text) (items->blocks cx (markup-items cx c text)))
+(defun (markup-blocks cx c text)
+  (items->blocks cx (markup-items cx c text)))
 
 ;; ---------------------------------------------------------------------------
 ;; A doc, as blocks
@@ -214,7 +231,8 @@
 
 (: drop-prefix (-> string string string))
 (defun (drop-prefix s prefix)
-  (let go ((at (string-cursor-start s)) (n (string-count prefix)))
+  (let go ((at (string-cursor-start s))
+           (n (string-count prefix)))
     (if (= n 0)
         (substring s at (string-cursor-end s))
         (go (string-cursor-next s at) (- n 1)))))
@@ -236,21 +254,25 @@
 (: code-of (-> Doc string))
 (defun (code-of d)
   (def name (doc-subject->string (record-ref d subject)))
-  (def signature (match (record-ref d signature)
-                   ((Some s) [(str "(: " name " " s ")")])
-                   (None [])))
-  (def definition (match (record-ref d definition)
-                    ((Some s) [s])
-                    (None [])))
-  (def forms (loop (:for cl (record-ref d clauses))
-                   (:acc out (folding (vec-empty)
-                                      (match cl
-                                        ((DocForm f) (vec-add out (form-text d f)))
-                                        (_ out))))))
+  (def signature
+    (match (record-ref d signature)
+      ((Some s) [(str "(: " name " " s ")")])
+      (None [])))
+  (def definition
+    (match (record-ref d definition)
+      ((Some s) [s])
+      (None [])))
+  (def forms
+    (loop (:for cl (record-ref d clauses))
+          (:acc out (folding (vec-empty)
+                             (match cl
+                               ((DocForm f) (vec-add out (form-text d f)))
+                               (_ out))))))
   (string-join (vec-append (vec-append signature definition) forms) "\n"))
 
 (: sym-code (-> Symbol Inline))
-(defun (sym-code s) (Code (symbol->string s)))
+(defun (sym-code s)
+  (Code (symbol->string s)))
 
 ;; The term a clause is listed under, when it is one that is.
 (: term-of (-> DocClause (Option (Tuple (Vec Inline) string))))
@@ -275,51 +297,61 @@
 
 (: see-para (-> Ctx ApiModule (List Symbol) (Vec Piece)))
 (defun (see-para cx m names)
-  (vec-append
-    (inline (Str "See also: "))
-    (defer-inlines cx (fun (doc)
-                        (loop (:with first #t #f)
-                              (:for n names)
-                              (:acc out (folding (vec-empty)
-                                                 (vec-append (if first out (vec-add out (Str ", ")))
-                                                            (see-inline cx m n doc)))))))))
+  (vec-append (inline (Str "See also: "))
+              (defer-inlines cx (fun (doc)
+                                  (loop (:with first #t #f)
+                                        (:for n names)
+                                        (:acc out (folding (vec-empty)
+                                                           (vec-append (if first
+                                                                           out
+                                                                           (vec-add out (Str ", ")))
+                                                                       (see-inline cx m n doc)))))))))
 
 ;; The body of a doc: summary, terms, examples, the long text, related names.
 (: doc-blocks (-> Ctx Call ApiModule Doc (Vec Block)))
 (defun (doc-blocks cx c m d)
   (def clauses (record-ref d clauses))
-  (def summary (loop (:for cl clauses)
-                     (:acc out (folding (vec-empty)
-                                        (match cl
-                                          ((DocSummary t) (vec-add out (Para (markup-inlines cx c t))))
-                                          (_ out))))))
-  (def terms (loop (:for cl clauses)
-                   (:acc out (folding (vec-empty)
-                                      (match (term-of cl)
-                                        ((Some (Tuple term text))
-                                         (vec-add out (Tuple term [(markup-blocks cx c text)])))
-                                        (None out))))))
-  (def literals (loop (:for cl clauses)
-                      (:acc out (folding (vec-empty)
-                                         (match cl
-                                           ((DocLiteral ns)
-                                            (vec-add out (Para (vec-append [(Str "Literally: ")]
-                                                                          (list->vec (list-map sym-code ns))))))
-                                           (_ out))))))
-  (def rest (loop (:for cl clauses)
-                  (:acc out (folding (vec-empty)
-                                     (match cl
-                                       ((DocExample t) (vec-add out (CodeBlock "bjolang" t)))
-                                       ((DocReference t) (vec-append out (markup-blocks cx c t)))
-                                       (_ out))))))
-  (def see (loop (:for cl clauses)
-                 (:acc out (folding (vec-empty)
-                                    (match cl
-                                      ((DocSee ns) (vec-add out (items->see cx m ns)))
-                                      (_ out))))))
-  (vec-append (vec-append (vec-append summary (if (vec-empty? terms) [] [(DefinitionList terms)]))
-                        (vec-append literals rest))
-             see))
+  (def summary
+    (loop (:for cl clauses)
+          (:acc out (folding (vec-empty)
+                             (match cl
+                               ((DocSummary t) (vec-add out (Para (markup-inlines cx c t))))
+                               (_ out))))))
+  (def terms
+    (loop (:for cl clauses)
+          (:acc out (folding (vec-empty)
+                             (match (term-of cl)
+                               ((Some (Tuple term text))
+                                (vec-add out (Tuple term [(markup-blocks cx c text)])))
+                               (None out))))))
+  (def literals
+    (loop (:for cl clauses)
+          (:acc out (folding (vec-empty)
+                             (match cl
+                               ((DocLiteral ns)
+                                (vec-add out
+                                         (Para (vec-append [(Str "Literally: ")]
+                                                           (list->vec (list-map sym-code ns))))))
+                               (_ out))))))
+  (def rest
+    (loop (:for cl clauses)
+          (:acc out (folding (vec-empty)
+                             (match cl
+                               ((DocExample t) (vec-add out (CodeBlock "bjolang" t)))
+                               ((DocReference t) (vec-append out (markup-blocks cx c t)))
+                               (_ out))))))
+  (def see
+    (loop (:for cl clauses)
+          (:acc out (folding (vec-empty)
+                             (match cl
+                               ((DocSee ns) (vec-add out (items->see cx m ns)))
+                               (_ out))))))
+  (vec-append (vec-append (vec-append summary
+                                      (if (vec-empty? terms)
+                                          []
+                                          [(DefinitionList terms)]))
+                          (vec-append literals rest))
+              see))
 
 (: items->see (-> Ctx ApiModule (List Symbol) Block))
 (defun (items->see cx m ns)
@@ -343,10 +375,13 @@
   (def code (code-of d))
   (Div "doc-entry"
        (vec-append (vec-append [(Heading level id [(Code name)])
-                              (Para (vec-append [(Span "doc-kind" [(Str (kind-name (record-ref d kind)))])]
-                                               beside))]
-                             (if (string-empty? code) [] [(CodeBlock "bjolang" code)]))
-                  (vec-append (doc-blocks cx c m d) extra))))
+                                (Para (vec-append [(Span "doc-kind"
+                                                         [(Str (kind-name (record-ref d kind)))])]
+                                                  beside))]
+                               (if (string-empty? code)
+                                   []
+                                   [(CodeBlock "bjolang" code)]))
+                   (vec-append (doc-blocks cx c m d) extra))))
 
 ;; ---------------------------------------------------------------------------
 ;; The commands
@@ -362,9 +397,10 @@
   (def written (vec-ref (positional c) 0))
   (def m (module-of cx c written))
   (state-set! cx current-key written)
-  (def own (match (module-doc (docs-of cx c m))
-             ((Some d) (doc-blocks cx c m d))
-             (None (vec-empty))))
+  (def own
+    (match (module-doc (docs-of cx c m))
+      ((Some d) (doc-blocks cx c m d))
+      (None (vec-empty))))
   (block (Div "doc-module" (vec-append own (expand-blocks cx c)))))
 
 ;; @defdoc[random-int]{...}: that definition's doc, then the body. #:module
@@ -381,15 +417,20 @@
 (: defdocs (-> Ctx Call (Vec Piece)))
 (defun (defdocs cx c)
   (check-keywords! cx c ["module" "level"])
-  (when (> (arg-count c) 0) (refuse cx c "takes no arguments; the module is #:module"))
-  (when (has-body? c) (refuse cx c "takes no body; write @defdoc for one with text of its own"))
+  (when (> (arg-count c) 0)
+    (refuse cx c "takes no arguments; the module is #:module"))
+  (when (has-body? c)
+    (refuse cx c "takes no body; write @defdoc for one with text of its own"))
   (def m (module-for cx c))
   (def level (kw-int-or cx c "level" 4))
   (loop (:for d (docs-of cx c m))
         (:acc out (folding (vec-empty)
                            (match (record-ref d subject)
                              (SubjectModule out)
-                             (_ (vec-append out (block (entry-blocks cx c m d level (vec-empty) (vec-empty))))))))))
+                             (_
+                              (vec-append
+                               out
+                               (block (entry-blocks cx c m d level (vec-empty) (vec-empty))))))))))
 
 ;; The module #:module or #:path names, as `module-of` takes it: "std
 ;; datetime", with or without its parentheses, is a name; a path is a string.
@@ -397,19 +438,28 @@
 (defun (generated-module cx c)
   (match (Tuple (keyword c "module") (keyword c "path"))
     ((Tuple (Some written) None)
-     (def text (match written
-                 ((BjoStr s) s)
-                 ((BjoSym s) (symbol->string s))
-                 ((BjoList _) (bjodat->string written))
-                 (_ (refuse cx c (str "#:module is a module's name, \"std datetime\", and not "
-                                      (bjodat->string written))))))
-     (def segments (vec-filter (fun (s) (not (string-empty? s)))
-                               (string-split (string-replace (string-replace text "(" " ") ")" " ") " ")))
-     (when (vec-empty? segments) (refuse cx c "#:module names no module"))
+     (def text
+       (match written
+         ((BjoStr s) s)
+         ((BjoSym s) (symbol->string s))
+         ((BjoList _) (bjodat->string written))
+         (_
+          (refuse cx
+                  c
+                  (str "#:module is a module's name, \"std datetime\", and not "
+                       (bjodat->string written))))))
+     (def segments
+       (vec-filter (fun (s) (not (string-empty? s)))
+                   (string-split (string-replace (string-replace text "(" " ") ")" " ") " ")))
+     (when (vec-empty? segments)
+       (refuse cx c "#:module names no module"))
      (BjoList (vec->list (vec-map (fun (s) (BjoSym (string->symbol s))) segments))))
     ((Tuple None (Some (BjoStr path))) (BjoStr path))
     ((Tuple None (Some other))
-     (refuse cx c (str "#:path is the path of a module's source, a string, and not " (bjodat->string other))))
+     (refuse cx
+             c
+             (str "#:path is the path of a module's source, a string, and not "
+                  (bjodat->string other))))
     ((Tuple None None) (refuse cx c "needs #:module \"std datetime\" or #:path \"the/module.bjo\""))
     (_ (refuse cx c "takes #:module or #:path, not both"))))
 
@@ -428,21 +478,23 @@
 (defun (group-of d)
   (match (record-ref d subject)
     (SubjectModule "")
-    (_ (match (record-ref d kind)
-         ((or KindRecord KindUnion KindAlias KindTrait) "Types")
-         (KindFunction "Functions")
-         (KindValue "Values")
-         ((or KindMacro KindReader) "Macros")
-         (_ "Other")))))
+    (_
+     (match (record-ref d kind)
+       ((or KindRecord KindUnion KindAlias KindTrait) "Types")
+       (KindFunction "Functions")
+       (KindValue "Values")
+       ((or KindMacro KindReader) "Macros")
+       (_ "Other")))))
 
 ;; A group's names in alphabetical order, each a link to its entry.
 (: group-index (-> Ctx ApiModule (Vec Doc) string (Vec (Vec Block))))
 (defun (group-index cx m docs g)
-  (def keys (loop (:for d docs)
-                  (:acc out (folding Nil
-                                     (if (= (group-of d) g)
-                                         (Cons (index-key (doc-subject->string (record-ref d subject))) out)
-                                         out)))))
+  (def keys
+    (loop (:for d docs)
+          (:acc out (folding Nil
+                             (if (= (group-of d) g)
+                                 (Cons (index-key (doc-subject->string (record-ref d subject))) out)
+                                 out)))))
   (vec-map (fun (key)
              (def name (vec-ref (string-split key "\t") 1))
              (match (state-ref cx (shown-key m name))
@@ -459,54 +511,66 @@
 (: generate-docs (-> Ctx Call (Vec Piece)))
 (defun (generate-docs cx c)
   (check-keywords! cx c ["module" "path"])
-  (when (> (arg-count c) 0) (refuse cx c "takes no arguments: #:module \"std datetime\" or #:path \"...\""))
+  (when (> (arg-count c) 0)
+    (refuse cx c "takes no arguments: #:module \"std datetime\" or #:path \"...\""))
   (def written (generated-module cx c))
   (def m (module-of cx c written))
   (state-set! cx current-key written)
   (def docs (docs-of cx c m))
   (def overview-id (unique-id! cx "overview"))
   (def reference-id (unique-id! cx "reference"))
-  (def own (match (module-doc docs)
-             ((Some d) (doc-blocks cx c m d))
-             (None (vec-empty))))
+  (def own
+    (match (module-doc docs)
+      ((Some d) (doc-blocks cx c m d))
+      (None (vec-empty))))
   ;; Each group's heading and entries first, so that every id exists when
   ;; the index that comes before them links to it. Each entry links back up
   ;; to its group's place in the index, an anchor there.
   (def groups
     (loop (:for g group-names)
-          (:acc out (folding (vec-empty)
-                             (let ((members (vec-filter (fun (d) (= (group-of d) g)) docs)))
-                               (if (vec-empty? members)
-                                   out
-                                   (let ((id (unique-id! cx g))
-                                         (listed (unique-id! cx (str "index " g))))
-                                     (def up [(Str " ")
-                                              (Span "doc-up" [(Link (str "#" listed) [(Str (str "↑ " g))])])])
-                                     ;; A loop rather than a vec-map: an ordinary
-                                     ;; lambda would call the ordinary copy of
-                                     ;; entry-blocks from a bjoroutine's copy of
-                                     ;; this, and that copy reaches a reader.
-                                     (vec-add out (Tuple g (Tuple id listed)
-                                                         (loop (:for d members)
-                                                               (:acc entries (vecing (entry-blocks cx c m d 3 up (vec-empty))))))))))))))
+          (:acc out (folding
+                     (vec-empty)
+                     (let ((members (vec-filter (fun (d) (= (group-of d) g)) docs)))
+                       (if (vec-empty? members)
+                           out
+                           (let ((id (unique-id! cx g))
+                                 (listed (unique-id! cx (str "index " g))))
+                             (def up
+                               [(Str " ")
+                                (Span "doc-up" [(Link (str "#" listed) [(Str (str "↑ " g))])])])
+                             ;; A loop rather than a vec-map: an ordinary
+                             ;; lambda would call the ordinary copy of
+                             ;; entry-blocks from a bjoroutine's copy of
+                             ;; this, and that copy reaches a reader.
+                             (vec-add
+                              out
+                              (Tuple g
+                                     (Tuple id listed)
+                                     (loop (:for d members)
+                                           (:acc entries
+                                                 (vecing
+                                                  (entry-blocks cx c m d 3 up (vec-empty))))))))))))))
   (def index
     (loop (:for group groups)
           (:acc out (folding (vec-empty)
                              (match group
                                ((Tuple g (Tuple id listed) entries)
-                                (vec-append out [(Para [(Anchor listed) (Link (str "#" id) [(Strong [(Str g)])])])
-                                                (ItemList #f 1 (group-index cx m docs g))])))))))
+                                (vec-append out
+                                            [(Para [(Anchor listed)
+                                                    (Link (str "#" id) [(Strong [(Str g)])])])
+                                             (ItemList #f 1 (group-index cx m docs g))])))))))
   (def sections
     (loop (:for group groups)
           (:acc out (folding (vec-empty)
                              (match group
                                ((Tuple g (Tuple id listed) entries)
                                 (vec-append (vec-add out (Heading 2 id [(Str g)])) entries)))))))
-  (def top [(Para [(Link (str "#" reference-id) [(Str "Reference")])])
-            (Heading 1 overview-id [(Str "Overview")])
-            (Div "doc-module" (vec-append own (expand-blocks cx c)))
-            (Heading 1 reference-id [(Str "Reference")])
-            (Div "doc-index" index)])
+  (def top
+    [(Para [(Link (str "#" reference-id) [(Str "Reference")])])
+     (Heading 1 overview-id [(Str "Overview")])
+     (Div "doc-module" (vec-append own (expand-blocks cx c)))
+     (Heading 1 reference-id [(Str "Reference")])
+     (Div "doc-index" index)])
   (loop (:for b (vec-append top sections))
         (:acc out (folding (vec-empty) (vec-append out (block b))))))
 
@@ -519,9 +583,16 @@
   (def m (module-for cx c))
   (def name (name-arg cx c))
   (ignore (doc-of cx c m name))
-  (def text (if (has-body? c) (expand-inlines cx c) [(Code name)]))
-  (defer-inlines cx (fun (doc)
-                      (match (state-ref cx (shown-key m name))
-                        ((Some (BjoStr id)) [(Link (str "#" id) text)])
-                        (_ (refuse cx c (str name " of " (record-ref m shown)
-                                             " is not shown in this document: @defdoc it")))))))
+  (def text
+    (if (has-body? c)
+        (expand-inlines cx c)
+        [(Code name)]))
+  (defer-inlines cx
+    (fun (doc)
+      (match (state-ref cx (shown-key m name))
+        ((Some (BjoStr id)) [(Link (str "#" id) text)])
+        (_
+         (refuse
+          cx
+          c
+          (str name " of " (record-ref m shown) " is not shown in this document: @defdoc it")))))))

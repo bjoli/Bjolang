@@ -15,7 +15,9 @@
 
 ;; What becomes of a line: kept, at its index in the old text and in the new;
 ;; or removed or added, at the index in the old and the new where it is.
-(type (: Op (Union (: Same int int) (: Del int int) (: Add int int))))
+(type (: Op (Union (: Same int int)
+                   (: Del int int)
+                   (: Add int int))))
 
 ;; How far ahead a place where the texts agree again is looked for.
 (: reach int)
@@ -29,7 +31,9 @@
 (defun (lines s)
   (def parts (string-split s "\n"))
   (def n (vec-length parts))
-  (if (and (> n 0) (string-empty? (vec-ref parts (- n 1)))) (vec-take parts (- n 1)) parts))
+  (if (and (> n 0) (string-empty? (vec-ref parts (- n 1))))
+      (vec-take parts (- n 1))
+      parts))
 
 ;; Whether old line `i` and new line `j` agree, and the lines after them too,
 ;; or one of the texts ends there: one equal line alone, a blank one or a `))`,
@@ -61,14 +65,19 @@
 ;; `count` ops made by `make` from `from` on, onto `ops`, the last first.
 (: ops-onto (-> (List Op) int int (-> int Op) (List Op)))
 (defun (ops-onto ops from count make)
-  (let go ((k 0) (ops ops))
-    (if (>= k count) ops (go (+ k 1) (Cons (make (+ from k)) ops)))))
+  (let go ((k 0)
+           (ops ops))
+    (if (>= k count)
+        ops
+        (go (+ k 1) (Cons (make (+ from k)) ops)))))
 
 (: edit-script (-> (Vec string) (Vec string) (Vec Op)))
 (defun (edit-script a b)
   (def n (vec-length a))
   (def m (vec-length b))
-  (let go ((i 0) (j 0) (ops Nil))
+  (let go ((i 0)
+           (j 0)
+           (ops Nil))
     (cond
       ((and (>= i n) (>= j m)) (list->vec (list-reverse ops)))
       ((>= i n) (go i (+ j 1) (Cons (Add i j) ops)))
@@ -100,14 +109,19 @@
 (: hunks (-> (Vec Op) (List (Tuple int int))))
 (defun (hunks ops)
   (def n (vec-length ops))
-  (def changes (loop (:for k (range 0 n))
-                     (:acc out (listing k) #:when (changed? (vec-ref ops k)))
-                 => out))
-  (defun (close-hunk first last) (Tuple (max0 (- first context)) (min-of (- n 1) (+ last context))))
+  (def changes
+    (loop (:for k (range 0 n))
+          (:acc out (listing k) #:when (changed? (vec-ref ops k)))
+      => out))
+  (defun (close-hunk first last)
+    (Tuple (max0 (- first context)) (min-of (- n 1) (+ last context))))
   (match changes
     (Nil Nil)
     ((Cons start rest)
-     (let go ((rest rest) (first start) (last start) (out Nil))
+     (let go ((rest rest)
+              (first start)
+              (last start)
+              (out Nil))
        (match rest
          (Nil (list-reverse (Cons (close-hunk first last) out)))
          ((Cons k more)
@@ -116,23 +130,38 @@
               (go more k k (Cons (close-hunk first last) out)))))))))
 
 (: max0 (-> int int))
-(defun (max0 x) (if (< x 0) 0 x))
+(defun (max0 x)
+  (if (< x 0)
+      0
+      x))
 
 (: min-of (-> int int int))
-(defun (min-of x y) (if (< x y) x y))
+(defun (min-of x y)
+  (if (< x y)
+      x
+      y))
 
 ;; `@@ -start,count +start,count @@`, where a side with no lines starts at the
 ;; line before.
 (: hunk-header (-> (Vec Op) int int string))
 (defun (hunk-header ops first last)
   (def (Tuple i j) (at-of (vec-ref ops first)))
-  (def olds (loop (:for k (range first (+ last 1)))
-                  (:acc c (counting k) #:when (match (vec-ref ops k) ((Add _ _) #f) (_ #t)))
-              => c))
-  (def news (loop (:for k (range first (+ last 1)))
-                  (:acc c (counting k) #:when (match (vec-ref ops k) ((Del _ _) #f) (_ #t)))
-              => c))
-  (defun (side start count) #"${(int->string (if (= count 0) start (+ start 1)))},${(int->string count)}")
+  (def olds
+    (loop (:for k (range first (+ last 1)))
+          (:acc c (counting k)
+                #:when (match (vec-ref ops k)
+                         ((Add _ _) #f)
+                         (_ #t)))
+      => c))
+  (def news
+    (loop (:for k (range first (+ last 1)))
+          (:acc c (counting k)
+                #:when (match (vec-ref ops k)
+                         ((Del _ _) #f)
+                         (_ #t)))
+      => c))
+  (defun (side start count)
+    #"${(int->string (if (= count 0) start (+ start 1)))},${(int->string count)}")
   #"@@ -${(side i olds)} +${(side j news)} @@")
 
 ;; The lines of one hunk: a run of changes as its removed lines and then its
@@ -141,8 +170,12 @@
 (defun (hunk-lines a b ops first last)
   ;; `out`, `dels` and `adds` are each the last first, so a run of changes goes
   ;; onto `out` as its additions and then its removals.
-  (let go ((k first) (dels Nil) (adds Nil) (out Nil))
-    (defun (flushed) (list-append adds (list-append dels out)))
+  (let go ((k first)
+           (dels Nil)
+           (adds Nil)
+           (out Nil))
+    (defun (flushed)
+      (list-append adds (list-append dels out)))
     (if (> k last)
         (list-reverse (flushed))
         (match (vec-ref ops k)

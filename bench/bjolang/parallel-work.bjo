@@ -91,7 +91,8 @@
 ;; that are not timed.
 (: (-bjo-> (-bjo-> void) long))
 (defbjo (median-ns thunk)
-  (loop (:for _ (range 0 2)) (:do (thunk)))
+  (loop (:for _ (range 0 2))
+        (:do (thunk)))
   (def times
     (loop (:for _ (range 0 reps))
           (:do (settle))
@@ -106,30 +107,50 @@
 
 (: (-> int long))
 (defun (fib k)
-  (if (< k 2) (cast long k) (+ (fib (- k 1)) (fib (- k 2)))))
+  (if (< k 2)
+      (cast long k)
+      (+ (fib (- k 1)) (fib (- k 2)))))
 
 ;; Prints one row: the time for each element, both ways, and the speed-up.
 (: (-> string int long long void))
 (defun (report name elems seq par)
   (def nn (cast long elems))
   (println (str (string-pad-right name 24)
-                "seq " (hundredths (/ seq (* 10L nn))) " us/elem   "
-                "par " (hundredths (/ par (* 10L nn))) " us/elem   "
-                "speed-up " (hundredths (/ (* seq 100L) par)) "x")))
+                "seq "
+                (hundredths (/ seq (* 10L nn)))
+                " us/elem   "
+                "par "
+                (hundredths (/ par (* 10L nn)))
+                " us/elem   "
+                "speed-up "
+                (hundredths (/ (* seq 100L) par))
+                "x")))
 
 (: (-bjo-> string (Vec int) void))
 (defbjo (row name v)
   (def sink (make-box 0L))
-  (report name (vec-length v)
+  (report name
+          (vec-length v)
           (median-ns (bjoroutine () (box-set! sink (vec-fold + 0L (vec-map fib v)))))
           (median-ns (bjoroutine () (box-set! sink (vec-fold + 0L (par-map fib v)))))))
 
 (defbjo (main)
-  (println (str (displayed processor-count) " processors, "
-                (displayed (compute-thread-count)) " compute threads"))
-  (loop (:for (Tuple k n) (list (Tuple 5 1000000) (Tuple 10 100000) (Tuple 15 10000)
-                                (Tuple 20 1000) (Tuple 25 100)))
-        (:do (row #"fib ${k} x ${n}" (loop (:for _ (range 0 n)) (:acc v (vecing k))))))
-  (row "fib 32 x 40" (loop (:for _ (range 0 40)) (:acc v (vecing 32))))
-  (row "fib 0 to 39" (loop (:for i (range 0 40)) (:acc v (vecing i))))
+  (println (str (displayed processor-count)
+                " processors, "
+                (displayed (compute-thread-count))
+                " compute threads"))
+  (loop (:for (Tuple k n) (list (Tuple 5 1000000)
+                                (Tuple 10 100000)
+                                (Tuple 15 10000)
+                                (Tuple 20 1000)
+                                (Tuple 25 100)))
+        (:do (row #"fib ${k} x ${n}"
+                  (loop (:for _ (range 0 n))
+                        (:acc v (vecing k))))))
+  (row "fib 32 x 40"
+       (loop (:for _ (range 0 40))
+             (:acc v (vecing 32))))
+  (row "fib 0 to 39"
+       (loop (:for i (range 0 40))
+             (:acc v (vecing i))))
   0)

@@ -40,11 +40,19 @@
   (let go ()
     (def msg (sync (chan-recv in)))
     (if (= msg -1)
-        (if is-last unit (sync (chan-send out -1)))
-        (let ((m (if is-last (+ msg 1) msg)))
+        (if is-last
+            unit
+            (sync (chan-send out -1)))
+        (let ((m (if is-last
+                     (+ msg 1)
+                     msg)))
           (if (and is-last (>= m trips))
-              (let () (sync (chan-send out -1)) (go))
-              (let () (sync (chan-send out m)) (go)))))))
+              (let ()
+                (sync (chan-send out -1))
+                (go))
+              (let ()
+                (sync (chan-send out m))
+                (go)))))))
 
 (: (-bjo-> (Chan int) int void))
 (defbjo (send-one ch v)
@@ -55,11 +63,19 @@
   (let go ()
     (def msg (chan-get in))
     (if (= msg -1)
-        (if is-last unit (chan-put out -1))
-        (let ((m (if is-last (+ msg 1) msg)))
+        (if is-last
+            unit
+            (chan-put out -1))
+        (let ((m (if is-last
+                     (+ msg 1)
+                     msg)))
           (if (and is-last (>= m trips))
-              (let () (chan-put out -1) (go))
-              (let () (chan-put out m) (go)))))))
+              (let ()
+                (chan-put out -1)
+                (go))
+              (let ()
+                (chan-put out m)
+                (go)))))))
 
 (: (-bjo-> (Chan int) int void))
 (defbjo (send-one/put ch v)
@@ -67,18 +83,22 @@
 
 (: (-bjo-> int int bool void))
 (defbjo (ring workers trips put?)
-  (def channels (loop (:for i (range 0 workers))
-                      (:acc v (vecing (make-chan)))))
-  (def handles (loop (:for i (range 0 workers))
-                     (:acc v (vecing (if put?
-                                         (bjo (ring-node/put (vec-ref channels i)
-                                                             (vec-ref channels (% (+ i 1) workers))
-                                                             (= i (- workers 1))
-                                                             trips))
-                                         (bjo (ring-node (vec-ref channels i)
-                                                         (vec-ref channels (% (+ i 1) workers))
-                                                         (= i (- workers 1))
-                                                         trips)))))))
+  (def channels
+    (loop (:for i (range 0 workers))
+          (:acc v (vecing (make-chan)))))
+  (def handles
+    (loop (:for i (range 0 workers))
+          (:acc v (vecing (if put?
+                              (bjo
+                                (ring-node/put (vec-ref channels i)
+                                               (vec-ref channels (% (+ i 1) workers))
+                                               (= i (- workers 1))
+                                               trips))
+                              (bjo
+                                (ring-node (vec-ref channels i)
+                                           (vec-ref channels (% (+ i 1) workers))
+                                           (= i (- workers 1))
+                                           trips)))))))
   (settle)
   (if put?
       (ignore (sync (promise-join (bjo (send-one/put (vec-ref channels 0) 0)))))
@@ -98,24 +118,27 @@
 
 (: (-bjo-> (Vec (Chan int)) int void))
 (defbjo (skewed-receiver chs rounds)
-  (def ev (choose (chan-recv (vec-ref chs 0))
-                  (chan-recv (vec-ref chs 1))
-                  (chan-recv (vec-ref chs 2))
-                  (chan-recv (vec-ref chs 3))
-                  (chan-recv (vec-ref chs 4))
-                  (chan-recv (vec-ref chs 5))
-                  (chan-recv (vec-ref chs 6))
-                  (chan-recv (vec-ref chs 7))))
+  (def ev
+    (choose (chan-recv (vec-ref chs 0))
+            (chan-recv (vec-ref chs 1))
+            (chan-recv (vec-ref chs 2))
+            (chan-recv (vec-ref chs 3))
+            (chan-recv (vec-ref chs 4))
+            (chan-recv (vec-ref chs 5))
+            (chan-recv (vec-ref chs 6))
+            (chan-recv (vec-ref chs 7))))
   (loop (:for i (range 0 rounds))
         (:do (ignore (sync ev)))))
 
 (: (-bjo-> int bool void))
 (defbjo (skewed rounds put?)
-  (def chs (loop (:for i (range 0 8))
-                 (:acc v (vecing (make-chan)))))
-  (def sender (if put?
-                  (bjo (skewed-sender/put (vec-ref chs 0) rounds))
-                  (bjo (skewed-sender (vec-ref chs 0) rounds))))
+  (def chs
+    (loop (:for i (range 0 8))
+          (:acc v (vecing (make-chan)))))
+  (def sender
+    (if put?
+        (bjo (skewed-sender/put (vec-ref chs 0) rounds))
+        (bjo (skewed-sender (vec-ref chs 0) rounds))))
   (settle)
   (ignore (sync (promise-join (bjo (skewed-receiver chs rounds)))))
   (ignore (sync (promise-join sender))))
@@ -128,19 +151,20 @@
 (: (-bjo-> int int (Vec (Chan int)) (Vec (Promise void))))
 (defbjo (start-rings k trips channels)
   (loop (:for i (range 0 (* k ring-width)))
-        (:acc v (vecing
-                  (let ((base (* (/ i ring-width) ring-width))
-                        (j (% i ring-width)))
-                    (bjo (ring-node/put (vec-ref channels i)
-                                        (vec-ref channels (+ base (% (+ j 1) ring-width)))
-                                        (= j (- ring-width 1))
-                                        trips)))))))
+        (:acc v (vecing (let ((base (* (/ i ring-width) ring-width))
+                              (j (% i ring-width)))
+                          (bjo
+                            (ring-node/put (vec-ref channels i)
+                                           (vec-ref channels (+ base (% (+ j 1) ring-width)))
+                                           (= j (- ring-width 1))
+                                           trips)))))))
 
 ;; Send each ring its token and wait for every node.
 (: (-bjo-> int (Vec (Chan int)) (Vec (Promise void)) void))
 (defbjo (run-rings k channels nodes)
-  (def kicks (loop (:for r (range 0 k))
-                   (:acc v (vecing (bjo (send-one/put (vec-ref channels (* r ring-width)) 0))))))
+  (def kicks
+    (loop (:for r (range 0 k))
+          (:acc v (vecing (bjo (send-one/put (vec-ref channels (* r ring-width)) 0))))))
   (loop (:for r (range 0 k))
         (:do (ignore (sync (promise-join (vec-ref kicks r))))))
   (loop (:for i (range 0 (vec-length nodes)))
@@ -163,7 +187,8 @@
 ;; Work that never parks: a fiber running it holds its thread throughout.
 (: (-> int int))
 (defun (crunch n)
-  (let go ((i 0) (x 1))
+  (let go ((i 0)
+           (x 1))
     (if (= i n)
         x
         (go (+ i 1) (% (+ (* x 31) i) 1000003)))))
@@ -185,19 +210,27 @@
 (: (-bjo-> int bool void))
 (defbjo (mixed c ring?)
   (def channels (make-channels ring-width))
-  (def nodes (if ring?
-                 (start-rings 1 (/ 1000000 ring-width) channels)
-                 (list->vec '())))
+  (def nodes
+    (if ring?
+        (start-rings 1 (/ 1000000 ring-width) channels)
+        (list->vec '())))
   (settle)
   (def t0 (timestamp))
-  (def crunchers (loop (:for i (range 0 c))
-                       (:acc v (vecing (bjo (cruncher crunch-work))))))
-  (def ring-ns (if ring?
-                   (let () (run-rings 1 channels nodes) (/ (ns-since t0) 1000000L))
-                   0L))
+  (def crunchers
+    (loop (:for i (range 0 c))
+          (:acc v (vecing (bjo (cruncher crunch-work))))))
+  (def ring-ns
+    (if ring?
+        (let ()
+          (run-rings 1 channels nodes)
+          (/ (ns-since t0) 1000000L))
+        0L))
   (loop (:for i (range 0 c))
         (:do (ignore (sync (promise-join (vec-ref crunchers i))))))
-  (def crunch-ms (if (> c 0) (/ (ns-since t0) 1000000L) 0L))
+  (def crunch-ms
+    (if (> c 0)
+        (/ (ns-since t0) 1000000L)
+        0L))
   (println (str "mixed " (->str ring-ns) " " (->str crunch-ms))))
 
 (: (-bjo-> string int int int void))
@@ -215,7 +248,10 @@
 ;; `rows ROW REPS`, or `rows ROW K REPS` for the rows that take a count.
 (defbjo (main args)
   (def row (vec-ref args 0))
-  (def k (if (= (vec-length args) 3) (string->int (vec-ref args 1)) 0))
+  (def k
+    (if (= (vec-length args) 3)
+        (string->int (vec-ref args 1))
+        0))
   (def reps (string->int (vec-ref args (- (vec-length args) 1))))
   ;; Warm-up at full size, so every rep after it runs tier-1 code.
   (run-row row k 3 1000)

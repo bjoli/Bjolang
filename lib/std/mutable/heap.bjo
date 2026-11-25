@@ -79,14 +79,15 @@
   ;; The least element and its priority, removed. `None` leaves the heap as it
   ;; was, so a drain can pop until it stops.
   (mutableheap-try-pop! (: System.Collections.Generic.PriorityQueue.TryDequeue
-                       (-> (MutableHeap %a %p) (out %a) (out %p) (Option (Tuple %a %p)))))
+                           (-> (MutableHeap %a %p) (out %a) (out %p) (Option (Tuple %a %p)))))
   (clr-items    (: System.Collections.Generic.PriorityQueue.UnorderedItems (-> (MutableHeap %a %p) (UnorderedItems %a %p)) #:get))
   (clr-comparer (: System.Collections.Generic.PriorityQueue.Comparer (-> (MutableHeap %a %p) (IComparer %p)) #:get))
   (clr-comparer-of (: System.Collections.Generic.Comparer.Create (-> (Comparison %p) (Comparer %p)))))
 
 ;; Ordered by `Comparer<P>.Default`, least priority first.
 (: (-> (MutableHeap %a %p)))
-(defun (mutableheap) (MutableHeap.))
+(defun (mutableheap)
+  (MutableHeap.))
 
 (import/class
   (EmptyHeap (: System.InvalidOperationException (-> string EmptyHeap))))
@@ -106,12 +107,14 @@
   (MutableHeap. (cast (IComparer %p) (clr-comparer-of (: (as-delegate cmp) (Comparison %p))))))
 
 (: (-> (MutableHeap %a %p) bool) #:inline)
-(defun (mutableheap-empty? h) (= (mutableheap-length h) 0))
+(defun (mutableheap-empty? h)
+  (= (mutableheap-length h) 0))
 
 ;; In *no* order: heap order is only observable by popping, and a walk that
 ;; looked ordered would be a lie the structure cannot tell.
 (: (-> (MutableHeap %a %p) (Seq (Tuple %a %p))))
-(defun (mutableheap->unordered-seq h) (cast (Seq (Tuple %a %p)) (clr-items h)))
+(defun (mutableheap->unordered-seq h)
+  (cast (Seq (Tuple %a %p)) (clr-items h)))
 
 (: (-> (Seq (Tuple %a %p)) (MutableHeap %a %p)))
 (defun (seq->mutableheap xs)
@@ -122,17 +125,20 @@
 ;; The copy keeps the comparer, so a heap built by `mutableheap-by` copies to
 ;; one ordered the same way.
 (: (-> (MutableHeap %a %p) (MutableHeap %a %p)))
-(defun (mutableheap-copy h) (MutableHeap. (mutableheap->unordered-seq h) (clr-comparer h)))
+(defun (mutableheap-copy h)
+  (MutableHeap. (mutableheap->unordered-seq h) (clr-comparer h)))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions
 ;; ---------------------------------------------------------------------------
 
 (: (-> (List (Tuple %a %p)) (MutableHeap %a %p)))
-(defun (list->mutableheap xs) (seq->mutableheap (list->seq xs)))
+(defun (list->mutableheap xs)
+  (seq->mutableheap (list->seq xs)))
 
 (: (-> (MutableHeap %a %p) (List (Tuple %a %p))))
-(defun (mutableheap->unordered-list h) (->list (mutableheap->unordered-seq h)))
+(defun (mutableheap->unordered-list h)
+  (->list (mutableheap->unordered-seq h)))
 
 ;; ---------------------------------------------------------------------------
 ;; The traits
@@ -148,8 +154,10 @@
 
 (impl (Collection (MutableHeap %a %p))
   (type %content (Tuple %a %p))
-  (defun (length h) (mutableheap-length h))
-  (defun (empty? h) (mutableheap-empty? h)))
+  (defun (length h)
+    (mutableheap-length h))
+  (defun (empty? h)
+    (mutableheap-empty? h)))
 
 ;; `#mheap(element priority ...)`, unordered, for the reason above. Each
 ;; element and priority is added by the function given for it.
@@ -159,7 +167,8 @@
   (loop (:with first? #t #f)
         (:for entry (mutableheap->unordered-seq h))
         (:do (def (x p) entry)
-             (unless first? (stringbuilder-add-string! b " "))
+             (unless first?
+               (stringbuilder-add-string! b " "))
              (each-elem x b)
              (stringbuilder-add-string! b " ")
              (each-priority p b)))
@@ -176,6 +185,7 @@
     (mutableheap-print-into h b (fun (x b) (display-into x b)) (fun (p b) (display-into p b)))))
 
 (: (-> (MutableHeap %a %p) string) (where (Displayed %a) (Displayed %p)))
-(defun (mutableheap->str h) (displayed h))
+(defun (mutableheap->str h)
+  (displayed h))
 
 (:deprecated mutableheap->str "use `displayed`")

@@ -153,39 +153,50 @@
   (clr-total-available  (: System.GCMemoryInfo.TotalAvailableMemoryBytes (-> GCMemoryInfo long) #:get)))
 
 (: (-> string) #:inline)
-(defun (os-description) clr-os-description)
+(defun (os-description)
+  clr-os-description)
 
 (: (-> string) #:inline)
-(defun (runtime-identifier) clr-runtime-identifier)
+(defun (runtime-identifier)
+  clr-runtime-identifier)
 
 (: (-> string) #:inline)
-(defun (dotnet-description) clr-dotnet-description)
+(defun (dotnet-description)
+  clr-dotnet-description)
 
 (: (-> int) #:inline)
-(defun (processor-count) clr-processor-count)
+(defun (processor-count)
+  clr-processor-count)
 
 (: (-> string) #:inline)
-(defun (machine-name) clr-machine-name)
+(defun (machine-name)
+  clr-machine-name)
 
 (: (-> string) #:inline)
-(defun (user-name) clr-user-name)
+(defun (user-name)
+  clr-user-name)
 
 (: (-> int) #:inline)
-(defun (process-id) clr-process-id)
+(defun (process-id)
+  clr-process-id)
 
 (: (-> bool) #:inline)
-(defun (privileged?) clr-privileged?)
+(defun (privileged?)
+  clr-privileged?)
 
 ;; .NET's name of an architecture, in lower case, as a runtime identifier
 ;; writes it.
 (: (-> Architecture string))
-(defun (architecture-name a) (string-downcase (.ToString a)))
+(defun (architecture-name a)
+  (string-downcase (.ToString a)))
 
 (: (-> string))
-(defun (os-architecture) (architecture-name clr-os-architecture))
+(defun (os-architecture)
+  (architecture-name clr-os-architecture))
 
 (: (-> string))
-(defun (process-architecture) (architecture-name clr-process-architecture))
+(defun (process-architecture)
+  (architecture-name clr-process-architecture))
 
 ;; The parts of the version that .NET has: a part it does not know is -1, and
 ;; is left out.
@@ -197,13 +208,16 @@
 ;; The memory the GC may use: the machine's, or the limit of the container or
 ;; of the process.
 (: (-> long))
-(defun (available-memory) (clr-total-available (clr-memory-info)))
+(defun (available-memory)
+  (clr-total-available (clr-memory-info)))
 
 ;; .NET has null when it cannot tell, which arrives as "".
 (: (-> (Option string)))
 (defun (process-path)
   (def p clr-process-path)
-  (if (string-empty? p) None (Some p)))
+  (if (string-empty? p)
+      None
+      (Some p)))
 
 ;; ---------------------------------------------------------------------------
 ;; The user's folders
@@ -234,19 +248,24 @@
       p))
 
 (: (-> string))
-(defun (home-directory) (folder-path SpecialFolder.UserProfile "home directory"))
+(defun (home-directory)
+  (folder-path SpecialFolder.UserProfile "home directory"))
 
 (: (-> string))
-(defun (config-directory) (folder-path SpecialFolder.ApplicationData "folder for configuration"))
+(defun (config-directory)
+  (folder-path SpecialFolder.ApplicationData "folder for configuration"))
 
 (: (-> string))
-(defun (data-directory) (folder-path SpecialFolder.LocalApplicationData "folder for data"))
+(defun (data-directory)
+  (folder-path SpecialFolder.LocalApplicationData "folder for data"))
 
 (: (-> string))
-(defun (documents-directory) (folder-path SpecialFolder.MyDocuments "folder for documents"))
+(defun (documents-directory)
+  (folder-path SpecialFolder.MyDocuments "folder for documents"))
 
 (: (-> string))
-(defun (desktop-directory) (folder-path SpecialFolder.Desktop "desktop folder"))
+(defun (desktop-directory)
+  (folder-path SpecialFolder.Desktop "desktop folder"))
 
 ;; .NET has no special folder for a cache. On Windows it is the local data
 ;; folder, on macOS `~/Library/Caches`, and elsewhere `XDG_CACHE_HOME`, or
@@ -259,13 +278,17 @@
     ((macos?) (path-combine (home-directory) "Library" "Caches"))
     (else
      (match (get-environment-variable "XDG_CACHE_HOME")
-       ((Some p) (if (clr-rooted? p) p (path-combine (home-directory) ".cache")))
+       ((Some p)
+        (if (clr-rooted? p)
+            p
+            (path-combine (home-directory) ".cache")))
        (None (path-combine (home-directory) ".cache"))))))
 
 ;; The folder for temporary files: `TMPDIR` on Unix, `TMP` or `TEMP` on
 ;; Windows, else the system's. Without the separator .NET ends it with.
 (: (-> string))
-(defun (temp-directory) (clr-trim-separator (clr-temp-path)))
+(defun (temp-directory)
+  (clr-trim-separator (clr-temp-path)))
 
 ;; A new, empty directory in the temp folder, with a name of its own after
 ;; `prefix`. On Unix only its owner may read or write it.
@@ -287,8 +310,18 @@
 ;; - `with-signal-cancel` cancels its scope at the first signal and gives the
 ;;   signals back to the system, so a second signal does the default action.
 
-(type (: Signal (Union Hangup Interrupt Quit Terminate Child Continue WindowChanged
-                       TerminalInput TerminalOutput TerminalStop User1 User2
+(type (: Signal (Union Hangup
+                       Interrupt
+                       Quit
+                       Terminate
+                       Child
+                       Continue
+                       WindowChanged
+                       TerminalInput
+                       TerminalOutput
+                       TerminalStop
+                       User1
+                       User2
                        (: OtherSignal int))))
 
 (import/class
@@ -302,10 +335,13 @@
   (clr-group-add!    (: Bjolang.Runtime.SignalGroup.Add (-> SignalGroup int bool (-> void) void)))
   (clr-cancellation? (: Bjolang.Runtime.SignalGroup.IsCancellation (-> Exception bool))))
 
-(type (: Signals #:opaque (Struct (: group SignalGroup) (: inboxes (Vec (Inbox Signal))))))
+(type (: Signals #:opaque
+         (Struct (: group SignalGroup)
+                 (: inboxes (Vec (Inbox Signal))))))
 
 (: (-> string PlatformNotSupportedException))
-(defun (unsupported message) (PlatformNotSupportedException. message))
+(defun (unsupported message)
+  (PlatformNotSupportedException. message))
 
 (: (-> Signal string))
 (defun (signal-name s)
@@ -354,8 +390,11 @@
     ((or (linux?) (android?)) linux)
     ((or (macos?) (freebsd?) (ios?) (tvos?) (watchos?) (mac-catalyst?)) bsd)
     (else
-     (raise (cast Exception (unsupported (str "The number of " (signal-name s) " on this system"
-                                              " is not known. Use (OtherSignal n).")))))))
+     (raise (cast Exception
+                  (unsupported (str "The number of "
+                                    (signal-name s)
+                                    " on this system"
+                                    " is not known. Use (OtherSignal n).")))))))
 
 ;; The number of the signal for .NET's `PosixSignal`: negative for .NET's own
 ;; names, and the system's number for the others.
@@ -366,8 +405,7 @@
 (: (-> Signal int))
 (defun (signal-code s)
   (cond
-    ((or (browser?) (wasi?))
-     (raise (cast Exception (unsupported "This system has no signals."))))
+    ((or (browser?) (wasi?)) (raise (cast Exception (unsupported "This system has no signals."))))
     ((and (windows?) (not (windows-signal? s)))
      (raise (cast Exception (unsupported (str "Windows has no " (signal-name s) ".")))))
     (else
@@ -387,17 +425,23 @@
        ((OtherSignal n)
         (if (> n 0)
             n
-            (raise (cast Exception (ArgumentException.
-                                    (str "OtherSignal takes a signal number above 0, not "
-                                         (int->string n) "."))))))))))
+            (raise (cast Exception
+                         (ArgumentException. (str "OtherSignal takes a signal number above 0, not "
+                                                  (int->string n)
+                                                  "."))))))))))
 
 ;; Each signal once, in the order given.
 (: (-> (Vec Signal) (Vec Signal)))
 (defun (distinct-signals signals)
-  (let go ((rest (vec->list signals)) (kept []))
+  (let go ((rest (vec->list signals))
+           (kept []))
     (match rest
       (Nil kept)
-      ((Cons s more) (go more (if (vec-contains? kept s) kept (vec-add kept s)))))))
+      ((Cons s more)
+       (go more
+           (if (vec-contains? kept s)
+               kept
+               (vec-add kept s)))))))
 
 ;; Registers the handler in `handlers` for each signal in `kinds`, whose
 ;; numbers are `codes`. Raises when the system cannot handle one, as SIGKILL.
@@ -407,12 +451,15 @@
   (loop (:for s kinds)
         (:for code codes)
         (:for handler handlers)
-        (:do (match (try (clr-group-add! group code (cancels-default? s) handler)
+        (:do (match (try
+                      (clr-group-add! group code (cancels-default? s) handler)
                       #:catch (System.Exception))
                ((Ok _) unit)
                ((Err e)
-                (raise (cast Exception (unsupported (str "This system cannot handle " (signal-name s)
-                                                         ": " (.-Message e))))))))))
+                (raise
+                 (cast Exception
+                       (unsupported
+                        (str "This system cannot handle " (signal-name s) ": " (.-Message e))))))))))
 
 ;; Subscribes to `signals`.
 ;;
@@ -431,10 +478,13 @@
     (loop (:for s kinds)
           (:for ib inboxes)
           (:acc hs (vecing (fun () (ignore (inbox-post! ib s)))))))
-  (match (try (add-handlers! (struct-ref subscription group) kinds codes handlers)
-              #:catch (System.Exception))
+  (match (try
+           (add-handlers! (struct-ref subscription group) kinds codes handlers)
+           #:catch (System.Exception))
     ((Ok _) subscription)
-    ((Err e) (release! owned) (raise e))))
+    ((Err e)
+     (release! owned)
+     (raise e))))
 
 ;; The event of the next signal. In a `choose` that another branch wins, it
 ;; takes nothing. When signals of more than one kind wait, which one comes
@@ -444,7 +494,8 @@
   (match (vec->list (struct-ref s inboxes))
     (Nil (never))
     ((Cons ib more)
-     (let go ((rest more) (e (inbox-recv ib)))
+     (let go ((rest more)
+              (e (inbox-recv ib)))
        (match rest
          (Nil e)
          ((Cons next after) (go after (choose e (inbox-recv next)))))))))
@@ -486,9 +537,12 @@
      (signal-unsubscribe! subscription)
      (if (clr-cancellation? e)
          (raise e)
-         (raise (cast Exception (HandlerFailed. (str "The handler of " (signal-name s) " raised, so "
-                                                     "its signals do their default action again.")
-                                                e)))))))
+         (raise (cast Exception
+                      (HandlerFailed. (str "The handler of "
+                                           (signal-name s)
+                                           " raised, so "
+                                           "its signals do their default action again.")
+                                      e)))))))
 
 ;; `(with-signal-cancel signals body ...)` - a scope that the first of
 ;; `signals` cancels.
@@ -507,12 +561,14 @@
          (def scope (scope-open! 0))
          (signal-cancel-result
           kinds
-          (try (scope-form scope (cancel)
-                 (signal-cancel-arm! kinds cancel)
-                 ,first ,@body)
-               #:catch (System.Exception))
+          (try
+            (scope-form scope (cancel) (signal-cancel-arm! kinds cancel) ,first ,@body)
+            #:catch (System.Exception))
           (scope-token scope))))
-    (bad (syntax-error bad "with-signal-cancel takes a Vec of signals and a body: (with-signal-cancel [Interrupt Terminate] body ...)"))))
+    (bad
+     (syntax-error
+      bad
+      "with-signal-cancel takes a Vec of signals and a body: (with-signal-cancel [Interrupt Terminate] body ...)"))))
 
 ;; Subscribes the scope that `cancel` cancels to `signals`. The first signal
 ;; ends the subscription and then cancels the scope, so the signals do their
@@ -522,10 +578,13 @@
   (def kinds (distinct-signals signals))
   (def codes (->vec (map signal-code kinds)))
   (def group (own-disposable (SignalGroup.)))
-  (add-handlers! group kinds codes
-                 (->vec (map (fun (s) (fun ()
-                                        (.Dispose group)
-                                        (cancel (Requested (signal-name s)))))
+  (add-handlers! group
+                 kinds
+                 codes
+                 (->vec (map (fun (s)
+                               (fun ()
+                                 (.Dispose group)
+                                 (cancel (Requested (signal-name s)))))
                              kinds))))
 
 ;; The value of `with-signal-cancel`, from the outcome of its scope and the
@@ -543,6 +602,9 @@
      (match (cancel-reason token)
        ((Some (Requested who))
         (match (find (fun (s) (= (signal-name s) who)) signals)
-          ((Some s) (if (clr-cancellation? e) (Err s) (raise e)))
+          ((Some s)
+           (if (clr-cancellation? e)
+               (Err s)
+               (raise e)))
           (None (raise e))))
        (_ (raise e))))))

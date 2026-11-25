@@ -44,7 +44,8 @@
 (export unhandled-effect)
 
 (: (-> string string string))
-(defun (cat a b) (str-concat a b))
+(defun (cat a b)
+  (str-concat a b))
 
 ;; What an operation declared with no `#:default` does when it is performed.
 ;; Written here rather than in the template so that the message is in one place.
@@ -75,7 +76,9 @@
 
 (: (-> Syntax bool))
 (defun (arrow? arrow)
-  (if (= (arrow-head arrow) "->") #t (suspending-arrow? arrow)))
+  (if (= (arrow-head arrow) "->")
+      #t
+      (suspending-arrow? arrow)))
 
 ;; Everything but the head and the return type.
 (: (-> Syntax int))
@@ -105,8 +108,7 @@
 (defun (wrapper-args i n)
   (if (>= i n)
       Nil
-      (Cons (SSym (string->symbol (cat "effect-arg" (.ToString i))))
-            (wrapper-args (+ i 1) n))))
+      (Cons (SSym (string->symbol (cat "effect-arg" (.ToString i)))) (wrapper-args (+ i 1) n))))
 
 ;; ---------------------------------------------------------------------------
 ;; The clauses of a `defeffect`
@@ -172,7 +174,10 @@
 (defun (named-in? name names)
   (match names
     (Nil #f)
-    ((Cons n rest) (if (syntax-ident=? n name) #t (named-in? name rest)))))
+    ((Cons n rest)
+     (if (syntax-ident=? n name)
+         #t
+         (named-in? name rest)))))
 
 (: (-> Syntax (List Syntax) (Option Syntax)))
 (defun (default-for name pairs)
@@ -180,8 +185,14 @@
     (Nil None)
     ((Cons pair rest)
      (syntax-match pair
-       ((op handler) (if (syntax-ident=? op name) (Some handler) (default-for name rest)))
-       (bad (Some (syntax-error bad "a #:default clause pairs an operation with a handler: (log write-it)")))))))
+       ((op handler)
+        (if (syntax-ident=? op name)
+            (Some handler)
+            (default-for name rest)))
+       (bad
+        (Some (syntax-error
+               bad
+               "a #:default clause pairs an operation with a handler: (log write-it)")))))))
 
 ;; ---------------------------------------------------------------------------
 ;; What one operation expands to
@@ -217,15 +228,22 @@
 (: (-> Syntax Syntax (List Syntax) (List Syntax) Syntax))
 (defun (wrapper-body name cell args adopts)
   (match (default-for name adopts)
-    (None #'(let ((handler (parameter-ref ,cell))) (handler ,@args)))
-    ((Some adopt) #'(let ((handler (parameter-ref ,cell))) (,adopt (handler ,@args))))))
+    (None
+     #'(let ((handler (parameter-ref ,cell)))
+         (handler ,@args)))
+    ((Some adopt)
+     #'(let ((handler (parameter-ref ,cell)))
+         (,adopt (handler ,@args))))))
 
 (: (-> (-> Symbol Syntax) Syntax (List Syntax) (List Syntax) (List Syntax) (List Syntax)))
 (defun (operation-decls inject clause defaults colds adopts)
   (syntax-match clause
     ((name arrow)
      (if (not (arrow? arrow))
-         (list (syntax-error arrow "an operation's type is an arrow: (-> ...) for one performable anywhere, (-bjo-> ...) for one only a bjoroutine may perform."))
+         (list
+          (syntax-error
+           arrow
+           "an operation's type is an arrow: (-> ...) for one performable anywhere, (-bjo-> ...) for one only a bjoroutine may perform."))
          (let ((cell (op-cell inject name))
                (args (wrapper-args 0 (arrow-arity arrow))))
            (list #'(: ,cell (Param ,arrow))
@@ -234,9 +252,13 @@
                      #'(def ,cell (make-parameter ,(handler-default name arrow args defaults))))
                  #'(: ,name ,arrow)
                  (if (suspending-arrow? arrow)
-                     #'(defbjo (,name ,@args) ,(wrapper-body name cell args adopts))
-                     #'(defun (,name ,@args) ,(wrapper-body name cell args adopts)))))))
-    (bad (list (syntax-error bad "an operation is written (name arrow), as in (log (-> string void)).")))))
+                     #'(defbjo (,name ,@args)
+                         ,(wrapper-body name cell args adopts))
+                     #'(defun (,name ,@args)
+                         ,(wrapper-body name cell args adopts)))))))
+    (bad
+     (list (syntax-error bad
+                         "an operation is written (name arrow), as in (log (-> string void)).")))))
 
 (: (-> (-> Symbol Syntax) (List Syntax) (List Syntax) (List Syntax) (List Syntax) (List Syntax)))
 (defun (effect-decls inject ops defaults colds adopts)
@@ -295,14 +317,19 @@
   (syntax-match form
     ((_ name clause ...)
      (if (list-empty? clause)
-         (syntax-error form "defeffect needs at least one operation: (defeffect Log (log (-> string void)))")
+         (syntax-error
+          form
+          "defeffect needs at least one operation: (defeffect Log (log (-> string void)))")
          #'(begin
              ,@(effect-decls inject
                              (operation-clauses clause)
                              (default-clauses clause)
                              (cold-clauses clause)
                              (adopt-clauses clause)))))
-    (bad (syntax-error bad "defeffect takes an effect name and one or more operations: (defeffect Log (log (-> string void)) #:default ((log write-it)))"))))
+    (bad
+     (syntax-error
+      bad
+      "defeffect takes an effect name and one or more operations: (defeffect Log (log (-> string void)) #:default ((log write-it)))"))))
 
 ;; `(with-handler ((op handler) ...) body ...)` — install handlers for the
 ;; extent of the body.
@@ -372,9 +399,17 @@
   (syntax-match form
     ((_ ((op handler) ...) first body ...)
      (if (list-empty? op)
-         (syntax-error form "with-handler installs at least one handler: (with-handler ((log collect)) body ...)")
-         #'(parameterize ,(SList (handler-bindings inject op handler)) ,first ,@body)))
-    (bad (syntax-error bad "with-handler takes a list of (operation handler) pairs and a body: (with-handler ((log collect)) body ...)"))))
+         (syntax-error
+          form
+          "with-handler installs at least one handler: (with-handler ((log collect)) body ...)")
+         #'(parameterize ,(SList
+                           (handler-bindings inject op handler))
+             ,first
+             ,@body)))
+    (bad
+     (syntax-error
+      bad
+      "with-handler takes a list of (operation handler) pairs and a body: (with-handler ((log collect)) body ...)"))))
 
 (: (-> (-> Symbol Syntax) (List Syntax) (List Syntax) (List Syntax)))
 (defun (handler-bindings inject ops handlers)

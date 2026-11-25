@@ -23,11 +23,14 @@
 ;; first and fnref-N-K for the others.
 (: (-> int int string))
 (defun (note-ref-id n k)
-  (if (= k 1) #"fnref-${n}" #"fnref-${n}-${k}"))
+  (if (= k 1)
+      #"fnref-${n}"
+      #"fnref-${n}-${k}"))
 
 ;; Adds `text` as it is.
 (: (-> HtmlOut string void))
-(defun (lit! o text) (stringbuilder-add-string! (record-ref o sb) text))
+(defun (lit! o text)
+  (stringbuilder-add-string! (record-ref o sb) text))
 
 ;; Adds a newline unless the output is empty or ends with one.
 (: (-> HtmlOut void))
@@ -52,10 +55,12 @@
       ((Some c)
        (stringbuilder-add-substring! sb text from c)
        (def ch (string-cursor-ref text c))
-       (stringbuilder-add-string! sb (cond ((char=? ch #\&) "&amp;")
-                                           ((char=? ch #\<) "&lt;")
-                                           ((char=? ch #\>) "&gt;")
-                                           (else "&quot;")))
+       (stringbuilder-add-string! sb
+                                  (cond
+                                    ((char=? ch #\&) "&amp;")
+                                    ((char=? ch #\<) "&lt;")
+                                    ((char=? ch #\>) "&gt;")
+                                    (else "&quot;")))
        (go (string-cursor-next text c))))))
 
 ;; The punctuation that a URL keeps as it is.
@@ -65,7 +70,12 @@
 ;; Adds byte `b` as %XX, with upper-case hex digits.
 (: (-> StringBuilder int void))
 (defun (percent-byte! sb b)
-  (def digit! (fun (d) (stringbuilder-add! sb (int->char (if (< d 10) (+ d 48) (+ d 55))))))
+  (def digit!
+    (fun (d)
+      (stringbuilder-add! sb
+                          (int->char (if (< d 10)
+                                         (+ d 48)
+                                         (+ d 55))))))
   (stringbuilder-add! sb #\%)
   (digit! (bitwise-and (shift-right b 4) 15))
   (digit! (bitwise-and b 15)))
@@ -79,8 +89,9 @@
 (defun (url! o url)
   (def sb (record-ref o sb))
   (def hex-at?
-    (fun (c) (and (not (string-cursor-end? url c))
-                  (ascii-hex-digit? (char->int (string-cursor-ref url c))))))
+    (fun (c)
+      (and (not (string-cursor-end? url c))
+           (ascii-hex-digit? (char->int (string-cursor-ref url c))))))
   (let go ((c (string-cursor-start url)))
     (unless (string-cursor-end? url c)
       (def ch (string-cursor-ref url c))
@@ -90,14 +101,19 @@
         ((and (= b (char->int #\%)) (hex-at? next) (hex-at? (string-cursor-next url next)))
          (stringbuilder-add! sb #\%)
          (go next))
-        ((= b (char->int #\&)) (stringbuilder-add-string! sb "&amp;") (go next))
+        ((= b (char->int #\&))
+         (stringbuilder-add-string! sb "&amp;")
+         (go next))
         ((or (ascii-alphanumeric? b) (byte-in? b url-safe-bytes))
          (stringbuilder-add! sb ch)
          (go next))
-        ((< b 128) (percent-byte! sb b) (go next))
+        ((< b 128)
+         (percent-byte! sb b)
+         (go next))
         (else
          (def bytes (string->bytestring (substring/slice url c next)))
-         (loop (:for k (range 0 (bytestring-length bytes))) (:do (percent-byte! sb (at bytes k))))
+         (loop (:for k (range 0 (bytestring-length bytes)))
+               (:do (percent-byte! sb (at bytes k))))
          (go next))))))
 
 ;; The tags that the tag filter disables.
@@ -116,7 +132,8 @@
         after-lt))
   (def name-end
     (let go ((k name-from))
-      (if (and (not (string-cursor-end? html k)) (ascii-alphanumeric? (char->int (string-cursor-ref html k))))
+      (if (and (not (string-cursor-end? html k))
+               (ascii-alphanumeric? (char->int (string-cursor-ref html k))))
           (go (string-cursor-next html k))
           k)))
   (and (vec-contains? filtered-tags (string-downcase (substring/slice html name-from name-end)))
@@ -132,7 +149,8 @@
   (cond
     ((not (record-ref o tag-filter)) (stringbuilder-add-string! sb html))
     (else
-     (let go ((from (string-cursor-start html)) (search (string-cursor-start html)))
+     (let go ((from (string-cursor-start html))
+              (search (string-cursor-start html)))
        (match (string-search-any html "<" search)
          (None (stringbuilder-add-substring! sb html from (string-cursor-end html)))
          ((Some c)
@@ -186,7 +204,8 @@
                (MdHardBreak (lit! o "\n"))
                ((MdHtml t) (escaped! o t))
                ((MdCheckbox _) unit)
-               ((MdFootnoteRef n) (stringbuilder-add-long! (record-ref o sb) (cast System.Int64 n)))))))
+               ((MdFootnoteRef n)
+                (stringbuilder-add-long! (record-ref o sb) (cast System.Int64 n)))))))
 
 ;; Adds ` title="..."` when `title` is not empty.
 (: (-> HtmlOut string void))
@@ -198,16 +217,29 @@
 
 (: (-> HtmlOut (Vec MdInline) void))
 (defun (write-inlines! o xs)
-  (loop (:for x xs) (:do (write-inline! o x))))
+  (loop (:for x xs)
+        (:do (write-inline! o x))))
 
 (: (-> HtmlOut MdInline void))
 (defun (write-inline! o x)
   (match x
     ((MdText t) (escaped! o t))
-    ((MdCode t) (lit! o "<code>") (escaped! o t) (lit! o "</code>"))
-    ((MdEmph ys) (lit! o "<em>") (write-inlines! o ys) (lit! o "</em>"))
-    ((MdStrong ys) (lit! o "<strong>") (write-inlines! o ys) (lit! o "</strong>"))
-    ((MdStrike ys) (lit! o "<del>") (write-inlines! o ys) (lit! o "</del>"))
+    ((MdCode t)
+     (lit! o "<code>")
+     (escaped! o t)
+     (lit! o "</code>"))
+    ((MdEmph ys)
+     (lit! o "<em>")
+     (write-inlines! o ys)
+     (lit! o "</em>"))
+    ((MdStrong ys)
+     (lit! o "<strong>")
+     (write-inlines! o ys)
+     (lit! o "</strong>"))
+    ((MdStrike ys)
+     (lit! o "<del>")
+     (write-inlines! o ys)
+     (lit! o "</del>"))
     ((MdLink dest title ys)
      (lit! o "<a href=\"")
      (url! o dest)
@@ -228,25 +260,34 @@
     (MdHardBreak (lit! o "<br />\n"))
     ((MdHtml t) (raw-html! o t))
     ((MdCheckbox checked)
-     (lit! o (if checked "<input checked=\"\" disabled=\"\" type=\"checkbox\">"
-                 "<input disabled=\"\" type=\"checkbox\">")))
+     (lit! o
+           (if checked
+               "<input checked=\"\" disabled=\"\" type=\"checkbox\">"
+               "<input disabled=\"\" type=\"checkbox\">")))
     ((MdFootnoteRef n)
      (def refs (record-ref o note-refs))
      (def k (+ (transientmap-ref-or refs n 0) 1))
      (transientmap-set! refs n k)
-     (lit! o #"<sup class=\"footnote-ref\"><a href=\"#fn-${n}\" id=\"${(note-ref-id n k)}\" data-footnote-ref>${n}</a></sup>"))))
+     (lit!
+      o
+      #"<sup class=\"footnote-ref\"><a href=\"#fn-${n}\" id=\"${(note-ref-id n k)}\" data-footnote-ref>${n}</a></sup>"))))
 
 ;; The open and close tags of the headings, by level.
 (: (Vec (Tuple string string)))
 (def heading-tags
-  [(Tuple "<h1>" "</h1>") (Tuple "<h2>" "</h2>") (Tuple "<h3>" "</h3>")
-   (Tuple "<h4>" "</h4>") (Tuple "<h5>" "</h5>") (Tuple "<h6>" "</h6>")])
+  [(Tuple "<h1>" "</h1>")
+   (Tuple "<h2>" "</h2>")
+   (Tuple "<h3>" "</h3>")
+   (Tuple "<h4>" "</h4>")
+   (Tuple "<h5>" "</h5>")
+   (Tuple "<h6>" "</h6>")])
 
 ;; Writes blocks. `tight` is whether they are the blocks of a tight list's
 ;; item, whose paragraphs have no <p>.
 (: (-> HtmlOut (Vec MdBlock) bool void))
 (defun (write-blocks! o bs tight)
-  (loop (:for b bs) (:do (write-block! o b tight))))
+  (loop (:for b bs)
+        (:do (write-block! o b tight))))
 
 (: (-> HtmlOut MdBlock bool void))
 (defun (write-block! o b tight)
@@ -254,24 +295,43 @@
     ((MdParagraph xs)
      (cond
        (tight (write-inlines! o xs))
-       (else (cr! o) (lit! o "<p>") (write-inlines! o xs) (lit! o "</p>") (cr! o))))
+       (else
+        (cr! o)
+        (lit! o "<p>")
+        (write-inlines! o xs)
+        (lit! o "</p>")
+        (cr! o))))
     ((MdHeading level xs)
      (def (Tuple open close) (vec-ref heading-tags (- level 1)))
-     (cr! o) (lit! o open) (write-inlines! o xs) (lit! o close) (cr! o))
+     (cr! o)
+     (lit! o open)
+     (write-inlines! o xs)
+     (lit! o close)
+     (cr! o))
     ((MdCodeBlock info code)
      ;; The language is the first word of the info string.
-     (def lang (match (string-search-any info " \t" (string-cursor-start info))
-                 ((Some c) (substring/slice info (string-cursor-start info) c))
-                 (None info)))
+     (def lang
+       (match (string-search-any info " \t" (string-cursor-start info))
+         ((Some c) (substring/slice info (string-cursor-start info) c))
+         (None info)))
      (cr! o)
      (cond
        ((string-empty? lang) (lit! o "<pre><code>"))
-       (else (lit! o "<pre><code class=\"language-") (escaped! o lang) (lit! o "\">")))
+       (else
+        (lit! o "<pre><code class=\"language-")
+        (escaped! o lang)
+        (lit! o "\">")))
      (escaped! o code)
      (lit! o "</code></pre>")
      (cr! o))
     ((MdQuote bs)
-     (cr! o) (lit! o "<blockquote>") (cr! o) (write-blocks! o bs #f) (cr! o) (lit! o "</blockquote>") (cr! o))
+     (cr! o)
+     (lit! o "<blockquote>")
+     (cr! o)
+     (write-blocks! o bs #f)
+     (cr! o)
+     (lit! o "</blockquote>")
+     (cr! o))
     ((MdListBlock l)
      (def ordered (record-ref l ordered))
      (cr! o)
@@ -287,9 +347,17 @@
                 (write-blocks! o item (not (record-ref l loose)))
                 (lit! o "</li>")
                 (cr! o)))
-     (cr! o) (lit! o (if ordered "</ol>" "</ul>")) (cr! o))
-    (MdRule (cr! o) (lit! o "<hr />") (cr! o))
-    ((MdHtmlBlock html) (cr! o) (raw-html! o html) (cr! o))
+     (cr! o)
+     (lit! o (if ordered "</ol>" "</ul>"))
+     (cr! o))
+    (MdRule
+     (cr! o)
+     (lit! o "<hr />")
+     (cr! o))
+    ((MdHtmlBlock html)
+     (cr! o)
+     (raw-html! o html)
+     (cr! o))
     ((MdTableBlock t) (write-table! o t))))
 
 ;; The open tag of a table cell, by its tag and its column's alignment.
@@ -311,7 +379,10 @@
       (loop (:for k (range 0 (vec-length cells)))
             (:do (lit! o (cell-open-tag tag (vec-ref aligns k)))
                  (write-inlines! o (vec-ref cells k))
-                 (lit! o (if (= tag "th") "</th>\n" "</td>\n"))))
+                 (lit! o
+                       (if (= tag "th")
+                           "</th>\n"
+                           "</td>\n"))))
       (lit! o "</tr>\n")))
   (cr! o)
   (lit! o "<table>\n<thead>\n")
@@ -319,7 +390,8 @@
   (lit! o "</thead>\n")
   (unless (vec-empty? (record-ref t body))
     (lit! o "<tbody>\n")
-    (loop (:for row (record-ref t body)) (:do (write-row! row "td")))
+    (loop (:for row (record-ref t body))
+          (:do (write-row! row "td")))
     (lit! o "</tbody>\n"))
   (lit! o "</table>\n"))
 
@@ -328,8 +400,9 @@
 (defun (back-links o n)
   (def count (transientmap-ref-or (record-ref o note-refs) n 0))
   (string-join
-   {vecing #"<a href=\"#${(note-ref-id n k)}\" class=\"footnote-backref\" data-footnote-backref data-footnote-backref-idx=\"${(if (= k 1) (int->string n) #"${n}-${k}")}\" aria-label=\"Back to reference ${(if (= k 1) (int->string n) #"${n}-${k}")}\">\u{21A9}${(if (= k 1) "" #"<sup class=\"footnote-ref\">${k}</sup>")}</a>"
-           (:for k (range 1 (+ count 1)))}
+   {vecing
+    #"<a href=\"#${(note-ref-id n k)}\" class=\"footnote-backref\" data-footnote-backref data-footnote-backref-idx=\"${(if (= k 1) (int->string n) #"${n}-${k}")}\" aria-label=\"Back to reference ${(if (= k 1) (int->string n) #"${n}-${k}")}\">\u{21A9}${(if (= k 1) "" #"<sup class=\"footnote-ref\">${k}</sup>")}</a>"
+    (:for k (range 1 (+ count 1)))}
    " "))
 
 ;; Writes the blocks of footnote `n`. Its back links go at the end of its
@@ -338,15 +411,25 @@
 (defun (write-note-blocks! o n bs)
   (def links (back-links o n))
   (def last (- (vec-length bs) 1))
-  (match (if (>= last 0) (Some (vec-ref bs last)) None)
+  (match (if (>= last 0)
+             (Some (vec-ref bs last))
+             None)
     ((Some (MdParagraph xs))
      (write-blocks! o (vec-take bs last) #f)
-     (cr! o) (lit! o "<p>") (write-inlines! o xs)
-     (lit! o (str (if (string-empty? links) "" (str " " links)) "</p>")) (cr! o))
+     (cr! o)
+     (lit! o "<p>")
+     (write-inlines! o xs)
+     (lit! o
+           (str (if (string-empty? links)
+                    ""
+                    (str " " links))
+                "</p>"))
+     (cr! o))
     (_
      (write-blocks! o bs #f)
      (cr! o)
-     (unless (string-empty? links) (lit! o (str links "\n"))))))
+     (unless (string-empty? links)
+       (lit! o (str links "\n"))))))
 
 ;; Writes a document as HTML.
 ;;
@@ -356,7 +439,8 @@
 ;;   reference.
 (: (-> MdDocument (#:tag-filter bool) string))
 (defun (markdown->html doc #:tag-filter #f)
-  (def o (HtmlOut (sb (stringbuilder-empty)) (tag-filter tag-filter) (note-refs (transientmap-empty))))
+  (def o
+    (HtmlOut (sb (stringbuilder-empty)) (tag-filter tag-filter) (note-refs (transientmap-empty))))
   (write-blocks! o (record-ref doc blocks) #f)
   (def notes (record-ref doc footnotes))
   (unless (vec-empty? notes)

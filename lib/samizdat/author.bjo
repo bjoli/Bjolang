@@ -93,29 +93,45 @@
                        (: url-hook (-> string string)))))
 
 (: author-setup (-> (#:commands (Map string Command)) (#:typography bool) (#:title string)
-                    (#:heading-offset int) (#:id-prefix string) (#:lang string)
-                    (#:css (Vec string)) (#:head string)
-                    (#:highlighter (Option (-> string string (Option Node))))
+                    (#:heading-offset int) (#:id-prefix string) (#:lang string) (#:css (Vec string))
+                    (#:head string) (#:highlighter (Option (-> string string (Option Node))))
                     (#:html-block-hook (-> Html Block (Option (List Node))))
-                    (#:html-inline-hook (-> Html Inline (Option (List Node))))
-                    (#:anchors MdAnchors)
+                    (#:html-inline-hook (-> Html Inline (Option (List Node)))) (#:anchors MdAnchors)
                     (#:md-block-hook (-> Md Block (Option string)))
-                    (#:md-inline-hook (-> Md Inline (Option string)))
-                    (#:sz-links bool)
-                    (#:url-hook (-> string string))
-                    Setup))
-(defun (author-setup #:commands standard-commands #:typography #t #:title ""
-                     #:heading-offset 1 #:id-prefix "" #:lang "en" #:css (vec-empty) #:head ""
+                    (#:md-inline-hook (-> Md Inline (Option string))) (#:sz-links bool)
+                    (#:url-hook (-> string string)) Setup))
+(defun (author-setup #:commands standard-commands
+                     #:typography #t
+                     #:title ""
+                     #:heading-offset 1
+                     #:id-prefix ""
+                     #:lang "en"
+                     #:css (vec-empty)
+                     #:head ""
                      #:highlighter None
-                     #:html-block-hook (fun (h b) None) #:html-inline-hook (fun (h i) None)
+                     #:html-block-hook (fun (h b) None)
+                     #:html-inline-hook (fun (h i) None)
                      #:anchors 'github
-                     #:md-block-hook (fun (h b) None) #:md-inline-hook (fun (h i) None)
-                     #:sz-links #t #:url-hook (fun (u) u))
-  (Setup (commands commands) (typography typography) (title title)
-         (heading-offset heading-offset) (id-prefix id-prefix) (lang lang) (css css) (head head)
-         (highlighter highlighter) (html-block-hook html-block-hook) (html-inline-hook html-inline-hook)
-         (anchors anchors) (md-block-hook md-block-hook) (md-inline-hook md-inline-hook)
-         (sz-links sz-links) (url-hook url-hook)))
+                     #:md-block-hook (fun (h b) None)
+                     #:md-inline-hook (fun (h i) None)
+                     #:sz-links #t
+                     #:url-hook (fun (u) u))
+  (Setup (commands commands)
+         (typography typography)
+         (title title)
+         (heading-offset heading-offset)
+         (id-prefix id-prefix)
+         (lang lang)
+         (css css)
+         (head head)
+         (highlighter highlighter)
+         (html-block-hook html-block-hook)
+         (html-inline-hook html-inline-hook)
+         (anchors anchors)
+         (md-block-hook md-block-hook)
+         (md-inline-hook md-inline-hook)
+         (sz-links sz-links)
+         (url-hook url-hook)))
 
 ;; The standard commands, and every other option at its default.
 (: default-setup Setup)
@@ -126,8 +142,7 @@
 ;; ---------------------------------------------------------------------------
 
 (def/grammar OutputFormat
-  (:or (: FormatHtml 'html)
-       (: FormatHtmlFragment 'html-fragment)
+  (:or (: FormatHtml 'html) (: FormatHtmlFragment 'html-fragment)
        (: FormatMarkdown 'markdown)
        (: FormatSexp 'sexp)))
 
@@ -157,8 +172,8 @@
 ;; "a.sz#b" gives "a.sz" and "#b".
 (: split-url (-> string (Tuple string string)))
 (defun (split-url url)
-  (def cut (option-ref-or (string-search-any url "#?" (string-cursor-start url))
-                          (string-cursor-end url)))
+  (def cut
+    (option-ref-or (string-search-any url "#?" (string-cursor-start url)) (string-cursor-end url)))
   (Tuple (substring url (string-cursor-start url) cut) (substring url cut (string-cursor-end url))))
 
 ;; Whether `url` is relative to the document: it has no scheme, such as
@@ -167,9 +182,10 @@
 (: local-url? (-> string bool))
 (defun (local-url? url)
   (def start (string-cursor-start url))
-  (def scheme? (match (string-search-any url ":/?#" start)
-                 ((Some c) (and (char=? (string-cursor-ref url c) #\:) (not (= c start))))
-                 (None #f)))
+  (def scheme?
+    (match (string-search-any url ":/?#" start)
+      ((Some c) (and (char=? (string-cursor-ref url c) #\:) (not (= c start))))
+      (None #f)))
   (not (or scheme? (string-starts-with? url "/"))))
 
 ;; A link to a .sz file, made relative to the outputs: "guide.sz#install"
@@ -206,7 +222,9 @@
 ;; messages give it. A relative @include is read from the current directory.
 (: load-document-text (-> string (#:name string) (#:setup Setup) (Result string Document)))
 (defun (load-document-text text #:name "input" #:setup default-setup)
-  (read-document text (record-ref setup commands) #:name name
+  (read-document text
+                 (record-ref setup commands)
+                 #:name name
                  #:typography (record-ref setup typography)))
 
 ;; ---------------------------------------------------------------------------
@@ -233,18 +251,22 @@
 ;; The <head> additions: a <link> per stylesheet, then `head`.
 (: head-of (-> Setup string))
 (defun (head-of setup)
-  (def links (vec-map (fun (url) #"<link rel=\"stylesheet\" href=\"${(escape-attribute url)}\">")
-                      (record-ref setup css)))
-  (string-join (vec-filter (fun (s) (not (string-empty? s)))
-                           (vec-add links (record-ref setup head)))
+  (def links
+    (vec-map (fun (url) #"<link rel=\"stylesheet\" href=\"${(escape-attribute url)}\">")
+             (record-ref setup css)))
+  (string-join (vec-filter (fun (s) (not (string-empty? s))) (vec-add links (record-ref setup head)))
                "\n"))
 
 ;; `doc` as text in `format`. A page and a Markdown file end with a newline.
 (: render (-> Document OutputFormat (#:setup Setup) string))
 (defun (render doc format #:setup default-setup)
   (match format
-    (FormatHtml (html-page doc #:with (html-of setup format) #:title (record-ref setup title)
-                           #:head (head-of setup) #:lang (record-ref setup lang)))
+    (FormatHtml
+     (html-page doc
+                #:with (html-of setup format)
+                #:title (record-ref setup title)
+                #:head (head-of setup)
+                #:lang (record-ref setup lang)))
     (FormatHtmlFragment (str (document->html doc #:with (html-of setup format)) "\n"))
     (FormatMarkdown (markdown-page doc #:with (md-of setup) #:title (record-ref setup title)))
     (FormatSexp (str (document->sexp doc) "\n"))))
@@ -260,14 +282,18 @@
 (: convert-file (-> string OutputFormat (#:setup Setup) (#:output string) (#:check bool)
                     (Result string bool)))
 (defun (convert-file input format #:setup default-setup #:output "" #:check #f)
-  (def target (if (string-empty? output) (output-path input format) output))
+  (def target
+    (if (string-empty? output)
+        (output-path input format)
+        output))
   (def (Ok doc) (load-document input #:setup setup) :propagate)
   (def text (render doc format #:setup setup))
   (def changed (not (and (file-exists? target) (= (file-read-text target) text))))
   (when (and changed (not check))
     (match (path-parent target)
-      ((Some dir) (unless (or (string-empty? (path->string/lossy dir)) (directory-exists? dir))
-                    (directory-create dir)))
+      ((Some dir)
+       (unless (or (string-empty? (path->string/lossy dir)) (directory-exists? dir))
+         (directory-create dir)))
       (None (ignore 0)))
     (file-write-text target text))
   (Ok changed))
@@ -276,14 +302,15 @@
 ;; with ".", such as .git and .bjo.
 (: sz-files (-> string (Vec string)))
 (defun (sz-files dir)
-  (def hidden? (fun (p) (match (path-name p)
-                          ((Some name) (bytestring-starts-with? name (string->bytestring ".")))
-                          (None #f))))
-  (vec-sort
-   (loop (:for p (directory-walk dir #:into? (fun (d) (not (hidden? d)))))
-         (:let s (path->string/lossy p))
-         (:when (string-ends-with? s ".sz"))
-         (:acc out (vecing s)))))
+  (def hidden?
+    (fun (p)
+      (match (path-name p)
+        ((Some name) (bytestring-starts-with? name (string->bytestring ".")))
+        (None #f))))
+  (vec-sort (loop (:for p (directory-walk dir #:into? (fun (d) (not (hidden? d)))))
+                  (:let s (path->string/lossy p))
+                  (:when (string-ends-with? s ".sz"))
+                  (:acc out (vecing s)))))
 
 ;; `convert-file` for every file of `sz-files dir`.
 ;;
@@ -298,11 +325,14 @@
         (:let target (if (string-empty? out)
                          (output-path input format)
                          (match (path-strip-prefix input dir)
-                           ((Some rel) (output-path (path-combine out (path->string/lossy rel)) format))
+                           ((Some rel)
+                            (output-path (path-combine out (path->string/lossy rel)) format))
                            (None (output-path input format)))))
-        (:acc results (vecing (Tuple input target
-                                     (convert-file input format #:setup setup #:output target
-                                                   #:check check))))))
+        (:acc results
+              (vecing
+               (Tuple input
+                      target
+                      (convert-file input format #:setup setup #:output target #:check check))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Looking at a document
@@ -310,20 +340,24 @@
 
 ;; A heading: its level (1 for a section), the id that @ref and a link with
 ;; # take, and its text without markup.
-(type (: OutlineEntry (Record (: level int) (: id string) (: title string))))
+(type (: OutlineEntry (Record (: level int)
+                              (: id string)
+                              (: title string))))
 
 ;; Every numbered heading of `doc`, in order. Unnumbered headings (@section*)
 ;; have no id and are left out.
 (: document-outline (-> Document (Vec OutlineEntry)))
 (defun (document-outline doc)
-  (vec-map (fun (h) (match h
-                      ((Tuple level id xs) (OutlineEntry (level level) (id id) (title (inlines->text xs))))))
+  (vec-map (fun (h)
+             (match h
+               ((Tuple level id xs) (OutlineEntry (level level) (id id) (title (inlines->text xs))))))
            (document-headings doc)))
 
 ;; Every file that `doc` was made from: its own file first, and then each file
 ;; a command read, such as an @include.
 (: document-sources (-> Document (Vec string)))
-(defun (document-sources doc) (record-ref doc sources))
+(defun (document-sources doc)
+  (record-ref doc sources))
 
 ;; ---------------------------------------------------------------------------
 ;; Links
@@ -331,11 +365,14 @@
 
 ;; A link or an image of a document: where it goes, and its text. The text of
 ;; an image is its alt text.
-(type (: DocLink (Record (: target string) (: text string) (: image bool))))
+(type (: DocLink (Record (: target string)
+                         (: text string)
+                         (: image bool))))
 
 (: add-inlines! (-> (VecBuilder Inline) (Vec Inline) void))
 (defun (add-inlines! out xs)
-  (loop (:for x xs) (:do (add-inline! out x))))
+  (loop (:for x xs)
+        (:do (add-inline! out x))))
 
 (: add-inline! (-> (VecBuilder Inline) Inline void))
 (defun (add-inline! out x)
@@ -352,11 +389,14 @@
 
 (: add-blocks! (-> (VecBuilder Inline) (Vec Block) void))
 (defun (add-blocks! out bs)
-  (loop (:for b bs) (:do (add-block! out b))))
+  (loop (:for b bs)
+        (:do (add-block! out b))))
 
 (: add-rows! (-> (VecBuilder Inline) (Vec (Vec (Vec Inline))) void))
 (defun (add-rows! out rows)
-  (loop (:for row rows) (:do (loop (:for cell row) (:do (add-inlines! out cell))))))
+  (loop (:for row rows)
+        (:do (loop (:for cell row)
+                   (:do (add-inlines! out cell))))))
 
 ;; The inlines of `b`, also the ones inside other inlines. A figure's image
 ;; is added as an `Image`.
@@ -366,19 +406,27 @@
     ((Para xs) (add-inlines! out xs))
     ((Heading _ _ xs) (add-inlines! out xs))
     ((UnnumberedHeading _ xs) (add-inlines! out xs))
-    ((Figure src alt xs) (vecbuilder-add! out (Image src alt)) (add-inlines! out xs))
+    ((Figure src alt xs)
+     (vecbuilder-add! out (Image src alt))
+     (add-inlines! out xs))
     ((Quote bs) (add-blocks! out bs))
     ((Div _ bs) (add-blocks! out bs))
-    ((ItemList _ _ items) (loop (:for item items) (:do (add-blocks! out item))))
-    ((LineBlock lines) (loop (:for line lines) (:do (add-inlines! out line))))
+    ((ItemList _ _ items)
+     (loop (:for item items)
+           (:do (add-blocks! out item))))
+    ((LineBlock lines)
+     (loop (:for line lines)
+           (:do (add-inlines! out line))))
     ((DefinitionList entries)
      (loop (:for (Tuple term defs) entries)
            (:do (add-inlines! out term)
-                (loop (:for d defs) (:do (add-blocks! out d))))))
+                (loop (:for d defs)
+                      (:do (add-blocks! out d))))))
     ((TableBlock t)
      (add-inlines! out (record-ref t caption))
      (add-rows! out (record-ref t head))
-     (loop (:for body (record-ref t bodies)) (:do (add-rows! out body))))
+     (loop (:for body (record-ref t bodies))
+           (:do (add-rows! out body))))
     (_ (ignore 0))))
 
 ;; Every inline of `doc`, its notes included, in order.
@@ -386,7 +434,8 @@
 (defun (document-inlines doc)
   (def out (vecbuilder-empty))
   (add-blocks! out (record-ref doc blocks))
-  (loop (:for n (record-ref doc notes)) (:do (add-blocks! out n)))
+  (loop (:for n (record-ref doc notes))
+        (:do (add-blocks! out n)))
   (vecbuilder->vec out))
 
 ;; Every link and image of `doc`, its notes included, in order. A link that
@@ -394,11 +443,13 @@
 (: document-links (-> Document (Vec DocLink)))
 (defun (document-links doc)
   (loop (:for x (document-inlines doc))
-        (:acc out (folding (vec-empty)
-                           (match x
-                             ((Link url xs) (vec-add out (DocLink (target url) (text (inlines->text xs)) (image #f))))
-                             ((Image src alt) (vec-add out (DocLink (target src) (text alt) (image #t))))
-                             (_ out))))))
+        (:acc out (folding
+                   (vec-empty)
+                   (match x
+                     ((Link url xs)
+                      (vec-add out (DocLink (target url) (text (inlines->text xs)) (image #f))))
+                     ((Image src alt) (vec-add out (DocLink (target src) (text alt) (image #t))))
+                     (_ out))))))
 
 ;; The ids that a link with a "#" can go to in `doc`: each numbered
 ;; heading's, and each anchor's.
@@ -412,7 +463,8 @@
                                          (_ out)))))))
 
 ;; A link that goes nowhere, and why.
-(type (: BrokenLink (Record (: link DocLink) (: why string))))
+(type (: BrokenLink (Record (: link DocLink)
+                            (: why string))))
 
 (import/extern
   (unescape-url (: System.Uri.UnescapeDataString (-> string string))))
@@ -441,9 +493,10 @@
   (match (map-try-ref (box-ref known) key)
     ((Some ids) ids)
     (None
-     (def ids (match (load-document file #:setup (record-ref lc setup))
-                ((Ok d) (Ok (document-ids d)))
-                ((Err why) (Err why))))
+     (def ids
+       (match (load-document file #:setup (record-ref lc setup))
+         ((Ok d) (Ok (document-ids d)))
+         ((Err why) (Err why))))
      (box-set! known (map-set (box-ref known) key ids))
      ids)))
 
@@ -461,20 +514,28 @@
 (defun (link-problem lc target)
   (match (split-url target)
     ((Tuple raw rest)
-     (def fragment (match (string-search-any rest "#" (string-cursor-start rest))
-                     ((Some c) (unescape-url (substring rest (string-cursor-next rest c) (string-cursor-end rest))))
-                     (None "")))
+     (def fragment
+       (match (string-search-any rest "#" (string-cursor-start rest))
+         ((Some c)
+          (unescape-url (substring rest (string-cursor-next rest c) (string-cursor-end rest))))
+         (None "")))
      (def dir (record-ref lc dir))
      (cond
        ((not (local-url? target)) None)
        ((string-empty? raw) (id-problem (record-ref lc own-ids) fragment "this document"))
        (else
-        (def file (if (string-empty? dir) (unescape-url raw) (path-combine dir (unescape-url raw))))
+        (def file
+          (if (string-empty? dir)
+              (unescape-url raw)
+              (path-combine dir (unescape-url raw))))
         (def source (str (without-suffix (without-suffix file ".html") ".md") ".sz"))
         (def output? (or (string-ends-with? file ".html") (string-ends-with? file ".md")))
         (cond
           ((and output? (file-exists? source)) (fragment-problem lc source fragment))
-          ((file-exists? file) (if (string-ends-with? file ".sz") (fragment-problem lc file fragment) None))
+          ((file-exists? file)
+           (if (string-ends-with? file ".sz")
+               (fragment-problem lc file fragment)
+               None))
           ((directory-exists? file) None)
           (else (Some #"there is no file ${file}"))))))))
 
@@ -496,14 +557,18 @@
 (: check-links (-> string (#:setup Setup) (Result string (Vec BrokenLink))))
 (defun (check-links path #:setup default-setup)
   (def (Ok doc) (load-document path #:setup setup) :propagate)
-  (def lc (LinkCheck (setup setup)
-                     ;; "" for a file in the current directory, so that a
-                     ;; message names "a.sz" and not "./a.sz".
-                     (dir (match (path-parent path)
-                            ((Some d) (if (= (path->string/lossy d) ".") "" (path->string/lossy d)))
-                            (None "")))
-                     (own-ids (document-ids doc))
-                     (known (make-box (map-empty)))))
+  (def lc
+    (LinkCheck (setup setup)
+               ;; "" for a file in the current directory, so that a
+               ;; message names "a.sz" and not "./a.sz".
+               (dir (match (path-parent path)
+                      ((Some d)
+                       (if (= (path->string/lossy d) ".")
+                           ""
+                           (path->string/lossy d)))
+                      (None "")))
+               (own-ids (document-ids doc))
+               (known (make-box (map-empty)))))
   (Ok (loop (:for l (document-links doc))
             (:let why (link-problem lc (record-ref l target)))
             (:when-let (Some w) why)

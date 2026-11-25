@@ -22,8 +22,9 @@
 ;;
 ;; The builds are `bjo.bjo`'s. Nothing here compiles or runs anything.
 
-(export TaskParam TaskDef tasks-file-name
-        read-task-defs read-tasks task-entry-source task-list-text write-if-changed!)
+(export
+  TaskParam TaskDef tasks-file-name
+  read-task-defs read-tasks task-entry-source task-list-text write-if-changed!)
 
 (import (std prelude))
 (import (bjo docs))
@@ -81,7 +82,8 @@
     ((>= start n) (Err "the text ends inside a form"))
     (:def c (vec-ref cs start))
     ((= c #\()
-     (let items ((j (+ start 1)) (acc Nil))
+     (let items ((j (+ start 1))
+                 (acc Nil))
        (def k (skip-blank cs j))
        (cond
          ((>= k n) (Err "a ( has no )"))
@@ -106,9 +108,10 @@
        ((Ok (Tuple (Node items _) after)) (Ok (Tuple (Node items (text-of cs start after)) after)))))
     (else
      ;; `#\(` is a character: the one after `#\` is taken whatever it is.
-     (def first-end (if (and (= c #\#) (< (+ start 2) n) (= (vec-ref cs (+ start 1)) #\\))
-                        (+ start 3)
-                        (+ start 1)))
+     (def first-end
+       (if (and (= c #\#) (< (+ start 2) n) (= (vec-ref cs (+ start 1)) #\\))
+           (+ start 3)
+           (+ start 1)))
      (let atom-end ((j first-end))
        (if (or (>= j n) (delimiter? (vec-ref cs j)))
            (Ok (Tuple (Atom (text-of cs start j)) j))
@@ -136,7 +139,7 @@
            (Ok (loop (:for d names)
                      (:when-let (Atom name) d)
                      (:acc out (listing name))
-                     => out)))
+                 => out)))
           ((Ok (Tuple _ after)) (go after))))))
 
 ;; ---------------------------------------------------------------------------
@@ -181,7 +184,9 @@
 
 (: (-> string (Option string)))
 (defun (keyword-name text)
-  (if (string-starts-with? text "#:") (Some (string-drop text 2)) None))
+  (if (string-starts-with? text "#:")
+      (Some (string-drop text 2))
+      None))
 
 ;; The keyword parameters of a defun's head: each name and its default.
 (: (-> (List Sexp) (List (Tuple string string))))
@@ -197,30 +202,41 @@
 (: (-> string Doc (Result string TaskDef)))
 (defun (task-of name doc)
   (def where #"${tasks-file-name}: the task ${name}")
-  (def* ((Some sig-text) (record-ref doc signature)
-         :leave-with (Err #"${where} has no signature. Write (: (-> ... void)) above its defun."))
-        ((Some head-text) (record-ref doc definition)
-         :leave-with (Err #"${where} is not a defun."))
-        ((Ok sig) (read-one sig-text) :leave ((Err why) (Err #"${where}: its signature does not read: ${why}")))
-        ((Ok head) (read-one head-text) :leave ((Err why) (Err #"${where}: its head does not read: ${why}")))
-        ((Node (Cons (Atom "->") types) _) sig
-         :leave-with (Err #"${where} has the type ${sig-text}. A task is a function: (-> ... void)."))
-        ((Node (Cons _ head-items) _) head
-         :leave-with (Err #"${where}: its head does not read: ${head-text}")))
+  (def*
+   ((Some sig-text) (record-ref doc signature)
+     :leave-with (Err #"${where} has no signature. Write (: (-> ... void)) above its defun."))
+   ((Some head-text) (record-ref doc definition)
+     :leave-with (Err #"${where} is not a defun."))
+   ((Ok sig) (read-one sig-text)
+     :leave ((Err why) (Err #"${where}: its signature does not read: ${why}")))
+   ((Ok head) (read-one head-text)
+     :leave ((Err why) (Err #"${where}: its head does not read: ${why}")))
+   ((Node (Cons (Atom "->") types) _) sig
+     :leave-with (Err #"${where} has the type ${sig-text}. A task is a function: (-> ... void)."))
+   ((Node (Cons _ head-items) _) head
+     :leave-with (Err #"${where}: its head does not read: ${head-text}")))
   (def returns (sexp-text (list-head (list-reverse types))))
   (def param-types (list-reverse (list-tail (list-reverse types))))
-  (def positional-types (list-filter (fun (t) (match t ((Node (Cons (Atom k) _) _) (none? (keyword-name k))) (_ #t)))
-                                     param-types))
-  (def keyword-types (loop (:for t param-types)
-                           (:when-let (Node (Cons (Atom k) (Cons ty Nil)) _) t)
-                           (:when-let (Some kname) (keyword-name k))
-                           (:acc out (listing (Tuple kname (sexp-text ty))))
-                           => out))
-  (def positional-names (loop (:for d head-items)
-                              (:finish (match d ((Atom t) (some? (keyword-name t))) (_ #f)))
-                              (:when-let (Atom pname) d)
-                              (:acc out (listing pname))
-                              => out))
+  (def positional-types
+    (list-filter (fun (t)
+                   (match t
+                     ((Node (Cons (Atom k) _) _) (none? (keyword-name k)))
+                     (_ #t)))
+                 param-types))
+  (def keyword-types
+    (loop (:for t param-types)
+          (:when-let (Node (Cons (Atom k) (Cons ty Nil)) _) t)
+          (:when-let (Some kname) (keyword-name k))
+          (:acc out (listing (Tuple kname (sexp-text ty))))
+      => out))
+  (def positional-names
+    (loop (:for d head-items)
+          (:finish (match d
+                     ((Atom t) (some? (keyword-name t)))
+                     (_ #f)))
+          (:when-let (Atom pname) d)
+          (:acc out (listing pname))
+      => out))
   (def defaults (keyword-defaults head-items))
   (cond
     ((not (task-name? name))
@@ -233,19 +249,25 @@
     (else
      (def positional
        (loop (:for (Tuple pname ty) (zip positional-names positional-types))
-             (:acc out (listing (TaskParam (name pname) (type (sexp-text ty)) (keyword #f)
-                                           (default None) (help (param-help doc pname)))))
-             => out))
+             (:acc out (listing (TaskParam (name pname)
+                                           (type (sexp-text ty))
+                                           (keyword #f)
+                                           (default None)
+                                           (help (param-help doc pname)))))
+         => out))
      (def keywords
        (loop (:for (Tuple kname ty) keyword-types)
-             (:acc out (listing (TaskParam (name kname) (type ty) (keyword #t)
+             (:acc out (listing (TaskParam (name kname)
+                                           (type ty)
+                                           (keyword #t)
                                            (default (loop (:for (Tuple dn dv) defaults)
                                                           (:when (= dn kname))
                                                           (:acc found (finding dv))
-                                                          => found))
+                                                      => found))
                                            (help (param-help doc kname)))))
-             => out))
-     (Ok (TaskDef (name name) (summary (doc-summary doc))
+         => out))
+     (Ok (TaskDef (name name)
+                  (summary (doc-summary doc))
                   (params (list-append positional keywords))
                   (returns-int (= returns "int")))))))
 
@@ -263,7 +285,9 @@
    (fun (name acc)
      (def (Ok more) acc :propagate)
      (match (doc-named docs name)
-       (None (Err #"${tasks-file-name}: ${name} is exported and has no (:doc ${name} ...). Every task has docs."))
+       (None
+        (Err
+         #"${tasks-file-name}: ${name} is exported and has no (:doc ${name} ...). Every task has docs."))
        ((Some doc)
         (match (record-ref doc kind)
           (KindFunction
@@ -272,7 +296,9 @@
           (KindRecord (Ok more))
           (KindUnion (Ok more))
           (KindAlias (Ok more))
-          (_ (Err #"${tasks-file-name}: ${name} is exported and is not a task. tasks.bjo exports tasks, and the types their arguments have. Put helpers in another module."))))))
+          (_
+           (Err
+            #"${tasks-file-name}: ${name} is exported and is not a task. tasks.bjo exports tasks, and the types their arguments have. Put helpers in another module."))))))
    (Ok Nil)
    names))
 
@@ -283,52 +309,70 @@
 ;; `build-std` is `BuildStd`, which def/cmdline-commands names `build-std`.
 (: (-> string string))
 (defun (camel name)
-  (string-join (list->vec (list-map (fun (w) (if (string-empty? w)
-                                                 w
-                                                 (str (string-upcase (string-take w 1)) (string-drop w 1))))
+  (string-join (list->vec (list-map (fun (w)
+                                      (if (string-empty? w)
+                                          w
+                                          (str (string-upcase (string-take w 1)) (string-drop w 1))))
                                     (vec->list (string-split name "-"))))
                ""))
 
 ;; A string literal of `text`.
 (: (-> string string))
 (defun (literal text)
-  (str "\"" (string-replace (string-replace (string-replace text "\\" "\\\\") "\"" "\\\"") "\n" "\\n") "\""))
+  (str "\""
+       (string-replace (string-replace (string-replace text "\\" "\\\\") "\"" "\\\"") "\n" "\\n")
+       "\""))
 
 (: (-> string string))
-(defun (record-of name) (str "Task" (camel name)))
+(defun (record-of name)
+  (str "Task" (camel name)))
 
 (: (-> string bool))
 (defun (collection-type? ty)
-  (or (string-starts-with? ty "(Option ") (string-starts-with? ty "(List ") (string-starts-with? ty "(Vec ")))
+  (or (string-starts-with? ty "(Option ")
+      (string-starts-with? ty "(List ")
+      (string-starts-with? ty "(Vec ")))
 
 (: (-> TaskParam string))
 (defun (field-of p)
-  (def help (if (= (record-ref p help) "") "" (str " #:help " (literal (record-ref p help)))))
-  (def default (match (record-ref p default)
-                 ((Some d) #:when (not (collection-type? (record-ref p type))) (str " #:default " d))
-                 (_ "")))
+  (def help
+    (if (= (record-ref p help) "")
+        ""
+        (str " #:help " (literal (record-ref p help)))))
+  (def default
+    (match (record-ref p default)
+      ((Some d) #:when (not (collection-type? (record-ref p type))) (str " #:default " d))
+      (_ "")))
   (if (record-ref p keyword)
       (str "    (: " (record-ref p name) " " (record-ref p type) default help ")")
       (str "    (: " (record-ref p name) " " (record-ref p type) " #:positional" help ")")))
 
 (: (-> TaskDef string))
 (defun (record-decl t)
-  (string-join
-   (list->vec
-    (list-append (list (str "(def/cmdline")
-                       (str "  (: " (record-of (record-ref t name)) " (Record #:summary " (literal (record-ref t summary))))
-                 (list-map field-of (record-ref t params))))
-   "\n"))
+  (string-join (list->vec (list-append (list (str "(def/cmdline")
+                                             (str "  (: "
+                                                  (record-of (record-ref t name))
+                                                  " (Record #:summary "
+                                                  (literal (record-ref t summary))))
+                                       (list-map field-of (record-ref t params))))
+               "\n"))
 
 (: (-> TaskDef string))
 (defun (call-of t)
-  (def args (list-map (fun (p)
-                        (def get (str "(record-ref o " (record-ref p name) ")"))
-                        (if (record-ref p keyword) (str "#:" (record-ref p name) " " get) get))
-                      (record-ref t params)))
+  (def args
+    (list-map (fun (p)
+                (def get (str "(record-ref o " (record-ref p name) ")"))
+                (if (record-ref p keyword)
+                    (str "#:" (record-ref p name) " " get)
+                    get))
+              (record-ref t params)))
   (def call (str "(" (string-join (list->vec (Cons (record-ref t name) args)) " ") ")"))
-  (str "      ((" (camel (record-ref t name)) " o) "
-       (if (record-ref t returns-int) call (str call " 0"))
+  (str "      (("
+       (camel (record-ref t name))
+       " o) "
+       (if (record-ref t returns-int)
+           call
+           (str call " 0"))
        ")"))
 
 ;; The program that parses the words after `bjo task` and calls the task.
@@ -336,7 +380,10 @@
 (: (-> (List TaskDef) string string))
 (defun (task-entry-source tasks import)
   (def records (list-map (fun (t) (str (record-decl t) ")))")) tasks))
-  (def cases (list-map (fun (t) (str "(: " (camel (record-ref t name)) " " (record-of (record-ref t name)) ")")) tasks))
+  (def cases
+    (list-map (fun (t)
+                (str "(: " (camel (record-ref t name)) " " (record-of (record-ref t name)) ")"))
+              tasks))
   (string-join
    (list->vec
     (list-append
@@ -348,30 +395,33 @@
            "")
      (list-append
       (list-map (fun (r) (str r "\n")) records)
-      (list (str "(def/cmdline-commands (: TaskCommand (Union " (string-join (list->vec cases) " ") ")))")
-            ""
-            "(def/cmdline (: TaskLine (Record #:program \"bjo task\" (: command TaskCommand #:subcommand #:value \"TASK\"))))"
-            ""
-            "(defun (main args)"
-            "  (match (cmdline-parse-TaskLine args)"
-            "    ((Err (HelpWanted text)) (println text) 0)"
-            "    ((Err e) (panic! (arg-error-message e) #:exit-code (arg-error-exit-code e)))"
-            "    ((Ok line)"
-            "     (match (record-ref line command)"
-            (str (string-join (list->vec (list-map call-of tasks)) "\n") "))))")
-            ""))))
+      (list
+       (str "(def/cmdline-commands (: TaskCommand (Union " (string-join (list->vec cases) " ") ")))")
+       ""
+       "(def/cmdline (: TaskLine (Record #:program \"bjo task\" (: command TaskCommand #:subcommand #:value \"TASK\"))))"
+       ""
+       "(defun (main args)"
+       "  (match (cmdline-parse-TaskLine args)"
+       "    ((Err (HelpWanted text)) (println text) 0)"
+       "    ((Err e) (panic! (arg-error-message e) #:exit-code (arg-error-exit-code e)))"
+       "    ((Ok line)"
+       "     (match (record-ref line command)"
+       (str (string-join (list->vec (list-map call-of tasks)) "\n") "))))")
+       ""))))
    "\n"))
 
 ;; What `bjo task` prints with no task named.
 (: (-> (List TaskDef) string))
 (defun (task-list-text tasks)
-  (def rows (list-map (fun (t)
-                        (def left (str "  " (record-ref t name)))
-                        (cond
-                          ((= (record-ref t summary) "") left)
-                          ((<= (string-length left) 22) (str (string-pad-right left 24) (record-ref t summary)))
-                          (else (str left "\n" (string-pad-right "" 24) (record-ref t summary)))))
-                      tasks))
+  (def rows
+    (list-map (fun (t)
+                (def left (str "  " (record-ref t name)))
+                (cond
+                  ((= (record-ref t summary) "") left)
+                  ((<= (string-length left) 22)
+                   (str (string-pad-right left 24) (record-ref t summary)))
+                  (else (str left "\n" (string-pad-right "" 24) (record-ref t summary)))))
+              tasks))
   (if (list-empty? tasks)
       #"${tasks-file-name} exports no tasks."
       (string-join (list->vec (list-append (list #"Tasks in ${tasks-file-name}:") rows)) "\n")))
@@ -392,5 +442,6 @@
 (defun (write-if-changed! path text)
   (unless (and (file-exists? path) (= (file-read-text path) text))
     (def dir (clr-directory-name (path-absolute path)))
-    (unless (directory-exists? dir) (directory-create dir))
+    (unless (directory-exists? dir)
+      (directory-create dir))
     (file-write-text path text)))

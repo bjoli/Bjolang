@@ -53,9 +53,7 @@
 
 (def commands
   (map-merge standard-commands
-             #map(("aside" aside)
-                  ("kbd" kbd)
-                  ("bjolang" (text-command "Bjolang")))))
+             #map(("aside" aside) ("kbd" kbd) ("bjolang" (text-command "Bjolang")))))
 
 ;; ---------------------------------------------------------------------------
 ;; How they look
@@ -88,25 +86,33 @@
 ;; ---------------------------------------------------------------------------
 
 (: text-element (-> string (List (Tuple string string)) string Node))
-(defun (text-element name attrs text) (html-element name attrs (list (xml-text text))))
+(defun (text-element name attrs text)
+  (html-element name attrs (list (xml-text text))))
 
 (: page (-> PostMeta Document string))
 (defun (page m doc)
   (def tags (string-join (list->vec (list-map symbol->string (record-ref m tags))) ", "))
   (str "<!DOCTYPE html>\n"
        (nodes->html
-         (list (html-element "html" (list (Tuple "lang" "en"))
-                 (list (html-element "head" Nil
-                         (list (html-element "meta" (list (Tuple "charset" "utf-8")) Nil)
-                               (text-element "title" Nil (record-ref m title))
-                               (text-element "style" Nil style)))
-                       (html-element "body" Nil
-                         (list (html-element "article" Nil
-                                 (list-append
-                                   (list (text-element "h1" Nil (record-ref m title))
-                                         (text-element "p" (list (Tuple "class" "date"))
-                                                       (str (record-ref m date) " · " tags)))
-                                   (document->nodes doc #:with html)))))))))
+        (list (html-element
+               "html"
+               (list (Tuple "lang" "en"))
+               (list (html-element "head"
+                                   Nil
+                                   (list (html-element "meta" (list (Tuple "charset" "utf-8")) Nil)
+                                         (text-element "title" Nil (record-ref m title))
+                                         (text-element "style" Nil style)))
+                     (html-element
+                      "body"
+                      Nil
+                      (list (html-element
+                             "article"
+                             Nil
+                             (list-append (list (text-element "h1" Nil (record-ref m title))
+                                                (text-element "p"
+                                                              (list (Tuple "class" "date"))
+                                                              (str (record-ref m date) " · " tags)))
+                                          (document->nodes doc #:with html)))))))))
        "\n"))
 
 (: meta-of (-> Document (Result string PostMeta)))
@@ -116,18 +122,26 @@
     (None (Err "the post has no (meta ...) form"))))
 
 (defun (main args)
-  (def input (if (> (vec-length args) 0) (vec-ref args 0) "Examples/samizdat/post.sz"))
-  (def output (if (> (vec-length args) 1)
-                  (vec-ref args 1)
-                  (str (if (string-ends-with? input ".sz")
-                           (.Substring input 0 (- (string-length input) 3))
-                           input)
-                       ".html")))
+  (def input
+    (if (> (vec-length args) 0)
+        (vec-ref args 0)
+        "Examples/samizdat/post.sz"))
+  (def output
+    (if (> (vec-length args) 1)
+        (vec-ref args 1)
+        (str (if (string-ends-with? input ".sz")
+                 (.Substring input 0 (- (string-length input) 3))
+                 input)
+             ".html")))
   (match (read-document-file input commands)
-    ((Err e) (println e) 1)
+    ((Err e)
+     (println e)
+     1)
     ((Ok doc)
      (match (meta-of doc)
-       ((Err e) (println (str input ": " e)) 1)
+       ((Err e)
+        (println (str input ": " e))
+        1)
        ((Ok m)
         (file-write-text output (page m doc))
         (println (str "wrote " output))

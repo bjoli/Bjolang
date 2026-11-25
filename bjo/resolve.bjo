@@ -82,7 +82,9 @@
                       (: want-path-ok? bool))))
 
 ;; A source, and the manifest that gave it.
-(type (: Given (Record (: given Source) (: given-from string) (: given-root? bool))))
+(type (: Given (Record (: given Source)
+                       (: given-from string)
+                       (: given-root? bool))))
 
 ;; Somebody's constraint on a package's version, for the check after the
 ;; versions have been chosen.
@@ -121,33 +123,41 @@
                       (: was-locked (List Locked)))))
 
 (: (-> Prepared string))
-(defun (prepared-roots-file p) (record-ref p roots-file))
+(defun (prepared-roots-file p)
+  (record-ref p roots-file))
 
 (: (-> Prepared (Option string)))
-(defun (prepared-frameworks-file p) (record-ref p frameworks-file))
+(defun (prepared-frameworks-file p)
+  (record-ref p frameworks-file))
 
 (: (-> Prepared (Option string)))
-(defun (prepared-nuget-dir p) (record-ref p nuget-dir))
+(defun (prepared-nuget-dir p)
+  (record-ref p nuget-dir))
 
 (: (-> Prepared (List string)))
-(defun (prepared-runtime p) (record-ref p runtime))
+(defun (prepared-runtime p)
+  (record-ref p runtime))
 
 (: (-> Prepared bool))
-(defun (prepared-aot p) (record-ref p aot))
+(defun (prepared-aot p)
+  (record-ref p aot))
 
 (: (-> Prepared string))
-(defun (prepared-aot-cpu p) (record-ref p aot-cpu))
+(defun (prepared-aot-cpu p)
+  (record-ref p aot-cpu))
 
 (: (-> Prepared bool))
-(defun (prepared-aot-trim p) (record-ref p aot-trim))
+(defun (prepared-aot-trim p)
+  (record-ref p aot-trim))
 
 (: (-> Prepared (List Root)))
-(defun (prepared-roots p) (record-ref p roots))
+(defun (prepared-roots p)
+  (record-ref p roots))
 
 ;; How many packages other than the project itself.
 (: (-> Prepared int))
-(defun (prepared-dependencies p) (- (length (prepared-roots p)) 1))
-
+(defun (prepared-dependencies p)
+  (- (length (prepared-roots p)) 1))
 
 ;; ---------------------------------------------------------------------------
 ;; Names and sources, as text
@@ -156,7 +166,8 @@
 ;; A package name is the key everywhere here: two names are the same name when
 ;; they are written the same, and `(a b)` is a string a map can hold.
 (: (-> (List Symbol) string))
-(defun (key-of name) (name->string name))
+(defun (key-of name)
+  (name->string name))
 
 (: (-> Source string))
 (defun (source-shown s)
@@ -169,7 +180,8 @@
 (defun (without-suffix s suffix)
   (if (not (string-ends-with? s suffix))
       s
-      (let go ((c (string-cursor-end s)) (left (string-count suffix)))
+      (let go ((c (string-cursor-end s))
+               (left (string-count suffix)))
         (if (= left 0)
             (substring s (string-cursor-start s) c)
             (go (string-cursor-prev s c) (- left 1))))))
@@ -183,7 +195,6 @@
     ((FromGit g) (str "git " (without-suffix (without-suffix (record-ref g url) "/") ".git")))
     ((FromPath p) (str "path " (record-ref p dir)))
     ((FromRegistry r) (str "registry " (record-ref r host)))))
-
 
 ;; ---------------------------------------------------------------------------
 ;; Reading a dependency's manifest
@@ -201,19 +212,36 @@
   (def manifest-file (path-combine dir manifest-name))
   (cond
     ((not (directory-exists? dir))
-     (Err (str "bjo: " asked-by " wants " (name->string wanted) " from " dir
+     (Err (str "bjo: "
+               asked-by
+               " wants "
+               (name->string wanted)
+               " from "
+               dir
                ", which is not a directory.")))
     ((not (file-exists? manifest-file))
-     (Err (str "bjo: " asked-by " wants " (name->string wanted) " from " dir
-               ", which has no " manifest-name ".")))
+     (Err (str "bjo: "
+               asked-by
+               " wants "
+               (name->string wanted)
+               " from "
+               dir
+               ", which has no "
+               manifest-name
+               ".")))
     (else
      (def (Ok package) (read-package manifest-file) :propagate)
      (if (not (= (key-of (record-ref package name)) (key-of wanted)))
-         (Err (str "bjo: " asked-by " wants " (name->string wanted) ", but "
-                   manifest-file " says the package there is "
-                   (name->string (record-ref package name)) "."))
+         (Err (str "bjo: "
+                   asked-by
+                   " wants "
+                   (name->string wanted)
+                   ", but "
+                   manifest-file
+                   " says the package there is "
+                   (name->string (record-ref package name))
+                   "."))
          (Ok package)))))
-
 
 ;; ---------------------------------------------------------------------------
 ;; The walk
@@ -229,24 +257,32 @@
   (def given (Given (given source) (given-from from) (given-root? root?)))
   (match (map-try-ref (box-ref (record-ref walk sources)) k)
     (None
-     (box-set! (record-ref walk sources)
-               (map-set (box-ref (record-ref walk sources)) k given))
+     (box-set! (record-ref walk sources) (map-set (box-ref (record-ref walk sources)) k given))
      (Ok unit))
     ((Some already)
      (cond
        ;; The root said where this comes from, so nothing else is consulted.
        ((record-ref already given-root?) (Ok unit))
        (root?
-        (box-set! (record-ref walk sources)
-                  (map-set (box-ref (record-ref walk sources)) k given))
+        (box-set! (record-ref walk sources) (map-set (box-ref (record-ref walk sources)) k given))
         (Ok unit))
        ((= (source-key (record-ref already given)) (source-key source)) (Ok unit))
        (else
-        (Err (str "bjo: " (name->string name) " is given two different sources.\n"
-                  "  " (source-shown (record-ref already given))
-                  " in " (record-ref already given-from) "\n"
-                  "  " (source-shown source) " in " from "\n"
-                  "  Name it in " (record-ref walk own-from)
+        (Err (str "bjo: "
+                  (name->string name)
+                  " is given two different sources.\n"
+                  "  "
+                  (source-shown (record-ref already given))
+                  " in "
+                  (record-ref already given-from)
+                  "\n"
+                  "  "
+                  (source-shown source)
+                  " in "
+                  from
+                  "\n"
+                  "  Name it in "
+                  (record-ref walk own-from)
                   " with the source you want: the root manifest's wins everywhere.")))))))
 
 ;; What a dependency clause has to satisfy before anything is fetched for it.
@@ -256,11 +292,17 @@
   (cond
     ((empty? name) (Err (str "bjo: " from ": a dependency with no name.")))
     ((reserved-name? name)
-     (Err (str "bjo: " from ": " (name->string name)
+     (Err (str "bjo: "
+               from
+               ": "
+               (name->string name)
                " is part of the standard library, so it cannot be a dependency."
                " It is there already.")))
     ((= (key-of name) (key-of (record-ref walk own)))
-     (Err (str "bjo: " from ": " (name->string name)
+     (Err (str "bjo: "
+               from
+               ": "
+               (name->string name)
                " is this project itself, so it cannot be one of its dependencies.")))
     (else (Ok unit))))
 
@@ -271,33 +313,33 @@
   (with-return ret
     (def package (record-ref task package))
     (def from (record-ref task from))
-    (def clauses (if (record-ref task dev?)
-                     (list-append (record-ref package depends)
-                                  (list-append (record-ref package dev-depends)
-                                               (record-ref package task-depends)))
-                     (record-ref package depends)))
-    (Ok (loop (:for dep clauses)
-              (:do
-               (match (check-dep walk dep from)
-                 ((Err why) (ret (Err why)))
-                 ((Ok u) unit))
-               (box-set! (record-ref walk needs)
-                         (Cons (Need (need-name (record-ref dep name))
-                                     (need-req (record-ref dep version))
-                                     (need-from from))
-                               (box-ref (record-ref walk needs))))
-               (match (record-ref dep source)
-                 (None unit)
-                 ((Some source)
-                  (match (give-source! walk (record-ref dep name) source from
-                                       (record-ref task dev?))
-                    ((Err why) (ret (Err why)))
-                    ((Ok u) unit)))))
-              (:acc out (listing (Want (dep dep)
-                                       (want-from from)
-                                       (want-dir (record-ref task dir))
-                                       (want-path-ok? (record-ref task path-ok?)))))
-              => out))))
+    (def clauses
+      (if (record-ref task dev?)
+          (list-append (record-ref package depends)
+                       (list-append (record-ref package dev-depends)
+                                    (record-ref package task-depends)))
+          (record-ref package depends)))
+    (Ok
+     (loop (:for dep clauses)
+           (:do (match (check-dep walk dep from)
+                  ((Err why) (ret (Err why)))
+                  ((Ok u) unit))
+                (box-set! (record-ref walk needs)
+                          (Cons (Need (need-name (record-ref dep name))
+                                      (need-req (record-ref dep version))
+                                      (need-from from))
+                                (box-ref (record-ref walk needs))))
+                (match (record-ref dep source)
+                  (None unit)
+                  ((Some source)
+                   (match (give-source! walk (record-ref dep name) source from (record-ref task dev?))
+                     ((Err why) (ret (Err why)))
+                     ((Ok u) unit)))))
+           (:acc out (listing (Want (dep dep)
+                                    (want-from from)
+                                    (want-dir (record-ref task dir))
+                                    (want-path-ok? (record-ref task path-ok?)))))
+       => out))))
 
 ;; Places one dependency, now that its source is known: the package's directory
 ;; is decided, its manifest read, and a task made of it.
@@ -318,7 +360,10 @@
 
     (match (record-ref given given)
       ((FromRegistry r)
-       (Err (str "bjo: " asked-by " wants " (name->string name)
+       (Err (str "bjo: "
+                 asked-by
+                 " wants "
+                 (name->string name)
                  " from a registry, and there are none yet."
                  " Use a git source, or a path source for a package on this disk.")))
 
@@ -328,20 +373,30 @@
        ;; runs `bjo` and from wherever.
        (def dir (path-absolute (path-combine (record-ref want want-dir) (record-ref local dir))))
        (unless (record-ref want want-path-ok?)
-         (ret (Err (str "bjo: " asked-by " gives " (name->string name)
-                        " a path source, " (source-shown (record-ref given given))
+         (ret (Err (str "bjo: "
+                        asked-by
+                        " gives "
+                        (name->string name)
+                        " a path source, "
+                        (source-shown (record-ref given given))
                         ". A fetched package may not: the directory is on its author's"
                         " disk and says nothing about yours."
-                        " Give " (name->string name) " a source in "
-                        (record-ref walk own-from) " instead."))))
+                        " Give "
+                        (name->string name)
+                        " a source in "
+                        (record-ref walk own-from)
+                        " instead."))))
        (def (Ok package) (package-in-directory name dir asked-by) :propagate)
        (def src (path-combine dir "src"))
        (unless (directory-exists? src)
-         (ret (Err (str "bjo: " (name->string name) " at " dir " has no src/."
+         (ret (Err (str "bjo: "
+                        (name->string name)
+                        " at "
+                        dir
+                        " has no src/."
                         " A package keeps its modules in src/, beside its manifest."))))
        (box-set! (record-ref walk placed)
-                 (map-set (box-ref (record-ref walk placed)) k
-                          (Root (name name) (dir src))))
+                 (map-set (box-ref (record-ref walk placed)) k (Root (name name) (dir src))))
        (Ok (Some (Task (package package)
                        (dir dir)
                        (from (path-combine dir manifest-name))
@@ -371,11 +426,17 @@
     ;; something this does not do, and building the tag instead would be a
     ;; different program from the one it asked for.
     (when (some? (record-ref source commit))
-      (ret (Err (str "bjo: " asked-by " pins " (name->string name)
+      (ret (Err (str "bjo: "
+                     asked-by
+                     " pins "
+                     (name->string name)
                      " to a commit, which bjo does not do yet."
                      " Use a version tag, or a path source for a copy on this disk."))))
     (when (some? (record-ref source branch))
-      (ret (Err (str "bjo: " asked-by " pins " (name->string name)
+      (ret (Err (str "bjo: "
+                     asked-by
+                     " pins "
+                     (name->string name)
                      " to a branch, which bjo does not do yet."
                      " Use a version tag, or a path source for a copy on this disk."))))
 
@@ -392,18 +453,13 @@
     (def node-key (str k "@" (version->string version)))
     (when (some? (map-try-ref (box-ref (record-ref walk walked)) node-key))
       (ret (Ok None)))
-    (box-set! (record-ref walk walked)
-              (map-set (box-ref (record-ref walk walked)) node-key #t))
+    (box-set! (record-ref walk walked) (map-set (box-ref (record-ref walk walked)) node-key #t))
 
     (def (Ok text) (manifest-at (record-ref walk tool) clone version) :propagate)
     (def shown (str url " " (version->tag version)))
     (def (Ok package) (package-at-tag name text shown) :propagate)
 
-    (Ok (Some (Task (package package)
-                    (dir clone)
-                    (from shown)
-                    (path-ok? #f)
-                    (dev? #f))))))
+    (Ok (Some (Task (package package) (dir clone) (from shown) (path-ok? #f) (dev? #f))))))
 
 ;; A manifest read at a tag, checked against the name it was asked for.
 ;;
@@ -416,9 +472,15 @@
     ((Err why) (Err (str "bjo: " manifest-name " at " shown ": " why)))
     ((Ok package)
      (if (not (= (key-of (record-ref package name)) (key-of wanted)))
-         (Err (str "bjo: " shown " was asked for as " (name->string wanted)
-                   ", but its " manifest-name " says the package there is "
-                   (name->string (record-ref package name)) "."))
+         (Err (str "bjo: "
+                   shown
+                   " was asked for as "
+                   (name->string wanted)
+                   ", but its "
+                   manifest-name
+                   " says the package there is "
+                   (name->string (record-ref package name))
+                   "."))
          (Ok package)))))
 
 ;; What a name is called, where it comes from and where its clone is. Written
@@ -433,11 +495,11 @@
 
 (: (-> Walk string Version Unit))
 (defun (add-node! walk k version)
-  (def had (match (map-try-ref (box-ref (record-ref walk nodes)) k)
-             ((Some versions) versions)
-             (None Nil)))
-  (box-set! (record-ref walk nodes)
-            (map-set (box-ref (record-ref walk nodes)) k (Cons version had)))
+  (def had
+    (match (map-try-ref (box-ref (record-ref walk nodes)) k)
+      ((Some versions) versions)
+      (None Nil)))
+  (box-set! (record-ref walk nodes) (map-set (box-ref (record-ref walk nodes)) k (Cons version had)))
   unit)
 
 ;; A git dependency has to say which versions it will take.
@@ -452,10 +514,14 @@
     ((Some req) (Ok req))
     (None
      (def (Ok tags) (version-tags (record-ref walk tool) clone) :propagate)
-     (Err (str "bjo: " asked-by " asks for " (name->string (record-ref dep name))
+     (Err (str "bjo: "
+               asked-by
+               " asks for "
+               (name->string (record-ref dep name))
                " from git without saying which versions it takes.\n"
                "  Write one, as in (version (version-at-least \"0.1.0\")).\n"
-               "  The versions that repository has: " (versions-shown tags))))))
+               "  The versions that repository has: "
+               (versions-shown tags))))))
 
 (: (-> (List Version) string))
 (defun (versions-shown versions)
@@ -492,10 +558,15 @@
      (match (find #(>= (version-compare & lower) 0) after)
        ((Some found) (Ok found))
        (None
-        (Err (str "bjo: " asked-by " asks for " (name->string name)
-                  " at least " (version->string lower)
+        (Err (str "bjo: "
+                  asked-by
+                  " asks for "
+                  (name->string name)
+                  " at least "
+                  (version->string lower)
                   ", and that repository has no such version.\n"
-                  "  The versions it has: " (versions-shown after))))))))
+                  "  The versions it has: "
+                  (versions-shown after))))))))
 
 ;; Fetches a clone once per run. A resolve asks several questions of one
 ;; repository, and a fetch that answered the first answers the rest.
@@ -504,8 +575,7 @@
   (cond
     ((some? (map-try-ref (box-ref (record-ref walk fetched)) clone)) (Ok #f))
     (else
-     (box-set! (record-ref walk fetched)
-               (map-set (box-ref (record-ref walk fetched)) clone #t))
+     (box-set! (record-ref walk fetched) (map-set (box-ref (record-ref walk fetched)) clone #t))
      (def (Ok got) (fetch-tags (record-ref walk tool) clone) :propagate)
      (Ok #t))))
 
@@ -513,17 +583,24 @@
 (: (-> Walk (List Want) (Tuple (List Want) (List Want))))
 (defun (ready-and-waiting walk wants)
   (def known (box-ref (record-ref walk sources)))
-  (Tuple (list-filter #(some? (map-try-ref known (key-of (record-ref (record-ref & dep) name)))) wants)
-         (list-filter #(not (some? (map-try-ref known (key-of (record-ref (record-ref & dep) name))))) wants)))
+  (Tuple (list-filter #(some? (map-try-ref known (key-of (record-ref (record-ref & dep) name))))
+                      wants)
+         (list-filter #(not (some? (map-try-ref known (key-of (record-ref (record-ref & dep) name)))))
+                      wants)))
 
 ;; A name nobody said where to get.
 (: (-> Walk Want string))
 (defun (no-source-message walk want)
   (def name (record-ref (record-ref want dep) name))
-  (str "bjo: " (record-ref want want-from) " wants " (name->string name)
+  (str "bjo: "
+       (record-ref want want-from)
+       " wants "
+       (name->string name)
        " and no manifest says where it comes from."
        " Give it a source: (source (git (url \"https://…\"))) to fetch it,"
-       " or (source (path (dir \"../" (name->string name) "\"))) for a copy on this disk."))
+       " or (source (path (dir \"../"
+       (name->string name)
+       "\"))) for a copy on this disk."))
 
 ;; Places every dependency that can be placed, and answers the tasks they made.
 (: place-all (-> Walk (List Want) (Result string (List Task))) #:sync)
@@ -532,11 +609,10 @@
     (Nil (Ok Nil))
     ((Cons want rest)
      (def known (box-ref (record-ref walk sources)))
-     (def (Ok made)
-       (match (map-try-ref known (key-of (record-ref (record-ref want dep) name)))
-         ;; Not this pass. It stays in the waiting list, which is the caller's.
-         (None (Ok None))
-         ((Some given) (place walk want given)))
+     (def (Ok made) (match (map-try-ref known (key-of (record-ref (record-ref want dep) name)))
+                      ;; Not this pass. It stays in the waiting list, which is the caller's.
+                      (None (Ok None))
+                      ((Some given) (place walk want given)))
        :propagate)
      (def (Ok more) (place-all walk rest) :propagate)
      (Ok (match made
@@ -566,7 +642,6 @@
               (def (Ok made) (place-all walk ready) :propagate)
               (walk-graph walk made still))))))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; The root package
 ;; ---------------------------------------------------------------------------
@@ -582,17 +657,22 @@
   (def src (project-src project))
   (cond
     ((empty? name)
-     (Err (str "bjo: " (path-combine (project-dir project) manifest-name)
-               ": the package has no name.")))
+     (Err
+      (str "bjo: " (path-combine (project-dir project) manifest-name) ": the package has no name.")))
     ((reserved-name? name)
-     (Err (str "bjo: " (path-combine (project-dir project) manifest-name) ": "
+     (Err (str "bjo: "
+               (path-combine (project-dir project) manifest-name)
+               ": "
                (name->string name)
                " is part of the standard library, so a package cannot be called that.")))
     ((not (directory-exists? src))
-     (Err (str "bjo: " (name->string name) " has no " src "."
+     (Err (str "bjo: "
+               (name->string name)
+               " has no "
+               src
+               "."
                " A package keeps its modules in src/, beside its manifest.")))
     (else (Ok (Root (name name) (dir src))))))
-
 
 ;; ---------------------------------------------------------------------------
 ;; Choosing versions
@@ -632,7 +712,10 @@
 ;; `list-foldl` hands the item first and the accumulator second.
 (: (-> (List Version) Version))
 (defun (highest versions)
-  (list-foldl (fun (v best) (if (> (version-compare v best) 0) v best))
+  (list-foldl (fun (v best)
+                (if (> (version-compare v best) 0)
+                    v
+                    best))
               (version 0 0 0)
               versions))
 
@@ -654,15 +737,21 @@
 (defun (check-bounds walk c)
   (def name (record-ref c chosen-name))
   (def picked (record-ref c chosen-version))
-  (def mine (list-filter #(= (key-of (record-ref & need-name)) (key-of name))
-                         (box-ref (record-ref walk needs))))
-  (def broken (list-filter (fun (n) (match (record-ref n need-req)
-                                      (None #f)
-                                      ((Some req) (not (version-satisfies? picked req)))))
-                           mine))
+  (def mine
+    (list-filter #(= (key-of (record-ref & need-name)) (key-of name))
+                 (box-ref (record-ref walk needs))))
+  (def broken
+    (list-filter (fun (n)
+                   (match (record-ref n need-req)
+                     (None #f)
+                     ((Some req) (not (version-satisfies? picked req)))))
+                 mine))
   (if (empty? broken)
       (Ok unit)
-      (Err (str "bjo: " (name->string name) " " (version->string picked)
+      (Err (str "bjo: "
+                (name->string name)
+                " "
+                (version->string picked)
                 " does not satisfy everything asked of it.\n"
                 "  What each manifest asks for:\n"
                 (string-join (list->vec (list-sort (list-map #(need-line picked &) mine))) "\n")
@@ -676,8 +765,13 @@
     (match (record-ref n need-req)
       (None #t)
       ((Some req) (version-satisfies? picked req))))
-  (str "    " (req-shown (record-ref n need-req)) " in " (record-ref n need-from)
-       (if satisfied? "" (str "   <- " (version->string picked) " breaks this"))))
+  (str "    "
+       (req-shown (record-ref n need-req))
+       " in "
+       (record-ref n need-from)
+       (if satisfied?
+           ""
+           (str "   <- " (version->string picked) " breaks this"))))
 
 (: (-> Walk (List Chosen) (Result string Unit)))
 (defun (check-every-bound walk chosen)
@@ -687,20 +781,30 @@
      (def (Ok held) (check-bounds walk c) :propagate)
      (check-every-bound walk rest))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; The lock
 ;; ---------------------------------------------------------------------------
 
 (: (-> (List Symbol) Version string string string string))
 (defun (moved-tag-message name v locked-at now lock-file)
-  (str "bjo: " (name->string name) " " (version->tag v)
-       " no longer points at the commit " lock-file " names.\n"
-       "    locked  " locked-at "\n"
-       "    now     " now "\n"
+  (str "bjo: "
+       (name->string name)
+       " "
+       (version->tag v)
+       " no longer points at the commit "
+       lock-file
+       " names.\n"
+       "    locked  "
+       locked-at
+       "\n"
+       "    now     "
+       now
+       "\n"
        "  A version is a tag, and a tag can be moved. Nothing was built:"
        " the same version naming different code is what the lock exists to catch.\n"
-       "  If the move was meant, remove that entry from " lock-file " and fetch again."))
+       "  If the move was meant, remove that entry from "
+       lock-file
+       " and fetch again."))
 
 ;; What the lock should say about one chosen package.
 ;;
@@ -721,21 +825,23 @@
   ;; going to the network for: it existed when the lock was written.
   (def (Ok fetched-for-lock?)
     (match was
-      ((Some old) (if (and same-version?
-                           (not (commit-present? (record-ref walk tool) clone (locked-commit old))))
-                      (fetch-once walk clone)
-                      (Ok #f)))
-      (None (Ok #f)))
-    :propagate)
+      ((Some old)
+       (if (and same-version?
+                (not (commit-present? (record-ref walk tool) clone (locked-commit old))))
+           (fetch-once walk clone)
+           (Ok #f)))
+      (None (Ok #f))) :propagate)
 
   (def (Ok commit) (tag-commit (record-ref walk tool) clone picked) :propagate)
 
-  (def was-commit (match was ((Some old) (locked-commit old)) (None "")))
+  (def was-commit
+    (match was
+      ((Some old) (locked-commit old))
+      (None "")))
   (if (and same-version? (not (= was-commit commit)))
       (Err (moved-tag-message name picked was-commit commit lock-file))
-      (Ok (Locked (name name) (version picked)
-                  (source (record-ref c chosen-source))
-                  (commit commit)))))
+      (Ok
+       (Locked (name name) (version picked) (source (record-ref c chosen-source)) (commit commit)))))
 
 (: lock-entries (-> Walk (List Chosen) string (Result string (List Locked))) #:sync)
 (defun (lock-entries walk chosen lock-file)
@@ -745,7 +851,6 @@
      (def (Ok entry) (lock-entry walk c lock-file) :propagate)
      (def (Ok more) (lock-entries walk rest lock-file) :propagate)
      (Ok (Cons entry more)))))
-
 
 ;; ---------------------------------------------------------------------------
 ;; Putting the chosen versions on disk
@@ -771,11 +876,13 @@
      (def src (path-combine where "src"))
      (def (Ok more) (materialise-all walk rest entries) :propagate)
      (if (not (directory-exists? src))
-         (Err (str "bjo: " (name->string name) " " (version->string picked)
+         (Err (str "bjo: "
+                   (name->string name)
+                   " "
+                   (version->string picked)
                    " has no src/, so there are no modules in it."
                    " A package keeps its modules in src/, beside its manifest."))
          (Ok (Cons (Root (name name) (dir src)) more))))))
-
 
 ;; ---------------------------------------------------------------------------
 ;; prepare
@@ -792,20 +899,21 @@
   (def lock-file (project-lock-file project))
   (def (Ok was-locked) (read-lock lock-file) :propagate)
 
-  (def walk (Walk (sources (make-box (map-empty)))
-                  (placed (make-box (map-empty)))
-                  (needs (make-box Nil))
-                  (nodes (make-box (map-empty)))
-                  (names (make-box (map-empty)))
-                  (clones (make-box (map-empty)))
-                  (origins (make-box (map-empty)))
-                  (walked (make-box (map-empty)))
-                  (fetched (make-box (map-empty)))
-                  (own (record-ref (project-package project) name))
-                  (own-from (path-combine (project-dir project) manifest-name))
-                  (tool (tool-for (project-tmp project)))
-                  (dot-bjo (project-dot-bjo project))
-                  (was-locked was-locked)))
+  (def walk
+    (Walk (sources (make-box (map-empty)))
+          (placed (make-box (map-empty)))
+          (needs (make-box Nil))
+          (nodes (make-box (map-empty)))
+          (names (make-box (map-empty)))
+          (clones (make-box (map-empty)))
+          (origins (make-box (map-empty)))
+          (walked (make-box (map-empty)))
+          (fetched (make-box (map-empty)))
+          (own (record-ref (project-package project) name))
+          (own-from (path-combine (project-dir project) manifest-name))
+          (tool (tool-for (project-tmp project)))
+          (dot-bjo (project-dot-bjo project))
+          (was-locked was-locked)))
 
   ;; The root task is the only one whose `dev-depends` and `task-depends`
   ;; count — a dependency's are what its author needs in order to test it or
@@ -813,11 +921,12 @@
   ;; allowed to say `(path ...)`, which its own
   ;; path dependencies inherit: a directory beside yours is as much yours as
   ;; your own.
-  (def first-task (Task (package (project-package project))
-                        (dir (project-dir project))
-                        (from (path-combine (project-dir project) manifest-name))
-                        (path-ok? #t)
-                        (dev? #t)))
+  (def first-task
+    (Task (package (project-package project))
+          (dir (project-dir project))
+          (from (path-combine (project-dir project) manifest-name))
+          (path-ok? #t)
+          (dev? #t)))
 
   (def (Ok walked) (walk-graph walk (Cons first-task Nil) Nil) :propagate)
 
@@ -827,9 +936,10 @@
   (def (Ok settled) (settle-lock project locked? was-locked entries) :propagate)
   (def (Ok fetched-roots) (materialise-all walk chosen entries) :propagate)
 
-  (def path-roots (loop (:for entry (map-values (box-ref (record-ref walk placed))))
-                        (:acc out (listing entry))
-                        => out))
+  (def path-roots
+    (loop (:for entry (map-values (box-ref (record-ref walk placed))))
+          (:acc out (listing entry))
+      => out))
   (def roots (Cons own (list-append path-roots fetched-roots)))
   (def roots-path (project-roots-file project))
   (ignore (write-roots roots-path roots))
@@ -843,7 +953,9 @@
   (def (Ok nuget-dir) (restore-packages project roots locked?) :propagate)
 
   (Ok (Prepared (roots-file roots-path)
-                (frameworks-file (if declared? (Some frameworks-path) None))
+                (frameworks-file (if declared?
+                                     (Some frameworks-path)
+                                     None))
                 (nuget-dir nuget-dir)
                 (runtime (runtime-settings (record-ref (project-package project) runtime)))
                 (aot (match (record-ref (project-package project) aot)
@@ -870,7 +982,9 @@
   (cond
     ((empty? changes) (Ok unit))
     (locked?
-     (Err (str "bjo: --locked, and the manifests no longer agree with " lock-file ":\n"
+     (Err (str "bjo: --locked, and the manifests no longer agree with "
+               lock-file
+               ":\n"
                (string-join (list->vec (list-map #(str "    " &) changes)) "\n")
                "\n  Run 'bjo fetch' without --locked to bring the lock up to date.")))
     (else

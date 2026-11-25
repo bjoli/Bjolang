@@ -19,7 +19,8 @@
 (: without-suffix (-> string string string))
 (defun (without-suffix s suffix)
   (if (string-ends-with? s suffix)
-      (substring s (string-cursor-start s)
+      (substring s
+                 (string-cursor-start s)
                  (loop (:for i (range 0 (string-length suffix)))
                        (:acc at (folding (string-cursor-end s) (string-cursor-prev s at)))))
       s))
@@ -32,10 +33,18 @@
       url))
 
 (defun (main args)
-  (def input (if (> (vec-length args) 0) (vec-ref args 0) "Examples/samizdat/post.sz"))
-  (def output (if (> (vec-length args) 1) (vec-ref args 1) (str (without-suffix input ".sz") ".md")))
+  (def input
+    (if (> (vec-length args) 0)
+        (vec-ref args 0)
+        "Examples/samizdat/post.sz"))
+  (def output
+    (if (> (vec-length args) 1)
+        (vec-ref args 1)
+        (str (without-suffix input ".sz") ".md")))
   (match (read-document-file input standard-commands)
-    ((Err e) (println e) 1)
+    ((Err e)
+     (println e)
+     1)
     ((Ok doc)
      (file-write-text output (markdown-page doc #:with (markdown-options #:url-hook local-page)))
      (println (str "wrote " output))

@@ -27,7 +27,7 @@
 (defun (sum-checks depth count)
   (loop (:for i (range 0 count))
         (:acc s (summing (check (bottom-up depth))))
-        => s))
+    => s))
 
 (: (-> int int int int))
 (defun (iterations min-depth max-depth depth)
@@ -53,15 +53,19 @@
   (displayln #"stretch tree of depth ${stretch-depth}\t check: ${(check (bottom-up stretch-depth))}")
   (def long-lived (bottom-up max-depth))
   (def depths
-    (let go ((depth max-depth) (acc Nil))
-      (if (< depth min-depth) acc (go (- depth 2) (Cons depth acc)))))
+    (let go ((depth max-depth)
+             (acc Nil))
+      (if (< depth min-depth)
+          acc
+          (go (- depth 2) (Cons depth acc)))))
   (def started
     (list-map (fun (d) (Tuple d (start-depth d (iterations min-depth max-depth d)))) depths))
   (let report ((ds started))
     (match ds
       (Nil unit)
       ((Cons (Tuple depth ps) rest)
-       (displayln #"${(iterations min-depth max-depth depth)}\t trees of depth ${depth}\t check: ${(join-sum ps 0)}")
+       (displayln
+        #"${(iterations min-depth max-depth depth)}\t trees of depth ${depth}\t check: ${(join-sum ps 0)}")
        (report rest))))
   (displayln #"long lived tree of depth ${max-depth}\t check: ${(check long-lived)}")
   0)

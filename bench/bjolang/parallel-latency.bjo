@@ -46,7 +46,9 @@
   (clr-sin (: System.Math.Sin (-> double double))))
 
 (def n 4000000)
-(def xs (vec->array (loop (:for i (range 0 n)) (:acc v (vecing (* 1e-6 (cast double i)))))))
+(def xs
+  (vec->array (loop (:for i (range 0 n))
+                    (:acc v (vecing (* 1e-6 (cast double i)))))))
 
 (: (-> (RoSpan double) double))
 (defun (sin-sum-span s)
@@ -54,15 +56,20 @@
         (:acc total (summing (clr-sin (ro-span-ref s i))))))
 
 (: (-> (ArrayPart double) double))
-(defun (sin-sum-part p) (sin-sum-span (part->ro-span p)))
+(defun (sin-sum-part p)
+  (sin-sum-span (part->ro-span p)))
 
 ;; Each part in a fiber of its own, joined in order.
 (: (-bjo-> double))
 (defbjo (on-fibers)
   (with-scope
-    (def ps (loop (:for p (chunks xs 96)) (:acc v (vecing (bjo (sin-sum-part p))))))
+    (def ps
+      (loop (:for p (chunks xs 96))
+            (:acc v (vecing (bjo (sin-sum-part p))))))
     (loop (:for p ps)
-          (:acc s (summing (match (sync (promise-join p)) ((Ok v) v) ((Err e) (raise e))))))))
+          (:acc s (summing (match (sync (promise-join p))
+                             ((Ok v) v)
+                             ((Err e) (raise e))))))))
 
 (: (-bjo-> double))
 (defbjo (on-compute)
@@ -71,7 +78,8 @@
 ;; How late each of `k` wakes after 1 ms was, in microseconds.
 (: (-bjo-> int (Vec long)))
 (defbjo (ticker k)
-  (let more ((i 0) (late []))
+  (let more ((i 0)
+             (late []))
     (if (= i k)
         late
         (let ((start (monotonic-ns)))
@@ -86,7 +94,9 @@
 ;; a `Some` makes C# that does not compile (Todo.org).
 (: (-bjo-> int double))
 (defbjo (load-of k)
-  (if (= k 1) (on-fibers) (on-compute)))
+  (if (= k 1)
+      (on-fibers)
+      (on-compute)))
 
 (: (-bjo-> string int void))
 (defbjo (scenario name load)
@@ -94,15 +104,31 @@
     (def p (bjo (ticker 500)))
     (def loops
       (if (= load 0)
-          (begin (ignore (sync (promise-join p))) 0)
-          (let go ((k 0)) (if (promise-done? p) k (begin (ignore (load-of load)) (go (+ k 1)))))))
-    (def late (match (sync (promise-join p)) ((Ok v) v) ((Err e) (raise e))))
+          (begin
+            (ignore (sync (promise-join p)))
+            0)
+          (let go ((k 0))
+            (if (promise-done? p)
+                k
+                (begin
+                  (ignore (load-of load))
+                  (go (+ k 1)))))))
+    (def late
+      (match (sync (promise-join p))
+        ((Ok v) v)
+        ((Err e) (raise e))))
     (def sorted (list->vec (list-sort (vec->list late))))
-    (println (str (string-pad-right name 14) (string-pad-left (displayed loops) 5) " loops"
-                  "   late, us: median " (string-pad-left (displayed (quantile sorted 0.5)) 6)
-                  "  p90 " (string-pad-left (displayed (quantile sorted 0.9)) 6)
-                  "  p99 " (string-pad-left (displayed (quantile sorted 0.99)) 6)
-                  "  max " (string-pad-left (displayed (vec-ref sorted (- (vec-length sorted) 1))) 6)))))
+    (println (str (string-pad-right name 14)
+                  (string-pad-left (displayed loops) 5)
+                  " loops"
+                  "   late, us: median "
+                  (string-pad-left (displayed (quantile sorted 0.5)) 6)
+                  "  p90 "
+                  (string-pad-left (displayed (quantile sorted 0.9)) 6)
+                  "  p99 "
+                  (string-pad-left (displayed (quantile sorted 0.99)) 6)
+                  "  max "
+                  (string-pad-left (displayed (vec-ref sorted (- (vec-length sorted) 1))) 6)))))
 
 (defbjo (main)
   (println (str (displayed n) " doubles, sum of sines in 96 parts"))

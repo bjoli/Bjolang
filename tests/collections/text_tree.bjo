@@ -35,7 +35,8 @@
   (def b (stringbuilder-empty))
   (let go ()
     (when (< (stringbuilder-length b) target)
-      (stringbuilder-add-string! b (vec-ref pieces (random-int 0 (- (vec-length pieces) 1) #:rng rng)))
+      (stringbuilder-add-string! b
+                                 (vec-ref pieces (random-int 0 (- (vec-length pieces) 1) #:rng rng)))
       (go)))
   (stringbuilder->string b))
 
@@ -44,7 +45,8 @@
 (defun (boundary-before s k)
   (def sp (.AsSpan s))
   (let go ((k k))
-    (if (or (<= k 0) (>= k (string-length s))
+    (if (or (<= k 0)
+            (>= k (string-length s))
             (not (= (bitwise-and (cast int (ro-span-ref sp k)) 192) 128)))
         k
         (go (- k 1)))))
@@ -54,33 +56,40 @@
   (boundary-before s (random-int 0 (string-length s) #:rng rng)))
 
 (: (-> string int int string))
-(defun (part s from to) (string-copy (.SliceBytes s from (- to from))))
+(defun (part s from to)
+  (string-copy (.SliceBytes s from (- to from))))
 
 (: (-> string int))
-(defun (newlines s) (span-count (.AsSpan s) (cast byte 10)))
+(defun (newlines s)
+  (span-count (.AsSpan s) (cast byte 10)))
 
 ;; The characters of `s` before byte `at`.
 (: (-> string int int))
-(defun (chars-to s at) (.Count (.SliceBytes s 0 at)))
+(defun (chars-to s at)
+  (.Count (.SliceBytes s 0 at)))
 
 ;; The cursor of `r`, which holds `s`, at byte `at` of `s`.
 (: (-> Text string int TextCursor))
-(defun (cursor-at r s at) (text-cursor-forward r (text-cursor-start r) (chars-to s at)))
+(defun (cursor-at r s at)
+  (text-cursor-forward r (text-cursor-start r) (chars-to s at)))
 
 ;; The bytes of `r` before its cursor `c`.
 (: (-> Text TextCursor int))
-(defun (offset-in r c) (text-length (text-substring r (text-cursor-start r) c)))
+(defun (offset-in r c)
+  (text-length (text-substring r (text-cursor-start r) c)))
 
 ;; The newlines in the first `at` bytes of `s`.
 (: (-> string int int))
-(defun (newlines-before s at) (span-count (ro-span-slice (.AsSpan s) #:from 0 #:to at) (cast byte 10)))
+(defun (newlines-before s at)
+  (span-count (ro-span-slice (.AsSpan s) #:from 0 #:to at) (cast byte 10)))
 
 ;; Whether line `n` of `r` starts where the `n`-th newline of `s` ends, for
 ;; every line: found in one pass over `s`.
 (: (-> Text string bool))
 (defun (line-starts-match? r s)
   (def sp (.AsSpan s))
-  (let go ((n 1) (from 0))
+  (let go ((n 1)
+           (from 0))
     (def j (span-index-of (ro-span-slice sp #:from from) (cast byte 10)))
     (if (< j 0)
         (= (text-line-count r) n)
@@ -102,24 +111,30 @@
          (= (text->string r) s)
          (= (text-line-count r) (+ (newlines s) 1))
          (loop (:for _ (range 0 8))
-               (:acc ok (folding #t
-                          (and ok
-                               (or (= len 0)
-                                   (begin
-                                     (def at (boundary-before s (random-int 0 (- len 1) #:rng rng)))
-                                     (def to (random-offset rng s))
-                                     (def lo (min at to))
-                                     (def hi (max at to))
-                                     (def c (cursor-at r s at))
-                                     (and (= (text-cursor-ref r c) (string-ref-at s at))
-                                          (= (offset-in r c) at)
-                                          (= (text->string (text-substring r (cursor-at r s lo) (cursor-at r s hi))) (part s lo hi))
-                                          (= (text-cursor-line r c) (newlines-before s at))))))))
-               => ok)))
+               (:acc ok (folding
+                         #t
+                         (and ok
+                              (or (= len 0)
+                                  (begin
+                                    (def at (boundary-before s (random-int 0 (- len 1) #:rng rng)))
+                                    (def to (random-offset rng s))
+                                    (def lo (min at to))
+                                    (def hi (max at to))
+                                    (def c (cursor-at r s at))
+                                    (and (= (text-cursor-ref r c) (string-ref-at s at))
+                                         (= (offset-in r c) at)
+                                         (= (text->string
+                                             (text-substring r (cursor-at r s lo) (cursor-at r s hi)))
+                                            (part s lo hi))
+                                         (= (text-cursor-line r c) (newlines-before s at))))))))
+           => ok)))
   (and ok
        (or (not deep?)
            (and (= (text-count r) (string-count s))
-                (loop (:for c r) (:for d s) (:acc ok (folding #t (and ok (= c d)))) => ok)
+                (loop (:for c r)
+                      (:for d s)
+                      (:acc ok (folding #t (and ok (= c d))))
+                  => ok)
                 (line-starts-match? r s)
                 (= (text-fold-chunks (fun (c acc) (string-append acc c)) "" r) s)))))
 
@@ -136,17 +151,27 @@
   (def rng (make-random/seed64 (cast ulong seed)))
   (def/mutable kept (text-empty))
   (def/mutable kept-s "")
-  (let go ((i 0) (r (text-empty)) (s ""))
+  (let go ((i 0)
+           (r (text-empty))
+           (s ""))
     (cond
       ((= i steps) (and (same? rng r s #t) (same? rng kept kept-s #t)))
       ((not (same? rng r s (= (% i 50) 0)))
-       (println #"step ${i}: ${(text-check r)}, ${(text-length r)} against ${(string-length s)} bytes")
+       (println
+        #"step ${i}: ${(text-check r)}, ${(text-length r)} against ${(string-length s)} bytes")
        #f)
       (else
-       (when (= i (/ steps 3)) (set! kept r) (set! kept-s s))
+       (when (= i (/ steps 3))
+         (set! kept r)
+         (set! kept-s s))
        (def len (string-length s))
        ;; Grow while short, then hold the length about steady.
-       (def op (random-int 0 (if (< len (* max-text 4)) 5 9) #:rng rng))
+       (def op
+         (random-int 0
+                     (if (< len (* max-text 4))
+                         5
+                         9)
+                     #:rng rng))
        (def a (random-offset rng s))
        (def b (random-offset rng s))
        (def lo (min a b))
@@ -160,25 +185,39 @@
           (go (+ i 1) (text-append r (string->text t)) (string-append s t)))
          ((= op 5)
           (def t (random-text rng max-text))
-          (go (+ i 1) (text-replace-range r (cursor-at r s lo) (cursor-at r s hi) t) (str (part s 0 lo) t (part s hi len))))
+          (go (+ i 1)
+              (text-replace-range r (cursor-at r s lo) (cursor-at r s hi) t)
+              (str (part s 0 lo) t (part s hi len))))
          ((= op 6)
           (def (Tuple x y) (text-split-at r (cursor-at r s a)))
-          (if (and (= (text->string x) (part s 0 a)) (= (text->string y) (part s a len))
-                   (none? (text-check x)) (none? (text-check y)))
+          (if (and (= (text->string x) (part s 0 a))
+                   (= (text->string y) (part s a len))
+                   (none? (text-check x))
+                   (none? (text-check y)))
               (go (+ i 1) (text-append x y) s)
-              (begin (println #"step ${i}: split at ${a}") #f)))
+              (begin
+                (println #"step ${i}: split at ${a}")
+                #f)))
          ((= op 7)
           (def m (text-substring r (cursor-at r s lo) (cursor-at r s hi)))
           (if (and (= (text->string m) (part s lo hi)) (none? (text-check m)))
-              (go (+ i 1) (text-append (text-substring r (text-cursor-start r) (cursor-at r s lo))
-                                       (text-substring r (cursor-at r s hi) (text-cursor-end r)))
+              (go (+ i 1)
+                  (text-append (text-substring r (text-cursor-start r) (cursor-at r s lo))
+                               (text-substring r (cursor-at r s hi) (text-cursor-end r)))
                   (string-append (part s 0 lo) (part s hi len)))
-              (begin (println #"step ${i}: slice ${lo} to ${hi}") #f)))
+              (begin
+                (println #"step ${i}: slice ${lo} to ${hi}")
+                #f)))
          (else
           ;; Mostly short deletes, as typing makes.
-          (def hi2 (if (= (random-int 0 3 #:rng rng) 0) hi (boundary-before s (min len (+ lo (random-int 0 8 #:rng rng))))))
+          (def hi2
+            (if (= (random-int 0 3 #:rng rng) 0)
+                hi
+                (boundary-before s (min len (+ lo (random-int 0 8 #:rng rng))))))
           (def hi3 (max lo hi2))
-          (go (+ i 1) (text-delete r (cursor-at r s lo) (cursor-at r s hi3)) (string-append (part s 0 lo) (part s hi3 len)))))))))
+          (go (+ i 1)
+              (text-delete r (cursor-at r s lo) (cursor-at r s hi3))
+              (string-append (part s 0 lo) (part s hi3 len)))))))))
 
 ;; Random edits of a text of about `size` bytes, with deletes as long as the
 ;; inserts, so that it neither grows nor shrinks much. Returns the greatest
@@ -192,9 +231,15 @@
       (textbuilder-add-string! b (random-text rng 5000))
       (fill)))
   (def start (textbuilder->text b))
-  (let go ((i 0) (r start) (s (text->string start)) (tallest 0))
+  (let go ((i 0)
+           (r start)
+           (s (text->string start))
+           (tallest 0))
     (cond
-      ((= i steps) (if (and (same? rng r s #t) (same? rng start (text->string start) #f)) tallest -1))
+      ((= i steps)
+       (if (and (same? rng r s #t) (same? rng start (text->string start) #f))
+           tallest
+           -1))
       ((not (same? rng r s (= (% i 200) 0)))
        (println #"step ${i}: ${(text-check r)}")
        -1)
@@ -206,17 +251,28 @@
        (cond
          ((= k 0)
           (def t (random-text rng 20000))
-          (go (+ i 1) (text-insert r (cursor-at r s a) t) (str (part s 0 a) t (part s a len)) tallest2))
+          (go (+ i 1)
+              (text-insert r (cursor-at r s a) t)
+              (str (part s 0 a) t (part s a len))
+              tallest2))
          ((= k 1)
           (def hi (boundary-before s (min len (+ a (random-int 0 20000 #:rng rng)))))
-          (go (+ i 1) (text-delete r (cursor-at r s a) (cursor-at r s hi)) (string-append (part s 0 a) (part s hi len)) tallest2))
+          (go (+ i 1)
+              (text-delete r (cursor-at r s a) (cursor-at r s hi))
+              (string-append (part s 0 a) (part s hi len))
+              tallest2))
          ((= k 2)
           (def (Tuple x y) (text-split-at r (cursor-at r s a)))
           (go (+ i 1) (text-append y x) (string-append (part s a len) (part s 0 a)) tallest2))
          (else
           (def t (random-text rng 300))
-          (go (+ i 1) (text-replace-range r (cursor-at r s a) (cursor-at r s (boundary-before s (min len (+ a 5)))) t)
-              (str (part s 0 a) t (part s (boundary-before s (min len (+ a 5))) len)) tallest2)))))))
+          (go (+ i 1)
+              (text-replace-range r
+                                  (cursor-at r s a)
+                                  (cursor-at r s (boundary-before s (min len (+ a 5))))
+                                  t)
+              (str (part s 0 a) t (part s (boundary-before s (min len (+ a 5))) len))
+              tallest2)))))))
 
 ;; Random edits through a transient, with a text taken from it halfway that
 ;; the edits after must not change.
@@ -261,38 +317,44 @@
   (def/mutable snaps '())
   (def ok
     (loop (:for i (range 0 steps))
-          (:acc ok (folding #t
-                     (begin
-                       (def len (string-length s))
-                       (def roll (random-int 0 100 #:rng rng))
-                       (cond
-                         ((< roll 2) (set! cursor (random-offset rng s)))
-                         ((and (< roll 30) (> cursor 0))
-                          (def a (boundary-before s (max 0 (- cursor (random-int 1 4 #:rng rng)))))
-                          (transienttext-delete! t (chars-to s a) (chars-to s cursor))
-                          (set! s (string-append (part s 0 a) (part s cursor len)))
-                          (set! cursor a))
-                         ((and (< roll 33) (< cursor len))
-                          (def b (boundary-before s (min len (+ cursor (random-int 1 6 #:rng rng)))))
-                          (def b2 (if (= b cursor) len b))
-                          (transienttext-delete! t (chars-to s cursor) (chars-to s b2))
-                          (set! s (string-append (part s 0 cursor) (part s b2 len))))
-                         (else
-                          (def w (array-ref words (random-int 0 (- (array-length words) 1) #:rng rng)))
-                          (transienttext-insert! t (chars-to s cursor) w)
-                          (set! s (str (part s 0 cursor) w (part s cursor len)))
-                          (set! cursor (+ cursor (string-length w)))))
-                       (def fine (and (= (transienttext-length t) (string-length s))
-                                      (= (transienttext-count t) (string-count s))))
-                       (if (= (* (/ i 997) 997) i)
-                           (begin
-                             (def r (transienttext->text t))
-                             (set! snaps (cons (Tuple r s) snaps))
-                             (and ok fine (same? rng r s #t)))
-                           (and ok fine)))))))
+          (:acc ok (folding
+                    #t
+                    (begin
+                      (def len (string-length s))
+                      (def roll (random-int 0 100 #:rng rng))
+                      (cond
+                        ((< roll 2) (set! cursor (random-offset rng s)))
+                        ((and (< roll 30) (> cursor 0))
+                         (def a (boundary-before s (max 0 (- cursor (random-int 1 4 #:rng rng)))))
+                         (transienttext-delete! t (chars-to s a) (chars-to s cursor))
+                         (set! s (string-append (part s 0 a) (part s cursor len)))
+                         (set! cursor a))
+                        ((and (< roll 33) (< cursor len))
+                         (def b (boundary-before s (min len (+ cursor (random-int 1 6 #:rng rng)))))
+                         (def b2
+                           (if (= b cursor)
+                               len
+                               b))
+                         (transienttext-delete! t (chars-to s cursor) (chars-to s b2))
+                         (set! s (string-append (part s 0 cursor) (part s b2 len))))
+                        (else
+                         (def w (array-ref words (random-int 0 (- (array-length words) 1) #:rng rng)))
+                         (transienttext-insert! t (chars-to s cursor) w)
+                         (set! s (str (part s 0 cursor) w (part s cursor len)))
+                         (set! cursor (+ cursor (string-length w)))))
+                      (def fine
+                        (and (= (transienttext-length t) (string-length s))
+                             (= (transienttext-count t) (string-count s))))
+                      (if (= (* (/ i 997) 997) i)
+                          (begin
+                            (def r (transienttext->text t))
+                            (set! snaps (cons (Tuple r s) snaps))
+                            (and ok fine (same? rng r s #t)))
+                          (and ok fine)))))))
   (and ok
        (same? rng (transienttext->text t) s #t)
-       (loop (:for (Tuple r x) snaps) (:acc all (folding #t (and all (same? rng r x #t)))))))
+       (loop (:for (Tuple r x) snaps)
+             (:acc all (folding #t (and all (same? rng r x #t)))))))
 
 ;; The same text built five ways is equal, hashes alike and orders alike.
 (: (-> int bool))
@@ -301,28 +363,50 @@
   (def s (random-text rng 30000))
   (def len (string-length s))
   (def whole (string->text s))
-  (def by-chars (loop (:for c s) (:acc r (folding (text-empty) (add r (char->string c))))))
+  (def by-chars
+    (loop (:for c s)
+          (:acc r (folding (text-empty) (add r (char->string c))))))
   (def b (textbuilder-empty))
   (let go ((at 0))
     (when (< at len)
       (def to (boundary-before s (min len (+ at (random-int 1 700 #:rng rng)))))
-      (def to2 (if (= to at) (boundary-before s (min len (+ at 8))) to))
-      (textbuilder-add-string! b (part s at (if (= to2 at) len to2)))
-      (go (if (= to2 at) len to2))))
+      (def to2
+        (if (= to at)
+            (boundary-before s (min len (+ at 8)))
+            to))
+      (textbuilder-add-string! b
+                               (part s
+                                     at
+                                     (if (= to2 at)
+                                         len
+                                         to2)))
+      (go (if (= to2 at)
+              len
+              to2))))
   (def built (textbuilder->text b))
   (def a (random-offset rng s))
   (def joined (text-append (string->text (part s 0 a)) (string->text (part s a len))))
-  (def backwards (loop (:for i (down-from (- len 1) #:to 0))
-                       (:when (= i (boundary-before s i)))
-                       (:acc r (folding (text-empty)
-                                 (text-append (string->text (part s i (if (= (text-length r) 0) len (- len (text-length r))))) r)))))
+  (def backwards
+    (loop (:for i (down-from (- len 1) #:to 0))
+          (:when (= i (boundary-before s i)))
+          (:acc r (folding (text-empty)
+                           (text-append (string->text (part s
+                                                            i
+                                                            (if (= (text-length r) 0)
+                                                                len
+                                                                (- len (text-length r)))))
+                                        r)))))
   (def all (list whole by-chars built joined backwards))
   (def other (add whole "!"))
-  (and (loop (:for r all) (:acc ok (folding #t (and ok (same? rng r s #t) (= r whole) (= (eq-hash r) (eq-hash whole))))) => ok)
-       (not (= other whole))
-       (< (compare whole other) 0)
-       (> (compare other whole) 0)
-       (= (compare by-chars built) 0)))
+  (and
+   (loop (:for r all)
+         (:acc ok (folding #t
+                           (and ok (same? rng r s #t) (= r whole) (= (eq-hash r) (eq-hash whole)))))
+     => ok)
+   (not (= other whole))
+   (< (compare whole other) 0)
+   (> (compare other whole) 0)
+   (= (compare by-chars built) 0)))
 
 ;; `text-cursor-search` against the string's search, for needles that cross
 ;; chunks.
@@ -334,27 +418,41 @@
   (def r (text-insert r0 (text-cursor-start r0) ""))
   (def len (string-length s))
   (loop (:for _ (range 0 300))
-        (:acc ok (folding #t
-                   (and ok
-                        (begin
-                          (def a (random-offset rng s))
-                          (def b (boundary-before s (min len (+ a (random-int 0 2500 #:rng rng)))))
-                          (def needle (if (= (random-int 0 4 #:rng rng) 0) "zzz" (part s a b)))
-                          (def from (random-offset rng s))
-                          (def tail (part s from len))
-                          (def j (find-in tail needle))
-                          (def want (if (>= j 0) (Some (+ from j)) None))
-                          (def got (offset-of r (text-cursor-search r (cursor-at r s from) needle)))
-                          (or (= got want)
-                              (begin (println #"needle ${(string-length needle)} bytes from ${from}: ${got} not ${want}") #f))))))
-        => ok))
+        (:acc ok (folding
+                  #t
+                  (and
+                   ok
+                   (begin
+                     (def a (random-offset rng s))
+                     (def b (boundary-before s (min len (+ a (random-int 0 2500 #:rng rng)))))
+                     (def needle
+                       (if (= (random-int 0 4 #:rng rng) 0)
+                           "zzz"
+                           (part s a b)))
+                     (def from (random-offset rng s))
+                     (def tail (part s from len))
+                     (def j (find-in tail needle))
+                     (def want
+                       (if (>= j 0)
+                           (Some (+ from j))
+                           None))
+                     (def got (offset-of r (text-cursor-search r (cursor-at r s from) needle)))
+                     (or
+                      (= got want)
+                      (begin
+                        (println
+                         #"needle ${(string-length needle)} bytes from ${from}: ${got} not ${want}")
+                        #f))))))
+    => ok))
 
 ;; A text of `s` whose chunks end at random places: the texts of pieces of
 ;; it, joined.
 (: (-> RandomSource string Text))
 (defun (cut-up rng s)
   (def len (string-length s))
-  (def cuts (vec-sort (loop (:for _ (range 0 12)) (:acc (vecing (random-offset rng s))))))
+  (def cuts
+    (vec-sort (loop (:for _ (range 0 12))
+                    (:acc (vecing (random-offset rng s))))))
   (def/mutable r (text-empty))
   (def/mutable from 0)
   (loop (:for k (vec-add cuts len))
@@ -365,7 +463,10 @@
 
 ;; The offset of a cursor of `r` found, if one was.
 (: (-> Text (Option TextCursor) (Option int)))
-(defun (offset-of r o) (match o ((Some c) (Some (offset-in r c))) (None None)))
+(defun (offset-of r o)
+  (match o
+    ((Some c) (Some (offset-in r c)))
+    (None None)))
 
 ;; The offsets of the characters of `s`, and its length.
 (: (-> string (Vec int)))
@@ -379,92 +480,153 @@
 (: (-> int bool))
 (defun (cursors? seed)
   (def rng (make-random/seed64 (cast ulong seed)))
-  (def s (let go ((acc "")) (if (< (string-length acc) 20000) (go (string-append acc (random-text rng 3000))) acc)))
+  (def s
+    (let go ((acc ""))
+      (if (< (string-length acc) 20000)
+          (go (string-append acc (random-text rng 3000)))
+          acc)))
   (def len (string-length s))
   (def r (cut-up rng s))
   (def offs (char-offsets s))
-  (def chars (loop (:for c s) (:acc (vecing c))))
+  (def chars
+    (loop (:for c s)
+          (:acc (vecing c))))
   (def n (vec-length chars))
-  (def check (fun (what ok) (unless ok (println #"cursors, seed ${seed}: ${what}")) ok))
+  (def check
+    (fun (what ok)
+      (unless ok
+        (println #"cursors, seed ${seed}: ${what}"))
+      ok))
   ;; Forward with ref+next, and back with prev.
   (def fwd
-    (let go ((c (text-cursor-start r)) (i 0) (ok #t))
+    (let go ((c (text-cursor-start r))
+             (i 0)
+             (ok #t))
       (if (text-cursor-end? r c)
           (and ok (= i n) (= (offset-in r c) len) (= (text-cursor-index r c) n))
           (begin
             (def (Tuple ch nxt) (text-cursor-ref+next r c))
-            (go nxt (+ i 1) (and ok (or (> (% i 97) 0) (= (offset-in r c) (vec-ref offs i))) (= ch (vec-ref chars i))
-                                 (= (text-cursor-index r c) i)))))))
+            (go nxt
+                (+ i 1)
+                (and ok
+                     (or (> (% i 97) 0) (= (offset-in r c) (vec-ref offs i)))
+                     (= ch (vec-ref chars i))
+                     (= (text-cursor-index r c) i)))))))
   (def back
-    (let go ((c (text-cursor-end r)) (i n) (ok #t))
+    (let go ((c (text-cursor-end r))
+             (i n)
+             (ok #t))
       (if (text-cursor-start? r c)
           (and ok (= i 0))
           (begin
             (def p (text-cursor-prev r c))
-            (go p (- i 1) (and ok (or (> (% i 97) 0) (= (offset-in r p) (vec-ref offs (- i 1))))
-                               (= (text-cursor-ref r p) (vec-ref chars (- i 1)))))))))
+            (go p
+                (- i 1)
+                (and ok
+                     (or (> (% i 97) 0) (= (offset-in r p) (vec-ref offs (- i 1))))
+                     (= (text-cursor-ref r p) (vec-ref chars (- i 1)))))))))
   (def loops
     (loop (:for _ (range 0 40))
-          (:acc ok (folding #t
-                     (begin
-                       (def i (random-int 0 n #:rng rng))
-                       (def c (text-cursor-forward r (text-cursor-start r) i))
-                       (def j (random-int 0 i #:rng rng))
-                       (def after (loop (:for ch c) (:acc (vecing ch))))
-                       (def before (loop (:for ch (text-backward r c)) (:acc (vecing ch))))
-                       (and ok
-                            (= (offset-in r c) (vec-ref offs i))
-                            (= (text-cursor-index r c) i)
-                            (= after (vec-drop chars i))
-                            (= before (vec-reverse (vec-take chars i)))
-                            (= (text-cursor-back r (text-cursor-end r) (- n i)) c)
-                            (= (text-cursor-forward r (text-cursor-forward r (text-cursor-start r) j) (- i j)) c)
-                            (= (text-cursor-back r c (- i j)) (text-cursor-forward r (text-cursor-start r) j))
-                            (= (text-cursor<? (text-cursor-start r) c) (> i 0))))))))
+          (:acc ok
+                (folding
+                 #t
+                 (begin
+                   (def i (random-int 0 n #:rng rng))
+                   (def c (text-cursor-forward r (text-cursor-start r) i))
+                   (def j (random-int 0 i #:rng rng))
+                   (def after
+                     (loop (:for ch c)
+                           (:acc (vecing ch))))
+                   (def before
+                     (loop (:for ch (text-backward r c))
+                           (:acc (vecing ch))))
+                   (and
+                    ok
+                    (= (offset-in r c) (vec-ref offs i))
+                    (= (text-cursor-index r c) i)
+                    (= after (vec-drop chars i))
+                    (= before (vec-reverse (vec-take chars i)))
+                    (= (text-cursor-back r (text-cursor-end r) (- n i)) c)
+                    (= (text-cursor-forward r (text-cursor-forward r (text-cursor-start r) j) (- i j))
+                       c)
+                    (= (text-cursor-back r c (- i j)) (text-cursor-forward r (text-cursor-start r) j))
+                    (= (text-cursor<? (text-cursor-start r) c) (> i 0))))))))
   (def lines
     (loop (:for _ (range 0 200))
           (:acc ok (folding #t
-                     (begin
-                       (def i (random-int 0 n #:rng rng))
-                       (def at (vec-ref offs i))
-                       (def c (text-cursor-forward r (text-cursor-start r) i))
-                       (def line (newlines-before s at))
-                       (def start (offset-in r (text-cursor-line-start r c)))
-                       (def col (loop (:for k offs) (:when (and (>= k start) (< k at))) (:acc (summing 1))))
-                       (and ok
-                            (= (text-cursor-line r c) line)
-                            (or (= start 0) (= (ro-span-ref (.AsSpan s) (- start 1)) (cast byte 10)))
-                            (= (newlines-before s start) line)
-                            (= (text-cursor-column r c) col)
-                            (= (text-cursor-at-line r line #:column col) c)
-                            (= (text-cursor-at-line r line #:column 100000) (text-cursor-line-end r c))))))))
+                            (begin
+                              (def i (random-int 0 n #:rng rng))
+                              (def at (vec-ref offs i))
+                              (def c (text-cursor-forward r (text-cursor-start r) i))
+                              (def line (newlines-before s at))
+                              (def start (offset-in r (text-cursor-line-start r c)))
+                              (def col
+                                (loop (:for k offs)
+                                      (:when (and (>= k start) (< k at)))
+                                      (:acc (summing 1))))
+                              (and ok
+                                   (= (text-cursor-line r c) line)
+                                   (or (= start 0)
+                                       (= (ro-span-ref (.AsSpan s) (- start 1)) (cast byte 10)))
+                                   (= (newlines-before s start) line)
+                                   (= (text-cursor-column r c) col)
+                                   (= (text-cursor-at-line r line #:column col) c)
+                                   (= (text-cursor-at-line r line #:column 100000)
+                                      (text-cursor-line-end r c))))))))
   (def searches
     (loop (:for _ (range 0 200))
-          (:acc ok (folding #t
-                     (begin
-                       (def a (random-offset rng s))
-                       (def b (boundary-before s (min len (+ a (random-int 0 40 #:rng rng)))))
-                       (def needle (if (= (random-int 0 5 #:rng rng) 0) "zq" (part s a b)))
-                       (def at (random-offset rng s))
-                       (def c (cursor-at r s at))
-                       (def j (find-in (part s at len) needle))
-                       (def want (if (>= j 0) (Some (+ at j)) None))
-                       (def jb (span-find-last (ro-span-slice (.AsSpan s) #:from 0 #:to at) (.AsSpan needle)))
-                       (def want-back (if (>= jb 0) (Some jb) None))
-                       (def got (offset-of r (text-cursor-search r c needle)))
-                       (def got-back (offset-of r (text-cursor-search-backward r c needle)))
-                       (def nl (fun (ch) (= ch #\newline)))
-                       (def jn (span-index-of (ro-span-slice (.AsSpan s) #:from at) (cast byte 10)))
-                       (def jnb (span-find-last (ro-span-slice (.AsSpan s) #:from 0 #:to at) (.AsSpan "\n")))
-                       (and ok
-                            (check #"search for ${(string-length needle)} bytes from ${at}: ${got}, not ${want}" (= got want))
-                            (check #"backward search for ${(string-length needle)} bytes to ${at}: ${got-back}, not ${want-back}" (= got-back want-back))
-                            (= (offset-of r (text-cursor-find nl r c)) (if (>= jn 0) (Some (+ at jn)) None))
-                            (= (offset-of r (text-cursor-find-backward nl r c)) (if (>= jnb 0) (Some jnb) None))
-                            (= (text->string (text-substring r c (text-cursor-end r))) (part s at len))))))))
+          (:acc ok
+                (folding
+                 #t
+                 (begin
+                   (def a (random-offset rng s))
+                   (def b (boundary-before s (min len (+ a (random-int 0 40 #:rng rng)))))
+                   (def needle
+                     (if (= (random-int 0 5 #:rng rng) 0)
+                         "zq"
+                         (part s a b)))
+                   (def at (random-offset rng s))
+                   (def c (cursor-at r s at))
+                   (def j (find-in (part s at len) needle))
+                   (def want
+                     (if (>= j 0)
+                         (Some (+ at j))
+                         None))
+                   (def jb
+                     (span-find-last (ro-span-slice (.AsSpan s) #:from 0 #:to at) (.AsSpan needle)))
+                   (def want-back
+                     (if (>= jb 0)
+                         (Some jb)
+                         None))
+                   (def got (offset-of r (text-cursor-search r c needle)))
+                   (def got-back (offset-of r (text-cursor-search-backward r c needle)))
+                   (def nl (fun (ch) (= ch #\newline)))
+                   (def jn (span-index-of (ro-span-slice (.AsSpan s) #:from at) (cast byte 10)))
+                   (def jnb
+                     (span-find-last (ro-span-slice (.AsSpan s) #:from 0 #:to at) (.AsSpan "\n")))
+                   (and
+                    ok
+                    (check
+                     #"search for ${(string-length needle)} bytes from ${at}: ${got}, not ${want}"
+                     (= got want))
+                    (check
+                     #"backward search for ${(string-length needle)} bytes to ${at}: ${got-back}, not ${want-back}"
+                     (= got-back want-back))
+                    (= (offset-of r (text-cursor-find nl r c))
+                       (if (>= jn 0)
+                           (Some (+ at jn))
+                           None))
+                    (= (offset-of r (text-cursor-find-backward nl r c))
+                       (if (>= jnb 0)
+                           (Some jnb)
+                           None))
+                    (= (text->string (text-substring r c (text-cursor-end r))) (part s at len))))))))
   (and (check "a tree of several chunks" (> (text-chunk-count r) 10))
-       (check "forward" fwd) (check "backward" back) (check "loops" loops) (check "lines" lines) searches))
-
+       (check "forward" fwd)
+       (check "backward" back)
+       (check "loops" loops)
+       (check "lines" lines)
+       searches))
 
 ;; ---------------------------------------------------------------------------
 ;; The functions a string has, against the string's
@@ -474,20 +636,26 @@
 (def char-sets ["\n€" "ab" "😀é" "xyz" " \n" ""])
 
 (: (-> Text string bool))
-(defun (same-text? t s) (and (= (text->string t) s) (none? (text-check t))))
+(defun (same-text? t s)
+  (and (= (text->string t) s) (none? (text-check t))))
 
 (: (-> string bool bool))
 (defun (alike name ok)
-  (unless ok (println #"differs from the string: ${name}"))
+  (unless ok
+    (println #"differs from the string: ${name}"))
   ok)
 
 (: (-> Text (Option TextCursor) (Option string)))
 (defun (text-before r oc)
-  (match oc ((Some c) (Some (text->string (text-substring r (text-cursor-start r) c)))) (None None)))
+  (match oc
+    ((Some c) (Some (text->string (text-substring r (text-cursor-start r) c))))
+    (None None)))
 
 (: (-> string (Option StringCursor) (Option string)))
 (defun (string-before s oc)
-  (match oc ((Some c) (Some (substring s (string-cursor-start s) c))) (None None)))
+  (match oc
+    ((Some c) (Some (substring s (string-cursor-start s) c)))
+    (None None)))
 
 (: (-> RandomSource bool))
 (defun (like-string-once? rng)
@@ -511,23 +679,32 @@
                    ((Some (Tuple a b)) (Some (Tuple (text->string a) (text->string b))))
                    (None None))
                  (string-split-once s needle)))
-       (alike "join" (same-text? (text-join (vec-map string->text parts) needle) (string-join parts needle)))
-       (alike "search" (= (text-before r (text-search r needle)) (string-before s (string-search s needle))))
+       (alike "join"
+              (same-text? (text-join (vec-map string->text parts) needle) (string-join parts needle)))
+       (alike "search"
+              (= (text-before r (text-search r needle)) (string-before s (string-search s needle))))
        (alike "search-backward"
-              (= (text-before r (text-search-backward r needle)) (string-before s (string-search-backward s needle))))
+              (= (text-before r (text-search-backward r needle))
+                 (string-before s (string-search-backward s needle))))
        (alike "search-any"
               (= (text-before r (text-search-any r chars (text-cursor-start r)))
                  (string-before s (string-search-any s chars (string-cursor-start s)))))
-       (alike "index" (= (text-before r (text-find char-whitespace? r)) (string-before s (string-find char-whitespace? s))))
+       (alike "index"
+              (= (text-before r (text-find char-whitespace? r))
+                 (string-before s (string-find char-whitespace? s))))
        (alike "trim" (same-text? (text-trim r) (string-trim s)))
        (alike "trim-left" (same-text? (text-trim-left r) (string-trim-left s)))
        (alike "trim-right" (same-text? (text-trim-right r) (string-trim-right s)))
-       (alike "pad-left" (same-text? (text-pad-left r width #:with #\.) (string-pad-left s width #:with #\.)))
+       (alike "pad-left"
+              (same-text? (text-pad-left r width #:with #\.) (string-pad-left s width #:with #\.)))
        (alike "pad-right" (same-text? (text-pad-right r width) (string-pad-right s width)))
        (alike "upcase" (same-text? (text-upcase r) (string-upcase s)))
        (alike "downcase" (same-text? (text-downcase r) (string-downcase s)))
        (alike "reverse" (same-text? (text-reverse r) (string-reverse s)))
-       (alike "texting characters" (same-text? (loop (:for c r) (:acc (texting c))) s))
+       (alike "texting characters"
+              (same-text? (loop (:for c r)
+                                (:acc (texting c)))
+                          s))
        (alike "ref by a cursor"
               (if (= n 0)
                   (none? (try-ref r (text-cursor-start r)))
@@ -537,17 +714,21 @@
        (alike "contains" (= (text-contains? r needle) (string-contains? s needle)))
        (alike "starts-with" (= (text-starts-with? r needle) (string-starts-with? s needle)))
        (alike "ends-with" (= (text-ends-with? r needle) (string-ends-with? s needle)))
-       (alike "fold" (= (text-fold (fun (ch acc) (+ (* acc 31) (char->int ch))) 7 r)
-                        (string-fold (fun (ch acc) (+ (* acc 31) (char->int ch))) 7 s)))
-       (alike "fold-right" (= (text-fold-right (fun (ch acc) (+ (* acc 31) (char->int ch))) 7 r)
-                              (string-fold-right (fun (ch acc) (+ (* acc 31) (char->int ch))) 7 s)))
+       (alike "fold"
+              (= (text-fold (fun (ch acc) (+ (* acc 31) (char->int ch))) 7 r)
+                 (string-fold (fun (ch acc) (+ (* acc 31) (char->int ch))) 7 s)))
+       (alike "fold-right"
+              (= (text-fold-right (fun (ch acc) (+ (* acc 31) (char->int ch))) 7 r)
+                 (string-fold-right (fun (ch acc) (+ (* acc 31) (char->int ch))) 7 s)))
        (alike "list" (= (text->list r) (string->list s)))
        (alike "vec" (= (text->vec r) (string->vec s)))))
 
 (: (-> int int bool))
 (defun (like-strings? seed rounds)
   (def rng (make-random/seed64 (cast ulong seed)))
-  (loop (:for _ (range 0 rounds)) (:acc ok (folding #t (and ok (like-string-once? rng)))) => ok))
+  (loop (:for _ (range 0 rounds))
+        (:acc ok (folding #t (and ok (like-string-once? rng))))
+    => ok))
 
 (defun (main args)
   (loop (:for seed (range 1 7))
@@ -571,20 +752,30 @@
   (def e (text-empty))
   (expect-true "cursors on the empty text"
                (and (text-cursor-end? e (text-cursor-start e))
-                    (= (loop (:for _ (text-cursor-start e)) (:acc (summing 1))) 0)
+                    (= (loop (:for _ (text-cursor-start e))
+                             (:acc (summing 1)))
+                       0)
                     (= (text-cursor-search e (text-cursor-start e) "") (Some (text-cursor-start e)))
                     (= (text-cursor-index e (text-cursor-end e)) 0)))
   (def acute (string->text "é"))
   (expect "a cursor past the end"
-          (match (try (text-cursor-forward acute (text-cursor-start acute) 2) #:catch (System.ArgumentOutOfRangeException))
-            ((Ok _) "made") ((Err _) "refused"))
+          (match (try
+                   (text-cursor-forward acute (text-cursor-start acute) 2)
+                   #:catch (System.ArgumentOutOfRangeException))
+            ((Ok _) "made")
+            ((Err _) "refused"))
           "refused")
   (expect "a text of small strings" (text->string (text "ab" "" "cd")) "abcd")
-  (expect "lines" (list (text->string (text-line (string->text "a\nbc\n") 1)) (text->string (text-line (string->text "a\nbc\n") 2)))
+  (expect "lines"
+          (list (text->string (text-line (string->text "a\nbc\n") 1))
+                (text->string (text-line (string->text "a\nbc\n") 2)))
           (list "bc" ""))
   (expect "a transient index past the end"
-          (match (try (transienttext-insert! (text->transienttext acute) 2 "x") #:catch (System.ArgumentOutOfRangeException))
-            ((Ok _) "inserted") ((Err _) "refused"))
+          (match (try
+                   (transienttext-insert! (text->transienttext acute) 2 "x")
+                   #:catch (System.ArgumentOutOfRangeException))
+            ((Ok _) "inserted")
+            ((Err _) "refused"))
           "refused")
   (expect "displayed" (displayed (text "a" "b")) "ab")
   0)

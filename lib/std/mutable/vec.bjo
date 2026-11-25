@@ -90,28 +90,36 @@
   (clr-set-count            (: System.Runtime.InteropServices.CollectionsMarshal.SetCount (-> (MutableVec %a) int void))))
 
 (: (-> (MutableVec %a)))
-(defun (mutablevec) (MutableVec.))
+(defun (mutablevec)
+  (MutableVec.))
 
 ;; Room for `capacity` elements before the first regrow. The length is still 0.
 (: (-> int (MutableVec %a)))
-(defun (mutablevec-with-capacity capacity) (MutableVec. capacity))
+(defun (mutablevec-with-capacity capacity)
+  (MutableVec. capacity))
 
 (: (-> (Seq %a) (MutableVec %a)))
-(defun (seq->mutablevec xs) (MutableVec. xs))
+(defun (seq->mutablevec xs)
+  (MutableVec. xs))
 
 ;; The vector itself, seen as a sequence: nothing is copied.
 (: (-> (MutableVec %a) (Seq %a)) #:inline)
-(defun (mutablevec->seq v) (cast (Seq %a) v))
+(defun (mutablevec->seq v)
+  (cast (Seq %a) v))
 
 (: (-> (MutableVec %a) (MutableVec %a)))
-(defun (mutablevec-copy v) (MutableVec. (mutablevec->seq v)))
+(defun (mutablevec-copy v)
+  (MutableVec. (mutablevec->seq v)))
 
 (: (-> (MutableVec %a) bool) #:inline)
-(defun (mutablevec-empty? v) (= (mutablevec-length v) 0))
+(defun (mutablevec-empty? v)
+  (= (mutablevec-length v) 0))
 
 (: (-> (MutableVec %a) int (Option %a)) #:inline)
 (defun (mutablevec-try-ref v i)
-  (if (and (>= i 0) (< i (mutablevec-length v))) (Some (mutablevec-ref v i)) None))
+  (if (and (>= i 0) (< i (mutablevec-length v)))
+      (Some (mutablevec-ref v i))
+      None))
 
 ;; The last element, removed. `None` leaves the vector as it was, so a
 ;; stack-shaped loop can pop until it stops.
@@ -192,8 +200,10 @@
 (defun (mutablevec-grow! xs n)
   (when (< n 0)
     (raise (cast Exception
-                 (ArgumentOutOfRangeException.
-                  "n" (str "mutablevec-grow!: the count is " (int->string n) ", and it must be 0 or more.")))))
+                 (ArgumentOutOfRangeException. "n"
+                                               (str "mutablevec-grow!: the count is "
+                                                    (int->string n)
+                                                    ", and it must be 0 or more.")))))
   (clr-set-count xs (+ (mutablevec-length xs) n)))
 
 ;; The `n` elements from index `start`, as a span over the storage of the
@@ -209,16 +219,20 @@
 ;; ---------------------------------------------------------------------------
 
 (: (-> (List %a) (MutableVec %a)))
-(defun (list->mutablevec xs) (seq->mutablevec (list->seq xs)))
+(defun (list->mutablevec xs)
+  (seq->mutablevec (list->seq xs)))
 
 (: (-> (MutableVec %a) (List %a)))
-(defun (mutablevec->list xs) (->list (mutablevec->seq xs)))
+(defun (mutablevec->list xs)
+  (->list (mutablevec->seq xs)))
 
 (: (-> (Vec %a) (MutableVec %a)))
-(defun (vec->mutablevec v) (seq->mutablevec (vec->seq v)))
+(defun (vec->mutablevec v)
+  (seq->mutablevec (vec->seq v)))
 
 (: (-> (MutableVec %a) (Vec %a)))
-(defun (mutablevec->vec xs) (->vec (mutablevec->seq xs)))
+(defun (mutablevec->vec xs)
+  (->vec (mutablevec->seq xs)))
 
 ;; ---------------------------------------------------------------------------
 ;; The traits
@@ -250,23 +264,32 @@
 (impl (Iterable (MutableVec %a))
   (type %elem %a)
   (type %cursor int)
-  (defun (iterable-start xs) 0)
-  (defun (iterable-done? xs index) (>= index (mutablevec-length xs)))
-  (defun (iterable-current xs index) (mutablevec-ref xs index))
-  (defun (iterable-next xs index) (+ index 1)))
+  (defun (iterable-start xs)
+    0)
+  (defun (iterable-done? xs index)
+    (>= index (mutablevec-length xs)))
+  (defun (iterable-current xs index)
+    (mutablevec-ref xs index))
+  (defun (iterable-next xs index)
+    (+ index 1)))
 
 ;; The elements are one .NET array, so a loop over them can be a vector loop.
 ;; Such a loop does not add to the vector, so the span stays valid.
 (impl (Contiguous (MutableVec %a))
   (type %value %a)
-  (defun (contiguous? xs) #t)
-  (defun (contiguous-values xs) (span->ro-span (clr-as-span xs)))
-  (defun (contiguous-valid xs) (array->ro-span (make-array 0))))
+  (defun (contiguous? xs)
+    #t)
+  (defun (contiguous-values xs)
+    (span->ro-span (clr-as-span xs)))
+  (defun (contiguous-valid xs)
+    (array->ro-span (make-array 0))))
 
 (impl (Collection (MutableVec %a))
   (type %content %a)
-  (defun (length xs) (mutablevec-length xs))
-  (defun (empty? xs) (mutablevec-empty? xs)))
+  (defun (length xs)
+    (mutablevec-length xs))
+  (defun (empty? xs)
+    (mutablevec-empty? xs)))
 
 (impl (Addable! (MutableVec %a))
   (type %elem %a)
@@ -293,18 +316,22 @@
             ((= (mutablevec-ref a i) (mutablevec-ref b i)) (lp (+ i 1)))
             (else #f)))
         #f))
-  (defun (eq-hash xs) (unhashable "MutableVec")))
+  (defun (eq-hash xs)
+    (unhashable "MutableVec")))
 
 ;; `#mvec(a b c)`, in order.
 (impl (Written (MutableVec %a))
   (where (Written %a))
-  (defun (write-into xs b) (elements-print-into "#mvec(" xs ")" b (fun (x b) (write-into x b)))))
+  (defun (write-into xs b)
+    (elements-print-into "#mvec(" xs ")" b (fun (x b) (write-into x b)))))
 
 (impl (Displayed (MutableVec %a))
   (where (Displayed %a))
-  (defun (display-into xs b) (elements-print-into "#mvec(" xs ")" b (fun (x b) (display-into x b)))))
+  (defun (display-into xs b)
+    (elements-print-into "#mvec(" xs ")" b (fun (x b) (display-into x b)))))
 
 (: (-> (MutableVec %a) string) (where (Displayed %a)))
-(defun (mutablevec->str xs) (displayed xs))
+(defun (mutablevec->str xs)
+  (displayed xs))
 
 (:deprecated mutablevec->str "use `displayed`")

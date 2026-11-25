@@ -37,7 +37,8 @@
 (import (std prelude))
 (import (only (std random) current-random random-u64))
 (import (only (std datetime) Instant now instant->unix-milliseconds unix-milliseconds->instant))
-(import (only (std crypto hash) HashAlgorithm make-hasher hasher-add! hasher-add-string! hasher-finish!))
+(import
+  (only (std crypto hash) HashAlgorithm make-hasher hasher-add! hasher-add-string! hasher-finish!))
 (import (only (std atomic) Atomic make-atomic atomic-update!))
 
 (:doc #:file "uuid.bjodoc")
@@ -56,22 +57,30 @@
 ;; that a function here made. `type/derive` does not take `#:opaque`, so `Eq`
 ;; and `Ord` are written out: `hi` first, then `lo`, which is the order of the
 ;; bytes.
-(type (: Uuid #:opaque (Struct (: hi ulong) (: lo ulong))))
+(type (: Uuid #:opaque
+         (Struct (: hi ulong)
+                 (: lo ulong))))
 
 (impl (Eq Uuid)
-  (defun (= a b) (and (= (struct-ref a hi) (struct-ref b hi)) (= (struct-ref a lo) (struct-ref b lo))))
-  (defun (eq-hash u) (bitwise-xor (eq-hash (struct-ref u hi)) (* 31 (eq-hash (struct-ref u lo))))))
+  (defun (= a b)
+    (and (= (struct-ref a hi) (struct-ref b hi)) (= (struct-ref a lo) (struct-ref b lo))))
+  (defun (eq-hash u)
+    (bitwise-xor (eq-hash (struct-ref u hi)) (* 31 (eq-hash (struct-ref u lo))))))
 
 (impl (Ord Uuid)
   (defun (compare a b)
     (def by-hi (compare (struct-ref a hi) (struct-ref b hi)))
-    (if (= by-hi 0) (compare (struct-ref a lo) (struct-ref b lo)) by-hi)))
+    (if (= by-hi 0)
+        (compare (struct-ref a lo) (struct-ref b lo))
+        by-hi)))
 
 (: (-> Uuid ulong))
-(defun (hi-of u) (struct-ref u hi))
+(defun (hi-of u)
+  (struct-ref u hi))
 
 (: (-> Uuid ulong))
-(defun (lo-of u) (struct-ref u lo))
+(defun (lo-of u)
+  (struct-ref u lo))
 
 ;; ---------------------------------------------------------------------------
 ;; Bits and bytes
@@ -94,12 +103,14 @@
   (bitwise-ior (bitwise-and hi version-mask) (shift-left (cast ulong version) 12)))
 
 (: (-> ulong ulong))
-(defun (with-variant lo) (bitwise-ior (bitwise-and lo variant-mask) rfc-variant))
+(defun (with-variant lo)
+  (bitwise-ior (bitwise-and lo variant-mask) rfc-variant))
 
 ;; The 8 bytes from `start`, big-endian.
 (: (-> (Array byte) int ulong))
 (defun (read-u64 bytes start)
-  (let go ((i start) (v 0UL))
+  (let go ((i start)
+           (v 0UL))
     (if (= i (+ start 8))
         v
         (go (+ i 1) (bitwise-ior (shift-left v 8) (cast ulong (array-ref bytes i)))))))
@@ -124,19 +135,21 @@
 ;; A version 7 uuid without its version and variant bits: the 48 bits of the
 ;; time and then the 74 random bits, as one 122-bit number. `high` is its top
 ;; 58 bits and `low` its bottom 64.
-(type (: V7Bits (Struct (: high ulong) (: low ulong))))
+(type (: V7Bits (Struct (: high ulong)
+                        (: low ulong))))
 
 (: (-> V7Bits V7Bits bool))
 (defun (v7-greater? a b)
   (or (> (struct-ref a high) (struct-ref b high))
-      (and (= (struct-ref a high) (struct-ref b high))
-           (> (struct-ref a low) (struct-ref b low)))))
+      (and (= (struct-ref a high) (struct-ref b high)) (> (struct-ref a low) (struct-ref b low)))))
 
 ;; `b` plus 1.
 (: (-> V7Bits V7Bits))
 (defun (v7-next b)
   (def bottom (+ (struct-ref b low) 1UL))
-  (V7Bits (high (if (= bottom 0UL) (+ (struct-ref b high) 1UL) (struct-ref b high)))
+  (V7Bits (high (if (= bottom 0UL)
+                    (+ (struct-ref b high) 1UL)
+                    (struct-ref b high)))
           (low bottom)))
 
 ;; The last version 7 value that this process made.
@@ -155,10 +168,12 @@
   (def ms (bitwise-and (cast ulong (instant->unix-milliseconds (now #:clock clock))) 0xFFFFFFFFFFFF))
   (def r1 (random-u64 #:rng rng))
   (def r2 (random-u64 #:rng rng))
-  (def candidate (V7Bits (high (bitwise-ior (shift-left ms 10) (bitwise-and r1 0x3FF)))
-                         (low r2)))
+  (def candidate (V7Bits (high (bitwise-ior (shift-left ms 10) (bitwise-and r1 0x3FF))) (low r2)))
   (def chosen
-    (atomic-update! last-v7 (fun (last) (if (v7-greater? candidate last) candidate (v7-next last)))))
+    (atomic-update! last-v7 (fun (last)
+                              (if (v7-greater? candidate last)
+                                  candidate
+                                  (v7-next last)))))
   (def top (struct-ref chosen high))
   (def bottom (struct-ref chosen low))
   ;; 48 bits of time, the version, then the top 12 random bits.
@@ -175,16 +190,17 @@
   (hasher-add! h (uuid->bytes namespace))
   (hasher-add-string! h name)
   (def digest (hasher-finish! h))
-  (Uuid (hi (with-version (read-u64 digest 0) version))
-        (lo (with-variant (read-u64 digest 8)))))
+  (Uuid (hi (with-version (read-u64 digest 0) version)) (lo (with-variant (read-u64 digest 8)))))
 
 ;; The same namespace and name always give the same uuid. SHA-1.
 (: (-> Uuid string Uuid))
-(defun (uuid-v5 namespace name) (name-based Sha1 5 namespace name))
+(defun (uuid-v5 namespace name)
+  (name-based Sha1 5 namespace name))
 
 ;; As `uuid-v5`, with MD5. For a system that already uses version 3.
 (: (-> Uuid string Uuid))
-(defun (uuid-v3 namespace name) (name-based Md5 3 namespace name))
+(defun (uuid-v3 namespace name)
+  (name-based Md5 3 namespace name))
 
 (: Uuid)
 (def uuid-nil (Uuid (hi 0UL) (lo 0UL)))
@@ -223,7 +239,8 @@
 
 ;; Whether the 32 hex digits have a hyphen before digit `i`.
 (: (-> int bool))
-(defun (hyphen-before? i) (or (= i 8) (= i 12) (= i 16) (= i 20)))
+(defun (hyphen-before? i)
+  (or (= i 8) (= i 12) (= i 16) (= i 20)))
 
 ;; 8-4-4-4-12 hex digits, lower case unless `#:upper #t`.
 (: (-> Uuid (#:upper bool) string))
@@ -231,11 +248,17 @@
   (def digits (if upper upper-digits lower-digits))
   (def sb (stringbuilder-empty))
   (loop (:for i (range 0 32))
-        (:do (when (hyphen-before? i) (stringbuilder-add-byte! sb 45))
-             (let ((word (if (< i 16) (hi-of u) (lo-of u)))
+        (:do (when (hyphen-before? i)
+               (stringbuilder-add-byte! sb 45))
+             (let ((word (if (< i 16)
+                             (hi-of u)
+                             (lo-of u)))
                    (shift (* 4 (- 15 (% i 16)))))
                (stringbuilder-add-byte!
-                 sb (cast int (array-ref digits (cast int (bitwise-and (shift-right-logical word shift) 15UL))))))))
+                sb
+                (cast int
+                      (array-ref digits
+                                 (cast int (bitwise-and (shift-right-logical word shift) 15UL))))))))
   (stringbuilder->string sb))
 
 ;; 0 to 15 for an ASCII hex digit in either case, -1 for any other byte.
@@ -257,11 +280,16 @@
   (if (not (= (array-length bytes) 36))
       None
       ;; `i` indexes the text, `digit` counts the hex digits read.
-      (let go ((i 0) (digit 0) (h 0UL) (l 0UL))
+      (let go ((i 0)
+               (digit 0)
+               (h 0UL)
+               (l 0UL))
         (cond
           ((= i 36) (Some (Uuid (hi h) (lo l))))
           ((or (= i 8) (= i 13) (= i 18) (= i 23))
-           (if (= (array-ref bytes i) 45uy) (go (+ i 1) digit h l) None))
+           (if (= (array-ref bytes i) 45uy)
+               (go (+ i 1) digit h l)
+               None))
           (else
            (def v (hex-value (array-ref bytes i)))
            (cond
@@ -270,7 +298,8 @@
              (else (go (+ i 1) (+ digit 1) h (bitwise-ior (shift-left l 4) (cast ulong v))))))))))
 
 (: (-> string bool))
-(defun (uuid-string? text) (some? (string->uuid text)))
+(defun (uuid-string? text)
+  (some? (string->uuid text)))
 
 ;; 16 bytes, in network byte order.
 (: (-> Uuid (Array byte)))
@@ -288,8 +317,10 @@
       None))
 
 (impl (Written Uuid)
-  (defun (written u) (uuid->string u))
-  (defun (write-into u b) (stringbuilder-add-string! b (written u))))
+  (defun (written u)
+    (uuid->string u))
+  (defun (write-into u b)
+    (stringbuilder-add-string! b (written u))))
 
 ;; ---------------------------------------------------------------------------
 ;; What is in one
@@ -323,8 +354,14 @@
   (Guid. (cast uint (shift-right-logical hi 32))
          (cast ushort (shift-right-logical hi 16))
          (cast ushort hi)
-         (array-ref b 8) (array-ref b 9) (array-ref b 10) (array-ref b 11)
-         (array-ref b 12) (array-ref b 13) (array-ref b 14) (array-ref b 15)))
+         (array-ref b 8)
+         (array-ref b 9)
+         (array-ref b 10)
+         (array-ref b 11)
+         (array-ref b 12)
+         (array-ref b 13)
+         (array-ref b 14)
+         (array-ref b 15)))
 
 (: (-> Guid Uuid))
 (defun (guid->uuid g)

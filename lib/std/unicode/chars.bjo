@@ -72,8 +72,10 @@
 ;; The kind of a code point.
 (: (-> int int) #:inline)
 (defun (kind-of cp)
-  (cast int (ro-span-ref stage2 (+ (shift-left (cast int (ro-span-ref stage1 (shift-right cp 8))) 8)
-                                   (bitwise-and cp 255)))))
+  (cast int
+        (ro-span-ref stage2
+                     (+ (shift-left (cast int (ro-span-ref stage1 (shift-right cp 8))) 8)
+                        (bitwise-and cp 255)))))
 
 ;; The properties of a character: bits 0-4 the general category, bit 5
 ;; Alphabetic, bit 6 White_Space, bit 7 Uppercase, bit 8 Lowercase, bits 9-12
@@ -91,43 +93,54 @@
 (defun (mapped row c)
   (def cp (char->int c))
   (def d (ro-span-ref kinds (+ (* row kind-count) (kind-of cp))))
-  (if (= d 0) c (int->char (+ cp d))))
+  (if (= d 0)
+      c
+      (int->char (+ cp d))))
 
 ;; ---------------------------------------------------------------------------
 ;; Case
 ;; ---------------------------------------------------------------------------
 
 (: (-> char char))
-(defun (char-upcase c) (mapped upper-row c))
+(defun (char-upcase c)
+  (mapped upper-row c))
 
 (: (-> char char))
-(defun (char-downcase c) (mapped lower-row c))
+(defun (char-downcase c)
+  (mapped lower-row c))
 
 (: (-> char char))
-(defun (char-titlecase c) (mapped title-row c))
+(defun (char-titlecase c)
+  (mapped title-row c))
 
 (: (-> char char))
-(defun (char-foldcase c) (mapped fold-row c))
+(defun (char-foldcase c)
+  (mapped fold-row c))
 
 ;; ---------------------------------------------------------------------------
 ;; Classification
 ;; ---------------------------------------------------------------------------
 
 (: (-> char bool))
-(defun (char-alphabetic? c) (has? c 5))
+(defun (char-alphabetic? c)
+  (has? c 5))
 
 (: (-> char bool))
-(defun (char-whitespace? c) (has? c 6))
+(defun (char-whitespace? c)
+  (has? c 6))
 
 (: (-> char bool))
-(defun (char-upper-case? c) (has? c 7))
+(defun (char-upper-case? c)
+  (has? c 7))
 
 (: (-> char bool))
-(defun (char-lower-case? c) (has? c 8))
+(defun (char-lower-case? c)
+  (has? c 8))
 
 ;; The index of the category, as `category-symbol` takes it.
 (: (-> char int) #:inline)
-(defun (category-of c) (bitwise-and (props-of c) 31))
+(defun (category-of c)
+  (bitwise-and (props-of c) 31))
 
 ;; Lt, Nd and No, by their index in `category-symbol`.
 (def lt 2)
@@ -135,7 +148,8 @@
 (def no 10)
 
 (: (-> char bool))
-(defun (char-title-case? c) (= (category-of c) lt))
+(defun (char-title-case? c)
+  (= (category-of c) lt))
 
 (: (-> char bool))
 (defun (char-numeric? c)
@@ -145,26 +159,34 @@
 (: (-> char (Option int)))
 (defun (digit-value c)
   (def d (shift-right (props-of c) 9))
-  (if (= d 15) None (Some d)))
+  (if (= d 15)
+      None
+      (Some d)))
 
 (: (-> char Symbol))
-(defun (char-general-category c) (category-symbol (category-of c)))
+(defun (char-general-category c)
+  (category-symbol (category-of c)))
 
 ;; ---------------------------------------------------------------------------
 ;; Comparison without case
 ;; ---------------------------------------------------------------------------
 
 (: (-> char char bool))
-(defun (char-ci=? a b) (= (char-foldcase a) (char-foldcase b)))
+(defun (char-ci=? a b)
+  (= (char-foldcase a) (char-foldcase b)))
 
 (: (-> char char bool))
-(defun (char-ci<? a b) (< (char-foldcase a) (char-foldcase b)))
+(defun (char-ci<? a b)
+  (< (char-foldcase a) (char-foldcase b)))
 
 (: (-> char char bool))
-(defun (char-ci>? a b) (> (char-foldcase a) (char-foldcase b)))
+(defun (char-ci>? a b)
+  (> (char-foldcase a) (char-foldcase b)))
 
 (: (-> char char bool))
-(defun (char-ci<=? a b) (<= (char-foldcase a) (char-foldcase b)))
+(defun (char-ci<=? a b)
+  (<= (char-foldcase a) (char-foldcase b)))
 
 (: (-> char char bool))
-(defun (char-ci>=? a b) (>= (char-foldcase a) (char-foldcase b)))
+(defun (char-ci>=? a b)
+  (>= (char-foldcase a) (char-foldcase b)))

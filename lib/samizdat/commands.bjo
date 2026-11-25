@@ -83,15 +83,18 @@
 (: no-arguments! (-> Ctx Call void))
 (defun (no-arguments! cx c)
   (check-keywords! cx c (vec-empty))
-  (when (> (arg-count c) 0) (refuse cx c "takes no arguments")))
+  (when (> (arg-count c) 0)
+    (refuse cx c "takes no arguments")))
 
 (: no-body! (-> Ctx Call void))
 (defun (no-body! cx c)
-  (when (has-body? c) (refuse cx c "takes no body")))
+  (when (has-body? c)
+    (refuse cx c "takes no body")))
 
 (: needs-body! (-> Ctx Call void))
 (defun (needs-body! cx c)
-  (unless (has-body? c) (refuse cx c "needs a body: {...}")))
+  (unless (has-body? c)
+    (refuse cx c "needs a body: {...}")))
 
 ;; ---------------------------------------------------------------------------
 ;; Text
@@ -119,7 +122,10 @@
 (defun (link cx c)
   (check-keywords! cx c (vec-empty))
   (def url (arg-string cx c 0))
-  (inline (Link url (if (has-body? c) (expand-inlines cx c) (vec-add (vec-empty) (Str url))))))
+  (inline (Link url
+                (if (has-body? c)
+                    (expand-inlines cx c)
+                    (vec-add (vec-empty) (Str url))))))
 
 (: image (-> Ctx Call (Vec Piece)))
 (defun (image cx c)
@@ -174,7 +180,8 @@
 (defun (checkbox cx c)
   (check-keywords! cx c ["checked"])
   (no-body! cx c)
-  (when (> (arg-count c) 0) (refuse cx c "takes no arguments; use #:checked #t for a checked box"))
+  (when (> (arg-count c) 0)
+    (refuse cx c "takes no arguments; use #:checked #t for a checked box"))
   (inline (Checkbox (kw-bool-or cx c "checked" #f))))
 
 ;; ---------------------------------------------------------------------------
@@ -189,7 +196,10 @@
     (def title (expand-inlines cx c))
     (def id (kw-string-or cx c "id" ""))
     (block (Heading level
-                    (unique-id! cx (if (string-empty? id) (inlines->text title) id))
+                    (unique-id! cx
+                                (if (string-empty? id)
+                                    (inlines->text title)
+                                    id))
                     title))))
 
 (: heading* (-> int Command))
@@ -205,7 +215,8 @@
 (: codeblock (-> Ctx Call (Vec Piece)))
 (defun (codeblock cx c)
   (check-keywords! cx c ["lang" "file"])
-  (when (> (arg-count c) 0) (refuse cx c "takes no arguments; the language is #:lang"))
+  (when (> (arg-count c) 0)
+    (refuse cx c "takes no arguments; the language is #:lang"))
   (def file (kw-string-or cx c "file" ""))
   (def text
     (cond
@@ -229,28 +240,32 @@
   (def start (kw-int-or cx c "start" 1))
   (def items
     (loop (:for item (body-items c))
-          (:acc out (folding (vec-empty)
-                             (match item
-                               ((Text s)
-                                (unless (string-empty? (string-trim s))
-                                  (refuse cx c "holds only @item{...}, and there is text in it"))
-                                out)
-                               ((Cmd inner)
-                                (unless (= (record-ref inner name) "item")
-                                  (refuse cx inner "cannot stand in an @itemlist, where only @item{...} can"))
-                                (check-keywords! cx inner (vec-empty))
-                                (vec-add out (expand-blocks cx inner))))))))
+          (:acc out (folding
+                     (vec-empty)
+                     (match item
+                       ((Text s)
+                        (unless (string-empty? (string-trim s))
+                          (refuse cx c "holds only @item{...}, and there is text in it"))
+                        out)
+                       ((Cmd inner)
+                        (unless (= (record-ref inner name) "item")
+                          (refuse cx inner "cannot stand in an @itemlist, where only @item{...} can"))
+                        (check-keywords! cx inner (vec-empty))
+                        (vec-add out (expand-blocks cx inner))))))))
   (block (ItemList (= style "ordered") start items)))
 
 ;; An @item is read by the @itemlist it is in, and anywhere else is a mistake.
 (: item (-> Ctx Call (Vec Piece)))
-(defun (item cx c) (refuse cx c "belongs inside an @itemlist"))
+(defun (item cx c)
+  (refuse cx c "belongs inside an @itemlist"))
 
 (: term (-> Ctx Call (Vec Piece)))
-(defun (term cx c) (refuse cx c "belongs inside a @deflist"))
+(defun (term cx c)
+  (refuse cx c "belongs inside a @deflist"))
 
 (: def (-> Ctx Call (Vec Piece)))
-(defun (def cx c) (refuse cx c "belongs inside a @deflist"))
+(defun (def cx c)
+  (refuse cx c "belongs inside a @deflist"))
 
 ;; Split a vec of inlines on LineBreak nodes, producing a vec of lines.
 ;;
@@ -264,17 +279,25 @@
                                    ((Tuple (Tuple lines current) LineBreak)
                                     (Tuple (vec-add lines current) (vec-empty)))
                                    ((Tuple (Tuple lines current) inline)
-                                    (Tuple lines (vec-add current (if (and (vec-empty? current) (not (vec-empty? lines)))
-                                                                      (without-leading-newline inline)
-                                                                      inline))))))))
+                                    (Tuple lines
+                                           (vec-add current
+                                                    (if (and (vec-empty? current)
+                                                             (not (vec-empty? lines)))
+                                                        (without-leading-newline inline)
+                                                        inline))))))))
     ((Tuple lines current)
-     (if (vec-empty? current) lines (vec-add lines current)))))
+     (if (vec-empty? current)
+         lines
+         (vec-add lines current)))))
 
 ;; Text less the newline it begins with, if it begins with one.
 (: without-leading-newline (-> Inline Inline))
 (defun (without-leading-newline x)
   (match x
-    ((Str s) (if (string-starts-with? s "\n") (Str (.Substring s 1)) x))
+    ((Str s)
+     (if (string-starts-with? s "\n")
+         (Str (.Substring s 1))
+         x))
     (_ x)))
 
 (: lineblock (-> Ctx Call (Vec Piece)))
@@ -298,36 +321,42 @@
   (needs-body! cx c)
   (def final
     (loop (:for item (body-items c))
-          (:acc st (folding (Tuple (vec-empty) None)
-                            (match item
-                              ((Text s)
-                               (unless (string-empty? (string-trim s))
-                                 (refuse cx c "holds only @term{...} and @def{...}, and there is text in it"))
-                               st)
-                              ((Cmd inner)
-                               (def nm (record-ref inner name))
-                               (cond
-                                 ((= nm "term")
-                                  (check-keywords! cx inner (vec-empty))
-                                  (needs-body! cx inner)
-                                  (match st
-                                    ((Tuple entries current)
-                                     (Tuple (flush-entry entries current)
-                                            (Some (Tuple (expand-inlines cx inner) (vec-empty)))))))
-                                 ((= nm "def")
-                                  (check-keywords! cx inner (vec-empty))
-                                  (needs-body! cx inner)
-                                  (match st
-                                    ((Tuple entries None)
-                                     (refuse cx inner "has a @def before any @term"))
-                                    ((Tuple entries (Some (Tuple t defs)))
-                                     (Tuple entries (Some (Tuple t (vec-add defs (expand-blocks cx inner))))))))
-                                 (else
-                                  (refuse cx inner "cannot stand in a @deflist; only @term{...} and @def{...} can")))))))))
+          (:acc st (folding
+                    (Tuple (vec-empty) None)
+                    (match item
+                      ((Text s)
+                       (unless (string-empty? (string-trim s))
+                         (refuse cx c "holds only @term{...} and @def{...}, and there is text in it"))
+                       st)
+                      ((Cmd inner)
+                       (def nm (record-ref inner name))
+                       (cond
+                         ((= nm "term")
+                          (check-keywords! cx inner (vec-empty))
+                          (needs-body! cx inner)
+                          (match st
+                            ((Tuple entries current)
+                             (Tuple (flush-entry entries current)
+                                    (Some (Tuple (expand-inlines cx inner) (vec-empty)))))))
+                         ((= nm "def")
+                          (check-keywords! cx inner (vec-empty))
+                          (needs-body! cx inner)
+                          (match st
+                            ((Tuple entries None) (refuse cx inner "has a @def before any @term"))
+                            ((Tuple entries (Some (Tuple t defs)))
+                             (Tuple entries
+                                    (Some (Tuple t (vec-add defs (expand-blocks cx inner))))))))
+                         (else
+                          (refuse
+                           cx
+                           inner
+                           "cannot stand in a @deflist; only @term{...} and @def{...} can")))))))))
   (match final
     ((Tuple entries current)
      (def all (flush-entry entries current))
-     (if (vec-empty? all) nothing (block (DefinitionList all))))))
+     (if (vec-empty? all)
+         nothing
+         (block (DefinitionList all))))))
 
 (: hr (-> Ctx Call (Vec Piece)))
 (defun (hr cx c)
@@ -346,7 +375,8 @@
   (block (RawBlock (arg-string cx c 0) (body-text cx c))))
 
 (: comment (-> Ctx Call (Vec Piece)))
-(defun (comment cx c) nothing)
+(defun (comment cx c)
+  nothing)
 
 ;; ---------------------------------------------------------------------------
 ;; What needs the whole document
@@ -355,14 +385,17 @@
 (type (: Entry (Alias (Tuple int string (Vec Inline)))))
 
 (: entry-level (-> Entry int))
-(defun (entry-level h) (match h ((Tuple level id xs) level)))
+(defun (entry-level h)
+  (match h
+    ((Tuple level id xs) level)))
 
 ;; The items for the headings from `i` on, at `level`, and where they stopped:
 ;; at the end, or at a heading above `level`. A heading below it makes a list
 ;; inside the item before it — or an item of its own, when there is none.
 (: toc-level (-> (Vec Entry) int int (Tuple (Vec (Vec Block)) int)))
 (defun (toc-level hs i level)
-  (let go ((i i) (items (vec-empty)))
+  (let go ((i i)
+           (items (vec-empty)))
     (cond
       ((>= i (vec-length hs)) (Tuple items i))
       ((< (entry-level (vec-ref hs i)) level) (Tuple items i))
@@ -371,9 +404,10 @@
          ((Tuple sub next)
           (def sublist (ItemList #f 1 sub))
           (def last (- (vec-length items) 1))
-          (go next (if (vec-empty? items)
-                       (vec-add items [sublist])
-                       (vec-set items last (vec-add (vec-ref items last) sublist)))))))
+          (go next
+              (if (vec-empty? items)
+                  (vec-add items [sublist])
+                  (vec-set items last (vec-add (vec-ref items last) sublist)))))))
       (else
        (match (vec-ref hs i)
          ((Tuple l id xs) (go (+ i 1) (vec-add items [(Para [(Link (str "#" id) xs)])]))))))))
@@ -385,9 +419,15 @@
   (if (vec-empty? hs)
       (vec-empty)
       (let ((top (loop (:for h hs)
-                       (:acc least (folding 1000 (if (< (entry-level h) least) (entry-level h) least)))))
+                       (:acc least (folding 1000
+                                            (if (< (entry-level h) least)
+                                                (entry-level h)
+                                                least)))))
             (numbered (loop (:for h hs)
-                            (:acc any (folding #f (or any (match h ((Tuple l id xs) (numbered-title? xs)))))))))
+                            (:acc any (folding #f
+                                               (or any
+                                                   (match h
+                                                     ((Tuple l id xs) (numbered-title? xs)))))))))
         (match (toc-level hs 0 top)
           ((Tuple items next) [(Div (if numbered "toc numbered" "toc") [(ItemList #f 1 items)])])))))
 
@@ -399,11 +439,11 @@
 (defun (toc cx c)
   (check-keywords! cx c ["depth"])
   (no-body! cx c)
-  (when (> (arg-count c) 0) (refuse cx c "takes no arguments; the depth is #:depth"))
+  (when (> (arg-count c) 0)
+    (refuse cx c "takes no arguments; the depth is #:depth"))
   (def depth (kw-int-or cx c "depth" 2))
-  (defer-blocks cx (fun (doc)
-                     (toc-of (vec-filter (fun (h) (<= (entry-level h) depth))
-                                         (document-headings doc))))))
+  (defer-blocks cx
+    (fun (doc) (toc-of (vec-filter (fun (h) (<= (entry-level h) depth)) (document-headings doc))))))
 
 (: heading-titled (-> (Vec Entry) string (Option (Vec Inline))))
 (defun (heading-titled hs target)
@@ -411,8 +451,12 @@
         (:acc found (folding None
                              (match found
                                ((Some xs) found)
-                               (None (match h
-                                       ((Tuple level id xs) (if (= id target) (Some xs) None)))))))))
+                               (None
+                                (match h
+                                  ((Tuple level id xs)
+                                   (if (= id target)
+                                       (Some xs)
+                                       None)))))))))
 
 ;; @numbered-headings, anywhere in the document: its sections, subsections and
 ;; subsubsections numbered, 1, 1.1, 1.1.1, in their titles and so in @toc and
@@ -422,9 +466,11 @@
 (defun (numbered-headings cx c)
   (check-keywords! cx c ["depth"])
   (no-body! cx c)
-  (when (> (arg-count c) 0) (refuse cx c "takes no arguments; the depth is #:depth"))
+  (when (> (arg-count c) 0)
+    (refuse cx c "takes no arguments; the depth is #:depth"))
   (def depth (kw-int-or cx c "depth" 3))
-  (when (< depth 1) (refuse cx c (str "#:depth is 1 or more, not " (int->string depth))))
+  (when (< depth 1)
+    (refuse cx c (str "#:depth is 1 or more, not " (int->string depth))))
   (number-headings! cx c depth)
   nothing)
 
@@ -435,7 +481,10 @@
 (defun (reference cx c)
   (check-keywords! cx c (vec-empty))
   (def target (arg-string cx c 0))
-  (def text (if (has-body? c) (Some (expand-inlines cx c)) None))
+  (def text
+    (if (has-body? c)
+        (Some (expand-inlines cx c))
+        None))
   (defer-inlines cx (fun (doc)
                       (match (heading-titled (document-headings doc) target)
                         (None (refuse cx c (str "there is no heading with the id " target)))

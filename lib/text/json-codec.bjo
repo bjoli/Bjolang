@@ -45,7 +45,6 @@
 (def/trait (->json %a)
   (: ->json (-> %a Json)))
 
-
 (def/trait (json-> %a)
   (: json-> (-> Json (Result string %a))))
 
@@ -53,16 +52,31 @@
 ;; Scalars
 ;; ---------------------------------------------------------------------------
 
-(impl (->json Json)   (defun (->json j) j))
-(impl (->json long)   (defun (->json n) (JsonInt n)))
-(impl (->json int)    (defun (->json n) (JsonInt (cast System.Int64 n))))
-(impl (->json double) (defun (->json n) (JsonFloat n)))
-(impl (->json float)  (defun (->json n) (JsonFloat (cast System.Double n))))
-(impl (->json bool)   (defun (->json b) (JsonBool b)))
-(impl (->json string) (defun (->json s) (JsonStr s)))
+(impl (->json Json)
+  (defun (->json j)
+    j))
+(impl (->json long)
+  (defun (->json n)
+    (JsonInt n)))
+(impl (->json int)
+  (defun (->json n)
+    (JsonInt (cast System.Int64 n))))
+(impl (->json double)
+  (defun (->json n)
+    (JsonFloat n)))
+(impl (->json float)
+  (defun (->json n)
+    (JsonFloat (cast System.Double n))))
+(impl (->json bool)
+  (defun (->json b)
+    (JsonBool b)))
+(impl (->json string)
+  (defun (->json s)
+    (JsonStr s)))
 
 (impl (json-> Json)
-  (defun (json-> j) (Ok j)))
+  (defun (json-> j)
+    (Ok j)))
 
 (impl (json-> long)
   (defun (json-> j)
@@ -80,7 +94,6 @@
            (Ok (cast System.Int32 n))
            (Err "expected an integer that fits in an int")))
       (_ (Err "expected an integer")))))
-
 
 (impl (json-> double)
   (defun (json-> j)
@@ -127,9 +140,10 @@
   (defun (json-> j)
     (match j
       (JsonNull (Ok None))
-      (_ (match (json-> j)
-           ((Err e) (Err e))
-           ((Ok v) (Ok (Some v))))))))
+      (_
+       (match (json-> j)
+         ((Err e) (Err e))
+         ((Ok v) (Ok (Some v))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Arrays
@@ -189,7 +203,8 @@
 
 (impl (json-> (Array %a))
   (where (json-> %a))
-  (defun (json-> j) (json-elements j)))
+  (defun (json-> j)
+    (json-elements j)))
 
 (impl (->json (IArray %a))
   (where (->json %a))
@@ -216,7 +231,8 @@
       ((JsonArr items)
        (cond
          ((not (= (iarray-length items) 2))
-          (Err (str "expected an array of 2 elements, and this has " (int->string (iarray-length items)))))
+          (Err (str "expected an array of 2 elements, and this has "
+                    (int->string (iarray-length items)))))
          (:def (Ok a) (json-element items 0) :propagate)
          (:def (Ok b) (json-element items 1) :propagate)
          (else (Ok (Tuple a b)))))
@@ -235,7 +251,8 @@
       ((JsonArr items)
        (cond
          ((not (= (iarray-length items) 3))
-          (Err (str "expected an array of 3 elements, and this has " (int->string (iarray-length items)))))
+          (Err (str "expected an array of 3 elements, and this has "
+                    (int->string (iarray-length items)))))
          (:def (Ok a) (json-element items 0) :propagate)
          (:def (Ok b) (json-element items 1) :propagate)
          (:def (Ok c) (json-element items 2) :propagate)
@@ -293,27 +310,54 @@
        (None (Err (str "expected " what ", and \"" s "\" is not one")))))
     (_ (Err (str "expected " what ", as a string")))))
 
-(impl (->json Date) (defun (->json d) (JsonStr (written d))))
-(impl (json-> Date) (defun (json-> j) (from-text j iso8601->date "an ISO 8601 date")))
+(impl (->json Date)
+  (defun (->json d)
+    (JsonStr (written d))))
+(impl (json-> Date)
+  (defun (json-> j)
+    (from-text j iso8601->date "an ISO 8601 date")))
 
-(impl (->json Time) (defun (->json t) (JsonStr (written t))))
-(impl (json-> Time) (defun (json-> j) (from-text j iso8601->time "an ISO 8601 time")))
+(impl (->json Time)
+  (defun (->json t)
+    (JsonStr (written t))))
+(impl (json-> Time)
+  (defun (json-> j)
+    (from-text j iso8601->time "an ISO 8601 time")))
 
-(impl (->json DateTime) (defun (->json dt) (JsonStr (written dt))))
-(impl (json-> DateTime) (defun (json-> j) (from-text j iso8601->datetime "an ISO 8601 date and time")))
+(impl (->json DateTime)
+  (defun (->json dt)
+    (JsonStr (written dt))))
+(impl (json-> DateTime)
+  (defun (json-> j)
+    (from-text j iso8601->datetime "an ISO 8601 date and time")))
 
-(impl (->json Instant) (defun (->json i) (JsonStr (written i))))
-(impl (json-> Instant) (defun (json-> j) (from-text j iso8601->instant "an ISO 8601 instant")))
+(impl (->json Instant)
+  (defun (->json i)
+    (JsonStr (written i))))
+(impl (json-> Instant)
+  (defun (json-> j)
+    (from-text j iso8601->instant "an ISO 8601 instant")))
 
-(impl (->json Moment) (defun (->json m) (JsonStr (written m))))
+(impl (->json Moment)
+  (defun (->json m)
+    (JsonStr (written m))))
 (impl (json-> Moment)
-  (defun (json-> j) (from-text j iso8601->moment "an ISO 8601 date and time with an offset")))
+  (defun (json-> j)
+    (from-text j iso8601->moment "an ISO 8601 date and time with an offset")))
 
-(impl (->json Duration) (defun (->json d) (JsonStr (written d))))
-(impl (json-> Duration) (defun (json-> j) (from-text j iso8601->duration "an ISO 8601 duration")))
+(impl (->json Duration)
+  (defun (->json d)
+    (JsonStr (written d))))
+(impl (json-> Duration)
+  (defun (json-> j)
+    (from-text j iso8601->duration "an ISO 8601 duration")))
 
-(impl (->json Uuid) (defun (->json u) (JsonStr (uuid->string u))))
-(impl (json-> Uuid) (defun (json-> j) (from-text j string->uuid "a UUID")))
+(impl (->json Uuid)
+  (defun (->json u)
+    (JsonStr (uuid->string u))))
+(impl (json-> Uuid)
+  (defun (json-> j)
+    (from-text j string->uuid "a UUID")))
 
 ;; ---------------------------------------------------------------------------
 ;; What generated field code calls
@@ -334,8 +378,7 @@
 (defun (json-field owner m key)
   (match (json-object-ref m key)
     (None (Err (str owner ": the object has no \"" key "\" field")))
-    ((Some j)
-     (result-map-err (fun (e) (str owner "." key ": " e)) (json-> j)))))
+    ((Some j) (result-map-err (fun (e) (str owner "." key ": " e)) (json-> j)))))
 
 ;; Absent and null ar the same in the sense that a nullable has the default value None
 (: (-> string Json string %a (Result string %a)) (where (json-> %a)))
@@ -343,8 +386,7 @@
   (match (json-object-ref m key)
     (None (Ok fallback))
     ((Some JsonNull) (Ok fallback))
-    ((Some j)
-     (result-map-err (fun (e) (str owner "." key ": " e)) (json-> j)))))
+    ((Some j) (result-map-err (fun (e) (str owner "." key ": " e)) (json-> j)))))
 
 ;; ---------------------------------------------------------------------------
 ;; The generator
@@ -353,10 +395,12 @@
 ;; settled later by instance resolution, and only the markers are read here.
 
 (: (-> string Syntax))
-(defun (jt-sym name) (SSym (string->symbol name)))
+(defun (jt-sym name)
+  (SSym (string->symbol name)))
 
 (: (-> Syntax Syntax))
-(defun (jt-str s) (SStr (syntax->string s)))
+(defun (jt-str s)
+  (SStr (syntax->string s)))
 
 ;; `(Box %a)` names the type `Box`; a bare `Point` names itself.
 (: (-> Syntax Syntax))
@@ -371,27 +415,27 @@
     ((SList parts) (list-tail parts))
     (_ Nil)))
 
-
 (: (-> (-> Symbol Syntax) Syntax (List Syntax)))
 (defun (jt-where-enc inject head)
   (def vars (jt-head-vars head))
   (if (list-empty? vars)
       Nil
-      (list #'(,(inject 'where)
-               ,@(list-map (fun (v) #'(,(inject (string->symbol "->json")) ,v)) vars)))))
+      (list #'(,(inject 'where) ,@(list-map (fun (v) #'(,(inject (string->symbol "->json")) ,v))
+                                            vars)))))
 
 (: (-> (-> Symbol Syntax) Syntax (List Syntax)))
 (defun (jt-where-dec inject head)
   (def vars (jt-head-vars head))
   (if (list-empty? vars)
       Nil
-      (list #'(,(inject 'where)
-               ,@(list-map (fun (v) #'(,(inject (string->symbol "json->")) ,v)) vars)))))
+      (list #'(,(inject 'where) ,@(list-map (fun (v) #'(,(inject (string->symbol "json->")) ,v))
+                                            vars)))))
 
 ;; --- fields ----------------------------------------------------------------
 
 (: (-> Syntax string bool))
-(defun (jt-marker=? m name) (= (syntax->string m) name))
+(defun (jt-marker=? m name)
+  (= (syntax->string m) name))
 
 ;; The JSON key: `#:json "name"` means it uses the "name" as the key for the field
 ;; instead of the defined name
@@ -468,7 +512,8 @@
   (def markers (jt-field-markers f))
   (def write #'(transientmap-set! ,buf ,(jt-key name markers) (->json (record-ref v ,name))))
   (if (jt-optional? markers)
-      #'(when (some? (record-ref v ,name)) ,write)
+      #'(when (some? (record-ref v ,name))
+          ,write)
       write))
 
 (: (-> (List Syntax) bool))
@@ -500,9 +545,10 @@
      (def e (jt-sym (str "__jt-e" (int->string i))))
      (def name (jt-field-name f))
      (def markers (jt-field-markers f))
-     (def get (match (jt-fallback markers)
-                (None #'(json-field ,owner ,m ,(jt-key name markers)))
-                ((Some d) #'(json-field/default ,owner ,m ,(jt-key name markers) ,d))))
+     (def get
+       (match (jt-fallback markers)
+         (None #'(json-field ,owner ,m ,(jt-key name markers)))
+         ((Some d) #'(json-field/default ,owner ,m ,(jt-key name markers) ,d))))
      #'(match ,get
          ((Err ,e) (Err ,e))
          ((Ok ,v) ,(jt-chain owner m (list-tail fields) (+ i 1) ctor))))))
@@ -510,7 +556,8 @@
 (: (-> Syntax (List Syntax) Syntax))
 (defun (jt-ctor head fields)
   #'(Ok (,(jt-head-name head)
-         ,@(let go ((fs fields) (i 0))
+         ,@(let go ((fs fields)
+                    (i 0))
              (if (list-empty? fs)
                  Nil
                  (Cons #'(,(jt-field-name (list-head fs)) ,(jt-sym (str "__jt-v" (int->string i))))
@@ -537,23 +584,30 @@
 
       (impl (->json ,head)
         ,@(jt-where-enc inject head)
-        (defun (->json v) ,(jt-encode fields)))
+        (defun (->json v)
+          ,(jt-encode fields)))
 
       (impl (json-> ,head)
         ,@(jt-where-dec inject head)
-        (defun (json-> j) ,(jt-decode head fields)))
+        (defun (json-> j)
+          ,(jt-decode head fields)))
 
       ;; The named pair. `json->` alone would be ambiguous at a call site;
       ;; this signature is what fixes the instance, once per type.
       (: ,enc (-> ,head Json) ,@(jt-where-enc inject head))
-      (defun (,enc v) (->json v))
+      (defun (,enc v)
+        (->json v))
       (: ,dec (-> Json (Result string ,head)) ,@(jt-where-dec inject head))
-      (defun (,dec j) (json-> j))))
+      (defun (,dec j)
+        (json-> j))))
 
 (def/macro (def/json-type form inject compare)
   (syntax-match form
     ((_ typedef)
      (syntax-match typedef
        ((colon head ('Record field ...)) (jt-expand inject colon head field))
-       (bad (syntax-error bad "def/json-type takes a record: (def/json-type (: Name (Record (: field type) ...)))"))))
+       (bad
+        (syntax-error
+         bad
+         "def/json-type takes a record: (def/json-type (: Name (Record (: field type) ...)))"))))
     (bad (syntax-error bad "def/json-type takes exactly one record declaration."))))

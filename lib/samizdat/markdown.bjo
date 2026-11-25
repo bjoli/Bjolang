@@ -58,7 +58,8 @@
 (def token-close (char->string (int->char 57346)))
 
 (: token (-> int string))
-(defun (token n) (str token-open (int->string n) token-close))
+(defun (token n)
+  (str token-open (int->string n) token-close))
 
 ;; The body's text with a placeholder where each command was, and the
 ;; commands, numbered from 0.
@@ -69,7 +70,9 @@
     (loop (:for item items)
           (:acc found (folding (vec-empty)
                                (match item
-                                 ((Text s) (stringbuilder-add-string! sb s) found)
+                                 ((Text s)
+                                  (stringbuilder-add-string! sb s)
+                                  found)
                                  ((Cmd c)
                                   (stringbuilder-add-string! sb (token (vec-length found)))
                                   (vec-add found c)))))))
@@ -104,7 +107,9 @@
 
 (: add-str (-> (Vec Piece) string (Vec Piece)))
 (defun (add-str out s)
-  (if (string-empty? s) out (vec-add out (PInline (Str s)))))
+  (if (string-empty? s)
+      out
+      (vec-add out (PInline (Str s)))))
 
 ;; Text with placeholders in it: the text, and each command expanded where
 ;; its placeholder was. A command that makes a block is refused here, in
@@ -113,18 +118,23 @@
 (defun (text-pieces md s)
   (def parts (string-split s token-open))
   (loop (:for part (in-vec parts #:from 1))
-        (:acc out (folding (add-str (vec-empty) (vec-ref parts 0))
-                           (let* ((halves (string-split part token-close))
-                                  (n (string->int (vec-ref halves 0)))
-                                  (rest (string-join (vec-remove-at halves 0) token-close))
-                                  (made (command-pieces md n)))
-                             (loop (:for p made)
-                                   (:do (match p
-                                          ((PBlock b)
-                                           (refuse (record-ref md cx) (vec-ref (record-ref md calls) n)
-                                                   "makes a block, and stands in running Markdown text; give it a paragraph of its own"))
-                                          (_ unit))))
-                             (add-str (vec-append out made) rest))))))
+        (:acc out
+              (folding
+               (add-str (vec-empty) (vec-ref parts 0))
+               (let* ((halves (string-split part token-close))
+                      (n (string->int (vec-ref halves 0)))
+                      (rest (string-join (vec-remove-at halves 0) token-close))
+                      (made (command-pieces md n)))
+                 (loop (:for p made)
+                       (:do
+                        (match p
+                          ((PBlock b)
+                           (refuse
+                            (record-ref md cx)
+                            (vec-ref (record-ref md calls) n)
+                            "makes a block, and stands in running Markdown text; give it a paragraph of its own"))
+                          (_ unit))))
+                 (add-str (vec-append out made) rest))))))
 
 ;; Text where only text will do — code, an address: a command's text.
 (: plain (-> Md string string))
@@ -189,10 +199,14 @@
   (match (map-try-ref (box-ref numbers) n)
     ((Some k) k)
     (None
-     (def blocks (loop (:for note (record-ref md footnotes))
-                       (:acc found (folding (vec-empty)
-                                            (match note
-                                              ((Tuple order bs) (if (= order n) bs found)))))))
+     (def blocks
+       (loop (:for note (record-ref md footnotes))
+             (:acc found (folding (vec-empty)
+                                  (match note
+                                    ((Tuple order bs)
+                                     (if (= order n)
+                                         bs
+                                         found)))))))
      (def k (add-note! (record-ref md cx) (fun () (blocks-of md blocks))))
      (box-set! numbers (map-set (box-ref numbers) n k))
      k)))
@@ -200,14 +214,24 @@
 ;; A command alone in a paragraph: what it makes, its text in paragraphs.
 (: pieces->blocks (-> (Vec Piece) (Vec Block)))
 (defun (pieces->blocks pieces)
-  (def with-run (fun (blocks run) (if (vec-empty? run) blocks (vec-add blocks (Para run)))))
+  (def with-run
+    (fun (blocks run)
+      (if (vec-empty? run)
+          blocks
+          (vec-add blocks (Para run)))))
   (match (loop (:for p pieces)
                (:acc st (folding (Tuple (vec-empty) (vec-empty))
                                  (match (Tuple st p)
-                                   ((Tuple (Tuple blocks run) (PInline x)) (Tuple blocks (vec-add run x)))
+                                   ((Tuple (Tuple blocks run) (PInline x))
+                                    (Tuple blocks (vec-add run x)))
                                    ((Tuple (Tuple blocks run) (PBlock b))
-                                    (Tuple (vec-add (with-run blocks run) b) (vec-empty)))))))
-    ((Tuple blocks run) (with-run blocks run))))
+                                    (Tuple (vec-add (with-run blocks
+                                                      run)
+                                                    b)
+                                           (vec-empty)))))))
+    ((Tuple blocks run)
+     (with-run blocks
+       run))))
 
 (: blocks-of (-> Md (Vec MdBlock) (Vec Block)))
 (defun (blocks-of md bs)
@@ -236,11 +260,12 @@
   (def cx (record-ref md cx))
   (match b
     ((MdParagraph xs)
-     (def alone (if (= (vec-length xs) 1)
-                    (match (vec-ref xs 0)
-                      ((MdText s) (sole-token s))
-                      (_ None))
-                    None))
+     (def alone
+       (if (= (vec-length xs) 1)
+           (match (vec-ref xs 0)
+             ((MdText s) (sole-token s))
+             (_ None))
+           None))
      (match alone
        ((Some n) (pieces->blocks (command-pieces md n)))
        (None [(Para (inlines-of md xs))])))
@@ -250,10 +275,15 @@
     ;; The code ends with a newline, as CommonMark has it; a CodeBlock's does not.
     ((MdCodeBlock info code)
      [(CodeBlock (language (plain md info))
-                 (plain md (if (string-ends-with? code "\n") (string-drop-right code 1) code)))])
+                 (plain md
+                        (if (string-ends-with? code "\n")
+                            (string-drop-right code 1)
+                            code)))])
     ((MdQuote bs) [(Quote (blocks-of md bs))])
     ((MdListBlock l)
-     [(ItemList (record-ref l ordered) 1 (vec-map (fun (item) (blocks-of md item)) (record-ref l items)))])
+     [(ItemList (record-ref l ordered)
+                1
+                (vec-map (fun (item) (blocks-of md item)) (record-ref l items)))])
     (MdRule [Rule])
     ((MdHtmlBlock s) [(RawBlock "html" (plain md s))])
     ((MdTableBlock t)
@@ -261,7 +291,9 @@
      [(TableBlock (Table (caption (vec-empty))
                          (aligns (vec-map align-of (record-ref t aligns)))
                          (head (rows-of md [(record-ref t head)]))
-                         (bodies (if (vec-empty? body) (vec-empty) [(rows-of md body)]))))])))
+                         (bodies (if (vec-empty? body)
+                                     (vec-empty)
+                                     [(rows-of md body)]))))])))
 
 ;; ---------------------------------------------------------------------------
 ;; The commands
@@ -271,20 +303,26 @@
 (: translate (-> Ctx Call string (Vec Call) (Vec Piece)))
 (defun (translate cx c text calls)
   (def doc (markdown-parse text))
-  (def md (Md (cx cx) (call c) (calls calls) (footnotes (record-ref doc footnotes))
-              (numbers (make-box (map-empty)))))
+  (def md
+    (Md (cx cx)
+        (call c)
+        (calls calls)
+        (footnotes (record-ref doc footnotes))
+        (numbers (make-box (map-empty)))))
   (vec-map (fun (b) (PBlock b)) (blocks-of md (record-ref doc blocks))))
 
 ;; Markdown text as blocks of the document being expanded, for a command of
 ;; your own. `c` is the command, for what a refusal names.
 (: markdown->pieces (-> Ctx Call string (Vec Piece)))
-(defun (markdown->pieces cx c text) (translate cx c text (vec-empty)))
+(defun (markdown->pieces cx c text)
+  (translate cx c text (vec-empty)))
 
 ;; @markdown{...}, or @markdown|{...}| when the Markdown has braces or @s in it.
 (: markdown (-> Ctx Call (Vec Piece)))
 (defun (markdown cx c)
   (check-keywords! cx c (vec-empty))
-  (when (> (arg-count c) 0) (refuse cx c "takes no arguments"))
+  (when (> (arg-count c) 0)
+    (refuse cx c "takes no arguments"))
   (unless (has-body? c)
     (refuse cx c "needs a body: {...}, or |{...}| when the Markdown has braces or @s in it"))
   (match (with-tokens (body-items c))
@@ -294,5 +332,6 @@
 (: include-markdown (-> Ctx Call (Vec Piece)))
 (defun (include-markdown cx c)
   (check-keywords! cx c (vec-empty))
-  (when (has-body? c) (refuse cx c "takes no body"))
+  (when (has-body? c)
+    (refuse cx c "takes no body"))
   (translate cx c (read-relative cx c (arg-string cx c 0)) (vec-empty)))

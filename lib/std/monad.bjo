@@ -30,12 +30,14 @@
 ;; copy and `(bjoroutine ...)` in the ordinary one — so a callback written here
 ;; could only ever be one of them.
 (impl (Monad (List %a))
-  (defun (pure x) (Cons x Nil))
+  (defun (pure x)
+    (Cons x Nil))
   (defun (bind m k)
     (list-foldr (fun (xs ys) (list-append xs ys)) Nil (list-map k m))))
 
 (impl (Monad (Option %a))
-  (defun (pure x) (Some x))
+  (defun (pure x)
+    (Some x))
   (defun (bind m k)
     (match m
       ((Some v) (k v))
@@ -43,7 +45,8 @@
 
 ;; Short-circuits on Err.
 (impl (Monad (Result %e %a))
-  (defun (pure x) (Ok x))
+  (defun (pure x)
+    (Ok x))
   (defun (bind m k)
     (match m
       ((Ok v) (k v))
@@ -93,15 +96,26 @@
     ((:return expr) #'(pure ,expr))
     ((:return bad ...) (syntax-error step "(:return expr) takes one expression."))
     ((:bind bad ...)
-     (syntax-error step "A (do ...) block cannot end with (:bind ...). Its last form is the block's value."))
+     (syntax-error
+      step
+      "A (do ...) block cannot end with (:bind ...). Its last form is the block's value."))
     ((:match bad ...)
-     (syntax-error step "A (do ...) block cannot end with (:match ...). Its last form is the block's value."))
+     (syntax-error
+      step
+      "A (do ...) block cannot end with (:match ...). Its last form is the block's value."))
     ((:let bad ...)
-     (syntax-error step "A (do ...) block cannot end with (:let ...). Its last form is the block's value."))
+     (syntax-error
+      step
+      "A (do ...) block cannot end with (:let ...). Its last form is the block's value."))
     ((:then bad ...)
-     (syntax-error step "A (do ...) block cannot end with (:then ...). Its last form is the block's value."))
+     (syntax-error
+      step
+      "A (do ...) block cannot end with (:then ...). Its last form is the block's value."))
     ;; Reports keyword errors.
-    (last (if (clause? last) (unknown-clause last) last))))
+    (last
+     (if (clause? last)
+         (unknown-clause last)
+         last))))
 
 ;; A step, and everything after it.
 (: (-> Syntax Syntax Syntax))
@@ -116,12 +130,16 @@
 
     ;; :match takes a pattern.
     ((:match pattern expr)
-     #'(bind ,expr (fun (bound) (match bound (,pattern ,rest)))))
-    ((:match bad ...) (syntax-error step "(:match pattern expr) takes one pattern and one expression."))
+     #'(bind ,expr (fun (bound)
+                     (match bound
+                       (,pattern ,rest)))))
+    ((:match bad ...)
+     (syntax-error step "(:match pattern expr) takes one pattern and one expression."))
 
     ((:let name expr)
      (if (identifier? name)
-         #'(let ((,name ,expr)) ,rest)
+         #'(let ((,name ,expr))
+             ,rest)
          (syntax-error step "(:let name expr) takes a plain identifier, not a pattern.")))
     ((:let bad ...) (syntax-error step "(:let name expr) takes an identifier and one expression."))
 
@@ -133,4 +151,8 @@
      (syntax-error step "(:return ...) is the last form of its (do ...) block, and this one is not."))
 
     ;; Plain form statement.
-    (other (if (clause? other) (unknown-clause other) #'(let ((_ ,other)) ,rest)))))
+    (other
+     (if (clause? other)
+         (unknown-clause other)
+         #'(let ((_ ,other))
+             ,rest)))))

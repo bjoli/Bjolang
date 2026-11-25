@@ -68,8 +68,7 @@
 ;; that is shorter than two.
 (: (-bjo-> (Loc (Option int)) (Loc (Option int)) (Loc int) void))
 (defbjo (eat fork-lhs fork-rhs eaten)
-  (def (lhs rhs)
-    (atomically (fun (tx) (Tuple (mvar-take tx fork-lhs) (mvar-take tx fork-rhs)))))
+  (def (lhs rhs) (atomically (fun (tx) (Tuple (mvar-take tx fork-lhs) (mvar-take tx fork-rhs)))))
   (ignore (atomically (fun (tx) (tx-update! tx eaten #(+ & 1)))))
   (atomically (fun (tx)
                 (mvar-put tx fork-lhs lhs)
@@ -89,10 +88,12 @@
 ;; Returns the number of meals of each philosopher.
 (: (-bjo-> int int (Vec int)))
 (defbjo (dining-philosophers philosophers min-rounds)
-  (def eaten (loop (:for i (range 0 philosophers))
-                   (:acc v (vecing (make-loc 0)))))
-  (def forks (loop (:for i (range 0 philosophers))
-                   (:acc v (vecing (make-loc (Some i))))))
+  (def eaten
+    (loop (:for i (range 0 philosophers))
+          (:acc v (vecing (make-loc 0)))))
+  (def forks
+    (loop (:for i (range 0 philosophers))
+          (:acc v (vecing (make-loc (Some i))))))
 
   ;; The dinner continues while some philosopher has eaten too few times.
   (defun (continue?)
@@ -100,10 +101,11 @@
 
   (with-scope
     (loop (:for i (range 0 philosophers))
-          (:do (spawn (philosopher (vec-ref forks i)
-                                   (vec-ref forks (% (+ i 1) philosophers))
-                                   (vec-ref eaten i)
-                                   continue?)))))
+          (:do (spawn
+                 (philosopher (vec-ref forks i)
+                              (vec-ref forks (% (+ i 1) philosophers))
+                              (vec-ref eaten i)
+                              continue?)))))
   (vec-map loc-ref eaten))
 
 (defbjo (main args)

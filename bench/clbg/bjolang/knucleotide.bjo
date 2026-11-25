@@ -7,7 +7,9 @@
 (import (std mutable map))
 
 ;; Sorted by count, the largest first, then by name.
-(type/derive (Eq Ord) (: Freq (Record (: neg-count int) (: name string))))
+(type/derive (Eq Ord)
+  (: Freq (Record (: neg-count int)
+                  (: name string))))
 
 ;; The sequence after the line that starts with ">THREE", as the codes
 ;; 0 to 3 for A, C, G and T.
@@ -15,7 +17,9 @@
 (defun (read-sequence in)
   (let skip ()
     (match (read-line/opt in)
-      ((Some line) (unless (string-starts-with? line ">THREE") (skip)))
+      ((Some line)
+       (unless (string-starts-with? line ">THREE")
+         (skip)))
       (None unit)))
   (def sb (stringbuilder-empty))
   (let go ()
@@ -33,9 +37,12 @@
 (: (-> byte byte))
 (defun (code b)
   (match b
-    (97uy 0uy) (65uy 0uy)
-    (99uy 1uy) (67uy 1uy)
-    (103uy 2uy) (71uy 2uy)
+    (97uy 0uy)
+    (65uy 0uy)
+    (99uy 1uy)
+    (67uy 1uy)
+    (103uy 2uy)
+    (71uy 2uy)
     (_ 3uy)))
 
 ;; Each k-mer is a long, two bits per nucleotide, the first one highest.
@@ -44,9 +51,11 @@
   (def counts (mutablemap))
   (def mask (- (shift-left 1L (* 2 k)) 1L))
   (def n (array-length sq))
-  (let go ((i 0) (key 0L))
+  (let go ((i 0)
+           (key 0L))
     (when (< i n)
-      (def key (bitwise-and (bitwise-ior (shift-left key 2) (cast System.Int64 (array-ref sq i))) mask))
+      (def key
+        (bitwise-and (bitwise-ior (shift-left key 2) (cast System.Int64 (array-ref sq i))) mask))
       (when (>= i (- k 1))
         (mutablemap-set! counts key (+ 1 (mutablemap-ref-or counts key 0))))
       (go (+ i 1) key)))
@@ -58,15 +67,23 @@
   (loop (:for i (down-from (- k 1) #:to 0))
         (:do (stringbuilder-add! sb
                                  (match (bitwise-and (shift-right key (* 2 i)) 3L)
-                                   (0L #\A) (1L #\C) (2L #\G) (_ #\T)))))
+                                   (0L #\A)
+                                   (1L #\C)
+                                   (2L #\G)
+                                   (_ #\T)))))
   (stringbuilder->string sb))
 
 (: (-> string long))
 (defun (string->key s)
   (string-fold (fun (c key)
                  (bitwise-ior (shift-left key 2)
-                             (match c (#\A 0L) (#\C 1L) (#\G 2L) (_ 3L))))
-               0L s))
+                              (match c
+                                (#\A 0L)
+                                (#\C 1L)
+                                (#\G 2L)
+                                (_ 3L))))
+               0L
+               s))
 
 (: (-> (Array byte) int void))
 (defun (write-frequencies sq k)
@@ -76,8 +93,11 @@
     (list-sort {listing (Freq (neg-count (- v)) (name (key->string key k)))
                         (:for (Tuple key v) (mutablemap->seq counts))}))
   (loop (:for f sorted)
-        (:do (displayln (render->string [(.name f) " " (numeric (/ (* 100.0 (cast System.Double (- (.neg-count f)))) total)
-                                                           #:precision 3)]))))
+        (:do (displayln (render->string [(.name f)
+                                         " "
+                                         (numeric (/ (* 100.0 (cast System.Double (- (.neg-count f))))
+                                                     total)
+                                                  #:precision 3)]))))
   (displayln ""))
 
 (: (-> (Array byte) string void))
@@ -94,4 +114,5 @@
   (loop (:for name ["GGT" "GGTA" "GGTATT" "GGTATTTTAATT" "GGTATTTTAATTTATAGT"])
         (:do (write-count sq name))))
 
-(defun (main args) (bench-main args #t run))
+(defun (main args)
+  (bench-main args #t run))

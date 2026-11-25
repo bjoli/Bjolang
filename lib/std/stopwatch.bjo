@@ -21,8 +21,9 @@
 
 (:doc #:file "stopwatch.bjodoc")
 
-(export Stopwatch stopwatch stopwatch-start! stopwatch-stop! stopwatch-ns stopwatch-us stopwatch-ms
-        ns->string get-memory-usage)
+(export
+  Stopwatch stopwatch stopwatch-start! stopwatch-stop! stopwatch-ns stopwatch-us stopwatch-ms
+  ns->string get-memory-usage)
 
 ;; A stopwatch reads the prelude's `monotonic-ns` from `current-clock` rather
 ;; than holding a `System.Diagnostics.Stopwatch`, so that a test can bind a
@@ -33,9 +34,8 @@
 ;; to. Both mutable, because a stopwatch is a thing that is started and stopped
 ;; rather than a value that is replaced. The other units are read from the
 ;; nanoseconds, so that a run under a millisecond is not lost.
-(type
-  (: Stopwatch (Record (: started long #:mutable)
-                       (: elapsed long #:mutable))))
+(type (: Stopwatch (Record (: started long #:mutable)
+                           (: elapsed long #:mutable))))
 
 (: (-> Stopwatch))
 (defun (stopwatch)
@@ -54,9 +54,8 @@
 (: (-> Stopwatch void))
 (defun (stopwatch-stop! sw)
   (when (running? sw)
-    (record-set! sw
-                 (elapsed (+ (record-ref sw elapsed) (- (monotonic-ns) (record-ref sw started))))
-                 (started -1L))))
+    (record-set! sw (elapsed (+ (record-ref sw elapsed) (- (monotonic-ns) (record-ref sw started))))
+                    (started -1L))))
 
 ;; The reading while running includes the segment in progress, so a watch can be
 ;; read without stopping it.
@@ -85,11 +84,11 @@
       ('ms (stopwatch-ms sw))
       ('s (/ (stopwatch-ns sw) 1000000000L))
       (else
-        (raise
-          (cast Exception
-                (ArgumentException.
-                  (str "A stopwatch is read with 'ns, 'us, 'ms or 's, and this was '"
-                       (displayed sym) "."))))))))
+       (raise (cast Exception
+                    (ArgumentException.
+                     (str "A stopwatch is read with 'ns, 'us, 'ms or 's, and this was '"
+                          (displayed sym)
+                          "."))))))))
 
 ;; A duration in the largest unit that keeps it at 1 or more, with one decimal
 ;; under 100: "850 ns", "12.5 us", "3.2 ms", "1.5 s".
@@ -105,20 +104,24 @@
 ;; ns in units of `unit` nanoseconds: one decimal under 100, none above.
 (: (-> long long string string))
 (defun (scaled ns unit suffix)
-  (def sign (if (< ns 0L) "-" ""))
+  (def sign
+    (if (< ns 0L)
+        "-"
+        ""))
   (def tenths (/ (* (abs ns) 10L) unit))
   (if (< tenths 1000L)
       (str sign (displayed (/ tenths 10L)) "." (displayed (% tenths 10L)) suffix)
       (str sign (displayed (/ tenths 10L)) suffix)))
-
 
 ;; `time-it` is `(std bench)`'s now, measured as a benchmark is: this one is
 ;; the same expansion, so that a program that imports this module for it goes
 ;; on finding it here. A macro is seen only where its own module is imported,
 ;; and what its expansion names has to be reachable from there, so those are
 ;; re-exported.
-(def/macro (time-it form inject compare)
+(def/macro (time-it
+             form
+             inject
+             compare)
   (time-it-expansion form))
 
 (re-export time-it-run time-it-fixed time-it-keep)
-

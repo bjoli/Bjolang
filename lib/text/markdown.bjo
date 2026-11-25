@@ -113,10 +113,12 @@
 
 ;; Whether the byte at `i` of `s` is the ASCII character `c`.
 (: (-> ByteString int char bool))
-(defun (at? s i c) (= (at s i) (char->int c)))
+(defun (at? s i c)
+  (= (at s i) (char->int c)))
 
 (: (-> int bool))
-(defun (space-or-tab? b) (or (= b 32) (= b 9)))
+(defun (space-or-tab? b)
+  (or (= b 32) (= b 9)))
 
 ;; A space, a tab, a newline, a form feed or a carriage return.
 (: (-> int bool))
@@ -126,7 +128,8 @@
     (else #f)))
 
 (: (-> int bool))
-(defun (ascii-digit? b) (and (>= b 48) (<= b 57)))
+(defun (ascii-digit? b)
+  (and (>= b 48) (<= b 57)))
 
 (: (-> int bool))
 (defun (ascii-letter? b)
@@ -135,7 +138,8 @@
     (_ #f)))
 
 (: (-> int bool))
-(defun (ascii-alphanumeric? b) (or (ascii-letter? b) (ascii-digit? b)))
+(defun (ascii-alphanumeric? b)
+  (or (ascii-letter? b) (ascii-digit? b)))
 
 (: (-> int bool))
 (defun (ascii-hex-digit? b)
@@ -144,16 +148,20 @@
 ;; An ASCII punctuation character, as the spec counts them.
 (: (-> int bool))
 (defun (ascii-punctuation? b)
-  (or (and (>= b 33) (<= b 47)) (and (>= b 58) (<= b 64))
-      (and (>= b 91) (<= b 96)) (and (>= b 123) (<= b 126))))
+  (or (and (>= b 33) (<= b 47))
+      (and (>= b 58) (<= b 64))
+      (and (>= b 91) (<= b 96))
+      (and (>= b 123) (<= b 126))))
 
 ;; The first position of byte `c` in `s`, or None.
 (: (-> ByteString int (Option int)))
-(defun (search-byte s c) (bytestring-search-byte s (cast System.Byte c)))
+(defun (search-byte s c)
+  (bytestring-search-byte s (cast System.Byte c)))
 
 ;; The last position of byte `c` in `s`, or None.
 (: (-> ByteString int (Option int)))
-(defun (search-byte-backward s c) (bytestring-search-byte-backward s (cast System.Byte c)))
+(defun (search-byte-backward s c)
+  (bytestring-search-byte-backward s (cast System.Byte c)))
 
 ;; Whether byte `b` is one of the bytes of `set`.
 (: (-> int ByteString bool))
@@ -166,13 +174,16 @@
 
 ;; The text of bytes `from` to `to` of `s`.
 (: (-> ByteString int int string))
-(defun (text-of s from to) (bytestring->string/lossy (bytestring-slice s from to)))
+(defun (text-of s from to)
+  (bytestring->string/lossy (bytestring-slice s from to)))
 
 ;; The position of the first byte at or after `i` that is not a space or
 ;; a tab.
 (: (-> ByteString int int))
 (defun (skip-spaces s i)
-  (if (space-or-tab? (at s i)) (skip-spaces s (+ i 1)) i))
+  (if (space-or-tab? (at s i))
+      (skip-spaces s (+ i 1))
+      i))
 
 ;; Whether bytes `from` to the end of `s` are spaces and tabs only.
 (: (-> ByteString int bool))
@@ -190,13 +201,17 @@
 
 ;; The ASCII lowercase of a byte.
 (: (-> int int))
-(defun (ascii-lower b) (if (and (>= b 65) (<= b 90)) (+ b 32) b))
+(defun (ascii-lower b)
+  (if (and (>= b 65) (<= b 90))
+      (+ b 32)
+      b))
 
 ;; Whether bytes `i` onwards of `s` start with the ASCII `word`, without
 ;; case.
 (: (-> ByteString int string bool))
 (defun (starts-with-ci? s i word)
-  (let go ((k i) (c (string-cursor-start word)))
+  (let go ((k i)
+           (c (string-cursor-start word)))
     (cond
       ((string-cursor-end? word c) #t)
       ((= (ascii-lower (at s k)) (ascii-lower (char->int (string-cursor-ref word c))))
@@ -213,7 +228,11 @@
     ((< (at s i) 128) (int->char (at s i)))
     (else
      (def b (at s i))
-     (def n (cond ((>= b 240) 4) ((>= b 224) 3) (else 2)))
+     (def n
+       (cond
+         ((>= b 240) 4)
+         ((>= b 224) 3)
+         (else 2)))
      (def t (text-of s i (min (+ i n) (bytestring-length s))))
      (string-cursor-ref t (string-cursor-start t)))))
 
@@ -229,8 +248,7 @@
 ;; form feed and carriage return.
 (: (-> char bool))
 (defun (unicode-whitespace? c)
-  (or (ascii-whitespace? (char->int c))
-      (= (char-general-category c) 'Zs)))
+  (or (ascii-whitespace? (char->int c)) (= (char-general-category c) 'Zs)))
 
 ;; Unicode punctuation, as the spec has it: a character of a P or S
 ;; general category.
@@ -259,12 +277,14 @@
 ;; - Each keyword turns an extension of GitHub Flavored Markdown on or off.
 ;;   With all of them off, the document is read as CommonMark 0.31.2.
 ;; - A document cannot fail to parse: any text is a Markdown document.
-(: (-> string (#:tables bool) (#:task-lists bool) (#:strikethrough bool)
-       (#:autolinks bool) (#:footnotes bool) (#:front-matter bool)
-       MdDocument))
-(defun (markdown-parse text #:tables #t #:task-lists #t #:strikethrough #t
-                       #:autolinks #t #:footnotes #t #:front-matter #t)
+(: (-> string (#:tables bool) (#:task-lists bool) (#:strikethrough bool) (#:autolinks bool)
+       (#:footnotes bool) (#:front-matter bool) MdDocument))
+(defun (markdown-parse text #:tables #t #:task-lists #t #:strikethrough #t #:autolinks #t
+                       #:footnotes #t #:front-matter #t)
   (parse-document text
-                  (Extensions (tables tables) (task-lists task-lists)
-                              (strikethrough strikethrough) (autolinks autolinks)
-                              (footnotes footnotes) (front-matter front-matter))))
+                  (Extensions (tables tables)
+                              (task-lists task-lists)
+                              (strikethrough strikethrough)
+                              (autolinks autolinks)
+                              (footnotes footnotes)
+                              (front-matter front-matter))))

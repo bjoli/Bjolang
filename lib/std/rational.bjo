@@ -13,8 +13,7 @@
 ;; std/rational.bjo — exact fractions over bigint: the built-in `rational`,
 ;; with functions by name.
 
-(import (std prelude)
-        (std maths))
+(import (std prelude) (std maths))
 
 (:doc #:file "rational.bjodoc")
 
@@ -66,36 +65,45 @@
   (BjoRational. n d))
 
 (: (-> bigint Rational))
-(defun (bigint->rational n) (BjoRational. n 1I))
+(defun (bigint->rational n)
+  (BjoRational. n 1I))
 
 (: (-> int Rational))
-(defun (int->rational n) (bigint->rational (cast System.Numerics.BigInteger n)))
+(defun (int->rational n)
+  (bigint->rational (cast System.Numerics.BigInteger n)))
 
 (: (-> Rational bigint))
-(defun (rational-num x) (clr-numerator x))
+(defun (rational-num x)
+  (clr-numerator x))
 
 (: (-> Rational bigint))
-(defun (rational-den x) (clr-denominator x))
+(defun (rational-den x)
+  (clr-denominator x))
 
 ;; ---------------------------------------------------------------------------
 ;; Arithmetic
 ;; ---------------------------------------------------------------------------
 
 (: (-> Rational Rational Rational))
-(defun (rational+ a b) (+ a b))
+(defun (rational+ a b)
+  (+ a b))
 
 (: (-> Rational Rational Rational))
-(defun (rational- a b) (- a b))
+(defun (rational- a b)
+  (- a b))
 
 (: (-> Rational Rational Rational))
-(defun (rational* a b) (* a b))
+(defun (rational* a b)
+  (* a b))
 
 ;; Raises DivideByZeroException when b is zero.
 (: (-> Rational Rational Rational))
-(defun (rational/ a b) (rational* a (rational-recip b)))
+(defun (rational/ a b)
+  (rational* a (rational-recip b)))
 
 (: (-> Rational Rational))
-(defun (rational-negate x) (- x))
+(defun (rational-negate x)
+  (- x))
 
 ;; Raises DivideByZeroException for zero.
 (: (-> Rational Rational))
@@ -105,7 +113,8 @@
   (rational (rational-den x) (rational-num x)))
 
 (: (-> Rational Rational))
-(defun (rational-abs x) (abs x))
+(defun (rational-abs x)
+  (abs x))
 
 ;; Any int exponent. A negative one takes the reciprocal; zero to a negative
 ;; power raises DivideByZeroException.
@@ -120,14 +129,17 @@
 ;; ---------------------------------------------------------------------------
 
 (: (-> Rational bool))
-(defun (rational-zero? x) (zero? x))
+(defun (rational-zero? x)
+  (zero? x))
 
 (: (-> Rational bool))
-(defun (rational-integer? x) (= (rational-den x) 1I))
+(defun (rational-integer? x)
+  (= (rational-den x) 1I))
 
 ;; -1, 0 or 1.
 (: (-> Rational int))
-(defun (rational-sign x) (sign x))
+(defun (rational-sign x)
+  (sign x))
 
 ;; ---------------------------------------------------------------------------
 ;; Rounding to a bigint
@@ -138,7 +150,9 @@
   (def n (rational-num x))
   (def d (rational-den x))
   (def q (/ n d))
-  (if (< (% n d) 0) (- q 1I) q))
+  (if (< (% n d) 0)
+      (- q 1I)
+      q))
 
 (: (-> Rational bigint))
 (defun (rational-ceiling x)
@@ -154,20 +168,25 @@
   (def f (rational-floor x))
   (def twice-frac (* 2I (- (rational-num x) (* f (rational-den x)))))
   (def c (compare twice-frac (rational-den x)))
-  (if (or (> c 0) (and (= c 0) (odd? f))) (+ f 1I) f))
+  (if (or (> c 0) (and (= c 0) (odd? f)))
+      (+ f 1I)
+      f))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions
 ;; ---------------------------------------------------------------------------
 
 (: (-> bigint int))
-(defun (bit-length n) (cast System.Int32 (clr-bit-length n)))
+(defun (bit-length n)
+  (cast System.Int32 (clr-bit-length n)))
 
 ;; q/d rounded to an integer, ties to even, given q = floor(x) and r its remainder.
 (: (-> bigint bigint bigint bigint))
 (defun (round-quotient q r d)
   (def c (compare (* 2I r) d))
-  (if (or (> c 0) (and (= c 0) (odd? q))) (+ q 1I) q))
+  (if (or (> c 0) (and (= c 0) (odd? q)))
+      (+ q 1I)
+      q))
 
 ;; Nearest double, ties to even, subnormals included. Rounds once.
 ;; Too large for a double: infinity.
@@ -178,10 +197,14 @@
   (def mag
     (if (zero? n)
         0.0
-        (let* ((e (- (bit-length n) (bit-length d)))  ; n/d in [2^(e-1), 2^(e+1))
-               (k (max (- e 54) -1074))               ; exponent of q's last bit
-               (num (if (< k 0) (shift-left n (- 0 k)) n))
-               (den (if (< k 0) d (shift-left d k)))
+        (let* ((e (- (bit-length n) (bit-length d))) ; n/d in [2^(e-1), 2^(e+1))
+               (k (max (- e 54) -1074)) ; exponent of q's last bit
+               (num (if (< k 0)
+                        (shift-left n (- 0 k))
+                        n))
+               (den (if (< k 0)
+                        d
+                        (shift-left d k)))
                (q (/ num den))
                (r (% num den))
                (extra (max 0 (- (bit-length q) 53))))
@@ -192,11 +215,16 @@
                      (high (shift-right q extra))
                      (half (shift-right unit 1))
                      (c (compare low half))
-                     (up (or (> c 0)
-                             (and (= c 0) (not (zero? r)))
-                             (and (= c 0) (zero? r) (odd? high)))))
-                (clr-scale-b (cast System.Double (if up (+ high 1I) high)) (+ k extra)))))))
-  (if (< (rational-num x) 0) (- 0.0 mag) mag))
+                     (up
+                      (or (> c 0) (and (= c 0) (not (zero? r))) (and (= c 0) (zero? r) (odd? high)))))
+                (clr-scale-b (cast System.Double
+                                   (if up
+                                       (+ high 1I)
+                                       high))
+                             (+ k extra)))))))
+  (if (< (rational-num x) 0)
+      (- 0.0 mag)
+      mag))
 
 (def decimal-limit (shift-left 1I 96))
 
@@ -221,16 +249,22 @@
       (def q (round-quotient (/ scaled d) (% scaled d) d))
       (cond
         ((< q decimal-limit) (Tuple q s))
-        ((= s 0) (raise (cast Exception (OverflowException.
-                                         (str "(std rational): " (rational->string x)
-                                              " is too large for a decimal.")))))
+        ((= s 0)
+         (raise (cast Exception
+                      (OverflowException. (str "(std rational): "
+                                               (rational->string x)
+                                               " is too large for a decimal.")))))
         (else (down (- s 1))))))
   (def (q* s*)
-    (let strip ((q q) (s s))
+    (let strip ((q q)
+                (s s))
       (if (and (> s 0) (zero? (% q 10I)))
           (strip (/ q 10I) (- s 1))
           (Tuple q s))))
-  (string->decimal (str (if (< (rational-num x) 0) "-" "") (point-digits q* s*))))
+  (string->decimal (str (if (< (rational-num x) 0)
+                            "-"
+                            "")
+                        (point-digits q* s*))))
 
 ;; "3", "-1/3".
 (: (-> Rational string))
@@ -244,15 +278,19 @@
 ;; ---------------------------------------------------------------------------
 
 (: (-> char bool))
-(defun (digit? c) (and (char>=? c #\0) (char<=? c #\9)))
+(defun (digit? c)
+  (and (char>=? c #\0) (char<=? c #\9)))
 
 (: (-> char bigint))
-(defun (digit-value c) (cast System.Numerics.BigInteger (- (char->int c) 48)))
+(defun (digit-value c)
+  (cast System.Numerics.BigInteger (- (char->int c) 48)))
 
 ;; Digits from the front of cs: (Tuple value count rest).
 (: (-> (List char) (Tuple bigint int (List char))))
 (defun (read-digits cs)
-  (let go ((cs cs) (v 0I) (k 0))
+  (let go ((cs cs)
+           (v 0I)
+           (k 0))
     (match cs
       ((Cons c rest) #:when (digit? c) (go rest (+ (* v 10I) (digit-value c)) (+ k 1)))
       (_ (Tuple v k cs)))))
@@ -287,10 +325,11 @@
       (_ None)))
   (match exponent
     ((Some ex) #:when (> (+ int-count frac-count) 0)
-     (def mantissa (rational (+ (* int-part (expt 10I frac-count)) frac-part)
-                             (expt 10I frac-count)))
+     (def mantissa (rational (+ (* int-part (expt 10I frac-count)) frac-part) (expt 10I frac-count)))
      (def scaled (rational* mantissa (rational-expt (bigint->rational 10I) ex)))
-     (Some (if neg? (rational-negate scaled) scaled)))
+     (Some (if neg?
+               (rational-negate scaled)
+               scaled)))
     (_ None)))
 
 ;; "3", "-0.3048", "1e-3", "2.5E+10", "1|60", "1/3". The two sides of | or /
@@ -301,9 +340,10 @@
   (def (a b)
     (match (string-split-once s "|")
       ((Some (Tuple x y)) (Tuple x (Some y)))
-      (None (match (string-split-once s "/")
-              ((Some (Tuple x y)) (Tuple x (Some y)))
-              (None (Tuple s None))))))
+      (None
+       (match (string-split-once s "/")
+         ((Some (Tuple x y)) (Tuple x (Some y)))
+         (None (Tuple s None))))))
   (match (Tuple (read-decimal (string->list a)) b)
     ((Tuple (Some x) None) (Some x))
     ((Tuple (Some x) (Some text))

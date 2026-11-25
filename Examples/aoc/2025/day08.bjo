@@ -7,15 +7,20 @@
 (defun (main args)
   (def* (boxes {vecing (scan l '(long ... #:sep ",")) (:for l (input-lines args))})
         (n (length boxes))
-        (k (if (< n 100) 10 1000)))
-  (defun (dist2 a b) {summing (* d d) (:for c (range 0 3)) (:let d (- (ref a c) (ref b c)))})
+        (k
+         (if (< n 100)
+             10
+             1000)))
+  (defun (dist2 a b)
+    {summing (* d d) (:for c (range 0 3)) (:let d (- (ref a c) (ref b c)))})
   ;; Each pair as distance, i, j packed in one long: 10 bits per index.
   (def pairs (mutablevec))
   (loop (:for i (range 0 n))
         (:subloop)
         (:for j (range (+ i 1) n))
-        (:do (mutablevec-add! pairs (bitwise-ior (shift-left (dist2 (ref boxes i) (ref boxes j)) 20)
-                                                 (cast System.Int64 (+ (* i 1024) j))))))
+        (:do (mutablevec-add! pairs
+                              (bitwise-ior (shift-left (dist2 (ref boxes i) (ref boxes j)) 20)
+                                           (cast System.Int64 (+ (* i 1024) j))))))
   (mutablevec-sort! pairs)
   (defun (ends p)
     (def key (mutablevec-ref pairs p))
@@ -24,12 +29,15 @@
   ;; Union-find over box indices.
   (def* (parent (make-array n))
         (size (make-array n #:fill 1)))
-  (loop (:for i (range 0 n)) (:do (array-set! parent i i)))
+  (loop (:for i (range 0 n))
+        (:do (array-set! parent i i)))
   (defun (root i)
     (def p (ref parent i))
     (if (= p i)
         i
-        (let ((r (root p))) (array-set! parent i r) r)))
+        (let ((r (root p)))
+          (array-set! parent i r)
+          r)))
   ;; Joins the pair at index p and answers whether that merged two circuits.
   (defun (join! p)
     (def* ((i . j) (ends p))
@@ -40,15 +48,19 @@
            (array-set! parent a b)
            (array-set! size b (+ (ref size a) (ref size b)))
            #t)))
-  (loop (:for p (range 0 k)) (:do (ignore (join! p))))
-  (def sizes (vec-sort-by #(compare &2 &1) {vecing (ref size i) (:for i (range 0 n)) (:when (= (root i) i))}))
+  (loop (:for p (range 0 k))
+        (:do (ignore (join! p))))
+  (def sizes
+    (vec-sort-by #(compare &2 &1) {vecing (ref size i) (:for i (range 0 n)) (:when (= (root i) i))}))
   (println (* (ref sizes 0) (* (ref sizes 1) (ref sizes 2))))
   ;; Part 2 goes on from where part 1 stopped, and counts circuits down to one.
   (def last
-    (let go ((p k) (left (length sizes)))
-      (cond ((not (join! p)) (go (+ p 1) left))
-            ((= left 2) p)
-            (else (go (+ p 1) (- left 1))))))
+    (let go ((p k)
+             (left (length sizes)))
+      (cond
+        ((not (join! p)) (go (+ p 1) left))
+        ((= left 2) p)
+        (else (go (+ p 1) (- left 1))))))
   (def (i . j) (ends last))
   (println (* (ref (ref boxes i) 0) (ref (ref boxes j) 0)))
   0)

@@ -59,8 +59,12 @@
 ;;
 ;; An `int` cursor and `array-ref`, which is `arr[i]`.
 
-(type (: (ArraySlice %a) (Struct (: items (Array %a)) (: from int) (: to int))))
-(type (: (ReverseArraySlice %a) (Struct (: items (Array %a)) (: from int) (: to int))))
+(type (: (ArraySlice %a) (Struct (: items (Array %a))
+                                 (: from int)
+                                 (: to int))))
+(type (: (ReverseArraySlice %a) (Struct (: items (Array %a))
+                                        (: from int)
+                                        (: to int))))
 
 (: in-array (-> (Array %a) (#:from int) (#:to int) (ArraySlice %a)))
 (defun (in-array arr #:from 0 #:to (array-length arr))
@@ -75,18 +79,26 @@
 (impl (Iterable (ArraySlice %a))
   (type %elem %a)
   (type %cursor int)
-  (defun (iterable-start s) (record-ref s from))
-  (defun (iterable-done? s c) (>= c (record-ref s to)))
-  (defun (iterable-current s c) (array-ref (record-ref s items) c))
-  (defun (iterable-next s c) (+ c 1)))
+  (defun (iterable-start s)
+    (record-ref s from))
+  (defun (iterable-done? s c)
+    (>= c (record-ref s to)))
+  (defun (iterable-current s c)
+    (array-ref (record-ref s items) c))
+  (defun (iterable-next s c)
+    (+ c 1)))
 
 (impl (Iterable (ReverseArraySlice %a))
   (type %elem %a)
   (type %cursor int)
-  (defun (iterable-start s) (- (record-ref s to) 1))
-  (defun (iterable-done? s c) (< c (record-ref s from)))
-  (defun (iterable-current s c) (array-ref (record-ref s items) c))
-  (defun (iterable-next s c) (- c 1)))
+  (defun (iterable-start s)
+    (- (record-ref s to) 1))
+  (defun (iterable-done? s c)
+    (< c (record-ref s from)))
+  (defun (iterable-current s c)
+    (array-ref (record-ref s items) c))
+  (defun (iterable-next s c)
+    (- c 1)))
 
 ;; --- Vecs ---
 ;;
@@ -106,8 +118,12 @@
   (vec-back-cursor-current (: Bjolang.Runtime.VecWalk.BackwardCurrent (-> (VecBackCursor %a) %a)))
   (vec-back-cursor-next    (: Bjolang.Runtime.VecWalk.BackwardNext    (-> (VecBackCursor %a) (VecBackCursor %a)))))
 
-(type (: (VecSlice %a) (Struct (: items (Vec %a)) (: from int) (: count int))))
-(type (: (ReverseVecSlice %a) (Struct (: items (Vec %a)) (: last int) (: count int))))
+(type (: (VecSlice %a) (Struct (: items (Vec %a))
+                               (: from int)
+                               (: count int))))
+(type (: (ReverseVecSlice %a) (Struct (: items (Vec %a))
+                                      (: last int)
+                                      (: count int))))
 
 (: in-vec (-> (Vec %a) (#:from int) (#:to int) (VecSlice %a)))
 (defun (in-vec v #:from 0 #:to (vec-length v))
@@ -124,18 +140,26 @@
 (impl (Iterable (VecSlice %a))
   (type %elem %a)
   (type %cursor (VecCursor %a))
-  (defun (iterable-start s) (vec-cursor-slice (record-ref s items) (record-ref s from) (record-ref s count)))
-  (defun (iterable-done? s c) (vec-cursor-done? c))
-  (defun (iterable-current s c) (vec-cursor-current c))
-  (defun (iterable-next s c) (vec-cursor-next c)))
+  (defun (iterable-start s)
+    (vec-cursor-slice (record-ref s items) (record-ref s from) (record-ref s count)))
+  (defun (iterable-done? s c)
+    (vec-cursor-done? c))
+  (defun (iterable-current s c)
+    (vec-cursor-current c))
+  (defun (iterable-next s c)
+    (vec-cursor-next c)))
 
 (impl (Iterable (ReverseVecSlice %a))
   (type %elem %a)
   (type %cursor (VecBackCursor %a))
-  (defun (iterable-start s) (vec-back-cursor (record-ref s items) (record-ref s last) (record-ref s count)))
-  (defun (iterable-done? s c) (vec-back-cursor-done? c))
-  (defun (iterable-current s c) (vec-back-cursor-current c))
-  (defun (iterable-next s c) (vec-back-cursor-next c)))
+  (defun (iterable-start s)
+    (vec-back-cursor (record-ref s items) (record-ref s last) (record-ref s count)))
+  (defun (iterable-done? s c)
+    (vec-back-cursor-done? c))
+  (defun (iterable-current s c)
+    (vec-back-cursor-current c))
+  (defun (iterable-next s c)
+    (vec-back-cursor-next c)))
 
 ;; --- List tails ---
 ;;
@@ -153,10 +177,14 @@
 (impl (Iterable (ListTails %a))
   (type %elem (List %a))
   (type %cursor (List %a))
-  (defun (iterable-start s) (record-ref s rest))
-  (defun (iterable-done? s c) (list-empty? c))
-  (defun (iterable-current s c) c)
-  (defun (iterable-next s c) (list-tail c)))
+  (defun (iterable-start s)
+    (record-ref s rest))
+  (defun (iterable-done? s c)
+    (list-empty? c))
+  (defun (iterable-current s c)
+    c)
+  (defun (iterable-next s c)
+    (list-tail c)))
 
 ;; --- Ports ---
 ;;
@@ -175,7 +203,8 @@
 ;; wants `port->seq` and the `Seq` iterators, or `port-fold`, whose callback
 ;; carries either colour.
 
-(type (: (PortReads %a) (Struct (: port InputPort) (: read (-> InputPort (Option %a))))))
+(type (: (PortReads %a) (Struct (: port InputPort)
+                                (: read (-> InputPort (Option %a))))))
 
 (: in-port (-> InputPort (-> InputPort (Option %a)) (PortReads %a)))
 (defun (in-port port read)
@@ -184,10 +213,14 @@
 (impl (Iterable (PortReads %a))
   (type %elem %a)
   (type %cursor (Option %a))
-  (defun (iterable-start s) ((record-ref s read) (record-ref s port)))
-  (defun (iterable-done? s c) (none? c))
-  (defun (iterable-current s c) (option-ref c))
-  (defun (iterable-next s c) ((record-ref s read) (record-ref s port))))
+  (defun (iterable-start s)
+    ((record-ref s read) (record-ref s port)))
+  (defun (iterable-done? s c)
+    (none? c))
+  (defun (iterable-current s c)
+    (option-ref c))
+  (defun (iterable-next s c)
+    ((record-ref s read) (record-ref s port))))
 
 ;; --- Counting ---
 ;;
@@ -228,8 +261,12 @@
   (num-top    (: Bjolang.Runtime.BjoNum.Top    (-> %n)))
   (num-bottom (: Bjolang.Runtime.BjoNum.Bottom (-> %n))))
 
-(type (: (UpFrom %n) (Struct (: from %n) (: to %n) (: by %n))))
-(type (: (DownFrom %n) (Struct (: from %n) (: to %n) (: by %n))))
+(type (: (UpFrom %n) (Struct (: from %n)
+                             (: to %n)
+                             (: by %n))))
+(type (: (DownFrom %n) (Struct (: from %n)
+                               (: to %n)
+                               (: by %n))))
 
 ;; Small enough to inline, as `check-slice` is, with the message made apart.
 (: check-step (-> string %n void) (where (Num %n) (Ordered %n)) #:inline)
@@ -241,7 +278,8 @@
 ;; dictionary every call of `up-from' would pass for the sake of this message.
 (: step-panic (-> string %n void))
 (defun (step-panic who by)
-  (panic! #"${who}: #:by is ${(clr-show by)}, and a step of zero or less is a walk that never gets anywhere. It is a distance; down-from subtracts it."))
+  (panic!
+   #"${who}: #:by is ${(clr-show by)}, and a step of zero or less is a walk that never gets anywhere. It is a distance; down-from subtracts it."))
 
 ;; A walk does not step past the end of its number type, where an int wraps
 ;; round. The bound is made safe once, when the walk is made, so a step is
@@ -264,10 +302,12 @@
 ;; `#:to` reads it. A call names its keywords, so their order there is free.
 
 (: up-safe (-> %n %n) (where (Num %n)) #:inline)
-(defun (up-safe by) (+ (- (num-top) by) 1))
+(defun (up-safe by)
+  (+ (- (num-top) by) 1))
 
 (: down-safe (-> %n %n) (where (Num %n)) #:inline)
-(defun (down-safe by) (+ (num-bottom) by))
+(defun (down-safe by)
+  (+ (num-bottom) by))
 
 (: up-bound (-> %n %n %n %n) (where (Num %n) (Ordered %n)) #:inline)
 (defun (up-bound from to by)
@@ -287,9 +327,11 @@
 ;; `clr-show`, as in `step-panic`.
 (: bound-panic (-> string %n %n %n))
 (defun (bound-panic who to by)
-  (raise (cast Exception
-               (ArgumentException.
-                 #"${who}: #:to is ${(clr-show to)} and #:by is ${(clr-show by)}, so the last step could pass the end of the number type, where it wraps round. Count in a wider type, as (${who} 0L ...) does, or stop the walk at least one step before the end."))))
+  (raise
+   (cast
+    Exception
+    (ArgumentException.
+     #"${who}: #:to is ${(clr-show to)} and #:by is ${(clr-show by)}, so the last step could pass the end of the number type, where it wraps round. Count in a wider type, as (${who} 0L ...) does, or stop the walk at least one step before the end."))))
 
 (: up-from (-> %n (#:by %n) (#:to %n) (UpFrom %n)) (where (Num %n) (Ordered %n)) #:inline)
 (defun (up-from from #:by 1 #:to (up-safe by))
@@ -305,16 +347,24 @@
   (where (Num %n) (Ordered %n))
   (type %elem %n)
   (type %cursor %n)
-  (defun (iterable-start s) (record-ref s from))
-  (defun (iterable-done? s c) (>= c (record-ref s to)))
-  (defun (iterable-current s c) c)
-  (defun (iterable-next s c) (+ c (record-ref s by))))
+  (defun (iterable-start s)
+    (record-ref s from))
+  (defun (iterable-done? s c)
+    (>= c (record-ref s to)))
+  (defun (iterable-current s c)
+    c)
+  (defun (iterable-next s c)
+    (+ c (record-ref s by))))
 
 (impl (Iterable (DownFrom %n))
   (where (Num %n) (Ordered %n))
   (type %elem %n)
   (type %cursor %n)
-  (defun (iterable-start s) (record-ref s from))
-  (defun (iterable-done? s c) (< c (record-ref s to)))
-  (defun (iterable-current s c) c)
-  (defun (iterable-next s c) (- c (record-ref s by))))
+  (defun (iterable-start s)
+    (record-ref s from))
+  (defun (iterable-done? s c)
+    (< c (record-ref s to)))
+  (defun (iterable-current s c)
+    c)
+  (defun (iterable-next s c)
+    (- c (record-ref s by))))

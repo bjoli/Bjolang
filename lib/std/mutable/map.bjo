@@ -114,19 +114,23 @@
   (def old (mutablemap-try-ref m k))
   (match (f old)
     ((Some v) (mutablemap-set! m k v))
-    (None (when (some? old) (ignore (mutablemap-remove! m k))))))
+    (None
+     (when (some? old)
+       (ignore (mutablemap-remove! m k))))))
 
 ;; `k` set to `f` of its value, in place. A missing key raises
 ;; `KeyNotFoundException`, unless `#:default (Some d)` is given: then `f` is
 ;; applied to `d`.
 (: (-> (MutableMap %k %v) %k (-?-> %v %v) (#:default (Option %v)) void))
 (defun (mutablemap-update! m k f #:default None)
-  (def old (match (mutablemap-try-ref m k)
-             ((Some v) v)
-             (None (match default
-                     ((Some d) d)
-                     ;; Raises KeyNotFoundException.
-                     (None (mutablemap-ref m k))))))
+  (def old
+    (match (mutablemap-try-ref m k)
+      ((Some v) v)
+      (None
+       (match default
+         ((Some d) d)
+         ;; Raises KeyNotFoundException.
+         (None (mutablemap-ref m k))))))
   (mutablemap-set! m k (f old)))
 
 ;; The key and the value as two arguments, which is what a caller of a map
@@ -145,29 +149,36 @@
 ;; ---------------------------------------------------------------------------
 
 (: (-> (List (Tuple %k %v)) (MutableMap %k %v)))
-(defun (list->mutablemap xs) (seq->mutablemap (list->seq xs)))
+(defun (list->mutablemap xs)
+  (seq->mutablemap (list->seq xs)))
 
 (: (-> (MutableMap %k %v) (List (Tuple %k %v))))
-(defun (mutablemap->list m) (->list (mutablemap->seq m)))
+(defun (mutablemap->list m)
+  (->list (mutablemap->seq m)))
 
 (: (-> (Vec (Tuple %k %v)) (MutableMap %k %v)))
-(defun (vec->mutablemap v) (seq->mutablemap (vec->seq v)))
+(defun (vec->mutablemap v)
+  (seq->mutablemap (vec->seq v)))
 
 (: (-> (MutableMap %k %v) (Vec (Tuple %k %v))))
-(defun (mutablemap->vec m) (->vec (mutablemap->seq m)))
+(defun (mutablemap->vec m)
+  (->vec (mutablemap->seq m)))
 
 (: (-> (Map %k %v) (MutableMap %k %v)))
-(defun (map->mutablemap m) (seq->mutablemap (map->seq m)))
+(defun (map->mutablemap m)
+  (seq->mutablemap (map->seq m)))
 
 (: (-> (MutableMap %k %v) (Map %k %v)))
-(defun (mutablemap->map m) (->map (mutablemap->seq m)))
+(defun (mutablemap->map m)
+  (->map (mutablemap->seq m)))
 
 ;; ---------------------------------------------------------------------------
 ;; The traits
 ;; ---------------------------------------------------------------------------
 
 (: (-> (MutableMap %k %v) %k bool))
-(defun (mutablemap-has-key? m k) (mutablemap-contains? m k))
+(defun (mutablemap-has-key? m k)
+  (mutablemap-contains? m k))
 
 (impl (Refable (MutableMap %k %v))
   (type %index %k)
@@ -190,15 +201,21 @@
   ;; The enumerator is the cursor, and it steps in `done?`, which the
   ;; protocol calls once per step before `current`. See the `Seq` impl.
   (type %cursor (MutableMapEnumerator %k %v))
-  (defun (iterable-start m) (mutablemap-enumerator m))
-  (defun (iterable-done? m e) (not (mutablemap-enumerator-next! e)))
-  (defun (iterable-current m e) (mutablemap-enumerator-current e))
-  (defun (iterable-next m e) e))
+  (defun (iterable-start m)
+    (mutablemap-enumerator m))
+  (defun (iterable-done? m e)
+    (not (mutablemap-enumerator-next! e)))
+  (defun (iterable-current m e)
+    (mutablemap-enumerator-current e))
+  (defun (iterable-next m e)
+    e))
 
 (impl (Collection (MutableMap %k %v))
   (type %content (Tuple %k %v))
-  (defun (length m) (mutablemap-length m))
-  (defun (empty? m) (mutablemap-empty? m)))
+  (defun (length m)
+    (mutablemap-length m))
+  (defun (empty? m)
+    (mutablemap-empty? m)))
 
 ;; Set semantics, as `Addable`'s do everywhere: a key already there is replaced.
 (impl (Addable! (MutableMap %k %v))
@@ -228,8 +245,12 @@
                 (def (k v) (mutablemap-enumerator-current e))
                 (match (mutablemap-try-ref b k)
                   (None #f)
-                  ((Some w) (if (= v w) (go) #f)))))))))
-  (defun (eq-hash m) (unhashable "MutableMap")))
+                  ((Some w)
+                   (if (= v w)
+                       (go)
+                       #f)))))))))
+  (defun (eq-hash m)
+    (unhashable "MutableMap")))
 
 ;; `#mmap(k v k v)`: each key and its value, flat, with a space between all.
 ;; Each key and value is added by the function given for it.
@@ -239,7 +260,8 @@
   (loop (:with first? #t #f)
         (:for entry m)
         (:do (def (k v) entry)
-             (unless first? (stringbuilder-add-string! b " "))
+             (unless first?
+               (stringbuilder-add-string! b " "))
              (each-key k b)
              (stringbuilder-add-string! b " ")
              (each-value v b)))
@@ -256,7 +278,7 @@
     (mutablemap-print-into m b (fun (k b) (display-into k b)) (fun (v b) (display-into v b)))))
 
 (: (-> (MutableMap %k %v) string) (where (Displayed %k) (Displayed %v)))
-(defun (mutablemap->str m) (displayed m))
+(defun (mutablemap->str m)
+  (displayed m))
 
 (:deprecated mutablemap->str "use `displayed`")
-

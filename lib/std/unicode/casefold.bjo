@@ -22,9 +22,7 @@
 ;;   search over the 1,606 mappings.
 ;; - A string that has nothing to fold is returned as it is, with no copy.
 
-(export
-  casefold-unicode-version
-  string-foldcase)
+(export casefold-unicode-version string-foldcase)
 
 ;; The core, so that (std prelude) can import this module.
 (import (std prelude core))
@@ -54,7 +52,8 @@
 ;; The index of the mapping of `cp`, or -1 if `cp` does not fold.
 (: (-> int int))
 (defun (fold-index cp)
-  (let go ((lo 0) (hi fold-count))
+  (let go ((lo 0)
+           (hi fold-count))
     (if (>= lo hi)
         -1
         (let* ((mid (shift-right (+ lo hi) 1))
@@ -65,26 +64,34 @@
             (else mid))))))
 
 (: (-> int bool) #:inline)
-(defun (ascii-upper? cp) (and (>= cp 65) (<= cp 90)))
+(defun (ascii-upper? cp)
+  (and (>= cp 65) (<= cp 90)))
 
 ;; True if `ch` folds to something other than itself.
 (: (-> char bool) #:inline)
 (defun (folds? ch)
   (def cp (char->int ch))
-  (if (< cp 128) (ascii-upper? cp) (>= (fold-index cp) 0)))
+  (if (< cp 128)
+      (ascii-upper? cp)
+      (>= (fold-index cp) 0)))
 
 ;; Adds the fold of `ch` to `sb`.
 (: (-> StringBuilder char void))
 (defun (add-folded! sb ch)
   (def cp (char->int ch))
   (if (< cp 128)
-      (stringbuilder-add-byte! sb (if (ascii-upper? cp) (+ cp 32) cp))
+      (stringbuilder-add-byte! sb
+                               (if (ascii-upper? cp)
+                                   (+ cp 32)
+                                   cp))
       (let ((i (fold-index cp)))
         (if (< i 0)
             (stringbuilder-add! sb ch)
             (loop (:for k (range (ro-span-ref fold-table (+ fold-starts i))
                                  (ro-span-ref fold-table (+ fold-starts i 1))))
-                  (:do (stringbuilder-add! sb (int->char (ro-span-ref fold-table (+ fold-targets k))))))))))
+                  (:do (stringbuilder-add! sb
+                                           (int->char (ro-span-ref fold-table
+                                                                   (+ fold-targets k))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Strings

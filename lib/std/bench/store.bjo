@@ -28,9 +28,10 @@
 ;; It is `(std bench)` that measures and prints; this module knows only runs
 ;; as data, so that the two do not import each other.
 
-(export SavedRun SavedCase Comparison Verdict CompareResult PairedCase
-        saved-run->string parse-saved-run write-saved-run! read-saved-run
-        case-key compare-runs compare-paired)
+(export
+  SavedRun SavedCase Comparison Verdict CompareResult PairedCase
+  saved-run->string parse-saved-run write-saved-run! read-saved-run
+  case-key compare-runs compare-paired)
 
 ;; Every export is documented there; the module doc is too.
 (:doc #:file "store.bjodoc")
@@ -63,20 +64,25 @@
                           (: cases (List SavedCase)))))
 
 (: (-> SavedCase string))
-(defun (case-name c) (record-ref c name))
+(defun (case-name c)
+  (record-ref c name))
 
 (: (-> SavedCase (List (Tuple string string))))
-(defun (case-labels c) (record-ref c labels))
+(defun (case-labels c)
+  (record-ref c labels))
 
 (: (-> SavedCase (Vec double)))
-(defun (case-samples c) (record-ref c samples))
+(defun (case-samples c)
+  (record-ref c samples))
 
 ;; What a case is known by across runs: its name and its parameters, as the
 ;; report shows them.
 (: (-> SavedCase string))
 (defun (case-key c)
   (string-join (list->vec (cons (case-name c)
-                                (list-map (fun (l) (match l ((Tuple p v) (str p "=" v))))
+                                (list-map (fun (l)
+                                            (match l
+                                              ((Tuple p v) (str p "=" v))))
                                           (case-labels c))))
                " "))
 
@@ -87,13 +93,17 @@
 (def file-version 1L)
 
 (: (-> string Bjodat))
-(defun (sym s) (BjoSym (string->symbol s)))
+(defun (sym s)
+  (BjoSym (string->symbol s)))
 
 (: (-> string Bjodat Bjodat))
-(defun (clause name value) (BjoList (list (sym name) value)))
+(defun (clause name value)
+  (BjoList (list (sym name) value)))
 
 (: (-> (Tuple string string) Bjodat))
-(defun (pair->bjodat p) (match p ((Tuple a b) (BjoList (list (BjoStr a) (BjoStr b))))))
+(defun (pair->bjodat p)
+  (match p
+    ((Tuple a b) (BjoList (list (BjoStr a) (BjoStr b))))))
 
 (: (-> SavedCase Bjodat))
 (defun (case->bjodat c)
@@ -108,25 +118,26 @@
 (: (-> (List (Tuple string string)) Bjodat))
 (defun (header->bjodat facts)
   (BjoList (cons (sym "header")
-                 (list-map (fun (f) (match f ((Tuple n v) (clause n (BjoStr v))))) facts))))
+                 (list-map (fun (f)
+                             (match f
+                               ((Tuple n v) (clause n (BjoStr v)))))
+                           facts))))
 
 ;; The text of a saved run: a case to a line, so that a diff of two files
 ;; says which cases changed.
 (: (-> SavedRun string))
 (defun (saved-run->string r)
   (def lines
-    (list-append
-      (list (bjodat->string (clause "version" (BjoInt file-version)))
-            (bjodat->string (clause "saved" (BjoStr (record-ref r saved))))
-            (bjodat->string (clause "machine" (BjoStr (record-ref r machine))))
-            (bjodat->string (header->bjodat (record-ref r header))))
-      (list-map (fun (c) (bjodat->string (case->bjodat c))) (record-ref r cases))))
-  (str "(bench-run\n"
-       (string-join (list->vec (list-map (fun (l) (str "  " l)) lines)) "\n")
-       ")\n"))
+    (list-append (list (bjodat->string (clause "version" (BjoInt file-version)))
+                       (bjodat->string (clause "saved" (BjoStr (record-ref r saved))))
+                       (bjodat->string (clause "machine" (BjoStr (record-ref r machine))))
+                       (bjodat->string (header->bjodat (record-ref r header))))
+                 (list-map (fun (c) (bjodat->string (case->bjodat c))) (record-ref r cases))))
+  (str "(bench-run\n" (string-join (list->vec (list-map (fun (l) (str "  " l)) lines)) "\n") ")\n"))
 
 (: (-> string SavedRun void))
-(defun (write-saved-run! path r) (file-write-text path (saved-run->string r)))
+(defun (write-saved-run! path r)
+  (file-write-text path (saved-run->string r)))
 
 ;; ---------------------------------------------------------------------------
 ;; Reading
@@ -137,7 +148,9 @@
 (defun (clause-ref clauses name)
   (match clauses
     ((Cons (BjoList (Cons (BjoSym s) (Cons v Nil))) more)
-     (if (= (symbol->string s) name) (Some v) (clause-ref more name)))
+     (if (= (symbol->string s) name)
+         (Some v)
+         (clause-ref more name)))
     ((Cons _ more) (clause-ref more name))
     (Nil None)))
 
@@ -145,10 +158,12 @@
 (: (-> (List Bjodat) string (List (List Bjodat))))
 (defun (forms-named clauses name)
   (loop (:for c clauses)
-        (:acc (listing (match c ((BjoList (Cons _ rest)) rest) (_ (list))))
-              #:when (match c
-                       ((BjoList (Cons (BjoSym s) _)) (= (symbol->string s) name))
-                       (_ #f)))))
+        (:acc (listing (match c
+                         ((BjoList (Cons _ rest)) rest)
+                         (_ (list)))) #:when (match c
+                                               ((BjoList (Cons (BjoSym s) _))
+                                                (= (symbol->string s) name))
+                                               (_ #f)))))
 
 (: (-> Bjodat (Option double)))
 (defun (number d)
@@ -173,25 +188,46 @@
 (: (-> (List Bjodat) (Result string SavedCase)))
 (defun (bjodat->case clauses)
   (def labels
-    (match (find (fun (c) (match c ((BjoList (Cons (BjoSym s) _)) (= (symbol->string s) "labels")) (_ #f)))
+    (match (find (fun (c)
+                   (match c
+                     ((BjoList (Cons (BjoSym s) _)) (= (symbol->string s) "labels"))
+                     (_ #f)))
                  clauses)
       ((Some (BjoList (Cons _ pairs))) (all-some (list-map string-pair pairs)))
       (_ None)))
-  (match (Tuple (clause-ref clauses "name") labels (clause-ref clauses "k")
-                (clause-ref clauses "once") (clause-ref clauses "bytes") (clause-ref clauses "samples"))
-    ((Tuple (Some (BjoStr name)) (Some labels) (Some (BjoInt k)) (Some (BjoBool once))
-            (Some bytes) (Some (BjoVec samples)))
+  (match (Tuple (clause-ref clauses "name")
+                labels
+                (clause-ref clauses "k")
+                (clause-ref clauses "once")
+                (clause-ref clauses "bytes")
+                (clause-ref clauses "samples"))
+    ((Tuple (Some (BjoStr name))
+            (Some labels)
+            (Some (BjoInt k))
+            (Some (BjoBool once))
+            (Some bytes)
+            (Some (BjoVec samples)))
      (match (Tuple (number bytes) (all-some (list-map number (vec->list samples))))
        ((Tuple (Some b) (Some xs))
-        (Ok (SavedCase (name name) (labels labels) (k k) (once once) (bytes b) (samples (list->vec xs)))))
+        (Ok (SavedCase (name name)
+                       (labels labels)
+                       (k k)
+                       (once once)
+                       (bytes b)
+                       (samples (list->vec xs)))))
        (_ (Err #"the case ${name} has a sample or a size that is not a number"))))
-    (_ (Err "a case lacks one of name, labels, k, once, bytes and samples, or has one of the wrong kind"))))
+    (_
+     (Err
+      "a case lacks one of name, labels, k, once, bytes and samples, or has one of the wrong kind"))))
 
 (: (-> (List (Result string %a)) (Result string (List %a))))
 (defun (results rs)
   (match rs
     (Nil (Ok (list)))
-    ((Cons (Ok x) more) (match (results more) ((Ok rest) (Ok (cons x rest))) ((Err e) (Err e))))
+    ((Cons (Ok x) more)
+     (match (results more)
+       ((Ok rest) (Ok (cons x rest)))
+       ((Err e) (Err e))))
     ((Cons (Err e) _) (Err e))))
 
 (def not-a-run "it is not a saved benchmark run: that is one (bench-run ...) form")
@@ -203,14 +239,16 @@
     ((Ok (BjoList (Cons (BjoSym head) clauses)))
      (if (not (= (symbol->string head) "bench-run"))
          (Err not-a-run)
-         (match (Tuple (clause-ref clauses "version") (clause-ref clauses "saved") (clause-ref clauses "machine"))
+         (match (Tuple (clause-ref clauses "version")
+                       (clause-ref clauses "saved")
+                       (clause-ref clauses "machine"))
            ((Tuple (Some (BjoInt v)) (Some (BjoStr saved)) (Some (BjoStr machine)))
             (if (> v file-version)
-                (Err #"it is version ${v} of the format, and this program reads version ${file-version}")
+                (Err
+                 #"it is version ${v} of the format, and this program reads version ${file-version}")
                 (saved-run-of clauses saved machine)))
            (_ (Err "it lacks its version, the time it was saved, or its machine")))))
     (_ (Err not-a-run))))
-
 
 (: (-> (List Bjodat) string string (Result string SavedRun)))
 (defun (saved-run-of clauses saved machine)
@@ -219,9 +257,12 @@
       ((Cons facts _)
        (loop (:for f facts)
              (:acc (listing (match f
-                              ((BjoList (Cons (BjoSym n) (Cons (BjoStr v) Nil))) (Tuple (symbol->string n) v))
+                              ((BjoList (Cons (BjoSym n) (Cons (BjoStr v) Nil)))
+                               (Tuple (symbol->string n) v))
                               (_ (Tuple "" ""))))
-                   #:when (match f ((BjoList (Cons (BjoSym _) (Cons (BjoStr _) Nil))) #t) (_ #f)))))
+                   #:when (match f
+                            ((BjoList (Cons (BjoSym _) (Cons (BjoStr _) Nil))) #t)
+                            (_ #f)))))
       (Nil (list))))
   (match (results (list-map bjodat->case (forms-named clauses "case")))
     ((Ok cases) (Ok (SavedRun (saved saved) (machine machine) (header header) (cases cases))))
@@ -233,8 +274,7 @@
   (if (not (file-exists? path))
       (Err #"${path} does not exist")
       (match (try (file-read-text path) #:catch (System.Exception))
-        ((Ok text)
-         (result-map-err (fun (e) #"${path}: ${e}") (parse-saved-run text)))
+        ((Ok text) (result-map-err (fun (e) #"${path}: ${e}") (parse-saved-run text)))
         (_ (Err #"${path} could not be read")))))
 
 ;; ---------------------------------------------------------------------------
@@ -275,16 +315,20 @@
 
 (: (-> (List (Tuple string string)) string string))
 (defun (fact facts name)
-  (match (find (fun (f) (match f ((Tuple n _) (= n name)))) facts)
+  (match (find (fun (f)
+                 (match f
+                   ((Tuple n _) (= n name))))
+               facts)
     ((Some (Tuple _ v)) v)
     (None "")))
 
 ;; The facts that a machine key leaves out and that move times: said when
 ;; they differ.
-(def watched-facts (list (Tuple "build" "the build")
-                         (Tuple "dotnet" "the .NET version")
-                         (Tuple "gc-server" "server GC")
-                         (Tuple "governor" "the CPU frequency governor")))
+(def watched-facts
+  (list (Tuple "build" "the build")
+        (Tuple "dotnet" "the .NET version")
+        (Tuple "gc-server" "server GC")
+        (Tuple "governor" "the CPU frequency governor")))
 
 (: (-> SavedRun SavedRun (List string)))
 (defun (fact-warnings saved now)
@@ -292,8 +336,7 @@
         (:let (Tuple name what) w)
         (:let a (fact (record-ref saved header) name))
         (:let b (fact (record-ref now header) name))
-        (:acc (listing #"${what} differs: ${a} in the saved run, ${b} now")
-              #:when (not (= a b)))))
+        (:acc (listing #"${what} differs: ${a} in the saved run, ${b} now") #:when (not (= a b)))))
 
 (: (-> double double double double Verdict))
 (defun (verdict p change alpha threshold)
@@ -304,7 +347,8 @@
     (else Faster)))
 
 (: (-> (List SavedCase) string (Option SavedCase)))
-(defun (find-case cases key) (find (fun (c) (= (case-key c) key)) cases))
+(defun (find-case cases key)
+  (find (fun (c) (= (case-key c) key)) cases))
 
 ;; `now` compared with `saved`, case by case: the Mann–Whitney U test on the
 ;; two sets of samples, since a saved run has no pairs, and a bootstrap
@@ -316,10 +360,14 @@
   (def now-cases (record-ref now cases))
   (def pairs
     (loop (:for c now-cases)
-          (:acc (listing (Tuple (match (find-case saved-cases (case-key c)) ((Some s) s) (None c)) c))
-                #:when (some? (find-case saved-cases (case-key c))))))
+          (:acc (listing (Tuple (match (find-case saved-cases (case-key c))
+                                  ((Some s) s)
+                                  (None c))
+                                c)) #:when (some? (find-case saved-cases (case-key c))))))
   (def raw
-    (list->vec (list-map (fun (p) (match p ((Tuple a b) (mann-whitney-p (case-samples a) (case-samples b)))))
+    (list->vec (list-map (fun (p)
+                           (match p
+                             ((Tuple a b) (mann-whitney-p (case-samples a) (case-samples b)))))
                          pairs)))
   (def corrected (holm raw))
   (def comparisons
@@ -328,22 +376,29 @@
           (:let (Tuple a b) p)
           (:let was (median (case-samples a)))
           (:let now-median (median (case-samples b)))
-          (:let change (if (> was 0.0) (- (/ now-median was) 1.0) 0.0))
+          (:let change (if (> was 0.0)
+                           (- (/ now-median was) 1.0)
+                           0.0))
           (:let (Tuple lo hi) (bootstrap-ratio (case-samples a) (case-samples b)))
-          (:acc (listing (Comparison (name (case-name b)) (labels (case-labels b))
-                                     (was was) (now now-median) (change change)
-                                     (lo (- lo 1.0)) (hi (- hi 1.0))
-                                     (p-raw (vec-ref raw i)) (p (vec-ref corrected i))
+          (:acc (listing (Comparison (name (case-name b))
+                                     (labels (case-labels b))
+                                     (was was)
+                                     (now now-median)
+                                     (change change)
+                                     (lo (- lo 1.0))
+                                     (hi (- hi 1.0))
+                                     (p-raw (vec-ref raw i))
+                                     (p (vec-ref corrected i))
                                      (verdict (verdict (vec-ref corrected i) change alpha threshold))
                                      (spread -1.0))))))
   (CompareResult
-    (comparisons comparisons)
-    (only-now (loop (:for c now-cases)
-                    (:acc (listing (case-key c)) #:when (none? (find-case saved-cases (case-key c))))))
-    (only-saved (loop (:for c saved-cases)
-                      (:acc (listing (case-key c)) #:when (none? (find-case now-cases (case-key c))))))
-    (warnings (fact-warnings saved now))
-    (other-machine (not (= (record-ref saved machine) (record-ref now machine))))))
+   (comparisons comparisons)
+   (only-now (loop (:for c now-cases)
+                   (:acc (listing (case-key c)) #:when (none? (find-case saved-cases (case-key c))))))
+   (only-saved (loop (:for c saved-cases)
+                     (:acc (listing (case-key c)) #:when (none? (find-case now-cases (case-key c))))))
+   (warnings (fact-warnings saved now))
+   (other-machine (not (= (record-ref saved machine) (record-ref now machine))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Comparing in rounds: A/B
@@ -357,12 +412,20 @@
                             (: b (Vec (Vec double))))))
 
 (: (-> double double double))
-(defun (log-ratio a b) (if (and (> a 0.0) (> b 0.0)) (loge (/ b a)) 0.0))
+(defun (log-ratio a b)
+  (if (and (> a 0.0) (> b 0.0))
+      (loge (/ b a))
+      0.0))
 
 ;; The comparison of one case before the correction: was, now, change, the
 ;; interval, the raw p, and the spread between processes.
-(type (: Paired (Record (: was double) (: now double) (: change double)
-                        (: lo double) (: hi double) (: p double) (: spread double))))
+(type (: Paired (Record (: was double)
+                        (: now double)
+                        (: change double)
+                        (: lo double)
+                        (: hi double)
+                        (: p double)
+                        (: spread double))))
 
 (: (-> PairedCase Paired))
 (defun (paired-one c)
@@ -378,23 +441,31 @@
         (def was (median a))
         (def now (median b))
         (def (Tuple lo hi) (bootstrap-ratio/paired a b))
-        (Paired (was was) (now now) (change (if (> was 0.0) (- (/ now was) 1.0) 0.0))
-                (lo (- lo 1.0)) (hi (- hi 1.0))
+        (Paired (was was)
+                (now now)
+                (change (if (> was 0.0)
+                            (- (/ now was) 1.0)
+                            0.0))
+                (lo (- lo 1.0))
+                (hi (- hi 1.0))
                 (p (wilcoxon-p {vecing (log-ratio (vec-ref a i) (vec-ref b i)) (:for i (range 0 n))}))
                 (spread -1.0)))
       ;; Several process pairs: one ratio of medians each, and the t-test
       ;; and t-interval on their logs, which a difference between processes
       ;; is in.
       (let ()
-        (def logs {vecing (log-ratio (median (vec-ref (record-ref c a) j)) (median (vec-ref (record-ref c b) j)))
-                          (:for j (range 0 pairs))})
+        (def logs
+          {vecing (log-ratio (median (vec-ref (record-ref c a) j))
+                             (median (vec-ref (record-ref c b) j)))
+                  (:for j (range 0 pairs))})
         (def m (mean logs))
         (def sd (std-dev logs))
         (def half (* (t-critical 0.05 (- pairs 1)) (/ sd (sqrt (cast System.Double pairs)))))
         (Paired (was (median (vec-map median (record-ref c a))))
                 (now (median (vec-map median (record-ref c b))))
                 (change (- (exp m) 1.0))
-                (lo (- (exp (- m half)) 1.0)) (hi (- (exp (+ m half)) 1.0))
+                (lo (- (exp (- m half)) 1.0))
+                (hi (- (exp (+ m half)) 1.0))
                 (p (t-test-p logs))
                 (spread sd)))))
 
@@ -405,19 +476,24 @@
 (defun (compare-paired cases only-a only-b alpha threshold)
   (def results (list->vec (list-map paired-one cases)))
   (def corrected (holm (vec-map (fun (r) (record-ref r p)) results)))
-  (CompareResult
-    (comparisons
-      (loop (:for c cases)
-            (:with i 0 (+ i 1))
-            (:let r (vec-ref results i))
-            (:acc (listing (Comparison (name (record-ref c name)) (labels (record-ref c labels))
-                                       (was (record-ref r was)) (now (record-ref r now))
-                                       (change (record-ref r change))
-                                       (lo (record-ref r lo)) (hi (record-ref r hi))
-                                       (p-raw (record-ref r p)) (p (vec-ref corrected i))
-                                       (verdict (verdict (vec-ref corrected i) (record-ref r change) alpha threshold))
-                                       (spread (record-ref r spread)))))))
-    (only-now only-b)
-    (only-saved only-a)
-    (warnings (list))
-    (other-machine #f)))
+  (CompareResult (comparisons (loop (:for c cases)
+                                    (:with i 0 (+ i 1))
+                                    (:let r (vec-ref results i))
+                                    (:acc (listing (Comparison (name (record-ref c name))
+                                                               (labels (record-ref c labels))
+                                                               (was (record-ref r was))
+                                                               (now (record-ref r now))
+                                                               (change (record-ref r change))
+                                                               (lo (record-ref r lo))
+                                                               (hi (record-ref r hi))
+                                                               (p-raw (record-ref r p))
+                                                               (p (vec-ref corrected i))
+                                                               (verdict (verdict (vec-ref corrected i)
+                                                                                 (record-ref r change)
+                                                                                 alpha
+                                                                                 threshold))
+                                                               (spread (record-ref r spread)))))))
+                 (only-now only-b)
+                 (only-saved only-a)
+                 (warnings (list))
+                 (other-machine #f)))

@@ -79,14 +79,12 @@
 ;;
 ;; Drains items.
 
-
 ;; Drains a port.
 (: (-> (-?-> InputPort %a) InputPort (List %a)))
 (defun (port->list reader p)
   (loop (:with i 1 1)
         (:finish (port-eof? p))
         (:acc lst (listing (reader p)))))
-
 
 (: (-> (-?-> InputPort %a) InputPort (Vec %a)))
 (defun (port->vec reader p)
@@ -217,7 +215,8 @@
 
 ;; Whatever is available, never an empty array, and `None` once there is no more.
 (: (-> InputPort (Event (Result Exception (Option (Array byte))))))
-(defun (read-some-evt p) (clr-read-some-evt p))
+(defun (read-some-evt p)
+  (clr-read-some-evt p))
 
 ;; Exactly `n` bytes. At end of input the short remainder comes back as
 ;; `(Some ...)` and the call after it as `None`, so the two are separate facts
@@ -225,13 +224,15 @@
 ;;
 ;; `n` must be at least 1.
 (: (-> InputPort int (Event (Result Exception (Option (Array byte))))))
-(defun (read-bytes-evt p n) (clr-read-bytes-evt p n))
+(defun (read-bytes-evt p n)
+  (clr-read-bytes-evt p n))
 
 ;; Fires once the port is finished — cleanly, or because it failed. It says only
 ;; that, which is what makes it the thing to wait on for "the other end has gone
 ;; away"; a read beside it is what says which of the two happened.
 (: (-> InputPort (Event Unit)))
-(defun (eof-evt p) (clr-eof-evt p))
+(defun (eof-evt p)
+  (clr-eof-evt p))
 
 ;; ---------------------------------------------------------------------------
 ;; Reading, for when there is nothing to choose between
@@ -253,13 +254,13 @@
 (: (-> InputPort (Option (Array byte))))
 (defbjouble (read-some p)
   (#:sync (byte-read-or-raise (sync/blocking (clr-read-some-evt p))))
-  (#:bjo  (byte-read-or-raise (sync (clr-read-some-evt p)))))
+  (#:bjo (byte-read-or-raise (sync (clr-read-some-evt p)))))
 
 ;; Exactly `n` bytes, or the short remainder at end of input, or `None`.
 (: (-> InputPort int (Option (Array byte))))
 (defbjouble (read-bytes p n)
   (#:sync (byte-read-or-raise (sync/blocking (clr-read-bytes-evt p n))))
-  (#:bjo  (byte-read-or-raise (sync (clr-read-bytes-evt p n)))))
+  (#:bjo (byte-read-or-raise (sync (clr-read-bytes-evt p n)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Looking without taking
@@ -275,7 +276,7 @@
 (: (-> InputPort int int (Option (Array byte))))
 (defbjouble (peek-bytes p skip count)
   (#:sync (clr-peek p skip count))
-  (#:bjo  (clr-peek-await p skip count)))
+  (#:bjo (clr-peek-await p skip count)))
 
 ;; ---------------------------------------------------------------------------
 ;; Writing
@@ -287,8 +288,7 @@
 (: (-> OutputPort (Array byte) void))
 (defbjouble (write-bytes! p bytes)
   (#:sync (clr-write-bytes p bytes))
-  (#:bjo  (clr-write-bytes-await p bytes)))
-
+  (#:bjo (clr-write-bytes-await p bytes)))
 
 ;; `flush-port` and `close-output-port` are the prelude's: there is one kind of
 ;; output port.
@@ -307,7 +307,7 @@
 (: (-> OutputPort void))
 (defbjouble (shutdown! p)
   (#:sync (clr-shutdown p))
-  (#:bjo  (clr-shutdown-await p)))
+  (#:bjo (clr-shutdown-await p)))
 
 ;; ---------------------------------------------------------------------------
 ;; Composition
@@ -320,7 +320,8 @@
 ;;
 ;; The result owns nothing: closing it does not close `p`.
 (: (-> InputPort int InputPort))
-(defun (limited p n) (clr-limited p n))
+(defun (limited p n)
+  (clr-limited p n))
 
 ;; A port pair with nothing underneath: what is written to the output can be
 ;; read from the input.

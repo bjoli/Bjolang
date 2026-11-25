@@ -74,15 +74,18 @@
 ;; One rep: elapsed milliseconds, bytes allocated, gen-0 collections.
 (: (-> (Tuple long long int) long long))
 (defun (rep-ns r ops)
-  (match r ((Tuple ms bytes gc) (/ (* ms 1000000L) ops))))
+  (match r
+    ((Tuple ms bytes gc) (/ (* ms 1000000L) ops))))
 
 (: (-> (Tuple long long int) long long))
 (defun (rep-bytes r ops)
-  (match r ((Tuple ms bytes gc) (/ bytes ops))))
+  (match r
+    ((Tuple ms bytes gc) (/ bytes ops))))
 
 (: (-> (Tuple long long int) int))
 (defun (rep-gc r)
-  (match r ((Tuple ms bytes gc) gc)))
+  (match r
+    ((Tuple ms bytes gc) gc)))
 
 ;; The third of five, i.e. the median, of an already sorted list.
 (: (-> (List %a) %a))
@@ -104,8 +107,11 @@
   (println (str (string-pad-right name 22)
                 (string-pad-left (->str (list-head nss)) 10)
                 (string-pad-left (->str (list-head bs)) 10)
-                "   (median " (->str (middle nss))
-                ", gc0 " (->str (middle gcs)) "/rep)")))
+                "   (median "
+                (->str (middle nss))
+                ", gc0 "
+                (->str (middle gcs))
+                "/rep)")))
 
 ;; ---------------------------------------------------------------------------
 ;; 1. Ring — 1000 nodes, 1000 trips, a million parked rendezvous.
@@ -116,11 +122,19 @@
   (let go ()
     (def msg (sync (chan-recv in)))
     (if (= msg -1)
-        (if is-last unit (sync (chan-send out -1)))
-        (let ((m (if is-last (+ msg 1) msg)))
+        (if is-last
+            unit
+            (sync (chan-send out -1)))
+        (let ((m (if is-last
+                     (+ msg 1)
+                     msg)))
           (if (and is-last (>= m trips))
-              (let () (sync (chan-send out -1)) (go))
-              (let () (sync (chan-send out m)) (go)))))))
+              (let ()
+                (sync (chan-send out -1))
+                (go))
+              (let ()
+                (sync (chan-send out m))
+                (go)))))))
 
 ;; The kick-off message, sent from a fiber of its own as in the C# twin, so that
 ;; the timed region starts with a spawn rather than with a send on the fiber
@@ -134,13 +148,16 @@
 ;; ambient, so every `sync` here races it; this row is the C# twin plus that.
 (: (-bjo-> int int (Tuple long long int)))
 (defbjo (ring-joined workers trips)
-  (def channels (loop (:for i (range 0 workers))
-                      (:acc v (vecing (make-chan)))))
-  (def handles (loop (:for i (range 0 workers))
-                     (:acc v (vecing (bjo (ring-node (vec-ref channels i)
-                                                     (vec-ref channels (% (+ i 1) workers))
-                                                     (= i (- workers 1))
-                                                     trips))))))
+  (def channels
+    (loop (:for i (range 0 workers))
+          (:acc v (vecing (make-chan)))))
+  (def handles
+    (loop (:for i (range 0 workers))
+          (:acc v (vecing (bjo
+                            (ring-node (vec-ref channels i)
+                                       (vec-ref channels (% (+ i 1) workers))
+                                       (= i (- workers 1))
+                                       trips))))))
   (settle)
   (def gc0 (gc-count 0))
   (def before (total-allocated #t))
@@ -161,11 +178,19 @@
   (let go ()
     (def msg (chan-get in))
     (if (= msg -1)
-        (if is-last unit (chan-put out -1))
-        (let ((m (if is-last (+ msg 1) msg)))
+        (if is-last
+            unit
+            (chan-put out -1))
+        (let ((m (if is-last
+                     (+ msg 1)
+                     msg)))
           (if (and is-last (>= m trips))
-              (let () (chan-put out -1) (go))
-              (let () (chan-put out m) (go)))))))
+              (let ()
+                (chan-put out -1)
+                (go))
+              (let ()
+                (chan-put out m)
+                (go)))))))
 
 (: (-bjo-> (Chan int) int void))
 (defbjo (send-one/put ch v)
@@ -173,13 +198,16 @@
 
 (: (-bjo-> int int (Tuple long long int)))
 (defbjo (ring-joined/put workers trips)
-  (def channels (loop (:for i (range 0 workers))
-                      (:acc v (vecing (make-chan)))))
-  (def handles (loop (:for i (range 0 workers))
-                     (:acc v (vecing (bjo (ring-node/put (vec-ref channels i)
-                                                         (vec-ref channels (% (+ i 1) workers))
-                                                         (= i (- workers 1))
-                                                         trips))))))
+  (def channels
+    (loop (:for i (range 0 workers))
+          (:acc v (vecing (make-chan)))))
+  (def handles
+    (loop (:for i (range 0 workers))
+          (:acc v (vecing (bjo
+                            (ring-node/put (vec-ref channels i)
+                                           (vec-ref channels (% (+ i 1) workers))
+                                           (= i (- workers 1))
+                                           trips))))))
   (settle)
   (def gc0 (gc-count 0))
   (def before (total-allocated #t))
@@ -198,8 +226,9 @@
 ;; token, so what the pair prices is the nested scope's bookkeeping.
 (: (-bjo-> int int (Tuple long long int)))
 (defbjo (ring-nested-scope workers trips)
-  (def channels (loop (:for i (range 0 workers))
-                      (:acc v (vecing (make-chan)))))
+  (def channels
+    (loop (:for i (range 0 workers))
+          (:acc v (vecing (make-chan)))))
   (settle)
   (def gc0 (gc-count 0))
   (def before (total-allocated #t))
@@ -207,10 +236,11 @@
   (stopwatch-start! sw)
   (with-cancel (cancel)
     (loop (:for i (range 0 workers))
-          (:do (spawn (ring-node (vec-ref channels i)
-                                 (vec-ref channels (% (+ i 1) workers))
-                                 (= i (- workers 1))
-                                 trips))))
+          (:do (spawn
+                 (ring-node (vec-ref channels i)
+                            (vec-ref channels (% (+ i 1) workers))
+                            (= i (- workers 1))
+                            trips))))
     (spawn (send-one (vec-ref channels 0) 0)))
   (stopwatch-stop! sw)
   (Tuple (stopwatch-ms sw) (- (total-allocated #t) before) (- (gc-count 0) gc0)))
@@ -223,7 +253,8 @@
 ;; ---------------------------------------------------------------------------
 
 (: (-bjo-> void))
-(defbjo (nothing) unit)
+(defbjo (nothing)
+  unit)
 
 (: (-bjo-> int (Tuple long long int)))
 (defbjo (spawn-burst n)
@@ -259,24 +290,27 @@
 (: (-bjo-> (Vec (Chan int)) int void))
 (defbjo (skewed-receiver chs rounds)
   ;; Built once and synced a million times, as in the C# twin.
-  (def ev (choose (chan-recv (vec-ref chs 0))
-                  (chan-recv (vec-ref chs 1))
-                  (chan-recv (vec-ref chs 2))
-                  (chan-recv (vec-ref chs 3))
-                  (chan-recv (vec-ref chs 4))
-                  (chan-recv (vec-ref chs 5))
-                  (chan-recv (vec-ref chs 6))
-                  (chan-recv (vec-ref chs 7))))
+  (def ev
+    (choose (chan-recv (vec-ref chs 0))
+            (chan-recv (vec-ref chs 1))
+            (chan-recv (vec-ref chs 2))
+            (chan-recv (vec-ref chs 3))
+            (chan-recv (vec-ref chs 4))
+            (chan-recv (vec-ref chs 5))
+            (chan-recv (vec-ref chs 6))
+            (chan-recv (vec-ref chs 7))))
   (loop (:for i (range 0 rounds))
         (:do (ignore (sync ev)))))
 
 (: (-bjo-> int bool (Tuple long long int)))
 (defbjo (skewed-choose rounds put?)
-  (def chs (loop (:for i (range 0 8))
-                 (:acc v (vecing (make-chan)))))
-  (def sender (if put?
-                  (bjo (skewed-sender/put (vec-ref chs 0) rounds))
-                  (bjo (skewed-sender (vec-ref chs 0) rounds))))
+  (def chs
+    (loop (:for i (range 0 8))
+          (:acc v (vecing (make-chan)))))
+  (def sender
+    (if put?
+        (bjo (skewed-sender/put (vec-ref chs 0) rounds))
+        (bjo (skewed-sender (vec-ref chs 0) rounds))))
   (settle)
   (def gc0 (gc-count 0))
   (def before (total-allocated #t))
@@ -293,14 +327,15 @@
 ;; ---------------------------------------------------------------------------
 
 (defbjo (main args)
-  (println (str framework
-                ", ProcessorCount=" (->str processor-count)
-                ", ServerGC=" (->str server-gc?)))
+  (println
+   (str framework ", ProcessorCount=" (->str processor-count) ", ServerGC=" (->str server-gc?)))
   (println "")
   (println (str (string-pad-right "benchmark" 22)
                 (string-pad-left "ns/op" 10)
                 (string-pad-left "B/op" 10)
-                "   (min of " (->str reps) ")"))
+                "   (min of "
+                (->str reps)
+                ")"))
 
   ;; Warm up every path the suite uses, so the first measured rep is not the one
   ;; paying for tier-0 code. A row hands its numbers back rather than printing
@@ -312,16 +347,28 @@
   (ignore (skewed-choose 50000 #f))
   (ignore (skewed-choose 50000 #t))
 
-  (report "Ring" 1000000
-          (loop (:for r (range 0 reps)) (:acc l (listing (ring-joined 1000 1000)))))
-  (report "Ring (put/get)" 1000000
-          (loop (:for r (range 0 reps)) (:acc l (listing (ring-joined/put 1000 1000)))))
-  (report "Ring (nested scope)" 1000000
-          (loop (:for r (range 0 reps)) (:acc l (listing (ring-nested-scope 1000 1000)))))
-  (report "Spawn burst" 1000000
-          (loop (:for r (range 0 reps)) (:acc l (listing (spawn-burst 1000000)))))
-  (report "Skewed choose(8)" 1000000
-          (loop (:for r (range 0 reps)) (:acc l (listing (skewed-choose 1000000 #f)))))
-  (report "Skewed choose(8), put" 1000000
-          (loop (:for r (range 0 reps)) (:acc l (listing (skewed-choose 1000000 #t)))))
+  (report "Ring"
+          1000000
+          (loop (:for r (range 0 reps))
+                (:acc l (listing (ring-joined 1000 1000)))))
+  (report "Ring (put/get)"
+          1000000
+          (loop (:for r (range 0 reps))
+                (:acc l (listing (ring-joined/put 1000 1000)))))
+  (report "Ring (nested scope)"
+          1000000
+          (loop (:for r (range 0 reps))
+                (:acc l (listing (ring-nested-scope 1000 1000)))))
+  (report "Spawn burst"
+          1000000
+          (loop (:for r (range 0 reps))
+                (:acc l (listing (spawn-burst 1000000)))))
+  (report "Skewed choose(8)"
+          1000000
+          (loop (:for r (range 0 reps))
+                (:acc l (listing (skewed-choose 1000000 #f)))))
+  (report "Skewed choose(8), put"
+          1000000
+          (loop (:for r (range 0 reps))
+                (:acc l (listing (skewed-choose 1000000 #t)))))
   0)

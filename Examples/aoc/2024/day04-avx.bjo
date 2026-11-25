@@ -11,9 +11,13 @@
 (def margin 3)
 
 (: (-> char byte))
-(defun (byte-of c) (cast System.Byte (char->int c)))
+(defun (byte-of c)
+  (cast System.Byte (char->int c)))
 
-(type (: Grid (Record (: cells (Array byte)) (: w int) (: h int) (: stride int))))
+(type (: Grid (Record (: cells (Array byte))
+                      (: w int)
+                      (: h int)
+                      (: stride int))))
 
 ;; A row of the grid is a stride of cells. The stride leaves a vector's width
 ;; of zeros after the letters, so the last vector of a row reads no letters of
@@ -24,7 +28,8 @@
         (h (length lines))
         (stride (* 32 (+ 1 (/ (+ w (* 2 margin) 31) 32))))
         (cells (make-array (+ (* (+ h (* 2 margin)) stride) 64) #:fill (cast System.Byte 0))))
-  (loop (:for line lines) (:with y 0 (+ y 1))
+  (loop (:for line lines)
+        (:with y 0 (+ y 1))
         (:let bytes (string->bytes line))
         (:subloop)
         (:for x (range 0 w))
@@ -44,40 +49,45 @@
         (cells (.cells g))
         (s (.stride g)))
   (: (-> char UInt8x32))
-  (defun (letter c) (simd256-splat (byte-of c)))
+  (defun (letter c)
+    (simd256-splat (byte-of c)))
   (def X (letter #\X))
   (def M (letter #\M))
   (def A (letter #\A))
   (def S (letter #\S))
   (: (-> int UInt8x32))
-  (defun (at i) (simd256-load cells i))
+  (defun (at i)
+    (simd256-load cells i))
 
   ;; Part 1: XMAS from each cell, in each of the eight directions.
-  (def steps {listing (+ (* dy s) dx)
-                      (:for dy (range -1 2)) (:subloop) (:for dx (range -1 2))
-                      (:when (not (and (= dx 0) (= dy 0))))})
+  (def steps
+    {listing (+ (* dy s) dx)
+             (:for dy (range -1 2))
+             (:subloop)
+             (:for dx (range -1 2))
+             (:when (not (and (= dx 0) (= dy 0))))})
   (def/mutable part1 0)
-  (for-each-vector g
-    (fun (i)
-      (list-for-each
-        (fun (d)
-          (def hits (simd-and (simd-and (simd-eq (at i) X) (simd-eq (at (+ i d)) M))
-                              (simd-and (simd-eq (at (+ i (* 2 d))) A) (simd-eq (at (+ i (* 3 d))) S))))
-          (set! part1 (+ part1 (simd-count-true hits))))
-        steps)))
+  (for-each-vector g (fun (i)
+                       (list-for-each (fun (d)
+                                        (def hits
+                                          (simd-and (simd-and (simd-eq (at i) X)
+                                                              (simd-eq (at (+ i d)) M))
+                                                    (simd-and (simd-eq (at (+ i (* 2 d))) A)
+                                                              (simd-eq (at (+ i (* 3 d))) S))))
+                                        (set! part1 (+ part1 (simd-count-true hits))))
+                                      steps)))
   (println part1)
 
   ;; Part 2: an A whose two diagonals each read MAS or SAM.
   (: (-> UInt8x32 UInt8x32 (Mask256 byte)))
   (defun (mas a b)
-    (simd-or (simd-and (simd-eq a M) (simd-eq b S))
-             (simd-and (simd-eq a S) (simd-eq b M))))
+    (simd-or (simd-and (simd-eq a M) (simd-eq b S)) (simd-and (simd-eq a S) (simd-eq b M))))
   (def/mutable part2 0)
-  (for-each-vector g
-    (fun (i)
-      (def hits (simd-and (simd-eq (at i) A)
-                          (simd-and (mas (at (- i s 1)) (at (+ i s 1)))
-                                    (mas (at (+ (- i s) 1)) (at (- (+ i s) 1))))))
-      (set! part2 (+ part2 (simd-count-true hits)))))
+  (for-each-vector g (fun (i)
+                       (def hits
+                         (simd-and (simd-eq (at i) A)
+                                   (simd-and (mas (at (- i s 1)) (at (+ i s 1)))
+                                             (mas (at (+ (- i s) 1)) (at (- (+ i s) 1))))))
+                       (set! part2 (+ part2 (simd-count-true hits)))))
   (println part2)
   0)

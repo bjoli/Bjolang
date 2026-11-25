@@ -34,7 +34,8 @@
   (error-message (: System.Exception.Message (-> Exception string) #:get)))
 
 ;; A benchmark file built, ready to run.
-(type (: BenchProgram (Record (: source string) (: exe string))))
+(type (: BenchProgram (Record (: source string)
+                              (: exe string))))
 
 ;; What `bjo.bjo` lends: building a file (an exit code when it fails, said
 ;; already), running a program on the console, and finding a source file.
@@ -43,16 +44,20 @@
                             (: resolve (-> string (Option string))))))
 
 (: (-> BenchProgram string))
-(defun (program-exe p) (record-ref p exe))
+(defun (program-exe p)
+  (record-ref p exe))
 
 (: (-> BenchProgram string))
-(defun (program-source p) (record-ref p source))
+(defun (program-source p)
+  (record-ref p source))
 
 (: (-> string string))
-(defun (file-name-of path) (clr-file-name path))
+(defun (file-name-of path)
+  (clr-file-name path))
 
 (: (-> void))
-(defun (flush!) (flush-port (parameter-ref current-output-port)))
+(defun (flush!)
+  (flush-port (parameter-ref current-output-port)))
 
 ;; ---------------------------------------------------------------------------
 ;; The arguments
@@ -61,25 +66,43 @@
 ;; The flags of a benchmark program, and of an A/B run, that take a value, so
 ;; that the value is not taken for a file or a name.
 (def bench-value-flags
-  (list "--save" "--compare" "--params" "--min-samples" "--max-time" "--alpha"
-        "--threshold" "--fail-slower" "--cases" "--alloc"
-        "--against" "-N" "--processes" "--seed" "--against-warmup" "--against-sample"
+  (list "--save"
+        "--compare"
+        "--params"
+        "--min-samples"
+        "--max-time"
+        "--alpha"
+        "--threshold"
+        "--fail-slower"
+        "--cases"
+        "--alloc"
+        "--against"
+        "-N"
+        "--processes"
+        "--seed"
+        "--against-warmup"
+        "--against-sample"
         "--against-build"))
 
 (: (-> string bool))
-(defun (value-flag? a) (any? (fun (f) (= f a)) bench-value-flags))
+(defun (value-flag? a)
+  (any? (fun (f) (= f a)) bench-value-flags))
 
 ;; The benchmark files among the arguments, and what goes to the programs.
 (: (-> (-> string (Option string)) (List string) (Tuple (List string) (List string))))
 (defun (split-bench-args resolve args)
-  (let go ((left args) (files (list)) (passed (list)))
+  (let go ((left args)
+           (files (list))
+           (passed (list)))
     (match left
       (Nil (Tuple (list-reverse files) (list-reverse passed)))
       ((Cons a more)
        (match (Tuple (value-flag? a) more)
          ((Tuple #t (Cons v after)) (go after files (cons v (cons a passed))))
          (_
-          (match (if (string-ends-with? a ".bjo") (resolve a) None)
+          (match (if (string-ends-with? a ".bjo")
+                     (resolve a)
+                     None)
             ((Some file) (go more (cons file files) passed))
             (None (go more files (cons a passed))))))))))
 
@@ -92,7 +115,10 @@
       (Nil #t)
       ((Cons a more)
        (cond
-         ((value-flag? a) (go (match more ((Cons _ after) after) (Nil Nil))))
+         ((value-flag? a)
+          (go (match more
+                ((Cons _ after) after)
+                (Nil Nil))))
          ((or (not (string-starts-with? a "-"))
               (any? (fun (f) (= f a)) (list "--all" "--list" "--serve")))
           #f)
@@ -101,11 +127,13 @@
 (: (-> bool))
 (defun (bench-at-terminal?)
   (or (= (get-environment-variable "BJO_BENCH_MENU") (Some "1"))
-      (and (not console-input-redirected?) (not console-output-redirected?)
+      (and (not console-input-redirected?)
+           (not console-output-redirected?)
            (none? (get-environment-variable "CI")))))
 
 (: (-> (List string) string bool))
-(defun (has-flag? args flag) (any? (fun (a) (= a flag)) args))
+(defun (has-flag? args flag)
+  (any? (fun (a) (= a flag)) args))
 
 ;; ---------------------------------------------------------------------------
 ;; The command
@@ -129,7 +157,9 @@
     (def programs
       (loop (:for file files)
             (:let built ((record-ref tools build) file))
-            (:do (match built ((Err status) (ret status)) (_ unit)))
+            (:do (match built
+                   ((Err status) (ret status))
+                   (_ unit)))
             (:when-let (Ok p) built)
             (:acc out (listing p))))
     (def exec (record-ref tools exec))
@@ -147,7 +177,9 @@
                           (println #"bjo bench: ${(file-name-of (program-source p))}")
                           (flush!))
                      (:acc out (listing (exec "dotnet" (list->vec (cons (program-exe p) passed)))))))
-             (if (any? (fun (s) (not (= s 0))) statuses) 1 0)))))))
+             (if (any? (fun (s) (not (= s 0))) statuses)
+                 1
+                 0)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; What a program has
@@ -163,29 +195,38 @@
                         (: skip string))))
 
 (: (-> Listed string))
-(defun (listed-name l) (record-ref l name))
+(defun (listed-name l)
+  (record-ref l name))
 
 (: (-> Listed (List (Tuple string string))))
-(defun (listed-labels l) (record-ref l labels))
+(defun (listed-labels l)
+  (record-ref l labels))
 
 (: (-> Listed int))
-(defun (listed-index l) (record-ref l index))
+(defun (listed-index l)
+  (record-ref l index))
 
 (: (-> Listed string))
-(defun (listed-skip l) (record-ref l skip))
+(defun (listed-skip l)
+  (record-ref l skip))
 
 ;; What a case is known by on both sides: its name and its parameters.
 (: (-> Listed string))
 (defun (listed-key l)
   (string-join (list->vec (cons (listed-name l)
-                                (list-map (fun (t) (match t ((Tuple p v) (str p "=" v)))) (listed-labels l))))
+                                (list-map (fun (t)
+                                            (match t
+                                              ((Tuple p v) (str p "=" v))))
+                                          (listed-labels l))))
                " "))
 
 (: (-> (List Bjodat) string (Option Bjodat)))
 (defun (clause-of clauses name)
   (match clauses
     ((Cons (BjoList (Cons (BjoSym s) (Cons v Nil))) more)
-     (if (= (symbol->string s) name) (Some v) (clause-of more name)))
+     (if (= (symbol->string s) name)
+         (Some v)
+         (clause-of more name)))
     ((Cons _ more) (clause-of more name))
     (Nil None)))
 
@@ -193,9 +234,13 @@
 (defun (listed-of d)
   (match d
     ((BjoList (Cons (BjoSym _) (Cons (BjoInt i) clauses)))
-     (def (Some (BjoStr name)) (clause-of clauses "name") :leave-with None)
+     (def (Some (BjoStr name)) (clause-of clauses "name")
+       :leave-with None)
      (def labels
-       (match (find (fun (c) (match c ((BjoList (Cons (BjoSym s) _)) (= (symbol->string s) "labels")) (_ #f)))
+       (match (find (fun (c)
+                      (match c
+                        ((BjoList (Cons (BjoSym s) _)) (= (symbol->string s) "labels"))
+                        (_ #f)))
                     clauses)
          ((Some (BjoList (Cons _ pairs)))
           (loop (:for p pairs)
@@ -203,10 +248,18 @@
                                  ((BjoList (Cons (BjoStr a) (Cons (BjoStr b) Nil))) (Tuple a b))
                                  (_ (Tuple "" "")))))))
          (_ (list))))
-     (Some (Listed (index (cast System.Int32 i)) (name name) (labels labels)
-                   (group (match (clause-of clauses "group") ((Some (BjoStr g)) g) (_ "")))
-                   (once (match (clause-of clauses "once") ((Some (BjoInt n)) (cast System.Int32 n)) (_ 0)))
-                   (skip (match (clause-of clauses "skip") ((Some (BjoStr s)) s) (_ ""))))))
+     (Some (Listed (index (cast System.Int32 i))
+                   (name name)
+                   (labels labels)
+                   (group (match (clause-of clauses "group")
+                            ((Some (BjoStr g)) g)
+                            (_ "")))
+                   (once (match (clause-of clauses "once")
+                           ((Some (BjoInt n)) (cast System.Int32 n))
+                           (_ 0)))
+                   (skip (match (clause-of clauses "skip")
+                           ((Some (BjoStr s)) s)
+                           (_ ""))))))
     (_ None)))
 
 ;; The cases of a `(cases ...)` reply.
@@ -215,7 +268,9 @@
   (match reply
     ((BjoList (Cons (BjoSym head) cases))
      (if (= (symbol->string head) "cases")
-         (Some (loop (:for c cases) (:when-let (Some l) (listed-of c)) (:acc ls (listing l))))
+         (Some (loop (:for c cases)
+                     (:when-let (Some l) (listed-of c))
+                     (:acc ls (listing l))))
          None))
     (_ None)))
 
@@ -224,7 +279,8 @@
 (defun (listed-cases p passed)
   (def commands (str (program-exe p) ".serve-input"))
   (file-write-text commands "(list)\n(quit)\n")
-  (def answer (run/output '(from-file ,commands (dotnet [,(program-exe p) "--serve" ,@(list->vec passed)]))))
+  (def answer
+    (run/output '(from-file ,commands (dotnet [,(program-exe p) "--serve" ,@(list->vec passed)]))))
   (file-delete commands)
   (match answer
     ((Ok (Tuple 0 text))
@@ -232,8 +288,12 @@
        ((Ok reply)
         (match (listed-cases-of reply)
           ((Some ls) (Ok ls))
-          (None (Err #"bjo bench: ${(program-source p)} did not list its benchmarks: ${(string-trim text)}"))))
-       (_ (Err #"bjo bench: ${(program-source p)} did not list its benchmarks: ${(string-trim text)}"))))
+          (None
+           (Err
+            #"bjo bench: ${(program-source p)} did not list its benchmarks: ${(string-trim text)}"))))
+       (_
+        (Err
+         #"bjo bench: ${(program-source p)} did not list its benchmarks: ${(string-trim text)}"))))
     (_ (Err #"bjo bench: ${(program-source p)} could not be asked for its benchmarks."))))
 
 ;; ---------------------------------------------------------------------------
@@ -241,15 +301,20 @@
 ;; ---------------------------------------------------------------------------
 
 (: (-> Bench string))
-(defun (bench-name b) (record-ref b name))
+(defun (bench-name b)
+  (record-ref b name))
 
 (: (-> Bench string))
-(defun (bench-module b) (record-ref b module))
+(defun (bench-module b)
+  (record-ref b module))
 
 (: (-> string (List Listed) (List Listed)))
 (defun (take-while-name name xs)
   (match xs
-    ((Cons x more) (if (= (listed-name x) name) (cons x (take-while-name name more)) (list)))
+    ((Cons x more)
+     (if (= (listed-name x) name)
+         (cons x (take-while-name name more))
+         (list)))
     (Nil (list))))
 
 (: (-> int (List %a) (List %a)))
@@ -264,21 +329,35 @@
 (: (-> BenchProgram (List Listed) (List Bench)))
 (defun (listed-benches p listed)
   (def shown (file-name-of (program-source p)))
-  (let go ((left listed) (acc (list)))
+  (let go ((left listed)
+           (acc (list)))
     (match left
       (Nil (list-reverse acc))
       ((Cons first _)
        (def same (take-while-name (listed-name first) left))
        (def rest (drop-count (list-length same) left))
        (def group (record-ref first group))
-       (def cases (list-map (fun (l) (BenchCase (labels (listed-labels l))
-                                                (prepare (fun () (panic! "bjo bench: a listed case is run by its program")))))
-                            same))
+       (def cases
+         (list-map
+          (fun (l)
+            (BenchCase (labels (listed-labels l))
+                       (prepare (fun () (panic! "bjo bench: a listed case is run by its program")))))
+          same))
        (go rest
-           (cons (Bench (name (listed-name first)) (module (program-exe p)) (file (program-source p))
-                        (line 0) (group (if (string-empty? group) shown (str shown ": " group)))
-                        (skip (listed-skip first)) (once (record-ref first once)) (alloc "")
-                        (param-names (list-map (fun (t) (match t ((Tuple n _) n))) (listed-labels first)))
+           (cons (Bench (name (listed-name first))
+                        (module (program-exe p))
+                        (file (program-source p))
+                        (line 0)
+                        (group (if (string-empty? group)
+                                   shown
+                                   (str shown ": " group)))
+                        (skip (listed-skip first))
+                        (once (record-ref first once))
+                        (alloc "")
+                        (param-names (list-map (fun (t)
+                                                 (match t
+                                                   ((Tuple n _) n)))
+                                               (listed-labels first)))
                         (cases (fun () cases)))
                  acc))))))
 
@@ -288,17 +367,27 @@
     (def per-file
       (loop (:for p programs)
             (:let listed (listed-cases p passed))
-            (:do (match listed ((Err why) (ret (fail why))) (_ unit)))
+            (:do (match listed
+                   ((Err why) (ret (fail why)))
+                   (_ unit)))
             (:when-let (Ok ls) listed)
             (:acc out (listing (Tuple p ls)))))
     (def benches
-      (fold (fun (pl acc) (match pl ((Tuple p ls) (list-append acc (listed-benches p ls))))) (list) per-file))
+      (fold (fun (pl acc)
+              (match pl
+                ((Tuple p ls) (list-append acc (listed-benches p ls)))))
+            (list)
+            per-file))
     (: (-> Bench BenchCase int))
     (defun (number-of b c)
-      (match (find (fun (pl) (match pl ((Tuple p _) (= (program-exe p) (bench-module b))))) per-file)
+      (match (find (fun (pl)
+                     (match pl
+                       ((Tuple p _) (= (program-exe p) (bench-module b)))))
+                   per-file)
         ((Some (Tuple _ ls))
-         (match (find (fun (l) (and (= (listed-name l) (bench-name b))
-                                    (= (listed-labels l) (case-labels c))))
+         (match (find (fun (l)
+                        (and (= (listed-name l) (bench-name b))
+                             (= (listed-labels l) (case-labels c))))
                       ls)
            ((Some l) (listed-index l))
            (None -1)))
@@ -307,12 +396,14 @@
     (defun (run-choice chosen)
       (loop (:for pl per-file)
             (:let (Tuple p _) pl)
-            (:let numbers
-                  (fold (fun (s acc)
-                          (if (= (bench-module (sel-bench s)) (program-exe p))
-                              (list-append acc (list-map (fun (c) (number-of (sel-bench s) c)) (sel-cases s)))
-                              acc))
-                        (list) chosen))
+            (:let numbers (fold (fun (s acc)
+                                  (if (= (bench-module (sel-bench s)) (program-exe p))
+                                      (list-append acc
+                                                   (list-map (fun (c) (number-of (sel-bench s) c))
+                                                             (sel-cases s)))
+                                      acc))
+                                (list)
+                                chosen))
             (:do (unless (list-empty? numbers)
                    (println "")
                    (println #"bjo bench: ${(file-name-of (program-source p))}")
@@ -321,10 +412,14 @@
                             "dotnet"
                             (list->vec (cons (program-exe p)
                                              (cons "--cases"
-                                                   (cons (string-join (list->vec (list-map int->string numbers)) ",")
+                                                   (cons (string-join (list->vec (list-map int->string
+                                                                                           numbers))
+                                                                      ",")
                                                          passed))))))))))
-    (def title (string-join (list->vec (list-map (fun (p) (file-name-of (program-source p))) programs)) ", "))
-    (menu-loop (menu-lines title benches) benches
+    (def title
+      (string-join (list->vec (list-map (fun (p) (file-name-of (program-source p))) programs)) ", "))
+    (menu-loop (menu-lines title benches)
+               benches
                (fun () (read-line/opt (parameter-ref current-input-port)))
                run-choice)
     0))
@@ -346,13 +441,19 @@
 (: (-> string (Option int)))
 (defun (parse-positive s)
   (match (try (string->int s) #:catch (System.Exception))
-    ((Ok n) (if (> n 0) (Some n) None))
+    ((Ok n)
+     (if (> n 0)
+         (Some n)
+         None))
     (_ None)))
 
 (: (-> string (Option double)))
 (defun (parse-number s)
   (match (try (string->double s) #:catch (System.Exception))
-    ((Ok x) (if (> x 0.0) (Some x) None))
+    ((Ok x)
+     (if (> x 0.0)
+         (Some x)
+         None))
     (_ None)))
 
 ;; The A/B flags read, and the arguments without them, which go on to the
@@ -360,21 +461,28 @@
 (: (-> (List string) (Result string (Tuple Against (List string)))))
 (defun (against-options passed)
   (let go ((left passed)
-           (a (Against (ref "") (rounds 20) (processes 1)
-                       (seed (cast System.UInt64 (+ clr-tick-count (cast System.Int64 clr-process-id))))
-                       (warmup-ms 1000L) (sample-ms 10L) (build None)))
+           (a (Against (ref "")
+                       (rounds 20)
+                       (processes 1)
+                       (seed (cast System.UInt64
+                                   (+ clr-tick-count (cast System.Int64 clr-process-id))))
+                       (warmup-ms 1000L)
+                       (sample-ms 10L)
+                       (build None)))
            (rest (list)))
     (defun (number-flag flag v after (: k (-> int Against)))
       (match (parse-positive v)
         ((Some n) (go after (k n) rest))
         (None (Err #"bjo bench: ${flag} takes a positive whole number: ${v}"))))
     (match left
-      (Nil (if (string-empty? (record-ref a ref))
-               (Err "bjo bench: --against needs a git ref or a path.")
-               (Ok (Tuple a (list-reverse rest)))))
+      (Nil
+       (if (string-empty? (record-ref a ref))
+           (Err "bjo bench: --against needs a git ref or a path.")
+           (Ok (Tuple a (list-reverse rest)))))
       ((Cons "--against" (Cons v after)) (go after (record-set a (ref v)) rest))
       ((Cons "-N" (Cons v after)) (number-flag "-N" v after (fun (n) (record-set a (rounds n)))))
-      ((Cons "--processes" (Cons v after)) (number-flag "--processes" v after (fun (n) (record-set a (processes n)))))
+      ((Cons "--processes" (Cons v after))
+       (number-flag "--processes" v after (fun (n) (record-set a (processes n)))))
       ((Cons "--seed" (Cons v after))
        (match (try (cast System.UInt64 (string->bigint v)) #:catch (System.Exception))
          ((Ok s) (go after (record-set a (seed s)) rest))
@@ -402,7 +510,8 @@
   (clr-directory-name (: System.IO.Path.GetDirectoryName (-> string string))))
 
 (: (-> string string))
-(defun (file-directory file) (clr-directory-name (clr-full-path file)))
+(defun (file-directory file)
+  (clr-directory-name (clr-full-path file)))
 
 ;; The other side's file: a path is taken as it is, a `.bjo` file or a
 ;; checkout holding this file at the same place in it; anything else is a git
@@ -419,12 +528,14 @@
     ((directory-exists? ref)
      (match (git-out (list "-C" (file-directory file) "rev-parse" "--show-toplevel"))
        ((Ok top)
-        (Ok (OtherSide (file (path-combine ref (clr-relative-path top (clr-full-path file)))) (worktree None))))
-       ((Err _)
-        (Ok (OtherSide (file (path-combine ref (clr-file-name file))) (worktree None))))))
+        (Ok (OtherSide (file (path-combine ref (clr-relative-path top (clr-full-path file))))
+                       (worktree None))))
+       ((Err _) (Ok (OtherSide (file (path-combine ref (clr-file-name file))) (worktree None))))))
     (else
      (match (git-out (list "-C" (file-directory file) "rev-parse" "--show-toplevel"))
-       ((Err why) (Err #"bjo bench: --against ${ref}: not a path, and ${file} is not in a git repository (${why})."))
+       ((Err why)
+        (Err
+         #"bjo bench: --against ${ref}: not a path, and ${file} is not in a git repository (${why})."))
        ((Ok top)
         (def tmp (path-combine (clr-temp-path) #"bjo-against-${clr-process-id}-${clr-tick-count}"))
         (match (git-out (list "-C" top "worktree" "add" "--detach" "--quiet" tmp ref))
@@ -448,20 +559,28 @@
     ((Some command)
      (println #"bjo bench: building ${file} with: ${command}")
      (flush!)
-     (def status ((record-ref tools exec) "sh" ["-c" (str "cd " (shell-quote (file-directory file)) " && " command)]))
+     (def status
+       ((record-ref tools exec) "sh"
+                                ["-c"
+                                 (str "cd " (shell-quote (file-directory file)) " && " command)]))
      (def exe (clr-change-extension file ".exe"))
      (cond
-       ((not (= status 0)) (Err (fail #"bjo bench: --against-build failed, with exit code ${status}.")))
+       ((not (= status 0))
+        (Err (fail #"bjo bench: --against-build failed, with exit code ${status}.")))
        ((not (file-exists? exe)) (Err (fail #"bjo bench: --against-build left no ${exe}.")))
        (else (Ok (BenchProgram (source file) (exe exe))))))))
 
 (: (-> string string))
-(defun (shell-quote s) (str "'" (string-replace s "'" "'\\''") "'"))
+(defun (shell-quote s)
+  (str "'" (string-replace s "'" "'\\''") "'"))
 
 ;; --- Serving -----------------------------------------------------------------
 
 ;; A benchmark program running with `--serve`: a command written, a reply read.
-(type (: Server (Record (: proc Proc) (: input OutputPort) (: output InputPort) (: what string))))
+(type (: Server (Record (: proc Proc)
+                        (: input OutputPort)
+                        (: output InputPort)
+                        (: what string))))
 
 (: start-server (-> BenchProgram (List string) string (Result string Server)) #:sync)
 (defun (start-server p passed what)
@@ -502,23 +621,32 @@
     ((BjoList items)
      (let go ((left items))
        (match left
-         ((Cons (BjoKey k) (Cons v more)) (if (= (keyword->string k) name) (Some v) (go more)))
+         ((Cons (BjoKey k) (Cons v more))
+          (if (= (keyword->string k) name)
+              (Some v)
+              (go more)))
          ((Cons _ more) (go more))
          (Nil None))))
     (_ None)))
 
 (: (-> Bjodat string long))
 (defun (reply-long reply name)
-  (match (reply-arg reply name) ((Some (BjoInt n)) n) (_ -1L)))
+  (match (reply-arg reply name)
+    ((Some (BjoInt n)) n)
+    (_ -1L)))
 
 ;; Prepares case `i` on a server, and answers its batch size and whether it
 ;; got steady while it warmed up.
 (: prepare-on (-> Server int Against (Result string (Tuple long bool))) #:sync)
 (defun (prepare-on s i a)
-  (match (ask s #"(prepare ${i} :warmup ${(record-ref a warmup-ms)} :sample ${(record-ref a sample-ms)})")
+  (match (ask
+          s
+          #"(prepare ${i} :warmup ${(record-ref a warmup-ms)} :sample ${(record-ref a sample-ms)})")
     ((Ok reply)
      (Ok (Tuple (reply-long reply "k")
-                (match (reply-arg reply "steady") ((Some (BjoBool b)) b) (_ #t)))))
+                (match (reply-arg reply "steady")
+                  ((Some (BjoBool b)) b)
+                  (_ #t)))))
     ((Err why) (Err why))))
 
 ;; One sample of `k` calls of case `i`, as nanoseconds per call.
@@ -531,25 +659,33 @@
 ;; --- The rounds ----------------------------------------------------------------
 
 ;; A case both sides have: its number on each.
-(type (: Shared (Record (: listed Listed) (: a int) (: b int))))
+(type (: Shared (Record (: listed Listed)
+                        (: a int)
+                        (: b int))))
 
 (: (-> Shared Listed))
-(defun (shared-listed s) (record-ref s listed))
+(defun (shared-listed s)
+  (record-ref s listed))
 
 ;; Whether a filter chooses a case: its name contains one, or it is one of
 ;; its parameters as the report shows them.
 (: (-> (List string) Listed bool))
 (defun (chosen-by? names l)
   (or (list-empty? names)
-      (any? (fun (f) (or (string-contains? (listed-name l) f)
-                         (any? (fun (t) (match t ((Tuple p v) (= (str p "=" v) f)))) (listed-labels l))))
+      (any? (fun (f)
+              (or (string-contains? (listed-name l) f)
+                  (any? (fun (t)
+                          (match t
+                            ((Tuple p v) (= (str p "=" v) f))))
+                        (listed-labels l))))
             names)))
 
 ;; What the programs are given as they are started: the flags of
 ;; `(std bench)` that decide what a case is, `--params` today.
 (: (-> (List string) (List string)))
 (defun (serve-flags rest)
-  (let go ((left rest) (acc (list)))
+  (let go ((left rest)
+           (acc (list)))
     (match left
       ((Cons "--params" (Cons v more)) (go more (cons v (cons "--params" acc))))
       ((Cons _ more) (go more acc))
@@ -558,11 +694,16 @@
 ;; The names among the arguments: what is not a flag or a flag's value.
 (: (-> (List string) (List string)))
 (defun (bench-names rest)
-  (let go ((left rest) (acc (list)))
+  (let go ((left rest)
+           (acc (list)))
     (match left
       ((Cons a more)
        (cond
-         ((value-flag? a) (go (match more ((Cons _ after) after) (Nil Nil)) acc))
+         ((value-flag? a)
+          (go (match more
+                ((Cons _ after) after)
+                (Nil Nil))
+              acc))
          ((string-starts-with? a "-") (go more acc))
          (else (go more (cons a acc)))))
       (Nil (list-reverse acc)))))
@@ -571,19 +712,26 @@
 ;; be, the first ones taking what is left over.
 (: (-> int int int int))
 (defun (rounds-of rounds pairs j)
-  (+ (/ rounds pairs) (if (< j (% rounds pairs)) 1 0)))
+  (+ (/ rounds pairs)
+     (if (< j (% rounds pairs))
+         1
+         0)))
 
 ;; One process pair: both started, every shared case prepared on both with
 ;; the smaller batch size, and its rounds taken, the order of the sides
 ;; alternating and the cases shuffled each round. Answers, per shared case,
 ;; A's and B's per-call times in round order.
 (: run-pair (-> BenchProgram BenchProgram (List Shared) Against int (List string) RandomSource
-                       (Box (List string))
-                       (Result string (Vec (Tuple (Vec double) (Vec double))))) #:sync)
+                (Box (List string)) (Result string (Vec (Tuple (Vec double) (Vec double)))))
+   #:sync)
 (defun (run-pair pa pb shared a j flags rng unsteady)
   (with-return ret
-    (def (Ok sa) (start-server pa flags (str "A (" (record-ref a ref) ")")) :leave ((Err why) (Err why)))
-    (def (Ok sb) (start-server pb flags "B (this code)") :leave ((Err why) (stop-server sa) (Err why)))
+    (def (Ok sa) (start-server pa flags (str "A (" (record-ref a ref) ")"))
+      :leave ((Err why) (Err why)))
+    (def (Ok sb) (start-server pb flags "B (this code)")
+      :leave ((Err why)
+              (stop-server sa)
+              (Err why)))
     (defun (leave (: why string)) : (Result string (Vec (Tuple (Vec double) (Vec double))))
       (stop-server sa)
       (stop-server sb)
@@ -594,9 +742,17 @@
       (loop (:for s shared)
             (:with i 0 (+ i 1))
             (:do (when live
-                   (print (str "\r[pair " (int->string (+ j 1)) "/" (int->string (record-ref a processes))
-                               "] preparing " (int->string (+ i 1)) "/" (int->string n) ": "
-                               (listed-key (shared-listed s)) "\u{1B}[K"))
+                   (print (str "\r[pair "
+                               (int->string (+ j 1))
+                               "/"
+                               (int->string (record-ref a processes))
+                               "] preparing "
+                               (int->string (+ i 1))
+                               "/"
+                               (int->string n)
+                               ": "
+                               (listed-key (shared-listed s))
+                               "\u{1B}[K"))
                    (flush!)))
             (:let ka (prepare-on sa (record-ref s a) a))
             (:let kb (prepare-on sb (record-ref s b) a))
@@ -604,53 +760,80 @@
             ;; the same number of calls.
             (:let k (match (Tuple ka kb)
                       ((Tuple (Ok (Tuple x steady-a)) (Ok (Tuple y steady-b)))
-                       (unless steady-a (box-set! unsteady (cons (str (listed-key (shared-listed s)) " on A") (box-ref unsteady))))
-                       (unless steady-b (box-set! unsteady (cons (str (listed-key (shared-listed s)) " on B") (box-ref unsteady))))
+                       (unless steady-a
+                         (box-set! unsteady
+                                   (cons (str (listed-key (shared-listed s)) " on A")
+                                         (box-ref unsteady))))
+                       (unless steady-b
+                         (box-set! unsteady
+                                   (cons (str (listed-key (shared-listed s)) " on B")
+                                         (box-ref unsteady))))
                        (Ok (min x y)))
                       ((Tuple (Err why) _) (Err why))
                       ((Tuple _ (Err why)) (Err why))))
-            (:do (match k ((Err why) (ret (leave why))) (_ unit)))
-            (:acc out (vecing (match k ((Ok x) x) (_ 1L))))))
+            (:do (match k
+                   ((Err why) (ret (leave why)))
+                   (_ unit)))
+            (:acc out (vecing (match k
+                                ((Ok x) x)
+                                (_ 1L))))))
     (def rounds (rounds-of (record-ref a rounds) (record-ref a processes) j))
     (def as (make-array n #:fill (vec-empty)))
     (def bs (make-array n #:fill (vec-empty)))
     (def order (list->vec (index-list n)))
     (loop (:for r (up-from 0 #:to rounds))
           (:do (when live
-                 (print (str "\r[pair " (int->string (+ j 1)) "/" (int->string (record-ref a processes))
-                             "] round " (int->string (+ r 1)) "/" (int->string rounds) "\u{1B}[K"))
+                 (print (str "\r[pair "
+                             (int->string (+ j 1))
+                             "/"
+                             (int->string (record-ref a processes))
+                             "] round "
+                             (int->string (+ r 1))
+                             "/"
+                             (int->string rounds)
+                             "\u{1B}[K"))
                  (flush!)))
           (:subloop (:for i (shuffle-vec order #:rng rng))
                     (:let s (list-ref shared i))
                     (:let k (vec-ref ks i))
                     ;; A first in even rounds, B first in odd ones.
                     (:let first-a (= (% (+ r j) 2) 0))
-                    (:let x1 (if first-a (sample-on sa (record-ref s a) k) (sample-on sb (record-ref s b) k)))
-                    (:let x2 (if first-a (sample-on sb (record-ref s b) k) (sample-on sa (record-ref s a) k)))
+                    (:let x1 (if first-a
+                                 (sample-on sa (record-ref s a) k)
+                                 (sample-on sb (record-ref s b) k)))
+                    (:let x2 (if first-a
+                                 (sample-on sb (record-ref s b) k)
+                                 (sample-on sa (record-ref s a) k)))
                     (:do (match (Tuple x1 x2)
                            ((Tuple (Ok t1) (Ok t2))
                             (array-set! as i (vec-add (array-ref as i) (if first-a t1 t2)))
                             (array-set! bs i (vec-add (array-ref bs i) (if first-a t2 t1))))
                            ((Tuple (Err why) _) (ret (leave why)))
                            ((Tuple _ (Err why)) (ret (leave why)))))))
-    (when live (print "\r\u{1B}[K") (flush!))
+    (when live
+      (print "\r\u{1B}[K")
+      (flush!))
     (stop-server sa)
     (stop-server sb)
     (Ok {vecing (Tuple (array-ref as i) (array-ref bs i)) (:for i (range 0 n))})))
 
 (: (-> int (List int)))
-(defun (index-list n) {listing i (:for i (range 0 n))})
+(defun (index-list n)
+  {listing i (:for i (range 0 n))})
 
 (: cmd-against (-> BenchTools string (List string) int) #:sync)
 (defun (cmd-against tools file passed)
   (with-return ret
-    (def (Ok (Tuple a rest)) (against-options passed) :leave ((Err why) (fail why)))
+    (def (Ok (Tuple a rest)) (against-options passed)
+      :leave ((Err why) (fail why)))
     (def (Ok o) (parse-bench-args (list->vec (list-filter (fun (x) (not (= x "--serve"))) rest)))
       :leave ((Err why) (fail #"bjo bench: ${why}")))
     (when (some? (record-ref o compare))
       (ret (fail "bjo bench: --against and --compare are two comparisons; ask for one.")))
-    (def (Ok pb) ((record-ref tools build) file) :leave ((Err status) status))
-    (def (Ok side) (other-side file (record-ref a ref)) :leave ((Err why) (fail why)))
+    (def (Ok pb) ((record-ref tools build) file)
+      :leave ((Err status) status))
+    (def (Ok side) (other-side file (record-ref a ref))
+      :leave ((Err why) (fail why)))
     (def code (against-with tools a o rest pb side))
     (remove-worktree side)
     code))
@@ -660,25 +843,32 @@
   (with-return ret
     (def ref (record-ref a ref))
     (unless (file-exists? (record-ref side file))
-      (ret (fail #"bjo bench: ${ref} has no ${(record-ref side file)}: the benchmark file is not there.")))
-    (def (Ok pa) (build-other tools a (record-ref side file)) :leave ((Err status) status))
+      (ret (fail
+            #"bjo bench: ${ref} has no ${(record-ref side file)}: the benchmark file is not there.")))
+    (def (Ok pa) (build-other tools a (record-ref side file))
+      :leave ((Err status) status))
     (def flags (serve-flags rest))
-    (def (Ok listed-a) (listed-cases pa flags) :leave ((Err why) (fail why)))
-    (def (Ok listed-b) (listed-cases pb flags) :leave ((Err why) (fail why)))
+    (def (Ok listed-a) (listed-cases pa flags)
+      :leave ((Err why) (fail why)))
+    (def (Ok listed-b) (listed-cases pb flags)
+      :leave ((Err why) (fail why)))
     (def names (bench-names rest))
-    (defun (runnable (: l Listed)) : bool (and (string-empty? (listed-skip l)) (chosen-by? names l)))
+    (defun (runnable (: l Listed)) : bool
+      (and (string-empty? (listed-skip l)) (chosen-by? names l)))
     (def wanted-a (list-filter runnable listed-a))
     (def wanted-b (list-filter runnable listed-b))
     (def shared
       (loop (:for l wanted-b)
             (:when-let (Some other) (find (fun (x) (= (listed-key x) (listed-key l))) wanted-a))
             (:acc out (listing (Shared (listed l) (a (listed-index other)) (b (listed-index l)))))))
-    (def only-a (loop (:for l wanted-a)
-                      (:acc out (listing (listed-key l))
-                            #:when (none? (find (fun (x) (= (listed-key x) (listed-key l))) wanted-b)))))
-    (def only-b (loop (:for l wanted-b)
-                      (:acc out (listing (listed-key l))
-                            #:when (none? (find (fun (x) (= (listed-key x) (listed-key l))) wanted-a)))))
+    (def only-a
+      (loop (:for l wanted-a)
+            (:acc out (listing (listed-key l))
+                  #:when (none? (find (fun (x) (= (listed-key x) (listed-key l))) wanted-b)))))
+    (def only-b
+      (loop (:for l wanted-b)
+            (:acc out (listing (listed-key l))
+                  #:when (none? (find (fun (x) (= (listed-key x) (listed-key l))) wanted-a)))))
     (when (list-empty? shared)
       (ret (fail "bjo bench: the two sides have no benchmark in common to compare.")))
     (def rng (make-random/seed64 (record-ref a seed)))
@@ -689,7 +879,9 @@
     (def taken
       (loop (:for j (up-from 0 #:to pairs))
             (:let got (run-pair pa pb shared a j flags rng unsteady))
-            (:do (match got ((Err why) (ret (fail why))) (_ unit)))
+            (:do (match got
+                   ((Err why) (ret (fail why)))
+                   (_ unit)))
             (:when-let (Ok v) got)
             (:acc out (listing v))))
     (def cases
@@ -697,32 +889,57 @@
             (:with i 0 (+ i 1))
             (:acc out (listing (PairedCase (name (listed-name (shared-listed s)))
                                            (labels (listed-labels (shared-listed s)))
-                                           (a (list->vec (list-map (fun (v) (match (vec-ref v i) ((Tuple x _) x))) taken)))
-                                           (b (list->vec (list-map (fun (v) (match (vec-ref v i) ((Tuple _ y) y))) taken))))))))
+                                           (a (list->vec (list-map (fun (v)
+                                                                     (match (vec-ref v i)
+                                                                       ((Tuple x _) x)))
+                                                                   taken)))
+                                           (b (list->vec (list-map (fun (v)
+                                                                     (match (vec-ref v i)
+                                                                       ((Tuple _ y) y)))
+                                                                   taken))))))))
     (def result (compare-paired cases only-a only-b (record-ref o alpha) (record-ref o threshold)))
-    (loop (:for l (header-lines (list-length shared))) (:do (println l)))
-    (println (str "bench: A/B against " ref ", " (int->string (record-ref a rounds)) " rounds, "
+    (loop (:for l (header-lines (list-length shared)))
+          (:do (println l)))
+    (println (str "bench: A/B against "
+                  ref
+                  ", "
+                  (int->string (record-ref a rounds))
+                  " rounds, "
                   (if (= pairs 1)
                       "paired (Wilcoxon signed-rank); "
                       #"${pairs} process pairs (t-test on their log ratios); ")
                   (comparisons-text (list-length shared))))
     (when (= pairs 1)
-      (println "bench: one process per side: a difference between processes is not in the p-values (--processes P measures it)"))
-    (println (str "bench: seed " (displayed (record-ref a seed)) " (--seed repeats the order of the cases)"))
+      (println
+       "bench: one process per side: a difference between processes is not in the p-values (--processes P measures it)"))
+    (println
+     (str "bench: seed " (displayed (record-ref a seed)) " (--seed repeats the order of the cases)"))
     (unless (list-empty? (box-ref unsteady))
-      (println (str "bench: warning: not steady after warming up, so the JIT may have changed them during the rounds: "
-                    (string-join (list->vec (distinct-strings (list-reverse (box-ref unsteady)))) ", ")
-                    ". --against-warmup S gives them longer.")))
-    (def shown (if (file-exists? ref) (file-name-of ref) ref))
+      (println
+       (str
+        "bench: warning: not steady after warming up, so the JIT may have changed them during the rounds: "
+        (string-join (list->vec (distinct-strings (list-reverse (box-ref unsteady)))) ", ")
+        ". --against-warmup S gives them longer.")))
+    (def shown
+      (if (file-exists? ref)
+          (file-name-of ref)
+          ref))
     (print-comparison-table result o shown "now" #"A (${shown})" #f)
     (match (record-ref o save)
       ((Some path) (save-sides path ref cases))
       (None unit))
-    (if (fails-slower? result o) 1 0)))
+    (if (fails-slower? result o)
+        1
+        0)))
 
 (: (-> (List string) (List string)))
 (defun (distinct-strings xs)
-  (fold (fun (x acc) (if (any? (fun (y) (= y x)) acc) acc (list-append acc (list x)))) (list) xs))
+  (fold (fun (x acc)
+          (if (any? (fun (y) (= y x)) acc)
+              acc
+              (list-append acc (list x))))
+        (list)
+        xs))
 
 ;; `--save FILE` of an A/B run: this code's samples to FILE, the other side's
 ;; beside it, `FILE` with `.against` before its extension. Every process
@@ -731,9 +948,15 @@
 (defun (save-sides path ref cases)
   (def other (clr-change-extension path (str ".against" (path-extension-of path))))
   (defun (side (: pick (-> PairedCase (Vec (Vec double))))) : (List SavedCase)
-    (list-map (fun (c) (SavedCase (name (record-ref c name)) (labels (record-ref c labels)) (k 0L) (once #f)
-                                  (bytes 0.0) (samples (vec-fold (fun (v acc) (vec-append acc v)) (vec-empty) (pick c)))))
-              cases))
+    (list-map
+     (fun (c)
+       (SavedCase (name (record-ref c name))
+                  (labels (record-ref c labels))
+                  (k 0L)
+                  (once #f)
+                  (bytes 0.0)
+                  (samples (vec-fold (fun (v acc) (vec-append acc v)) (vec-empty) (pick c)))))
+     cases))
   (write-saved-run! path (this-run (side (fun (c) (record-ref c b)))))
   (write-saved-run! other (this-run (side (fun (c) (record-ref c a)))))
   (println #"bench: saved this code's samples to ${path}, and ${ref}'s to ${other}"))

@@ -138,7 +138,9 @@
   (match clauses
     (Nil None)
     ((Cons (BjoList (Cons (BjoSym s) values)) rest)
-     (if (= (symbol->string s) name) (Some values) (clause-named rest name)))
+     (if (= (symbol->string s) name)
+         (Some values)
+         (clause-named rest name)))
     ((Cons other rest) (clause-named rest name))))
 
 ;; A string or a symbol as text, and nothing else.
@@ -208,25 +210,33 @@
 (: headings-in (-> (Vec Block) (Vec (Tuple int string (Vec Inline)))))
 (defun (headings-in bs)
   (loop (:for b bs)
-        (:acc out (folding (vec-empty)
-                           (match b
-                             ((Heading level id xs) (vec-add out (Tuple level id xs)))
-                             ((Quote inner) (vec-append out (headings-in inner)))
-                             ((Div c inner) (vec-append out (headings-in inner)))
-                             ((ItemList numbered start items)
-                              (vec-append out (loop (:for item items)
-                                                   (:acc more (folding (vec-empty)
-                                                                       (vec-append more (headings-in item)))))))
-                             ((DefinitionList entries)
-                              (vec-append out (loop (:for entry entries)
-                                                   (:acc more (folding (vec-empty)
-                                                                       (match entry
-                                                                         ((Tuple term defs)
-                                                                          (vec-append more
-                                                                                     (loop (:for def defs)
-                                                                                           (:acc inner (folding (vec-empty)
-                                                                                                                (vec-append inner (headings-in def)))))))))))))
-                             (_ out))))))
+        (:acc out (folding
+                   (vec-empty)
+                   (match b
+                     ((Heading level id xs) (vec-add out (Tuple level id xs)))
+                     ((Quote inner) (vec-append out (headings-in inner)))
+                     ((Div c inner) (vec-append out (headings-in inner)))
+                     ((ItemList numbered start items)
+                      (vec-append out
+                                  (loop (:for item items)
+                                        (:acc more (folding (vec-empty)
+                                                            (vec-append more (headings-in item)))))))
+                     ((DefinitionList entries)
+                      (vec-append
+                       out
+                       (loop (:for entry entries)
+                             (:acc more (folding (vec-empty)
+                                                 (match entry
+                                                   ((Tuple term defs)
+                                                    (vec-append
+                                                     more
+                                                     (loop (:for def defs)
+                                                           (:acc inner (folding (vec-empty)
+                                                                                (vec-append
+                                                                                 inner
+                                                                                 (headings-in
+                                                                                  def)))))))))))))
+                     (_ out))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Numbering
@@ -242,12 +252,14 @@
 ;; is, and no heading's id changes.
 (: number-headings (-> (Vec Block) int (Vec Block)))
 (defun (number-headings bs depth)
-  (def top (loop (:for h (headings-in bs))
-                 (:acc least (folding 0 (match h
-                                          ((Tuple level id xs)
-                                           (if (and (<= level depth) (or (= least 0) (< level least)))
-                                               level
-                                               least)))))))
+  (def top
+    (loop (:for h (headings-in bs))
+          (:acc least (folding 0
+                               (match h
+                                 ((Tuple level id xs)
+                                  (if (and (<= level depth) (or (= least 0) (< level least)))
+                                      level
+                                      least)))))))
   (if (= top 0)
       bs
       (number-in bs depth top (make-box (vec-empty)))))
@@ -265,23 +277,32 @@
          b
          (let ((k (- level top))
                (last (box-ref counters)))
-           (def now (loop (:for i (range 0 (+ k 1)))
-                          (:acc (vecing (let ((n (if (< i (vec-length last)) (vec-ref last i) 0)))
-                                          (if (= i k) (+ n 1) n))))))
+           (def now
+             (loop (:for i (range 0 (+ k 1)))
+                   (:acc (vecing (let ((n (if (< i (vec-length last))
+                                              (vec-ref last i)
+                                              0)))
+                                   (if (= i k)
+                                       (+ n 1)
+                                       n))))))
            (box-set! counters now)
-           (Heading level id (vec-append [(Span "heading-number" [(Str (string-join (vec-map int->string now) "."))])
-                                         (Str " ")]
-                                        xs)))))
+           (Heading level
+                    id
+                    (vec-append [(Span "heading-number"
+                                       [(Str (string-join (vec-map int->string now) "."))])
+                                 (Str " ")]
+                                xs)))))
     ((Quote inner) (Quote (number-in inner depth top counters)))
     ((Div c inner) (Div c (number-in inner depth top counters)))
     ((ItemList numbered start items)
      (ItemList numbered start (vec-map (fun (item) (number-in item depth top counters)) items)))
     ((DefinitionList entries)
-     (DefinitionList (vec-map (fun (entry)
-                                (match entry
-                                  ((Tuple term defs)
-                                   (Tuple term (vec-map (fun (d) (number-in d depth top counters)) defs)))))
-                              entries)))
+     (DefinitionList
+      (vec-map (fun (entry)
+                 (match entry
+                   ((Tuple term defs)
+                    (Tuple term (vec-map (fun (d) (number-in d depth top counters)) defs)))))
+               entries)))
     (_ b)))
 
 ;; Whether a heading's title begins with the number `number-headings` gave it.
@@ -319,7 +340,8 @@
 ;;     (deflist (entry (term "Key") (def (para "Value"))))
 
 (: quoted (-> string string))
-(defun (quoted s) (bjodat->string (BjoStr s)))
+(defun (quoted s)
+  (bjodat->string (BjoStr s)))
 
 (: form (-> string (Vec string) string))
 (defun (form head parts)
@@ -367,7 +389,11 @@
     ((CodeBlock lang text) (form "codeblock" [(quoted lang) (quoted text)]))
     ((Quote bs) (form "quote" (vec-map block->sexp bs)))
     ((ItemList numbered start items)
-     (form (if numbered (if (> start 1) (str "numbered-from-" (int->string start)) "numbered") "bullets")
+     (form (if numbered
+               (if (> start 1)
+                   (str "numbered-from-" (int->string start))
+                   "numbered")
+               "bullets")
            (vec-map (fun (item) (form "item" (vec-map block->sexp item))) items)))
     ((LineBlock lines)
      (form "line-block" (vec-map (fun (line) (form "line" (vec-map inline->sexp line))) lines)))
@@ -378,7 +404,8 @@
                         ((Tuple term defs)
                          (form "entry"
                                (vec-append [(form "term" (vec-map inline->sexp term))]
-                                          (vec-map (fun (def) (form "def" (vec-map block->sexp def))) defs))))))
+                                           (vec-map (fun (def) (form "def" (vec-map block->sexp def)))
+                                                    defs))))))
                     entries)))
     (Rule "(rule)")
     ((Div c bs) (form "div" (vec-insert (vec-map block->sexp bs) 0 (quoted c))))
@@ -392,10 +419,18 @@
   (def caption (record-ref t caption))
   (def head (record-ref t head))
   (def parts (vec-add (vec-empty) (form "aligns" (vec-map align->string (record-ref t aligns)))))
-  (def captioned (if (vec-empty? caption) parts (vec-add parts (form "caption" (vec-map inline->sexp caption)))))
-  (def headed (if (vec-empty? head) captioned (vec-add captioned (form "head" (vec-map row->sexp head)))))
-  (form "table" (vec-append headed (vec-map (fun (group) (form "body" (vec-map row->sexp group)))
-                                           (record-ref t bodies)))))
+  (def captioned
+    (if (vec-empty? caption)
+        parts
+        (vec-add parts (form "caption" (vec-map inline->sexp caption)))))
+  (def headed
+    (if (vec-empty? head)
+        captioned
+        (vec-add captioned (form "head" (vec-map row->sexp head)))))
+  (form "table"
+        (vec-append headed
+                    (vec-map (fun (group) (form "body" (vec-map row->sexp group)))
+                             (record-ref t bodies)))))
 
 (: row->sexp (-> (Vec (Vec Inline)) string))
 (defun (row->sexp row)
@@ -412,17 +447,16 @@
 ;; One block to a line, and the notes after them.
 (: document->sexp (-> Document string))
 (defun (document->sexp doc)
-  (with-return ret 
+  (with-return ret
     (def notes (record-ref doc notes))
     (def body (string-join (vec-map block->sexp (record-ref doc blocks)) "\n"))
     (when (empty? notes)
       (ret body))
     (def all-notes
-       (loop (:for i (up-from 1))
-             (:for inv notes)
-             (:let noteblocks (vec-map block->sexp inv))
-             (:let prepended (vec-insert noteblocks 0 (int->string i)))
-             (:acc (vecing (form "note" prepended)))))
+      (loop (:for i (up-from 1))
+            (:for inv notes)
+            (:let noteblocks (vec-map block->sexp inv))
+            (:let prepended (vec-insert noteblocks 0 (int->string i)))
+            (:acc (vecing (form "note" prepended)))))
 
     (str body "\n" (form "notes" all-notes))))
-               

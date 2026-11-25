@@ -36,8 +36,7 @@
                                       System.UnauthorizedAccessException
                                       System.BadImageFormatException))))
 
-(:doc #:module
-  (summary "A module's published docs, read back as records.")
+(:doc #:module (summary "A module's published docs, read back as records.")
   (see module-docs assembly-docs Doc)
   (reference """
     Each (:doc ...) form a module was compiled with is a Doc. Its clauses are
@@ -52,44 +51,60 @@
 
 (:doc DocSubject
   (summary "What a doc is about.")
-  (case SubjectName "A definition, by its name.")
-  (case SubjectReader "A reader extension: (:doc name #:reader ...).")
-  (case SubjectModule "The module itself: (:doc #:module ...)."))
+  (case SubjectName
+    "A definition, by its name.")
+  (case SubjectReader
+    "A reader extension: (:doc name #:reader ...).")
+  (case SubjectModule
+    "The module itself: (:doc #:module ...)."))
 (type (: DocSubject (Union (: SubjectName Symbol)
                            (: SubjectReader Symbol)
                            SubjectModule)))
 
 (:doc DocKind
   (summary "What kind of definition a doc is about, as the compiler found it.")
-  (case KindOther "A kind this version does not know, as published."))
-(type (: DocKind (Union KindFunction KindValue KindRecord KindUnion KindAlias
-                        KindTrait KindMacro KindReader KindModule
+  (case KindOther
+    "A kind this version does not know, as published."))
+(type (: DocKind (Union KindFunction
+                        KindValue
+                        KindRecord
+                        KindUnion
+                        KindAlias
+                        KindTrait
+                        KindMacro
+                        KindReader
+                        KindModule
                         (: KindOther Symbol))))
 
 (:doc DocClause
   (summary "One clause of a doc, as written.")
-  (case DocArg "A positional parameter's name and text.")
-  (case DocKey "A keyword parameter's name, without #:, and text.")
-  (case DocRaises "The exception's type as written, and when.")
-  (case DocTparam "The type parameter as written, %a, and its text.")
-  (case DocForm "How a macro is written, as source text: (with-x name body ...).")
-  (case DocOther "A clause this version does not know: its head and the rest."))
-(type (: DocClause (Union
-                    (: DocSummary string)
-                    (: DocArg Symbol string)
-                    (: DocRest Symbol string)
-                    (: DocKey Symbol string)
-                    (: DocReturns string)
-                    (: DocRaises Symbol string)
-                    (: DocSee (List Symbol))
-                    (: DocExample string)
-                    (: DocReference string)
-                    (: DocField Symbol string)
-                    (: DocCase Symbol string)
-                    (: DocTparam Symbol string)
-                    (: DocForm string)
-                    (: DocLiteral (List Symbol))
-                    (: DocOther Symbol (List Bjodat)))))
+  (case DocArg
+    "A positional parameter's name and text.")
+  (case DocKey
+    "A keyword parameter's name, without #:, and text.")
+  (case DocRaises
+    "The exception's type as written, and when.")
+  (case DocTparam
+    "The type parameter as written, %a, and its text.")
+  (case DocForm
+    "How a macro is written, as source text: (with-x name body ...).")
+  (case DocOther
+    "A clause this version does not know: its head and the rest."))
+(type (: DocClause (Union (: DocSummary string)
+                          (: DocArg Symbol string)
+                          (: DocRest Symbol string)
+                          (: DocKey Symbol string)
+                          (: DocReturns string)
+                          (: DocRaises Symbol string)
+                          (: DocSee (List Symbol))
+                          (: DocExample string)
+                          (: DocReference string)
+                          (: DocField Symbol string)
+                          (: DocCase Symbol string)
+                          (: DocTparam Symbol string)
+                          (: DocForm string)
+                          (: DocLiteral (List Symbol))
+                          (: DocOther Symbol (List Bjodat)))))
 
 (:doc Doc
   (summary "One published doc.")
@@ -131,8 +146,7 @@
 (defun (symbol-list xs)
   (match xs
     (Nil (Some Nil))
-    ((Cons (BjoSym s) rest)
-     (option-map (fun (more) (Cons s more)) (symbol-list rest)))
+    ((Cons (BjoSym s) rest) (option-map (fun (more) (Cons s more)) (symbol-list rest)))
     (_ None)))
 
 ;; A clause by its head. `#:rng` and `rng` are the same key.
@@ -165,8 +179,9 @@
         (match (symbol-list names)
           ((Some ns) (Ok (DocLiteral ns)))
           (None (malformed "a literal clause names symbols" c))))
-       ((Tuple (or "summary" "arg" "rest" "key" "returns" "raises" "example"
-                   "reference" "field" "case" "tparam" "form") _)
+       ((Tuple (or "summary" "arg" "rest" "key" "returns" "raises" "example" "reference" "field"
+                   "case" "tparam" "form")
+               _)
         (malformed "a clause of the wrong shape" c))
        (_ (Ok (DocOther head args)))))
     (_ (malformed "a clause is a list headed by a symbol" c))))
@@ -204,8 +219,11 @@
 ;; `(:doc name ...)`, `(:doc name #:reader ...)` or `(:doc #:module ...)`.
 (: (-> Bjodat (Result string Doc)))
 (defun (read-doc form)
-  (def start (Partial (kind (KindOther (string->symbol "unknown")))
-                      (signature None) (definition None) (clauses Nil)))
+  (def start
+    (Partial (kind (KindOther (string->symbol "unknown")))
+             (signature None)
+             (definition None)
+             (clauses Nil)))
   (def subject+clauses
     (match form
       ((BjoList (Cons (BjoKey d) after))
@@ -213,9 +231,13 @@
            None
            (match after
              ((Cons (BjoKey m) cs)
-              (if (= (keyword->string m) "module") (Some (Tuple SubjectModule cs)) None))
+              (if (= (keyword->string m) "module")
+                  (Some (Tuple SubjectModule cs))
+                  None))
              ((Cons (BjoSym n) (Cons (BjoKey r) cs))
-              (if (= (keyword->string r) "reader") (Some (Tuple (SubjectReader n) cs)) None))
+              (if (= (keyword->string r) "reader")
+                  (Some (Tuple (SubjectReader n) cs))
+                  None))
              ((Cons (BjoSym n) cs) (Some (Tuple (SubjectName n) cs)))
              (_ None))))
       (_ None)))
@@ -265,8 +287,7 @@
       (Err #"no such file: ${path}")
       (match (clr-read-metadata path "BjolangDocs")
         ((Err e) (Err #"${path}: ${(.-Message e)}"))
-        ((Ok text)
-         (result-map-err (fun (why) #"${path}: ${why}") (parse-docs text))))))
+        ((Ok text) (result-map-err (fun (why) #"${path}: ${why}") (parse-docs text))))))
 
 (:doc module-docs
   (summary "The docs of a module, by name.")
@@ -292,7 +313,10 @@
   (loop (:for c (record-ref doc clauses))
         (:acc found (folding ""
                              (match c
-                               ((DocSummary s) (if (= found "") s found))
+                               ((DocSummary s)
+                                (if (= found "")
+                                    s
+                                    found))
                                (_ found))))))
 
 (:doc doc-named

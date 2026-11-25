@@ -60,12 +60,13 @@
 
 (re-export combine combine-all)
 
-(export Chunkable chunk-size chunks
-        in-parts in-parallel computing-each compute-thread-count
-        ArrayPart part-array part-lo part-hi part-length part->span part->ro-span
-        IArrayPart iarray-part-lo iarray-part-hi iarray-part-length
-        par-for-each
-        ParallelMap par-map ParallelFilter par-filter)
+(export
+  Chunkable chunk-size chunks
+  in-parts in-parallel computing-each compute-thread-count
+  ArrayPart part-array part-lo part-hi part-length part->span part->ro-span
+  IArrayPart iarray-part-lo iarray-part-hi iarray-part-length
+  par-for-each
+  ParallelMap par-map ParallelFilter par-filter)
 
 ;; ---------------------------------------------------------------------------
 ;; The trait
@@ -133,13 +134,18 @@
 
 (def thread-count
   (match (get-environment-variable "BJOLANG_COMPUTE_THREADS")
-    ((Some s) (match (parse-int s)
-                ((Some n) (if (> n 0) n default-thread-count))
-                (None default-thread-count)))
+    ((Some s)
+     (match (parse-int s)
+       ((Some n)
+        (if (> n 0)
+            n
+            default-thread-count))
+       (None default-thread-count)))
     (None default-thread-count)))
 
 (: (-> int))
-(defun (compute-thread-count) thread-count)
+(defun (compute-thread-count)
+  thread-count)
 
 (def jobs (: (make-jobs-inbox 4096 #f) (Inbox (-> Unit))))
 (def started (make-atomic 0))
@@ -218,10 +224,12 @@
                 (cond
                   ((not (= (atomic-ref failed) 0)) unit)
                   ((cancelled? token) (ignore (atomic-increment! skipped)))
-                  (else (match (try (array-set! results k (work k)) #:catch (System.Exception))
-                          ((Ok _) unit)
-                          ((Err e) (when (= (atomic-compare-and-swap! failed 0 1) 0)
-                                     (array-set! failure 0 e))))))
+                  (else
+                   (match (try (array-set! results k (work k)) #:catch (System.Exception))
+                     ((Ok _) unit)
+                     ((Err e)
+                      (when (= (atomic-compare-and-swap! failed 0 1) 0)
+                        (array-set! failure 0 e))))))
                 (when (= (atomic-increment! ended) n)
                   (ignore (inbox-post! done unit)))
                 (go)))
@@ -230,30 +238,29 @@
         ;; At most one runner for each part and one for each compute thread,
         ;; and in ordinary code one less, as the calling thread takes parts
         ;; too.
-        (def runners (by-colour (#:sync (min (- n 1) thread-count))
-                                (#:bjo (min n thread-count))))
+        (def runners (by-colour (#:sync (min (- n 1) thread-count)) (#:bjo (min n thread-count))))
         (def posted (make-atomic 0))
         ;; Posts runners while a part is left that no runner has taken.
         (def post-runners
           (fun ()
             (let go ()
-              (when (and (< (+ (atomic-ref next) 1) n)
-                         (<= (atomic-increment! posted) runners))
+              (when (and (< (+ (atomic-ref next) 1) n) (<= (atomic-increment! posted) runners))
                 (ignore (inbox-post! jobs runner))
                 (go)))))
-        (by-colour
-          (#:sync (begin
-                    (post-runners)
-                    (run-parts)
-                    (sync/blocking (inbox-recv done))))
-          (#:bjo (begin
-                   (ignore (atomic-increment! posted))
-                   (unless (inbox-post! jobs runner)
-                     (sync (inbox-send-evt jobs runner)))
-                   (post-runners)
-                   (sync (inbox-recv done))
-                   (when (> (atomic-ref skipped) 0) (sync (: (never) (Event Unit)))))))
-        (when (= (atomic-ref failed) 1) (raise (array-ref failure 0)))
+        (by-colour (#:sync (begin
+                             (post-runners)
+                             (run-parts)
+                             (sync/blocking (inbox-recv done))))
+                   (#:bjo (begin
+                            (ignore (atomic-increment! posted))
+                            (unless (inbox-post! jobs runner)
+                              (sync (inbox-send-evt jobs runner)))
+                            (post-runners)
+                            (sync (inbox-recv done))
+                            (when (> (atomic-ref skipped) 0)
+                              (sync (: (never) (Event Unit)))))))
+        (when (= (atomic-ref failed) 1)
+          (raise (array-ref failure 0)))
         (array->vec results))))
 
 ;; How many parts to ask of a collection of `n` elements.
@@ -262,7 +269,11 @@
 (: (-> int int int int))
 (defun (parts-asked n parts size)
   (if (> size 0)
-      (max 1 (+ (/ n size) (if (= 0 (% n size)) 0 1)))
+      (max 1
+           (+ (/ n size)
+              (if (= 0 (% n size))
+                  0
+                  1)))
       parts))
 
 ;; Runs `f` on each part of `c` on the compute threads, and returns the
@@ -272,7 +283,8 @@
 ;;   thread. The collection may make fewer.
 ;; - `#:size`: instead, ceil(n / size) parts of n elements, so that the parts
 ;;   do not depend on the machine.
-(: in-parts (-> %c (-> %p %r) (#:parts int) (#:size int) (Vec %r)) (where (Chunkable %c #:chunk %p))
+(: in-parts (-> %c (-> %p %r) (#:parts int) (#:size int) (Vec %r))
+   (where (Chunkable %c #:chunk %p))
    #:elsewhere f)
 (defun (in-parts c f #:parts (* 4 thread-count) #:size 0)
   (def ps (chunks c (parts-asked (chunk-size c) parts size)))
@@ -291,19 +303,20 @@
 
 (impl (Chunkable Range)
   (type %chunk Range)
-  (defun (chunk-size r) (max 0 (- (record-ref r hi) (record-ref r lo))))
+  (defun (chunk-size r)
+    (max 0 (- (record-ref r hi) (record-ref r lo))))
   (defun (chunks r k)
     (def lo (record-ref r lo))
     (def n (max 0 (- (record-ref r hi) lo)))
     (def m (part-count n k))
     (loop (:for i (range 0 m))
-          (:acc parts (vecing (range (+ lo (part-start n m i))
-                                     (+ lo (part-start n m (+ i 1)))))))))
+          (:acc parts (vecing (range (+ lo (part-start n m i)) (+ lo (part-start n m (+ i 1)))))))))
 
 ;; A part of a vector is a slice of it, which shares its nodes.
 (impl (Chunkable (Vec %a))
   (type %chunk (Vec %a))
-  (defun (chunk-size v) (vec-length v))
+  (defun (chunk-size v)
+    (vec-length v))
   (defun (chunks v k)
     (def n (vec-length v))
     (def m (part-count n k))
@@ -318,21 +331,27 @@
 
 ;; The elements of `array` from `lo` up to `hi`. A view: it holds the array,
 ;; not a copy of the elements.
-(type (: (ArrayPart %a) (Struct (: array (Array %a)) (: lo int) (: hi int))))
+(type (: (ArrayPart %a) (Struct (: array (Array %a))
+                                (: lo int)
+                                (: hi int))))
 
 (: (-> (ArrayPart %a) (Array %a)))
-(defun (part-array p) (record-ref p array))
+(defun (part-array p)
+  (record-ref p array))
 
 ;; The index in the array of the part's first element.
 (: (-> (ArrayPart %a) int))
-(defun (part-lo p) (record-ref p lo))
+(defun (part-lo p)
+  (record-ref p lo))
 
 ;; The index in the array after the part's last element.
 (: (-> (ArrayPart %a) int))
-(defun (part-hi p) (record-ref p hi))
+(defun (part-hi p)
+  (record-ref p hi))
 
 (: (-> (ArrayPart %a) int))
-(defun (part-length p) (- (record-ref p hi) (record-ref p lo)))
+(defun (part-length p)
+  (- (record-ref p hi) (record-ref p lo)))
 
 ;; A span of the part's elements, which writes into the array. Index 0 is the
 ;; part's first element. Made where it is used: a span cannot go to another
@@ -349,15 +368,21 @@
 (impl (Iterable (ArrayPart %a))
   (type %elem %a)
   (type %cursor int)
-  (defun (iterable-start p) (record-ref p lo))
-  (defun (iterable-done? p index) (>= index (record-ref p hi)))
-  (defun (iterable-current p index) (array-ref (record-ref p array) index))
-  (defun (iterable-next p index) (+ index 1))
-  (defun (count p) (- (record-ref p hi) (record-ref p lo))))
+  (defun (iterable-start p)
+    (record-ref p lo))
+  (defun (iterable-done? p index)
+    (>= index (record-ref p hi)))
+  (defun (iterable-current p index)
+    (array-ref (record-ref p array) index))
+  (defun (iterable-next p index)
+    (+ index 1))
+  (defun (count p)
+    (- (record-ref p hi) (record-ref p lo))))
 
 (impl (Chunkable (Array %a))
   (type %chunk (ArrayPart %a))
-  (defun (chunk-size a) (array-length a))
+  (defun (chunk-size a)
+    (array-length a))
   (defun (chunks a k)
     (def n (array-length a))
     (def m (part-count n k))
@@ -370,29 +395,40 @@
 ;; Immutable arrays: parts are views too
 ;; ---------------------------------------------------------------------------
 
-(type (: (IArrayPart %a) (Struct (: iarray (IArray %a)) (: lo int) (: hi int))))
+(type (: (IArrayPart %a) (Struct (: iarray (IArray %a))
+                                 (: lo int)
+                                 (: hi int))))
 
 (: (-> (IArrayPart %a) int))
-(defun (iarray-part-lo p) (record-ref p lo))
+(defun (iarray-part-lo p)
+  (record-ref p lo))
 
 (: (-> (IArrayPart %a) int))
-(defun (iarray-part-hi p) (record-ref p hi))
+(defun (iarray-part-hi p)
+  (record-ref p hi))
 
 (: (-> (IArrayPart %a) int))
-(defun (iarray-part-length p) (- (record-ref p hi) (record-ref p lo)))
+(defun (iarray-part-length p)
+  (- (record-ref p hi) (record-ref p lo)))
 
 (impl (Iterable (IArrayPart %a))
   (type %elem %a)
   (type %cursor int)
-  (defun (iterable-start p) (record-ref p lo))
-  (defun (iterable-done? p index) (>= index (record-ref p hi)))
-  (defun (iterable-current p index) (iarray-ref (record-ref p iarray) index))
-  (defun (iterable-next p index) (+ index 1))
-  (defun (count p) (- (record-ref p hi) (record-ref p lo))))
+  (defun (iterable-start p)
+    (record-ref p lo))
+  (defun (iterable-done? p index)
+    (>= index (record-ref p hi)))
+  (defun (iterable-current p index)
+    (iarray-ref (record-ref p iarray) index))
+  (defun (iterable-next p index)
+    (+ index 1))
+  (defun (count p)
+    (- (record-ref p hi) (record-ref p lo))))
 
 (impl (Chunkable (IArray %a))
   (type %chunk (IArrayPart %a))
-  (defun (chunk-size a) (iarray-length a))
+  (defun (chunk-size a)
+    (iarray-length a))
   (defun (chunks a k)
     (def n (iarray-length a))
     (def m (part-count n k))
@@ -413,25 +449,33 @@
 ;; anything, as the map's own order does not.
 (impl (Chunkable (Map %k %v))
   (type %chunk (Map %k %v))
-  (defun (chunk-size m) (map-length m))
-  (defun (chunks m k) (array->vec (map-split m k))))
+  (defun (chunk-size m)
+    (map-length m))
+  (defun (chunks m k)
+    (array->vec (map-split m k))))
 
 (impl (Chunkable (HashSet %a))
   (type %chunk (HashSet %a))
-  (defun (chunk-size s) (hashset-length s))
-  (defun (chunks s k) (array->vec (hashset-split s k))))
+  (defun (chunk-size s)
+    (hashset-length s))
+  (defun (chunks s k)
+    (array->vec (hashset-split s k))))
 
 ;; The parts of an ordered map or set are in key order: every key of a part
 ;; is less than every key of the next.
 (impl (Chunkable (OrderedMap %k %v))
   (type %chunk (OrderedMap %k %v))
-  (defun (chunk-size m) (orderedmap-length m))
-  (defun (chunks m k) (array->vec (orderedmap-split m k))))
+  (defun (chunk-size m)
+    (orderedmap-length m))
+  (defun (chunks m k)
+    (array->vec (orderedmap-split m k))))
 
 (impl (Chunkable (OrderedSet %a))
   (type %chunk (OrderedSet %a))
-  (defun (chunk-size s) (orderedset-length s))
-  (defun (chunks s k) (array->vec (orderedset-split s k))))
+  (defun (chunk-size s)
+    (orderedset-length s))
+  (defun (chunks s k)
+    (array->vec (orderedset-split s k))))
 
 ;; ---------------------------------------------------------------------------
 ;; Over the elements of a whole collection
@@ -440,18 +484,16 @@
 ;; Runs `f` on each element of `c`, on the compute threads. The elements of
 ;; a part are taken in order, and the parts at the same time.
 (: par-for-each (-> (-> %e void) %c void)
-   (where (Chunkable %c #:chunk %p)
-          (Iterable %p #:elem %e))
+   (where (Chunkable %c #:chunk %p) (Iterable %p #:elem %e))
    #:elsewhere f)
 (defun (par-for-each f c)
-  (ignore (in-parallel c
-                       (fun (part)
-                         (let go ((cur (iterable-start part)))
-                           (if (iterable-done? part cur)
-                               unit
-                               (begin
-                                 (f (iterable-current part cur))
-                                 (go (iterable-next part cur)))))))))
+  (ignore (in-parallel c (fun (part)
+                           (let go ((cur (iterable-start part)))
+                             (if (iterable-done? part cur)
+                                 unit
+                                 (begin
+                                   (f (iterable-current part cur))
+                                   (go (iterable-next part cur)))))))))
 
 ;; The parts joined from the first to the last: `(join (join p0 p1) p2)`.
 ;; There is at least one part.
@@ -520,7 +562,9 @@
 ;; their number.
 (: (-> (Vec (ArrayBuilder %a)) (Array %a)))
 (defun (builders->array parts)
-  (def out (make-array (loop (:for b parts) (:acc n (summing (arraybuilder-count b))))))
+  (def out
+    (make-array (loop (:for b parts)
+                      (:acc n (summing (arraybuilder-count b))))))
   (loop (:for b parts)
         (:with at 0 (+ at (arraybuilder-count b)))
         (:do (let ((from (arraybuilder-span b 0 (arraybuilder-count b))))
@@ -571,8 +615,7 @@
 
 (impl (ParallelFilter (Map %k %a))
   (defun (par-filter keep? m)
-    (joined (in-parts m (fun (p) (map-filter (fun (k v) (keep? v)) p)))
-            (fun (a b) (map-merge a b)))))
+    (joined (in-parts m (fun (p) (map-filter (fun (k v) (keep? v)) p))) (fun (a b) (map-merge a b)))))
 
 (impl (ParallelFilter (HashSet %a))
   (defun (par-filter keep? s)
@@ -589,7 +632,8 @@
 
 (impl (ParallelFilter (OrderedMap %k %a))
   (defun (par-filter keep? m)
-    (orderedmap-concat (vec->array (in-parts m (fun (p) (orderedmap-filter (fun (k v) (keep? v)) p)))))))
+    (orderedmap-concat (vec->array (in-parts m (fun (p)
+                                                 (orderedmap-filter (fun (k v) (keep? v)) p)))))))
 
 (impl (ParallelFilter (OrderedSet %a))
   (defun (par-filter keep? s)

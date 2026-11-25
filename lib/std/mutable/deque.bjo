@@ -60,21 +60,23 @@
 ;;
 ;; `size` is carried rather than counted so that `deque-length` is O(1). It is
 ;; the one field that is not derivable from the others in constant time.
-(type
-  (: (Deque %a) #:opaque
-     (Record (: front (List %a) #:mutable)
-             (: back (List %a) #:mutable)
-             (: size int #:mutable))))
+(type (: (Deque %a)
+         #:opaque
+         (Record (: front (List %a) #:mutable)
+                 (: back (List %a) #:mutable)
+                 (: size int #:mutable))))
 
 (: (-> (Deque %a)))
 (defun (deque)
   (Deque (front Nil) (back Nil) (size 0)))
 
 (: (-> (Deque %a) int))
-(defun (deque-length d) (record-ref d size))
+(defun (deque-length d)
+  (record-ref d size))
 
 (: (-> (Deque %a) bool))
-(defun (deque-empty? d) (= (record-ref d size) 0))
+(defun (deque-empty? d)
+  (= (record-ref d size) 0))
 
 (: (-> (Deque %a) void))
 (defun (deque-clear! d)
@@ -92,7 +94,9 @@
 ;; per element.
 (: (-> int (List %a) (List %a)))
 (defun (take-n k xs)
-  (let go ((k k) (rest xs) (acc Nil))
+  (let go ((k k)
+           (rest xs)
+           (acc Nil))
     (if (= k 0)
         (list-reverse acc)
         (match rest
@@ -119,25 +123,19 @@
 ;; holding an element twice.
 (: (-> (Deque %a) void))
 (defun (refill-front! d)
-  (when (and (list-empty? (record-ref d front))
-             (not (list-empty? (record-ref d back))))
+  (when (and (list-empty? (record-ref d front)) (not (list-empty? (record-ref d back))))
     (def b (record-ref d back))
     (def k (/ (record-ref d size) 2))
-    (record-set! d
-                 (front (list-reverse (drop-n k b)))
-                 (back (take-n k b)))))
+    (record-set! d (front (list-reverse (drop-n k b))) (back (take-n k b)))))
 
 ;; The mirror image: everything is on `front`, in order, and the rear half moves
 ;; across reversed.
 (: (-> (Deque %a) void))
 (defun (refill-back! d)
-  (when (and (list-empty? (record-ref d back))
-             (not (list-empty? (record-ref d front))))
+  (when (and (list-empty? (record-ref d back)) (not (list-empty? (record-ref d front))))
     (def f (record-ref d front))
     (def k (/ (record-ref d size) 2))
-    (record-set! d
-                 (front (take-n k f))
-                 (back (list-reverse (drop-n k f))))))
+    (record-set! d (front (take-n k f)) (back (list-reverse (drop-n k f))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The ends
@@ -145,15 +143,11 @@
 
 (: (-> (Deque %a) %a void))
 (defun (deque-push-front! d x)
-  (record-set! d
-               (front (Cons x (record-ref d front)))
-               (size (+ (record-ref d size) 1))))
+  (record-set! d (front (Cons x (record-ref d front))) (size (+ (record-ref d size) 1))))
 
 (: (-> (Deque %a) %a void))
 (defun (deque-push-back! d x)
-  (record-set! d
-               (back (Cons x (record-ref d back)))
-               (size (+ (record-ref d size) 1))))
+  (record-set! d (back (Cons x (record-ref d back))) (size (+ (record-ref d size) 1))))
 
 (: (-> (Deque %a) (Option %a)))
 (defun (deque-try-pop-first! d)
@@ -161,9 +155,7 @@
   (match (record-ref d front)
     (Nil None)
     ((Cons x rest)
-     (record-set! d
-                  (front rest)
-                  (size (- (record-ref d size) 1)))
+     (record-set! d (front rest) (size (- (record-ref d size) 1)))
      (Some x))))
 
 (: (-> (Deque %a) (Option %a)))
@@ -172,9 +164,7 @@
   (match (record-ref d back)
     (Nil None)
     ((Cons x rest)
-     (record-set! d
-                  (back rest)
-                  (size (- (record-ref d size) 1)))
+     (record-set! d (back rest) (size (- (record-ref d size) 1)))
      (Some x))))
 
 (import/class
@@ -238,8 +228,7 @@
 ;; Front to back. The rear half is reversed once rather than per element.
 (: (-> (-?-> %a %b %b) %b (Deque %a) %b))
 (defun (deque-fold f init d)
-  (list-foldl f (list-foldl f init (record-ref d front))
-              (list-reverse (record-ref d back))))
+  (list-foldl f (list-foldl f init (record-ref d front)) (list-reverse (record-ref d back))))
 
 (: (-> (-?-> %a void) (Deque %a) void))
 (defun (deque-for-each f d)
@@ -274,9 +263,9 @@
 (impl (Eq (Deque %a))
   (where (Eq %a))
   (defun (= a b)
-    (and (= (deque-length a) (deque-length b))
-         (= (deque->list a) (deque->list b))))
-  (defun (eq-hash d) (unhashable "Deque")))
+    (and (= (deque-length a) (deque-length b)) (= (deque->list a) (deque->list b))))
+  (defun (eq-hash d)
+    (unhashable "Deque")))
 
 ;; `#<a b c>`, front first.
 (impl (Written (Deque %a))
@@ -290,6 +279,7 @@
     (elements-print-into "#<" (deque->list d) ">" b (fun (x b) (display-into x b)))))
 
 (: (-> (Deque %a) string) (where (Displayed %a)))
-(defun (deque->str d) (displayed d))
+(defun (deque->str d)
+  (displayed d))
 
 (:deprecated deque->str "use `displayed`")

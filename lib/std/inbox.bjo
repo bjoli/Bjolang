@@ -86,7 +86,7 @@
   (clr-try-call      (: Bjoml.InboxModule.TryCallInbox
                         (-> (Inbox (Call %q %r)) %q (Option (Task %r)))))
   (clr-try-call/token (: Bjoml.InboxModule.TryCallInboxWithToken
-                        (-> (Inbox (Call %q %r)) %q CancellationToken (Option (Task %r)))))
+                         (-> (Inbox (Call %q %r)) %q CancellationToken (Option (Task %r)))))
   (clr-call-request  (: Bjoml.InboxModule.CallRequest      (-> (Call %q %r) %q)))
   (clr-call-reply!   (: Bjoml.InboxModule.CallReply        (-> (Call %q %r) %r bool)))
   (clr-call-fail!    (: Bjoml.InboxModule.CallFail         (-> (Call %q %r) Exception bool)))
@@ -111,9 +111,10 @@
 ;; wait before the answer is 503.
 (: (-> int WhenFull (Inbox %a)))
 (defun (make-inbox capacity policy)
-  (clr-make-inbox capacity (match policy
-                             (DropNewest #f)
-                             (DropOldest #t))))
+  (clr-make-inbox capacity
+                  (match policy
+                    (DropNewest #f)
+                    (DropOldest #t))))
 
 ;; ---------------------------------------------------------------------------
 ;; Putting something in
@@ -125,7 +126,8 @@
 ;; `#t` when the item was queued or handed straight to a waiting receiver. `#f`
 ;; when the inbox is closed, or full under `DropNewest`.
 (: (-> (Inbox %a) %a bool))
-(defun (inbox-post! ib x) (clr-post ib x))
+(defun (inbox-post! ib x)
+  (clr-post ib x))
 
 ;; The same handover for a caller that can wait, because it returns a `Task`:
 ;; the task completes once `x` is in. On a full inbox it stays pending until a
@@ -134,12 +136,14 @@
 ;;
 ;; On a closed inbox, or an `inbox-abort!` while waiting, the task is cancelled.
 (: (-> (Inbox %a) %a (Task Unit)))
-(defun (inbox-send ib x) (clr-send ib x))
+(defun (inbox-send ib x)
+  (clr-send ib x))
 
 ;; The same, with the caller's own token. If it fires while the send is waiting
 ;; for room, the item never enters the queue and the task is cancelled.
 (: (-> (Inbox %a) %a CancellationToken (Task Unit)))
-(defun (inbox-send/token ib x token) (clr-send/token ib x token))
+(defun (inbox-send/token ib x token)
+  (clr-send/token ib x token))
 
 ;; The fiber's form of a send, as a CML event: it commits when there is room,
 ;; and in a `choose` that another branch wins, `x` is *not* queued.
@@ -151,7 +155,8 @@
 ;; On a closed inbox it never commits. A fiber that may meet one should choose
 ;; it together with `inbox-closed`.
 (: (-> (Inbox %a) %a (Event Unit)))
-(defun (inbox-send-evt ib x) (clr-send-evt ib x))
+(defun (inbox-send-evt ib x)
+  (clr-send-evt ib x))
 
 ;; ---------------------------------------------------------------------------
 ;; Taking it out
@@ -164,7 +169,8 @@
 ;; On a closed, empty inbox it never fires. `inbox-closed` is how the end is
 ;; noticed.
 (: (-> (Inbox %a) (Event %a)))
-(defun (inbox-recv ib) (clr-recv ib))
+(defun (inbox-recv ib)
+  (clr-recv ib))
 
 ;; Fires once the inbox is closed *and* empty, and from then on commits
 ;; immediately on every `sync`. `None` after `inbox-close!` or `inbox-abort!`,
@@ -179,7 +185,8 @@
 ;; which never closes its inbox — an HTTP worker stopped by cancelling its scope
 ;; — keeps the simple form.
 (: (-> (Inbox %a) (Event (Option Exception))))
-(defun (inbox-closed ib) (clr-closed ib))
+(defun (inbox-closed ib)
+  (clr-closed ib))
 
 ;; ---------------------------------------------------------------------------
 ;; Ending it
@@ -190,21 +197,24 @@
 ;; it; a sender already waiting for room still gets in. `inbox-closed` fires
 ;; once all of that has been received.
 (: (-> (Inbox %a) void))
-(defun (inbox-close! ib) (clr-close! ib))
+(defun (inbox-close! ib)
+  (clr-close! ib))
 
 ;; The same as `inbox-close!`, but `inbox-closed` yields `(Some e)`.
 ;;
 ;; The error is kept beside the queue rather than in it, so no full policy can
 ;; drop the one item that says what went wrong.
 (: (-> (Inbox %a) Exception void))
-(defun (inbox-fail! ib e) (clr-fail! ib e))
+(defun (inbox-fail! ib e)
+  (clr-fail! ib e))
 
 ;; A hard stop: closed, and everything queued dropped. Queued calls and waiting
 ;; `inbox-send` tasks are cancelled, a waiting `inbox-send-evt` never commits,
 ;; and `inbox-closed` then fires with `None` — or with the earlier error, if
 ;; `inbox-fail!` came first.
 (: (-> (Inbox %a) void))
-(defun (inbox-abort! ib) (clr-abort! ib))
+(defun (inbox-abort! ib)
+  (clr-abort! ib))
 
 ;; ---------------------------------------------------------------------------
 ;; What was lost
@@ -214,7 +224,8 @@
 ;; can report its losses: "dropped 37 progress updates". `inbox-abort!` is not
 ;; counted — that is the program stopping, not the inbox overflowing.
 (: (-> (Inbox %a) int))
-(defun (inbox-dropped-count ib) (clr-dropped-count ib))
+(defun (inbox-dropped-count ib)
+  (clr-dropped-count ib))
 
 ;; ---------------------------------------------------------------------------
 ;; Subscribing to an IObservable
@@ -254,7 +265,8 @@
 ;; thread. When the inbox is full the policy decides, and the task faults with a
 ;; `Bjoml.InboxFullException`; when it is closed, the task is cancelled.
 (: (-> (Inbox (Call %q %r)) %q (Task %r)))
-(defun (inbox-call ib request) (clr-call ib request))
+(defun (inbox-call ib request)
+  (clr-call ib request))
 
 ;; The same, with the caller's own `CancellationToken` — Kestrel's
 ;; `RequestAborted`. What the token does depends on where the call is:
@@ -267,7 +279,8 @@
 ;;     writing into a context that has already been recycled into the next
 ;;     request.
 (: (-> (Inbox (Call %q %r)) %q CancellationToken (Task %r)))
-(defun (inbox-call/token ib request token) (clr-call/token ib request token))
+(defun (inbox-call/token ib request token)
+  (clr-call/token ib request token))
 
 ;; The same two, with the refusal as an answer rather than as a fault on the
 ;; task: `None` when the inbox was full under `DropNewest` or closed, and
@@ -288,27 +301,33 @@
 ;; Under `DropOldest` the answer is `(Some ...)`: this call went in, and it is
 ;; an *older* one whose task faults. `inbox-post!` means the same thing by `#t`.
 (: (-> (Inbox (Call %q %r)) %q (Option (Task %r))))
-(defun (inbox-try-call ib request) (clr-try-call ib request))
+(defun (inbox-try-call ib request)
+  (clr-try-call ib request))
 
 (: (-> (Inbox (Call %q %r)) %q CancellationToken (Option (Task %r))))
-(defun (inbox-try-call/token ib request token) (clr-try-call/token ib request token))
+(defun (inbox-try-call/token ib request token)
+  (clr-try-call/token ib request token))
 
 ;; What the caller asked.
 (: (-> (Call %q %r) %q))
-(defun (call-request c) (clr-call-request c))
+(defun (call-request c)
+  (clr-call-request c))
 
 ;; Answers the call. The first completion wins and returns `#t`; a later one
 ;; returns `#f` and does nothing, so a timeout and a handler can race to answer
 ;; safely.
 (: (-> (Call %q %r) %r bool))
-(defun (call-reply! c value) (clr-call-reply! c value))
+(defun (call-reply! c value)
+  (clr-call-reply! c value))
 
 ;; The same, with an exception for the caller to receive.
 (: (-> (Call %q %r) Exception bool))
-(defun (call-fail! c e) (clr-call-fail! c e))
+(defun (call-fail! c e)
+  (clr-call-fail! c e))
 
 ;; Fires once the caller's token has fired *after* this call was taken. It never
 ;; fires for a call made without a token, and never for one cancelled while it
 ;; was still queued — nobody had it to be told.
 (: (-> (Call %q %r) (Event Unit)))
-(defun (call-abandoned c) (clr-call-abandoned c))
+(defun (call-abandoned c)
+  (clr-call-abandoned c))

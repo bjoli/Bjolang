@@ -63,27 +63,21 @@
 ;; along so that a position costs a walk of the current line rather than of
 ;; everything before it.
 
-(type
-  (: State (Record
-             (: text string)
-             (: pos StringCursor #:mutable)
-             (: line int #:mutable)
-             (: line-start StringCursor #:mutable))))
+(type (: State (Record (: text string)
+                       (: pos StringCursor #:mutable)
+                       (: line int #:mutable)
+                       (: line-start StringCursor #:mutable))))
 
 ;; What a backtracking combinator saves. A struct, so saving one is a read of
 ;; three fields and no allocation. The fields are named apart from State's so
 ;; that a (record-ref st pos) resolves without the state having been pinned to
 ;; a type first.
-(type
-  (: Mark (Struct
-            (: cursor StringCursor)
-            (: row int)
-            (: row-start StringCursor))))
+(type (: Mark (Struct (: cursor StringCursor)
+                      (: row int)
+                      (: row-start StringCursor))))
 
-(type
-  (: Position (Struct
-                (: line int)
-                (: column int))))
+(type (: Position (Struct (: line int)
+                          (: column int))))
 
 (: make-state (-> string State))
 (defun (make-state text)
@@ -100,10 +94,9 @@
 
 (: reset! (-> State Mark void))
 (defun (reset! st m)
-  (record-set! st
-               (pos (struct-ref m cursor))
-               (line (struct-ref m row))
-               (line-start (struct-ref m row-start))))
+  (record-set! st (pos (struct-ref m cursor))
+                  (line (struct-ref m row))
+                  (line-start (struct-ref m row-start))))
 
 ;; Whether anything has been consumed since the mark was taken.
 (: moved? (-> State Mark bool))
@@ -121,8 +114,7 @@
   (cond
     ((char=? c #\newline)
      (record-set! st (pos next) (line (+ 1 (record-ref st line))) (line-start next)))
-    (else
-     (record-set! st (pos next)))))
+    (else (record-set! st (pos next)))))
 
 ;; Consumes characters while they satisfy pred, and answers how many.
 (: skip-while! (-> State (-> char bool) int))
@@ -134,7 +126,9 @@
       (else
        (def (Tuple c next) (string-cursor-ref+next text (record-ref st pos)))
        (cond
-         ((pred c) (advance! st c next) (go (+ n 1)))
+         ((pred c)
+          (advance! st c next)
+          (go (+ n 1)))
          (else n))))))
 
 ;; Consumes one particular character, and answers whether it was there.
@@ -145,7 +139,9 @@
     (else
      (def (Tuple got next) (string-cursor-ref+next (record-ref st text) (record-ref st pos)))
      (cond
-       ((char=? got c) (advance! st got next) #t)
+       ((char=? got c)
+        (advance! st got next)
+        #t)
        (else #f)))))
 
 (: state-position (-> State Position))
@@ -165,20 +161,18 @@
 ;; Errors
 ;; ---------------------------------------------------------------------------
 
-(type
-  (: ErrorItem (Union
-                 (: Expected string)
-                 (: Unexpected string)
-                 (: ErrorMessage string))))
+(type (: ErrorItem (Union (: Expected string)
+                          (: Unexpected string)
+                          (: ErrorMessage string))))
 
 ;; Expectations combine as a tree rather than by copying lists. A merge at one
 ;; position is a node, and the list is read back in order only when an error is
 ;; printed, so merging costs no allocation.
-(type
-  (: ErrorItems #:opaque (Union
-                  ItemsNone
-                  (: ItemsLeaf (List ErrorItem))
-                  (: ItemsBoth ErrorItems ErrorItems))))
+(type (: ErrorItems
+         #:opaque
+         (Union ItemsNone
+                (: ItemsLeaf (List ErrorItem))
+                (: ItemsBoth ErrorItems ErrorItems))))
 
 ;; Nothing expected. What a failed choice starts from, and what an expectation
 ;; from elsewhere merges cleanly with.
@@ -187,25 +181,21 @@
 ;; What a parser hands back when it fails: only what cannot be recovered later,
 ;; the position and the expectations. The source, the line and the line start
 ;; are worked out once by `run-parser`, so a reply carries far less.
-(type
-  (: Failure #:opaque (Struct
-                        (: err-pos StringCursor)
-                        (: items ErrorItems))))
+(type (: Failure #:opaque
+         (Struct (: err-pos StringCursor)
+                 (: items ErrorItems))))
 
 ;; The public error. Built by `run-parser`, so a user of a parser still gets a
 ;; `ParseError` carrying the source and the line exactly as before.
-(type
-  (: ParseError (Struct
-                  (: source string)
-                  (: err-pos StringCursor)
-                  (: err-line int)
-                  (: err-line-start StringCursor)
-                  (: items ErrorItems))))
+(type (: ParseError (Struct (: source string)
+                            (: err-pos StringCursor)
+                            (: err-line int)
+                            (: err-line-start StringCursor)
+                            (: items ErrorItems))))
 
 (: failure-at (-> State ErrorItems Failure))
 (defun (failure-at st xs)
-  (Failure (err-pos (record-ref st pos))
-           (items xs)))
+  (Failure (err-pos (record-ref st pos)) (items xs)))
 
 ;; The item tree for a fixed expectation, built once when a parser is made
 ;; rather than on every failure. A failing parser then allocates nothing.
@@ -231,9 +221,10 @@
 (defun (items-merge a b)
   (match a
     (ItemsNone b)
-    (_ (match b
-         (ItemsNone a)
-         (_ (ItemsBoth a b))))))
+    (_
+     (match b
+       (ItemsNone a)
+       (_ (ItemsBoth a b))))))
 
 ;; The character at a cursor, as a message names it. Used when printing an
 ;; error, not while parsing: the error carries the position, so nothing on the
@@ -265,8 +256,7 @@
   (cond
     ((string-cursor<? pa pb) b)
     ((string-cursor<? pb pa) a)
-    (else (Failure (err-pos pa)
-                   (items (items-merge (record-ref a items) (record-ref b items)))))))
+    (else (Failure (err-pos pa) (items (items-merge (record-ref a items) (record-ref b items)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Reporting
@@ -291,7 +281,10 @@
 (defun (member? x xs)
   (match xs
     (Nil #f)
-    ((Cons y rest) (cond ((= x y) #t) (else (member? x rest))))))
+    ((Cons y rest)
+     (cond
+       ((= x y) #t)
+       (else (member? x rest))))))
 
 ;; `seen` carries the elements already passed, so the test is against what the
 ;; iterations before this one saw rather than against what the accumulator has
@@ -302,7 +295,7 @@
         (:with seen Nil (Cons x seen))
         (:when (not (member? x seen)))
         (:acc out (listing x))
-        => out))
+    => out))
 
 ;; "a", "a or b", "a, b or c".
 ;;
@@ -329,20 +322,23 @@
 
 (: parse-error-position (-> ParseError Position))
 (defun (parse-error-position e)
-  (Position (line (record-ref e err-line))
-            (column (column-of (record-ref e source) (record-ref e err-line-start) (record-ref e err-pos)))))
+  (Position
+   (line (record-ref e err-line))
+   (column (column-of (record-ref e source) (record-ref e err-line-start) (record-ref e err-pos)))))
 
 (: error->string (-> ParseError string))
 (defun (error->string e)
   (def p (parse-error-position e))
   (def column (struct-ref p column))
   (def sb (stringbuilder-empty))
-  (stringbuilder-add-string!
-    sb (str "Parse error at line " (int->string (struct-ref p line))
-            ", column " (int->string column) ":"))
+  (stringbuilder-add-string! sb
+                             (str "Parse error at line "
+                                  (int->string (struct-ref p line))
+                                  ", column "
+                                  (int->string column)
+                                  ":"))
   (match (source-line (record-ref e source) (struct-ref p line))
-    ((Some text)
-     (stringbuilder-add-string! sb (str "\n" text "\n" (string-pad-left "^" column))))
+    ((Some text) (stringbuilder-add-string! sb (str "\n" text "\n" (string-pad-left "^" column))))
     (None unit))
   (def items (items-flatten (record-ref e items)))
   (def expected (expected-strings items))
@@ -358,19 +354,18 @@
     (stringbuilder-add-string! sb (str "\nExpecting: " (or-join expected))))
   (unless (list-empty? unexpected)
     (stringbuilder-add-string! sb (str "\nUnexpected: " (or-join unexpected))))
-  (list-for-each (fun (m) (stringbuilder-add-string! sb (str "\n" m)))
-                 (message-strings items))
+  (list-for-each (fun (m) (stringbuilder-add-string! sb (str "\n" m))) (message-strings items))
   (stringbuilder->string sb))
 
 (impl (Displayed ParseError)
-  (defun (displayed e) (error->string e))
-  (defun (display-into e b) (stringbuilder-add-string! b (error->string e))))
+  (defun (displayed e)
+    (error->string e))
+  (defun (display-into e b)
+    (stringbuilder-add-string! b (error->string e))))
 
 ;; ---------------------------------------------------------------------------
 ;; Parsers
 ;; ---------------------------------------------------------------------------
-
-
 
 (type (: (Parser %a) (-> State (Result Failure %a))))
 
@@ -508,7 +503,9 @@
         (Nil (Ok (listbuilder->list b)))
         ((Cons p more)
          (match (p st)
-           ((Ok v) (listbuilder-add! b v) (go more))
+           ((Ok v)
+            (listbuilder-add! b v)
+            (go more))
            ((Err e) (Err e))))))))
 
 ;; ---------------------------------------------------------------------------
@@ -533,7 +530,8 @@
 (defun (choice ps)
   (fun (st)
     (def m (mark st))
-    (let go ((rest ps) (acc (failure-at st no-items)))
+    (let go ((rest ps)
+             (acc (failure-at st no-items)))
       (match rest
         (Nil (Err acc))
         ((Cons p more)
@@ -554,7 +552,9 @@
     (def m (mark st))
     (match (p st)
       ((Ok v) (Ok v))
-      ((Err e) (reset! st m) (Err e)))))
+      ((Err e)
+       (reset! st m)
+       (Err e)))))
 
 (: look-ahead (-> (Parser %a) (Parser %a)))
 (defun (look-ahead p)
@@ -601,9 +601,7 @@
          (else (Err (failure-at st items))))))))
 
 (: pposition (Parser Position))
-(def pposition
-  (fun (st)
-    (Ok (state-position st))))
+(def pposition (fun (st) (Ok (state-position st))))
 
 ;; ---------------------------------------------------------------------------
 ;; Characters and strings
@@ -618,7 +616,9 @@
       (else
        (def (Tuple c next) (string-cursor-ref+next (record-ref st text) (record-ref st pos)))
        (cond
-         ((pred c) (advance! st c next) (Ok c))
+         ((pred c)
+          (advance! st c next)
+          (Ok c))
          (else (Err (failure-at st items))))))))
 
 (: any-char-items ErrorItems)
@@ -662,7 +662,9 @@
         (let ()
           (def (Tuple c next) (string-cursor-ref+next (record-ref st text) (record-ref st pos)))
           (if (char-in? c s)
-              (let () (advance! st c next) (Ok c))
+              (let ()
+                (advance! st c next)
+                (Ok c))
               (Err (failure-at st items)))))))
 
 (: none-of (-> string (Parser char)))
@@ -675,7 +677,9 @@
           (def (Tuple c next) (string-cursor-ref+next (record-ref st text) (record-ref st pos)))
           (if (char-in? c s)
               (Err (failure-at st items))
-              (let () (advance! st c next) (Ok c)))))))
+              (let ()
+                (advance! st c next)
+                (Ok c)))))))
 
 ;; All or nothing: a half-matched literal leaves the cursor where it was, so a
 ;; choice between literals needs no attempt.
@@ -695,7 +699,9 @@
          (def (Tuple want wnext) (string-cursor-ref+next s sc))
          (def (Tuple got gnext) (string-cursor-ref+next text (record-ref st pos)))
          (cond
-           ((char=? want got) (advance! st got gnext) (go wnext))
+           ((char=? want got)
+            (advance! st got gnext)
+            (go wnext))
            (else
             (reset! st m)
             (Err (failure-at st items)))))))))
@@ -709,8 +715,7 @@
     (def start (record-ref st pos))
     (let go ((sc (string-cursor-start s)))
       (cond
-        ((string-cursor-end? s sc)
-         (Ok (substring text start (record-ref st pos))))
+        ((string-cursor-end? s sc) (Ok (substring text start (record-ref st pos))))
         ((at-end? st)
          (reset! st m)
          (Err (failure-at st items)))
@@ -718,7 +723,9 @@
          (def (Tuple want wnext) (string-cursor-ref+next s sc))
          (def (Tuple got gnext) (string-cursor-ref+next text (record-ref st pos)))
          (cond
-           ((char-ci=? want got) (advance! st got gnext) (go wnext))
+           ((char-ci=? want got)
+            (advance! st got gnext)
+            (go wnext))
            (else
             (reset! st m)
             (Err (failure-at st items)))))))))
@@ -803,10 +810,7 @@
           (Ok unit)
           (let ()
             (def (Tuple c next) (string-cursor-ref+next text (record-ref st pos)))
-            (if (or (char=? c #\space)
-                    (char=? c #\tab)
-                    (char=? c #\newline)
-                    (char=? c #\return))
+            (if (or (char=? c #\space) (char=? c #\tab) (char=? c #\newline) (char=? c #\return))
                 (let ()
                   (advance! st c next)
                   (go))
@@ -830,7 +834,9 @@
 (def pnewline
   (fun (st)
     (cond
-      ((skip-char! st #\return) (ignore (skip-char! st #\newline)) (Ok #\newline))
+      ((skip-char! st #\return)
+       (ignore (skip-char! st #\newline))
+       (Ok #\newline))
       ((skip-char! st #\newline) (Ok #\newline))
       (else (Err (failure-at st pnewline-items))))))
 
@@ -873,7 +879,9 @@
         ((Ok v)
          (cond
            ((moved? st m) (go (f v acc)))
-           (else (panic! "text parser-combinators: a parser under many succeeded without consuming input"))))
+           (else
+            (panic!
+             "text parser-combinators: a parser under many succeeded without consuming input"))))
         ((Err e)
          (cond
            ((moved? st m) (Err e))
@@ -888,8 +896,12 @@
       (match (p st)
         ((Ok v)
          (cond
-           ((moved? st m) (listbuilder-add! b v) (go))
-           (else (panic! "text parser-combinators: a parser under many succeeded without consuming input"))))
+           ((moved? st m)
+            (listbuilder-add! b v)
+            (go))
+           (else
+            (panic!
+             "text parser-combinators: a parser under many succeeded without consuming input"))))
         ((Err e)
          (cond
            ((moved? st m) (Err e))
@@ -921,7 +933,9 @@
            ((moved? st m) (Err e1))
            (else
             (match (p st)
-              ((Ok v) (listbuilder-add! b v) (go))
+              ((Ok v)
+               (listbuilder-add! b v)
+               (go))
               ((Err e2) (Err (error-merge e1 e2)))))))))))
 
 (: prepeat (-> int (Parser %a) (Parser (List %a))))
@@ -933,7 +947,9 @@
         ((>= i n) (Ok (listbuilder->list b)))
         (else
          (match (p st)
-           ((Ok v) (listbuilder-add! b v) (go (+ i 1)))
+           ((Ok v)
+            (listbuilder-add! b v)
+            (go (+ i 1)))
            ((Err e) (Err e))))))))
 
 (: sep-by1 (-> (Parser %a) (Parser %sep) (Parser (List %a))))
@@ -949,8 +965,7 @@
 ;; between the two.
 (: sep-end-by1 (-> (Parser %a) (Parser %sep) (Parser (List %a))))
 (defun (sep-end-by1 p sep)
-  (pleft (ppipe2 p (many (attempt (pright sep p))) (fun (x xs) (Cons x xs)))
-         (optional sep)))
+  (pleft (ppipe2 p (many (attempt (pright sep p))) (fun (x xs) (Cons x xs))) (optional sep)))
 
 (: sep-end-by (-> (Parser %a) (Parser %sep) (Parser (List %a))))
 (defun (sep-end-by p sep)
@@ -979,7 +994,9 @@
          (def m (mark st))
          (match (op st)
            ((Err e)
-            (cond ((moved? st m) (Err e)) (else (Ok acc))))
+            (cond
+              ((moved? st m) (Err e))
+              (else (Ok acc))))
            ((Ok f)
             (match (p st)
               ((Err e) (Err e))
@@ -990,7 +1007,9 @@
   (match ops-rev
     (Nil x0)
     ((Cons _ _)
-     (let go ((acc (list-head vals-rev)) (ops ops-rev) (vals (list-tail vals-rev)))
+     (let go ((acc (list-head vals-rev))
+              (ops ops-rev)
+              (vals (list-tail vals-rev)))
        (match ops
          (Nil acc)
          ((Cons f more)
@@ -1006,7 +1025,8 @@
     (match (p st)
       ((Err e) (Err e))
       ((Ok first)
-       (let collect ((ops Nil) (vals Nil))
+       (let collect ((ops Nil)
+                     (vals Nil))
          (def m (mark st))
          (match (op st)
            ((Err e)
@@ -1038,7 +1058,9 @@
         (let ()
           (def (Tuple c next) (string-cursor-ref+next text (record-ref st pos)))
           (if (ascii-digit? c)
-              (let () (advance! st c next) (go (+ n 1)))
+              (let ()
+                (advance! st c next)
+                (go (+ n 1)))
               n)))))
 
 (: pint-items ErrorItems)
@@ -1100,8 +1122,7 @@
 ;; values needs a cell to refer to before it is filled, which is what a
 ;; ParserRef is.
 
-(type
-  (: (ParserRef %a) (Record (: target (Parser %a) #:mutable))))
+(type (: (ParserRef %a) (Record (: target (Parser %a) #:mutable))))
 
 (: pforward (-> (ParserRef %a)))
 (defun (pforward)
@@ -1117,8 +1138,7 @@
 
 ;; Builds the parser on first use and keeps it, which is the other way to tie a
 ;; knot. The cell is filled once, so the thunk does not run again.
-(type
-  (: (LazyCell %a) (Record (: built (Option (Parser %a)) #:mutable))))
+(type (: (LazyCell %a) (Record (: built (Option (Parser %a)) #:mutable))))
 
 (: plazy (-> (-> (Parser %a)) (Parser %a)))
 (defun (plazy thunk)
@@ -1126,6 +1146,7 @@
   (fun (st)
     (match (record-ref cell built)
       ((Some p) (p st))
-      (None (def p (thunk))
-            (record-set! cell (built (Some p)))
-            (p st)))))
+      (None
+       (def p (thunk))
+       (record-set! cell (built (Some p)))
+       (p st)))))

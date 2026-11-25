@@ -9,7 +9,8 @@
 ;; cross nothing.
 (import (std maths) (std simd) "common.bjo")
 
-(type (: P (Record (: x long) (: y long))))
+(type (: P (Record (: x long)
+                   (: y long))))
 
 (: (-> P P long))
 (defun (area a b)
@@ -27,26 +28,27 @@
         (ys (vec->array {vecing (cast System.Double (.y p)) (:for p ps)}))
         (one (simd256-splat 1.0)))
   (: (-> (Array double) int Float64x4))
-  (defun (tile-vec a j) (simd256-load a j))
+  (defun (tile-vec a j)
+    (simd256-load a j))
   (loop (:for i (range 0 n))
         (:let xi (simd256-splat (array-ref xs i)))
         (:let yi (simd256-splat (array-ref ys i)))
         ;; The js after i that fill whole vectors, then the rest one by one.
         (:let whole (+ i 1 (* 4 (/ (- n i 1) 4))))
-        (:let vec-best
-              (loop (:for j (up-from (+ i 1) #:to whole #:by 4))
-                    (:let w (simd-add one (simd-abs (simd-sub (tile-vec xs j) xi))))
-                    (:let h (simd-add one (simd-abs (simd-sub (tile-vec ys j) yi))))
-                    (:acc m (folding (simd256-zero) (simd-max m (simd-mul w h))))
-                    => (cast System.Int64 (max-lane m))))
-        (:let tail-best
-              (fold #(max &2 (area (ref ps i) (ref ps &1))) 0L (range whole n)))
+        (:let vec-best (loop (:for j (up-from (+ i 1) #:to whole #:by 4))
+                             (:let w (simd-add one (simd-abs (simd-sub (tile-vec xs j) xi))))
+                             (:let h (simd-add one (simd-abs (simd-sub (tile-vec ys j) yi))))
+                             (:acc m (folding (simd256-zero) (simd-max m (simd-mul w h))))
+                         => (cast System.Int64 (max-lane m))))
+        (:let tail-best (fold #(max &2 (area (ref ps i) (ref ps &1))) 0L (range whole n)))
         (:acc best (folding 0L (max best (max vec-best tail-best))))
-        => best))
+    => best))
 
 ;; The sides of the loop, by their bounds. Side k runs from tile k to tile k + 1.
-(type (: Sides (Record (: x0 (Array long)) (: x1 (Array long))
-                       (: y0 (Array long)) (: y1 (Array long)))))
+(type (: Sides (Record (: x0 (Array long))
+                       (: x1 (Array long))
+                       (: y0 (Array long))
+                       (: y1 (Array long)))))
 
 (: (-> (Vec P) Sides))
 (defun (make-sides ps)
@@ -77,13 +79,15 @@
   (def Y0 (simd256-splat ry0))
   (def Y1 (simd256-splat ry1))
   (: (-> (Array long) int Int64x4))
-  (defun (at a k) (simd256-load a k))
+  (defun (at a k)
+    (simd256-load a k))
   (loop (:for k (up-from 0 #:to (array-length (.x0 sides)) #:by 4))
         (:let hit (simd-and (simd-and (simd-lt (at (.x0 sides) k) X1) (simd-gt (at (.x1 sides) k) X0))
-                            (simd-and (simd-lt (at (.y0 sides) k) Y1) (simd-gt (at (.y1 sides) k) Y0))))
+                            (simd-and (simd-lt (at (.y0 sides) k) Y1)
+                                      (simd-gt (at (.y1 sides) k) Y0))))
         (:acc any (folding #f (simd-any? hit)))
         (:finish any)
-        => any))
+    => any))
 
 ;; Whether the point (px + 1/2, py + 1/2) is inside the loop, by counting the
 ;; vertical sides to its right. Called once per rectangle that is not crossed,
@@ -94,10 +98,12 @@
   (loop (:for i (range 0 n))
         (:let a (ref ps i))
         (:let b (ref ps (% (+ i 1) n)))
-        (:when (and (= (.x a) (.x b)) (> (.x a) px)
-                    (<= (min (.y a) (.y b)) py) (> (max (.y a) (.y b)) py)))
+        (:when (and (= (.x a) (.x b))
+                    (> (.x a) px)
+                    (<= (min (.y a) (.y b)) py)
+                    (> (max (.y a) (.y b)) py)))
         (:acc crossings (summing 1))
-        => (= 1 (% crossings 2))))
+    => (= 1 (% crossings 2))))
 
 (: (-> (Vec P) long))
 (defun (part2 ps)
@@ -113,16 +119,21 @@
         (:let y0 (min (.y a) (.y b)))
         (:let y1 (max (.y a) (.y b)))
         (:let s (area a b))
-        (:acc best (folding 0L (if (and (> s best) (< x0 x1) (< y0 y1)
-                                        (not (crossed? sides x0 x1 y0 y1))
-                                        (inside? ps x0 y0))
-                                   s
-                                   best)))
-        => best))
+        (:acc best (folding 0L
+                            (if (and (> s best)
+                                     (< x0 x1)
+                                     (< y0 y1)
+                                     (not (crossed? sides x0 x1 y0 y1))
+                                     (inside? ps x0 y0))
+                                s
+                                best)))
+    => best))
 
 (defun (main args)
-  (def ps {vecing (let ((v (vec-map parse-long (string-split l ",")))) (P (x (ref v 0)) (y (ref v 1))))
-                  (:for l (input-lines args))})
+  (def ps
+    {vecing (let ((v (vec-map parse-long (string-split l ","))))
+              (P (x (ref v 0)) (y (ref v 1))))
+            (:for l (input-lines args))})
   (println (part1 ps))
   (println (part2 ps))
   0)

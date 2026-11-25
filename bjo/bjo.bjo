@@ -100,7 +100,6 @@
   ;; is. See `root`.
   (clr-base-dir  (: System.AppContext.BaseDirectory #:get)))
 
-
 ;; ---------------------------------------------------------------------------
 ;; Starting something, and waiting for it
 ;; ---------------------------------------------------------------------------
@@ -130,7 +129,8 @@
   (def settings (ProcessStartInfo.))
   (settings-program! settings program)
   (settings-use-shell! settings #f)
-  (when to-stderr? (settings-pipe-out! settings #t))
+  (when to-stderr?
+    (settings-pipe-out! settings #t))
   (loop (:for a arguments)
         (:do (ignore (settings-argument settings a))))
   (match (process-start settings)
@@ -141,10 +141,10 @@
     ((Ok child)
      ;; Only standard output is a pipe, so reading it to the end cannot wait
      ;; on a child that waits on another pipe.
-     (when to-stderr? (copy-to-stderr! (process-out child)))
+     (when to-stderr?
+       (copy-to-stderr! (process-out child)))
      (process-wait child)
      (process-code child))))
-
 
 ;; ---------------------------------------------------------------------------
 ;; Timestamps
@@ -155,11 +155,13 @@
 ;; and does not force a rebuild that would fail for the same reason.
 (: (-> string long))
 (defun (mtime path)
-  (if (file-exists? path) (clr-ticks (clr-mtime path)) 0L))
+  (if (file-exists? path)
+      (clr-ticks (clr-mtime path))
+      0L))
 
 (: (-> string string bool))
-(defun (newer? a b) (> (mtime a) (mtime b)))
-
+(defun (newer? a b)
+  (> (mtime a) (mtime b)))
 
 ;; ---------------------------------------------------------------------------
 ;; The installation
@@ -186,7 +188,6 @@
     ((Some path) path)
     (None (path-combine root "bin" "compiler" "Bjolang.dll"))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; The compiler binary
 ;; ---------------------------------------------------------------------------
@@ -200,7 +201,6 @@
      (println "bjo: there is no compiler built here yet. Run 'bjo rebjo'.")
      #f)))
 
-
 ;; ---------------------------------------------------------------------------
 ;; The build record
 ;; ---------------------------------------------------------------------------
@@ -208,67 +208,67 @@
 ;; What a build wrote down about itself. `compiler`, `source` and `dep` lines
 ;; are read into one list: they are all files the artefact must be newer than,
 ;; and nothing here has a reason to tell them apart.
-(type
-  (: BuildRecord (Record (: mode string)
-                         (: output string)
-                         (: inputs (List string))
-                         ;; The compiler that built it. Its timestamp is also
-                         ;; in `inputs`; this is compared as a path, because a
-                         ;; different compiler can be older than the artefact,
-                         ;; and the timestamp check would then call the
-                         ;; artefact current.
-                         (: compiler string)
-                         ;; The .NET shared frameworks the file's package
-                         ;; declared when it was built. Not a file, so not an
-                         ;; input: a declaration that is *removed* deletes the
-                         ;; declarations file, and a file that is not there is
-                         ;; newer than nothing.
-                         (: frameworks (List string))
-                         ;; The declarations file this was built against, or ""
-                         ;; where there was none. It is an input as well — a
-                         ;; rewrite is a change the timestamps can see — and
-                         ;; this is for the change they cannot: the file
-                         ;; appearing, or going away with the last declaration
-                         ;; in the whole graph.
-                         (: declaration-file string)
-                         ;; The `--nuget` directory it was built with, or "".
-                         ;; Compared for the same reason as `declaration-file`:
-                         ;; packages removed from the manifest leave no file
-                         ;; that a timestamp could show.
-                         (: nuget string)
-                         ;; For a program: its runtime settings, as
-                         ;; `name=value`, sorted. Compared for the same reason
-                         ;; as `nuget`: they are in the manifest, and a change
-                         ;; to them changes no file that the build read.
-                         (: runtime (List string))
-                         ;; For a program built with `--aot`: its native
-                         ;; executable. "" otherwise.
-                         (: aot string)
-                         ;; With `--aot-cpu`: the CPU it was built for. ""
-                         ;; otherwise.
-                         (: aot-cpu string)
-                         ;; With `--aot-keep-packages`: "yes". "" otherwise.
-                         (: aot-keep-packages string)
-                         ;; For a program: what its resolver loads, as the
-                         ;; `link` and `native` lines name them. What
-                         ;; `bjo publish` copies.
-                         (: links (List (Tuple string string)))
-                         (: natives (List (Tuple string string)))
-                         ;; The artefact's last write when the record was
-                         ;; written, 0 where it does not say. A record whose
-                         ;; artefact was written since is another build's.
-                         (: written long)
-                         ;; For a library, the digest of what an importer is
-                         ;; compiled against, or "".
-                         (: interface string)
-                         ;; Each linked module's digest as this build saw it, as
-                         ;; `(digest . path)`.
-                         (: interface-of (List (Tuple string string)))
-                         ;; The `source` lines alone.
-                         (: sources (List string)))))
+(type (: BuildRecord (Record (: mode string)
+                             (: output string)
+                             (: inputs (List string))
+                             ;; The compiler that built it. Its timestamp is also
+                             ;; in `inputs`; this is compared as a path, because a
+                             ;; different compiler can be older than the artefact,
+                             ;; and the timestamp check would then call the
+                             ;; artefact current.
+                             (: compiler string)
+                             ;; The .NET shared frameworks the file's package
+                             ;; declared when it was built. Not a file, so not an
+                             ;; input: a declaration that is *removed* deletes the
+                             ;; declarations file, and a file that is not there is
+                             ;; newer than nothing.
+                             (: frameworks (List string))
+                             ;; The declarations file this was built against, or ""
+                             ;; where there was none. It is an input as well — a
+                             ;; rewrite is a change the timestamps can see — and
+                             ;; this is for the change they cannot: the file
+                             ;; appearing, or going away with the last declaration
+                             ;; in the whole graph.
+                             (: declaration-file string)
+                             ;; The `--nuget` directory it was built with, or "".
+                             ;; Compared for the same reason as `declaration-file`:
+                             ;; packages removed from the manifest leave no file
+                             ;; that a timestamp could show.
+                             (: nuget string)
+                             ;; For a program: its runtime settings, as
+                             ;; `name=value`, sorted. Compared for the same reason
+                             ;; as `nuget`: they are in the manifest, and a change
+                             ;; to them changes no file that the build read.
+                             (: runtime (List string))
+                             ;; For a program built with `--aot`: its native
+                             ;; executable. "" otherwise.
+                             (: aot string)
+                             ;; With `--aot-cpu`: the CPU it was built for. ""
+                             ;; otherwise.
+                             (: aot-cpu string)
+                             ;; With `--aot-keep-packages`: "yes". "" otherwise.
+                             (: aot-keep-packages string)
+                             ;; For a program: what its resolver loads, as the
+                             ;; `link` and `native` lines name them. What
+                             ;; `bjo publish` copies.
+                             (: links (List (Tuple string string)))
+                             (: natives (List (Tuple string string)))
+                             ;; The artefact's last write when the record was
+                             ;; written, 0 where it does not say. A record whose
+                             ;; artefact was written since is another build's.
+                             (: written long)
+                             ;; For a library, the digest of what an importer is
+                             ;; compiled against, or "".
+                             (: interface string)
+                             ;; Each linked module's digest as this build saw it, as
+                             ;; `(digest . path)`.
+                             (: interface-of (List (Tuple string string)))
+                             ;; The `source` lines alone.
+                             (: sources (List string)))))
 
 (: (-> string string))
-(defun (record-file file) (clr-change-extension file ".bjobuild"))
+(defun (record-file file)
+  (clr-change-extension file ".bjobuild"))
 
 ;; A line is `key value`, and the value may contain spaces — a path is allowed
 ;; them — so it is everything after the first one rather than a field of a
@@ -307,34 +307,65 @@
 (defun (read-record file)
   (with-return ret
     (def path (record-file file))
-    (unless (file-exists? path) (ret None))
+    (unless (file-exists? path)
+      (ret None))
 
     (loop (:for line (string-split (file-read-text path) "\n"))
           ;; A line with no key at all is not one. `:when-let` skips it, and an
           ;; accumulator that is not stepped keeps what it had.
           (:when-let (Some (Tuple key value)) (split-line (string-trim line)))
-          (:acc mode (folding "" (if (= key "mode") value mode)))
-          (:acc artefact (folding "" (if (= key "output") value artefact)))
-          (:acc compiler (folding "" (if (= key "compiler") value compiler)))
+          (:acc mode (folding ""
+                              (if (= key "mode")
+                                  value
+                                  mode)))
+          (:acc artefact (folding ""
+                                  (if (= key "output")
+                                      value
+                                      artefact)))
+          (:acc compiler (folding ""
+                                  (if (= key "compiler")
+                                      value
+                                      compiler)))
           ;; A key this `bjo` does not know is a record from a later one, and is
           ;; accumulated nowhere: the three fields here are what a decision is
           ;; made of, and they are all present.
           (:acc inputs (listing value) #:when (input-key? key))
           (:acc frameworks (listing value) #:when (= key "framework"))
-          (:acc declarations (folding "" (if (= key "frameworks") value declarations)))
-          (:acc nuget (folding "" (if (= key "nuget") value nuget)))
+          (:acc declarations (folding ""
+                                      (if (= key "frameworks")
+                                          value
+                                          declarations)))
+          (:acc nuget (folding ""
+                               (if (= key "nuget")
+                                   value
+                                   nuget)))
           (:acc runtime (listing value) #:when (= key "runtime"))
-          (:acc aot (folding "" (if (= key "aot") value aot)))
-          (:acc aot-cpu (folding "" (if (= key "aot-cpu") value aot-cpu)))
-          (:acc aot-keep-packages (folding "" (if (= key "aot-keep-packages") value aot-keep-packages)))
+          (:acc aot (folding ""
+                             (if (= key "aot")
+                                 value
+                                 aot)))
+          (:acc aot-cpu (folding ""
+                                 (if (= key "aot-cpu")
+                                     value
+                                     aot-cpu)))
+          (:acc aot-keep-packages (folding ""
+                                           (if (= key "aot-keep-packages")
+                                               value
+                                               aot-keep-packages)))
           ;; `link <name> <path>` and `native <key> <path>`: the value splits
           ;; at its first space the way a line does, and a path may hold more.
           (:acc links (listing (pair-of value)) #:when (= key "link"))
           (:acc natives (listing (pair-of value)) #:when (= key "native"))
-          (:acc written (folding 0L (if (= key "written")
-                                        (match (string->long value) ((Some n) n) (None 0L))
-                                        written)))
-          (:acc interface (folding "" (if (= key "interface") value interface)))
+          (:acc written (folding 0L
+                                 (if (= key "written")
+                                     (match (string->long value)
+                                       ((Some n) n)
+                                       (None 0L))
+                                     written)))
+          (:acc interface (folding ""
+                                   (if (= key "interface")
+                                       value
+                                       interface)))
           (:acc interface-of (listing (pair-of value)) #:when (= key "interface-of"))
           (:acc sources (listing value) #:when (= key "source"))
       => (if (= artefact "")
@@ -399,8 +430,14 @@
                          (: aot-trim bool))))
 
 (: Against)
-(def nothing-against (Against (roots None) (frameworks None) (nuget None) (runtime Nil) (aot #f) (aot-cpu "")
-                             (aot-trim #t)))
+(def nothing-against
+  (Against (roots None)
+           (frameworks None)
+           (nuget None)
+           (runtime Nil)
+           (aot #f)
+           (aot-cpu "")
+           (aot-trim #t)))
 
 (: (-> Prepared Against))
 (defun (prepared-against ready)
@@ -431,8 +468,12 @@
 (defun (aot-flags a)
   (if (not (record-ref a aot))
       Nil
-      (list-append (if (= (record-ref a aot-cpu) "") '("--aot") (list "--aot" "--aot-cpu" (record-ref a aot-cpu)))
-                   (if (record-ref a aot-trim) '() '("--aot-keep-packages")))))
+      (list-append (if (= (record-ref a aot-cpu) "")
+                       '("--aot")
+                       (list "--aot" "--aot-cpu" (record-ref a aot-cpu)))
+                   (if (record-ref a aot-trim)
+                       '()
+                       '("--aot-keep-packages")))))
 
 ;; The compiler records both files as inputs of what it builds, so a build made
 ;; against other packages — or against another set of declarations — is stale by
@@ -453,7 +494,8 @@
 ;; dependency fetched into `.bjo/pkg` lives *under* the root project.
 (: (-> Against string (List string)))
 (defun (declared-for against file)
-  (def (Some path) (get against .frameworks) :leave-with Nil)
+  (def (Some path) (get against .frameworks)
+    :leave-with Nil)
   (cond
     ((not (file-exists? path)) Nil)
     (:def full (path-absolute file))
@@ -464,23 +506,23 @@
     (:def owner
           (loop (:for line lines)
                 (:when-let (Some (Tuple dir name)) (split-tab (string-trim line)))
-                (:acc out (folding "" (if (and (string-starts-with? full (str dir "/"))
-                                               (> (string-length dir) (string-length out)))
-                                          dir  
-                                          out)))))
+                (:acc out (folding ""
+                                   (if (and (string-starts-with? full (str dir "/"))
+                                            (> (string-length dir) (string-length out)))
+                                       dir
+                                       out)))))
     ((= owner "") Nil)
-    (else (list-sort
-           (loop (:for line lines)
-                 (:when-let (Some (Tuple dir name)) (split-tab (string-trim line)))
-                 (:acc out (listing name) #:when (= dir owner)))))))
+    (else
+     (list-sort (loop (:for line lines)
+                      (:when-let (Some (Tuple dir name)) (split-tab (string-trim line)))
+                      (:acc out (listing name) #:when (= dir owner)))))))
 
 ;; A frameworks-file line: a directory, a tab, a framework name.
 (: (-> string (Option (Tuple string string))))
 (defun (split-tab line)
   (def (Some tab) (string-find #(char=? & #\tab) line) :propagate)
   (Some (Tuple (substring line (string-cursor-start line) tab)
-               (substring line (string-cursor-next line tab)
-                          (string-cursor-end line)))))
+               (substring line (string-cursor-next line tab) (string-cursor-end line)))))
 
 ;; Is there anything to do before the artefact can be used?
 (: (-> string string Against bool))
@@ -489,7 +531,8 @@
   ;; the artefact was built from, so the only safe answer is to build it. `#f`
   ;; here makes `ensure-built` serve a record that is not there, and fail with
   ;; an exit code and no message.
-  (def (Some rec) (read-record file) :leave-with #t)
+  (def (Some rec) (read-record file)
+    :leave-with #t)
   (or (built-otherwise? rec wanted against file)
       (any? #(newer? & (record-ref rec output)) (record-ref rec inputs))))
 
@@ -537,17 +580,16 @@
       (and (string-ends-with? artefact ".exe")
            (record-ref against aot)
            (not (= (= (record-ref rec aot-keep-packages) "yes") (not (record-ref against aot-trim)))))
-      (and (record-ref against aot)
-           (not (file-exists? (record-ref rec aot))))))
+      (and (record-ref against aot) (not (file-exists? (record-ref rec aot))))))
 
 ;; A linked module whose own record vouches for the interface `entry` says the
 ;; build saw: the module and the sources it was built from. Nothing otherwise.
 (: (-> (Tuple string string) (List string)))
 (defun (interface-kept entry)
   (def (Tuple digest dll) entry)
-  (def (Some dep) (read-record dll) :leave-with Nil)
-  (if (and (= (record-ref dep written) (mtime dll))
-           (= (record-ref dep interface) digest))
+  (def (Some dep) (read-record dll)
+    :leave-with Nil)
+  (if (and (= (record-ref dep written) (mtime dll)) (= (record-ref dep interface) digest))
       (cons dll (record-ref dep sources))
       Nil))
 
@@ -560,7 +602,8 @@
 ;;   linked modules compiled in, so a changed body is a changed executable.
 (: (-> string string Against bool))
 (defun (current-by-interface? file wanted against)
-  (def* ((Some rec) (read-record file) :leave-with #f)
+  (def* ((Some rec) (read-record file)
+          :leave-with #f)
         (artefact (record-ref rec output)))
   (def excused
     (loop (:for entry (record-ref rec interface-of))
@@ -573,12 +616,16 @@
        (all? (fun (input) (or (not (newer? input artefact)) (any? #(= & input) excused)))
              (record-ref rec inputs))))
 
-
 (: compile (-> string bool bool Against int) #:sync)
 (defun (compile file debug? lib? roots)
-  (def flags (list-append (if lib? (Cons "--lib" Nil) Nil)
-                          (list-append (if debug? (Cons "-d" Nil) Nil)
-                                       (against-flags roots))))
+  (def flags
+    (list-append (if lib?
+                     (Cons "--lib" Nil)
+                     Nil)
+                 (list-append (if debug?
+                                  (Cons "-d" Nil)
+                                  Nil)
+                              (against-flags roots))))
   (exec "dotnet" (list->vec (Cons compiler-dll (list-append flags (Cons file Nil))))))
 
 ;; Modules and everything they import, built in parallel, each as soon as what
@@ -587,8 +634,13 @@
 ;; it is compiled as a program.
 (: compile-graph (-> (List string) bool Against int) #:sync)
 (defun (compile-graph files deps-only? roots)
-  (def flags (list-append (Cons "--build-graph" (Cons "--quiet" (if deps-only? (Cons "--deps-only" Nil) Nil)))
-                          (against-flags roots)))
+  (def flags
+    (list-append (Cons "--build-graph"
+                       (Cons "--quiet"
+                             (if deps-only?
+                                 (Cons "--deps-only" Nil)
+                                 Nil)))
+                 (against-flags roots)))
   (exec "dotnet" (list->vec (Cons compiler-dll (list-append flags files)))))
 
 ;; Every module of a library, in one compiler process, one after another.
@@ -598,9 +650,12 @@
 ;; library goes through: a graph build's workers build without `-d`.
 (: compile-batch (-> (List string) bool Against int) #:sync)
 (defun (compile-batch files debug? roots)
-  (def flags (list-append (Cons "--batch" (Cons "--if-stale" Nil))
-                          (list-append (if debug? (Cons "-d" Nil) Nil)
-                                       (against-flags roots))))
+  (def flags
+    (list-append (Cons "--batch" (Cons "--if-stale" Nil))
+                 (list-append (if debug?
+                                  (Cons "-d" Nil)
+                                  Nil)
+                              (against-flags roots))))
   (exec "dotnet" (list->vec (cons compiler-dll (list-append flags files)))))
 
 ;; The artefact as it already stands, for a file that needs no building.
@@ -623,7 +678,8 @@
 ;; after another, which is what the graph saves.
 (: (-> string bool))
 (defun (imports-first? file)
-  (def* ((Some rec) (read-record file) :leave-with #t)
+  (def* ((Some rec) (read-record file)
+          :leave-with #t)
         (artefact (record-ref rec output))
         (self (path-absolute file)))
   (or (not (file-exists? artefact))
@@ -640,7 +696,8 @@
 (: ensure-built (-> string bool bool bool Against (Result int (Tuple BuildRecord bool))) #:sync)
 (defun (ensure-built file debug? lib? force? roots)
   (with-return ret
-    (unless (have-compiler?) (ret (Err 1)))
+    (unless (have-compiler?)
+      (ret (Err 1)))
 
     ;; A debug build is never served from the record: the dumps `-d` asks for
     ;; are produced by compiling, so a cached one has nothing to show.
@@ -650,22 +707,24 @@
 
     (when (imports-first? file)
       (let ((imports (compile-graph (Cons file Nil) #t roots)))
-        (unless (= imports 0) (ret (Err imports))))
+        (unless (= imports 0)
+          (ret (Err imports))))
       ;; What they changed may be nothing the entry was compiled against.
       (unless (or force? debug? (not (current-by-interface? file wanted roots)))
         (ret (record-as-built file))))
 
     (def status (compile file debug? lib? roots))
-    (unless (= status 0) (ret (Err status)))
+    (unless (= status 0)
+      (ret (Err status)))
 
     ;; The compiler said it succeeded and left no record. It writes one after
     ;; every build that did, so this is a compiler too old for this `bjo`.
     (def (Some built) (read-record file)
-      :leave (None (println #"bjo: ${file} compiled, but left no build record.")
-                   (Err 1)))
+      :leave (None
+              (println #"bjo: ${file} compiled, but left no build record.")
+              (Err 1)))
 
     (Ok (Tuple built #t))))
-
 
 ;; ---------------------------------------------------------------------------
 ;; The commands
@@ -698,8 +757,7 @@
      (println #"bjo: ${file} has no main, so it builds a library: ${(record-ref rec output)}")
      (println "bjo: there is nothing to run. Use 'bjo build' for a library.")
      1)
-    ((Ok (Tuple rec _))
-     (run-built rec program-args))))
+    ((Ok (Tuple rec _)) (run-built rec program-args))))
 
 (: cmd-build (-> string bool bool bool Against int) #:sync)
 (defun (cmd-build file debug? lib? force? roots)
@@ -727,9 +785,9 @@
          ((Cons _ (Cons _ _)) (Cons "--batch" Nil))
          (_ Nil)))
      (exec "dotnet"
-           (list->vec #fr(cons compiler-dll "--check"
-                               (list-append (against-flags roots)
-                                            (list-append batch files))))))))
+           (list->vec #fr(cons compiler-dll
+                               "--check"
+                               (list-append (against-flags roots) (list-append batch files))))))))
 
 ;; `bjo test`: builds each test file and runs it, with `filters` as its
 ;; arguments, so that a test file ending in `(run-tests)` runs the tests whose
@@ -751,20 +809,22 @@
        (if named?
            (Some (fail #"bjo test: ${file} has no main. End a test file with (run-tests)."))
            None))
-      ((Ok (Tuple rec _))
-       (Some (exec "dotnet" (list->vec (Cons (record-ref rec output) filters)))))))
+      ((Ok (Tuple rec _)) (Some (exec "dotnet" (list->vec (Cons (record-ref rec output) filters)))))))
   (def statuses
     (loop (:for file files)
           (:let status (destructure-roots file))
           (:when-let (Some code) status)
-          (:do (unless (= code 0) (println #"bjo test: ${file} failed.")))
+          (:do (unless (= code 0)
+                 (println #"bjo test: ${file} failed.")))
           (:acc out (listing code))))
   (def failed (length (list-filter #(not (= & 0)) statuses)))
   (when (> (length statuses) 1)
     (println (if (= failed 0)
                  #"bjo test: ${(length statuses)} files, all passed."
                  #"bjo test: ${failed} of ${(length statuses)} files failed.")))
-  (if (= failed 0) 0 1))
+  (if (= failed 0)
+      0
+      1))
 
 ;; `bjo task`: the tasks of tasks.bjo, in the project's root, or here outside
 ;; a project. See `task.bjo`.
@@ -779,14 +839,19 @@
 (: cmd-task (-> (List string) bool bool bool int) #:sync)
 (defun (cmd-task words debug? force? locked?)
   (with-return ret
-    (def dir (match (find-project-dir (current-directory))
-               ((Some d) d)
-               (None (current-directory))))
+    (def dir
+      (match (find-project-dir (current-directory))
+        ((Some d) d)
+        (None (current-directory))))
     (def file (path-combine dir tasks-file-name))
     (unless (file-exists? file)
-      (ret (fail #"bjo task: there is no ${tasks-file-name} in ${dir}. Write one: each function it exports is a task.")))
-    (def (Ok roots) (roots-near dir locked?) :leave ((Err why) (fail why)))
-    (def (Ok (Tuple built _)) (ensure-built file debug? #t force? roots) :leave ((Err status) status))
+      (ret
+       (fail
+        #"bjo task: there is no ${tasks-file-name} in ${dir}. Write one: each function it exports is a task.")))
+    (def (Ok roots) (roots-near dir locked?)
+      :leave ((Err why) (fail why)))
+    (def (Ok (Tuple built _)) (ensure-built file debug? #t force? roots)
+      :leave ((Err status) status))
     (def (Ok tasks) (read-tasks file (record-ref built output))
       :leave ((Err why) (fail #"bjo task: ${why}")))
     (cond
@@ -797,7 +862,8 @@
       (else
        (def entry (path-combine dir ".bjo" "tasks" "main.bjo"))
        (write-if-changed! entry (task-entry-source tasks "../../tasks.bjo"))
-       (def (Ok (Tuple rec _)) (ensure-built entry debug? #f force? roots) :leave ((Err status) status))
+       (def (Ok (Tuple rec _)) (ensure-built entry debug? #f force? roots)
+         :leave ((Err status) status))
        ;; A task runs in the directory of tasks.bjo, wherever bjo task is
        ;; run from, so its relative paths are the project's.
        (set-current-directory! dir)
@@ -810,15 +876,10 @@
 ;; The entry point that imports a project's sz.bjo, at .bjo/sz/main.bjo.
 (: string)
 (def sz-project-entry
-  (string-join [";; Written by bjo sz from sz.bjo. Do not edit: it is written again."
-                ""
-                "(import (std prelude))"
-                "(import (samizdat cli))"
-                "(import (only \"../../sz.bjo\" configure))"
-                ""
-                "(defun (main args)"
-                "  (sz-main args configure))"
-                ""]
+  (string-join [";; Written by bjo sz from sz.bjo. Do not edit: it is written again." ""
+                "(import (std prelude))" "(import (samizdat cli))"
+                "(import (only \"../../sz.bjo\" configure))" "" "(defun (main args)"
+                "  (sz-main args configure))" ""]
                "\n"))
 
 ;; `bjo sz`: the samizdat command line of `(samizdat cli)`.
@@ -835,19 +896,23 @@
 ;;   only the program's output, also on the run that builds it.
 (: cmd-sz (-> (List string) bool bool bool int) #:sync)
 (defun (cmd-sz words debug? force? locked?)
-  (def dir (match (find-project-dir (current-directory))
-             ((Some d) d)
-             (None (current-directory))))
+  (def dir
+    (match (find-project-dir (current-directory))
+      ((Some d) d)
+      (None (current-directory))))
   (def own? (file-exists? (path-combine dir sz-file-name)))
-  (def (Ok roots) (if own? (roots-near dir locked?) (Ok nothing-against))
+  (def (Ok roots) (if own?
+                      (roots-near dir locked?)
+                      (Ok nothing-against))
     :leave ((Err why) (fail why)))
-  (def entry (if own?
-                 (path-combine dir ".bjo" "sz" "main.bjo")
-                 (path-combine root "bjo" "sz" "main.bjo")))
-  (when own? (write-if-changed! entry sz-project-entry))
-  (def (Ok (Tuple rec _))
-    (parameterize ((child-out-to-stderr #t))
-      (ensure-built entry debug? #f force? roots))
+  (def entry
+    (if own?
+        (path-combine dir ".bjo" "sz" "main.bjo")
+        (path-combine root "bjo" "sz" "main.bjo")))
+  (when own?
+    (write-if-changed! entry sz-project-entry))
+  (def (Ok (Tuple rec _)) (parameterize ((child-out-to-stderr #t))
+                            (ensure-built entry debug? #f force? roots))
     :leave ((Err status) status))
   (run-built rec words))
 
@@ -879,9 +944,7 @@
   (def flags (against-flags roots))
   (if (not (have-compiler?))
       1
-      (exec "dotnet" (list->vec (Cons compiler-dll
-                                      (list-append flags (Cons "--repl" Nil)))))))
-
+      (exec "dotnet" (list->vec (Cons compiler-dll (list-append flags (Cons "--repl" Nil)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Projects
@@ -890,20 +953,19 @@
 ;; The flags a command was given, and what was left after them. Declared here
 ;; rather than beside the parser below it, because the project commands take
 ;; one and a signature cannot name a type that has not been declared yet.
-(type
-  (: Cmdline (Record (: debug bool)
-                     (: force bool)
-                     (: lib bool)
-                     (: locked bool)
-                     ;; `-o DIR`: where `publish` writes. Only `publish` takes it.
-                     (: output (Option string))
-                     ;; `--whole-stdlib`: `publish` copies all of the standard
-                     ;; library, sources and documentation included.
-                     (: whole-stdlib bool)
-                     ;; `--android`: `publish` makes an Android app. See
-                     ;; `android.bjo`.
-                     (: android bool)
-                     (: rest (List string)))))
+(type (: Cmdline (Record (: debug bool)
+                         (: force bool)
+                         (: lib bool)
+                         (: locked bool)
+                         ;; `-o DIR`: where `publish` writes. Only `publish` takes it.
+                         (: output (Option string))
+                         ;; `--whole-stdlib`: `publish` copies all of the standard
+                         ;; library, sources and documentation included.
+                         (: whole-stdlib bool)
+                         ;; `--android`: `publish` makes an Android app. See
+                         ;; `android.bjo`.
+                         (: android bool)
+                         (: rest (List string)))))
 
 ;; The directory a file sits in, for the walk upward that finds a project.
 (: (-> string string))
@@ -927,8 +989,9 @@
 (defun (project-here command)
   (def (Ok (Some project)) (project-around (current-directory))
     :leave ((Ok None)
-            (Err (str #"bjo ${command}: this is not a project — there is no ${manifest-name} "
-                      "here or in any directory above. Name a file, or make a project with 'bjo init'.")))
+            (Err (str
+                  #"bjo ${command}: this is not a project — there is no ${manifest-name} "
+                  "here or in any directory above. Name a file, or make a project with 'bjo init'.")))
            ((Err why) (Err why)))
   (Ok project))
 
@@ -969,7 +1032,10 @@
       (ret (build-library project line roots say?)))
 
     (match (ensure-built (project-entry project)
-                         (record-ref line debug) #f (record-ref line force) roots)
+                         (record-ref line debug)
+                         #f
+                         (record-ref line force)
+                         roots)
       ((Err status) (Err status))
       ((Ok (Tuple rec built?))
        (when say?
@@ -987,15 +1053,21 @@
     (when (empty? sources)
       (ret (Err (fail #"bjo build: there are no modules under ${(project-src project)}."))))
 
-    (def status (if (record-ref line debug)
-                    (compile-batch sources #t roots)
-                    (compile-graph sources #f roots)))
-    (unless (= status 0) (ret (Err status)))
+    (def status
+      (if (record-ref line debug)
+          (compile-batch sources #t roots)
+          (compile-graph sources #f roots)))
+    (unless (= status 0)
+      (ret (Err status)))
 
     (when say?
       (def n (length sources))
-      (println (str (package-name-of project) " is a library: "
-                    (int->string n) (if (= n 1) " module" " modules")
+      (println (str (package-name-of project)
+                    " is a library: "
+                    (int->string n)
+                    (if (= n 1)
+                        " module"
+                        " modules")
                     " under src/, all current.")))
     (Ok None)))
 
@@ -1010,7 +1082,9 @@
 (defun (run-project project line arguments)
   (with-return ret
     (unless (project-has-entry? project)
-      (ret (fail (str "bjo run: " (package-name-of project) " is a library — there is no "
+      (ret (fail (str "bjo run: "
+                      (package-name-of project)
+                      " is a library — there is no "
                       (record-ref (project-package project) entry)
                       " to run. 'bjo build' builds it."))))
 
@@ -1021,7 +1095,8 @@
       ((Ok (Some rec))
        (def out (record-ref rec output))
        (if (string-ends-with? out ".dll")
-           (fail (str "bjo run: " (project-entry project) " has no main, so it builds a library: " out))
+           (fail
+            (str "bjo run: " (project-entry project) " has no main, so it builds a library: " out))
            (run-built rec arguments))))))
 
 ;; `bjo check` with no file, inside a project: everything the project holds.
@@ -1031,14 +1106,13 @@
     (def (Ok ready) (prepare project (record-ref line locked))
       :leave ((Err why) (fail why)))
     (def sources (sources-under (project-src project)))
-    (def files (if (and (project-has-entry? project)
-                        (not (any? #(= & (project-entry project)) sources)))
-                   (Cons (project-entry project) sources)
-                   sources))
+    (def files
+      (if (and (project-has-entry? project) (not (any? #(= & (project-entry project)) sources)))
+          (Cons (project-entry project) sources)
+          sources))
     (when (empty? files)
       (ret (fail #"bjo check: there are no modules under ${(project-src project)}.")))
     (cmd-check files (prepared-against ready))))
-
 
 ;; ---------------------------------------------------------------------------
 ;; Publishing
@@ -1079,7 +1153,9 @@
 (defun (publish-built rec packages line out)
   (def program (record-ref rec output))
   (if (string-ends-with? program ".dll")
-      (fail (str "bjo publish: " program " has no main, so it is a library. Only a program can be published."))
+      (fail (str "bjo publish: "
+                 program
+                 " has no main, so it is a library. Only a program can be published."))
       (match (publish (Publication (program program)
                                    (native-program (record-ref rec aot))
                                    (links (record-ref rec links))
@@ -1102,7 +1178,8 @@
             ;; builds stay IL, so that a rebuild after an edit runs no crossgen2.
             (def status (exec "dotnet" (list->vec (list compiler-dll "--precompile-published" dir))))
             (unless (= status 0)
-              (println #"bjo publish: precompiling the published modules failed (exit code ${(int->string status)}). They are left as IL."))
+              (println
+               #"bjo publish: precompiling the published modules failed (exit code ${(int->string status)}). They are left as IL."))
             (println #"Published ${program} to ${dir}: ${n} files.")
             (println #"Run it with: dotnet ${(path-combine dir name)}"))
            (else
@@ -1115,11 +1192,18 @@
 (defun (publish-project project line)
   (with-return ret
     (unless (project-has-entry? project)
-      (ret (fail (str "bjo publish: " (package-name-of project) " is a library — there is no "
-                      (record-ref (project-package project) entry) " to publish."))))
+      (ret (fail (str "bjo publish: "
+                      (package-name-of project)
+                      " is a library — there is no "
+                      (record-ref (project-package project) entry)
+                      " to publish."))))
     (def (Ok ready) (prepare project (record-ref line locked))
       :leave ((Err why) (fail why)))
-    (match (ensure-built (project-entry project) #f #f (record-ref line force) (prepared-against ready))
+    (match (ensure-built (project-entry project)
+                         #f
+                         #f
+                         (record-ref line force)
+                         (prepared-against ready))
       ((Err status) status)
       ((Ok (Tuple rec _))
        (publish-built rec
@@ -1144,13 +1228,16 @@
          (match (prepare project (record-ref line locked))
            ((Ok ready) (Ok (Some (Tuple project ready))))
            ((Err why) (Err why))))))
-    (def (Ok prepared) context :leave ((Err why) (fail why)))
-    (def roots (match prepared
-                 ((Some (Tuple _ ready)) (prepared-against ready))
-                 (None nothing-against)))
-    (def packages (match prepared
-                    ((Some (Tuple project ready)) (published-packages project ready))
-                    (None Nil)))
+    (def (Ok prepared) context
+      :leave ((Err why) (fail why)))
+    (def roots
+      (match prepared
+        ((Some (Tuple _ ready)) (prepared-against ready))
+        (None nothing-against)))
+    (def packages
+      (match prepared
+        ((Some (Tuple project ready)) (published-packages project ready))
+        (None Nil)))
     (match (ensure-built file #f #f (record-ref line force) roots)
       ((Err status) status)
       ((Ok (Tuple rec _))
@@ -1172,13 +1259,23 @@
   (with-return ret
     (def package (project-package project))
     (unless (project-has-entry? project)
-      (ret (Err (fail (str what ": " (package-name-of project) " is a library — there is no "
-                           (record-ref package entry) " to make an app of.")))))
+      (ret (Err (fail (str what
+                           ": "
+                           (package-name-of project)
+                           " is a library — there is no "
+                           (record-ref package entry)
+                           " to make an app of.")))))
     (def (Some id) (record-ref package android-id)
-      :leave (None (Err (fail (str what ": the manifest of " (package-name-of project)
-                                   " has no (android-id \"org.example.app\"). The id names the app on Android.")))))
-    (def icon (option-map #(path-absolute (path-combine (project-dir project) &))
-                          (record-ref package android-icon)))
+      :leave (None
+              (Err (fail
+                    (str
+                     what
+                     ": the manifest of "
+                     (package-name-of project)
+                     " has no (android-id \"org.example.app\"). The id names the app on Android.")))))
+    (def icon
+      (option-map #(path-absolute (path-combine (project-dir project) &))
+                  (record-ref package android-icon)))
     (match icon
       ((Some png) #:when (not (string-ends-with? (string-downcase png) ".png"))
        (ret (Err (fail (str what ": the android-icon " png " is not a PNG. Android needs a PNG.")))))
@@ -1187,8 +1284,8 @@
       (_ unit))
     (def (Ok ready) (prepare project (record-ref line locked))
       :leave ((Err why) (Err (fail why))))
-    (def (Ok (Tuple rec _)) (ensure-built (project-entry project) #f #f (record-ref line force)
-                                          (prepared-against ready))
+    (def (Ok (Tuple rec _))
+      (ensure-built (project-entry project) #f #f (record-ref line force) (prepared-against ready))
       :leave ((Err status) (Err status)))
     (when (string-ends-with? (record-ref rec output) ".dll")
       (ret (Err (fail (str what ": " (project-entry project) " has no main, so it is a library.")))))
@@ -1200,7 +1297,7 @@
             (:when (not (= (root-name r) own-name)))
             (:when-let (Some p) (root-package r))
             (:acc out (listing p))
-            => out))
+        => out))
     (: nuget-of (-> bool (List (Tuple string string))))
     (defun (nuget-of android?)
       (loop (:for p (Cons package other-packages))
@@ -1208,10 +1305,11 @@
             (:for n (record-ref p packages))
             (:when (= (nuget-android? n) android?))
             (:acc out (listing (Tuple (nuget-id n) (nuget-version n))))
-            => out))
+        => out))
     (Ok (AndroidJob (id id)
                     (label (option-ref-or (record-ref package android-label)
-                                          (string-join (list->vec (list-map symbol->string own-name)) ".")))
+                                          (string-join (list->vec (list-map symbol->string own-name))
+                                                       ".")))
                     (abis (record-ref package android-abis))
                     (version (record-ref package version))
                     (program (record-ref rec output))
@@ -1253,18 +1351,19 @@
 (defun (run-android-project project line)
   (with-return ret
     (def adb (adb-program))
-    (def (Ok abi) (device-abi adb) :leave ((Err why) (fail why)))
+    (def (Ok abi) (device-abi adb)
+      :leave ((Err why) (fail why)))
     (def (Ok job) (android-job-of project line "bjo run --android")
       :leave ((Err status) status))
-    (def dev (record-set job
-                         (abis (list abi))
-                         (aot #f)
-                         (dev #t)
-                         (dir (path-combine (project-dot-bjo project) "android-dev"))
-                         (out None)))
-    (def (Ok apk) (publish-android dev) :leave ((Err why) (fail why)))
+    (def dev
+      (record-set job (abis (list abi))
+                      (aot #f)
+                      (dev #t)
+                      (dir (path-combine (project-dot-bjo project) "android-dev"))
+                      (out None)))
+    (def (Ok apk) (publish-android dev)
+      :leave ((Err why) (fail why)))
     (run-on-device adb apk (record-ref job id) exec)))
-
 
 ;; ---------------------------------------------------------------------------
 ;; The command line
@@ -1279,11 +1378,23 @@
 ;; being an error: `bjo test --seed 7` gives `--seed 7` to the test files.
 (: (-> (List string) bool (Result string Cmdline)))
 (defun (parse-flags argv pass-unknown?)
-  (let go ((left argv) (debug #f) (force #f) (lib #f) (locked #f) (output None) (whole-stdlib #f)
+  (let go ((left argv)
+           (debug #f)
+           (force #f)
+           (lib #f)
+           (locked #f)
+           (output None)
+           (whole-stdlib #f)
            (android #f))
     (defun (done rest)
-      (Cmdline (debug debug) (force force) (lib lib) (locked locked)
-               (output output) (whole-stdlib whole-stdlib) (android android) (rest rest)))
+      (Cmdline (debug debug)
+               (force force)
+               (lib lib)
+               (locked locked)
+               (output output)
+               (whole-stdlib whole-stdlib)
+               (android android)
+               (rest rest)))
     (match left
       (Nil (Ok (done Nil)))
       ((Cons a more)
@@ -1309,7 +1420,9 @@
 (: (-> (List string) bool bool int))
 (defun (cmd-fmt files check? diff?)
   (def failures (list-foldl (fun (file n) (+ n (fmt-file file check? diff?))) 0 files))
-  (if (> failures 0) 1 0))
+  (if (> failures 0)
+      1
+      0))
 
 ;; Lays out one file, and answers 1 when that fails the command: the file
 ;; could not be laid out, or, with `check?`, it is not. A file that is laid out
@@ -1321,7 +1434,9 @@
   (def source (file-read-text file))
   (def shown (as-seen-from-here file))
   (match (format-source source)
-    ((Err why) (println #"bjo fmt: ${shown}: ${why}") 1)
+    ((Err why)
+     (println #"bjo fmt: ${shown}: ${why}")
+     1)
     ((Ok (Tuple text _)) #:when (= text source) 0)
     ((Ok (Tuple text long)) #:when diff?
      (display (unified-diff shown shown source text))
@@ -1348,8 +1463,13 @@
 (: (-> string string))
 (defun (as-seen-from-here path)
   (def cwd (current-directory))
-  (def here (if (string-ends-with? cwd "/") cwd (str cwd "/")))
-  (if (string-starts-with? path here) (string-drop path (string-length here)) path))
+  (def here
+    (if (string-ends-with? cwd "/")
+        cwd
+        (str cwd "/")))
+  (if (string-starts-with? path here)
+      (string-drop path (string-length here))
+      path))
 
 ;; `bjo fmt -`: standard input laid out to standard output, for an editor. What
 ;; is wrong goes to standard error, and nothing to standard output.
@@ -1364,7 +1484,9 @@
   (def source (str (string-join (list->vec lines) "\n") "\n"))
   (match (format-source source)
     ((Ok (Tuple text long))
-     (display (if diff? (unified-diff "-" "-" source text) text))
+     (display (if diff?
+                  (unified-diff "-" "-" source text)
+                  text))
      (loop (:for at long)
            (:do (writeln (parameter-ref current-error-port) (noted "-" at))))
      0)
@@ -1378,11 +1500,12 @@
 (defun (fmt-targets named)
   (match named
     (Nil
-     (def (Ok project) (project-here "fmt")
-       :propagate)
-     ;; TODO: this is not how to build a list :( 
+     (def (Ok project) (project-here "fmt") :propagate)
+     ;; TODO: this is not how to build a list :(
      (Ok (loop (:for dir (list "src" "tests" "benches"))
-               (:acc out (folding Nil (list-append out (sources-under (path-combine (project-dir project) dir)))))
+               (:acc out (folding
+                          Nil
+                          (list-append out (sources-under (path-combine (project-dir project) dir)))))
            => out)))
     (_
      (defun (do-it name out)
@@ -1391,9 +1514,9 @@
          ((directory-exists? name) (Ok (list-append so-far (sources-under name))))
          ((file-exists? name) (Ok (list-append so-far (list name))))
          (else (Err #"bjo fmt: no such file or directory '${name}'."))))
-     
+
      (loop (:for name named)
-           (:acc out (folding (Ok Nil) (do-it name  out)))
+           (:acc out (folding (Ok Nil) (do-it name out)))
        => out))))
 
 (: (-> void))
@@ -1403,7 +1526,8 @@
   (println "Usage:")
   (println "  bjo init [name] [--lib]                 Make a project here. The name defaults to")
   (println "                                          this directory's; --lib makes a library.")
-  (println "  bjo fetch [--locked]                    Fetch what the manifest names. Compiles nothing.")
+  (println
+   "  bjo fetch [--locked]                    Fetch what the manifest names. Compiles nothing.")
   (println "  bjo run [-d] [-c] [args...]             Build this project and run it.")
   (println "  bjo run . [args...]                     The same, when the program takes arguments.")
   (println "  bjo run [-d] [-c] <file.bjo> [args...]  Compile one file if it needs it, then run it.")
@@ -1424,25 +1548,30 @@
   (println "                                          programs': --all, --quick, --save FILE, ...")
   (println "  bjo publish [-c] [-o dir] [<file.bjo>]  Build a program for release, and copy it with")
   (println "                                          everything it loads into one directory that")
-  (println "                                          runs from anywhere. Default: publish/ beside it.")
+  (println
+   "                                          runs from anywhere. Default: publish/ beside it.")
   (println "  bjo publish --android [-c] [-o dir]     Make an Android app (an APK) of this project's")
   (println "                                          program, which shows itself with bjogui's")
   (println "                                          run-app. The manifest needs (android-id ...).")
   (println "                                          Default: publish-android/ in the project.")
   (println "  bjo run --android [-c]                  Build this project's app for the connected")
-  (println "                                          device, install it, start it, and show its log.")
+  (println
+   "                                          device, install it, start it, and show its log.")
   (println "  bjo fmt [--check] [--diff] [files or dirs...]")
   (println "                                          Lay source out: the files named,")
   (println "                                          or every file under src/, tests/ and benches/.")
   (println "                                          --check writes nothing and names what is not")
   (println "                                          laid out; --diff writes nothing and prints the")
-  (println "                                          changes as a diff. bjo fmt - reads standard input.")
+  (println
+   "                                          changes as a diff. bjo fmt - reads standard input.")
   (println "  bjo task [-d] [-c] [task] [args...]    Run a task of this project's tasks.bjo, with")
   (println "                                          its arguments. With no task, list them.")
   (println "                                          'bjo task NAME --help' shows a task's help.")
-  (println "  bjo sz COMMAND [args...]                Read samizdat documents and write them as HTML or")
+  (println
+   "  bjo sz COMMAND [args...]                Read samizdat documents and write them as HTML or")
   (println "                                          Markdown, check them, or show their outline.")
-  (println "                                          'bjo sz --help' lists the commands. A project's")
+  (println
+   "                                          'bjo sz --help' lists the commands. A project's")
   (println "                                          sz.bjo adds its own samizdat commands.")
   (println "  bjo repl                                Start a REPL.")
   (println "  bjo rebjo                               Rebuild the compiler and bjo itself.")
@@ -1517,11 +1646,16 @@
      (with-return ret
        (when (or debug? force? lib?)
          (ret (fail "bjo fetch: compiles nothing, so it takes no build flags.")))
-       (unless (empty? rest) (ret (fail "bjo fetch: takes no arguments.")))
-       (def (Ok project) (project-here "fetch") :leave ((Err why) (fail why)))
-       (def (Ok ready) (prepare project locked?) :leave ((Err why) (fail why)))
-       (println (str (package-name-of project) ": "
-                     (int->string (prepared-dependencies ready)) " dependencies ready."))
+       (unless (empty? rest)
+         (ret (fail "bjo fetch: takes no arguments.")))
+       (def (Ok project) (project-here "fetch")
+         :leave ((Err why) (fail why)))
+       (def (Ok ready) (prepare project locked?)
+         :leave ((Err why) (fail why)))
+       (println (str (package-name-of project)
+                     ": "
+                     (int->string (prepared-dependencies ready))
+                     " dependencies ready."))
        0))
 
     ("run"
@@ -1538,37 +1672,45 @@
                  (match (project-here "run")
                    ((Err why) (fail why))
                    ((Ok project) (run-android-project project line))))
-                (else (fail "bjo run --android: runs this project's app, so it takes no file or arguments.")))))
+                (else
+                 (fail
+                  "bjo run --android: runs this project's app, so it takes no file or arguments.")))))
        (def (Cons name args) rest
-         :leave (Nil (match (project-here "run")
-                       ((Err why) (fail why))
-                       ((Ok project) (run-project project line Nil)))))
+         :leave (Nil
+                 (match (project-here "run")
+                   ((Err why) (fail why))
+                   ((Ok project) (run-project project line Nil)))))
        (when (= name ".")
          (ret (match (project-here "run")
                 ((Err why) (fail why))
                 ((Ok project) (run-project project line args)))))
        (def (Some file) (resolve-source name)
          :leave-with (fail #"bjo run: no such file '${name}'."))
-       (def (Ok roots) (roots-for-file file locked?) :leave ((Err why) (fail why)))
+       (def (Ok roots) (roots-for-file file locked?)
+         :leave ((Err why) (fail why)))
        (cmd-run file args debug? force? roots)))
 
     ("build"
      (with-return ret
        (def (Cons name more) rest
-         :leave (Nil (match (project-here "build")
-                       ((Err why) (fail why))
-                       ((Ok project) (build-and-say project line)))))
+         :leave (Nil
+                 (match (project-here "build")
+                   ((Err why) (fail why))
+                   ((Ok project) (build-and-say project line)))))
        (when (= name ".")
          (ret (cond
                 ((not (empty? more))
                  (fail "bjo build: '.' is the whole project, so nothing may follow it."))
-                (else (match (project-here "build")
-                        ((Err why) (fail why))
-                        ((Ok project) (build-and-say project line)))))))
-       (unless (empty? more) (ret (fail "bjo build: takes one source file.")))
+                (else
+                 (match (project-here "build")
+                   ((Err why) (fail why))
+                   ((Ok project) (build-and-say project line)))))))
+       (unless (empty? more)
+         (ret (fail "bjo build: takes one source file.")))
        (def (Some file) (resolve-source name)
          :leave-with (fail #"bjo build: no such file '${name}'."))
-       (def (Ok roots) (roots-for-file file locked?) :leave ((Err why) (fail why)))
+       (def (Ok roots) (roots-for-file file locked?)
+         :leave ((Err why) (fail why)))
        (cmd-build file debug? lib? force? roots)))
 
     ("check"
@@ -1583,14 +1725,16 @@
          :leave ((Err message) (fail message)))
        (def (Cons first _) resolved
          :leave-with (fail "bjo check: no source file. Try 'bjo help'."))
-       (def (Ok roots) (roots-for-file first locked?) :leave ((Err why) (fail why)))
+       (def (Ok roots) (roots-for-file first locked?)
+         :leave ((Err why) (fail why)))
        (cmd-check resolved roots)))
 
     ;; The test files named, or every one under the project's tests/. An
     ;; argument that is not a file is a filter on test names.
     ("test"
      (with-return ret
-       (when lib? (ret (fail "bjo test: a test file is a program, so it takes no --lib.")))
+       (when lib?
+         (ret (fail "bjo test: a test file is a program, so it takes no --lib.")))
        (def named (list-filter #(some? (resolve-source &)) rest))
        (def filters (list-filter #(none? (resolve-source &)) rest))
        (def found
@@ -1601,7 +1745,8 @@
              (Ok (loop (:for name named)
                        (:when-let (Some file) (resolve-source name))
                        (:acc out (listing file))))))
-       (def (Ok files) found :leave ((Err why) (fail why)))
+       (def (Ok files) found
+         :leave ((Err why) (fail why)))
        (when (empty? files)
          (ret (fail "bjo test: there are no test files. Put them under tests/, or name them.")))
        (cmd-test files (not (empty? named)) filters debug? force? locked?)))
@@ -1611,8 +1756,10 @@
     ;; optimise.
     ("bench"
      (with-return ret
-       (when lib? (ret (fail "bjo bench: a benchmark file is a program, so it takes no --lib.")))
-       (when debug? (println "bjo bench: -d is ignored: benchmarks are always built in Release."))
+       (when lib?
+         (ret (fail "bjo bench: a benchmark file is a program, so it takes no --lib.")))
+       (when debug?
+         (println "bjo bench: -d is ignored: benchmarks are always built in Release."))
        (def (Tuple named passed) (split-bench-args resolve-source rest))
        (def found
          (if (empty? named)
@@ -1620,9 +1767,11 @@
                ((Err why) (Err why))
                ((Ok project) (Ok (sources-under (path-combine (project-dir project) "benches")))))
              (Ok named)))
-       (def (Ok files) found :leave ((Err why) (fail why)))
+       (def (Ok files) found
+         :leave ((Err why) (fail why)))
        (when (empty? files)
-         (ret (fail "bjo bench: there are no benchmark files. Put them under benches/, or name them.")))
+         (ret (fail
+               "bjo bench: there are no benchmark files. Put them under benches/, or name them.")))
        (cmd-bench (bench-tools force? locked?) files passed)))
 
     ;; A release build of a program, and a copy of everything it loads in one
@@ -1630,21 +1779,25 @@
     ("publish"
      (with-return ret
        (when (or debug? lib?)
-         (ret (fail "bjo publish: publishes a release build of a program, so it takes no -d or --lib.")))
+         (ret (fail
+               "bjo publish: publishes a release build of a program, so it takes no -d or --lib.")))
        (when (record-ref line android)
          (ret (cond
                 ((or (empty? rest) (= rest (list ".")))
                  (match (project-here "publish")
                    ((Err why) (fail why))
                    ((Ok project) (publish-android-project project line))))
-                (else (fail "bjo publish --android: makes an app of this project, so it takes no file.")))))
+                (else
+                 (fail
+                  "bjo publish --android: makes an app of this project, so it takes no file.")))))
        (cond
          ((or (empty? rest) (= rest (list ".")))
           (match (project-here "publish")
             ((Err why) (fail why))
             ((Ok project) (publish-project project line))))
          ((= (length rest) 1)
-          (def (Cons name _) rest :leave-with 1)
+          (def (Cons name _) rest
+            :leave-with 1)
           (def (Some file) (resolve-source name)
             :leave-with (fail #"bjo publish: no such file '${name}'."))
           (publish-file file line))
@@ -1652,8 +1805,10 @@
 
     ("repl"
      (with-return ret
-       (when (or debug? force? lib?) (ret (fail "bjo repl: takes no build flags.")))
-       (unless (empty? rest) (ret (fail "bjo repl: takes no arguments.")))
+       (when (or debug? force? lib?)
+         (ret (fail "bjo repl: takes no build flags.")))
+       (unless (empty? rest)
+         (ret (fail "bjo repl: takes no arguments.")))
        ;; Inside a project the prompt sees the project's packages, which is
        ;; what makes `(import (myapp lexer))` work there.
        (def (Ok roots) (roots-near (current-directory) locked?)
@@ -1681,23 +1836,28 @@
        (match (list-filter #(string-starts-with? & "-") named)
          ((Cons flag _) (ret (fail #"bjo fmt: unknown flag '${flag}'.")))
          (Nil (ignore 0)))
-       (def (Ok files) (fmt-targets named) :leave ((Err why) (fail why)))
+       (def (Ok files) (fmt-targets named)
+         :leave ((Err why) (fail why)))
        (cmd-fmt files check? diff?)))
 
     ;; Everything after the task's name is the task's: bjo's own flags come
     ;; before it, and parse-flags stopped there.
     ("task"
      (with-return ret
-       (when lib? (ret (fail "bjo task: runs a task, so it takes no --lib.")))
+       (when lib?
+         (ret (fail "bjo task: runs a task, so it takes no --lib.")))
        (cmd-task rest debug? force? locked?)))
 
     ;; Everything after `sz` is the samizdat program's, as for `task`.
     ("sz"
      (with-return ret
-       (when lib? (ret (fail "bjo sz: runs the samizdat tool, so it takes no --lib.")))
+       (when lib?
+         (ret (fail "bjo sz: runs the samizdat tool, so it takes no --lib.")))
        (cmd-sz rest debug? force? locked?)))
 
-    (("help" "-h" "--help") (usage) 0)
+    (("help" "-h" "--help")
+     (usage)
+     0)
 
     (else (fail #"bjo: '${command}' is not a command. Try 'bjo help'."))))
 
@@ -1711,12 +1871,20 @@
   ;; The command comes first and is never a flag, so the flags of the command
   ;; are what follows it.
   (def (Cons command rest) (vec->list args)
-    :leave (Nil (usage) 1))
-  (match (parse-flags rest (or (= command "test") (= command "bench") (= command "fmt") (= command "task")
-                            (= command "sz")))
+    :leave (Nil
+            (usage)
+            1))
+  (match (parse-flags rest
+                      (or (= command "test")
+                          (= command "bench")
+                          (= command "fmt")
+                          (= command "task")
+                          (= command "sz")))
     ((Err message) (fail message))
     ((Ok line) #:when (and (some? (record-ref line output)) (not (= command "publish")))
      (fail #"bjo ${command}: -o is for publish, which writes a directory; ${command} does not."))
-    ((Ok line) #:when (and (record-ref line android) (not (or (= command "publish") (= command "run"))))
-     (fail #"bjo ${command}: --android is for publish and run, which make the app; ${command} does not."))
+    ((Ok line) #:when (and (record-ref line android)
+                           (not (or (= command "publish") (= command "run"))))
+     (fail
+      #"bjo ${command}: --android is for publish and run, which make the app; ${command} does not."))
     ((Ok line) (dispatch command line))))

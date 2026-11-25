@@ -91,21 +91,24 @@
 ;; deferred commands, each with the source it was written in.
 (type-rec
   (: Command (Alias (-> Ctx Call (Vec Piece))))
-  (: Ctx #:opaque (Record (: commands (Map string Command))
-                          (: source string #:mutable)
-                          (: including (Vec string) #:mutable)
-                          (: notes (Vec (Option (Vec Block))) #:mutable)
-                          (: ids (Map string int) #:mutable)
-                          (: depth int #:mutable)
-                          (: later (Vec (Tuple string Later)) #:mutable)
-                          ;; Every file read for the document, in order.
-                          (: sources (Vec string) #:mutable)
-                          ;; What commands keep for the rest of the document,
-                          ;; by a key each command chooses.
-                          (: state (Map string Bjodat) #:mutable))))
+  (: Ctx
+     #:opaque
+     (Record (: commands (Map string Command))
+             (: source string #:mutable)
+             (: including (Vec string) #:mutable)
+             (: notes (Vec (Option (Vec Block))) #:mutable)
+             (: ids (Map string int) #:mutable)
+             (: depth int #:mutable)
+             (: later (Vec (Tuple string Later)) #:mutable)
+             ;; Every file read for the document, in order.
+             (: sources (Vec string) #:mutable)
+             ;; What commands keep for the rest of the document,
+             ;; by a key each command chooses.
+             (: state (Map string Bjodat) #:mutable))))
 
 (: ctx-source (-> Ctx string))
-(defun (ctx-source cx) (record-ref cx source))
+(defun (ctx-source cx)
+  (record-ref cx source))
 
 ;; How deep commands may run inside commands. A body read from a file cannot
 ;; nest this deep; a command that expands itself can.
@@ -120,19 +123,27 @@
 (: refuse (-> Ctx Call string %a))
 (defun (refuse cx c why)
   (raise (cast Exception
-               (Refused. (str (record-ref cx source) ":" (int->string (record-ref c line))
-                              ":" (int->string (record-ref c column)) ": @" (record-ref c name)
-                              ": " why)))))
+               (Refused. (str (record-ref cx source)
+                              ":"
+                              (int->string (record-ref c line))
+                              ":"
+                              (int->string (record-ref c column))
+                              ": @"
+                              (record-ref c name)
+                              ": "
+                              why)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Answering
 ;; ---------------------------------------------------------------------------
 
 (: inline (-> Inline (Vec Piece)))
-(defun (inline x) (vec-add (vec-empty) (PInline x)))
+(defun (inline x)
+  (vec-add (vec-empty) (PInline x)))
 
 (: block (-> Block (Vec Piece)))
-(defun (block x) (vec-add (vec-empty) (PBlock x)))
+(defun (block x)
+  (vec-add (vec-empty) (PBlock x)))
 
 (: nothing (Vec Piece))
 (def nothing (vec-empty))
@@ -194,7 +205,8 @@
   (string-join (vec-map (fun (item)
                           (match item
                             ((Text s) s)
-                            ((Cmd inner) (inlines->text (as-inlines cx inner (run-command cx inner))))))
+                            ((Cmd inner)
+                             (inlines->text (as-inlines cx inner (run-command cx inner))))))
                         (body-items c))
                ""))
 
@@ -306,7 +318,9 @@
       (match (vec-ref xs 0)
         ((Str s)
          (def t (string-trim-left s))
-         (if (string-empty? t) (trim-start (vec-remove-at xs 0)) (vec-set xs 0 (Str t))))
+         (if (string-empty? t)
+             (trim-start (vec-remove-at xs 0))
+             (vec-set xs 0 (Str t))))
         (_ xs))))
 
 (: trim-end (-> (Vec Inline) (Vec Inline)))
@@ -317,13 +331,17 @@
         (match (vec-ref xs last)
           ((Str s)
            (def t (string-trim-right s))
-           (if (string-empty? t) (trim-end (vec-remove-at xs last)) (vec-set xs last (Str t))))
+           (if (string-empty? t)
+               (trim-end (vec-remove-at xs last))
+               (vec-set xs last (Str t))))
           (_ xs)))))
 
 (: flush (-> (Vec Block) (Vec Inline) (Vec Block)))
 (defun (flush blocks para)
   (def trimmed (trim-inlines (merge-strs para)))
-  (if (vec-empty? trimmed) blocks (vec-add blocks (Para trimmed))))
+  (if (vec-empty? trimmed)
+      blocks
+      (vec-add blocks (Para trimmed))))
 
 (: decode-step (-> (Tuple (Vec Block) (Vec Inline)) Piece (Tuple (Vec Block) (Vec Inline))))
 (defun (decode-step st p)
@@ -367,7 +385,8 @@
 (: positional (-> Call (Vec Bjodat)))
 (defun (positional c)
   (def args (record-ref c args))
-  (let go ((i 0) (out (vec-empty)))
+  (let go ((i 0)
+           (out (vec-empty)))
     (cond
       ((>= i (vec-length args)) out)
       (else
@@ -376,7 +395,8 @@
          (v (go (+ i 1) (vec-add out v))))))))
 
 (: arg-count (-> Call int))
-(defun (arg-count c) (vec-length (positional c)))
+(defun (arg-count c)
+  (vec-length (positional c)))
 
 ;; The value after `#:name`, the first time it is given.
 (: keyword (-> Call string (Option Bjodat)))
@@ -405,10 +425,13 @@
         ((BjoKey k)
          (def name (keyword-name k))
          (unless (vec-contains? names name)
-           (refuse cx c (str "takes no #:" name
-                           (if (vec-empty? names)
-                               ""
-                               (str "; it takes #:" (string-join names ", #:"))))))
+           (refuse cx
+                   c
+                   (str "takes no #:"
+                        name
+                        (if (vec-empty? names)
+                            ""
+                            (str "; it takes #:" (string-join names ", #:"))))))
          (unless (< (+ i 1) (vec-length args))
            (refuse cx c (str "#:" name " has no value after it")))
          (go (+ i 2)))
@@ -429,15 +452,27 @@
       fallback
       (match (as-text (vec-ref args i))
         ((Some s) s)
-        (None (refuse cx c (str "argument " (int->string (+ i 1)) " should be a string, and is "
-                              (bjodat->string (vec-ref args i))))))))
+        (None
+         (refuse cx
+                 c
+                 (str "argument "
+                      (int->string (+ i 1))
+                      " should be a string, and is "
+                      (bjodat->string (vec-ref args i))))))))
 
 ;; The `i`th positional argument, counting from 0, which must be there.
 (: arg-string (-> Ctx Call int string))
 (defun (arg-string cx c i)
   (if (>= i (arg-count c))
-      (refuse cx c (str "needs " (int->string (+ i 1)) " argument" (if (= i 0) "" "s")
-                      " in its [...]"))
+      (refuse cx
+              c
+              (str "needs "
+                   (int->string (+ i 1))
+                   " argument"
+                   (if (= i 0)
+                       ""
+                       "s")
+                   " in its [...]"))
       (arg-string-or cx c i "")))
 
 (: kw-string-or (-> Ctx Call string string string))
@@ -451,7 +486,8 @@
 
 ;; A symbol or a string, compared as text: `#:style ordered`.
 (: kw-symbol-or (-> Ctx Call string string string))
-(defun (kw-symbol-or cx c name fallback) (kw-string-or cx c name fallback))
+(defun (kw-symbol-or cx c name fallback)
+  (kw-string-or cx c name fallback))
 
 (: kw-int-or (-> Ctx Call string int int))
 (defun (kw-int-or cx c name fallback)
@@ -485,7 +521,8 @@
 ;; @defmodule made current, say. Keys are the commands' own, so a command
 ;; prefixes them with its name.
 (: state-ref (-> Ctx string (Option Bjodat)))
-(defun (state-ref cx key) (map-try-ref (record-ref cx state) key))
+(defun (state-ref cx key)
+  (map-try-ref (record-ref cx state) key))
 
 (: state-set! (-> Ctx string Bjodat void))
 (defun (state-set! cx key value)
@@ -496,10 +533,16 @@
 (: unique-id! (-> Ctx string string))
 (defun (unique-id! cx text)
   (def made (slug text))
-  (def base (if (string-empty? made) "section" made))
+  (def base
+    (if (string-empty? made)
+        "section"
+        made))
   (def ids (record-ref cx ids))
   (let go ((n (map-ref-or ids base 0)))
-    (def candidate (if (= n 0) base (str base "-" (int->string (+ n 1)))))
+    (def candidate
+      (if (= n 0)
+          base
+          (str base "-" (int->string (+ n 1)))))
     (if (and (> n 0) (map-contains? ids candidate))
         (go (+ n 1))
         (begin
@@ -539,7 +582,8 @@
 (def later-mark (str (char->string (int->char 0)) "later:"))
 
 (: later-class (-> int string))
-(defun (later-class n) (str later-mark (int->string n)))
+(defun (later-class n)
+  (str later-mark (int->string n)))
 
 ;; The number in a placeholder's class, when it is one.
 (: later-number (-> string (Option int)))
@@ -613,13 +657,15 @@
     ((Quote bs) [(Quote (resolve-blocks cx doc active bs))])
     ((ItemList numbered start items)
      [(ItemList numbered start (vec-map (fun (item) (resolve-blocks cx doc active item)) items))])
-    ((LineBlock lines) [(LineBlock (vec-map (fun (line) (resolve-inlines cx doc active line)) lines))])
+    ((LineBlock lines)
+     [(LineBlock (vec-map (fun (line) (resolve-inlines cx doc active line)) lines))])
     ((DefinitionList entries)
      [(DefinitionList (vec-map (fun (entry)
                                  (match entry
                                    ((Tuple term defs)
                                     (Tuple (resolve-inlines cx doc active term)
-                                           (vec-map (fun (d) (resolve-blocks cx doc active d)) defs)))))
+                                           (vec-map (fun (d) (resolve-blocks cx doc active d))
+                                                    defs)))))
                                entries))])
     ((TableBlock t) [(TableBlock (map-table-text (fun (xs) (resolve-inlines cx doc active xs)) t))])
     (_ [b])))
@@ -663,15 +709,21 @@
 (: relative-path (-> Ctx string string))
 (defun (relative-path cx path)
   (def source (record-ref cx source))
-  (def dir (if (string-empty? source) "" (directory-of source)))
-  (if (string-empty? dir) path (path-combine dir path)))
+  (def dir
+    (if (string-empty? source)
+        ""
+        (directory-of source)))
+  (if (string-empty? dir)
+      path
+      (path-combine dir path)))
 
 ;; The text of the file at `path`, relative to the document. A file that is not
 ;; there is refused, as the command's mistake.
 (: read-relative (-> Ctx Call string string))
 (defun (read-relative cx c path)
   (def full (relative-path cx path))
-  (unless (file-exists? full) (refuse cx c (str "there is no file " full)))
+  (unless (file-exists? full)
+    (refuse cx c (str "there is no file " full)))
   (add-source! cx full)
   (file-read-text full))
 
@@ -692,20 +744,26 @@
   (def full (relative-path cx path))
   (def chain (record-ref cx including))
   (when (vec-contains? (vec-map path-absolute chain) (path-absolute full))
-    (refuse cx c (str full " is already being included: "
-                      (string-join (vec-add chain full) " -> "))))
+    (refuse cx c (str full " is already being included: " (string-join (vec-add chain full) " -> "))))
   (def text (read-relative cx c path))
   (match (read-source text #:name full)
     ((Err e) (refuse cx c e))
     ((Ok src)
      (match (record-ref src meta)
-       ((Some m) (refuse cx c (str full " begins with (meta ...), which only the document itself may")))
+       ((Some m)
+        (refuse cx c (str full " begins with (meta ...), which only the document itself may")))
        (None unit))
-     (def here (str (record-ref cx source) ":" (int->string (record-ref c line))
-                    ":" (int->string (record-ref c column))))
+     (def here
+       (str (record-ref cx source)
+            ":"
+            (int->string (record-ref c line))
+            ":"
+            (int->string (record-ref c column))))
      (record-set! cx (including (vec-add chain full)))
-     (def result (try (in-source cx full (fun () (expand-items cx (record-ref src content))))
-                      #:catch (System.IO.InvalidDataException)))
+     (def result
+       (try
+         (in-source cx full (fun () (expand-items cx (record-ref src content))))
+         #:catch (System.IO.InvalidDataException)))
      (record-set! cx (including chain))
      (match result
        ((Ok pieces) pieces)
@@ -722,8 +780,13 @@
 (: opens-after? (-> char bool))
 (defun (opens-after? c)
   (or (char-whitespace? c)
-      (char=? c #\() (char=? c #\[) (char=? c #\{)
-      (char=? c #\—) (char=? c #\–) (char=? c #\“) (char=? c #\‘)))
+      (char=? c #\()
+      (char=? c #\[)
+      (char=? c #\{)
+      (char=? c #\—)
+      (char=? c #\–)
+      (char=? c #\“)
+      (char=? c #\‘)))
 
 ;; The text made typographic, and the last character of it.
 (: smarten-text (-> string char (Tuple string char)))
@@ -732,10 +795,17 @@
   (def b (stringbuilder-empty))
   (def last
     (string-fold (fun (c prev)
-                   (def out (cond
-                              ((char=? c #\") (if (opens-after? prev) #\“ #\”))
-                              ((char=? c #\') (if (opens-after? prev) #\‘ #\’))
-                              (else c)))
+                   (def out
+                     (cond
+                       ((char=? c #\")
+                        (if (opens-after? prev)
+                            #\“
+                            #\”))
+                       ((char=? c #\')
+                        (if (opens-after? prev)
+                            #\‘
+                            #\’))
+                       (else c)))
                    (stringbuilder-add! b out)
                    out)
                  before
@@ -754,18 +824,31 @@
 (: smarten-inline (-> Inline char (Tuple Inline char)))
 (defun (smarten-inline x before)
   (match x
-    ((Str s) (match (smarten-text s before) ((Tuple t last) (Tuple (Str t) last))))
-    ((Emph xs) (match (smarten-inlines xs before) ((Tuple ys last) (Tuple (Emph ys) last))))
-    ((Strong xs) (match (smarten-inlines xs before) ((Tuple ys last) (Tuple (Strong ys) last))))
-    ((Strike xs) (match (smarten-inlines xs before) ((Tuple ys last) (Tuple (Strike ys) last))))
-    ((Link url xs) (match (smarten-inlines xs before) ((Tuple ys last) (Tuple (Link url ys) last))))
-    ((Span c xs) (match (smarten-inlines xs before) ((Tuple ys last) (Tuple (Span c ys) last))))
+    ((Str s)
+     (match (smarten-text s before)
+       ((Tuple t last) (Tuple (Str t) last))))
+    ((Emph xs)
+     (match (smarten-inlines xs before)
+       ((Tuple ys last) (Tuple (Emph ys) last))))
+    ((Strong xs)
+     (match (smarten-inlines xs before)
+       ((Tuple ys last) (Tuple (Strong ys) last))))
+    ((Strike xs)
+     (match (smarten-inlines xs before)
+       ((Tuple ys last) (Tuple (Strike ys) last))))
+    ((Link url xs)
+     (match (smarten-inlines xs before)
+       ((Tuple ys last) (Tuple (Link url ys) last))))
+    ((Span c xs)
+     (match (smarten-inlines xs before)
+       ((Tuple ys last) (Tuple (Span c ys) last))))
     (LineBreak (Tuple x #\space))
     (_ (Tuple x #\x))))
 
 (: smarten-line (-> (Vec Inline) (Vec Inline)))
 (defun (smarten-line xs)
-  (match (smarten-inlines xs #\space) ((Tuple ys last) ys)))
+  (match (smarten-inlines xs #\space)
+    ((Tuple ys last) ys)))
 
 (: smarten-block (-> Block Block))
 (defun (smarten-block b)
@@ -779,7 +862,8 @@
     (_ b)))
 
 (: smarten (-> (Vec Block) (Vec Block)))
-(defun (smarten blocks) (vec-map smarten-block blocks))
+(defun (smarten blocks)
+  (vec-map smarten-block blocks))
 
 ;; ---------------------------------------------------------------------------
 ;; A document
@@ -791,16 +875,22 @@
 (: expand (-> Source (Map string Command) (#:name string) (#:typography bool)
               (Result string Document)))
 (defun (expand src commands #:name "input" #:typography #t)
-  (def cx (Ctx (commands commands) (source name) (including [name]) (notes (vec-empty))
-               (ids (map-empty)) (depth 0) (later (vec-empty)) (sources (vec-empty))
-               (state (map-empty))))
+  (def cx
+    (Ctx (commands commands)
+         (source name)
+         (including [name])
+         (notes (vec-empty))
+         (ids (map-empty))
+         (depth 0)
+         (later (vec-empty))
+         (sources (vec-empty))
+         (state (map-empty))))
   (match (try (finish cx src) #:catch (System.IO.InvalidDataException))
     ((Err e) (Err (.-Message e)))
     ((Ok doc)
      (Ok (if typography
-             (record-set doc
-                         (blocks (smarten (record-ref doc blocks)))
-                         (notes (vec-map smarten (record-ref doc notes))))
+             (record-set doc (blocks (smarten (record-ref doc blocks)))
+                             (notes (vec-map smarten (record-ref doc notes))))
              doc)))))
 
 ;; Every command run, the headings numbered if the document asked, and then
@@ -808,12 +898,16 @@
 (: finish (-> Ctx Source Document))
 (defun (finish cx src)
   (def expanded (decode (expand-items cx (record-ref src content))))
-  (def blocks (match (state-ref cx numbering-key)
-                ((Some (BjoInt depth)) (number-headings expanded (cast System.Int32 depth)))
-                (_ expanded)))
+  (def blocks
+    (match (state-ref cx numbering-key)
+      ((Some (BjoInt depth)) (number-headings expanded (cast System.Int32 depth)))
+      (_ expanded)))
   (def notes (vec-map (fun (n) (option-ref-or n (vec-empty))) (record-ref cx notes)))
-  (def before (Document (meta (record-ref src meta)) (blocks blocks) (notes notes)
-                        (sources (record-ref cx sources))))
+  (def before
+    (Document (meta (record-ref src meta))
+              (blocks blocks)
+              (notes notes)
+              (sources (record-ref cx sources))))
   (def resolved-blocks (resolve-blocks cx before (vec-empty) blocks))
   (def resolved-notes (vec-map (fun (n) (resolve-blocks cx before (vec-empty) n)) notes))
   ;; Read after resolving: a deferred command may read a file too.
@@ -830,8 +924,7 @@
     ((Err e) (Err e))
     ((Ok src) (expand src commands #:name name #:typography typography))))
 
-(: read-document-file (-> string (Map string Command) (#:typography bool)
-                          (Result string Document)))
+(: read-document-file (-> string (Map string Command) (#:typography bool) (Result string Document)))
 (defun (read-document-file path commands #:typography #t)
   (match (read-document (file-read-text path) commands #:name path #:typography typography)
     ((Err e) (Err e))

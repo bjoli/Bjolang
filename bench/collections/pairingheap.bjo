@@ -48,7 +48,7 @@
 ;; For this reason, heap-balance exists. It rebalances the heap so that the root
 ;; has log2(n) elements in the root, meaning any following operation is cheap.
 ;; bjolang has a mutable 4ary heap that has no such case, and if all you need is linear
-;; usage that is a much faster way to do it. 
+;; usage that is a much faster way to do it.
 (export
   ;; The types.
   Heap Heaping
@@ -71,9 +71,7 @@
 
 ;; The tree itself. Not exported, because exposing this can break things
 ;; if used badly.
-(type
-  (: (Tree %a)
-     (Union TNil (: TNode %a (List (Tree %a))))))
+(type (: (Tree %a) (Union TNil (: TNode %a (List (Tree %a))))))
 
 ;; The heap as it is handed out.
 ;;
@@ -84,12 +82,12 @@
 ;; `size` is carried rather than counted, so `heap-length` is O(1). `settled` is
 ;; #t exactly when this value came out of `heap-balance` or a bulk build and
 ;; nothing has been done to it since.
-(type
-  (: (Heap %a) #:opaque
-     (Record (: tree (Tree %a))
-             (: precedes (-> %a %a bool))
-             (: size int)
-             (: settled bool))))
+(type (: (Heap %a)
+         #:opaque
+         (Record (: tree (Tree %a))
+                 (: precedes (-> %a %a bool))
+                 (: size int)
+                 (: settled bool))))
 
 ;; ---------------------------------------------------------------------------
 ;; Merging — everything else is written in terms of this
@@ -128,17 +126,19 @@
 ;; stack overflow on a large heap, not a slow program.
 (: (-> (-> %a %a bool) (List (Tree %a)) (Tree %a)))
 (defun (merge-pairs precedes? ts)
-  (let pair ((rest ts) (done Nil))
+  (let pair ((rest ts)
+             (done Nil))
     (match rest
       ;; Pass one is finished. `done` came out reversed, so folding it left to
       ;; right here is the right-to-left fold the algorithm asks for.
-      (Nil (let combine ((rest done) (acc TNil))
-             (match rest
-               (Nil acc)
-               ((Cons t more) (combine more (tree-merge precedes? t acc))))))
+      (Nil
+       (let combine ((rest done)
+                     (acc TNil))
+         (match rest
+           (Nil acc)
+           ((Cons t more) (combine more (tree-merge precedes? t acc))))))
       ((Cons t Nil) (pair Nil (Cons t done)))
-      ((Cons t1 (Cons t2 more))
-       (pair more (Cons (tree-merge precedes? t1 t2) done))))))
+      ((Cons t1 (Cons t2 more)) (pair more (Cons (tree-merge precedes? t1 t2) done))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Building
@@ -176,21 +176,25 @@
     ((TNode x _) (Some x))))
 
 (: (-> (Heap %a) int))
-(defun (heap-length h) (record-ref h size))
+(defun (heap-length h)
+  (record-ref h size))
 
 (: (-> (Heap %a) bool))
-(defun (heap-empty? h) (< (record-ref h size) 1))
+(defun (heap-empty? h)
+  (< (record-ref h size) 1))
 
 ;; The ordering this heap was built with, so that a heap with a different one can
 ;; be brought into line — see `heap-merge`.
 (: (-> (Heap %a) (-> %a %a bool)))
-(defun (heap-ordering h) (record-ref h precedes))
+(defun (heap-ordering h)
+  (record-ref h precedes))
 
 ;; #t when this value came out of `heap-balance` or a bulk build untouched. #f is
 ;; not a claim that the heap is badly shaped — only that this module has not
 ;; proved it is well shaped.
 (: (-> (Heap %a) bool))
-(defun (heap-balanced? h) (record-ref h settled))
+(defun (heap-balanced? h)
+  (record-ref h settled))
 
 ;; ---------------------------------------------------------------------------
 ;; Changing
@@ -208,7 +212,8 @@
 
 (: (-> (Heap %a) (List %a) (Heap %a)))
 (defun (heap-insert-all h xs)
-  (let go ((rest xs) (acc h))
+  (let go ((rest xs)
+           (acc h))
     (match rest
       (Nil acc)
       ((Cons x more) (go more (heap-insert acc x))))))
@@ -236,12 +241,11 @@
   (cond
     ((heap-empty? a) b)
     ((heap-empty? b) a)
-    (else (Heap (tree (tree-merge (record-ref a precedes)
-                                  (record-ref a tree)
-                                  (record-ref b tree)))
-                (precedes (record-ref a precedes))
-                (size (+ (record-ref a size) (record-ref b size)))
-                (settled #f)))))
+    (else
+     (Heap (tree (tree-merge (record-ref a precedes) (record-ref a tree) (record-ref b tree)))
+           (precedes (record-ref a precedes))
+           (size (+ (record-ref a size) (record-ref b size)))
+           (settled #f)))))
 
 ;; The empty heap deletes to itself, so this never fails. Use `heap-pop` when you
 ;; want the element and the rest together.
@@ -274,18 +278,19 @@
 ;; down the children, for the same stack reason as `merge-pairs`.
 (: (-> (Tree %a) (List %a)))
 (defun (tree-elements t)
-  (let walk ((todo (Cons t Nil)) (out Nil))
+  (let walk ((todo (Cons t Nil))
+             (out Nil))
     (match todo
       (Nil out)
       ((Cons TNil rest) (walk rest out))
-      ((Cons (TNode x children) rest)
-       (walk (list-append children rest) (Cons x out))))))
+      ((Cons (TNode x children) rest) (walk (list-append children rest) (Cons x out))))))
 
 ;; One round of a knockout tournament: merge neighbours, halving the list. An odd
 ;; one out is carried into the next round.
 (: (-> (-> %a %a bool) (List (Tree %a)) (List (Tree %a))))
 (defun (pair-round precedes? ts)
-  (let go ((rest ts) (out Nil))
+  (let go ((rest ts)
+           (out Nil))
     (match rest
       (Nil (list-reverse out))
       ((Cons t Nil) (list-reverse (Cons t out)))
@@ -321,9 +326,7 @@
 (defun (heap-balance h)
   (if (record-ref h settled)
       h
-      (build (tree-elements (record-ref h tree))
-             (record-ref h precedes)
-             (record-ref h size))))
+      (build (tree-elements (record-ref h tree)) (record-ref h precedes) (record-ref h size))))
 
 ;; The same rebuild under a different ordering. Always O(n) — the old ordering
 ;; tells us nothing about the new one, so there is no shortcut and no `settled`
@@ -353,7 +356,9 @@
 ;; `(list->heap/by '(...) f)`.
 (: (-> #:rest %a (Heap %a)) (where (Ord %a)))
 (defun (heap-of #:rest xs)
-  (list->heap/by (loop (:for x xs) (:acc out (listing x))) less?))
+  (list->heap/by (loop (:for x xs)
+                       (:acc out (listing x)))
+                 less?))
 
 ;; Every element, in no particular order. O(n).
 (: (-> (Heap %a) (List %a)))
@@ -363,7 +368,8 @@
 ;; In the heap's own order. O(n log n), and the honest way to read a heap out.
 (: (-> (Heap %a) (List %a)))
 (defun (heap->sorted-list h)
-  (let go ((rest h) (out Nil))
+  (let go ((rest h)
+           (out Nil))
     (match (heap-min rest)
       (None (list-reverse out))
       ((Some x) (go (heap-delete-min rest) (Cons x out))))))
@@ -388,8 +394,10 @@
 
 (impl (Collection (Heap %a))
   (type %content %a)
-  (defun (length h) (heap-length h))
-  (defun (empty? h) (heap-empty? h)))
+  (defun (length h)
+    (heap-length h))
+  (defun (empty? h)
+    (heap-empty? h)))
 
 ;; Walking a heap yields its elements in the heap's own order, which costs
 ;; O(log n) a step. The cursor is the remaining heap, so `(loop (:for x h) ...)`
@@ -401,13 +409,16 @@
 (impl (Iterable (Heap %a))
   (type %elem %a)
   (type %cursor (Heap %a))
-  (defun (iterable-start h) h)
-  (defun (iterable-done? h c) (heap-empty? c))
+  (defun (iterable-start h)
+    h)
+  (defun (iterable-done? h c)
+    (heap-empty? c))
   (defun (iterable-current h c)
     (match (heap-min c)
       ((Some x) x)
       (None (panic! "heap: iterable-current on an exhausted cursor"))))
-  (defun (iterable-next h c) (heap-delete-min c)))
+  (defun (iterable-next h c)
+    (heap-delete-min c)))
 
 ;; `(loop (:for x xs) (:acc h (heaping x)))`, at the natural ordering. A
 ;; collector has no room for a keyword, so for another ordering collect into a
@@ -422,9 +433,12 @@
   (type %elem %a)
   (type %acc (Heap %a))
   (type %out (Heap %a))
-  (defun (collector-init c) (heap-empty))
-  (defun (collector-step c acc x) (heap-insert acc x))
-  (defun (collector-finish c acc) (heap-balance acc)))
+  (defun (collector-init c)
+    (heap-empty))
+  (defun (collector-step c acc x)
+    (heap-insert acc x))
+  (defun (collector-finish c acc)
+    (heap-balance acc)))
 
 ;; Two heaps are equal when they hold the same elements in the same order, not
 ;; when they have the same shape — shape is an implementation detail, and two
@@ -436,8 +450,7 @@
 (impl (Eq (Heap %a))
   (where (Eq %a))
   (defun (= a b)
-    (and (= (heap-length a) (heap-length b))
-         (= (heap->sorted-list a) (heap->sorted-list b))))
+    (and (= (heap-length a) (heap-length b)) (= (heap->sorted-list a) (heap->sorted-list b))))
   (defun (eq-hash h)
     (list-foldl (fun (x acc) (hash-combine acc (eq-hash x))) 17 (heap->sorted-list h))))
 
@@ -449,11 +462,13 @@
   (stringbuilder-add-string! sb "(Heap")
   (loop (:with first? #t #f)
         (:for x (heap->sorted-list h))
-        (:do (unless first? (stringbuilder-add-string! sb " "))
+        (:do (unless first?
+               (stringbuilder-add-string! sb " "))
              (stringbuilder-add-string! sb (->str x))))
   (stringbuilder-add-string! sb ")")
   (stringbuilder->string sb))
 
 (impl (->str (Heap %a))
   (where (->str %a))
-  (defun (->str h) (heap->str h)))
+  (defun (->str h)
+    (heap->str h)))

@@ -62,37 +62,48 @@
     ((Err e) (argument-error e))))
 
 (: (-> int bigint))
-(defun (int->bigint n) (cast System.Numerics.BigInteger n))
+(defun (int->bigint n)
+  (cast System.Numerics.BigInteger n))
 
 (def rational-one (rational 1 1))
 
 (: (-> (Tuple %a %b) %a))
-(defun (fst t) (match t ((Tuple a _) a)))
+(defun (fst t)
+  (match t
+    ((Tuple a _) a)))
 
 (: (-> (Tuple %a %b) %b))
-(defun (snd t) (match t ((Tuple _ b) b)))
+(defun (snd t)
+  (match t
+    ((Tuple _ b) b)))
 
 ;; ---------------------------------------------------------------------------
 ;; Factors
 ;; ---------------------------------------------------------------------------
 
 ;; rat × pi^pi-power.
-(type (: Factor #:opaque (Struct (: rat Rational) (: pi-power int))))
+(type (: Factor #:opaque
+         (Struct (: rat Rational)
+                 (: pi-power int))))
 
 (: (-> Rational int Factor))
-(defun (factor r k) (Factor (rat r) (pi-power k)))
+(defun (factor r k)
+  (Factor (rat r) (pi-power k)))
 
 (: (-> Factor Rational))
-(defun (factor-rational f) (struct-ref f rat))
+(defun (factor-rational f)
+  (struct-ref f rat))
 
 (: (-> Factor int))
-(defun (factor-pi f) (struct-ref f pi-power))
+(defun (factor-pi f)
+  (struct-ref f pi-power))
 
 (: factor-one Factor)
 (def factor-one (factor rational-one 0))
 
 (: (-> Factor bool))
-(defun (factor-one? f) (= f factor-one))
+(defun (factor-one? f)
+  (= f factor-one))
 
 (: (-> Factor Factor Factor))
 (defun (factor* a b)
@@ -108,8 +119,11 @@
 
 (: (-> bigint int))
 (defun (bit-count n)
-  (let go ((n n) (k 0))
-    (if (zero? n) k (go (shift-right n 1) (+ k 1)))))
+  (let go ((n n)
+           (k 0))
+    (if (zero? n)
+        k
+        (go (shift-right n 1) (+ k 1)))))
 
 ;; The exact b-th root of n >= 0, or None.
 (: (-> bigint int (Option bigint)))
@@ -120,8 +134,12 @@
              (start (shift-left 1I (+ (/ (bit-count n) b) 1)))
              (r (let go ((x start))
                   (def y (/ (+ (* (- bb 1I) x) (/ n (expt x (- b 1)))) bb))
-                  (if (>= y x) x (go y)))))
-        (if (= (expt r b) n) (Some r) None))))
+                  (if (>= y x)
+                      x
+                      (go y)))))
+        (if (= (expt r b) n)
+            (Some r)
+            None))))
 
 ;; f^q, or None when the result is irrational, or q is negative and f zero.
 (: (-> Factor Rational (Option Factor)))
@@ -138,7 +156,12 @@
     (else
      (match (Tuple (exact-root (abs n) s) (exact-root d s))
        ((Tuple (Some a) (Some b))
-        (Some (factor (rational-expt (rational (if (< n 0I) (- 0I a) a) b) p) (/ k s))))
+        (Some (factor (rational-expt (rational (if (< n 0I)
+                                                   (- 0I a)
+                                                   a)
+                                               b)
+                                     p)
+                      (/ k s))))
        (_ None)))))
 
 ;; ---------------------------------------------------------------------------
@@ -158,7 +181,8 @@
       (orderedmap-map-values (fun (v) (rational* v q)) m)))
 
 (: (-> (OrderedMap string Rational) (OrderedMap string Rational)))
-(defun (exps-invert m) (exps-scale m (rational -1 1)))
+(defun (exps-invert m)
+  (exps-scale m (rational -1 1)))
 
 (: (-> string Rational string))
 (defun (exp-part name q)
@@ -175,9 +199,17 @@
   (def neg (list-filter (fun (e) (< (rational-sign (snd e)) 0)) entries))
   (: (-> (List (Tuple string Rational)) bool string))
   (defun (parts es negate?)
-    (string-join (list->vec (list-map (fun (e) (exp-part (fst e) (if negate? (rational-negate (snd e)) (snd e)))) es))
+    (string-join (list->vec (list-map (fun (e)
+                                        (exp-part (fst e)
+                                                  (if negate?
+                                                      (rational-negate (snd e))
+                                                      (snd e))))
+                                      es))
                  " "))
-  (def numer (if (list-empty? pos) "1" (parts pos #f)))
+  (def numer
+    (if (list-empty? pos)
+        "1"
+        (parts pos #f)))
   (cond
     ((list-empty? neg) numer)
     ((= (list-length neg) 1) (str numer "/" (parts neg #t)))
@@ -186,7 +218,9 @@
 ;; A dimension as text: "length/time", "mass/(length time^2)", "dimensionless".
 (: (-> (OrderedMap string Rational) string))
 (defun (dims->string d)
-  (if (orderedmap-empty? d) "dimensionless" (exps->string d)))
+  (if (orderedmap-empty? d)
+      "dimensionless"
+      (exps->string d)))
 
 ;; ---------------------------------------------------------------------------
 ;; Atoms and resolved expressions
@@ -194,39 +228,51 @@
 
 ;; A named unit with its dimension and its factor to the coherent unit of
 ;; that dimension.
-(type (: Atom #:opaque (Struct (: name string)
-                               (: dims (OrderedMap string Rational))
-                               (: factor Factor))))
+(type (: Atom
+         #:opaque
+         (Struct (: name string)
+                 (: dims (OrderedMap string Rational))
+                 (: factor Factor))))
 
 (: (-> string (OrderedMap string Rational) Factor Atom))
-(defun (atom name dims f) (Atom (name name) (dims dims) (factor f)))
+(defun (atom name dims f)
+  (Atom (name name) (dims dims) (factor f)))
 
 (: (-> Atom string))
-(defun (atom-name a) (struct-ref a name))
+(defun (atom-name a)
+  (struct-ref a name))
 
 (: (-> Atom (OrderedMap string Rational)))
-(defun (atom-dims a) (struct-ref a dims))
+(defun (atom-dims a)
+  (struct-ref a dims))
 
 (: (-> Atom Factor))
-(defun (atom-factor a) (struct-ref a factor))
+(defun (atom-factor a)
+  (struct-ref a factor))
 
 ;; coeff × the product of atoms to their exponents. atoms holds every atom
 ;; the term names.
-(type (: Resolved #:opaque (Struct (: coeff Factor)
-                                   (: term (OrderedMap string Rational))
-                                   (: atoms (OrderedMap string Atom)))))
+(type (: Resolved
+         #:opaque
+         (Struct (: coeff Factor)
+                 (: term (OrderedMap string Rational))
+                 (: atoms (OrderedMap string Atom)))))
 
 (: (-> Resolved Factor))
-(defun (resolved-coeff r) (struct-ref r coeff))
+(defun (resolved-coeff r)
+  (struct-ref r coeff))
 
 (: (-> Resolved (OrderedMap string Rational)))
-(defun (resolved-term r) (struct-ref r term))
+(defun (resolved-term r)
+  (struct-ref r term))
 
 (: (-> Resolved (OrderedMap string Atom)))
-(defun (resolved-atoms r) (struct-ref r atoms))
+(defun (resolved-atoms r)
+  (struct-ref r atoms))
 
 (: (-> Factor Resolved))
-(defun (resolved-number f) (Resolved (coeff f) (term (orderedmap-empty)) (atoms (orderedmap-empty))))
+(defun (resolved-number f)
+  (Resolved (coeff f) (term (orderedmap-empty)) (atoms (orderedmap-empty))))
 
 (: (-> Atom Resolved))
 (defun (resolved-atom a)
@@ -244,41 +290,46 @@
 (: (-> Resolved Resolved (Option Resolved)))
 (defun (resolved/ a b)
   (option-map (fun (inv)
-                (resolved* a (Resolved (coeff inv) (term (exps-invert (resolved-term b))) (atoms (resolved-atoms b)))))
+                (resolved* a
+                           (Resolved (coeff inv)
+                                     (term (exps-invert (resolved-term b)))
+                                     (atoms (resolved-atoms b)))))
               (factor-expt (resolved-coeff b) (rational -1 1))))
 
 ;; r^q, or None when the coefficient's power is irrational.
 (: (-> Resolved Rational (Option Resolved)))
 (defun (resolved-expt r q)
-  (option-map (fun (c) (Resolved (coeff c) (term (exps-scale (resolved-term r) q)) (atoms (resolved-atoms r))))
-              (factor-expt (resolved-coeff r) q)))
+  (option-map
+   (fun (c) (Resolved (coeff c) (term (exps-scale (resolved-term r) q)) (atoms (resolved-atoms r))))
+   (factor-expt (resolved-coeff r) q)))
 
 (: (-> Resolved (OrderedMap string Rational)))
 (defun (resolved-dims r)
-  (orderedmap-fold (fun (name q acc) (exps* acc (exps-scale (atom-dims (orderedmap-ref (resolved-atoms r) name)) q)))
+  (orderedmap-fold (fun (name q acc)
+                     (exps* acc (exps-scale (atom-dims (orderedmap-ref (resolved-atoms r) name)) q)))
                    (orderedmap-empty)
                    (resolved-term r)))
 
 ;; The exact factor from r to the coherent unit of its dimension.
 (: (-> Resolved (Result string Factor)))
 (defun (resolved-factor r)
-  (orderedmap-fold
-   (fun (name q acc)
-     (match acc
-       ((Ok f)
-        (match (factor-expt (atom-factor (orderedmap-ref (resolved-atoms r) name)) q)
-          ((Some g) (Ok (factor* f g)))
-          (None (Err (str "the factor of " (exp-part name q) " is irrational")))))
-       (e e)))
-   (Ok (resolved-coeff r))
-   (resolved-term r)))
+  (orderedmap-fold (fun (name q acc)
+                     (match acc
+                       ((Ok f)
+                        (match (factor-expt (atom-factor (orderedmap-ref (resolved-atoms r) name)) q)
+                          ((Some g) (Ok (factor* f g)))
+                          (None (Err (str "the factor of " (exp-part name q) " is irrational")))))
+                       (e e)))
+                   (Ok (resolved-coeff r))
+                   (resolved-term r)))
 
 ;; The factor as a double, rational powers included.
 (: (-> Resolved double))
 (defun (resolved-double r)
   (orderedmap-fold (fun (name q acc)
-                     (* acc (pow (factor->double (atom-factor (orderedmap-ref (resolved-atoms r) name)))
-                                 (rational->double q))))
+                     (* acc
+                        (pow (factor->double (atom-factor (orderedmap-ref (resolved-atoms r) name)))
+                             (rational->double q))))
                    (factor->double (resolved-coeff r))
                    (resolved-term r)))
 
@@ -289,9 +340,11 @@
 ;; Which prefixes printing may put on a preferred unit.
 (type (: PrefixUse (Union NoPrefix SmallPrefixes AllPrefixes)))
 
-(type (: UnitDef (Union (: UnitAtom Atom) (: UnitAlias Resolved))))
+(type (: UnitDef (Union (: UnitAtom Atom)
+                        (: UnitAlias Resolved))))
 
-(type (: UnitTable #:opaque
+(type (: UnitTable
+         #:opaque
          (Record (: dimensions (OrderedMap string string))
                  (: units (OrderedMap string UnitDef))
                  (: prefixes (OrderedMap string Rational))
@@ -299,8 +352,10 @@
 
 (: empty-unit-table UnitTable)
 (def empty-unit-table
-  (UnitTable (dimensions (orderedmap-empty)) (units (orderedmap-empty))
-             (prefixes (orderedmap-empty)) (preferred (orderedmap-empty))))
+  (UnitTable (dimensions (orderedmap-empty))
+             (units (orderedmap-empty))
+             (prefixes (orderedmap-empty))
+             (preferred (orderedmap-empty))))
 
 (: (-> UnitTable (List string)))
 (defun (unit-table-names t)
@@ -330,7 +385,8 @@
 (defun (check-new-name t name)
   (cond
     ((not (valid-name? name)) (Err (str "'" name "' is not a valid unit name")))
-    ((orderedmap-has-key? (record-ref t units) name) (Err (str "the unit '" name "' is already defined")))
+    ((orderedmap-has-key? (record-ref t units) name)
+     (Err (str "the unit '" name "' is already defined")))
     (else (Ok t))))
 
 ;; A base dimension and its coherent unit: (def-dimension t "length" "m").
@@ -339,10 +395,13 @@
   (def (Ok _) (check-new-name t unit) :propagate)
   (if (orderedmap-has-key? (record-ref t dimensions) dim)
       (Err (str "the dimension '" dim "' is already defined"))
-      (Ok (record-set t
-            (dimensions (orderedmap-set (record-ref t dimensions) dim unit))
-            (units (orderedmap-set (record-ref t units) unit
-                                   (UnitAtom (atom unit (orderedmap-set (orderedmap-empty) dim rational-one) factor-one))))))))
+      (Ok (record-set t (dimensions (orderedmap-set (record-ref t dimensions) dim unit))
+                        (units (orderedmap-set
+                                (record-ref t units)
+                                unit
+                                (UnitAtom (atom unit
+                                                (orderedmap-set (orderedmap-empty) dim rational-one)
+                                                factor-one))))))))
 
 ;; A unit defined by a unit expression: (def-unit t "ft" "12 in").
 ;; A definition with coefficient 1 makes an alias: "N" is "kg m/s^2". Any
@@ -389,7 +448,8 @@
 (: (-> string (Option (Tuple string int))))
 (defun (split-power name)
   (def cs (list-reverse (string->list name)))
-  (let go ((cs cs) (digits Nil))
+  (let go ((cs cs)
+           (digits Nil))
     (match cs
       ((Cons c rest) #:when (char-numeric? c) (go rest (Cons c digits)))
       ((Cons c rest) #:when (not (list-empty? digits))
@@ -399,19 +459,18 @@
 ;; The longest prefix p with name = p ++ rest, rest a unit of the table.
 (: (-> UnitTable string (Option (Tuple Rational string))))
 (defun (find-prefix t name)
-  (orderedmap-fold
-   (fun (p q best)
-     (if (and (string-starts-with? name p) (< (string-length p) (string-length name)))
-         (let ((rest (string-drop name (string-length p))))
-           (if (and (orderedmap-has-key? (record-ref t units) rest)
-                    (match best
-                      ((Some (Tuple _ r)) (< (string-length rest) (string-length r)))
-                      (None #t)))
-               (Some (Tuple q rest))
-               best))
-         best))
-   None
-   (record-ref t prefixes)))
+  (orderedmap-fold (fun (p q best)
+                     (if (and (string-starts-with? name p) (< (string-length p) (string-length name)))
+                         (let ((rest (string-drop name (string-length p))))
+                           (if (and (orderedmap-has-key? (record-ref t units) rest)
+                                    (match best
+                                      ((Some (Tuple _ r)) (< (string-length rest) (string-length r)))
+                                      (None #t)))
+                               (Some (Tuple q rest))
+                               best))
+                         best))
+                   None
+                   (record-ref t prefixes)))
 
 ;; A unit by name: the exact name, then a trailing power ("m2"), then a
 ;; prefix on a unit of the table ("km"). A prefixed unit is a new atom.
@@ -435,19 +494,29 @@
           (None None)))))))
 
 (: (-> char char int))
-(defun (char-cost a b) (if (char=? a b) 0 1))
+(defun (char-cost a b)
+  (if (char=? a b)
+      0
+      1))
 
 ;; Levenshtein distance.
 (: (-> string string int))
 (defun (edit-distance a b)
   (def bcs (string->list b))
-  (def first-row (let go ((j (list-length bcs)) (acc Nil))
-                   (if (< j 0) acc (go (- j 1) (Cons j acc)))))
+  (def first-row
+    (let go ((j (list-length bcs))
+             (acc Nil))
+      (if (< j 0)
+          acc
+          (go (- j 1) (Cons j acc)))))
   (: (-> char (List int) (List int)))
   (defun (next-row ca prev)
     (match prev
       ((Cons p0 _)
-       (let go ((bs bcs) (prev prev) (left (+ p0 1)) (acc (Cons (+ p0 1) Nil)))
+       (let go ((bs bcs)
+                (prev prev)
+                (left (+ p0 1))
+                (acc (Cons (+ p0 1) Nil)))
          (match (Tuple bs prev)
            ((Tuple (Cons cb more) (Cons diag (Cons up rest)))
             (def v (min (+ up 1) (min (+ left 1) (+ diag (char-cost ca cb)))))
@@ -467,7 +536,10 @@
                   (def d (edit-distance name candidate))
                   (match best
                     ((Some (Tuple bd _)) #:when (<= bd d) best)
-                    (_ (if (<= d limit) (Some (Tuple d candidate)) best))))
+                    (_
+                     (if (<= d limit)
+                         (Some (Tuple d candidate))
+                         best))))
                 None
                 (list-reverse (unit-table-names t))))
   (match best
@@ -485,7 +557,9 @@
 ;;   + -    measurements only
 ;; A trailing number on a name is a power: m2. pi is the number.
 
-(type (: Token (Union (: TNum Rational) (: TName string) (: TOp char))))
+(type (: Token (Union (: TNum Rational)
+                      (: TName string)
+                      (: TOp char))))
 
 (type (: Expr (Union (: ENum Rational)
                      EPi
@@ -499,7 +573,8 @@
                      (: ECall string Expr))))
 
 (: (-> char bool))
-(defun (number-char? c) (or (char-numeric? c) (char=? c #\.)))
+(defun (number-char? c)
+  (or (char-numeric? c) (char=? c #\.)))
 
 ;; Chars of a number from the front of cs: digits and points, an exponent
 ;; when digits follow the e, and a |-quotient.
@@ -530,14 +605,16 @@
 
 (: (-> (List char) (Tuple (List char) (List char))))
 (defun (take-name cs)
-  (let go ((cs cs) (acc Nil))
+  (let go ((cs cs)
+           (acc Nil))
     (match cs
       ((Cons c rest) #:when (name-char? c) (go rest (Cons c acc)))
       (_ (Tuple (list-reverse acc) cs)))))
 
 (: (-> string (Result string (List Token))))
 (defun (tokenize text)
-  (let go ((cs (string->list text)) (acc Nil))
+  (let go ((cs (string->list text))
+           (acc Nil))
     (match cs
       (Nil (Ok (list-reverse acc)))
       ((Cons c rest) #:when (char-whitespace? c) (go rest acc))
@@ -573,7 +650,8 @@
 (: (-> (List Token) (Result string (Tuple Expr (List Token)))))
 (defun (parse-sum ts)
   (def (Ok (Tuple first rest)) (parse-product ts) :propagate)
-  (let go ((e first) (ts rest))
+  (let go ((e first)
+           (ts rest))
     (match ts
       ((Cons (TOp #\+) more)
        (def (Ok (Tuple r after)) (parse-product more) :propagate)
@@ -586,7 +664,8 @@
 (: (-> (List Token) (Result string (Tuple Expr (List Token)))))
 (defun (parse-product ts)
   (def (Ok (Tuple first rest)) (parse-juxt ts) :propagate)
-  (let go ((e first) (ts rest))
+  (let go ((e first)
+           (ts rest))
     (match ts
       ((Cons (TOp #\*) more)
        (def (Ok (Tuple r after)) (parse-juxt more) :propagate)
@@ -599,7 +678,8 @@
 (: (-> (List Token) (Result string (Tuple Expr (List Token)))))
 (defun (parse-juxt ts)
   (def (Ok (Tuple first rest)) (parse-unary ts) :propagate)
-  (let go ((e first) (ts rest))
+  (let go ((e first)
+           (ts rest))
     (if (starts-factor? ts)
         (let ()
           (def (Ok (Tuple r after)) (parse-power ts) :propagate)
@@ -714,9 +794,10 @@
 (defun (conformable-units t text)
   (def (Ok r) (resolve-unit t text) :propagate)
   (def d (resolved-dims r))
-  (Ok (list-filter (fun (n) (match (lookup t n)
-                              ((Some u) (= (resolved-dims u) d))
-                              (None #f)))
+  (Ok (list-filter (fun (n)
+                     (match (lookup t n)
+                       ((Some u) (= (resolved-dims u) d))
+                       (None #f)))
                    (list-reverse (unit-table-names t)))))
 
 ;; ---------------------------------------------------------------------------
@@ -1014,160 +1095,207 @@
 ;; ---------------------------------------------------------------------------
 
 (def si-prefixes
-  (list (list "Q" "1e30") (list "R" "1e27") (list "Y" "1e24") (list "Z" "1e21") (list "E" "1e18") (list "P" "1e15")
-    (list "T" "1e12") (list "G" "1e9") (list "M" "1e6") (list "k" "1e3") (list "h" "1e2") (list "da" "1e1")
-    (list "d" "1e-1") (list "c" "1e-2") (list "m" "1e-3") (list "u" "1e-6") (list "µ" "1e-6") (list "n" "1e-9")
-    (list "p" "1e-12") (list "f" "1e-15") (list "a" "1e-18") (list "z" "1e-21") (list "y" "1e-24")
-    (list "r" "1e-27") (list "q" "1e-30")
-    (list "Ki" "1024") (list "ki" "1024") (list "Mi" "1048576") (list "Gi" "1073741824")
-    (list "Ti" "1099511627776") (list "Pi" "1125899906842624") (list "Ei" "1152921504606846976")
-    (list "Zi" "1180591620717411303424") (list "Yi" "1208925819614629174706176")))
+  (list (list "Q" "1e30")
+        (list "R" "1e27")
+        (list "Y" "1e24")
+        (list "Z" "1e21")
+        (list "E" "1e18")
+        (list "P" "1e15")
+        (list "T" "1e12")
+        (list "G" "1e9")
+        (list "M" "1e6")
+        (list "k" "1e3")
+        (list "h" "1e2")
+        (list "da" "1e1")
+        (list "d" "1e-1")
+        (list "c" "1e-2")
+        (list "m" "1e-3")
+        (list "u" "1e-6")
+        (list "µ" "1e-6")
+        (list "n" "1e-9")
+        (list "p" "1e-12")
+        (list "f" "1e-15")
+        (list "a" "1e-18")
+        (list "z" "1e-21")
+        (list "y" "1e-24")
+        (list "r" "1e-27")
+        (list "q" "1e-30")
+        (list "Ki" "1024")
+        (list "ki" "1024")
+        (list "Mi" "1048576")
+        (list "Gi" "1073741824")
+        (list "Ti" "1099511627776")
+        (list "Pi" "1125899906842624")
+        (list "Ei" "1152921504606846976")
+        (list "Zi" "1180591620717411303424")
+        (list "Yi" "1208925819614629174706176")))
 
 (def si-dimensions
-  (list (list "length" "m") (list "mass" "kg") (list "time" "s") (list "current" "A") (list "temperature" "K")
-    (list "amount" "mol") (list "luminosity" "cd") (list "information" "b")))
+  (list (list "length" "m")
+        (list "mass" "kg")
+        (list "time" "s")
+        (list "current" "A")
+        (list "temperature" "K")
+        (list "amount" "mol")
+        (list "luminosity" "cd")
+        (list "information" "b")))
 
 ;; (name definition alias ...), in order: a definition uses only names above it.
 (def standard-definitions
   (list ;; Aliases of the base units
-    (list "m" "m" "meter" "meters" "metre" "metres")
-    (list "s" "s" "sec" "second" "seconds")
-    (list "b" "b" "bit" "bits")
-    (list "A" "A" "amp" "Amp" "ampere")
-    ;; Constants
-    (list "c" "299792458 m/s")
-    (list "gn" "9.80665 m/s^2")
-    ;; Time
-    (list "min" "60 s" "minute" "minutes")
-    (list "h" "60 min" "hr" "hour" "hours")
-    (list "d" "24 h" "day" "days")
-    (list "wk" "7 d" "week" "weeks")
-    (list "fortnight" "14 d" "fortnights")
-    (list "yr" "31557600 s" "year" "years")
-    ;; Length
-    (list "in" "0.0254 m" "inch" "inches")
-    (list "ft" "12 in" "foot" "feet")
-    (list "yd" "3 ft" "yard" "yards")
-    (list "mi" "5280 ft" "mile" "miles")
-    (list "nmi" "1852 m")
-    (list "fath" "6 ft" "fathom" "fathoms")
-    (list "fur" "660 ft" "furlong" "furlongs")
-    (list "au" "149597870700 m")
-    (list "ly" "c yr" "lightyear" "lightyears")
-    (list "pc" "648000 au/pi" "parsec" "parsecs")
-    ;; Area
-    (list "ha" "10000 m2" "hectare" "hectares")
-    (list "are" "100 m2" "ares")
-    (list "acre" "4046.8564224 m2" "acres")
-    ;; Volume
-    (list "l" "0.001 m3" "L" "litre" "litres" "liter" "liters")
-    (list "gal" "3.785411784 l" "gallon" "gallons")
-    (list "qt" "1|4 gal" "quart" "quarts")
-    (list "pt" "1|2 qt" "pint" "pints")
-    (list "fl_oz" "1|16 pt" "fluid_ounce" "fluid_ounces")
-    (list "fl_dr" "1|8 fl_oz")
-    (list "gi" "4 fl_oz")
-    (list "tsp" "5 ml" "teaspoon" "teaspoons")
-    (list "tbsp" "15 ml" "tablespoon" "tablespoons")
-    (list "cup" "250 ml" "cups")
-    (list "us_tsp" "4.92892159375 ml")
-    (list "us_tbsp" "3 us_tsp")
-    (list "us_cup" "16 us_tbsp" "us_cups")
-    ;; Mass
-    (list "g" "0.001 kg" "gram" "grams")
-    (list "t" "1000 kg" "ton" "tons" "tonne" "tonnes")
-    (list "u" "1.66053906660e-27 kg" "amu")
-    (list "slug" "14.5939029 kg")
-    (list "lb" "0.45359237 kg" "pound" "pounds")
-    (list "oz" "1|16 lb" "ounce" "ounces")
-    (list "gr" "1|7000 lb" "grain" "grains")
-    (list "st" "14 lb" "stone")
-    (list "short_ton" "2000 lb" "short_tons")
-    (list "long_ton" "2240 lb" "long_tons")
-    ;; Force and pressure
-    (list "N" "kg m/s^2" "newton" "newtons")
-    (list "lbf" "lb gn")
-    (list "kgf" "kg gn")
-    (list "dyn" "1e-5 N")
-    (list "Pa" "N/m^2" "pascal")
-    (list "bar" "100000 Pa")
-    (list "atm" "101325 Pa" "atmosphere" "atmospheres")
-    (list "psi" "lbf/in^2")
-    (list "mHg" "133322.387415 Pa" "mhg")
-    (list "mH2O" "9806.65 Pa" "mh2o")
-    ;; Energy and power
-    (list "J" "N m" "joule" "joules" "Nm")
-    (list "W" "J/s" "watt" "watts" "Watt" "Watts")
-    (list "Wh" "W h")
-    (list "hp" "745.6998715822702 W" "horsepower")
-    (list "cal" "4.184 J" "calorie" "calories")
-    (list "BTU" "1055.05585262 J")
-    (list "eV" "1.602176634e-19 J")
-    (list "erg" "1e-7 J")
-    ;; Electricity and magnetism
-    (list "C" "A s" "coulomb")
-    (list "V" "W/A" "volt" "volts")
-    (list "ohm" "V/A" "ohms")
-    (list "S" "1/ohm" "siemens")
-    (list "F" "C/V" "farad")
-    (list "H" "V s/A" "henry")
-    (list "Wb" "V s" "weber")
-    (list "T" "Wb/m^2" "tesla" "T_tesla")
-    (list "gauss" "1e-4 T")
-    (list "Mx" "1e-8 Wb" "maxwell")
-    (list "Oe" "1000/(4 pi) * A/m" "oersted")
-    ;; Viscosity
-    (list "poise" "0.1 Pa s")
-    (list "St" "1e-4 m^2/s" "stokes")
-    ;; Information
-    (list "B" "8 b" "byte" "bytes")
-    (list "bps" "b/s")
-    (list "Bps" "B/s")
-    ;; Photometry
-    (list "sr" "1" "steradian")
-    (list "lm" "cd sr" "lumen")
-    (list "lx" "lm/m^2" "lux")
-    ;; Frequency and radioactivity
-    (list "Hz" "1/s" "hertz" "Hertz" "hz")
-    (list "Bq" "1/s" "becquerel")
-    (list "Ci" "3.7e10 Bq" "curie")
-    (list "Gy" "J/kg" "gray")
-    (list "Sv" "J/kg" "sievert")
-    (list "rem" "0.01 Sv")
-    (list "rad_dose" "0.01 Gy")
-    (list "R" "2.58e-4 C/kg" "roentgen")
-    ;; Temperature differences
-    (list "degR" "5|9 K" "rankine")
-    ;; Angles
-    (list "rad" "1" "radian" "radians")
-    (list "deg" "pi/180" "degree" "degrees")
-    (list "grad" "pi/200")
-    (list "rev" "2 pi" "revolution" "revolutions")
-    (list "rpm" "rev/min")
-    (list "arcmin" "1|60 deg")
-    (list "arcsec" "1|3600 deg")
-    ;; Ratios
-    (list "%" "0.01" "percent")
-    (list "ppm" "1e-6")
-    (list "ppb" "1e-9")
-    (list "ppt" "1e-12")
-    ;; Physical constants
-    (list "planck" "6.62607015e-34 J s")
-    (list "hbar" "planck/(2 pi)")
-    ;; Rates
-    (list "kph" "km/h")
-    (list "mph" "mi/h")
-    (list "kn" "nmi/h" "knot" "knots")))
+   (list "m" "m" "meter" "meters" "metre" "metres")
+   (list "s" "s" "sec" "second" "seconds")
+   (list "b" "b" "bit" "bits")
+   (list "A" "A" "amp" "Amp" "ampere")
+   ;; Constants
+   (list "c" "299792458 m/s")
+   (list "gn" "9.80665 m/s^2")
+   ;; Time
+   (list "min" "60 s" "minute" "minutes")
+   (list "h" "60 min" "hr" "hour" "hours")
+   (list "d" "24 h" "day" "days")
+   (list "wk" "7 d" "week" "weeks")
+   (list "fortnight" "14 d" "fortnights")
+   (list "yr" "31557600 s" "year" "years")
+   ;; Length
+   (list "in" "0.0254 m" "inch" "inches")
+   (list "ft" "12 in" "foot" "feet")
+   (list "yd" "3 ft" "yard" "yards")
+   (list "mi" "5280 ft" "mile" "miles")
+   (list "nmi" "1852 m")
+   (list "fath" "6 ft" "fathom" "fathoms")
+   (list "fur" "660 ft" "furlong" "furlongs")
+   (list "au" "149597870700 m")
+   (list "ly" "c yr" "lightyear" "lightyears")
+   (list "pc" "648000 au/pi" "parsec" "parsecs")
+   ;; Area
+   (list "ha" "10000 m2" "hectare" "hectares")
+   (list "are" "100 m2" "ares")
+   (list "acre" "4046.8564224 m2" "acres")
+   ;; Volume
+   (list "l" "0.001 m3" "L" "litre" "litres" "liter" "liters")
+   (list "gal" "3.785411784 l" "gallon" "gallons")
+   (list "qt" "1|4 gal" "quart" "quarts")
+   (list "pt" "1|2 qt" "pint" "pints")
+   (list "fl_oz" "1|16 pt" "fluid_ounce" "fluid_ounces")
+   (list "fl_dr" "1|8 fl_oz")
+   (list "gi" "4 fl_oz")
+   (list "tsp" "5 ml" "teaspoon" "teaspoons")
+   (list "tbsp" "15 ml" "tablespoon" "tablespoons")
+   (list "cup" "250 ml" "cups")
+   (list "us_tsp" "4.92892159375 ml")
+   (list "us_tbsp" "3 us_tsp")
+   (list "us_cup" "16 us_tbsp" "us_cups")
+   ;; Mass
+   (list "g" "0.001 kg" "gram" "grams")
+   (list "t" "1000 kg" "ton" "tons" "tonne" "tonnes")
+   (list "u" "1.66053906660e-27 kg" "amu")
+   (list "slug" "14.5939029 kg")
+   (list "lb" "0.45359237 kg" "pound" "pounds")
+   (list "oz" "1|16 lb" "ounce" "ounces")
+   (list "gr" "1|7000 lb" "grain" "grains")
+   (list "st" "14 lb" "stone")
+   (list "short_ton" "2000 lb" "short_tons")
+   (list "long_ton" "2240 lb" "long_tons")
+   ;; Force and pressure
+   (list "N" "kg m/s^2" "newton" "newtons")
+   (list "lbf" "lb gn")
+   (list "kgf" "kg gn")
+   (list "dyn" "1e-5 N")
+   (list "Pa" "N/m^2" "pascal")
+   (list "bar" "100000 Pa")
+   (list "atm" "101325 Pa" "atmosphere" "atmospheres")
+   (list "psi" "lbf/in^2")
+   (list "mHg" "133322.387415 Pa" "mhg")
+   (list "mH2O" "9806.65 Pa" "mh2o")
+   ;; Energy and power
+   (list "J" "N m" "joule" "joules" "Nm")
+   (list "W" "J/s" "watt" "watts" "Watt" "Watts")
+   (list "Wh" "W h")
+   (list "hp" "745.6998715822702 W" "horsepower")
+   (list "cal" "4.184 J" "calorie" "calories")
+   (list "BTU" "1055.05585262 J")
+   (list "eV" "1.602176634e-19 J")
+   (list "erg" "1e-7 J")
+   ;; Electricity and magnetism
+   (list "C" "A s" "coulomb")
+   (list "V" "W/A" "volt" "volts")
+   (list "ohm" "V/A" "ohms")
+   (list "S" "1/ohm" "siemens")
+   (list "F" "C/V" "farad")
+   (list "H" "V s/A" "henry")
+   (list "Wb" "V s" "weber")
+   (list "T" "Wb/m^2" "tesla" "T_tesla")
+   (list "gauss" "1e-4 T")
+   (list "Mx" "1e-8 Wb" "maxwell")
+   (list "Oe" "1000/(4 pi) * A/m" "oersted")
+   ;; Viscosity
+   (list "poise" "0.1 Pa s")
+   (list "St" "1e-4 m^2/s" "stokes")
+   ;; Information
+   (list "B" "8 b" "byte" "bytes")
+   (list "bps" "b/s")
+   (list "Bps" "B/s")
+   ;; Photometry
+   (list "sr" "1" "steradian")
+   (list "lm" "cd sr" "lumen")
+   (list "lx" "lm/m^2" "lux")
+   ;; Frequency and radioactivity
+   (list "Hz" "1/s" "hertz" "Hertz" "hz")
+   (list "Bq" "1/s" "becquerel")
+   (list "Ci" "3.7e10 Bq" "curie")
+   (list "Gy" "J/kg" "gray")
+   (list "Sv" "J/kg" "sievert")
+   (list "rem" "0.01 Sv")
+   (list "rad_dose" "0.01 Gy")
+   (list "R" "2.58e-4 C/kg" "roentgen")
+   ;; Temperature differences
+   (list "degR" "5|9 K" "rankine")
+   ;; Angles
+   (list "rad" "1" "radian" "radians")
+   (list "deg" "pi/180" "degree" "degrees")
+   (list "grad" "pi/200")
+   (list "rev" "2 pi" "revolution" "revolutions")
+   (list "rpm" "rev/min")
+   (list "arcmin" "1|60 deg")
+   (list "arcsec" "1|3600 deg")
+   ;; Ratios
+   (list "%" "0.01" "percent")
+   (list "ppm" "1e-6")
+   (list "ppb" "1e-9")
+   (list "ppt" "1e-12")
+   ;; Physical constants
+   (list "planck" "6.62607015e-34 J s")
+   (list "hbar" "planck/(2 pi)")
+   ;; Rates
+   (list "kph" "km/h")
+   (list "mph" "mi/h")
+   (list "kn" "nmi/h" "knot" "knots")))
 
 (def standard-preferred
-  (list (Tuple "m" AllPrefixes) (Tuple "g" AllPrefixes) (Tuple "s" SmallPrefixes)
-        (Tuple "A" AllPrefixes) (Tuple "K" SmallPrefixes) (Tuple "mol" AllPrefixes)
-        (Tuple "cd" AllPrefixes) (Tuple "b" AllPrefixes)
-        (Tuple "N" AllPrefixes) (Tuple "Pa" AllPrefixes) (Tuple "J" AllPrefixes)
-        (Tuple "W" AllPrefixes) (Tuple "C" AllPrefixes) (Tuple "V" AllPrefixes)
-        (Tuple "ohm" AllPrefixes) (Tuple "S" AllPrefixes) (Tuple "F" AllPrefixes)
-        (Tuple "H" AllPrefixes) (Tuple "Wb" AllPrefixes) (Tuple "T" AllPrefixes)
-        (Tuple "lx" AllPrefixes) (Tuple "Hz" AllPrefixes) (Tuple "Gy" AllPrefixes)))
+  (list (Tuple "m" AllPrefixes)
+        (Tuple "g" AllPrefixes)
+        (Tuple "s" SmallPrefixes)
+        (Tuple "A" AllPrefixes)
+        (Tuple "K" SmallPrefixes)
+        (Tuple "mol" AllPrefixes)
+        (Tuple "cd" AllPrefixes)
+        (Tuple "b" AllPrefixes)
+        (Tuple "N" AllPrefixes)
+        (Tuple "Pa" AllPrefixes)
+        (Tuple "J" AllPrefixes)
+        (Tuple "W" AllPrefixes)
+        (Tuple "C" AllPrefixes)
+        (Tuple "V" AllPrefixes)
+        (Tuple "ohm" AllPrefixes)
+        (Tuple "S" AllPrefixes)
+        (Tuple "F" AllPrefixes)
+        (Tuple "H" AllPrefixes)
+        (Tuple "Wb" AllPrefixes)
+        (Tuple "T" AllPrefixes)
+        (Tuple "lx" AllPrefixes)
+        (Tuple "Hz" AllPrefixes)
+        (Tuple "Gy" AllPrefixes)))
 
 (: (-> UnitTable (List string) UnitTable))
 (defun (add-definition t entry)
@@ -1183,12 +1311,13 @@
 (: standard-units UnitTable)
 (def standard-units
   (let* ((t (list-foldl (fun (d t) (ok-or-raise (def-dimension t (first-of-2 d) (second-of-2 d))))
-                        empty-unit-table si-dimensions))
+                        empty-unit-table
+                        si-dimensions))
          (t (list-foldl (fun (p t) (ok-or-raise (def-prefix t (first-of-2 p) (second-of-2 p))))
-                        t si-prefixes))
+                        t
+                        si-prefixes))
          (t (list-foldl (fun (e t) (add-definition t e)) t standard-definitions)))
-    (list-foldl (fun (p t) (ok-or-raise (def-preferred t (fst p) (snd p))))
-                t standard-preferred)))
+    (list-foldl (fun (p t) (ok-or-raise (def-preferred t (fst p) (snd p)))) t standard-preferred)))
 
 (: (-> (List string) string))
 (defun (first-of-2 xs)
@@ -1207,16 +1336,20 @@
 ;; ---------------------------------------------------------------------------
 
 ;; A value in the coherent unit of its dimension.
-(type (: Measurement (Struct (: value double) (: dims (OrderedMap string Rational)))))
+(type (: Measurement (Struct (: value double)
+                             (: dims (OrderedMap string Rational)))))
 
 (: (-> double (OrderedMap string Rational) Measurement))
-(defun (measurement v d) (Measurement (value v) (dims d)))
+(defun (measurement v d)
+  (Measurement (value v) (dims d)))
 
 (: (-> Measurement double))
-(defun (measurement-value m) (struct-ref m value))
+(defun (measurement-value m)
+  (struct-ref m value))
 
 (: (-> Measurement (OrderedMap string Rational)))
-(defun (measurement-dims m) (struct-ref m dims))
+(defun (measurement-dims m)
+  (struct-ref m dims))
 
 (def no-dims (orderedmap-empty))
 
@@ -1224,8 +1357,12 @@
 (defun (same-dims what a b)
   (if (= (measurement-dims a) (measurement-dims b))
       (Ok a)
-      (Err (str "cannot " what " " (dims->string (measurement-dims a))
-                " and " (dims->string (measurement-dims b))))))
+      (Err (str "cannot "
+                what
+                " "
+                (dims->string (measurement-dims a))
+                " and "
+                (dims->string (measurement-dims b))))))
 
 (: (-> UnitTable Expr (Result string Measurement)))
 (defun (eval-measure t e)
@@ -1262,7 +1399,10 @@
      (Ok (measurement (- (measurement-value x) (measurement-value y)) (measurement-dims x))))
     ((ECall f a)
      (def (Ok x) (eval-measure t a) :propagate)
-     (Ok (measurement-expt x (if (= f "sqrt") (rational 1 2) (rational 1 3)))))))
+     (Ok (measurement-expt x
+                           (if (= f "sqrt")
+                               (rational 1 2)
+                               (rational 1 3)))))))
 
 ;; "6000 m + 50 ft", "0.5 * 1.225 kg/m^3 * (120 km/h)^2", "sqrt(2 m^2)".
 (: (-> string (#:table UnitTable) (Result string Measurement)))
@@ -1304,14 +1444,15 @@
 
 (: (-> Measurement Rational Measurement))
 (defun (measurement-expt m q)
-  (measurement (pow (measurement-value m) (rational->double q))
-               (exps-scale (measurement-dims m) q)))
+  (measurement (pow (measurement-value m) (rational->double q)) (exps-scale (measurement-dims m) q)))
 
 (: (-> Measurement Measurement))
-(defun (measurement-sqrt m) (measurement-expt m (rational 1 2)))
+(defun (measurement-sqrt m)
+  (measurement-expt m (rational 1 2)))
 
 (: (-> Measurement Measurement bool))
-(defun (conformable? a b) (= (measurement-dims a) (measurement-dims b)))
+(defun (conformable? a b)
+  (= (measurement-dims a) (measurement-dims b)))
 
 ;; m as a number of target: (measurement-in m "ft"), (measurement-in m "12 mi/h").
 (: (-> Measurement string (#:table UnitTable) (Result string double)))
@@ -1319,8 +1460,12 @@
   (def (Ok u) (string->measurement target #:table table) :propagate)
   (if (conformable? m u)
       (Ok (/ (measurement-value m) (measurement-value u)))
-      (Err (str "cannot convert " (dims->string (measurement-dims m))
-                " to " target ", which is " (dims->string (measurement-dims u))))))
+      (Err (str "cannot convert "
+                (dims->string (measurement-dims m))
+                " to "
+                target
+                ", which is "
+                (dims->string (measurement-dims u))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Printing
@@ -1342,19 +1487,33 @@
   (def candidates
     (match use
       (NoPrefix Nil)
-      (_ (list-filter (fun (p) (match use
-                                 (SmallPrefixes (< (snd p) 1.0))
-                                 (_ #t)))
-                      (list-map (fun (p) (Tuple p (rational->double (orderedmap-ref (record-ref t prefixes) p))))
-                                (list-filter (fun (p) (orderedmap-has-key? (record-ref t prefixes) p)) print-prefixes))))))
+      (_
+       (list-filter
+        (fun (p)
+          (match use
+            (SmallPrefixes (< (snd p) 1.0))
+            (_ #t)))
+        (list-map (fun (p) (Tuple p (rational->double (orderedmap-ref (record-ref t prefixes) p))))
+                  (list-filter (fun (p) (orderedmap-has-key? (record-ref t prefixes) p))
+                               print-prefixes))))))
   (def all (Cons (Tuple "" 1.0) candidates))
   (def fitting (list-filter (fun (p) (<= (snd p) a)) all))
   (cond
     ((= a 0.0) (Tuple "" 1.0))
     ((list-empty? fitting)
-     (list-foldl (fun (p best) (if (< (snd p) (snd best)) p best)) (Tuple "" 1.0) all))
+     (list-foldl (fun (p best)
+                   (if (< (snd p) (snd best))
+                       p
+                       best))
+                 (Tuple "" 1.0)
+                 all))
     (else
-     (list-foldl (fun (p best) (if (> (snd p) (snd best)) p best)) (Tuple "" 0.0) fitting))))
+     (list-foldl (fun (p best)
+                   (if (> (snd p) (snd best))
+                       p
+                       best))
+                 (Tuple "" 0.0)
+                 fitting))))
 
 ;; In the dimension's preferred unit with a prefix by magnitude, or else in
 ;; the coherent unit written with the base units: "3.6 MJ", "33.33333 m/s".
@@ -1365,16 +1524,20 @@
   (cond
     ((orderedmap-empty? d) (format-number v))
     (:match (Some (Tuple unit use)) (orderedmap-try-ref (record-ref table preferred) (exps->string d))
-     (def u (match (lookup table unit)
-              ((Some r) (resolved-double r))
-              (None 1.0)))
+     (def u
+       (match (lookup table unit)
+         ((Some r) (resolved-double r))
+         (None 1.0)))
      (def x (/ v u))
      (def (p pv) (choose-prefix table x use))
      (str (format-number (/ x pv)) " " p unit))
     (else
-     (def names (orderedmap-fold (fun (dim q acc)
-                                   (orderedmap-set acc (orderedmap-ref-or (record-ref table dimensions) dim dim) q))
-                                 (orderedmap-empty) d))
+     (def names
+       (orderedmap-fold
+        (fun (dim q acc)
+          (orderedmap-set acc (orderedmap-ref-or (record-ref table dimensions) dim dim) q))
+        (orderedmap-empty)
+        d))
      (str (format-number v) " " (exps->string names)))))
 
 ;; Mixed output: (measurement->string/mixed m (list "h" "min")) is "5 h 25 min".
@@ -1382,34 +1545,43 @@
 (: (-> Measurement (List string) (#:table UnitTable) (Result string string)))
 (defun (measurement->string/mixed m units #:table standard-units)
   (def (Ok targets)
-    (list-foldl (fun (u acc)
-                  (match acc
-                    ((Ok xs)
-                     (match (string->measurement u #:table table)
-                       ((Ok v) #:when (conformable? v m) (Ok (Cons (Tuple u (measurement-value v)) xs)))
-                       ((Ok v) (Err (str "cannot convert " (dims->string (measurement-dims m)) " to " u)))
-                       ((Err e) (Err e))))
-                    (e e)))
-                (Ok Nil) units)
-    :propagate)
-  (let go ((ts (list-reverse targets)) (remaining (measurement-value m)) (parts Nil))
+    (list-foldl
+     (fun (u acc)
+       (match acc
+         ((Ok xs)
+          (match (string->measurement u #:table table)
+            ((Ok v) #:when (conformable? v m) (Ok (Cons (Tuple u (measurement-value v)) xs)))
+            ((Ok v) (Err (str "cannot convert " (dims->string (measurement-dims m)) " to " u)))
+            ((Err e) (Err e))))
+         (e e)))
+     (Ok Nil)
+     units) :propagate)
+  (let go ((ts (list-reverse targets))
+           (remaining (measurement-value m))
+           (parts Nil))
     (match ts
       (Nil (Ok (string-join (list->vec (list-reverse parts)) " ")))
       ((Cons (Tuple u scale) Nil)
        (def x (/ remaining scale))
-       (go Nil 0.0 (if (or (> (abs x) 1e-9) (list-empty? parts))
-                       (Cons (str (format-number x) " " u) parts)
-                       parts)))
+       (go Nil
+           0.0
+           (if (or (> (abs x) 1e-9) (list-empty? parts))
+               (Cons (str (format-number x) " " u) parts)
+               parts)))
       ((Cons (Tuple u scale) more)
        (def whole (truncate (round-to (/ remaining scale) 9)))
-       (go more (- remaining (* whole scale))
-           (if (= whole 0.0) parts (Cons (str (format-number whole) " " u) parts)))))))
+       (go more
+           (- remaining (* whole scale))
+           (if (= whole 0.0)
+               parts
+               (Cons (str (format-number whole) " " u) parts)))))))
 
 (import/extern
   (clr-round-digits (: System.Math.Round (-> double int double))))
 
 (: (-> double int double))
-(defun (round-to x digits) (clr-round-digits x digits))
+(defun (round-to x digits)
+  (clr-round-digits x digits))
 
 ;; A query as Umits takes it: "12 h in s", "65 mi/(12 mi/h) in h,min",
 ;; "6 ft, 2 in in m", or an expression alone, printed by measurement->string.
@@ -1419,8 +1591,9 @@
 (defun (convert-query query #:table standard-units)
   (def (lhs rhs)
     (match (string-search-backward query " in ")
-      ((Some at) (Tuple (substring query (string-cursor-start query) at)
-                        (Some (substring query (string-cursor-forward query at 4) (string-cursor-end query)))))
+      ((Some at)
+       (Tuple (substring query (string-cursor-start query) at)
+              (Some (substring query (string-cursor-forward query at 4) (string-cursor-end query)))))
       (None (Tuple query None))))
   (def (Ok m) (string->measurement (string-replace lhs "," " + ") #:table table) :propagate)
   (match rhs
@@ -1436,12 +1609,16 @@
        (_ (measurement->string/mixed m units #:table table))))))
 
 (impl (Written Measurement)
-  (defun (written m) (str "(string->measurement \"" (measurement->string m) "\")"))
-  (defun (write-into m b) (stringbuilder-add-string! b (written m))))
+  (defun (written m)
+    (str "(string->measurement \"" (measurement->string m) "\")"))
+  (defun (write-into m b)
+    (stringbuilder-add-string! b (written m))))
 
 (impl (Displayed Measurement)
-  (defun (displayed m) (measurement->string m))
-  (defun (display-into m b) (stringbuilder-add-string! b (measurement->string m))))
+  (defun (displayed m)
+    (measurement->string m))
+  (defun (display-into m b)
+    (stringbuilder-add-string! b (measurement->string m))))
 
 ;; ---------------------------------------------------------------------------
 ;; Temperatures
@@ -1464,7 +1641,8 @@
 (: (-> Fahrenheit Measurement))
 (defun (fahrenheit->kelvin f)
   (def (Fahrenheit x) f)
-  (measurement (* (+ x 459.67) (/ 5.0 9.0)) (measurement-dims (ok-or-raise (string->measurement "K")))))
+  (measurement (* (+ x 459.67) (/ 5.0 9.0))
+               (measurement-dims (ok-or-raise (string->measurement "K")))))
 
 ;; Raises ArgumentException when k is not a temperature.
 (: (-> Measurement Fahrenheit))
@@ -1472,20 +1650,32 @@
   (Fahrenheit (- (* (ok-or-raise (measurement-in k "K")) (/ 9.0 5.0)) 459.67)))
 
 (impl (Written Celsius)
-  (defun (written c) (def (Celsius x) c) (str "(Celsius " (written x) ")"))
-  (defun (write-into c b) (stringbuilder-add-string! b (written c))))
+  (defun (written c)
+    (def (Celsius x) c)
+    (str "(Celsius " (written x) ")"))
+  (defun (write-into c b)
+    (stringbuilder-add-string! b (written c))))
 
 (impl (Displayed Celsius)
-  (defun (displayed c) (def (Celsius x) c) (str (format-number x) " °C"))
-  (defun (display-into c b) (stringbuilder-add-string! b (displayed c))))
+  (defun (displayed c)
+    (def (Celsius x) c)
+    (str (format-number x) " °C"))
+  (defun (display-into c b)
+    (stringbuilder-add-string! b (displayed c))))
 
 (impl (Written Fahrenheit)
-  (defun (written f) (def (Fahrenheit x) f) (str "(Fahrenheit " (written x) ")"))
-  (defun (write-into f b) (stringbuilder-add-string! b (written f))))
+  (defun (written f)
+    (def (Fahrenheit x) f)
+    (str "(Fahrenheit " (written x) ")"))
+  (defun (write-into f b)
+    (stringbuilder-add-string! b (written f))))
 
 (impl (Displayed Fahrenheit)
-  (defun (displayed f) (def (Fahrenheit x) f) (str (format-number x) " °F"))
-  (defun (display-into f b) (stringbuilder-add-string! b (displayed f))))
+  (defun (displayed f)
+    (def (Fahrenheit x) f)
+    (str (format-number x) " °F"))
+  (defun (display-into f b)
+    (stringbuilder-add-string! b (displayed f))))
 
 ;; ---------------------------------------------------------------------------
 ;; Logarithmic
@@ -1501,25 +1691,33 @@
   (measurement-scale (pow 10.0 (/ x k)) (ok-or-raise (string->measurement reference))))
 
 (: (-> Measurement double))
-(defun (dBW p) (decibels 10.0 p "1 W"))
+(defun (dBW p)
+  (decibels 10.0 p "1 W"))
 
 (: (-> Measurement double))
-(defun (dBm p) (decibels 10.0 p "1 mW"))
+(defun (dBm p)
+  (decibels 10.0 p "1 mW"))
 
 (: (-> Measurement double))
-(defun (dBV v) (decibels 20.0 v "1 V"))
+(defun (dBV v)
+  (decibels 20.0 v "1 V"))
 
 (: (-> Measurement double))
-(defun (dBSPL p) (decibels 20.0 p "20 uPa"))
+(defun (dBSPL p)
+  (decibels 20.0 p "20 uPa"))
 
 (: (-> double Measurement))
-(defun (dBW->power x) (from-decibels 10.0 x "1 W"))
+(defun (dBW->power x)
+  (from-decibels 10.0 x "1 W"))
 
 (: (-> double Measurement))
-(defun (dBm->power x) (from-decibels 10.0 x "1 mW"))
+(defun (dBm->power x)
+  (from-decibels 10.0 x "1 mW"))
 
 (: (-> double Measurement))
-(defun (dBV->voltage x) (from-decibels 20.0 x "1 V"))
+(defun (dBV->voltage x)
+  (from-decibels 20.0 x "1 V"))
 
 (: (-> double Measurement))
-(defun (dBSPL->pressure x) (from-decibels 20.0 x "20 uPa"))
+(defun (dBSPL->pressure x)
+  (from-decibels 20.0 x "20 uPa"))

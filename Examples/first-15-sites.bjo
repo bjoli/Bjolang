@@ -20,7 +20,6 @@
 (type (: Fetched (Record (: url string)
                          (: outcome (Result Exception string)))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; One request
 ;; ---------------------------------------------------------------------------
@@ -32,7 +31,6 @@
     ;; otherwise propagate the (Err ...)
     (result-map (bjoroutine (response) (read-all (response-port response))) r)))
 
-
 ;; ---------------------------------------------------------------------------
 ;; The crew
 ;; ---------------------------------------------------------------------------
@@ -41,8 +39,7 @@
 (defbjo (worker jobs answers)
   (loop (:for n (up-from 0))
         (:let url (sync (chan-recv jobs)))
-        (:do (sync (chan-send answers
-                              (Fetched (url url) (outcome (fetch-text url))))))))
+        (:do (sync (chan-send answers (Fetched (url url) (outcome (fetch-text url))))))))
 
 ;; Hires workers and passes them the channel where they get the addresses and
 ;; the channel where they put the result. `n` is the number of workers.
@@ -58,7 +55,6 @@
   (loop (:for url urls)
         (:do (sync (chan-send jobs url)))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; The whole thing
 ;; ---------------------------------------------------------------------------
@@ -66,7 +62,7 @@
 (: (-bjo-> (Vec string) int int (Vec Fetched)))
 (defbjo (fetch-first urls wanted crew-size)
   ;; The fibers spawned registers with the current cancel context
-  ;; and they are awaited at the end of with-cancel. 
+  ;; and they are awaited at the end of with-cancel.
   (with-cancel (cancel)
     (def jobs (make-chan))
     (def answers (make-chan))
@@ -76,11 +72,12 @@
     (hire jobs answers crew-size)
     (spawn (feeder jobs urls))
 
-    (def kept (loop (:for seen (range 0 (vec-length urls)))
-                    (:let r (sync (chan-recv answers)))
-                    (:when-let (Ok text) (record-ref r outcome))
-                    (:acc got (vecing r))
-                    (:finish (= (vecbuilder-length got) wanted))))
+    (def kept
+      (loop (:for seen (range 0 (vec-length urls)))
+            (:let r (sync (chan-recv answers)))
+            (:when-let (Ok text) (record-ref r outcome))
+            (:acc got (vecing r))
+            (:finish (= (vecbuilder-length got) wanted))))
 
     ;; Enough. Firing the token is what stops the crew, and the scope does not
     ;; return until every worker has actually stopped.

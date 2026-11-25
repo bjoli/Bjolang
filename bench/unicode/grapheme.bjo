@@ -24,18 +24,26 @@
 (: (-> int (Vec int) string))
 (defun (repeated n codes)
   (def sb (stringbuilder-empty))
-  (loop (:for _ (range 0 n)) (:do (loop (:for k codes) (:do (stringbuilder-add! sb (int->char k))))))
+  (loop (:for _ (range 0 n))
+        (:do (loop (:for k codes)
+                   (:do (stringbuilder-add! sb (int->char k))))))
   (stringbuilder->string sb))
 
 (: (-> string int))
 (defun (count-back s)
-  (let go ((c (string-cursor-end s)) (n 0))
-    (if (string-cursor=? c (string-cursor-start s)) n (go (string-cursor-prev-grapheme s c) (+ n 1)))))
+  (let go ((c (string-cursor-end s))
+           (n 0))
+    (if (string-cursor=? c (string-cursor-start s))
+        n
+        (go (string-cursor-prev-grapheme s c) (+ n 1)))))
 
 (: (-> Text int))
 (defun (text-count-back r)
-  (let go ((c (text-cursor-end r)) (n 0))
-    (if (text-cursor-start? r c) n (go (text-cursor-prev-grapheme r c) (+ n 1)))))
+  (let go ((c (text-cursor-end r))
+           (n 0))
+    (if (text-cursor-start? r c)
+        n
+        (go (text-cursor-prev-grapheme r c) (+ n 1)))))
 
 (def flags-10k (repeated 5000 [0x1F1E6 0x1F1E7]))
 (def flags-40k (repeated 20000 [0x1F1E6 0x1F1E7]))
@@ -43,24 +51,32 @@
 
 (def/bench "1 MB: string-grapheme-count" (string-grapheme-count megabyte))
 (def/bench "1 MB: every character of the string, ref+next"
-  (let go ((c (string-cursor-start megabyte)) (n 0))
-    (if (string-cursor-end? megabyte c) n (go (string-cursor-next megabyte c) (+ n 1)))))
+  (let go ((c (string-cursor-start megabyte))
+           (n 0))
+    (if (string-cursor-end? megabyte c)
+        n
+        (go (string-cursor-next megabyte c) (+ n 1)))))
 (def/bench "1 MB: string, clusters back from the end" (count-back megabyte))
 (def/bench "1 MB: every character of the string backwards, prev+ref"
-  (let go ((c (string-cursor-end megabyte)) (n 0))
+  (let go ((c (string-cursor-end megabyte))
+           (n 0))
     (if (string-cursor=? c (string-cursor-start megabyte))
         n
-        (let ((p (string-cursor-prev megabyte c))) (go p (+ n (char->int (string-cursor-ref megabyte p))))))))
+        (let ((p (string-cursor-prev megabyte c)))
+          (go p (+ n (char->int (string-cursor-ref megabyte p))))))))
 (def/bench "1 MB: every character of the text backwards, prev+ref"
-  (let go ((c (text-cursor-end mb-text)) (n 0))
+  (let go ((c (text-cursor-end mb-text))
+           (n 0))
     (if (text-cursor-start? mb-text c)
         n
-        (let ((p (text-cursor-prev mb-text c))) (go p (+ n (char->int (text-cursor-ref mb-text p))))))))
+        (let ((p (text-cursor-prev mb-text c)))
+          (go p (+ n (char->int (text-cursor-ref mb-text p))))))))
 (def/bench "1 MB: text-grapheme-count" (text-grapheme-count mb-text))
 (def/bench "1 MB: text, clusters back from the end" (text-count-back mb-text))
 (def/bench "10k flags: back from the end" (count-back flags-10k))
 (def/bench "40k flags: back from the end" (count-back flags-40k))
 (def/bench "40k flags: string-grapheme-count" (string-grapheme-count flags-40k))
-(def/bench "40k marks: one cluster back" (string-cursor-prev-grapheme marks-40k (string-cursor-end marks-40k)))
+(def/bench "40k marks: one cluster back"
+  (string-cursor-prev-grapheme marks-40k (string-cursor-end marks-40k)))
 
 (run-benches)

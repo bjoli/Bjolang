@@ -107,15 +107,16 @@
                                                             (string-length (record-ref p dir)))
                                best)
                               (_ (Some (Tuple p rel))))))
-        => best))
+    => best))
 
 ;; Where `path` goes in the output, when it is under the standard library,
 ;; the runtime or a package. `None` for anything else.
 (: (-> Publication string (Option string)))
 (defun (known-destination p path)
-  (def in-lib (match (record-ref p lib)
-                ((Some lib) (below lib path))
-                (None None)))
+  (def in-lib
+    (match (record-ref p lib)
+      ((Some lib) (below lib path))
+      (None None)))
   (match in-lib
     ((Some rel) (Some (path-combine "lib" rel)))
     (None
@@ -167,7 +168,9 @@
     (Nil "/")
     ((Cons first rest)
      (def dir (string-join (list->vec (list-foldl common-prefix first rest)) "/"))
-     (if (= dir "") "/" dir))))
+     (if (= dir "")
+         "/"
+         dir))))
 
 ;; ---------------------------------------------------------------------------
 ;; Copying
@@ -219,10 +222,12 @@
 ;; its build records, which name this machine's paths and which nothing reads
 ;; in a published program.
 (: (-> Path bool))
-(defun (build-record? f) (path-has-extension? f "bjobuild"))
+(defun (build-record? f)
+  (path-has-extension? f "bjobuild"))
 
 (: (-> Path bool))
-(defun (nothing-skipped f) #f)
+(defun (nothing-skipped f)
+  #f)
 
 ;; Copies a resource, a file or a directory, to `rel` under `out`.
 (: copy-resource! (-> string string string void) #:sync)
@@ -237,7 +242,7 @@
   (+ (length (directory-files dir))
      (loop (:for d (directory-subdirectories dir))
            (:acc n (summing (count-files d)))
-           => n)))
+       => n)))
 
 ;; Empties the output directory, or makes it. A directory that is there and
 ;; holds files is replaced only when an earlier publish made it. Answers why
@@ -252,11 +257,12 @@
      (directory-delete-tree out)
      (directory-create out)
      None)
-    ((and (empty? (directory-files out)) (empty? (directory-subdirectories out)))
-     None)
+    ((and (empty? (directory-files out)) (empty? (directory-subdirectories out))) None)
     (else
-     (Some (str "bjo publish: " out " is not empty, and bjo publish did not make it. "
-               "Give an empty or new directory with -o.")))))
+     (Some (str "bjo publish: "
+                out
+                " is not empty, and bjo publish did not make it. "
+                "Give an empty or new directory with -o.")))))
 
 ;; Why a declared resource cannot be published, or nothing when it can.
 (: (-> PublishedPackage string (Option string)))
@@ -266,7 +272,9 @@
   (cond
     ((or (clr-path-rooted? resource)
          (any? #(= & "..") (string-split (string-replace resource "\\" "/") "/")))
-     (Some (str "bjo publish: " shown " is not a path inside the package. "
+     (Some (str "bjo publish: "
+                shown
+                " is not a path inside the package. "
                 "A resource is written relative to the package's directory.")))
     ((not (or (file-exists? from) (directory-exists? from)))
      (Some (str "bjo publish: " shown " is not there.")))
@@ -280,7 +288,7 @@
         (:for resource (record-ref package resources))
         (:when-let (Some why) (resource-problem package resource))
         (:acc out (listing why))
-        => out))
+    => out))
 
 ;; ---------------------------------------------------------------------------
 ;; Publishing
@@ -294,7 +302,8 @@
 (defun (publish p)
   (with-return ret
     (when (empty? (record-ref p links))
-      (ret (Err (str "bjo publish: the build record of " (record-ref p program)
+      (ret (Err (str "bjo publish: the build record of "
+                     (record-ref p program)
                      " names nothing the program loads. Rebuild it with -c and publish again."))))
 
     (match (resource-problems (record-ref p packages))
@@ -310,24 +319,32 @@
     (when (and (not (= native "")) (file-exists? native))
       (ret (publish-native p out native)))
 
-    (def files (list-append (list-map (fun (link) (match link ((Tuple name path) (Tuple "link" name path))))
-                                      (record-ref p links))
-                            (list-map (fun (native) (match native ((Tuple key path) (Tuple "native" key path))))
-                                      (record-ref p natives))))
+    (def files
+      (list-append (list-map (fun (link)
+                               (match link
+                                 ((Tuple name path) (Tuple "link" name path))))
+                             (record-ref p links))
+                   (list-map (fun (native)
+                               (match native
+                                 ((Tuple key path) (Tuple "native" key path))))
+                             (record-ref p natives))))
     (def external-root
       (common-directory (loop (:for (Tuple _ _ path) files)
-                              (:acc paths (listing path) #:when (and (not (some? (known-destination p path)))
-                                                                     (not (some? (package-store-path path)))))
-                              => paths)))
+                              (:acc paths (listing path)
+                                    #:when (and (not (some? (known-destination p path)))
+                                                (not (some? (package-store-path path)))))
+                          => paths)))
     (defun (destination path)
       (match (known-destination p path)
         ((Some rel) rel)
-        (None (path-combine "external"
-                            (match (package-store-path path)
-                              ((Some rel) rel)
-                              (None (match (below external-root path)
-                                      ((Some rel) rel)
-                                      (None (clr-file-name path)))))))))
+        (None
+         (path-combine "external"
+                       (match (package-store-path path)
+                         ((Some rel) rel)
+                         (None
+                          (match (below external-root path)
+                            ((Some rel) rel)
+                            (None (clr-file-name path)))))))))
 
     (def program (record-ref p program))
 
@@ -357,8 +374,10 @@
           ;; is copied to.
           (def table
             (loop (:for (Tuple kind name path) files)
-                  (:acc lines (listing (str kind "\t" name "\t" (string-replace (destination path) "\\" "/"))))
-                  => lines))
+                  (:acc lines
+                        (listing
+                         (str kind "\t" name "\t" (string-replace (destination path) "\\" "/"))))
+              => lines))
           (file-write-text (path-combine out (str (clr-file-stem program) ".bjolinks"))
                            (str (string-join (list->vec table) "\n") "\n"))
           (file-write-text (path-combine out published-marker)
@@ -393,7 +412,7 @@
           (loop (:for (Tuple key path) (record-ref p natives))
                 (:do (copy-to! out (clr-file-name path) path))
                 (:acc lines (listing (str "native\t" key "\t" (clr-file-name path))))
-                => lines))
+            => lines))
         (loop (:for package (record-ref p packages))
               (:subloop)
               (:for resource (record-ref package resources))

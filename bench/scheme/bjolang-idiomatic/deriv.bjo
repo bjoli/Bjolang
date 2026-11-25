@@ -16,39 +16,47 @@
 
 ;; `(op . args)` as one vec.
 (: (-> Sexp (Vec Sexp) Sexp))
-(defun (form op args) (Lst (vec-insert args 0 op)))
+(defun (form op args)
+  (Lst (vec-insert args 0 op)))
 
 (: (-> Sexp Sexp))
 (defun (deriv a)
   (match a
-    ((Atom s) (Int (if (eq? s 'x) 1 0)))
+    ((Atom s)
+     (Int (if (eq? s 'x)
+              1
+              0)))
     ((Int _) (Int 0))
     ((Lst [(Atom op) args ...])
-     (cond ((eq? op '+) (form plus (vec-map deriv args)))
-           ((eq? op '-) (form minus (vec-map deriv args)))
-           ((eq? op '*)
-            (Lst [times a (form plus (vec-map (fun (e) (Lst [divide (deriv e) e])) args))]))
-           ((eq? op '/)
-            (let ((x (vec-ref args 0))
-                  (y (vec-ref args 1)))
-              (Lst [minus
-                    (Lst [divide (deriv x) y])
-                    (Lst [divide x (Lst [times y y (deriv y)])])])))
-           (else (panic! "No derivation method available"))))
+     (cond
+       ((eq? op '+) (form plus (vec-map deriv args)))
+       ((eq? op '-) (form minus (vec-map deriv args)))
+       ((eq? op '*) (Lst [times a (form plus (vec-map (fun (e) (Lst [divide (deriv e) e])) args))]))
+       ((eq? op '/)
+        (let ((x (vec-ref args 0))
+              (y (vec-ref args 1)))
+          (Lst [minus (Lst [divide (deriv x) y]) (Lst [divide x (Lst [times y y (deriv y)])])])))
+       (else (panic! "No derivation method available"))))
     (_ (panic! "No derivation method available"))))
 
 (: (-> Sexp Sexp bool))
 (defun (sexp-equal? a b)
   (match a
-    ((Atom x) (match b ((Atom y) (eq? x y)) (_ #f)))
-    ((Int x) (match b ((Int y) (= x y)) (_ #f)))
+    ((Atom x)
+     (match b
+       ((Atom y) (eq? x y))
+       (_ #f)))
+    ((Int x)
+     (match b
+       ((Int y) (= x y))
+       (_ #f)))
     ((Lst xs)
      (match b
        ((Lst ys)
         (and (= (vec-length xs) (vec-length ys))
              (loop (:for i (range 0 (vec-length xs)))
                    (:finish (not (sexp-equal? (vec-ref xs i) (vec-ref ys i))) #f)
-                   => #t)))
+               => #t)))
        (_ #f)))))
 
 (def sx (Atom 'x))
@@ -62,10 +70,11 @@
 
 (: Sexp)
 (def output
-  (Lst [plus [times [times 3 sx sx] [plus [divide 0 3] [divide 1 sx] [divide 1 sx]]]
-             [times [times sa sx sx] [plus [divide 0 sa] [divide 1 sx] [divide 1 sx]]]
-             [times [times sb sx] [plus [divide 0 sb] [divide 1 sx]]]
-             0]))
+  (Lst [plus
+        [times [times 3 sx sx] [plus [divide 0 3] [divide 1 sx] [divide 1 sx]]]
+        [times [times sa sx sx] [plus [divide 0 sa] [divide 1 sx] [divide 1 sx]]]
+        [times [times sb sx] [plus [divide 0 sb] [divide 1 sx]]]
+        0]))
 
 (defun (main args)
   (run-benchmark "deriv" (arg-int args 0) (fun () (deriv input)) #(sexp-equal? & output)))

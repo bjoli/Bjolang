@@ -91,14 +91,17 @@
            (def (Tuple d c) (digits-from s start 0))
            (cond
              ((or (= d 0) (> d 9) (string-cursor-end? s c)) None)
-             ((not (or (char=? (string-cursor-ref s c) #\.) (char=? (string-cursor-ref s c) #\)))) None)
+             ((not (or (char=? (string-cursor-ref s c) #\.) (char=? (string-cursor-ref s c) #\))))
+              None)
              ((string-cursor-end? s (string-cursor-next s c)) (Some (Tuple (+ d 1) #t)))
              ((space-at? s (string-cursor-next s c)) (Some (Tuple (+ d 2) #t)))
              (else None)))))))
 
 (: with-first-text (-> (Vec At) string (Vec At)))
 (defun (with-first-text line s)
-  (if (string-empty? s) (vec-remove-at line 0) (vec-set line 0 (Text s))))
+  (if (string-empty? s)
+      (vec-remove-at line 0)
+      (vec-set line 0 (Text s))))
 
 (: classify (-> (Vec At) Line))
 (defun (classify line)
@@ -125,9 +128,10 @@
 (defun (next-non-blank lines i)
   (cond
     ((>= i (vec-length lines)) i)
-    (else (match (vec-ref lines i)
-            (Blank (next-non-blank lines (+ i 1)))
-            (_ i)))))
+    (else
+     (match (vec-ref lines i)
+       (Blank (next-non-blank lines (+ i 1)))
+       (_ i)))))
 
 (: bullet-at? (-> Line int bool))
 (defun (bullet-at? l indent)
@@ -157,10 +161,12 @@
 ;; whether it numbers, its items, and the line it stopped at.
 (: parse-list (-> (Vec Line) int int (Tuple bool (Vec (Vec Part)) int)))
 (defun (parse-list lines start indent)
-  (def numbered (match (vec-ref lines start)
-                  ((Bullet k num xs) num)
-                  (_ #f)))
-  (let go ((i start) (items (vec-empty)))
+  (def numbered
+    (match (vec-ref lines start)
+      ((Bullet k num xs) num)
+      (_ #f)))
+  (let go ((i start)
+           (items (vec-empty)))
     (def j (next-non-blank lines i))
     (if (and (< j (vec-length lines)) (bullet-at? (vec-ref lines j) indent))
         (match (parse-item lines j indent)
@@ -173,10 +179,12 @@
 (: parse-item (-> (Vec Line) int int (Tuple (Vec Part) int)))
 (defun (parse-item lines start indent)
   (def n (vec-length lines))
-  (def first (match (vec-ref lines start)
-               ((Bullet k num xs) xs)
-               (_ (vec-empty))))
-  (let go ((i (+ start 1)) (parts [(Words first)]))
+  (def first
+    (match (vec-ref lines start)
+      ((Bullet k num xs) xs)
+      (_ (vec-empty))))
+  (let go ((i (+ start 1))
+           (parts [(Words first)]))
     (if (>= i n)
         (Tuple parts i)
         (match (vec-ref lines i)
@@ -204,7 +212,8 @@
         (:acc out (folding (vec-empty)
                            (match p
                              ((Words ws) (vec-append out (items->blocks cx ws)))
-                             ((Sublist numbered items) (vec-add out (list->block cx numbered items))))))))
+                             ((Sublist numbered items)
+                              (vec-add out (list->block cx numbered items))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The command
@@ -223,8 +232,10 @@
 (: read-list (-> Ctx Call (Vec Piece)))
 (defun (read-list cx c)
   (check-keywords! cx c (vec-empty))
-  (when (> (arg-count c) 0) (refuse cx c "takes no arguments"))
-  (unless (has-body? c) (refuse cx c "needs a body: {...}"))
+  (when (> (arg-count c) 0)
+    (refuse cx c "takes no arguments"))
+  (unless (has-body? c)
+    (refuse cx c "needs a body: {...}"))
   (def raw (at-lines (body-items c)))
   (def lines (vec-map classify raw))
   (def n (vec-length lines))
@@ -237,12 +248,19 @@
            ((Tuple numbered items next)
             (def rest (next-non-blank lines next))
             (when (< rest n)
-              (refuse cx c (str "has a line in no item: \"" (line-text (vec-ref raw rest))
-                                "\". After a blank line, text is in an item when it is"
-                                " indented past the item's marker")))
+              (refuse cx
+                      c
+                      (str "has a line in no item: \""
+                           (line-text (vec-ref raw rest))
+                           "\". After a blank line, text is in an item when it is"
+                           " indented past the item's marker")))
             (block (list->block cx numbered items)))))
-        (_ (refuse cx c (str "begins with text, and a list begins with - or 1.: \""
-                             (line-text (vec-ref raw start)) "\""))))))
+        (_
+         (refuse cx
+                 c
+                 (str "begins with text, and a list begins with - or 1.: \""
+                      (line-text (vec-ref raw start))
+                      "\""))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Tables, as Org writes them
@@ -288,8 +306,7 @@
 
 (: rule? (-> string bool))
 (defun (rule? s)
-  (and (string-contains? s "-")
-       (string-fold (fun (c ok) (and ok (rule-char? c))) #t s)))
+  (and (string-contains? s "-") (string-fold (fun (c ok) (and ok (rule-char? c))) #t s)))
 
 ;; The alignment each segment of a rule asks for: `:--` left, `--:` right,
 ;; `:-:` centred, and `---` nothing.
@@ -310,11 +327,14 @@
 (def kept-pipe (char->string (int->char 57344)))
 
 (: unpipe (-> string string))
-(defun (unpipe s) (string-replace s kept-pipe "|"))
+(defun (unpipe s)
+  (string-replace s kept-pipe "|"))
 
 (: add-text (-> (Vec At) string (Vec At)))
 (defun (add-text items s)
-  (if (string-empty? s) items (vec-add items (Text s))))
+  (if (string-empty? s)
+      items
+      (vec-add items (Text s))))
 
 (: split-item (-> (Tuple (Vec (Vec At)) (Vec At)) At (Tuple (Vec (Vec At)) (Vec At))))
 (defun (split-item st item)
@@ -326,23 +346,26 @@
            (:acc next (folding (Tuple cells (add-text current (unpipe (vec-ref parts 0))))
                                (match next
                                  ((Tuple done cell)
-                                  (Tuple (vec-add done cell) (add-text (vec-empty) (unpipe part)))))))))))
+                                  (Tuple (vec-add done cell)
+                                         (add-text (vec-empty) (unpipe part)))))))))))
 
 ;; A cell with the space around it taken off.
 (: trim-cell (-> (Vec At) (Vec At)))
 (defun (trim-cell cell)
-  (def start (if (vec-empty? cell)
-                 cell
-                 (match (vec-ref cell 0)
-                   ((Text s) (with-first-text cell (string-trim-left s)))
-                   ((Cmd c) cell))))
+  (def start
+    (if (vec-empty? cell)
+        cell
+        (match (vec-ref cell 0)
+          ((Text s) (with-first-text cell (string-trim-left s)))
+          ((Cmd c) cell))))
   (if (vec-empty? start)
       start
       (let ((last (- (vec-length start) 1)))
         (match (vec-ref start last)
-          ((Text s) (if (string-empty? (string-trim-right s))
-                        (vec-remove-at start last)
-                        (vec-set start last (Text (string-trim-right s)))))
+          ((Text s)
+           (if (string-empty? (string-trim-right s))
+               (vec-remove-at start last)
+               (vec-set start last (Text (string-trim-right s)))))
           ((Cmd c) start)))))
 
 ;; The cells of a row. What is before its first `|` is not a cell, and neither
@@ -364,14 +387,19 @@
 (defun (cookie s)
   (if (and (>= (string-length s) 2) (string-starts-with? s "<") (string-ends-with? s ">"))
       (let* ((inner (string-downcase (.Substring s 1 (- (.-Length s) 2))))
-             (letter (if (string-empty? inner) "" (.Substring inner 0 1)))
+             (letter (if (string-empty? inner)
+                         ""
+                         (.Substring inner 0 1)))
              (lettered (or (= letter "l") (= letter "c") (= letter "r")))
-             (width (if lettered (.Substring inner 1) inner)))
+             (width (if lettered
+                        (.Substring inner 1)
+                        inner)))
         (if (string-fold (fun (ch ok) (and ok (char-numeric? ch))) #t width)
-            (Some (cond ((= letter "l") AlignLeft)
-                        ((= letter "c") AlignCenter)
-                        ((= letter "r") AlignRight)
-                        (else AlignDefault)))
+            (Some (cond
+                    ((= letter "l") AlignLeft)
+                    ((= letter "c") AlignCenter)
+                    ((= letter "r") AlignRight)
+                    (else AlignDefault)))
             None))
       None))
 
@@ -385,10 +413,12 @@
                             (match (Tuple st (plain-line cell))
                               ((Tuple (Some aligns) (Some text))
                                (cond
-                                 ((string-empty? (string-trim text)) (Some (vec-add aligns AlignDefault)))
-                                 (else (match (cookie (string-trim text))
-                                         ((Some a) (Some (vec-add aligns a)))
-                                         (None None)))))
+                                 ((string-empty? (string-trim text))
+                                  (Some (vec-add aligns AlignDefault)))
+                                 (else
+                                  (match (cookie (string-trim text))
+                                    ((Some a) (Some (vec-add aligns a)))
+                                    (None None)))))
                               (_ None))))))
   (if (vec-empty? (vec-filter (fun (cell) (not (at-line-blank? cell))) cells))
       None
@@ -426,10 +456,17 @@
 ;; anything.
 (: over-aligns (-> (Vec Align) (Vec Align) (Vec Align)))
 (defun (over-aligns before after)
-  (def n (if (> (vec-length after) (vec-length before)) (vec-length after) (vec-length before)))
+  (def n
+    (if (> (vec-length after) (vec-length before))
+        (vec-length after)
+        (vec-length before)))
   (loop (:for i (up-from 0 #:to n))
-        (:let old (if (< i (vec-length before)) (vec-ref before i) AlignDefault))
-        (:let new (if (< i (vec-length after)) (vec-ref after i) AlignDefault))
+        (:let old (if (< i (vec-length before))
+                      (vec-ref before i)
+                      AlignDefault))
+        (:let new (if (< i (vec-length after))
+                      (vec-ref after i)
+                      AlignDefault))
         (:acc (vecing (match new
                         (AlignDefault old)
                         (_ new))))))
@@ -438,10 +475,17 @@
 (: number-text? (-> string bool))
 (defun (number-text? s)
   (def t0 (string-trim s))
-  (def t1 (if (or (string-starts-with? t0 "-") (string-starts-with? t0 "+")) (.Substring t0 1) t0))
-  (def t2 (if (string-ends-with? t1 "%") (.Substring t1 0 (- (.-Length t1) 1)) t1))
-  (and (string-fold (fun (ch ok) (and ok (or (char-numeric? ch) (char=? ch #\.) (char=? ch #\,)))) #t t2)
-       (string-fold (fun (ch any) (or any (char-numeric? ch))) #f t2)))
+  (def t1
+    (if (or (string-starts-with? t0 "-") (string-starts-with? t0 "+"))
+        (.Substring t0 1)
+        t0))
+  (def t2
+    (if (string-ends-with? t1 "%")
+        (.Substring t1 0 (- (.-Length t1) 1))
+        t1))
+  (and
+   (string-fold (fun (ch ok) (and ok (or (char-numeric? ch) (char=? ch #\.) (char=? ch #\,)))) #t t2)
+   (string-fold (fun (ch any) (or any (char-numeric? ch))) #f t2)))
 
 ;; Whether more than half of a column's non-empty body cells are numbers.
 (: numeric-column? (-> (Vec (Vec (Vec At))) int bool))
@@ -458,21 +502,27 @@
 
 (: padded (-> int (Vec (Vec At)) (Vec (Vec At))))
 (defun (padded n row)
-  (if (>= (vec-length row) n) row (padded n (vec-add row (vec-empty)))))
+  (if (>= (vec-length row) n)
+      row
+      (padded n (vec-add row (vec-empty)))))
 
 (: read-table (-> Ctx Call (Vec Piece)))
 (defun (read-table cx c)
   (check-keywords! cx c ["caption"])
-  (when (> (arg-count c) 0) (refuse cx c "takes no arguments; the caption is #:caption"))
-  (unless (has-body? c) (refuse cx c "needs a body: {...}"))
+  (when (> (arg-count c) 0)
+    (refuse cx c "takes no arguments; the caption is #:caption"))
+  (unless (has-body? c)
+    (refuse cx c "needs a body: {...}"))
   (def raw (at-lines (body-items c)))
   (def lines (vec-map table-line raw))
   (loop (:for line lines)
         (:for text raw)
         (:do (match line
                ((StrayLine l)
-                (refuse cx c (str "has a line that is not a row, a rule or a #+ line: \""
-                                  (line-text text) "\"")))
+                (refuse
+                 cx
+                 c
+                 (str "has a line that is not a row, a rule or a #+ line: \"" (line-text text) "\"")))
                (_ unit))))
   ;; The rows in groups, and whether the first group was ended by a rule.
   (def grouped
@@ -484,20 +534,31 @@
                               ((Tuple (Tuple groups current headed) (RuleLine a))
                                (if (vec-empty? current)
                                    st
-                                   (Tuple (vec-add groups current) (vec-empty)
+                                   (Tuple (vec-add groups current)
+                                          (vec-empty)
                                           (or headed (vec-empty? groups)))))
                               (_ st))))))
   (match grouped
     ((Tuple closed last headed)
-     (def groups (if (vec-empty? last) closed (vec-add closed last)))
+     (def groups
+       (if (vec-empty? last)
+           closed
+           (vec-add closed last)))
      (if (vec-empty? groups)
          nothing
-         (let* ((head (if headed (vec-ref groups 0) (vec-empty)))
-                (bodies (if headed (vec-remove-at groups 0) groups))
+         (let* ((head (if headed
+                          (vec-ref groups 0)
+                          (vec-empty)))
+                (bodies (if headed
+                            (vec-remove-at groups 0)
+                            groups))
                 (body-rows (loop (:for g bodies)
                                  (:acc rows (folding (vec-empty) (vec-append rows g)))))
                 (columns (loop (:for row (vec-append head body-rows))
-                               (:acc widest (folding 0 (if (> (vec-length row) widest) (vec-length row) widest)))))
+                               (:acc widest (folding 0
+                                                     (if (> (vec-length row) widest)
+                                                         (vec-length row)
+                                                         widest)))))
                 (asked (loop (:for line lines)
                              (:acc so-far (folding (vec-empty)
                                                    (match line
@@ -505,23 +566,32 @@
                                                      ((CookieLine a) (over-aligns so-far a))
                                                      (_ so-far))))))
                 (aligns (loop (:for i (up-from 0 #:to columns))
-                              (:let a (if (< i (vec-length asked)) (vec-ref asked i) AlignDefault))
+                              (:let a (if (< i (vec-length asked))
+                                          (vec-ref asked i)
+                                          AlignDefault))
                               (:acc (vecing (match a
-                                              (AlignDefault (if (numeric-column? body-rows i) AlignRight AlignDefault))
+                                              (AlignDefault
+                                               (if (numeric-column? body-rows i)
+                                                   AlignRight
+                                                   AlignDefault))
                                               (_ a))))))
                 (caption-text (kw-string-or cx c "caption" ""))
                 (caption (if (string-empty? caption-text)
-                             (items->inlines cx c
-                                             (loop (:for line lines)
-                                                   (:acc words (folding (vec-empty)
-                                                                        (match line
-                                                                          ((CaptionLine more)
-                                                                           (if (vec-empty? words)
-                                                                               more
-                                                                               (vec-append (vec-add words (Text " ")) more)))
-                                                                          (_ words))))))
+                             (items->inlines
+                              cx
+                              c
+                              (loop (:for line lines)
+                                    (:acc words (folding (vec-empty)
+                                                         (match line
+                                                           ((CaptionLine more)
+                                                            (if (vec-empty? words)
+                                                                more
+                                                                (vec-append (vec-add words (Text " "))
+                                                                            more)))
+                                                           (_ words))))))
                              [(Str caption-text)]))
-                (cells-of (fun (row) (vec-map (fun (cell) (items->inlines cx c cell)) (padded columns row)))))
+                (cells-of (fun (row)
+                            (vec-map (fun (cell) (items->inlines cx c cell)) (padded columns row)))))
            (block (TableBlock (Table (caption caption)
                                      (aligns aligns)
                                      (head (vec-map cells-of head))

@@ -63,7 +63,8 @@
 ;; Is there a git to run at all? Asked before the first command, so that a
 ;; machine without one is told what is missing rather than what failed.
 (: (-> bool))
-(defun (git-on-path?) (some? (which "git")))
+(defun (git-on-path?)
+  (some? (which "git")))
 
 ;; Runs git, and answers its exit code and its output. A non-zero code is an
 ;; ordinary answer here — "this tag has no manifest" is one — so it is not an
@@ -81,7 +82,6 @@
       (Ok out)
       (Err (str "bjo: " what " failed.\n  " (tool-said g)))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; The bare clone
 ;; ---------------------------------------------------------------------------
@@ -92,7 +92,9 @@
 (: (-> string string))
 (defun (url->directory-name url)
   (loop (:for c url)
-        (:acc out (stringing (if (or (char-alphabetic? c) (char-numeric? c)) c #\_)))
+        (:acc out (stringing (if (or (char-alphabetic? c) (char-numeric? c))
+                                 c
+                                 #\_)))
     => out))
 
 (: (-> string string string))
@@ -108,31 +110,30 @@
   (cond
     ((directory-exists? dir) (Ok dir))
     ((not (git-on-path?))
-     (Err (str "bjo: git is not on PATH; it is needed to fetch "
-               (name->string name) " from " url ".")))
+     (Err
+      (str "bjo: git is not on PATH; it is needed to fetch " (name->string name) " from " url ".")))
     (else
      (directory-create (path-combine dot-bjo "git"))
-     (def (Ok cloned) (git-must g ["clone" "--bare" "--quiet" url dir]
-                                (str "cloning " url))
+     (def (Ok cloned) (git-must g ["clone" "--bare" "--quiet" url dir] (str "cloning " url))
        :propagate)
      (Ok dir))))
 
 ;; New tags, for when this run needs something the clone has not got.
 (: fetch-tags (-> Tool string (Result string Unit)) #:sync)
 (defun (fetch-tags g dir)
-  (def (Ok fetched)
-    (git-must g ["--git-dir" dir "fetch" "--tags" "--force" "--quiet"]
-              (str "fetching tags into " dir))
+  (def (Ok fetched) (git-must g
+                              ["--git-dir" dir "fetch" "--tags" "--force" "--quiet"]
+                              (str "fetching tags into " dir))
     :propagate)
   (Ok unit))
-
 
 ;; ---------------------------------------------------------------------------
 ;; Versions, as tags
 ;; ---------------------------------------------------------------------------
 
 (: (-> Version string))
-(defun (version->tag v) (str "v" (version->string v)))
+(defun (version->tag v)
+  (str "v" (version->string v)))
 
 ;; A tag as a version, if it is one.
 ;;
@@ -149,19 +150,21 @@
                              (string-cursor-end tag))))
         (match (parse-version text)
           ((Err why) None)
-          ((Ok v) (if (= (version->string v) text) (Some v) None))))))
+          ((Ok v)
+           (if (= (version->string v) text)
+               (Some v)
+               None))))))
 
 ;; Every version the clone holds, oldest first.
 (: version-tags (-> Tool string (Result string (List Version))) #:sync)
 (defun (version-tags g dir)
   (def (Ok out) (git-must g ["--git-dir" dir "tag" "--list"] (str "reading the tags of " dir))
     :propagate)
-  (Ok (list-sort-versions
-       (loop (:for line (string-split out "\n"))
-             (:let v (tag->version (string-trim line)))
-             (:when-let (Some version) v)
-             (:acc found (listing version))
-         => found))))
+  (Ok (list-sort-versions (loop (:for line (string-split out "\n"))
+                                (:let v (tag->version (string-trim line)))
+                                (:when-let (Some version) v)
+                                (:acc found (listing version))
+                            => found))))
 
 ;; Insertion sort, oldest first. A repository has tens of tags, not thousands,
 ;; and `Version` is a record with no ordering of its own.
@@ -184,9 +187,9 @@
 ;; whose own object is not the commit.
 (: tag-commit (-> Tool string Version (Result string string)) #:sync)
 (defun (tag-commit g dir v)
-  (def (Ok out)
-    (git-must g ["--git-dir" dir "rev-parse" (str (version->tag v) "^{commit}")]
-              (str "reading the commit of " (version->tag v)))
+  (def (Ok out) (git-must g
+                          ["--git-dir" dir "rev-parse" (str (version->tag v) "^{commit}")]
+                          (str "reading the commit of " (version->tag v)))
     :propagate)
   (Ok (string-trim out)))
 
@@ -205,13 +208,17 @@
 (: manifest-at (-> Tool string Version (Result string string)) #:sync)
 (defun (manifest-at g dir v)
   (def (Ok (Tuple code out))
-    (git-run g ["--git-dir" dir "show" (str (version->tag v) ":" manifest-name)])
-    :propagate)
+    (git-run g ["--git-dir" dir "show" (str (version->tag v) ":" manifest-name)]) :propagate)
   (if (= code 0)
       (Ok out)
-      (Err (str "bjo: " (version->tag v) " in " dir " has no " manifest-name
-                ", so there is no package there.\n  " (tool-said g)))))
-
+      (Err (str "bjo: "
+                (version->tag v)
+                " in "
+                dir
+                " has no "
+                manifest-name
+                ", so there is no package there.\n  "
+                (tool-said g)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Putting a version on disk
@@ -222,13 +229,15 @@
 ;; share one and a version that is no longer wanted can be deleted by name.
 (: (-> string (List Symbol) Version string))
 (defun (package-directory dot-bjo name v)
-  (path-combine dot-bjo "pkg"
-                (str (string-join (list->vec (list-map symbol->string name)) ".")
-                     "@" (version->string v))))
+  (path-combine
+   dot-bjo
+   "pkg"
+   (str (string-join (list->vec (list-map symbol->string name)) ".") "@" (version->string v))))
 
 ;; What a materialised directory says it holds.
 (: (-> string string))
-(defun (commit-marker dir) (path-combine dir ".bjo-commit"))
+(defun (commit-marker dir)
+  (path-combine dir ".bjo-commit"))
 
 (: (-> string string))
 (defun (marked-commit dir)
@@ -253,12 +262,14 @@
     (def archive (path-combine tmp (str commit ".zip")))
     (def unpacked (path-combine tmp (str "unpack-" commit)))
 
-    (when (directory-exists? unpacked) (directory-delete-tree unpacked))
-    (when (file-exists? archive) (file-delete archive))
+    (when (directory-exists? unpacked)
+      (directory-delete-tree unpacked))
+    (when (file-exists? archive)
+      (file-delete archive))
 
-    (def (Ok archived)
-      (git-must g ["--git-dir" clone "archive" "--format=zip" "-o" archive commit]
-                (str "writing an archive of " commit))
+    (def (Ok archived) (git-must g
+                                 ["--git-dir" clone "archive" "--format=zip" "-o" archive commit]
+                                 (str "writing an archive of " commit))
       :propagate)
 
     (def (Ok unzipped) (zip-extract archive unpacked)
@@ -267,10 +278,10 @@
     (file-write-text (commit-marker unpacked) commit)
     (file-delete archive)
 
-    (when (directory-exists? target) (directory-delete-tree target))
+    (when (directory-exists? target)
+      (directory-delete-tree target))
     (directory-create (path-combine target ".."))
 
     (def (Ok moved) (directory-move unpacked target)
-      :leave ((Err e) (Err (str "bjo: could not put " commit " at " target ": "
-                                (error-message e)))))
+      :leave ((Err e) (Err (str "bjo: could not put " commit " at " target ": " (error-message e)))))
     (Ok unit)))

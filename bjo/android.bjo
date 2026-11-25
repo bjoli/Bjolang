@@ -111,18 +111,24 @@
 (defun (abi-rid abi)
   (case abi
     (("arm64" "x64" "arm" "x86") (Ok (str "android-" abi)))
-    (else (Err (str "bjo publish --android: \"" abi "\" is not an ABI. "
-                    "The ABIs are \"arm64\", \"x64\", \"arm\" and \"x86\".")))))
+    (else
+     (Err (str "bjo publish --android: \""
+               abi
+               "\" is not an ABI. "
+               "The ABIs are \"arm64\", \"x64\", \"arm\" and \"x86\".")))))
 
 ;; The runtime identifiers to build for, joined with `;`.
 (: (-> (List string) (Result string string)))
 (defun (android-rids abis)
-  (def wanted (if (list-empty? abis) (list "arm64" "x64") abis))
+  (def wanted
+    (if (list-empty? abis)
+        (list "arm64" "x64")
+        abis))
   (loop (:for abi wanted)
         (:let r (abi-rid abi))
         (:finish (not (ok? r)) r)
         (:acc rids (listing (result-ref-or r "")))
-        => (Ok (string-join (list->vec rids) ";"))))
+    => (Ok (string-join (list->vec rids) ";"))))
 
 ;; The app's version code: a number that a later version makes larger.
 (: (-> Version int))
@@ -145,13 +151,22 @@
   (def hint "Set BJO_ANDROID_DOTNET to a .NET SDK with the android workload.")
   (def least (version-major clr-runtime-version))
   (match (run/output '(,(cmd dotnet "--version")))
-    ((Err e) (Err (str "bjo publish --android: could not run " dotnet ": " (error-message e) ". " hint)))
+    ((Err e)
+     (Err (str "bjo publish --android: could not run " dotnet ": " (error-message e) ". " hint)))
     ((Ok (Tuple 0 out))
-     (match (try (string->int (vec-ref (string-split (string-trim out) ".") 0))
-                 #:catch (System.FormatException))
+     (match (try
+              (string->int (vec-ref (string-split (string-trim out) ".") 0))
+              #:catch (System.FormatException))
        ((Ok major) #:when (>= major least) (Ok (str "net" (int->string major) ".0-android")))
-       (_ (Err (str "bjo publish --android: " dotnet " is .NET " (string-trim out)
-                    ", and Bjolang is built for .NET " (int->string least) ". " hint)))))
+       (_
+        (Err (str "bjo publish --android: "
+                  dotnet
+                  " is .NET "
+                  (string-trim out)
+                  ", and Bjolang is built for .NET "
+                  (int->string least)
+                  ". "
+                  hint)))))
     ((Ok (Tuple _ out))
      (Err (str "bjo publish --android: " dotnet " --version failed: " (string-trim out) " " hint)))))
 
@@ -171,7 +186,7 @@
                               (if (any? #(= (string-downcase (fst &)) (string-downcase (fst p))) seen)
                                   seen
                                   (Cons p seen))))
-          => (list-reverse seen)))
+      => (list-reverse seen)))
   (if (some? (nuget-version-of unique "Avalonia.Android"))
       unique
       (list-append unique (list (Tuple "Avalonia.Android" avalonia)))))
@@ -183,8 +198,9 @@
 (: (-> string string))
 (defun (xml-escape s)
   (string-replace
-    (string-replace (string-replace (string-replace s "&" "&amp;") "<" "&lt;") ">" "&gt;")
-    "\"" "&quot;"))
+   (string-replace (string-replace (string-replace s "&" "&amp;") "<" "&lt;") ">" "&gt;")
+   "\""
+   "&quot;"))
 
 (: (-> string string))
 (defun (cs-string s)
@@ -194,53 +210,67 @@
 (defun (csproj-text job framework rids packages kept)
   (def v (record-ref job version))
   ;; An XML comment may not hold "--", so the flag is not named in it.
-  (str "<!-- Made by bjo publish, for Android. Publishing again writes it again. -->\n"
-       "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
-       "  <PropertyGroup>\n"
-       "    <TargetFramework>" framework "</TargetFramework>\n"
-       "    <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>\n"
-       "    <OutputType>Exe</OutputType>\n"
-       "    <ImplicitUsings>disable</ImplicitUsings>\n"
-       "    <Nullable>disable</Nullable>\n"
-       "    <ApplicationId>" (xml-escape (record-ref job id)) "</ApplicationId>\n"
-       "    <ApplicationVersion>" (int->string (version-code v)) "</ApplicationVersion>\n"
-       "    <ApplicationDisplayVersion>" (version->string v) "</ApplicationDisplayVersion>\n"
-       "    <AndroidPackageFormat>apk</AndroidPackageFormat>\n"
-       "    <RuntimeIdentifiers>" rids "</RuntimeIdentifiers>\n"
-       (cond
-         ((record-ref job aot)
-          (str "    <!-- Native AOT. -->\n"
-               "    <PublishAot>true</PublishAot>\n"))
-         ((record-ref job dev)
-          (str "    <!-- CoreCLR, not Mono. A development build: not trimmed, no ReadyToRun. -->\n"
-               "    <UseMonoRuntime>false</UseMonoRuntime>\n"
-               "    <PublishTrimmed>false</PublishTrimmed>\n"
-               "    <PublishReadyToRun>false</PublishReadyToRun>\n"))
-         (else
-          (str "    <!-- CoreCLR, not Mono, with ReadyToRun. -->\n"
-               "    <UseMonoRuntime>false</UseMonoRuntime>\n"
-               "    <PublishReadyToRun>true</PublishReadyToRun>\n")))
-       "  </PropertyGroup>\n"
-       "  <ItemGroup>\n"
-       (string-join (list->vec (list-map (fun (p)
-                                           (str "    <PackageReference Include=\"" (xml-escape (fst p))
-                                                "\" Version=\"" (xml-escape (snd p)) "\" />\n"))
-                                         packages))
-                    "")
-       "  </ItemGroup>\n"
-       "  <ItemGroup>\n"
-       "    <Reference Include=\"bjolibs/*.dll\" />\n"
-       "    <!-- Kept whole: Bjolang code finds their events by name. -->\n"
-       (string-join (list->vec (list-map #(str "    <TrimmerRootAssembly Include=\"" (xml-escape &) "\" />\n")
-                                         kept))
-                    "")
-       "  </ItemGroup>\n"
-       "</Project>\n"))
+  (str
+   "<!-- Made by bjo publish, for Android. Publishing again writes it again. -->\n"
+   "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
+   "  <PropertyGroup>\n"
+   "    <TargetFramework>"
+   framework
+   "</TargetFramework>\n"
+   "    <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>\n"
+   "    <OutputType>Exe</OutputType>\n"
+   "    <ImplicitUsings>disable</ImplicitUsings>\n"
+   "    <Nullable>disable</Nullable>\n"
+   "    <ApplicationId>"
+   (xml-escape (record-ref job id))
+   "</ApplicationId>\n"
+   "    <ApplicationVersion>"
+   (int->string (version-code v))
+   "</ApplicationVersion>\n"
+   "    <ApplicationDisplayVersion>"
+   (version->string v)
+   "</ApplicationDisplayVersion>\n"
+   "    <AndroidPackageFormat>apk</AndroidPackageFormat>\n"
+   "    <RuntimeIdentifiers>"
+   rids
+   "</RuntimeIdentifiers>\n"
+   (cond
+     ((record-ref job aot) (str "    <!-- Native AOT. -->\n" "    <PublishAot>true</PublishAot>\n"))
+     ((record-ref job dev)
+      (str "    <!-- CoreCLR, not Mono. A development build: not trimmed, no ReadyToRun. -->\n"
+           "    <UseMonoRuntime>false</UseMonoRuntime>\n"
+           "    <PublishTrimmed>false</PublishTrimmed>\n"
+           "    <PublishReadyToRun>false</PublishReadyToRun>\n"))
+     (else
+      (str "    <!-- CoreCLR, not Mono, with ReadyToRun. -->\n"
+           "    <UseMonoRuntime>false</UseMonoRuntime>\n"
+           "    <PublishReadyToRun>true</PublishReadyToRun>\n")))
+   "  </PropertyGroup>\n"
+   "  <ItemGroup>\n"
+   (string-join (list->vec (list-map (fun (p)
+                                       (str "    <PackageReference Include=\""
+                                            (xml-escape (fst p))
+                                            "\" Version=\""
+                                            (xml-escape (snd p))
+                                            "\" />\n"))
+                                     packages))
+                "")
+   "  </ItemGroup>\n"
+   "  <ItemGroup>\n"
+   "    <Reference Include=\"bjolibs/*.dll\" />\n"
+   "    <!-- Kept whole: Bjolang code finds their events by name. -->\n"
+   (string-join
+    (list->vec (list-map #(str "    <TrimmerRootAssembly Include=\"" (xml-escape &) "\" />\n") kept))
+    "")
+   "  </ItemGroup>\n"
+   "</Project>\n"))
 
 ;; The full name of a permission: Android's own for a name with no dot.
 (: (-> string string))
 (defun (permission-name p)
-  (if (string-contains? p ".") p (str "android.permission." p)))
+  (if (string-contains? p ".")
+      p
+      (str "android.permission." p)))
 
 ;; The app's icon, as Android names it in the C#.
 (: string)
@@ -264,8 +294,7 @@
 ;;   "device-secret": "ok", "cancelled", "gone" or "failed", a newline, and
 ;;   the secret or the reason.
 (: string)
-(def device-secrets-cs
-  """
+(def device-secrets-cs """
   // The program's secrets, kept behind the device's unlock. See bjo/android.bjo.
   static class BjoDeviceSecrets
   {
@@ -449,126 +478,140 @@
 ;;   the program finds them at its start.
 (: (-> string (List string) bool bool string))
 (defun (app-cs-text label permissions share-target icon?)
-  (def icon (if icon? (str ", Icon = " (cs-string icon-resource)) ""))
-  (str "// Made by bjo publish --android. Publishing again writes it again.\n"
-       "using Android.App;\n"
-       "using Android.Content;\n"
-       "using Android.Content.PM;\n"
-       "using Android.Hardware.Biometrics;\n"
-       "using Android.OS;\n"
-       "using Android.Runtime;\n"
-       "using Android.Security.Keystore;\n"
-       "using Avalonia.Android;\n"
-       "using Java.Security;\n"
-       "using Java.Security.Spec;\n"
-       "using Javax.Crypto;\n"
-       "using Javax.Crypto.Spec;\n"
-       "using System;\n"
-       "using System.IO;\n"
-       "using System.Linq;\n"
-       "using System.Text;\n"
-       "using BjoHost = Bjolang.Runtime.Host;\n"
-       "\n"
-       "[assembly: UsesPermission(\"android.permission.USE_BIOMETRIC\")]\n"
-       (string-join (list->vec (list-map #(str "[assembly: UsesPermission(" (cs-string (permission-name &)) ")]\n")
-                                         permissions))
-                    "")
-       "\n"
-       "namespace BjoAndroid;\n"
-       "\n"
-       "// Runs the program's main once Avalonia is set up. bjogui's run-app\n"
-       "// then makes the program the main view.\n"
-       "public class App : Avalonia.Application\n"
-       "{\n"
-       "    public override void OnFrameworkInitializationCompleted()\n"
-       "    {\n"
-       "        global::BjolangEntryPoint.StartHosted(System.Array.Empty<string>());\n"
-       "        base.OnFrameworkInitializationCompleted();\n"
-       "    }\n"
-       "}\n"
-       "\n"
-       "[Activity(Name = " (cs-string activity-name) ", Label = " (cs-string label) icon ",\n"
-       "          Theme = \"@style/AppTheme\", MainLauncher = true, Exported = true,\n"
-       "          LaunchMode = LaunchMode.SingleTask,\n"
-       "          ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize | ConfigChanges.UiMode)]\n"
-       (if share-target
-           (str "[IntentFilter(new[] { Intent.ActionSend }, Categories = new[] { Intent.CategoryDefault },\n"
-                "              DataMimeType = \"text/plain\")]\n")
-           "")
-       "public class MainActivity : AvaloniaMainActivity\n"
-       "{\n"
-       "    protected override void OnCreate(Bundle savedInstanceState)\n"
-       "    {\n"
-       "        BjoHost.SetHandler(\"share-text\", ShareText);\n"
-       "        BjoHost.SetHandler(\"open-private\", OpenPrivate);\n"
-       "        BjoDeviceSecrets.Register(this);\n"
-       "        base.OnCreate(savedInstanceState);\n"
-       "        // Not again when Android makes the activity anew with the same intent.\n"
-       "        if (savedInstanceState == null) PostShared(Intent);\n"
-       "    }\n"
-       "\n"
-       "    protected override void OnNewIntent(Intent intent)\n"
-       "    {\n"
-       "        base.OnNewIntent(intent);\n"
-       "        PostShared(intent);\n"
-       "    }\n"
-       "\n"
-       "    // Shared text, with its subject (a page's title) on a line before it.\n"
-       "    private static void PostShared(Intent intent)\n"
-       "    {\n"
-       "        if (intent?.Action != Intent.ActionSend || intent.Type != \"text/plain\") return;\n"
-       "        var text = intent.GetStringExtra(Intent.ExtraText);\n"
-       "        if (text == null) return;\n"
-       "        var subject = intent.GetStringExtra(Intent.ExtraSubject);\n"
-       "        BjoHost.Post(\"share-text\", subject == null ? \"\\n\" + text : subject + \"\\n\" + text);\n"
-       "    }\n"
-       "\n"
-       "    private bool ShareText(string text)\n"
-       "    {\n"
-       "        RunOnUiThread(() =>\n"
-       "        {\n"
-       "            var send = new Intent(Intent.ActionSend);\n"
-       "            send.SetType(\"text/plain\");\n"
-       "            send.PutExtra(Intent.ExtraText, text);\n"
-       "            StartActivity(Intent.CreateChooser(send, (string)null));\n"
-       "        });\n"
-       "        return true;\n"
-       "    }\n"
-       "\n"
-       "    // The browsers that open an address in private browsing: Firefox, with\n"
-       "    // its extra, and Firefox Focus, which is always private. The first\n"
-       "    // that is installed. An intent for a package needs no <queries>.\n"
-       "    private static readonly (string Package, bool Extra)[] PrivateBrowsers =\n"
-       "    {\n"
-       "        (\"org.mozilla.firefox\", true), (\"org.mozilla.firefox_beta\", true),\n"
-       "        (\"org.mozilla.fenix\", true), (\"org.mozilla.focus\", false), (\"org.mozilla.klar\", false),\n"
-       "    };\n"
-       "\n"
-       "    private bool OpenPrivate(string address)\n"
-       "    {\n"
-       "        foreach (var (package, extra) in PrivateBrowsers)\n"
-       "        {\n"
-       "            var view = new Intent(Intent.ActionView, Android.Net.Uri.Parse(address));\n"
-       "            view.SetPackage(package);\n"
-       "            view.AddFlags(ActivityFlags.NewTask);\n"
-       "            if (extra) view.PutExtra(\"private_browsing_mode\", true);\n"
-       "            try { StartActivity(view); return true; }\n"
-       "            catch (ActivityNotFoundException) { }\n"
-       "        }\n"
-       "        return false;\n"
-       "    }\n"
-       "}\n"
-       "\n"
-       "[Application(Label = " (cs-string label) icon ")]\n"
-       "public class MainApplication : AvaloniaAndroidApplication<App>\n"
-       "{\n"
-       "    protected MainApplication(nint javaReference, JniHandleOwnership transfer) : base(javaReference, transfer)\n"
-       "    {\n"
-       "    }\n"
-       "}\n"
-       "\n"
-       device-secrets-cs
-       "\n"))
+  (def icon
+    (if icon?
+        (str ", Icon = " (cs-string icon-resource))
+        ""))
+  (str
+   "// Made by bjo publish --android. Publishing again writes it again.\n"
+   "using Android.App;\n"
+   "using Android.Content;\n"
+   "using Android.Content.PM;\n"
+   "using Android.Hardware.Biometrics;\n"
+   "using Android.OS;\n"
+   "using Android.Runtime;\n"
+   "using Android.Security.Keystore;\n"
+   "using Avalonia.Android;\n"
+   "using Java.Security;\n"
+   "using Java.Security.Spec;\n"
+   "using Javax.Crypto;\n"
+   "using Javax.Crypto.Spec;\n"
+   "using System;\n"
+   "using System.IO;\n"
+   "using System.Linq;\n"
+   "using System.Text;\n"
+   "using BjoHost = Bjolang.Runtime.Host;\n"
+   "\n"
+   "[assembly: UsesPermission(\"android.permission.USE_BIOMETRIC\")]\n"
+   (string-join
+    (list->vec (list-map #(str "[assembly: UsesPermission(" (cs-string (permission-name &)) ")]\n")
+                         permissions))
+    "")
+   "\n"
+   "namespace BjoAndroid;\n"
+   "\n"
+   "// Runs the program's main once Avalonia is set up. bjogui's run-app\n"
+   "// then makes the program the main view.\n"
+   "public class App : Avalonia.Application\n"
+   "{\n"
+   "    public override void OnFrameworkInitializationCompleted()\n"
+   "    {\n"
+   "        global::BjolangEntryPoint.StartHosted(System.Array.Empty<string>());\n"
+   "        base.OnFrameworkInitializationCompleted();\n"
+   "    }\n"
+   "}\n"
+   "\n"
+   "[Activity(Name = "
+   (cs-string activity-name)
+   ", Label = "
+   (cs-string label)
+   icon
+   ",\n"
+   "          Theme = \"@style/AppTheme\", MainLauncher = true, Exported = true,\n"
+   "          LaunchMode = LaunchMode.SingleTask,\n"
+   "          ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize | ConfigChanges.UiMode)]\n"
+   (if share-target
+       (str
+        "[IntentFilter(new[] { Intent.ActionSend }, Categories = new[] { Intent.CategoryDefault },\n"
+        "              DataMimeType = \"text/plain\")]\n")
+       "")
+   "public class MainActivity : AvaloniaMainActivity\n"
+   "{\n"
+   "    protected override void OnCreate(Bundle savedInstanceState)\n"
+   "    {\n"
+   "        BjoHost.SetHandler(\"share-text\", ShareText);\n"
+   "        BjoHost.SetHandler(\"open-private\", OpenPrivate);\n"
+   "        BjoDeviceSecrets.Register(this);\n"
+   "        base.OnCreate(savedInstanceState);\n"
+   "        // Not again when Android makes the activity anew with the same intent.\n"
+   "        if (savedInstanceState == null) PostShared(Intent);\n"
+   "    }\n"
+   "\n"
+   "    protected override void OnNewIntent(Intent intent)\n"
+   "    {\n"
+   "        base.OnNewIntent(intent);\n"
+   "        PostShared(intent);\n"
+   "    }\n"
+   "\n"
+   "    // Shared text, with its subject (a page's title) on a line before it.\n"
+   "    private static void PostShared(Intent intent)\n"
+   "    {\n"
+   "        if (intent?.Action != Intent.ActionSend || intent.Type != \"text/plain\") return;\n"
+   "        var text = intent.GetStringExtra(Intent.ExtraText);\n"
+   "        if (text == null) return;\n"
+   "        var subject = intent.GetStringExtra(Intent.ExtraSubject);\n"
+   "        BjoHost.Post(\"share-text\", subject == null ? \"\\n\" + text : subject + \"\\n\" + text);\n"
+   "    }\n"
+   "\n"
+   "    private bool ShareText(string text)\n"
+   "    {\n"
+   "        RunOnUiThread(() =>\n"
+   "        {\n"
+   "            var send = new Intent(Intent.ActionSend);\n"
+   "            send.SetType(\"text/plain\");\n"
+   "            send.PutExtra(Intent.ExtraText, text);\n"
+   "            StartActivity(Intent.CreateChooser(send, (string)null));\n"
+   "        });\n"
+   "        return true;\n"
+   "    }\n"
+   "\n"
+   "    // The browsers that open an address in private browsing: Firefox, with\n"
+   "    // its extra, and Firefox Focus, which is always private. The first\n"
+   "    // that is installed. An intent for a package needs no <queries>.\n"
+   "    private static readonly (string Package, bool Extra)[] PrivateBrowsers =\n"
+   "    {\n"
+   "        (\"org.mozilla.firefox\", true), (\"org.mozilla.firefox_beta\", true),\n"
+   "        (\"org.mozilla.fenix\", true), (\"org.mozilla.focus\", false), (\"org.mozilla.klar\", false),\n"
+   "    };\n"
+   "\n"
+   "    private bool OpenPrivate(string address)\n"
+   "    {\n"
+   "        foreach (var (package, extra) in PrivateBrowsers)\n"
+   "        {\n"
+   "            var view = new Intent(Intent.ActionView, Android.Net.Uri.Parse(address));\n"
+   "            view.SetPackage(package);\n"
+   "            view.AddFlags(ActivityFlags.NewTask);\n"
+   "            if (extra) view.PutExtra(\"private_browsing_mode\", true);\n"
+   "            try { StartActivity(view); return true; }\n"
+   "            catch (ActivityNotFoundException) { }\n"
+   "        }\n"
+   "        return false;\n"
+   "    }\n"
+   "}\n"
+   "\n"
+   "[Application(Label = "
+   (cs-string label)
+   icon
+   ")]\n"
+   "public class MainApplication : AvaloniaAndroidApplication<App>\n"
+   "{\n"
+   "    protected MainApplication(nint javaReference, JniHandleOwnership transfer) : base(javaReference, transfer)\n"
+   "    {\n"
+   "    }\n"
+   "}\n"
+   "\n"
+   device-secrets-cs
+   "\n"))
 
 (: string)
 (def styles-text
@@ -612,9 +655,10 @@
 (defun (same-bytes? a b)
   (and (= (array-length a) (array-length b))
        (let go ((i 0))
-         (cond ((= i (array-length a)) #t)
-               ((= (array-ref a i) (array-ref b i)) (go (+ i 1)))
-               (else #f)))))
+         (cond
+           ((= i (array-length a)) #t)
+           ((= (array-ref a i) (array-ref b i)) (go (+ i 1)))
+           (else #f)))))
 
 ;; Copies `from` to `to`, unless `to` has its bytes already. As for
 ;; `write-if-changed!`, a file that is not written keeps its time.
@@ -647,7 +691,8 @@
      (write-if-changed! adaptive adaptive-icon-text))
     (None
      (loop (:for f (list legacy adaptive image))
-           (:do (when (file-exists? f) (file-delete f)))))))
+           (:do (when (file-exists? f)
+                  (file-delete f)))))))
 
 ;; Copies the program and the assemblies it loads to `<dir>/bjolibs`, each
 ;; under its assembly name. NuGet packages' assemblies are left out. Returns
@@ -655,15 +700,20 @@
 (: stage! (-> string string (List (Tuple string string)) (Result string int)) #:sync)
 (defun (stage! dir program links)
   (def libs (path-combine dir "bjolibs"))
-  (when (directory-exists? libs) (directory-delete-tree libs))
+  (when (directory-exists? libs)
+    (directory-delete-tree libs))
   (directory-create libs)
   (def own (filter-out-packages links))
   (match (find #(not (file-exists? (snd &))) own)
     ((Some (Tuple name path))
-     (Err (str "bjo publish --android: the program loads " name " from " path
+     (Err (str "bjo publish --android: the program loads "
+               name
+               " from "
+               path
                ", and it is not there. Rebuild with -c and publish again.")))
     (None
-     (file-copy program (path-combine libs (str (assembly-simple-name (assembly-name-of program)) ".dll"))
+     (file-copy program
+                (path-combine libs (str (assembly-simple-name (assembly-name-of program)) ".dll"))
                 #:mode Truncate)
      (loop (:for (Tuple name path) own)
            (:do (file-copy path (path-combine libs (str name ".dll")) #:mode Truncate)))
@@ -679,21 +729,22 @@
 ;;   cannot see which events are used. bjogui's `Loaded` is one.
 ;; - `links` gives each assembly's file, below the NuGet cache. Its first
 ;;   directory there is its package.
-(: kept-assemblies (-> string (List (Tuple string string)) (List (Tuple string string)) (List string)) #:sync)
+(: kept-assemblies (-> string (List (Tuple string string)) (List (Tuple string string)) (List string))
+   #:sync)
 (defun (kept-assemblies libs links packages)
   (def referenced
     (loop (:for f (directory-files libs))
           (:subloop)
           (:for n (assembly-references (assembly-load-file (path-absolute f))))
           (:acc out (listing (assembly-simple-name n)))
-          => out))
+      => out))
   (def ids (list-map #(string-downcase (fst &)) packages))
   (loop (:for (Tuple name path) links)
         (:when-let (Some rel) (package-store-path path))
         (:when (any? #(= & name) referenced))
         (:when (any? #(= & (string-downcase (vec-ref (string-split rel "/") 0))) ids))
         (:acc out (listing name))
-        => out))
+    => out))
 
 ;; ---------------------------------------------------------------------------
 ;; Publishing
@@ -709,8 +760,9 @@
   (with-return ret
     (def (Ok rids) (android-rids (record-ref job abis)) :propagate)
     (def (Some avalonia) (nuget-version-of (record-ref job nuget) "Avalonia")
-      :leave (None (Err (str "bjo publish --android: an Android app is drawn by Avalonia, "
-                             "and no package of the program names the NuGet package Avalonia."))))
+      :leave (None
+              (Err (str "bjo publish --android: an Android app is drawn by Avalonia, "
+                        "and no package of the program names the NuGet package Avalonia."))))
     (def dotnet (android-dotnet))
     (def (Ok framework) (android-framework dotnet) :propagate)
 
@@ -718,21 +770,28 @@
     (def label (record-ref job label))
     (def (Ok staged) (stage! dir (record-ref job program) (record-ref job links)) :propagate)
     (def csproj (path-combine dir "AndroidApp.csproj"))
-    (def kept (kept-assemblies (path-combine dir "bjolibs") (record-ref job links) (record-ref job nuget)))
+    (def kept
+      (kept-assemblies (path-combine dir "bjolibs") (record-ref job links) (record-ref job nuget)))
     (def references
       (if (record-ref job aot)
           (list-append (record-ref job nuget) (record-ref job not-android))
           (record-ref job nuget)))
-    (write-if-changed! csproj (csproj-text job framework rids (package-references references avalonia) kept))
+    (write-if-changed! csproj
+                       (csproj-text job framework rids (package-references references avalonia) kept))
     (write-if-changed! (path-combine dir "App.cs")
-                       (app-cs-text label (record-ref job permissions) (record-ref job share-target)
+                       (app-cs-text label
+                                    (record-ref job permissions)
+                                    (record-ref job share-target)
                                     (some? (record-ref job icon))))
     (write-if-changed! (path-combine dir "Resources" "values" "styles.xml") styles-text)
     (write-icon! dir (record-ref job icon))
-    (def how (cond ((record-ref job aot) " with Native AOT")
-                   ((record-ref job dev) ", a development build")
-                   (else "")))
-    (println #"bjo publish --android: ${staged} assemblies in ${dir}. Building the APK for ${rids}${how}.")
+    (def how
+      (cond
+        ((record-ref job aot) " with Native AOT")
+        ((record-ref job dev) ", a development build")
+        (else "")))
+    (println
+     #"bjo publish --android: ${staged} assemblies in ${dir}. Building the APK for ${rids}${how}.")
     ;; Before dotnet writes to the same terminal.
     (flush-port (parameter-ref current-output-port))
 
@@ -743,25 +802,31 @@
         (None unit)))
     (set-environment-variable! "DOTNET_NOLOGO" "1")
     (def properties
-      (list-append
-        (match (option-or (get-environment-variable "ANDROID_HOME") (get-environment-variable "ANDROID_SDK_ROOT"))
-          ((Some sdk) #:when (not (= sdk "")) (list (str "-p:AndroidSdkDirectory=" sdk)))
-          (_ Nil))
-        (match (get-environment-variable "JAVA_HOME")
-          ((Some jdk) #:when (not (= jdk "")) (list (str "-p:JavaSdkDirectory=" jdk)))
-          (_ Nil))))
+      (list-append (match (option-or (get-environment-variable "ANDROID_HOME")
+                                     (get-environment-variable "ANDROID_SDK_ROOT"))
+                     ((Some sdk) #:when (not (= sdk "")) (list (str "-p:AndroidSdkDirectory=" sdk)))
+                     (_ Nil))
+                   (match (get-environment-variable "JAVA_HOME")
+                     ((Some jdk) #:when (not (= jdk "")) (list (str "-p:JavaSdkDirectory=" jdk)))
+                     (_ Nil))))
     (def publish-dir (path-combine dir "bin" "Release" framework "publish"))
-    (when (directory-exists? publish-dir) (directory-delete-tree publish-dir))
-    (def status ((record-ref job exec) dotnet
-                 (list->vec (list-append (list "publish" csproj "-c" "Release") properties))))
+    (when (directory-exists? publish-dir)
+      (directory-delete-tree publish-dir))
+    (def status
+      ((record-ref job exec) dotnet
+                             (list->vec (list-append (list "publish" csproj "-c" "Release")
+                                                     properties))))
     (unless (= status 0)
-      (ret (Err (str "bjo publish --android: dotnet publish failed (exit code " (int->string status) ")."))))
+      (ret (Err (str "bjo publish --android: dotnet publish failed (exit code "
+                     (int->string status)
+                     ")."))))
 
     (def apk-name (str (record-ref job id) "-Signed.apk"))
     (def built (path-combine publish-dir apk-name))
     (unless (file-exists? built)
       (ret (Err (str "bjo publish --android: dotnet publish made no " built "."))))
-    (def (Some to) (record-ref job out) :leave (None (Ok built)))
+    (def (Some to) (record-ref job out)
+      :leave (None (Ok built)))
     (def out (path-absolute to))
     (match (prepare-output! out)
       ((Some why) (ret (Err why)))
@@ -780,7 +845,8 @@
 ;; `adb` on the PATH.
 (: (-> string))
 (defun (adb-program)
-  (match (option-or (get-environment-variable "ANDROID_HOME") (get-environment-variable "ANDROID_SDK_ROOT"))
+  (match (option-or (get-environment-variable "ANDROID_HOME")
+                    (get-environment-variable "ANDROID_SDK_ROOT"))
     ((Some sdk) #:when (file-exists? (path-combine sdk "platform-tools" "adb"))
      (path-combine sdk "platform-tools" "adb"))
     (_ "adb")))
@@ -803,10 +869,15 @@
     ((Ok "x86_64") (Ok "x64"))
     ((Ok "armeabi-v7a") (Ok "arm"))
     ((Ok "x86") (Ok "x86"))
-    ((Ok other) (Err (str "bjo run --android: the device's ABI is \"" other "\", which .NET does not build for.")))
+    ((Ok other)
+     (Err
+      (str "bjo run --android: the device's ABI is \"" other "\", which .NET does not build for.")))
     ((Err why)
      ;; adb writes its reason to standard error, which is the terminal's.
-     (Err (str "bjo run --android: no device to run on." (if (= why "") "" (str " " why))
+     (Err (str "bjo run --android: no device to run on."
+               (if (= why "")
+                   ""
+                   (str " " why))
                "\nStart an emulator or connect a phone. With several, set ANDROID_SERIAL.")))))
 
 ;; The uid of the installed app `id`, from `cmd package list packages -U`.
@@ -833,14 +904,22 @@
 (defun (run-on-device adb apk id exec)
   (with-return ret
     (def installed (exec adb ["install" "-r" apk]))
-    (unless (= installed 0) (ret installed))
+    (unless (= installed 0)
+      (ret installed))
     (def (Some uid) (app-uid adb id)
-      :leave (None (println #"bjo run --android: ${id} is installed, and the device does not give its uid.") 1))
+      :leave (None
+              (println
+               #"bjo run --android: ${id} is installed, and the device does not give its uid.")
+              1))
     (ignore (adb-output adb (list "shell" "am" "force-stop" id)))
     (def (Ok since) (adb-output adb (list "shell" "date" "+%s"))
-      :leave ((Err why) (println #"bjo run --android: ${why}") 1))
+      :leave ((Err why)
+              (println #"bjo run --android: ${why}")
+              1))
     (def (Ok _) (adb-output adb (list "shell" "am" "start" "-n" (str id "/" activity-name)))
-      :leave ((Err why) (println #"bjo run --android: could not start ${id}: ${why}") 1))
+      :leave ((Err why)
+              (println #"bjo run --android: could not start ${id}: ${why}")
+              1))
     (println #"bjo run --android: ${id} started. Its log follows; Ctrl+C stops it.")
     (flush-port (parameter-ref current-output-port))
     ;; logcat does not end with the app, so the device's shell ends it:
@@ -848,9 +927,18 @@
     ;; - It waits while the process runs.
     ;; - It stops logcat a second later, so that a crash report is shown whole.
     (def running (str "pidof -s " id " >/dev/null"))
-    (ignore (exec adb ["shell" (str "logcat -v tag -T " since ".000 --uid=" uid
-                                    " bjo:V DOTNET:V AndroidRuntime:V '*:E' & l=$!; "
-                                    "i=0; while [ $i -lt 10 ] && ! " running "; do sleep 0.5; i=$((i+1)); done; "
-                                    "while " running "; do sleep 1; done; sleep 1; kill $l")]))
+    (ignore (exec adb
+                  ["shell"
+                   (str "logcat -v tag -T "
+                        since
+                        ".000 --uid="
+                        uid
+                        " bjo:V DOTNET:V AndroidRuntime:V '*:E' & l=$!; "
+                        "i=0; while [ $i -lt 10 ] && ! "
+                        running
+                        "; do sleep 0.5; i=$((i+1)); done; "
+                        "while "
+                        running
+                        "; do sleep 1; done; sleep 1; kill $l")]))
     (println #"bjo run --android: ${id} has ended.")
     0))

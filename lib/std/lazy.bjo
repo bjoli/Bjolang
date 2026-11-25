@@ -42,7 +42,9 @@
 (def/macro (delay form inject compare)
   (syntax-match form
     ((_ first body ...)
-     #'(make-lazy (fun () ,first ,@body)))
+     #'(make-lazy (fun ()
+                    ,first
+                    ,@body)))
     (bad (syntax-error bad "delay takes a body: (delay expr ...)"))))
 
 ;; ---------------------------------------------------------------------------
@@ -69,7 +71,8 @@
   (cell-fail!       (: Bjolang.Runtime.FiberLazyModule.Fail     (-> (FiberLazyCell %a) void)))
   (cell-done        (: Bjolang.Runtime.FiberLazyModule.Done     (-> (FiberLazyCell %a) (Promise %a)))))
 
-(type (: (FiberLazy %a) #:opaque
+(type (: (FiberLazy %a)
+         #:opaque
          (Record (: cell (FiberLazyCell %a))
                  (: thunk (Option (-bjo-> %a)) #:mutable))))
 
@@ -80,7 +83,8 @@
   (FiberLazy (cell (cell-make)) (thunk (Some thunk))))
 
 (: (-> (FiberLazy %a) bool))
-(defun (fiber-lazy-forced? lazy) (cell-forced? (record-ref lazy cell)))
+(defun (fiber-lazy-forced? lazy)
+  (cell-forced? (record-ref lazy cell)))
 
 ;; The value of `lazy`. Runs the thunk if no force has completed, or waits for
 ;; the run in progress.
@@ -88,7 +92,9 @@
 (: (-bjo-> (FiberLazy %a) %a) #:inline)
 (defbjo (force/fiber lazy)
   (def cell (record-ref lazy cell))
-  (if (cell-forced? cell) (cell-value cell) (force/fiber-slow lazy cell)))
+  (if (cell-forced? cell)
+      (cell-value cell)
+      (force/fiber-slow lazy cell)))
 
 (: (-bjo-> (FiberLazy %a) (FiberLazyCell %a) %a) #:no-inline)
 (defbjo (force/fiber-slow lazy cell)
@@ -121,15 +127,16 @@
 ;; The event of a value being computed. It does not start a run.
 (: (-> (FiberLazy %a) (Event %a)))
 (defun (lazy-evt lazy)
-  (wrap (promise-join (cell-done (record-ref lazy cell)))
-        (fun (r)
-          (match r
-            ((Ok v) v)
-            ((Err e) (raise e))))))
+  (wrap (promise-join (cell-done (record-ref lazy cell))) (fun (r)
+                                                            (match r
+                                                              ((Ok v) v)
+                                                              ((Err e) (raise e))))))
 
 ;; `(delay/fiber body ...)` is `(make-fiber-lazy (bjoroutine () body ...))`.
 (def/macro (delay/fiber form inject compare)
   (syntax-match form
     ((_ first body ...)
-     #'(make-fiber-lazy (bjoroutine () ,first ,@body)))
+     #'(make-fiber-lazy (bjoroutine ()
+                          ,first
+                          ,@body)))
     (bad (syntax-error bad "delay/fiber takes a body: (delay/fiber expr ...)"))))

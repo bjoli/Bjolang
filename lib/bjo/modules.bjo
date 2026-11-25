@@ -50,8 +50,7 @@
 (: OwnMarker)
 (def own-marker (OwnMarker (unused 0)))
 
-(:doc #:module
-  (summary "Where a module name leads: its package, its source and its dll.")
+(:doc #:module (summary "Where a module name leads: its package, its source and its dll.")
   (see find-module-assembly read-roots-file)
   (reference """
     The rules are the compiler's. The installed lib is the first candidate
@@ -89,7 +88,9 @@
 (: (-> string (Option string)))
 (defun (parent-of dir)
   (def up (clr-directory-name (path-absolute dir)))
-  (if (clr-null-or-empty? up) None (Some up)))
+  (if (clr-null-or-empty? up)
+      None
+      (Some up)))
 
 ;; `<dir>/lib` for `dir` and every directory above it, deepest first.
 (: (-> string (List string)))
@@ -103,7 +104,11 @@
 (: (-> string string (List string)))
 (defun (env-dir var below)
   (match (get-environment-variable var)
-    ((Some dir) (Cons (path-absolute (if (= below "") dir (path-combine dir below))) Nil))
+    ((Some dir)
+     (Cons (path-absolute (if (= below "")
+                              dir
+                              (path-combine dir below)))
+           Nil))
     (None Nil)))
 
 ;; The lib this module was loaded from: lib/bjo/modules.dll. A program run
@@ -115,9 +120,10 @@
   (if (clr-null-or-empty? own)
       Nil
       (match (parent-of own)
-        ((Some own-dir) (match (parent-of own-dir)
-                          ((Some lib) (Cons lib Nil))
-                          (None Nil)))
+        ((Some own-dir)
+         (match (parent-of own-dir)
+           ((Some lib) (Cons lib Nil))
+           (None Nil)))
         (None Nil))))
 
 (:doc lib-directory
@@ -147,10 +153,15 @@
     (None Nil)
     ((Some lib)
      (loop (:for dir (directory-subdirectories lib))
-           (:acc out (listing (PackageRoot (name (Cons (string->symbol (option-ref-or (option-map bytestring->string/lossy (path-name dir)) "")) Nil))
-                                           (directory (path-absolute dir))
-                                           (standard #t))))
-           => out))))
+           (:acc out (listing
+                      (PackageRoot
+                       (name (Cons (string->symbol (option-ref-or (option-map bytestring->string/lossy
+                                                                              (path-name dir))
+                                                                  ""))
+                                   Nil))
+                       (directory (path-absolute dir))
+                       (standard #t))))
+       => out))))
 
 ;; ---------------------------------------------------------------------------
 ;; A roots file
@@ -176,8 +187,7 @@
 (defun (symbols-of parts)
   (match parts
     (Nil (Some Nil))
-    ((Cons (BjoSym s) rest)
-     (option-map (fun (more) (Cons s more)) (symbols-of rest)))
+    ((Cons (BjoSym s) rest) (option-map (fun (more) (Cons s more)) (symbols-of rest)))
     (_ None)))
 
 (: (-> string (List Bjodat) (Result string (List PackageRoot))))
@@ -192,7 +202,8 @@
 (:doc read-roots-file
   (summary "The packages a roots file names, as bjo writes one in .bjo/roots.")
   (arg file "The roots file: (roots (root (name ...) \"directory\") ...).")
-  (returns "Its packages, or why the file could not be read. A relative directory is relative to the file.")
+  (returns
+   "Its packages, or why the file could not be read. A relative directory is relative to the file.")
   (see standard-roots))
 (: (-> string (Result string (List PackageRoot))))
 (defun (read-roots-file file)
@@ -222,7 +233,10 @@
 (: (-> int (List Symbol) (List Symbol)))
 (defun (drop-segments n name)
   (match name
-    ((Cons _ rest) (if (> n 0) (drop-segments (- n 1) rest) name))
+    ((Cons _ rest)
+     (if (> n 0)
+         (drop-segments (- n 1) rest)
+         name))
     (Nil Nil)))
 
 (:doc find-module-source
@@ -235,20 +249,22 @@
 (defun (find-module-source roots name)
   (def owner
     (loop (:for r roots)
-          (:acc best
-                (folding None
-                         (if (and (proper-prefix? (record-ref r name) name)
-                                  (match best
-                                    (None #t)
-                                    ((Some b) (> (list-length (record-ref r name))
-                                                 (list-length (record-ref b name))))))
-                             (Some r)
-                             best)))))
+          (:acc best (folding None
+                              (if (and (proper-prefix? (record-ref r name) name)
+                                       (match best
+                                         (None #t)
+                                         ((Some b)
+                                          (> (list-length (record-ref r name))
+                                             (list-length (record-ref b name))))))
+                                  (Some r)
+                                  best)))))
   (match owner
     (None None)
     ((Some r)
      (def below (list-map symbol->string (drop-segments (list-length (record-ref r name)) name)))
-     (Some (path-absolute (str (path-combine (record-ref r directory) (string-join (list->vec below) "/")) ".bjo"))))))
+     (Some (path-absolute (str (path-combine (record-ref r directory)
+                                             (string-join (list->vec below) "/"))
+                               ".bjo"))))))
 
 (:doc find-module-assembly
   (summary "The compiled dll of a module.")

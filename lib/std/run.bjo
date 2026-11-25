@@ -38,7 +38,6 @@
   ;; Scoped
   with-run)
 
-
 ;; ===========================================================================
 ;; Interop
 ;; ===========================================================================
@@ -123,14 +122,14 @@
 ;; subprocess ports are: its text reads decode UTF-8, whatever encoding .NET
 ;; would have guessed the child writes.
 (: (-> StreamReader InputPort))
-(defun (output-port reader) (cast InputPort (PipePort. (reader-bytes reader))))
+(defun (output-port reader)
+  (cast InputPort (PipePort. (reader-bytes reader))))
 
 ;; Nothing in the language builds an `Exception`, and every rejection below is
 ;; this module's own rather than .NET's, so they need a carrier.
 (: (-> string Exception))
 (defun (run-error message)
   (cast Exception (InvalidOperationException. message)))
-
 
 ;; ===========================================================================
 ;; What you write
@@ -139,7 +138,8 @@
 ;; A command written out, for when a program name is computed rather than
 ;; spelled: `,(cmd program "-l")`. An unquoted value has no literal shape and
 ;; is selected by its type, and `Cmd` is the only case carrying a record.
-(type (: Cmd (Record (: program string) (: arguments (Vec string)))))
+(type (: Cmd (Record (: program string)
+                     (: arguments (Vec string)))))
 
 ;; A filter stage.
 (type (: Filter (-bjo-> InputPort OutputPort Unit)))
@@ -152,28 +152,31 @@
 ;; priority over a program name. To run a program with the name `pipe`, write
 ;; `"pipe"`.
 (def/grammar Form
-  (Form (:or (: FPipe      (pipe Form ...))
-             (: FFrom      (from-file string Form))
-             (: FInto      (into-file string Form))
-             (: FAppend    (append-to-file string Form))
-             (: FErrInto   (errors-into-file string Form))
+  (Form (:or (: FPipe (pipe Form ...)) (: FFrom (from-file string Form))
+             (: FInto (into-file string Form))
+             (: FAppend (append-to-file string Form))
+             (: FErrInto (errors-into-file string Form))
              (: FErrAppend (errors-append-to-file string Form))
-             (: FSym       symbol)         ;; a bare program name
-             (: FStr       string)         ;; ...written as a string
-             (: FArgv      (Vec string))  ;; ...or a computed argv
-             (: FCmdValue  ,Cmd)           ;; a bare ,(cmd ...)
-             (: FFilter    ,Filter)        ;; a bare ,filter
-             (: FCmd       (Word ...+))))  ;; (echo "x")
+             (: FSym symbol) ;; a bare program name
+             (: FStr string) ;; ...written as a string
+             (: FArgv (Vec string)) ;; ...or a computed argv
+             (: FCmdValue ,Cmd) ;; a bare ,(cmd ...)
+             (: FFilter ,Filter) ;; a bare ,filter
+             (: FCmd (Word ...+)))) ;; (echo "x")
   ;; The words of a command.
-  (Word (:or (: WSym symbol) (: WStr string) (: WInt int) (: WDouble double)
-             (: WArgv (Vec string)) (: WCmd ,Cmd) (: WFilter ,Filter)
+  (Word (:or (: WSym symbol) (: WStr string)
+             (: WInt int)
+             (: WDouble double)
+             (: WArgv (Vec string))
+             (: WCmd ,Cmd)
+             (: WFilter ,Filter)
              (: WForm (Word ...)))))
 
 (: (-> string #:rest string Cmd))
 (defun (cmd program #:rest arguments)
   (Cmd (program program)
-       (arguments (loop (:for a arguments) (:acc out (vecing a))))))
-
+       (arguments (loop (:for a arguments)
+                        (:acc out (vecing a))))))
 
 ;; ===========================================================================
 ;; What it parses to
@@ -187,7 +190,9 @@
                  (: NFilter Filter)
                  (: NPipe (List Node))
                  (: NRedirect Redirect)))
-  (: Redirect (Record (: how Redirection) (: path string) (: inner Node))))
+  (: Redirect (Record (: how Redirection)
+                      (: path string)
+                      (: inner Node))))
 
 (: (-> Word string))
 (defun (word->text w)
@@ -232,9 +237,10 @@
   (match forms
     (Nil (Err (run-error "(pipe ...) needs at least one thing to run")))
     ((Cons only Nil) (form->node only))
-    (_ (match (form->each forms)
-         ((Err e) (Err e))
-         ((Ok nodes) (Ok (NPipe nodes)))))))
+    (_
+     (match (form->each forms)
+       ((Err e) (Err e))
+       ((Ok nodes) (Ok (NPipe nodes)))))))
 
 (: (-> (List Form) (Result Exception (List Node))))
 (defun (form->each forms)
@@ -265,8 +271,11 @@
   (match ws
     ((Cons (WSym s) rest)
      (run-error (str (.-Message original)
-                     " If `" (symbol->string s) "` was meant as a keyword, the keywords are: "
-                     (tag-names) ".")))
+                     " If `"
+                     (symbol->string s)
+                     "` was meant as a keyword, the keywords are: "
+                     (tag-names)
+                     ".")))
     (_ original)))
 
 (: (-> (List Word) (Result Exception Node)))
@@ -286,12 +295,10 @@
        ((WInt n) (words->argv rest (vec-add acc (int->string n))))
        ((WDouble x) (words->argv rest (vec-add acc (number->argument x))))
        ((WArgv v) (words->argv rest (vec-append acc v)))
-       (_ (Err (run-error
-                (str "a command's words have to be plain — this one contains "
-                     (word->text w)
-                     ", which belongs in a (pipe ...) rather than among arguments."))))))))
-
-
+       (_
+        (Err (run-error (str "a command's words have to be plain — this one contains "
+                             (word->text w)
+                             ", which belongs in a (pipe ...) rather than among arguments."))))))))
 
 ;; A form written as a list is a command, or one thing that is a whole stage on
 ;; its own: `'(,my-filter)` and `'(,(cmd ...))`. The grammar read the keywords
@@ -306,14 +313,15 @@
        ((WFilter f) (stage-alone (NFilter f) rest "a filter"))
        ((WCmd c) (stage-alone (NCmd c) rest "an unquoted ,(cmd ...)"))
        ((WForm ws)
-        (Err (run-error
-              "this form begins with another form. To run several things in turn, name it: (pipe (cat \"a\") (wc -l))")))
+        (Err
+         (run-error
+          "this form begins with another form. To run several things in turn, name it: (pipe (cat \"a\") (wc -l))")))
        ((WSym s) (parse-command ws))
        ((WStr s) (parse-command ws))
        ((WArgv v) (parse-command ws))
-       (_ (Err (run-error
-                (str "a program name has to be a word, and this form begins with "
-                     (word->text head)))))))))
+       (_
+        (Err (run-error (str "a program name has to be a word, and this form begins with "
+                             (word->text head)))))))))
 
 ;; A form that is one thing already carries everything it needs, so a word
 ;; after it is a pipeline nobody named.
@@ -321,34 +329,36 @@
 (defun (stage-alone node rest what)
   (match rest
     (Nil (Ok node))
-    (_ (Err (run-error
-             (str what
-                  " is a whole stage on its own, so nothing may follow it here. To run several things in turn, name it: (pipe ...)"))))))
-
+    (_
+     (Err
+      (run-error
+       (str
+        what
+        " is a whole stage on its own, so nothing may follow it here. To run several things in turn, name it: (pipe ...)"))))))
 
 ;; ===========================================================================
 ;; Running it
 ;; ===========================================================================
 
 ;; Started process state.
-(type
-  (: Proc #:opaque
-     (Record (: input (Option OutputPort))
-             (: output (Option InputPort))
-             (: children (Vec Process))
-             (: exits (Vec (Promise Unit)))
-             (: waits (Vec (Promise Unit))))))
+(type (: Proc
+         #:opaque
+         (Record (: input (Option OutputPort))
+                 (: output (Option InputPort))
+                 (: children (Vec Process))
+                 (: exits (Vec (Promise Unit)))
+                 (: waits (Vec (Promise Unit))))))
 
 ;; One node, wired but not yet connected to its neighbours. A command and a
 ;; filter differ only in where `sink` and `source` come from, which is what
 ;; makes the pipeline loop have no cases in it.
-(type
-  (: Wired #:opaque
-     (Record (: sink (Option OutputPort))
-             (: source (Option InputPort))
-             (: children (Vec Process))
-             (: exits (Vec (Promise Unit)))
-             (: waits (Vec (Promise Unit))))))
+(type (: Wired
+         #:opaque
+         (Record (: sink (Option OutputPort))
+                 (: source (Option InputPort))
+                 (: children (Vec Process))
+                 (: exits (Vec (Promise Unit)))
+                 (: waits (Vec (Promise Unit))))))
 
 ;; Waits for child exit once.
 (: (-> Process Unit))
@@ -399,8 +409,12 @@
 (: (-> (Promise Unit) OutputPort Unit))
 (defbjo (close-after done out)
   (match (sync (promise-join done))
-    ((Ok u) (close-output-port out) unit)
-    ((Err e) (close-output-port out) (raise e))))
+    ((Ok u)
+     (close-output-port out)
+     unit)
+    ((Err e)
+     (close-output-port out)
+     (raise e))))
 
 ;; `PumpAsync` closes its target on exhaustion, which is the whole reason it is
 ;; a junction: an unclosed stdin leaves the process downstream waiting forever.
@@ -436,8 +450,10 @@
 (: (-> Wired void))
 (defun (abandon w)
   (kill-all (record-ref w children))
-  (when-let (to (record-ref w sink)) (close-output-port to))
-  (when-let (from (record-ref w source)) (close-input-port from)))
+  (when-let (to (record-ref w sink))
+    (close-output-port to))
+  (when-let (from (record-ref w source))
+    (close-input-port from)))
 
 ;; Connect wired stages front to back, pumping each one's output into the next
 ;; one's input.
@@ -458,7 +474,9 @@
      (match (wire node errors)
        ;; Whatever is already running would otherwise sit on a stdin nobody
        ;; will ever close.
-       ((Err e) (abandon joined) (Err e))
+       ((Err e)
+        (abandon joined)
+        (Err e))
        ((Ok w)
         (match (junction (record-ref joined source) (record-ref w sink))
           ((Err e)
@@ -471,7 +489,8 @@
                         (source (record-ref w source))
                         (children (vec-append (record-ref joined children) (record-ref w children)))
                         (exits (vec-append (record-ref joined exits) (record-ref w exits)))
-                        (waits (vec-add (vec-append (record-ref joined waits) (record-ref w waits)) link)))
+                        (waits (vec-add (vec-append (record-ref joined waits) (record-ref w waits))
+                                        link)))
             more
             errors))))))))
 
@@ -479,12 +498,15 @@
 (: (-> (Option InputPort) (Option OutputPort) (Result Exception (Promise Unit))))
 (defun (junction upstream downstream)
   (match upstream
-    (None (Err (run-error
-                "the stage before this one has its output redirected to a file, so there is nothing to pipe onwards")))
+    (None
+     (Err
+      (run-error
+       "the stage before this one has its output redirected to a file, so there is nothing to pipe onwards")))
     ((Some from)
      (match downstream
-       (None (Err (run-error
-                   "this stage has its input redirected from a file, so nothing can be piped into it")))
+       (None
+        (Err (run-error
+              "this stage has its input redirected from a file, so nothing can be piped into it")))
        ((Some to) (Ok (bjo (pump from to))))))))
 
 ;; Through the prelude's `FS` effect, as every file is opened, so a handler
@@ -535,16 +557,20 @@
 (: (-> Node (Option OutputPort) InputPort (Result Exception Wired)))
 (defun (redirect-input inner errors file)
   (match (wire inner errors)
-    ((Err e) (close-input-port file) (Err e))
+    ((Err e)
+     (close-input-port file)
+     (Err e))
     ((Ok w)
      (match (record-ref w sink)
-       (None (abandon w)
-             (close-input-port file)
-             (Err (run-error "this form already takes its input from somewhere, so it cannot also take it from a file")))
+       (None
+        (abandon w)
+        (close-input-port file)
+        (Err
+         (run-error
+          "this form already takes its input from somewhere, so it cannot also take it from a file")))
        ((Some to)
-        (Ok (record-set w
-                        (sink None)
-                        (waits (vec-add (record-ref w waits) (bjo (pump file to)))))))))))
+        (Ok (record-set w (sink None)
+                          (waits (vec-add (record-ref w waits) (bjo (pump file to)))))))))))
 
 ;; ...and the file replaces the caller as the thing reading out, so `source`
 ;; goes away. The file is opened once the form has started and has an output
@@ -554,15 +580,18 @@
 (defun (redirect-output inner errors path append)
   (def (Ok w) (wire inner errors) :propagate)
   (match (record-ref w source)
-    (None (abandon w)
-          (Err (run-error "this form already sends its output somewhere, so it cannot also send it to a file")))
+    (None
+     (abandon w)
+     (Err (run-error
+           "this form already sends its output somewhere, so it cannot also send it to a file")))
     ((Some from)
      (match (open-for-writing path append)
-       ((Err e) (abandon w) (Err e))
+       ((Err e)
+        (abandon w)
+        (Err e))
        ((Ok file)
-        (Ok (record-set w
-                        (source None)
-                        (waits (vec-add (record-ref w waits) (bjo (pump from file)))))))))))
+        (Ok (record-set w (source None)
+                          (waits (vec-add (record-ref w waits) (bjo (pump from file)))))))))))
 
 ;; Standard error is not a stream this module wires between stages — every
 ;; command under here writes into the one file — so neither end changes.
@@ -577,11 +606,12 @@
   (def shared file)
 
   (match (wire inner (Some shared))
-    ((Err e) (close-output-port shared) (Err e))
+    ((Err e)
+     (close-output-port shared)
+     (Err e))
     ((Ok w)
-     (Ok (record-set w
-                     (waits (vec-add (record-ref w waits)
-                                     (bjo (close-when-all-done (record-ref w waits) shared)))))))))
+     (Ok (record-set w (waits (vec-add (record-ref w waits)
+                                       (bjo (close-when-all-done (record-ref w waits) shared)))))))))
 
 ;; Parses and runs form.
 (: (-> Form (Result Exception Proc)))
@@ -597,12 +627,14 @@
 ;; Where to write the form's input, unless a `from-file` took it. Closing it is
 ;; what ends the first stage.
 (: (-> Proc (Option OutputPort)))
-(defun (proc-input p) (record-ref p input))
+(defun (proc-input p)
+  (record-ref p input))
 
 ;; Where to read the form's output, unless an `into-file` took it. It has to be
 ;; drained, or the last stage blocks writing and `wait` never returns.
 (: (-> Proc (Option InputPort)))
-(defun (proc-output p) (record-ref p output))
+(defun (proc-output p)
+  (record-ref p output))
 
 ;; ---------------------------------------------------------------------------
 ;; Waiting, written once and seen from two sides
@@ -644,30 +676,34 @@
 
 ;; Waits for last command exit.
 (: (-> Proc (Result Exception int)))
-(defun (wait p) (blocking-result (bjo (waiting p))))
+(defun (wait p)
+  (blocking-result (bjo (waiting p))))
 
 ;; Every command's exit code, in the order they were started. Filters
 ;; contribute nothing — their failures arrive as the `Err` instead.
 (: (-> Proc (Result Exception (Vec int))))
-(defun (wait/all p) (blocking-result (bjo (waiting/all p))))
+(defun (wait/all p)
+  (blocking-result (bjo (waiting/all p))))
 
 ;; Returns process exit event.
 (: (-> Proc (Event (Result Exception int))))
 (defun (exited p)
-  (wrap (promise-join (bjo (waiting p)))
-        (fun (r) (match r ((Err e) (Err e)) ((Ok answer) answer)))))
+  (wrap (promise-join (bjo (waiting p))) (fun (r)
+                                           (match r
+                                             ((Err e) (Err e))
+                                             ((Ok answer) answer)))))
 
 ;; Stop everything. The pumps end on their own once the streams they are
 ;; copying do.
 (: (-> Proc void))
-(defun (kill p) (kill-all (record-ref p children)))
+(defun (kill p)
+  (kill-all (record-ref p children)))
 
 ;; A background job added to a form after it has started, so that `wait` and
 ;; `exited` cover it too. `run/channel`'s reader is the one caller.
 (: (-> Proc (Promise Unit) Proc))
 (defun (with-wait p extra)
   (record-set p (waits (vec-add (record-ref p waits) extra))))
-
 
 ;; ===========================================================================
 ;; The whole thing at once
@@ -736,7 +772,9 @@
 (: (-> Proc (Result Exception (Vec string))))
 (defbjo (collecting/lines p)
   (let ((lines (match (proc-output p)
-                 ((Some out) (loop (:for l (read-lines out)) (:acc v (vecing l))))
+                 ((Some out)
+                  (loop (:for l (read-lines out))
+                        (:acc v (vecing l))))
                  (None (vec-empty)))))
     (match (waiting p)
       ((Err e) (Err e))
@@ -758,7 +796,6 @@
     (None unit))
   (waiting p))
 
-
 ;; ===========================================================================
 ;; A form as a channel
 ;; ===========================================================================
@@ -775,12 +812,12 @@
      (let ((items (make-chan)))
        (match (proc-output p)
          ;; Handles redirect output.
-         (None (kill p)
-               (Err (run-error
-                     "this form sends its output to a file, so there is nothing left to read onto a channel")))
-         ((Some out)
-          (Ok (Tuple items
-                     (with-wait p (bjo (read out items)))))))))))
+         (None
+          (kill p)
+          (Err
+           (run-error
+            "this form sends its output to a file, so there is nothing left to read onto a channel")))
+         ((Some out) (Ok (Tuple items (with-wait p (bjo (read out items)))))))))))
 
 ;; The stock `Reader`: one item per line, `\r\n` and a missing last newline
 ;; handled by `read-line`'s default mode rather than by guessing. Each line is
@@ -794,7 +831,6 @@
        (sync (chan-send items line))
        (next))
       (None unit))))
-
 
 ;; ===========================================================================
 ;; A form as a stream
@@ -822,7 +858,9 @@
      (close-input p)
      (try
        (match (proc-output p)
-         (None (raise (run-error "this form sends its output to a file, so there is nothing left to stream")))
+         (None
+          (raise (run-error
+                  "this form sends its output to a file, so there is nothing left to stream")))
          ((Some port)
           (let go ()
             (unless (port-eof? port)
@@ -839,7 +877,8 @@
 ;; Awaits the exit of each of `children`.
 (: (-> (Vec Process) Unit))
 (defbjo (awaiting-exits children)
-  (loop (:for child children) (:do (process-await child)))
+  (loop (:for child children)
+        (:do (process-await child)))
   unit)
 
 ;; Kills the form, and waits until its processes have exited.
@@ -857,12 +896,12 @@
   ;; The shield's deadline is longer than `reap-grace`, so the timeout always
   ;; commits first and the shield never raises `Cancelled`. The inner scope
   ;; cancels the awaits that are still waiting when the grace passes.
-  (with-shield #:within (seconds 6)
-               (with-cancel (stop)
-                 (def exited (bjo (awaiting-exits (record-ref p children))))
-                 (ignore (sync (choose (wrap (promise-join exited) (fun (_) unit)) (timeout reap-grace))))
-                 (ignore (stop (Requested "the grace for the form to exit has passed"))))))
-
+  (with-shield
+    #:within (seconds 6)
+    (with-cancel (stop)
+      (def exited (bjo (awaiting-exits (record-ref p children))))
+      (ignore (sync (choose (wrap (promise-join exited) (fun (_) unit)) (timeout reap-grace))))
+      (ignore (stop (Requested "the grace for the form to exit has passed"))))))
 
 ;; ===========================================================================
 ;; A form as one event
@@ -871,8 +910,7 @@
 ;; Stops on event.
 (: (-> (Event Unit) Proc (Promise (Result Exception string)) Unit))
 (defbjo (reap-on-loss nack p done)
-  (when (sync (choose (wrap nack (fun (u) #t))
-                      (wrap (promise-join done) (fun (r) #f))))
+  (when (sync (choose (wrap nack (fun (u) #t)) (wrap (promise-join done) (fun (r) #f))))
     (kill p))
   unit)
 
@@ -887,16 +925,19 @@
          (close-input p)
          (let ((done (bjo (collecting p))))
            (ignore (bjo (reap-on-loss nack p done)))
-           (wrap (promise-join done)
-                 (fun (r) (match r ((Err e) (Err e)) ((Ok answer) answer))))))))))
-
+           (wrap (promise-join done) (fun (r)
+                                       (match r
+                                         ((Err e) (Err e))
+                                         ((Ok answer) answer))))))))))
 
 ;; ===========================================================================
 ;; Scoped
 ;; ===========================================================================
 
 ;; Runs form scoped to body.
-(def/macro (with-run form inject compare)
+(def/macro (with-run form
+             inject
+             compare)
   (syntax-match form
     ((_ (name spec) first body ...)
      ;; `name` came from the input, so hygiene leaves it alone and the body sees
@@ -910,4 +951,6 @@
            #:finally (match started
                        ((Ok p) (kill p))
                        ((Err e) unit)))))
-    (bad (syntax-error bad "with-run names a form and takes a body: (with-run (p '(ls \"-l\")) body ...)"))))
+    (bad
+     (syntax-error bad
+                   "with-run names a form and takes a body: (with-run (p '(ls \"-l\")) body ...)"))))

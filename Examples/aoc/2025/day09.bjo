@@ -4,22 +4,24 @@
 (import (std scan) "common.bjo")
 
 (defun (main args)
-  (def ps {vecing (scan l '(long "," long))
-                  (:for l (input-lines args))})
+  (def ps {vecing (scan l '(long "," long)) (:for l (input-lines args))})
   (def n (length ps))
   ;; Each side as its box x0, x1, y0, y1.
-  (def sides {vecing (Tuple (min ax bx) (max ax bx) (min ay by) (max ay by))
-                     (:for i (range 0 n))
-                     (:let (ax . ay) (ref ps i))
-                     (:let (bx . by) (ref ps (% (+ i 1) n)))})
+  (def sides
+    {vecing (Tuple (min ax bx) (max ax bx) (min ay by) (max ay by))
+            (:for i (range 0 n))
+            (:let (ax . ay) (ref ps i))
+            (:let (bx . by) (ref ps (% (+ i 1) n)))})
   ;; Whether a side passes through the open inside of the rectangle.
   (defun (crossed? x0 x1 y0 y1)
     (any? (fun ((Tuple ex0 ex1 ey0 ey1)) (and (< ex0 x1) (> ex1 x0) (< ey0 y1) (> ey1 y0))) sides))
   ;; Whether (px + 1/2, py + 1/2) is inside, by counting the sides to its right.
   (defun (inside? px py)
-    (= 1 (% {counting ex0 (:for (Tuple ex0 ex1 ey0 ey1) sides)
-                         (:when (and (= ex0 ex1) (> ex0 px) (<= ey0 py) (> ey1 py)))}
-            2)))
+    (= 1
+       (% {counting ex0
+                    (:for (Tuple ex0 ex1 ey0 ey1) sides)
+                    (:when (and (= ex0 ex1) (> ex0 px) (<= ey0 py) (> ey1 py)))}
+          2)))
   (def (part1 part2)
     (loop (:for i (range 0 n))
           (:subloop)
@@ -34,12 +36,15 @@
           (:acc part1 (folding 0L (max part1 s)))
           ;; A rectangle of one row or column has no inside to test; the
           ;; largest one is never that thin.
-          (:acc part2 (folding 0L (if (and (> s part2) (< x0 x1) (< y0 y1)
-                                           (not (crossed? x0 x1 y0 y1))
-                                           (inside? x0 y0))
-                                      s
-                                      part2)))
-          => (Tuple part1 part2)))
+          (:acc part2 (folding 0L
+                               (if (and (> s part2)
+                                        (< x0 x1)
+                                        (< y0 y1)
+                                        (not (crossed? x0 x1 y0 y1))
+                                        (inside? x0 y0))
+                                   s
+                                   part2)))
+      => (Tuple part1 part2)))
   (println part1)
   (println part2)
   0)

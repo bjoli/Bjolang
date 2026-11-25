@@ -86,8 +86,21 @@
 
 (import (std prelude))
 (import (only (std hashset) HashSet list->hashset hashset-contains?))
-(import (only (text xml) Node XmlAttrs XmlName xml-name xml-name-local xml-name-ns xml-element xml-text element-view
-              text? text-value comment? comment-value text-content))
+(import (only (text xml)
+              Node
+              XmlAttrs
+              XmlName
+              xml-name
+              xml-name-local
+              xml-name-ns
+              xml-element
+              xml-text
+              element-view
+              text?
+              text-value
+              comment?
+              comment-value
+              text-content))
 ;; (text xml) has a `Document` too. The (only ...) above names the xml types
 ;; this module uses, so `Document` here is samizdat's.
 (import (samizdat doc))
@@ -99,30 +112,39 @@
 ;; ---------------------------------------------------------------------------
 
 (type-rec
-  (: Html #:opaque (Record (: offset int)
-                           (: prefix string)
-                           (: block-hook (-> Html Block (Option (List Node))))
-                           (: inline-hook (-> Html Inline (Option (List Node))))
-                           (: url-hook (-> string string))
-                           (: highlighter (Option (-> string string (Option Node)))))))
+  (: Html
+     #:opaque
+     (Record (: offset int)
+             (: prefix string)
+             (: block-hook (-> Html Block (Option (List Node))))
+             (: inline-hook (-> Html Inline (Option (List Node))))
+             (: url-hook (-> string string))
+             (: highlighter (Option (-> string string (Option Node)))))))
 
 (: no-block-hook (-> Html Block (Option (List Node))))
-(defun (no-block-hook h b) None)
+(defun (no-block-hook h b)
+  None)
 
 (: no-inline-hook (-> Html Inline (Option (List Node))))
-(defun (no-inline-hook h i) None)
+(defun (no-inline-hook h i)
+  None)
 
-(: html-options (-> (#:heading-offset int) (#:id-prefix string)
-                    (#:block-hook (-> Html Block (Option (List Node))))
-                    (#:inline-hook (-> Html Inline (Option (List Node))))
-                    (#:url-hook (-> string string))
-                    (#:highlighter (Option (-> string string (Option Node))))
-                    Html))
-(defun (html-options #:heading-offset 1 #:id-prefix ""
-                     #:block-hook no-block-hook #:inline-hook no-inline-hook
-                     #:url-hook (fun (u) u) #:highlighter None)
-  (Html (offset heading-offset) (prefix id-prefix) (block-hook block-hook) (inline-hook inline-hook)
-        (url-hook url-hook) (highlighter highlighter)))
+(: html-options
+   (-> (#:heading-offset int) (#:id-prefix string) (#:block-hook (-> Html Block (Option (List Node))))
+       (#:inline-hook (-> Html Inline (Option (List Node)))) (#:url-hook (-> string string))
+       (#:highlighter (Option (-> string string (Option Node)))) Html))
+(defun (html-options #:heading-offset 1
+                     #:id-prefix ""
+                     #:block-hook no-block-hook
+                     #:inline-hook no-inline-hook
+                     #:url-hook (fun (u) u)
+                     #:highlighter None)
+  (Html (offset heading-offset)
+        (prefix id-prefix)
+        (block-hook block-hook)
+        (inline-hook inline-hook)
+        (url-hook url-hook)
+        (highlighter highlighter)))
 
 (: default-html Html)
 (def default-html (html-options))
@@ -133,7 +155,8 @@
 ;; Made once: xml-name checks each one.
 
 (: tag (-> string XmlName))
-(defun (tag name) (xml-name name))
+(defun (tag name)
+  (xml-name name))
 
 (def a-tag (tag "a"))
 (def blockquote-tag (tag "blockquote"))
@@ -201,7 +224,10 @@
 (: html-element (-> string (List (Tuple string string)) (List Node) Node))
 (defun (html-element name attrs children)
   (xml-element (xml-name name)
-               (list-map (fun (a) (match a ((Tuple k v) (Tuple (xml-name k) v)))) attrs)
+               (list-map (fun (a)
+                           (match a
+                             ((Tuple k v) (Tuple (xml-name k) v))))
+                         attrs)
                children))
 
 ;; Raw HTML is an element in this namespace, holding the markup as its text.
@@ -214,11 +240,13 @@
 
 ;; Markup written as it is, among text.
 (: raw-html (-> string Node))
-(defun (raw-html markup) (xml-element raw-inline-tag Nil (list (xml-text markup))))
+(defun (raw-html markup)
+  (xml-element raw-inline-tag Nil (list (xml-text markup))))
 
 ;; Markup written as it is, on a line of its own among blocks.
 (: raw-html-block (-> string Node))
-(defun (raw-html-block markup) (xml-element raw-block-tag Nil (list (xml-text markup))))
+(defun (raw-html-block markup)
+  (xml-element raw-block-tag Nil (list (xml-text markup))))
 
 ;; ---------------------------------------------------------------------------
 ;; Escaping
@@ -234,7 +262,8 @@
   (string-replace (escape-html s) "\"" "&quot;"))
 
 (: id (-> Html string string))
-(defun (id h s) (str (record-ref h prefix) s))
+(defun (id h s)
+  (str (record-ref h prefix) s))
 
 ;; A link to `#something` is to an id in this document, which has the prefix
 ;; too: a table of contents and a reference keep working under `#:id-prefix`.
@@ -257,7 +286,8 @@
         (:acc out (folding (vec-empty) (vec-append out (inline-nodes h x))))))
 
 (: inlines->nodes (-> Html (Vec Inline) (List Node)))
-(defun (inlines->nodes h xs) (vec->list (inline-vec h xs)))
+(defun (inlines->nodes h xs)
+  (vec->list (inline-vec h xs)))
 
 (: inline-nodes (-> Html Inline (Vec Node)))
 (defun (inline-nodes h x)
@@ -266,10 +296,12 @@
     (None (plain-inline h x))))
 
 (: around (-> XmlName Html (Vec Inline) (Vec Node)))
-(defun (around name h xs) [(xml-element name Nil (inlines->nodes h xs))])
+(defun (around name h xs)
+  [(xml-element name Nil (inlines->nodes h xs))])
 
 (: image (-> string string Node))
-(defun (image src alt) (xml-element img-tag (list (Tuple src-attr src) (Tuple alt-attr alt)) Nil))
+(defun (image src alt)
+  (xml-element img-tag (list (Tuple src-attr src) (Tuple alt-attr alt)) Nil))
 
 (: plain-inline (-> Html Inline (Vec Node)))
 (defun (plain-inline h x)
@@ -282,19 +314,28 @@
     ((Subscript xs) (around sub-tag h xs))
     ((Checkbox checked)
      (def attrs (list (Tuple type-attr "checkbox") (Tuple disabled-attr "disabled")))
-     [(xml-element input-tag (if checked (list-append attrs (list (Tuple checked-attr "checked"))) attrs) Nil)])
+     [(xml-element input-tag
+                   (if checked
+                       (list-append attrs (list (Tuple checked-attr "checked")))
+                       attrs)
+                   Nil)])
     ((Code s) [(xml-element code-tag Nil (list (xml-text s)))])
     ((Link url xs) [(xml-element a-tag (list (Tuple href-attr (href h url))) (inlines->nodes h xs))])
     ((Image src alt) [(image ((record-ref h url-hook) src) alt)])
     (LineBreak [(xml-element br-tag Nil Nil)])
     ((NoteRef n)
      (def k (int->string n))
-     [(xml-element sup-tag (list (Tuple class-attr "note-ref"))
-                   (list (xml-element a-tag (list (Tuple id-attr (id h (str "note-ref-" k)))
-                                                  (Tuple href-attr (str "#" (id h (str "note-" k)))))
+     [(xml-element sup-tag
+                   (list (Tuple class-attr "note-ref"))
+                   (list (xml-element a-tag
+                                      (list (Tuple id-attr (id h (str "note-ref-" k)))
+                                            (Tuple href-attr (str "#" (id h (str "note-" k)))))
                                       (list (xml-text k)))))])
     ((Span c xs) [(xml-element span-tag (list (Tuple class-attr c)) (inlines->nodes h xs))])
-    ((RawInline format s) (if (= format "html") [(raw-html s)] (vec-empty)))
+    ((RawInline format s)
+     (if (= format "html")
+         [(raw-html s)]
+         (vec-empty)))
     ((Anchor aid) [(xml-element a-tag (list (Tuple id-attr (id h aid))) Nil)])))
 
 ;; ---------------------------------------------------------------------------
@@ -307,7 +348,8 @@
         (:acc out (folding (vec-empty) (vec-append out (block-nodes h b))))))
 
 (: blocks->nodes (-> Html (Vec Block) (List Node)))
-(defun (blocks->nodes h bs) (vec->list (block-vec h bs)))
+(defun (blocks->nodes h bs)
+  (vec->list (block-vec h bs)))
 
 (: block-nodes (-> Html Block (Vec Node)))
 (defun (block-nodes h b)
@@ -318,7 +360,12 @@
 (: heading-tag (-> Html int XmlName))
 (defun (heading-tag h level)
   (def n (+ level (record-ref h offset)))
-  (vec-ref heading-tags (- (cond ((< n 1) 1) ((> n 6) 6) (else n)) 1)))
+  (vec-ref heading-tags
+           (- (cond
+                ((< n 1) 1)
+                ((> n 6) 6)
+                (else n))
+              1)))
 
 ;; A paragraph first, and nothing after it but lists.
 (: tight? (-> (Vec Block) bool))
@@ -327,9 +374,11 @@
        (match (vec-ref item 0)
          ((Para xs)
           (loop (:for i (range 1 (vec-length item)))
-                (:acc ok (folding #t (and ok (match (vec-ref item i)
-                                               ((ItemList numbered start items) #t)
-                                               (_ #f)))))))
+                (:acc ok (folding #t
+                                  (and ok
+                                       (match (vec-ref item i)
+                                         ((ItemList numbered start items) #t)
+                                         (_ #f)))))))
          (_ #f))))
 
 ;; An item that is one paragraph, and perhaps lists after it, is written
@@ -337,13 +386,14 @@
 ;; written by hand. So is a definition.
 (: item-node (-> Html XmlName (Vec Block) Node))
 (defun (item-node h name item)
-  (xml-element name Nil
-               (vec->list
-                 (if (tight? item)
-                     (match (vec-ref item 0)
-                       ((Para xs) (vec-append (inline-vec h xs) (block-vec h (vec-remove-at item 0))))
-                       (_ (block-vec h item)))
-                     (block-vec h item)))))
+  (xml-element name
+               Nil
+               (vec->list (if (tight? item)
+                              (match (vec-ref item 0)
+                                ((Para xs)
+                                 (vec-append (inline-vec h xs) (block-vec h (vec-remove-at item 0))))
+                                (_ (block-vec h item)))
+                              (block-vec h item)))))
 
 ;; The highlighter's <pre> when it returns one; else the code in a <code>,
 ;; with its language as a class.
@@ -356,29 +406,38 @@
   (match highlighted
     ((Some n) n)
     (None
-     (xml-element pre-tag Nil
+     (xml-element pre-tag
+                  Nil
                   (list (xml-element code-tag
-                                     (if (string-empty? lang) Nil (list (Tuple class-attr (str "language-" lang))))
+                                     (if (string-empty? lang)
+                                         Nil
+                                         (list (Tuple class-attr (str "language-" lang))))
                                      (list (xml-text text))))))))
 
 ;; The lines, a <br> and a newline between each.
 (: line-block (-> Html (Vec (Vec Inline)) Node))
 (defun (line-block h lines)
-  (def kids (loop (:for line lines)
-                  (:for i (up-from 0))
-                  (:acc out (folding (vec-empty)
-                                     (vec-append (if (= i 0) out (vec-append out [(xml-element br-tag Nil Nil) (xml-text "\n")]))
-                                                (inline-vec h line))))))
+  (def kids
+    (loop (:for line lines)
+          (:for i (up-from 0))
+          (:acc out (folding (vec-empty)
+                             (vec-append
+                              (if (= i 0)
+                                  out
+                                  (vec-append out [(xml-element br-tag Nil Nil) (xml-text "\n")]))
+                              (inline-vec h line))))))
   (xml-element div-tag (list (Tuple class-attr "line-block")) (vec->list kids)))
 
 (: definition-list (-> Html (Vec (Tuple (Vec Inline) (Vec (Vec Block)))) Node))
 (defun (definition-list h entries)
-  (def kids (loop (:for entry entries)
-                  (:acc out (folding (vec-empty)
-                                     (match entry
-                                       ((Tuple term defs)
-                                        (vec-append (vec-add out (xml-element dt-tag Nil (inlines->nodes h term)))
-                                                   (vec-map (fun (d) (item-node h dd-tag d)) defs))))))))
+  (def kids
+    (loop (:for entry entries)
+          (:acc out (folding (vec-empty)
+                             (match entry
+                               ((Tuple term defs)
+                                (vec-append (vec-add out
+                                                     (xml-element dt-tag Nil (inlines->nodes h term)))
+                                            (vec-map (fun (d) (item-node h dd-tag d)) defs))))))))
   (xml-element dl-tag Nil (vec->list kids)))
 
 (: plain-block (-> Html Block (Vec Node)))
@@ -389,21 +448,28 @@
      [(xml-element (heading-tag h level) (list (Tuple id-attr (id h hid))) (inlines->nodes h xs))])
     ((UnnumberedHeading level xs) [(xml-element (heading-tag h level) Nil (inlines->nodes h xs))])
     ((Figure src alt xs)
-     [(xml-element figure-tag Nil
+     [(xml-element figure-tag
+                   Nil
                    (if (vec-empty? xs)
                        (list (image ((record-ref h url-hook) src) alt))
-                       (list (image ((record-ref h url-hook) src) alt) (xml-element figcaption-tag Nil (inlines->nodes h xs)))))])
+                       (list (image ((record-ref h url-hook) src) alt)
+                             (xml-element figcaption-tag Nil (inlines->nodes h xs)))))])
     ((CodeBlock lang text) [(code-block h lang text)])
     ((Quote bs) [(xml-element blockquote-tag Nil (blocks->nodes h bs))])
     ((ItemList numbered start items)
      [(xml-element (if numbered ol-tag ul-tag)
-                   (if (and numbered (> start 1)) (list (Tuple start-attr (int->string start))) Nil)
+                   (if (and numbered (> start 1))
+                       (list (Tuple start-attr (int->string start)))
+                       Nil)
                    (vec->list (vec-map (fun (item) (item-node h li-tag item)) items)))])
     ((LineBlock lines) [(line-block h lines)])
     ((DefinitionList entries) [(definition-list h entries)])
     (Rule [(xml-element hr-tag Nil Nil)])
     ((Div c bs) [(xml-element div-tag (list (Tuple class-attr c)) (blocks->nodes h bs))])
-    ((RawBlock format s) (if (= format "html") [(raw-html-block s)] (vec-empty)))
+    ((RawBlock format s)
+     (if (= format "html")
+         [(raw-html-block s)]
+         (vec-empty)))
     ((TableBlock t) [(table-node h t)])))
 
 ;; A <table>: the caption, the head in a <thead>, and each group of the rest
@@ -414,10 +480,14 @@
   (def caption (record-ref t caption))
   (def head (record-ref t head))
   (def parts
-    (vec-append
-      (vec-append (if (vec-empty? caption) (vec-empty) [(xml-element caption-tag Nil (inlines->nodes h caption))])
-                 (if (vec-empty? head) (vec-empty) [(xml-element thead-tag Nil (rows h th-tag aligns head))]))
-      (vec-map (fun (group) (xml-element tbody-tag Nil (rows h td-tag aligns group))) (record-ref t bodies))))
+    (vec-append (vec-append (if (vec-empty? caption)
+                                (vec-empty)
+                                [(xml-element caption-tag Nil (inlines->nodes h caption))])
+                            (if (vec-empty? head)
+                                (vec-empty)
+                                [(xml-element thead-tag Nil (rows h th-tag aligns head))]))
+                (vec-map (fun (group) (xml-element tbody-tag Nil (rows h td-tag aligns group)))
+                         (record-ref t bodies))))
   (xml-element table-tag Nil (vec->list parts)))
 
 (: rows (-> Html XmlName (Vec Align) (Vec (Vec (Vec Inline))) (List Node)))
@@ -435,12 +505,17 @@
 ;; A cell past the end of `aligns` is set as the browser pleases.
 (: row (-> Html XmlName (Vec Align) (Vec (Vec Inline)) Node))
 (defun (row h cell aligns r)
-  (xml-element tr-tag Nil
+  (xml-element tr-tag
+               Nil
                (loop (:for c r)
                      (:for i (up-from 0))
-                     (:let style (align-style (if (< i (vec-length aligns)) (vec-ref aligns i) AlignDefault)))
+                     (:let style (align-style (if (< i (vec-length aligns))
+                                                  (vec-ref aligns i)
+                                                  AlignDefault)))
                      (:acc (listing (xml-element cell
-                                                 (if (string-empty? style) Nil (list (Tuple style-attr style)))
+                                                 (if (string-empty? style)
+                                                     Nil
+                                                     (list (Tuple style-attr style)))
                                                  (inlines->nodes h c)))))))
 
 ;; ---------------------------------------------------------------------------
@@ -452,23 +527,29 @@
 (: note-node (-> Html int (Vec Block) Node))
 (defun (note-node h n blocks)
   (def k (int->string n))
-  (def back (xml-element a-tag (list (Tuple class-attr "note-back") (Tuple href-attr (str "#" (id h (str "note-ref-" k)))))
-                         (list (xml-text "↩"))))
+  (def back
+    (xml-element a-tag
+                 (list (Tuple class-attr "note-back")
+                       (Tuple href-attr (str "#" (id h (str "note-ref-" k)))))
+                 (list (xml-text "↩"))))
   (def count (vec-length blocks))
   (def body
     (if (= count 0)
         [back]
         (match (vec-ref blocks (- count 1))
           ((Para xs)
-           (vec-add (block-vec h (vec-remove-at blocks (- count 1)))
-                    (xml-element p-tag Nil (vec->list (vec-append (inline-vec h xs) [(xml-text " ") back])))))
+           (vec-add
+            (block-vec h (vec-remove-at blocks (- count 1)))
+            (xml-element p-tag Nil (vec->list (vec-append (inline-vec h xs) [(xml-text " ") back])))))
           (_ (vec-add (block-vec h blocks) back)))))
   (xml-element li-tag (list (Tuple id-attr (id h (str "note-" k)))) (vec->list body)))
 
 (: notes-node (-> Html (Vec (Vec Block)) Node))
 (defun (notes-node h notes)
-  (xml-element section-tag (list (Tuple class-attr "notes"))
-               (list (xml-element ol-tag Nil
+  (xml-element section-tag
+               (list (Tuple class-attr "notes"))
+               (list (xml-element ol-tag
+                                  Nil
                                   (loop (:for n (up-from 1))
                                         (:for note notes)
                                         (:acc (listing (note-node h n note))))))))
@@ -479,35 +560,46 @@
 (defun (document->nodes doc #:with default-html)
   (def body (block-vec with (record-ref doc blocks)))
   (def notes (record-ref doc notes))
-  (vec->list (if (vec-empty? notes) body (vec-add body (notes-node with notes)))))
+  (vec->list (if (vec-empty? notes)
+                 body
+                 (vec-add body (notes-node with notes)))))
 
 (: document->html (-> Document (#:with Html) string))
 (defun (document->html doc #:with default-html)
   (nodes->html (document->nodes doc #:with with)))
 
 (: blocks->html (-> Html (Vec Block) string))
-(defun (blocks->html h bs) (nodes->html (blocks->nodes h bs)))
+(defun (blocks->html h bs)
+  (nodes->html (blocks->nodes h bs)))
 
 (: inlines->html (-> Html (Vec Inline) string))
-(defun (inlines->html h xs) (nodes->html (inlines->nodes h xs)))
+(defun (inlines->html h xs)
+  (nodes->html (inlines->nodes h xs)))
 
 ;; A whole page. The title is `#:title`, or the meta form's `(title ...)`;
 ;; `#:head` is put in the <head> as it is — a stylesheet, say.
 (: html-page (-> Document (#:with Html) (#:title string) (#:head string) (#:lang string) string))
 (defun (html-page doc #:with default-html #:title "" #:head "" #:lang "en")
-  (def title-text (if (string-empty? title) (option-ref-or (meta-string doc "title") "") title))
+  (def title-text
+    (if (string-empty? title)
+        (option-ref-or (meta-string doc "title") "")
+        title))
   (def head-nodes
-    (list-append
-      (list (xml-element meta-tag (list (Tuple charset-attr "utf-8")) Nil)
-            (xml-element meta-tag (list (Tuple name-attr "viewport")
-                                        (Tuple content-attr "width=device-width, initial-scale=1"))
-                         Nil)
-            (xml-element title-tag Nil (list (xml-text title-text))))
-      (if (string-empty? head) Nil (list (raw-html-block head)))))
+    (list-append (list (xml-element meta-tag (list (Tuple charset-attr "utf-8")) Nil)
+                       (xml-element meta-tag
+                                    (list (Tuple name-attr "viewport")
+                                          (Tuple content-attr "width=device-width, initial-scale=1"))
+                                    Nil)
+                       (xml-element title-tag Nil (list (xml-text title-text))))
+                 (if (string-empty? head)
+                     Nil
+                     (list (raw-html-block head)))))
   (str "<!DOCTYPE html>\n"
-       (nodes->html (list (xml-element html-tag (list (Tuple lang-attr lang))
-                                       (list (xml-element head-tag Nil head-nodes)
-                                             (xml-element body-tag Nil (document->nodes doc #:with with))))))
+       (nodes->html (list (xml-element
+                           html-tag
+                           (list (Tuple lang-attr lang))
+                           (list (xml-element head-tag Nil head-nodes)
+                                 (xml-element body-tag Nil (document->nodes doc #:with with))))))
        "\n"))
 
 ;; ---------------------------------------------------------------------------
@@ -517,33 +609,99 @@
 ;; Elements with no end tag, and no children.
 (: void-elements (HashSet string))
 (def void-elements
-  (list->hashset (list "area" "base" "br" "col" "embed" "hr" "img" "input" "link" "meta" "source" "track" "wbr")))
+  (list->hashset
+   (list "area" "base" "br" "col" "embed" "hr" "img" "input" "link" "meta" "source" "track" "wbr")))
 
 ;; Elements that go on lines of their own when they stand among blocks. Not
 ;; <figcaption>, <td> or <th>, which stay on the line of what holds them.
 (: block-elements (HashSet string))
 (def block-elements
-  (list->hashset (list "address" "article" "aside" "blockquote" "body" "caption" "dd" "details" "dialog"
-                   "div" "dl" "dt" "fieldset" "figure" "footer" "form" "h1" "h2" "h3" "h4" "h5" "h6"
-                   "head" "header" "hgroup" "hr" "html" "li" "link" "main" "menu" "meta" "nav" "ol"
-                   "p" "pre" "script" "search" "section" "style" "summary" "table" "tbody" "tfoot"
-                   "thead" "title" "tr" "ul")))
+  (list->hashset (list "address"
+                       "article"
+                       "aside"
+                       "blockquote"
+                       "body"
+                       "caption"
+                       "dd"
+                       "details"
+                       "dialog"
+                       "div"
+                       "dl"
+                       "dt"
+                       "fieldset"
+                       "figure"
+                       "footer"
+                       "form"
+                       "h1"
+                       "h2"
+                       "h3"
+                       "h4"
+                       "h5"
+                       "h6"
+                       "head"
+                       "header"
+                       "hgroup"
+                       "hr"
+                       "html"
+                       "li"
+                       "link"
+                       "main"
+                       "menu"
+                       "meta"
+                       "nav"
+                       "ol"
+                       "p"
+                       "pre"
+                       "script"
+                       "search"
+                       "section"
+                       "style"
+                       "summary"
+                       "table"
+                       "tbody"
+                       "tfoot"
+                       "thead"
+                       "title"
+                       "tr"
+                       "ul")))
 
 ;; Attributes that mean something by being there, written bare when their
 ;; value is empty or their own name.
 (: boolean-attributes (HashSet string))
 (def boolean-attributes
-  (list->hashset (list "allowfullscreen" "async" "autofocus" "autoplay" "checked" "controls" "default"
-                   "defer" "disabled" "formnovalidate" "hidden" "inert" "ismap" "itemscope" "loop"
-                   "multiple" "muted" "nomodule" "novalidate" "open" "playsinline" "readonly"
-                   "required" "reversed" "selected")))
+  (list->hashset (list "allowfullscreen"
+                       "async"
+                       "autofocus"
+                       "autoplay"
+                       "checked"
+                       "controls"
+                       "default"
+                       "defer"
+                       "disabled"
+                       "formnovalidate"
+                       "hidden"
+                       "inert"
+                       "ismap"
+                       "itemscope"
+                       "loop"
+                       "multiple"
+                       "muted"
+                       "nomodule"
+                       "novalidate"
+                       "open"
+                       "playsinline"
+                       "readonly"
+                       "required"
+                       "reversed"
+                       "selected")))
 
 ;; Elements whose text is not HTML, and is written unescaped.
 (: raw-text-elements (HashSet string))
 (def raw-text-elements (list->hashset (list "script" "style")))
 
 (: raw-marker? (-> XmlName bool))
-(defun (raw-marker? name) (= (xml-name-ns name) raw-namespace))
+(defun (raw-marker? name)
+  (= (xml-name-ns name) raw-namespace))
 
 (: block-node? (-> Node bool))
 (defun (block-node? n)
@@ -560,24 +718,26 @@
 (defun (shown? n)
   (cond
     ((text? n) (not (string-empty? (text-value n))))
-    (else (match (element-view n)
-            ((Some (Tuple name attrs kids)) (or (not (raw-marker? name)) (not (string-empty? (text-content n)))))
-            (None #t)))))
+    (else
+     (match (element-view n)
+       ((Some (Tuple name attrs kids))
+        (or (not (raw-marker? name)) (not (string-empty? (text-content n)))))
+       (None #t)))))
 
 (: write-attributes! (-> StringBuilder XmlAttrs void))
 (defun (write-attributes! sb attrs)
-  (list-for-each
-    (fun (a)
-      (match a
-        ((Tuple k v)
-         (def name (xml-name-local k))
-         (stringbuilder-add-string! sb " ")
-         (stringbuilder-add-string! sb name)
-         (unless (and (hashset-contains? boolean-attributes name) (or (string-empty? v) (= v name)))
-           (stringbuilder-add-string! sb "=\"")
-           (stringbuilder-add-string! sb (escape-attribute v))
-           (stringbuilder-add-string! sb "\"")))))
-    attrs))
+  (list-for-each (fun (a)
+                   (match a
+                     ((Tuple k v)
+                      (def name (xml-name-local k))
+                      (stringbuilder-add-string! sb " ")
+                      (stringbuilder-add-string! sb name)
+                      (unless (and (hashset-contains? boolean-attributes name)
+                                   (or (string-empty? v) (= v name)))
+                        (stringbuilder-add-string! sb "=\"")
+                        (stringbuilder-add-string! sb (escape-attribute v))
+                        (stringbuilder-add-string! sb "\"")))))
+                 attrs))
 
 (: write-node! (-> StringBuilder Node bool void))
 (defun (write-node! sb n pre?)
@@ -615,8 +775,10 @@
 (: write-children! (-> StringBuilder (List Node) bool bool void))
 (defun (write-children! sb kids inside? pre?)
   (def shown (list-filter shown? kids))
-  (def blocks? (and (not pre?)
-                    (loop (:for k shown) (:acc any (folding #f (or any (block-node? k)))))))
+  (def blocks?
+    (and (not pre?)
+         (loop (:for k shown)
+               (:acc any (folding #f (or any (block-node? k)))))))
   (def after-block
     (loop (:for k shown)
           (:for i (up-from 0))
@@ -626,7 +788,8 @@
                                   (stringbuilder-add-string! sb "\n"))
                                 (write-node! sb k pre?)
                                 block)))))
-  (when (and blocks? inside?) (stringbuilder-add-string! sb "\n")))
+  (when (and blocks? inside?)
+    (stringbuilder-add-string! sb "\n")))
 
 ;; Nodes written as HTML: a fragment, a block to a line.
 (: nodes->html (-> (List Node) string))

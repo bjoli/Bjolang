@@ -25,7 +25,8 @@
 (export all-of)
 
 (: (-> string string string))
-(defun (cat a b) (str-concat a b))
+(defun (cat a b)
+  (str-concat a b))
 
 ;; ---------------------------------------------------------------------------
 ;; What the expansion calls
@@ -91,17 +92,22 @@
 ;; Private right fold.
 (: (-> (-> %a %b %b) %b (List %a) %b))
 (defun (fold-right f init xs)
-  (let go ((rest (list-reverse xs)) (acc init))
+  (let go ((rest (list-reverse xs))
+           (acc init))
     (if (list-empty? rest)
         acc
         (go (list-tail rest) (f (list-head rest) acc)))))
 
 (: (-> (List Syntax) int))
 (defun (count-ellipses items)
-  (let go ((rest items) (n 0))
+  (let go ((rest items)
+           (n 0))
     (if (list-empty? rest)
         n
-        (go (list-tail rest) (if (ellipsis? (list-head rest)) (+ n 1) n)))))
+        (go (list-tail rest)
+            (if (ellipsis? (list-head rest))
+                (+ n 1)
+                n)))))
 
 ;; Extracts repeated pattern before trailing ellipsis.
 (: (-> (List Syntax) Syntax (Option Syntax)))
@@ -110,14 +116,20 @@
   (if (= count 0)
       None
       (if (> count 1)
-          (Some (syntax-error whole "A form repeats only its last pattern, so it may hold only one `...`."))
+          (Some (syntax-error whole
+                              "A form repeats only its last pattern, so it may hold only one `...`."))
           (match (last-of items)
             (None None)
             ((Some final)
              (if (not (ellipsis? final))
-                 (Some (syntax-error whole "`...` repeats the pattern before it, so it may only come last."))
+                 (Some (syntax-error
+                        whole
+                        "`...` repeats the pattern before it, so it may only come last."))
                  (match (last-of (init-of items))
-                   (None (Some (syntax-error whole "`...` repeats the pattern before it, and this form has none.")))
+                   (None
+                    (Some (syntax-error
+                           whole
+                           "`...` repeats the pattern before it, and this form has none.")))
                    ((Some repeated) (Some repeated)))))))))
 
 ;; Items matched one for one.
@@ -131,7 +143,10 @@
 (: (-> Syntax (List Syntax)))
 (defun (pattern-vars p)
   (match p
-    ((SSym _) (if (wildcard? p) Nil (list p)))
+    ((SSym _)
+     (if (wildcard? p)
+         Nil
+         (list p)))
     ((SList items)
      (fold-right (fun (item found) (syntax-splice (pattern-vars item) found)) Nil items))
     (_ Nil)))
@@ -140,7 +155,10 @@
 (defun (bound-already? var seen)
   (match seen
     (Nil #f)
-    ((Cons other rest) (if (same-name? var other) #t (bound-already? var rest)))))
+    ((Cons other rest)
+     (if (same-name? var other)
+         #t
+         (bound-already? var rest)))))
 
 ;; Whether a name is spelled as a constructor, by the rule the compiler
 ;; reads a pattern with: its first UTF-16 unit is an uppercase letter.
@@ -157,14 +175,17 @@
 (: (-> Syntax (List Syntax)))
 (defun (checked-vars p)
   (fold-right
-    (fun (var seen)
-      (if (uppercase-name? var)
-          (Cons (syntax-error var "A pattern variable is lowercase; write 'name to match that identifier itself.") seen)
-          (if (bound-already? var seen)
-              (Cons (syntax-error var "This pattern binds the same name twice.") seen)
-              (Cons var seen))))
-    Nil
-    (pattern-vars p)))
+   (fun (var seen)
+     (if (uppercase-name? var)
+         (Cons (syntax-error
+                var
+                "A pattern variable is lowercase; write 'name to match that identifier itself.")
+               seen)
+         (if (bound-already? var seen)
+             (Cons (syntax-error var "This pattern binds the same name twice.") seen)
+             (Cons var seen))))
+   Nil
+   (pattern-vars p)))
 
 ;; ---------------------------------------------------------------------------
 ;; Names the expansion binds
@@ -215,7 +236,9 @@
   (match (repeated-of items whole)
     (None #'Nil)
     ((Some repeated)
-     (if (irrefutable? repeated) repeated (at-path "sm-rest" path)))))
+     (if (irrefutable? repeated)
+         repeated
+         (at-path "sm-rest" path)))))
 
 (: (-> Syntax string (List Syntax)))
 (defun (checks p path)
@@ -256,7 +279,11 @@
 ;; Item answer.
 (: (-> (List Syntax) Syntax Syntax))
 (defun (answer tests some)
-  (if (list-empty? tests) some #'(if ,(conjunction tests) ,some None)))
+  (if (list-empty? tests)
+      some
+      #'(if ,(conjunction tests)
+            ,some
+            None)))
 
 (: (-> (List Syntax) Syntax))
 (defun (conjunction tests)
@@ -269,7 +296,10 @@
 (: (-> Syntax Syntax string (Option Syntax)))
 (defun (value-of p var path)
   (match p
-    ((SSym _) (if (same-name? p var) (Some p) None))
+    ((SSym _)
+     (if (same-name? p var)
+         (Some p)
+         None))
     ((SList items)
      (match (fixed-value (fixed-of items p) var path 0)
        ((Some found) (Some found))
@@ -290,7 +320,9 @@
   (def (Some repeated) (repeated-of items whole) :propagate)
   (if (irrefutable? repeated)
       ;; The tail binder, bound by the pattern like any other variable.
-      (if (same-name? repeated var) (Some repeated) None)
+      (if (same-name? repeated var)
+          (Some repeated)
+          None)
       (match (value-of repeated var (repeated-path items whole path))
         (None None)
         ((Some inner)
@@ -304,31 +336,40 @@
 ;; Clause bindings.
 (: (-> Syntax (List Syntax)))
 (defun (binds p)
-  (fold-right
-    (fun (var bindings)
-      (match (value-of p var "")
-        (None bindings)
-        ((Some value)
-         (if (same-name? value var) bindings (Cons #'(,var ,value) bindings)))))
-    Nil
-    (checked-vars p)))
+  (fold-right (fun (var bindings)
+                (match (value-of p var "")
+                  (None bindings)
+                  ((Some value)
+                   (if (same-name? value var)
+                       bindings
+                       (Cons #'(,var ,value) bindings)))))
+              Nil
+              (checked-vars p)))
 
 (: (-> (List Syntax) Syntax))
 (defun (single-body bodies)
   (match bodies
     ((Cons body Nil) body)
-    (_ #'(let () ,@bodies))))
+    (_
+     #'(let ()
+         ,@bodies))))
 
 (: (-> Syntax Syntax))
 (defun (compile-clause clause)
   (match clause
     ((SList (Cons p bodies))
      (if (list-empty? bodies)
-         (syntax-error clause "A syntax-match clause is (pattern body ...), and this one has no body.")
+         (syntax-error clause
+                       "A syntax-match clause is (pattern body ...), and this one has no body.")
          (let ((tests (checks p ""))
                (bindings (binds p))
                (body (single-body bodies)))
-           (def whole (if (list-empty? bindings) body #'(let ,(SList bindings) ,body)))
+           (def whole
+             (if (list-empty? bindings)
+                 body
+                 #'(let ,(SList
+                          bindings)
+                     ,body)))
            (if (list-empty? tests)
                #'(,(structural p "") ,whole)
                #'(,(structural p "") #:when ,(conjunction tests) ,whole)))))
@@ -347,25 +388,33 @@
 (: (-> (List Syntax) (List Syntax)))
 (defun (arms clauses)
   (syntax-splice
-    ;; Built backwards from the reversed input, so it comes out in order.
-    (let go ((rest (list-reverse clauses)) (acc Nil))
-      (if (list-empty? rest)
-          acc
-          (go (list-tail rest) (cons (compile-clause (list-head rest)) acc))))
-    (if (covered? clauses)
-        Nil
-        ;; Reports unmatched form.
-        (list #'(sm-unmatched (syntax-error sm-unmatched "No clause of this syntax-match matched."))))))
+   ;; Built backwards from the reversed input, so it comes out in order.
+   (let go ((rest (list-reverse clauses))
+            (acc Nil))
+     (if (list-empty? rest)
+         acc
+         (go (list-tail rest) (cons (compile-clause (list-head rest)) acc))))
+   (if (covered? clauses)
+       Nil
+       ;; Reports unmatched form.
+       (list #'(sm-unmatched (syntax-error sm-unmatched
+                                           "No clause of this syntax-match matched."))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The macro
 ;; ---------------------------------------------------------------------------
 
 ;; syntax-match macro.
-(def/macro (syntax-match form inject compare)
+(def/macro (syntax-match form
+             inject
+             compare)
   (match form
     ((SList (Cons _ (Cons subject clauses)))
      (if (list-empty? clauses)
          (syntax-error form "syntax-match needs at least one clause.")
-         #'(match ,subject ,@(arms clauses))))
-    (_ (syntax-error form "syntax-match takes a subject and at least one clause: (syntax-match form (pattern body ...) ...)"))))
+         #'(match ,subject
+             ,@(arms clauses))))
+    (_
+     (syntax-error
+      form
+      "syntax-match takes a subject and at least one clause: (syntax-match form (pattern body ...) ...)"))))

@@ -90,27 +90,33 @@
   (mutableset-enumerator-current (: Bjolang.Runtime.MutableSetModule.Current    (-> (MutableSetEnumerator %a) %a))))
 
 (: (-> (MutableSet %a)))
-(defun (mutableset) (MutableSet.))
+(defun (mutableset)
+  (MutableSet.))
 
 (: (-> (Seq %a) (MutableSet %a)))
-(defun (seq->mutableset xs) (MutableSet. xs))
+(defun (seq->mutableset xs)
+  (MutableSet. xs))
 
 ;; The set itself, seen as a sequence: nothing is copied.
 (: (-> (MutableSet %a) (Seq %a)) #:inline)
-(defun (mutableset->seq s) (cast (Seq %a) s))
+(defun (mutableset->seq s)
+  (cast (Seq %a) s))
 
 ;; A set with the same members. .NET copies another `HashSet` with the same
 ;; equality without hashing its members again.
 (: (-> (MutableSet %a) (MutableSet %a)))
-(defun (mutableset-copy s) (MutableSet. (mutableset->seq s)))
+(defun (mutableset-copy s)
+  (MutableSet. (mutableset->seq s)))
 
 (: (-> (MutableSet %a) bool) #:inline)
-(defun (mutableset-empty? s) (= (mutableset-length s) 0))
+(defun (mutableset-empty? s)
+  (= (mutableset-length s) 0))
 
 ;; Makes x a member. Adding one that is already a member is not a failure:
 ;; afterwards it is a member, which is all `add!` says.
 (: (-> (MutableSet %a) %a void) #:inline)
-(defun (mutableset-add! s x) (ignore (clr-add s x)))
+(defun (mutableset-add! s x)
+  (ignore (clr-add s x)))
 
 ;; The equal element already there, or None when x was added. What
 ;; `mutableset-try-add-new!` is made of.
@@ -118,7 +124,9 @@
 (defun (add-or-existing! s x)
   (match (clr-try-get s x)
     ((Some old) (Some old))
-    (None (ignore (clr-add s x)) None)))
+    (None
+     (ignore (clr-add s x))
+     None)))
 
 ;; Adds an element that must be new, and raises when it is not.
 (: (-> (MutableSet %a) %a void))
@@ -137,27 +145,34 @@
 ;; --- Set algebra, written into the first argument ---
 
 (: (-> (MutableSet %a) (MutableSet %a) void))
-(defun (mutableset-union! a b) (mutableset-add-all! a (mutableset->seq b)))
+(defun (mutableset-union! a b)
+  (mutableset-add-all! a (mutableset->seq b)))
 
 (: (-> (MutableSet %a) (MutableSet %a) void))
-(defun (mutableset-intersect! a b) (clr-intersect a (mutableset->seq b)))
+(defun (mutableset-intersect! a b)
+  (clr-intersect a (mutableset->seq b)))
 
 (: (-> (MutableSet %a) (MutableSet %a) void))
-(defun (mutableset-difference! a b) (mutableset-remove-all! a (mutableset->seq b)))
+(defun (mutableset-difference! a b)
+  (mutableset-remove-all! a (mutableset->seq b)))
 
 (: (-> (MutableSet %a) (MutableSet %a) void))
-(defun (mutableset-symmetric-difference! a b) (clr-symmetric-except a (mutableset->seq b)))
+(defun (mutableset-symmetric-difference! a b)
+  (clr-symmetric-except a (mutableset->seq b)))
 
 ;; --- Comparisons, which write nothing ---
 
 (: (-> (MutableSet %a) (MutableSet %a) bool))
-(defun (mutableset-subset? a b) (clr-subset? a (mutableset->seq b)))
+(defun (mutableset-subset? a b)
+  (clr-subset? a (mutableset->seq b)))
 
 (: (-> (MutableSet %a) (MutableSet %a) bool))
-(defun (mutableset-superset? a b) (clr-superset? a (mutableset->seq b)))
+(defun (mutableset-superset? a b)
+  (clr-superset? a (mutableset->seq b)))
 
 (: (-> (MutableSet %a) (MutableSet %a) bool))
-(defun (mutableset-overlaps? a b) (clr-overlaps? a (mutableset->seq b)))
+(defun (mutableset-overlaps? a b)
+  (clr-overlaps? a (mutableset->seq b)))
 
 ;; `mutableset-add-new!` with the failure as a value: `(Err y)` carries the
 ;; equal element already in the set, which is what interning a value needs.
@@ -182,22 +197,28 @@
 ;; ---------------------------------------------------------------------------
 
 (: (-> (List %a) (MutableSet %a)))
-(defun (list->mutableset xs) (seq->mutableset (list->seq xs)))
+(defun (list->mutableset xs)
+  (seq->mutableset (list->seq xs)))
 
 (: (-> (MutableSet %a) (List %a)))
-(defun (mutableset->list s) (->list (mutableset->seq s)))
+(defun (mutableset->list s)
+  (->list (mutableset->seq s)))
 
 (: (-> (Vec %a) (MutableSet %a)))
-(defun (vec->mutableset v) (seq->mutableset (vec->seq v)))
+(defun (vec->mutableset v)
+  (seq->mutableset (vec->seq v)))
 
 (: (-> (MutableSet %a) (Vec %a)))
-(defun (mutableset->vec s) (->vec (mutableset->seq s)))
+(defun (mutableset->vec s)
+  (->vec (mutableset->seq s)))
 
 (: (-> (HashSet %a) (MutableSet %a)))
-(defun (hashset->mutableset s) (seq->mutableset (hashset->seq s)))
+(defun (hashset->mutableset s)
+  (seq->mutableset (hashset->seq s)))
 
 (: (-> (MutableSet %a) (HashSet %a)))
-(defun (mutableset->hashset s) (seq->hashset (mutableset->seq s)))
+(defun (mutableset->hashset s)
+  (seq->hashset (mutableset->seq s)))
 
 ;; ---------------------------------------------------------------------------
 ;; The traits
@@ -214,15 +235,21 @@
   ;; The enumerator is the cursor, and it steps in `done?`, which the
   ;; protocol calls once per step before `current`. See the `Seq` impl.
   (type %cursor (MutableSetEnumerator %a))
-  (defun (iterable-start s) (mutableset-enumerator s))
-  (defun (iterable-done? s e) (not (mutableset-enumerator-next! e)))
-  (defun (iterable-current s e) (mutableset-enumerator-current e))
-  (defun (iterable-next s e) e))
+  (defun (iterable-start s)
+    (mutableset-enumerator s))
+  (defun (iterable-done? s e)
+    (not (mutableset-enumerator-next! e)))
+  (defun (iterable-current s e)
+    (mutableset-enumerator-current e))
+  (defun (iterable-next s e)
+    e))
 
 (impl (Collection (MutableSet %a))
   (type %content %a)
-  (defun (length s) (mutableset-length s))
-  (defun (empty? s) (mutableset-empty? s)))
+  (defun (length s)
+    (mutableset-length s))
+  (defun (empty? s)
+    (mutableset-empty? s)))
 
 (impl (Addable! (MutableSet %a))
   (type %elem %a)
@@ -244,18 +271,22 @@
                ((not (mutableset-enumerator-next! e)) #t)
                ((mutableset-contains? b (mutableset-enumerator-current e)) (go))
                (else #f))))))
-  (defun (eq-hash s) (unhashable "MutableSet")))
+  (defun (eq-hash s)
+    (unhashable "MutableSet")))
 
 ;; `#mset(a b c)`, in whatever order the table holds them.
 (impl (Written (MutableSet %a))
   (where (Written %a))
-  (defun (write-into s b) (elements-print-into "#mset(" s ")" b (fun (x b) (write-into x b)))))
+  (defun (write-into s b)
+    (elements-print-into "#mset(" s ")" b (fun (x b) (write-into x b)))))
 
 (impl (Displayed (MutableSet %a))
   (where (Displayed %a))
-  (defun (display-into s b) (elements-print-into "#mset(" s ")" b (fun (x b) (display-into x b)))))
+  (defun (display-into s b)
+    (elements-print-into "#mset(" s ")" b (fun (x b) (display-into x b)))))
 
 (: (-> (MutableSet %a) string) (where (Displayed %a)))
-(defun (mutableset->str s) (displayed s))
+(defun (mutableset->str s)
+  (displayed s))
 
 (:deprecated mutableset->str "use `displayed`")

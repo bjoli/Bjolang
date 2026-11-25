@@ -77,7 +77,8 @@
 ;; that are not timed.
 (: (-bjo-> (-bjo-> void) long))
 (defbjo (median-ns thunk)
-  (loop (:for _ (range 0 5)) (:do (thunk)))
+  (loop (:for _ (range 0 5))
+        (:do (thunk)))
   (def times
     (loop (:for _ (range 0 reps))
           (:do (settle))
@@ -95,29 +96,49 @@
 (defun (report name seq par)
   (def nn (cast long n))
   (println (str (string-pad-right name 22)
-                "seq " (hundredths (/ (* seq 100L) nn)) " ns/elem   "
-                "par " (hundredths (/ (* par 100L) nn)) " ns/elem   "
-                "speed-up " (hundredths (/ (* seq 100L) par)) "x")))
+                "seq "
+                (hundredths (/ (* seq 100L) nn))
+                " ns/elem   "
+                "par "
+                (hundredths (/ (* par 100L) nn))
+                " ns/elem   "
+                "speed-up "
+                (hundredths (/ (* seq 100L) par))
+                "x")))
 
 (: (-> double double))
-(defun (twice x) (* 2.0 x))
+(defun (twice x)
+  (* 2.0 x))
 
 (: (-> double double))
-(defun (sine x) (clr-sin x))
+(defun (sine x)
+  (clr-sin x))
 
 (: (-> double bool))
-(defun (big? x) (> x 0.5))
+(defun (big? x)
+  (> x 0.5))
 
 (: (-> (Vec double) double))
-(defun (sum-sines p) (loop (:for x p) (:acc s (summing (sine x)))))
+(defun (sum-sines p)
+  (loop (:for x p)
+        (:acc s (summing (sine x)))))
 
 (: (-> (Vec double) (Vec double)))
-(defun (twice-all p) (loop (:for x p) (:acc o (vecing (twice x)))))
+(defun (twice-all p)
+  (loop (:for x p)
+        (:acc o (vecing (twice x)))))
 
 (defbjo (main)
-  (println (str "n = " (displayed n) ", " (displayed processor-count) " processors, "
-                (displayed (* 4 processor-count)) " parts"))
-  (def v (loop (:for i (range 0 n)) (:acc v (vecing (* 1e-6 (cast double i))))))
+  (println (str "n = "
+                (displayed n)
+                ", "
+                (displayed processor-count)
+                " processors, "
+                (displayed (* 4 processor-count))
+                " parts"))
+  (def v
+    (loop (:for i (range 0 n))
+          (:acc v (vecing (* 1e-6 (cast double i))))))
   (def a (vec->array v))
   (def m (vec->map (vec-map (fun (x) (Tuple x x)) v)))
   (def om (vec->orderedmap (vec-map (fun (x) (Tuple x x)) v)))
@@ -131,16 +152,26 @@
           (median-ns (bjoroutine () (box-set! sink (vec-length (vec-map sine v)))))
           (median-ns (bjoroutine () (box-set! sink (vec-length (par-map sine v))))))
   (report "array map cheap"
-          (median-ns (bjoroutine () (box-set! sink (array-length (loop (:for x a) (:acc o (arraying (twice x))))))))
+          (median-ns (bjoroutine ()
+                       (box-set! sink
+                                 (array-length (loop (:for x a)
+                                                     (:acc o (arraying (twice x))))))))
           (median-ns (bjoroutine () (box-set! sink (array-length (par-map twice a))))))
   (report "array map sin"
-          (median-ns (bjoroutine () (box-set! sink (array-length (loop (:for x a) (:acc o (arraying (sine x))))))))
+          (median-ns (bjoroutine ()
+                       (box-set! sink
+                                 (array-length (loop (:for x a)
+                                                     (:acc o (arraying (sine x))))))))
           (median-ns (bjoroutine () (box-set! sink (array-length (par-map sine a))))))
   (report "vec filter cheap"
           (median-ns (bjoroutine () (box-set! sink (vec-length (vec-filter big? v)))))
           (median-ns (bjoroutine () (box-set! sink (vec-length (par-filter big? v))))))
   (report "array filter cheap"
-          (median-ns (bjoroutine () (box-set! sink (array-length (loop (:for x a) (:when (big? x)) (:acc o (arraying x)))))))
+          (median-ns (bjoroutine ()
+                       (box-set! sink
+                                 (array-length (loop (:for x a)
+                                                     (:when (big? x))
+                                                     (:acc o (arraying x)))))))
           (median-ns (bjoroutine () (box-set! sink (array-length (par-filter big? a))))))
   (report "map map-values cheap"
           (median-ns (bjoroutine () (box-set! sink (map-length (map-map-values twice m)))))
@@ -149,10 +180,13 @@
           (median-ns (bjoroutine () (box-set! sink (map-length (map-filter (fun (k x) (big? x)) m)))))
           (median-ns (bjoroutine () (box-set! sink (map-length (par-filter big? m))))))
   (report "omap map-values cheap"
-          (median-ns (bjoroutine () (box-set! sink (orderedmap-length (orderedmap-map-values twice om)))))
+          (median-ns (bjoroutine ()
+                       (box-set! sink (orderedmap-length (orderedmap-map-values twice om)))))
           (median-ns (bjoroutine () (box-set! sink (orderedmap-length (par-map twice om))))))
   (report "omap filter cheap"
-          (median-ns (bjoroutine () (box-set! sink (orderedmap-length (orderedmap-filter (fun (k x) (big? x)) om)))))
+          (median-ns (bjoroutine ()
+                       (box-set! sink
+                                 (orderedmap-length (orderedmap-filter (fun (k x) (big? x)) om)))))
           (median-ns (bjoroutine () (box-set! sink (orderedmap-length (par-filter big? om))))))
   (report "loop summing sin"
           (median-ns (bjoroutine () (box-set! total (sum-sines v))))
