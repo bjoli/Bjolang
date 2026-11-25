@@ -140,12 +140,19 @@ module Diagnostics =
     /// reported next. A stack trace naming it is fine — it is a real method. A
     /// compiler error naming it is not, because it appears in no source file
     /// and the reader has no way to find it.
+    ///
+    /// The message of an illegal name (`Unused.rejectNames`) is not changed:
+    /// its name is one the program wrote, `x__1`, with a suffix of the shape
+    /// that is taken away here.
     let humanize (message: string) =
-        landingPad.Replace(
-            generatedCopy.Replace(specializedCopy.Replace(invented.Replace(message, ""), ""), ""),
-            ""
-        )
-        |> showTraitKeys
+        if message.EndsWith "is an illegal name." then
+            message
+        else
+            landingPad.Replace(
+                generatedCopy.Replace(specializedCopy.Replace(invented.Replace(message, ""), ""), ""),
+                ""
+            )
+            |> showTraitKeys
 
     /// Whether the compiler narrates what it is doing.
     ///

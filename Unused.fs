@@ -118,9 +118,12 @@ let private defines (d: Decl) : (string * Range) list =
 ///   (`x__3`). A written name with a `_` could be the same as one of those.
 /// - A name that the source does not have is the compiler's (`loopcur__7`),
 ///   and is not checked. Nor is one of `Gensym.compilerWritten`.
+/// - A parameter of a short lambda, `&1` of `#(f &1)`, is read as `&1__4`.
+///   A program cannot bind a name that starts with `&`.
 let private illegal (name: string) =
     name <> "_"
     && name.Contains "_"
+    && not (name.StartsWith "&")
     && Gensym.isWritten name
     && not (Gensym.compilerWritten.Contains name)
 
