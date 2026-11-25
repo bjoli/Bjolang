@@ -8,10 +8,9 @@
 // It checks every file of TestFiles/errors one at a time and then on 8 and on
 // 16 threads, which takes about a minute. Exit code 1 when a check fails.
 //
-// The console is one for the process, and the compiler prints a failure that
-// it does not record. So what is written goes to the buffer of the check that
-// writes it (`Routed`), in place of `Diagnostics.captured`, which sets the
-// console and is for one compilation at a time.
+// The compiler prints a failure that it does not record, and
+// `Diagnostics.captured` collects what a check prints: of the check's own
+// context, so each of the checks at the same time has its own text.
 
 #r "../../bin/compiler/Bjolang.dll"
 
@@ -23,24 +22,6 @@ let root = IO.Path.GetFullPath(IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..")
 Environment.SetEnvironmentVariable("BJOLANG_HOME", root)
 
 let realOut = Console.Out
-let printedBy = new AsyncLocal<Text.StringBuilder>()
-
-type Routed() =
-    inherit IO.TextWriter()
-    override _.Encoding = Text.Encoding.UTF8
-
-    override _.Write(c: char) =
-        match printedBy.Value with
-        | null -> ()
-        | b -> lock b (fun () -> b.Append c |> ignore)
-
-    override _.Write(s: string) =
-        match printedBy.Value with
-        | null -> ()
-        | b -> lock b (fun () -> b.Append s |> ignore)
-
-Console.SetOut(new Routed())
-Console.SetError(new Routed())
 
 let say fmt =
     Printf.kprintf (fun (line: string) -> realOut.WriteLine line) fmt
@@ -85,6 +66,32 @@ let inTask = Compilation.inNew (fun () ->
 expect "a task that a context starts has that context" (inTask = 1) (string inTask)
 Diagnostics.reset ()
 
+// What two contexts print at the same time is collected apart.
+let texts = Collections.Concurrent.ConcurrentDictionary<int, string>()
+
+let printers =
+    [ for n in 1..8 ->
+          Thread(fun () ->
+              Compilation.inNew (fun () ->
+                  let (), text =
+                      Diagnostics.captured (fun () ->
+                          for i in 1..200 do
+                              printfn "%d %d" n i
+                              if i % 50 = 0 then Thread.Yield() |> ignore)
+
+                  texts[n] <- text)) ]
+
+printers |> List.iter (fun t -> t.Start())
+printers |> List.iter (fun t -> t.Join())
+
+let wanted (n: int) =
+    [ for i in 1..200 -> $"{n} {i}" ] |> String.concat "\n"
+
+expect
+    "what each of eight contexts prints at the same time is collected as its own"
+    ([ 1..8 ] |> List.forall (fun n -> texts[n].Trim().Replace("\r\n", "\n") = wanted n))
+    ""
+
 // ---------------------------------------------------------------------------
 // Whole checks
 // ---------------------------------------------------------------------------
@@ -101,13 +108,12 @@ let check (path: string) : string list =
     Compilation.inNew (fun () ->
         Diagnostics.verbose.Value <- false
         Diagnostics.reset ()
-        printedBy.Value <- Text.StringBuilder()
-
-        let status, raised =
-            try
-                Build.compile options path, []
-            with ex ->
-                -1, [ "RAISED " + ex.GetType().Name + ": " + ex.Message.Split('\n')[0] ]
+        let (status, raised), printedText =
+            Diagnostics.captured (fun () ->
+                try
+                    Build.compile options path, []
+                with ex ->
+                    -1, [ "RAISED " + ex.GetType().Name + ": " + ex.Message.Split('\n')[0] ])
 
         let found =
             Diagnostics.snapshot ()
@@ -115,7 +121,7 @@ let check (path: string) : string list =
 
         let printed =
             if status <> 0 && not (found |> List.exists (fun m -> m.StartsWith "E")) then
-                [ "PRINTED " + printedBy.Value.ToString().Trim() ]
+                [ "PRINTED " + printedText.Trim() ]
             else
                 []
 

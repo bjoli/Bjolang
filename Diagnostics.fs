@@ -541,41 +541,86 @@ module Diagnostics =
             printfn "This is a bug in the compiler, not in the program above. Trace:"
             printfn $"%s{ex.StackTrace}"
 
-    /// Kör `f` med allt den skriver till konsolen uppsamlat, och lämnar
-    /// tillbaka både resultatet och texten.
-    ///
-    /// Hela `Console` växlas om, inte bara den här modulens utskrifter. En
-    /// kompilering rapporterar från ett dussin moduler med rakt `printfn` —
-    /// `Pipeline` säger vilket beroende den bygger, `Build` skickar vidare vad
-    /// C#-kompilatorn sade — och en batch måste kunna svara på vilken indatafil
-    /// som sade vad. Att fånga vid källan skulle betyda ett anrop att ändra på
-    /// varje ställe som skriver, och nästa tillagda `printfn` skulle tyst falla
-    /// utanför.
-    ///
-    /// Priset är att `Console.SetOut` gäller hela processen: det här duger för
-    /// en batch som kompilerar en fil i taget, och för ingenting som kompilerar
-    /// två samtidigt.
-    ///
-    /// stdout och stderr går till samma buffert, så att en varning hamnar där
-    /// den skrevs i förhållande till resten. Den som läser texten letar efter
-    /// en sträng i den, inte efter vilken ström den kom på.
-    let captured (f: unit -> 'a) : 'a * string =
-        let buffer = System.Text.StringBuilder()
-        use writer = new System.IO.StringWriter(buffer)
-        let previousOut = System.Console.Out
-        let previousError = System.Console.Error
+    /// The writer that takes what the current compilation writes to the
+    /// console, while `captured` runs in its context. Null when it does not.
+    let private captureOf = Compilation.Per<System.IO.TextWriter>(fun () -> null)
 
-        System.Console.SetOut writer
-        System.Console.SetError writer
+    /// The console's writer once `captured` has run: what a compilation that
+    /// is captured writes goes to its buffer, and all other text to
+    /// `fallback`, the writer that the console had.
+    ///
+    /// - The console is one for the process, and a compilation writes to it
+    ///   from a dozen modules with a plain `printfn`. So the console is not
+    ///   set for each capture: this writer is set once, and finds the buffer
+    ///   through the current context (`Compilation.fs`).
+    /// - Two compilations in contexts of their own can thus each be captured
+    ///   at the same time.
+    /// - A buffer is locked for each write: a compilation can have a helper
+    ///   thread.
+    type private Routed(fallback: System.IO.TextWriter) =
+        inherit System.IO.TextWriter()
+
+        override _.Encoding = fallback.Encoding
+
+        override _.Write(c: char) =
+            match captureOf.Value with
+            | null -> fallback.Write c
+            | w -> lock w (fun () -> w.Write c)
+
+        override _.Write(text: string) =
+            match captureOf.Value with
+            | null -> fallback.Write text
+            | w -> lock w (fun () -> w.Write text)
+
+        override _.Write(buffer: char[], index: int, count: int) =
+            match captureOf.Value with
+            | null -> fallback.Write(buffer, index, count)
+            | w -> lock w (fun () -> w.Write(buffer, index, count))
+
+        override _.Flush() =
+            match captureOf.Value with
+            | null -> fallback.Flush()
+            | _ -> ()
+
+    let private routing = obj ()
+    let mutable private routed = false
+
+    /// Sets the console's two writers to `Routed` ones, the first time.
+    let private routeConsole () =
+        if not routed then
+            lock routing (fun () ->
+                if not routed then
+                    System.Console.SetOut(new Routed(System.Console.Out))
+                    System.Console.SetError(new Routed(System.Console.Error))
+                    routed <- true)
+
+    /// Runs `f` with all that it writes to the console collected, and gives
+    /// the result and the text.
+    ///
+    /// - All of the console is collected, not only what this module writes:
+    ///   `Pipeline` says which import it builds, and `Build` passes on what
+    ///   the C# compiler said. A batch must know which file said what.
+    /// - Standard output and standard error go to one buffer, so that a
+    ///   warning is where it was written among the rest.
+    /// - The capture is of the current context. A compilation in another
+    ///   context, on another thread, is not collected here and can be
+    ///   captured by itself at the same time (see `Routed`).
+    /// - A task or a thread that `f` starts writes to the buffer too. What it
+    ///   writes after `f` returns goes to the console.
+    let captured (f: unit -> 'a) : 'a * string =
+        routeConsole ()
+        let buffer = System.Text.StringBuilder()
+        let writer = new System.IO.StringWriter(buffer)
+        let previous = captureOf.Value
+        captureOf.Value <- writer
 
         try
-            // Texten läses innanför `try`, eftersom en `f` som kastar har hunnit
-            // skriva det som förklarar varför.
+            // The text is read inside the `try`: an `f` that raises has
+            // written what says why.
             let result = f ()
-            result, buffer.ToString()
+            result, lock writer (fun () -> buffer.ToString())
         finally
-            System.Console.SetOut previousOut
-            System.Console.SetError previousError
+            captureOf.Value <- previous
 
     // ---------------------------------------------------------------------------
     // Names two imports offer as different things

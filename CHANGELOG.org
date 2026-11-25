@@ -3,6 +3,21 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~Diagnostics.captured~ collects the output of its own context
+
+- *~captured~ set the console of the process*, so two compilations could
+  not both be captured, and one of them could lose what it printed.
+- The console's two writers are set once, the first time ~captured~ runs,
+  to writers that find the buffer of the current context
+  (~Compilation.fs~). What a compilation that is captured prints goes to
+  its buffer, and all other text to the writer that the console had.
+- Two compilations in contexts of their own can each be captured at the
+  same time. ~tests/contexts/contexts.fsx~ does it for the 824 files of
+  TestFiles/errors, and for eight contexts that print 200 lines each.
+- One compilation at a time, as on the command line, collects what it
+  collected.
+- BjolangLsp runs its checks on a thread of their own with this.
+
 * The state of a compilation is in a context, not in static fields
 
 - *The compiler kept the state of a compilation in module-level values*:
