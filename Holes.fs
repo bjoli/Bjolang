@@ -11,14 +11,12 @@
  * availability requirements or notice obligations of Section 3 of the MPL 2.0.
  *)
 
-/// Typed holes: `_`, or a `_name` nothing binds, written where an expression
-/// goes.
+/// Typed holes: `_`, or a `_name` in expression position.
 ///
-/// A hole is inferred as a fresh metavariable, so the code around it decides
-/// what it has to be. It is always an error: `Traits.solvePending` settles the
-/// declaration as far as it goes and then refuses it with `describe` for each
-/// hole, which says what the hole stands for and which bindings in scope would
-/// do there.
+/// A hole is inferred as a fresh metavariable, so the surrounding code decides
+/// its type. Holes always produce a compile error: `Traits.solvePending` solves
+/// as much of the declaration as it can, then uses `describe` to report what
+/// the compiler expects.
 module Bjolang.Holes
 
 open Bjolang.Lexer
@@ -31,26 +29,26 @@ type Hole =
     { Written: string
       Type: HMType
       Range: Range
-      /// The scope at the hole, which is where what fits it is looked for.
+      /// The environment used to try to figure out what fits the hole.
       Env: Env }
 
-/// The holes of the declaration being checked. Emptied by the refusal that
-/// reports them.
+/// Pending holes for the declaration currently being checked. Cleared when
+/// reporting errors.
 let internal pending = Compilation.PerList<Hole>()
 
 let clear () : unit = pending.Clear()
 
-/// The names the declaration being checked binds, set by `checkDeclGroup`.
-/// Its own name is bound in its body for recursion, and is listed among the
-/// module's bindings rather than the hole's locals.
+/// Names bound by the declaration currently being checked (set by
+/// `checkDeclGroup`). A recursive function's own name is in scope in its body,
+/// so we track it here to classify it as a module-level binding rather than a
+/// local.
 let declaring = Compilation.Per<Set<string>>((fun () -> Set.empty))
 
-/// Whether `name`, written as an expression, is a hole.
+/// Returns true if `name` in expression position should be treated as a hole.
 ///
-/// `_` binds nothing anywhere, so it always is. `_name` is also an ordinary
-/// name, so it is a hole only where nothing binds it or spells something by
-/// it. One with a `.` in it is a member access, and one with a `/` or a `:` is
-/// a qualified name.
+/// `_` is always a hole in expression position. `_name` is only a hole if it's
+/// a simple, unbound identifier (not `__...`, not a member access or qualified
+/// name, and not already bound in scope).
 let isHoleName (env: Env) (name: string) : bool =
     name = "_"
     || (name.Length > 1
@@ -62,29 +60,29 @@ let isHoleName (env: Env) (name: string) : bool =
         && not (Map.containsKey name env.Registry.ClrExterns)
         && not (Map.containsKey name env.Escapes))
 
-/// The metavariables of the holes' types, held from generalization. A local
-/// function with a hole in it then stays monomorphic, so that its uses decide
-/// the hole's type.
+/// Metavariable IDs referenced by pending holes. These are excluded from
+/// generalization so local functions containing holes stay monomorphic and
+/// their call sites can constrain the hole's type.
 let heldMetaIds () : Set<int> =
     pending |> Seq.collect (fun h -> metaIdsOf h.Type) |> Set.ofSeq
 
-// --- What fits a hole ---
+// --- Finding bindings that fit a hole ---
 //
-// A binding fits when its type and the hole's unify and what its where clause
-// asks holds there. Unification here binds nothing: it answers a
-// substitution, so trying every binding in scope leaves the declaration's
-// types as they were.
+// A binding fits if its type unifies with the hole's type and its trait
+// constraints are satisfied. Unification here is pure (returns a substitution
+// map instead of mutating metavariables), so testing candidates doesn't affect
+// the declaration's types.
 
-/// The prefix a candidate's own type variables carry while it is tried: they
-/// may become anything, and the hole's own variables are rigid.
+/// Prefix used to mark a candidate binding's quantified type variables as
+/// flexible during matching, while keeping the hole's own type variables rigid.
 let private flexMark = "\u0001"
 
-/// Compared by character: `StartsWith` with a string compares by culture,
-/// which ignores a control character, so every name would start with this one.
+/// Check the first char directly: `string.StartsWith` uses culture-sensitive
+/// comparison, which ignores control characters and would match every string.
 let private isFlex (v: string) = v.Length > 0 && v[0] = flexMark[0]
 
-/// What may still be chosen: a candidate's own variable by its name, or an
-/// open metavariable of either side by its id.
+/// Returns the substitution key if `t` is flexible (an unsolved metavariable or
+/// a candidate's flexible type variable).
 let private flexKey (t: HMType) : string option =
     match t with
     | TMeta { Value = None; Id = id } -> Some $"#%d{id}"
@@ -99,7 +97,7 @@ let rec private walk (s: Map<string, HMType>) (t: HMType) : HMType =
         | Some chosen -> walk s chosen
         | None -> t
 
-/// `t` with everything `s` chose put in.
+/// Recursively applies substitution `s` to `t`.
 let rec private applied (s: Map<string, HMType>) (t: HMType) : HMType =
     match walk s t with
     | TCon(n, xs) -> TCon(n, List.map (applied s) xs)
@@ -124,8 +122,7 @@ let rec private settledEffect (e: Effect) : Effect =
     | EMeta { EValue = Some inner } -> settledEffect inner
     | other -> other
 
-/// Only an ordinary function against a bjoroutine is refused: every other
-/// pair can still meet, as `unifyEffect` lets it.
+/// Checks whether two effects are compatible (only sync vs. async conflicts).
 let private effectsMeet (a: Effect) (b: Effect) : bool =
     match settledEffect a, settledEffect b with
     | ESync, EAsync
@@ -142,8 +139,8 @@ let rec private hasAssoc (t: HMType) : bool =
     | TNum(carrier, _) -> hasAssoc carrier
     | _ -> false
 
-/// An associated type whose implementor `s` has made known, as that
-/// implementation says it is. One still undecided is left as it is.
+/// Tries to resolve an associated type once `s` has determined its implementing
+/// type; leaves it unchanged if it's still unresolved.
 let private reduced (registry: TraitRegistry) (s: Map<string, HMType>) (t: HMType) : HMType =
     match t with
     | TAssoc _ ->
@@ -171,8 +168,8 @@ let rec private meet (registry: TraitRegistry) (s: Map<string, HMType> option) (
             | TCon(TypeConstants.UnitName, []), TCon(TypeConstants.VoidName, []) -> s
             | TCon(n, xs), TCon(m, ys) when n = m && xs.Length = ys.Length -> List.fold2 meet s xs ys
             | TTuple xs, TTuple ys when xs.Length = ys.Length -> List.fold2 meet s xs ys
-            // A part that is an associated type last, once the others may have
-            // said what its implementor is, as `unify` does.
+            // Unify parameter/return types that contain associated types last,
+            // so earlier parameters can determine the implementing type first.
             | TFun(xs, r, e), TFun(ys, q, f) when xs.Length = ys.Length && effectsMeet e f ->
                 let ready, waiting =
                     List.zip (xs @ [ r ]) (ys @ [ q ])
@@ -187,20 +184,20 @@ let rec private meet (registry: TraitRegistry) (s: Map<string, HMType> option) (
 let private isOpen (t: HMType) : bool =
     not (List.isEmpty (metaIdsOf t)) || typeVarsOf t |> List.exists isFlex
 
-/// Several answers as one: refused if any refuses, held if all hold, and
-/// otherwise not known yet.
+/// Combines tri-state constraint results: `Some false` if any failed,
+/// `Some true` if all passed, otherwise `None` (undetermined).
 let private allOf (answers: bool option list) : bool option =
     if List.contains (Some false) answers then Some false
     elif List.forall ((=) (Some true)) answers then Some true
     else None
 
-/// Whether `traitName` holds at `t`, a type with a candidate's choices put
-/// in: `None` while `t` is open where the answer depends on it.
+/// Checks whether `traitName` holds for `t` (after applying a candidate's
+/// substitution). Returns `None` if `t` is still too open to decide.
 ///
-/// At a variable of the enclosing signature a constraint is taken into the
-/// function's own where clause, so it holds, unless it is a .NET interface:
-/// such a constraint has to be written in the signature, and whether it is
-/// is not known here.
+/// For a rigid type variable from the enclosing signature, normal trait
+/// constraints are assumed to hold (they can be added to the signature's
+/// `where` clause), except for .NET interfaces, which must be written
+/// explicitly and can't be verified here.
 let rec private holdsAt (clrHolds: string -> HMType -> bool) (registry: TraitRegistry) (traitName: string) (t: HMType) : bool option =
     match t with
     | TMeta _ -> None
@@ -224,9 +221,9 @@ let rec private holdsAt (clrHolds: string -> HMType -> bool) (registry: TraitReg
         | None when isOpen ground -> None
         | None -> Some false
 
-/// Binding key -> the name a program writes it as, where the two differ: a
-/// constructor and a trait method are bound under their keys and spelled
-/// through `ImportAliases`. A def is bound under the name it is written as.
+/// Maps internal binding keys to their user-facing names when they differ
+/// (e.g. constructors and trait methods stored under internal keys but accessed
+/// via `ImportAliases`). Regular defs are already keyed by their written name.
 let private spellingsOf (registry: TraitRegistry) : Map<string, string> =
     registry.ImportAliases
     |> Map.toSeq
@@ -236,21 +233,19 @@ let private spellingsOf (registry: TraitRegistry) : Map<string, string> =
     |> Seq.map (fun (key, spellings) -> key, spellings |> Seq.map fst |> Seq.minBy (fun v -> v.Length, v))
     |> Map.ofSeq
 
-/// How many fits are named; the rest are counted.
+/// Max number of matching bindings to list by name; the rest are summarized as a count.
 let private fitsShown = 6
 
-/// The bindings in scope that fit a hole of type `t`, as the program writes
-/// them: the hole's own scope first, then the module's and the builtins, then
-/// the imports, and within each the least generic first. `waiting` is what the
-/// code around the hole asks of its type.
+/// Finds bindings in scope that fit a hole of type `t`, returning their written
+/// names ordered by: locals first, then current module / builtins, then imports
+/// (and least generic first within each tier). `waiting` contains the trait
+/// constraints imposed on the hole by surrounding code.
 ///
-/// What the compiler made rather than the program is left out: a generated
-/// copy, a qualified name and anything else with no spelling of its own, as
-/// are what is deprecated or failed to check. So is a binding of every type,
-/// such as the stand-in for a declaration that failed: it fits anything and
-/// says nothing.
+/// Filters out compiler-generated names, deprecated or poisoned bindings, and
+/// completely unconstrained polymorphic bindings (like error placeholders) that
+/// would match anything.
 ///
-/// With `localOnly`, only the hole's own scope is searched.
+/// If `localOnly` is true, only searches the hole's local scope.
 let private fitsFor
     (clrHolds: string -> HMType -> bool)
     (h: Hole)
@@ -264,7 +259,7 @@ let private fitsFor
 
     let writtenAs (key: string) : string option =
         match Map.tryFind key spellings with
-        // A spelling a binding in scope has taken means that binding here.
+        // If another binding in scope shadows this name, it refers to that binding instead.
         | Some visible when Map.containsKey visible env.Bindings -> None
         | Some visible -> Some visible
         | None when key.Contains "." || key.Contains "::" || key.Contains "__" || key.StartsWith "#" -> None
@@ -285,9 +280,9 @@ let private fitsFor
             | Some alias when alias.OriginModule <> "" && alias.OriginModule <> env.CurrentModule -> 2
             | _ -> 1
 
-    // A trait method is bound with no constraint: a use of it dispatches,
-    // and that is what asks for the trait, at the scheme's first variable,
-    // and for the member's own where clause.
+    // Trait methods don't carry their own trait constraint in their scheme;
+    // reconstruct the trait constraint (on the first type var) plus any
+    // method-level `where` constraints.
     let methodConstraints (key: string) (vars: string list) : TraitConstraint list =
         match traitMethodOf registry key with
         | Some(traitName, methodName) when Set.contains key env.TraitMethodNames && not vars.IsEmpty ->
@@ -317,8 +312,8 @@ let private fitsFor
                 waiting
                 |> List.map (fun (traitName, at) -> holdsAt clrHolds registry traitName (applied subst at))
 
-            // What the binding asks has to be known to hold; what the hole is
-            // asked may still be open, as it is for any value of the type.
+            // The candidate's own constraints must definitely hold; the hole's
+            // surrounding constraints just must not be violated.
             allOf asked = Some true && allOf around <> Some false
 
     env.Bindings
@@ -344,10 +339,9 @@ let private fitsFor
     |> List.map (fun (_, _, written) -> written)
     |> List.distinct
 
-/// A hole, for a tool that offers what could fill it: its type as shown, the
-/// bindings in scope that fit, ranked as the refusal ranks them, the
-/// constructors of its type written with holes for what they take, and for a
-/// function type how many parameters it takes.
+/// Structured info about a hole for IDE/tooling completions: its formatted
+/// type, ranked matching bindings, constructor templates (with `_` for args),
+/// and parameter count if it's a function type.
 type Fillers =
     { Range: Range
       Type: string
@@ -355,12 +349,12 @@ type Fillers =
       Constructors: string list
       Parameters: int option }
 
-/// Called with each hole as it is refused.
+/// Optional hook called with each hole's `Fillers` when errors are reported.
 let observe = Compilation.Per<(Fillers -> unit) option>((fun () -> None))
 
-/// The values of type `t` the code at `h` may build directly, each with a hole
-/// for what it takes: a union's cases, a record with each field, a newtype
-/// around its value. Nothing for a type whose representation is hidden there.
+/// Builds constructor templates for `t` with `_` placeholders for arguments
+/// (union cases, record literals, newtypes). Returns an empty list if `t` is
+/// opaque at the hole's location.
 let private constructorsOf (h: Hole) (t: HMType) : string list =
     let registry = h.Env.Registry
     let spellings = spellingsOf registry
@@ -401,10 +395,8 @@ let private constructorsOf (h: Hole) (t: HMType) : string list =
             | _ -> []
     | _ -> []
 
-/// The refusal of a hole: where it is, what it stands for, and what in scope
-/// would do there. `waiting` is every constraint the declaration raised, with
-/// the type it is asked at; those that mention the hole's type are what the
-/// code around it asks of it.
+/// Formats the error message for a hole, including its location, expected type,
+/// relevant trait constraints from `waiting`, and matching bindings in scope.
 let describe (clrHolds: string -> HMType -> bool) (waiting: (string * HMType) list) (h: Hole) : string =
     let registry = h.Env.Registry
 
@@ -439,8 +431,8 @@ let describe (clrHolds: string -> HMType -> bool) (waiting: (string * HMType) li
             let all = String.concat " and " several
             $"a value of type %s{shown.Head}, where %s{all} have to hold"
 
-    // A type that names no type, such as `(-> ?a ?b)`, is fitted by nearly
-    // everything at module level, so only the hole's own scope is searched.
+    // If the expected type has no concrete type names (e.g. `(-> ?a ?b)`),
+    // almost every module-level function would match, so only search locals.
     let rec namesAType (t: HMType) =
         match t with
         | TMeta { Value = Some inner } -> namesAType inner
