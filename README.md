@@ -416,11 +416,13 @@ A grammar is declared in the module with the types, so a library can give its us
 
 ## Speed
 
-Speed is pretty good. Since bjolang compiles to c#, compilation is slower than c#, but actual speed when running is pretty much the same. I have been porting c# in the runtime to bjolang, and depsite the c# being pretty optimized, the bjolang code has been at most +/- 10%. Some of that is of course the power of hindsight and being able to make better decisions, but some of it are actually surprising speedups.
+Speed is pretty good. Since bjolang compiles to c#, compilation is slower than c#, but actual speed when running is pretty much the same. I have been porting c# in the runtime to bjolang, and despite the c# being pretty optimized, the bjolang code has been at most +/- 10%. Some of that is of course the power of hindsight and being able to make better decisions, but some of it are actually surprising speedups.
 
 Bjolang has spans, and most of the knobs to make fast code in c# are available to bjolang. The only thing that you actually get is a better looping facility that makes the easy path the fast path. It also does automatic vectorization for a (quite narrow) case of loops.
 
 Bjolang strings being utf8-only has both pros and cons. Some things are a LOT faster (like over 10x), but for cursor walks it is actually slower. When using the built in string search tools, it is mostly going to be faster than c# strings, though. Especially (std scan). When you can use it, it will beat c# regexps (even compiled ones) any day of the week.
+
+When porting code from f# you will notice that the default immutable maps are often a lot faster. The linked list is about the same, since there are no real tricks to play there. Replacing f# linked lists with bjolangs Vec will usually lead to a speed up, especially with iteration.
 
 ## License
 
@@ -437,8 +439,6 @@ Probably many.
 
 ### Problems
 
-macros are always exported, invisibly.
-
 mutual recursion doesn’t do any dictionary passing, so it is monomorphic once entered. This is pretty minor, tbh.
 
 pruning raises type resolution errors eagerly during environment traversals which causes the compiler to report errors on unrelated lines of code.
@@ -454,6 +454,10 @@ fix tail recursion and parameterization: Since tail calls have no code in the re
 ### features to add in no particular order
 
 add #:align to columnar and tabular in (std fmt)
+
+Nim-style exception tracking, so that we can actually claim (and verify) a #:no-raise tag. This would of course make us diffrentiate between execution exceptions (which should be panics) and other kinds of exceptions flagged by dotnet for all kinds of stupid things.
+
+i think (std fmt) can learn at least one thing from ocamls documents.
 
 remove the use for (bjoroutine …) special syntax in places where the lambda is in direct argument position: (result-map #(read-line &) r) currently needs a bjoroutine.
 
