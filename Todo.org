@@ -403,6 +403,39 @@ cast, and a store of a reference into the heap (the GC's write barrier).
   copies its body into each call and drops the copy. The check of the copy
   is work for nothing; marking such a demand would save it.
 
+* State that the compilations of one process share
+
+The state of a compilation is in a context (see the changelog, "The state of
+a compilation is in a context, not in static fields"). What is not, and so
+is the same for two compilations that run at the same time:
+
+- *The caches of what is read from disk or loaded are plain dictionaries
+  with no lock*: ~Pipeline.dllCache~, ~sourceFacts~ and ~assemblyPaths~,
+  ~Frameworks.indexes~, ~Docs.sources~, ~DotNetInterop.extraAssemblies~ and
+  ~Repl.docCache~. ~tests/contexts/contexts.fsx~ did not fail on them on 16
+  threads, which does not show that they are safe. Each needs a lock or a
+  concurrent dictionary, and a key that is right for every project.
+- *The console.* ~Diagnostics.captured~ sets the console of the process, so
+  two compilations cannot both use it, and the compiler prints a failure
+  that it does not record. The test gives each check a writer of its own.
+  The compiler needs the same: a writer in the context.
+- *The assemblies that are loaded.* .NET does not unload them, so a macro
+  module that changes is not loaded again. A load context for each project,
+  which can be collected, would do it.
+- *The hooks that one module sets once for another*: ~Hygiene.expandHook~
+  and the others of ~Hygiene~, ~Unification.heldMetaIds~ and its two
+  siblings, ~Pipeline.compileLibrary~, ~InferExpr.runGrammarCheck~. They do
+  not change after the start, and what they call reads the context.
+- *Counters and switches of the process*: ~Timing~, the flags that say a
+  resolver is installed, ~CSharpEmit~'s references and its count of emits.
+- ~Session.capture~ and ~restore~ name each value that they save. A new
+  value of a compilation must be a ~Per~ of ~Compilation.fs~, and must be
+  added there if a compilation that another one starts has to begin without
+  it.
+- BjolangLsp still runs every check in the root context, on its one
+  thread. To run a check in ~Compilation.inNew~ on another thread is the
+  next step, and it needs the first two items above.
+
 * Walks to the end of a number type
 
 - *~(down-from n #:to 0u)~ raises, and a count down to zero in an unsigned
