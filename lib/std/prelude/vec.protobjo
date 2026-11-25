@@ -111,12 +111,9 @@
 (defun (rrb-sizes-of table count)
   (def sizes (make-array count #:fill 0))
   (loop (:for i (range 0 count))
-        (:do (array-set! sizes
-                         i
-                         (- (array-ref table i)
-                            (if (> i 0)
-                                (array-ref table (- i 1))
-                                0)))))
+        (:with before 0 total)
+        (:let total (array-ref table i))
+        (:do (array-set! sizes i (- total before))))
   sizes)
 
 ;; ---------------------------------------------------------------------------
@@ -150,13 +147,9 @@
          ;; The last leaf's worth goes in front of the tree, and the first
          ;; item stays as the head.
          (let ()
-           (def (Tuple r g s)
-             (rrb-push-in-front root
-                                (- tail-from head-len)
-                                gap
-                                (rrb-array-part head 1 rrb-branching)
-                                rrb-branching
-                                shift))
+           (def leaf (rrb-array-part head 1 rrb-branching))
+           (def tree-count (- tail-from head-len))
+           (def (Tuple r g s) (rrb-push-in-front root tree-count gap leaf rrb-branching shift))
            (rrb-list r s g (rrb-array-of (array-ref head 0)) 1 (rrb-tail v) tail-len (+ count 1)))))
     ((>= i tail-from)
      (def tail (rrb-array-with (rrb-tail v) tail-len (- i tail-from) x))
@@ -165,21 +158,11 @@
          ;; The first leaf's worth goes after the tree, and the last item
          ;; stays as the tail.
          (let ()
+           (def leaf (rrb-array-part tail 0 rrb-branching))
            (def tree-count (- tail-from head-len))
-           (def (Tuple r s g)
-             (rrb-append-leaf root
-                              (rrb-array-part tail 0 rrb-branching)
-                              gap
-                              (+ tree-count rrb-branching)
-                              shift))
-           (rrb-list r
-                     s
-                     g
-                     (rrb-head v)
-                     head-len
-                     (rrb-array-of (array-ref tail rrb-branching))
-                     1
-                     (+ count 1)))))
+           (def (Tuple r s g) (rrb-append-leaf root leaf gap (+ tree-count rrb-branching) shift))
+           (def last (rrb-array-of (array-ref tail rrb-branching)))
+           (rrb-list r s g (rrb-head v) head-len last 1 (+ count 1)))))
     ;; The tree in the middle has no gap.
     ((> gap 0) (vec-insert (rrb-materialized v) i x))
     (else
@@ -192,8 +175,9 @@
            (array-set! kids 0 node)
            (array-set! kids 1 over)
            (def table (make-array 2 #:fill 0))
-           (array-set! table 0 (rrb-count-tree node shift))
-           (array-set! table 1 (+ (array-ref table 0) (rrb-count-tree over shift)))
+           (def node-count (rrb-count-tree node shift))
+           (array-set! table 0 node-count)
+           (array-set! table 1 (+ node-count (rrb-count-tree over shift)))
            (rrb-list (rrb-relaxed kids table 2)
                      (+ shift rrb-bits)
                      0
@@ -252,20 +236,17 @@
            (def block (shift-left 1 shift))
            (def child-shift (- shift rrb-bits))
            (def table (make-array len #:fill 0))
-           (ignore (loop (:for i (range 0 len))
-                         (:acc sum (folding 0
-                                            (let ()
-                                              (def size
-                                                (cond
-                                                  ((= i at)
-                                                   (if (< at (- len 1))
-                                                       (+ block 1)
-                                                       (rrb-count-tree new-child child-shift)))
-                                                  ((= i (- len 1))
-                                                   (rrb-count-tree (rrb-child node i) child-shift))
-                                                  (else block)))
-                                              (array-set! table i (+ sum size))
-                                              (+ sum size))))))
+           (loop (:for i (range 0 len))
+                 (:with before 0 total)
+                 (:let size (cond
+                              ((= i at)
+                               (if (< at (- len 1))
+                                   (+ block 1)
+                                   (rrb-count-tree new-child child-shift)))
+                              ((= i (- len 1)) (rrb-count-tree (rrb-child node i) child-shift))
+                              (else block)))
+                 (:let total (+ before size))
+                 (:do (array-set! table i total)))
            (Tuple (rrb-relaxed kids table len) (rrb-no-tree)))
           (else (Tuple (rrb-dense kids len) (rrb-no-tree)))))))))
 
@@ -309,15 +290,14 @@
      (cond
        (to-left?
         (def nb (rrb-child node (- at 1)))
+        (def before-nb
+          (if (> at 1)
+              (array-ref cumulative (- at 2))
+              0))
         (array-set! window 0 nb)
         (array-set! window 1 left)
         (array-set! window 2 right)
-        (array-set! window-sizes
-                    0
-                    (- before
-                       (if (> at 1)
-                           (array-ref cumulative (- at 2))
-                           0)))
+        (array-set! window-sizes 0 (- before before-nb))
         (array-set! window-sizes 1 left-size)
         (array-set! window-sizes 2 right-size)
         (array-set! plan 0 (+ (rrb-len nb) extra))
@@ -340,23 +320,18 @@
           (def b-len (array-ref plan 1))
           (def (: a (Array %a)) (make-array a-len))
           (def (: b (Array %a)) (make-array b-len))
-          (ignore (loop (:for w (range 0 3))
-                        (:acc filled
-                              (folding
-                               0
-                               (let ()
-                                 (def leaf (array-ref window w))
-                                 (def items (rrb-items leaf))
-                                 (def n (rrb-len leaf))
-                                 (def taken
-                                   (if (< filled a-len)
-                                       (min n (- a-len filled))
-                                       0))
-                                 (when (> taken 0)
-                                   (array-copy! items 0 a filled taken))
-                                 (when (< taken n)
-                                   (array-copy! items taken b (- (+ filled taken) a-len) (- n taken)))
-                                 (+ filled n))))))
+          (loop (:for w (range 0 3))
+                (:with filled 0 (+ filled n))
+                (:let leaf (array-ref window w))
+                (:let items (rrb-items leaf))
+                (:let n (rrb-len leaf))
+                (:let taken (if (< filled a-len)
+                                (min n (- a-len filled))
+                                0))
+                (:do (when (> taken 0)
+                       (array-copy! items 0 a filled taken))
+                     (when (< taken n)
+                       (array-copy! items taken b (- (+ filled taken) a-len) (- n taken)))))
           (Tuple (rrb-leaf a a-len) (rrb-leaf b b-len) a-len))
          (else
           (def made (rrb-repack window window-sizes 0 3 plan shift))
@@ -366,12 +341,11 @@
      (def table (rrb-array-part cumulative 0 len))
      (array-set! kids start first)
      (array-set! kids (+ start 1) second)
-     (array-set! table
-                 start
-                 (+ (if (> start 0)
-                        (array-ref cumulative (- start 1))
-                        0)
-                    first-size))
+     (def before-start
+       (if (> start 0)
+           (array-ref cumulative (- start 1))
+           0))
+     (array-set! table start (+ before-start first-size))
      (loop (:for i (range (+ start 1) len))
            (:do (array-set! table i (+ (array-ref table i) 1))))
      (Tuple (rrb-relaxed kids table len) (rrb-no-tree)))
@@ -385,8 +359,9 @@
      (array-set! children (+ at 1) right)
      (array-copy! (rrb-children node) (+ at 1) children (+ at 2) (- (- len at) 1))
      (array-copy! cumulative 0 table 0 at)
-     (array-set! table at (+ before left-size))
-     (array-set! table (+ at 1) (+ (+ before left-size) right-size))
+     (def left-end (+ before left-size))
+     (array-set! table at left-end)
+     (array-set! table (+ at 1) (+ left-end right-size))
      (loop (:for i (range (+ at 1) len))
            (:do (array-set! table (+ i 1) (+ (array-ref cumulative i) 1))))
      (def slots
@@ -400,11 +375,12 @@
        ((<= count (rrb-allowed-children slots))
         (def mid (/ count 2))
         (def cut (array-ref table (- mid 1)))
-        (def right-table (rrb-array-part table mid (- count mid)))
-        (loop (:for i (range 0 (- count mid)))
+        (def right-count (- count mid))
+        (def right-table (rrb-array-part table mid right-count))
+        (loop (:for i (range 0 right-count))
               (:do (array-set! right-table i (- (array-ref right-table i) cut))))
         (Tuple (rrb-relaxed (rrb-array-part children 0 mid) (rrb-array-part table 0 mid) mid)
-               (rrb-relaxed (rrb-array-part children mid (- count mid)) right-table (- count mid))))
+               (rrb-relaxed (rrb-array-part children mid right-count) right-table right-count)))
        (else (rrb-build-checked children (rrb-sizes-of table count) count shift))))))
 
 ;; ---------------------------------------------------------------------------
@@ -549,13 +525,10 @@
   (def made-table (rrb-cumulative made shift))
   (def k (array-length plan))
   (loop (:for i (range 0 k))
+        (:with before 0 total)
+        (:let total (array-ref made-table i))
         (:do (array-set! children (+ start i) (rrb-child made i))
-             (array-set! sizes
-                         (+ start i)
-                         (- (array-ref made-table i)
-                            (if (> i 0)
-                                (array-ref made-table (- i 1))
-                                0)))))
+             (array-set! sizes (+ start i) (- total before))))
   (def gap (- window k))
   (loop (:for i (range (+ start k) (- count gap)))
         (:do (array-set! children i (array-ref children (+ i gap)))
@@ -731,12 +704,12 @@
               first
               (+ first 1)))
         (def middle (max 0 (- last middle-from)))
-        (def len (+ (+ (if has-left? 1 0) middle) (if has-right? 1 0)))
+        (def at (if has-left? 1 0))
+        (def len (+ (+ at middle) (if has-right? 1 0)))
         (if (= len 0)
             (Tuple (rrb-no-tree) tail tail-len)
             (let ()
               (def (: kids (Array (RrbNode %a))) (make-array len))
-              (def at (if has-left? 1 0))
               (when has-left?
                 (array-set! kids 0 left))
               (array-copy! (rrb-children node) middle-from kids at middle)
@@ -791,26 +764,21 @@
     ;; In the head, or right after it: the left half is all head.
     ((and (> head-len 0) (<= i head-len))
      (def right-head-len (- head-len i))
+     (def right-head (rrb-array-part (rrb-head v) i right-head-len))
      (Tuple (rrb-tail-only (rrb-array-part (rrb-head v) 0 i) i)
-            (rrb-list root
-                      shift
-                      gap
-                      (rrb-array-part (rrb-head v) i right-head-len)
-                      right-head-len
-                      (rrb-tail v)
-                      tail-len
-                      (- total i))))
+            (rrb-list root shift gap right-head right-head-len (rrb-tail v) tail-len (- total i))))
     ((> head-len 0)
      (def (Tuple left right) (vec-split (rrb-headless v) (- i head-len)))
      (Tuple (rrb-with-head (rrb-head v) head-len left) right))
     ((>= i tree-size)
      (def at (- i tree-size))
      (def rest (- tail-len at))
+     (def right-tail
+       (if (= at 0)
+           (rrb-tail v)
+           (rrb-array-part (rrb-tail v) at rest)))
      (Tuple (rrb-tree root shift gap (rrb-array-part (rrb-tail v) 0 at) at i)
-            (rrb-tail-only (if (= at 0)
-                               (rrb-tail v)
-                               (rrb-array-part (rrb-tail v) at rest))
-                           rest)))
+            (rrb-tail-only right-tail rest)))
     ((not (rrb-relaxed? root)) (rrb-split-dense v i))
     (else
      (def (Tuple left left-tail left-tail-len right) (rrb-split-tree root i shift))
@@ -845,17 +813,17 @@
            (def right-table (rrb-array-part cumulative at right-len))
            (loop (:for k (range 0 right-len))
                  (:do (array-set! right-table k (- (array-ref right-table k) before))))
-           (Tuple
-            (if relaxed?
-                (rrb-relaxed (rrb-array-part (rrb-children node) 0 at)
-                             (rrb-array-part cumulative 0 at)
-                             at)
-                (rrb-dense (rrb-array-part (rrb-children node) 0 at) at))
-            (rrb-no-items)
-            0
-            (if relaxed?
-                (rrb-relaxed (rrb-array-part (rrb-children node) at right-len) right-table right-len)
-                (rrb-dense (rrb-array-part (rrb-children node) at right-len) right-len))))
+           (def left-kids (rrb-array-part (rrb-children node) 0 at))
+           (def right-kids (rrb-array-part (rrb-children node) at right-len))
+           (def left
+             (if relaxed?
+                 (rrb-relaxed left-kids (rrb-array-part cumulative 0 at) at)
+                 (rrb-dense left-kids at)))
+           (def right
+             (if relaxed?
+                 (rrb-relaxed right-kids right-table right-len)
+                 (rrb-dense right-kids right-len)))
+           (Tuple left (rrb-no-items) 0 right))
           (else
            (def (Tuple left-child tail tail-len right-child)
              (rrb-split-tree (rrb-child node at) sub (- shift rrb-bits)))
