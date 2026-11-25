@@ -2204,9 +2204,9 @@ def test_fmt(work, c):
         ("or have a line of its own", "(cond\n((a) 1)\n(else 2))\n", "(cond\n  ((a) 1)\n  (else 2))\n"),
         ("each later clause of a cond over several lines starts a line",
          "(cond ((a) 1) ((b) 2)\n(else 3))\n", "(cond ((a) 1)\n      ((b) 2)\n      (else 3))\n"),
-        ("the arguments of a call with none on the line of its head go two in",
-         "(vec-append\n(g x)\n(h x))\n", "(vec-append\n  (g x)\n  (h x))\n"),
-        ("but a list with a list as its head keeps its forms under the head",
+        ("the arguments of a call with none on the line of its head go under the head",
+         "(vec-append\n(g x)\n(h x))\n", "(vec-append\n (g x)\n (h x))\n"),
+        ("a list with a list as its head keeps its forms under the head too",
          "((g)\n1 2)\n", "((g)\n 1 2)\n"),
         ("an else clause keeps its body under its head",
          "(cond\n((a) 1)\n(else\n(f)\n(g)))\n", "(cond\n  ((a) 1)\n  (else\n   (f)\n   (g)))\n"),
@@ -2216,6 +2216,16 @@ def test_fmt(work, c):
          "(loop (:for i xs)\n(:do\n(f i)\n(g i)))\n", "(loop (:for i xs)\n      (:do\n       (f i)\n       (g i)))\n"),
         ("an arm after :leave with a name as its pattern does too",
          "(def (Some x) (f k)\n:leave (None\n(g)\n0))\n", "(def (Some x) (f k)\n  :leave (None\n          (g)\n          0))\n"),
+        ("the setters of a record-set too wide for a line go under the first one",
+         "(record-set m (field-one (compute-the-first-value 1 2 3)) (field-two (compute-the-second-value 4 5 6)) (field-three #t))\n",
+         "(record-set m (field-one (compute-the-first-value 1 2 3))\n              (field-two (compute-the-second-value 4 5 6))\n              (field-three #t))\n"),
+        ("setters written under the first one are kept there",
+         "(record-set! m (a 1)\n(b 2))\n", "(record-set! m (a 1)\n               (b 2))\n"),
+        ("with no setter on the line of the head they go under the record, as a call's arguments do",
+         "(record-set m\n(a 1)\n(b 2))\n", "(record-set m\n            (a 1)\n            (b 2))\n"),
+        ("a record-set whose record is not small is broken as a call is",
+         "(record-set (some-long-function-that-returns (a-record-from 1 2 3) (and-more 4 5 6)) (field-one (compute 1)) (field-two (compute 2)))\n",
+         "(record-set (some-long-function-that-returns (a-record-from 1 2 3) (and-more 4 5 6))\n            (field-one (compute 1))\n            (field-two (compute 2)))\n"),
         ("the list of names after a keyword of a defeffect is data",
          "(defeffect Fs\n  (fs-move (-> Path Unit))\n  #:cold (fs-move fs-list\n fs-info))\n",
          "(defeffect Fs\n  (fs-move (-> Path Unit))\n  #:cold (fs-move fs-list\n          fs-info))\n"),
@@ -2269,7 +2279,7 @@ def test_fmt(work, c):
          "        nu-function xi-function)\n"),
         ("failing that, the list's first argument moves down",
          "(" + "f" * 60 + " a\n\"" + "x" * 62 + "\")\n",
-         "(" + "f" * 60 + "\n  a\n  \"" + "x" * 62 + "\")\n"),
+         "(" + "f" * 60 + "\n a\n \"" + "x" * 62 + "\")\n"),
         ("a keyword argument stays with its value in a try over several lines",
          "(try (let ()\n(a 1))\n#:finally (b))\n",
          "(try\n  (let ()\n    (a 1))\n  #:finally (b))\n"),
@@ -2286,10 +2296,10 @@ def test_fmt(work, c):
          "                        (string-cursor-end s-longer))))\n"),
         ("the first argument that moves down is the one that gains the most",
          "(raise (cast Exception (DurationOverflow. \"" + "z" * 80 + "\")))\n",
-         "(raise (cast Exception\n             (DurationOverflow.\n               \"" + "z" * 80 + "\")))\n"),
+         "(raise (cast Exception\n             (DurationOverflow.\n              \"" + "z" * 80 + "\")))\n"),
         ("a string's continued lines move with it, what they keep kept",
          "(f\n      (g \"one \\\n             two \\\n                 three\"))\n",
-         "(f\n  (g \"one \\\n         two \\\n             three\"))\n"),
+         "(f\n (g \"one \\\n        two \\\n            three\"))\n"),
         ("a continued line indented less than the text is lined up with it",
          "(f \"one \\\ntwo\")\n", "(f \"one \\\n    two\")\n"),
         ("as is one in an interpolated string, after its #\", what it keeps kept",
@@ -2298,29 +2308,26 @@ def test_fmt(work, c):
          "(f \"one \\   \n   two\")\n", "(f \"one \\\n    two\")\n"),
         ("an escaped backslash before a line break is no continuation",
          "    (f \"a\\\\\nb\")\n", "(f \"a\\\\\nb\")\n"),
-        ("a string too long for its line is split after the last space that fits",
+        ("a string too long for its line is not split",
          '(f "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen '
          'seventeen")\n',
-         '(f "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen \\\n'
-         '    seventeen")\n'),
-        ("after the line's lists are broken, and as often as it takes",
-         '(defun (g) (f "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen '
-         'sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five '
-         'twenty-six"))\n',
-         '(defun (g)\n'
-         '  (f "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen \\\n'
-         '      sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four \\\n'
-         '      twenty-five twenty-six"))\n'),
-        ("an interpolated string is split outside its holes, under the text after #\"",
+         '(f "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen '
+         'seventeen")\n'),
+        ("nor is an interpolated string",
          '(f #"one two three four five six seven eight nine ten eleven twelve thirteen fourteen ${(g "a b c d e f")} xx")\n',
-         '(f #"one two three four five six seven eight nine ten eleven twelve thirteen fourteen \\\n'
-         '     ${(g "a b c d e f")} xx")\n'),
-        ("where it is, before a first argument is moved down, its closing brackets counting",
+         '(f #"one two three four five six seven eight nine ten eleven twelve thirteen fourteen ${(g "a b c d e f")} xx")\n'),
+        ("a string that fits further left is moved there by moving first arguments down",
          '(f (g (h "' + 'word ' * 18 + 'words!")))\n',
-         '(f (g (h "' + 'word ' * 18 + '\\\n          words!")))\n'),
+         '(f\n (g\n  (h\n   "' + 'word ' * 18 + 'words!")))\n'),
+        ("the first argument moves down early when the arguments fit under the head but not under it",
+         "(some-quite-long-function-name-here-indeed (first 1) (second-argument-is-a-call-with-a-very-long-name-that-goes-on (nested 4 5 6) 7 8))\n",
+         "(some-quite-long-function-name-here-indeed\n (first 1)\n (second-argument-is-a-call-with-a-very-long-name-that-goes-on (nested 4 5 6) 7 8))\n"),
+        ("arguments that fit under the first one stay there",
+         "(string-append (compute-the-first-part-of-the-message alpha beta) (compute-the-second-part-of-the-message gamma delta epsilon))\n",
+         "(string-append (compute-the-first-part-of-the-message alpha beta)\n               (compute-the-second-part-of-the-message gamma delta epsilon))\n"),
         ("a doc's string is not split, a published doc having no columns",
          '(:doc f (summary "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen"))\n',
-         '(:doc f\n  (summary\n    "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen"))\n'),
+         '(:doc f\n  (summary\n   "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen"))\n'),
         ("nor is a raw string, which has no escapes",
          '(f """one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen""")\n',
          '(f """one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen""")\n'),
@@ -2382,7 +2389,7 @@ def test_fmt(work, c):
     piped = subprocess.run([str(BJO), "fmt", "--diff", "-"], cwd=str(work), input="(f\nx)\n",
                            capture_output=True, text=True, timeout=120)
     c.that("fmt --diff - prints the diff of standard input",
-           piped.stdout == "--- -\n+++ -\n@@ -1,2 +1,2 @@\n (f\n-x)\n+  x)\n", piped.stdout + piped.stderr)
+           piped.stdout == "--- -\n+++ -\n@@ -1,2 +1,2 @@\n (f\n-x)\n+ x)\n", piped.stdout + piped.stderr)
     check = run_bjo(app, "fmt", "--check")
     c.failed("fmt --check fails on a file that is not laid out", check)
     c.says("and names it", check, "src/main.bjo: not formatted")

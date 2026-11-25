@@ -374,7 +374,7 @@ let rec private expandIncludes
                     | None -> ()
 
                 let source = Paths.readSource target
-                let innerForms, _ = Lexer.tokenize target source |> read
+                let innerForms, _ = Lexer.tokenizeSource target source |> read
                 let inner, innerVisited = expandIncludes (target :: activeFiles) target innerForms
                 visited <- Set.union visited innerVisited
                 inner
@@ -398,7 +398,7 @@ let rec private expandIncludes
                         rel
                         target
 
-                let innerForms, _ = Lexer.tokenize target (Paths.readSource target) |> read
+                let innerForms, _ = Lexer.tokenizeSource target (Paths.readSource target) |> read
 
                 for inner in innerForms do
                     if not (Docs.isDocForm inner) || (Docs.fileForm inner).IsSome then
@@ -1867,7 +1867,7 @@ let private factsOf (bjoPath: string) : SourceFacts =
     | true, hit when not held -> hit
     | _ ->
       Timing.phase "import: source facts" (fun () ->
-        let forms, _ = Lexer.tokenize bjoPath (Paths.readSource bjoPath) |> read
+        let forms, _ = Lexer.tokenizeSource bjoPath (Paths.readSource bjoPath) |> read
         let expanded, sources = expandIncludes [ bjoPath ] bjoPath forms
 
         // The imports of the expanded forms, as `loadModuleGraph` reads them:
@@ -2960,7 +2960,7 @@ let loadModuleGraph
                             absPath
 
                     let sourceCode = Paths.readSource absPath
-                    let forms, _ = Lexer.tokenize absPath sourceCode |> read
+                    let forms, _ = Lexer.tokenizeSource absPath sourceCode |> read
                     // Includes are spliced before anything looks at the forms, so
                     // an included file's own imports are picked up as this
                     // module's dependencies below.

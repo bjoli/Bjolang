@@ -1,0 +1,26 @@
+;; EXPECT-ERROR: illegal_name_binders.bjo:14:1: '_offset' is an illegal name.
+;; EXPECT-ERROR: illegal_name_binders.bjo:17:1: '_x' is an illegal name.
+;; EXPECT-ERROR: '_n' is an illegal name.
+;; EXPECT-ERROR: 'snake_case' is an illegal name.
+;; EXPECT-ERROR: '_v' is an illegal name.
+;; EXPECT-NO-ERROR: '_' is an illegal name.
+;; EXPECT-ERROR: 'x__1' is an illegal name.
+;;
+;; A name with a `_` in it is illegal where the program binds it: a
+;; definition, a parameter, a local binding and a name of a pattern. `_` alone
+;; binds nothing. A name with `__` has the shape of the compiler's names, and
+;; is illegal too.
+(import (std prelude))
+(def _offset 10)
+
+(: shifted (-> int int))
+(defun (shifted _x) (+ _x _offset))
+
+(defun (main)
+  (def x__1 1)
+  (def snake_case 2)
+  (def (Tuple _ b) (Tuple 1 2))
+  (let ((_n 4))
+    (match (Some 3)
+      ((Some _v) (+ _n (+ b (+ x__1 snake_case))))
+      (None 0))))

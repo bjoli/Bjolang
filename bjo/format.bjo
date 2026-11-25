@@ -11,9 +11,8 @@
 ;;   - a `def`'s failure part starts a line, as does each form of a `cond`,
 ;;     `begin`, `seq` or `try` over several lines, and each binding of a `let`
 ;;     whose bindings are over several lines (see "Reshaping");
-;;   - a line wider than `wide` is broken in its lists, and a string that runs
-;;     past the limit is split with a line continuation after the last space
-;;     that fits (see "Breaking long lines");
+;;   - a line wider than `wide` is broken in its lists (see "Breaking long
+;;     lines"). Strings are never split;
 ;;   - trailing whitespace goes, as do spaces just inside a bracket; a tab
 ;;     becomes spaces, or `\t` in a string;
 ;;   - three or more blank lines in a row become two, and the file ends in one
@@ -26,8 +25,8 @@
 ;; column `lisp-indent-region` keeps for the following lines at the same depth.
 ;; The comments below say which of them each part is.
 ;;
-;; A string's lines are text, not code. Its continued lines move with it, and
-;; a long one is split, but what it stands for is never changed. What comes
+;; A string's lines are text, not code. Its continued lines move with it, but
+;; its value is never changed. What comes
 ;; out is checked against what went in: the same tokens in the same order, a
 ;; string compared by what it stands for, or the file is left alone.
 
@@ -236,7 +235,7 @@
 
 ;; The tokens that make the program: everything but the spacing, and a string
 ;; with its tabs written `\t`, as the layout writes them, and its continued
-;; lines joined, since the layout may split a long one. A comment's words are
+;; lines joined, since the layout re-indents them. A comment's words are
 ;; compared, its tabs being spaces once laid out.
 (: significant (-> (List Tok) (List string)))
 (defun (significant toks)
@@ -272,13 +271,14 @@
 ;; Each rule says where a line has to break, and what it adds is a line break,
 ;; so that the tokens are what they were:
 ;;
-;;   - a `def`'s failure part, `:leave`, `:leave-with`, `:default` or
-;;     `:propagate`, starts a line of its own, so that the way out stands out.
-;;     One with nothing after it, `:propagate`, stays where it is written;
-;;   - in a `cond`, a `begin`, a `seq` or a `try` over several lines, each form
-;;     after the head starts a line, but a keyword argument's value, which
-;;     stays on the keyword's line: `#:finally (restore)`. The first clause
-;;     of a `cond` stays where it is written;
+;;   - A `def`'s failure clause (`:leave`, `:leave-with`, `:default`) is
+;;     moved to its own line so the early exit is easy to see. A failure
+;;     keyword that takes no arguments, i.e. `:propagate`, is left wherever
+;;     the user put it.
+;;   - In a multi-line `cond`, `begin`, `seq` or `try`, every form after the
+;;     head goes on its own line. Exceptions: a keyword argument's value stays
+;;     next to its keyword (`#:finally (restore)`), and the first clause of a
+;;     `cond` may stay on the same line as `cond`.
 ;;   - in a `let`'s bindings over several lines, each binding starts a line.
 ;;
 ;; A tab in a string, which is otherwise left as it is, is written `\t`.
@@ -352,8 +352,9 @@
              ((Some o) (= (record-ref o head) "def*"))
              (None #f)))))
 
-;; Whether a form written `raw` after `let` is the name of a named `let`. In a
-;; syntax template the name can be unquoted: `(let ,go (...) ...)`.
+;; Returns true if `raw`, the form right after `let`, is the loop name of a
+;; named `let`. Also accepts an unquoted name, as in the syntax template
+;; `(let ,go (...) ...)`.
 (: let-name? (-> string bool))
 (defun (let-name? raw)
   (match (list-drop-while #(= & #\,) (string->list raw))
@@ -383,12 +384,16 @@
          (spans (record-ref s spans))
          (bindings (record-ref s bindings))))
 
-;; Whether the form at position `n` of `s`, written `raw`, has to start a line.
-;; One after a keyword argument stays with it.
+;; Returns true if a line break must be inserted before the form at index `n`
+;; of list `s`. `raw` is the form's text.
 ;;
-;; - `ends?`: the form is the last of its list. A failure keyword with nothing
-;;   after it, `:propagate`, can stay on the line.
-;; - The first clause of a `cond` can stay on the line of the head.
+;; - A failure keyword of a `def` clause forces a break, unless `ends?` is
+;;   true. `ends?` means the form is the last one in its list, so the keyword
+;;   takes no arguments (`:propagate`).
+;; - In a multi-line body-only form or binding list, every form after the head
+;;   forces a break. For `cond` this starts at the second clause, so the first
+;;   clause may share the line with `cond`.
+;; - The value of a keyword argument never forces a break.
 (: breaks-before? (-> Shape (Option Shape) int string bool bool))
 (defun (breaks-before? s outer n raw ends?)
   (or (and (failure-keyword? raw) (not ends?) (clause? s outer))
@@ -407,7 +412,8 @@
   (defun (spans? k)
     (def c (vec-ref closes k))
     (and (>= c 0) (> (vec-ref lines c) (vec-ref lines k))))
-  ;; Whether the first token from `j` on that is not space closes a list.
+  ;; Returns true if the next non-whitespace token at or after index `j` is a
+  ;; closing bracket.
   (defun (closes-next? j)
     (and (< j n)
          (match (vec-ref v j)
@@ -606,8 +612,8 @@
      (stringbuilder->string sb))))
 
 ;; The string `s`, as `without-continued-indent` reads it, with its continued
-;; lines joined: what it stands for, written without continuations, which a
-;; string split by the layout is compared by.
+;; lines joined: its value, written without continuations. This is what two
+;; strings are compared by when the layout has re-indented one of them.
 (: joined-continuations (-> string string))
 (defun (joined-continuations s)
   (rewrite-continuations s #f (fun (sb cs at) at)))
@@ -876,28 +882,25 @@
     ((Cons c _) (not (or (opening? c) (= c #\") (= c #\\) (= c #\;))))
     (Nil #f)))
 
-;; `calculate-lisp-indent`'s own column, before any rule: under the first form
-;; when it is a list, under the second when the forms so far are all on the
-;; first one's line, and otherwise under the first form on the line of the
-;; last of them.
+;; Returns the default indentation column for the next line inside list `f`,
+;; before any head-specific rule is applied. This is Emacs's
+;; `calculate-lisp-indent`:
 ;;
-;; `clause?`: the list is a clause, of a `cond` or a `match`. Its forms go
-;; under its head, one in, as those of a clause with a list as its head do.
-(: normal-indent (-> Frame Elem bool int))
-(defun (normal-indent f head clause?)
+;; - If the head is a list, align with the head.
+;; - If an argument follows the head on the head's line, align with that
+;;   argument.
+;; - If the head is alone on its line, align with the head, i.e. one column
+;;   in from the bracket.
+;; - Otherwise, align with the first form on the previous form's line.
+(: normal-indent (-> Frame Elem int))
+(defun (normal-indent f head)
   (def last (last-of f head))
   (cond
     ((record-ref head is-list) (record-ref head bracket))
     ((= (record-ref last line) (record-ref head line))
      (match (record-ref f second)
        ((Some s) (record-ref s col))
-       ;; A call with no argument on the line of its head: the arguments go
-       ;; two in from the bracket. This is not `calculate-lisp-indent`'s
-       ;; column, which is one in.
-       (None
-        (if (and (= (record-ref f bracket) "(") (not clause?) (symbolic? (record-ref head raw)))
-            (+ (record-ref f col) 2)
-            (record-ref head col)))))
+       (None (record-ref head col))))
     (else (record-ref last line-first))))
 
 ;; `lisp-indent-specform`: the first two of a form's `n` distinguished forms
@@ -928,6 +931,14 @@
      (let-name? (record-ref s raw)))
     (_ #f)))
 
+;; Returns true if `name` is a form that takes a record followed by
+;; `(field value)` setters.
+(: record-setter? (-> string bool))
+(defun (record-setter? name)
+  (match name
+    ((or "record-set" "record-set!" "struct-set" "struct-set!") #t)
+    (_ #f)))
+
 ;; `bjo-indent-function`: what the form's head says, if it says anything.
 (: by-head (-> Frame Elem int (Option Indent)))
 (defun (by-head f head normal)
@@ -952,6 +963,14 @@
              ((Some s) #:when (= (record-ref s line) (record-ref head line)) (indent (record-ref s col) #t))
              (_ (indent (record-ref head col) #t)))))
     ((= name ":match") (Some (indent head-col #t)))
+    ;; `(record-set target (f v) ...)`: if the first setter is on the head's
+    ;; line, the following setters align under it. Otherwise fall back to the
+    ;; normal call indentation.
+    ((record-setter? name)
+     (match (list-reverse (record-ref f elems))
+       ((Cons _ (Cons _ (Cons setter _))) #:when (= (record-ref setter line) (record-ref head line))
+        (Some (indent (record-ref setter col) #t)))
+       (_ None)))
     (else
      (match (rule-of name)
        ((Some DefForm) (defform f head))
@@ -1063,30 +1082,15 @@
 ;; form if `here-form?`.
 (: indent-in (-> Frame (Option Frame) string bool Indent))
 (defun (indent-in f outer here here-form?)
-  ;; Whether the list is the value of a keyword of a `defeffect`,
-  ;; `#:cold (name ...)`: a list of names, which is data.
-  ;; Whether the list, with the head `head`, is a clause:
-  ;;
-  ;; - `(else ...)`;
-  ;; - a list with a keyword as its head, `(:do ...)`;
-  ;; - a form directly in a `cond`, a `match`, a `case` or a `syntax-match`;
-  ;; - an arm after the `:leave` of a `def`.
-  (: clause-of? (-> Elem (Option Frame) bool))
-  (defun (clause-of? head outer)
-    (or (= (record-ref head raw) "else")
-        (string-starts-with? (record-ref head raw) ":")
-        (match outer
-          ((Some o)
-           (or (match (without-prefix (raw-of (record-ref o first)))
-                 ((or "cond" "match" "case" "syntax-match") #t)
-                 (_ #f))
-               (any? #(= (record-ref & raw) ":leave") (record-ref o elems))))
-          (None #f))))
+  ;; Returns true if the current list is the value of a keyword argument of a
+  ;; `defeffect`, e.g. the name list in `#:cold (name ...)`. Such a list is
+  ;; data, so its elements align under the first one.
   (: effect-names? (-> (Option Frame) bool))
   (defun (effect-names? outer)
     (match outer
       ((Some o) (and (= (raw-of (record-ref o first)) "defeffect")
-                     ;; The last form of `o` is this list itself.
+                     ;; `o`'s most recent element is the current list, so the
+                     ;; one before it is what precedes the list.
                      (match (record-ref o elems)
                        ((Cons _ (Cons e _)) (keyword-arg? (record-ref e raw)))
                        (_ #f))))
@@ -1100,7 +1104,7 @@
       ((Some head) #:when (or (= (record-ref f bracket) "[") (binding-list? f outer) (effect-names? outer))
        (indent (record-ref head col) #t))
       ((Some head)
-       (def normal (normal-indent f head (clause-of? head outer)))
+       (def normal (normal-indent f head))
        (match (by-head f head normal)
          ((Some i) i)
          (None (indent (keyword-aligned f head normal here) #t))))))
@@ -1401,33 +1405,42 @@
 ;; limit. A list runs past the limit when it does with the closing brackets
 ;; right after it, so a line too wide only for the brackets that end it is
 ;; broken in its last list. A line that continues a list opened on a line
-;; before is filled in that list. What none of that can take, a call's first
-;; argument moving down gives a line more, in the call where that moves the
-;; most left. A line none of that can break, a string that runs past the limit
-;; is split on, with a line continuation after the last space that fits. Then
-;; the text is laid out again and looked at again, until nothing more can be
-;; broken.
+;; before is filled in that list.
 ;;
-;; A keyword argument's value stays on the keyword's line, a clause's `#:when`
-;; and guard on the line of its pattern, and the value of a loop's `=>` on
-;; the line of the `=>`.
+;; A call's first argument is moved down to its own line in two cases:
 ;;
-;; A signature, `(: name type (where ...) marker ...)`, is broken in steps,
-;; and no further than it has to be:
+;;   - Early, when the call's arguments don't fit aligned under the first
+;;     argument but do fit under the head, one column in from the bracket
+;;     (see `hang-too-wide?`).
+;;   - As a last resort, when nothing else on the line can be broken. The call
+;;     that gains the most columns is chosen.
 ;;
-;;   - first the `(where ...)` starts a line, and the first marker starts a
-;;     line, so that the markers have a row together, `#:sync #:inline`, a
-;;     marker's operand with it, `#:elsewhere f`. The type stays on the first
-;;     line;
-;;   - then the type moves under the name, as any list's forms do;
-;;   - then the type itself is broken. An arrow inside a `(: ...)` is filled:
-;;     its parameters are types, most of them small.
+;; Strings are never split. A line whose string, comment or name is too wide
+;; to fit anywhere is left as it is.
 ;;
-;; The same goes for any `(: ...)` with keywords after its type, as a field
-;; with its options.
+;; After each round the text is laid out and examined again, until nothing
+;; more can be broken.
 ;;
-;; The list of a hash macro, `#map(...)`, stays with the macro's name. Its
-;; entries each start a line when they are lists, and are filled when not.
+;; Some pairs are never separated by a break: a keyword argument and its
+;; value, a clause's pattern and its `#:when` guard, and a loop's `=>` and the
+;; result expression after it.
+;;
+;; A type signature `(: name type (where ...) marker ...)` that is too wide is
+;; broken in stages, stopping as soon as it fits:
+;;
+;;   1. Break before the `(where ...)` clause and before the first marker. The
+;;      type stays on the first line, and all markers share one line
+;;      (`#:sync #:inline`), each with its operand (`#:elsewhere f`).
+;;   2. Move the type to its own line under the name, like any list.
+;;   3. Break inside the type. Function types inside a `(: ...)` are filled
+;;      (as many parameter types per line as fit) rather than one per line.
+;;
+;; The same applies to any `(: ...)` with keywords after the type, such as a
+;; record field with options.
+;;
+;; A hash macro's list, `#map(...)`, is never separated from the macro name.
+;; If its entries are lists, each goes on its own line; otherwise they are
+;; filled.
 ;;
 ;; A macro is left as it is: what its forms are is its own business. Those of
 ;; the prelude are named here; a head that begins with `with-` is one too. So
@@ -1511,8 +1524,8 @@
   (def tabled (vecbuilder-empty))
   (def docked (vecbuilder-empty))
   (def typed (vecbuilder-empty))
-  ;; `open` holds for each list open whether it is, or is in, a table, a doc
-  ;; and a `(: ...)`.
+  ;; `open` is a stack with one entry per enclosing list. Each entry records
+  ;; whether we are inside a table form, a `:doc` form, and a `(: ...)`.
   (let go ((k 0) (line 0) (col 0) (open Nil))
     (when (< k (vec-length v))
       (def t (vec-ref v k))
@@ -1581,8 +1594,8 @@
       ((or (< close 0) (>= j close)) (list-reverse out))
       ((not (starts-form? (tok-at p j))) (go (+ j 1) at prev out))
       (else
-       ;; A prefix is the start of the form after it, and so is the name of a
-       ;; hash macro, `#map(...)`.
+       ;; A reader prefix and the form after it count as one form. The same
+       ;; goes for a hash macro's name and its list, `#map(...)`.
        (def body
          (if (and (< (+ j 1) n)
                   (or (prefix-of-next? (tok-at p j) (list (tok-at p (+ j 1))))
@@ -1595,14 +1608,14 @@
        (def form (Form (tok j) (at at) (from (vec-ref (record-ref p cols) j)) (to (form-end p body))
                        (small (small-form? p body))
                        (glued (or (keyword-arg? prev)
-                                  ;; The value of a loop's `=>`.
+                                  ;; The result expression after a loop's `=>`.
                                   (= prev "=>")
                                   (and (= at 1) head-list? (= text "#:when"))))))
        (go next (+ at 1) text (if here? (Cons form out) out))))))
 
-;; Whether `t` is the name of a hash macro written right before its list:
-;; the `#map` of `#map(...)`. A keyword, `#:name`, a boolean and a character
-;; are not.
+;; Returns true if `t` is a hash macro name immediately followed by its
+;; opening bracket `next`, like the `#map` in `#map(...)`. Keywords (`#:name`),
+;; booleans and character literals also start with `#` but don't count.
 (: hash-name-of-next? (-> Tok Tok bool))
 (defun (hash-name-of-next? t next)
   (match t
@@ -1641,16 +1654,17 @@
 (defun (unglued forms)
   (list-map #(record-ref & tok) (list-filter #(not (record-ref & glued)) forms)))
 
-;; `breaking-of` for the list opening at `k`, with what its place says:
-;; - the list of a hash macro, `#map(...)`, is data;
-;; - an arrow inside a `(: ...)` is a type and not a `->` of calls. Its
-;;   parameters are filled.
+;; Returns the line-breaking strategy for the list opening at token `k`. Like
+;; `breaking-of`, but also takes the list's context into account:
+;; - A hash macro's list, `#map(...)`, is treated as data.
+;; - A `->` inside a `(: ...)` is a function type, not a call of the `->`
+;;   macro, so its parameter types are filled.
 (: breaking-at (-> Placed int (List Form) (Option Breaking)))
 (defun (breaking-at p k all)
   (def head (head-text p all))
   (cond
-    ;; Entries that are lists, each on a line: the indentation puts them under
-    ;; the first one. Other data is filled.
+    ;; Hash macro data. If every entry is a list, put one entry per line
+    ;; (they then align under the first entry). Otherwise fill.
     ((and (> k 0) (hash-name-of-next? (tok-at p (- k 1)) (tok-at p k)))
      (if (and (not (empty? all)) (all? #(opens? (tok-at p (record-ref & tok))) all))
          (Some (OneALine 1))
@@ -1660,16 +1674,24 @@
             ((or "->" "-bjo->" "-?->") #t)
             (_ #f)))
      (Some (Filled 1)))
+    ;; `(record-set target (f v) ...)` with a small target: keep the target and
+    ;; the first setter on the head's line and put each later setter on its
+    ;; own line. With a larger target it is broken like any call.
+    ((and (record-setter? (without-prefix head))
+          (match (list-filter #(= (record-ref & at) 1) all)
+            ((Cons target _) (record-ref target small))
+            (Nil #f)))
+     (Some (OneALine 3)))
     (else (breaking-of (tok-text (tok-at p k)) head))))
 
-;; The forms of a `(: ...)` to start a line, of those on the line looked at:
-;; its `(where ...)`, and the first of its markers.
+;; Returns the tokens to break before in the first stage of breaking a
+;; signature: the `(where ...)` clause and the first marker keyword, but only
+;; those still on the current line (`here`). `all` is every form of the
+;; signature.
 ;;
-;; - A signature that is too wide is first broken there: the type stays on
-;;   the first line, the `(where ...)` has a row, and the markers have a row
-;;   together, `#:sync #:inline`, a marker's operand with it, `#:elsewhere f`.
-;; - None when both have rows of their own. The list is then broken as any
-;;   list is, which moves the type under the name.
+;; Returns an empty list once both already start their own lines. The caller
+;; then falls back to the normal list-breaking rules, which move the type
+;; under the name.
 (: signature-tail (-> Placed (List Form) (List Form) (List int)))
 (defun (signature-tail p all here)
   (defun (where? f)
@@ -1690,6 +1712,38 @@
     (any? (fun (f) (and (>= (record-ref f at) 1) (= (record-ref f tok) j))) here))
   (list-filter on-line? (list-append (first-of where?) (first-of marker?))))
 
+;; Returns true if the call opening at `k` on line `ln` can't keep its
+;; arguments aligned under the first argument ("hanging" them) within the
+;; line width. `here` is the call's forms on line `ln`.
+;;
+;; True when the first argument is on the head's line, moving it down would
+;; gain columns, and some argument on this line, placed at the first
+;; argument's column, would run past `wide`. Arguments that span several
+;; lines are not measured. The argument must fit once it is under the head
+;; (one column in from the bracket), otherwise moving the first argument down only
+;; adds lines. A small first argument (an atom, or a list with no
+;; nested list) doesn't count: moving it down saves nothing worth a line, and
+;; the enclosing list can move the whole call instead.
+(: hang-too-wide? (-> Placed int int (List Form) bool))
+(defun (hang-too-wide? p k ln here)
+  (def bracket (vec-ref (record-ref p cols) k))
+  (defun (one-line? f)
+    (def j (record-ref f tok))
+    (or (not (opens? (tok-at p j)))
+        (= (vec-ref (record-ref p lines) (vec-ref (record-ref p closes) j)) ln)))
+  (match (list-filter #(= (record-ref & at) 1) here)
+    ((Cons first _) #:when (= (vec-ref (record-ref p lines) k) ln)
+     (def hang (record-ref first from))
+     (and (> hang (+ bracket 1))
+          (any? (fun (f)
+                  (and (or (>= (record-ref f at) 2) (and (= (record-ref f at) 1) (not (record-ref f small))))
+                       (one-line? f)
+                       (> (+ hang (- (record-ref f to) (record-ref f from))) wide)
+                       ;; Moving the first argument down has to make it fit.
+                       (<= (+ bracket 1 (- (record-ref f to) (record-ref f from))) wide)))
+                here)))
+    (_ #f)))
+
 ;; Where to break line `ln` in the list opening at `k` on it.
 (: breaks-in-list (-> Placed int int (List int)))
 (defun (breaks-in-list p k ln)
@@ -1704,9 +1758,18 @@
     ((Some (OneALine n)) (unglued (from-on n)))
     ((Some (Filled n)) (first-past (from-on n)))
     ((Some (Call n))
-     (if (all? #(record-ref & small) (list-filter #(>= (record-ref & at) 1) all))
-         (first-past (from-on n))
-         (unglued (from-on n))))))
+     (def all-small? (all? #(record-ref & small) (list-filter #(>= (record-ref & at) 1) all)))
+     (cond
+       ;; The arguments don't fit aligned under the first one, so move the
+       ;; first argument down: they then align under the head.
+       ;; Small arguments are filled from there; others get a line each.
+       ;; Not for a `(: ...)` or a keyword-headed clause, which are not calls.
+       ((and (not (string-starts-with? (head-text p all) ":")) (hang-too-wide? p k ln here))
+        (if all-small?
+            (list-map #(record-ref & tok) (list-filter #(= (record-ref & at) 1) here))
+            (unglued (from-on 1))))
+       (all-small? (first-past (from-on n)))
+       (else (unglued (from-on n)))))))
 
 ;; Whether the list opening at `k` runs past the limit on line `ln`, the
 ;; closing brackets right after it included: a line too wide only for the
@@ -1781,100 +1844,15 @@
     ((Some (Tuple tok gain)) #:when (> gain 0) (list tok))
     (_ Nil)))
 
-;; A string that line `ln` has some of, split there with a line continuation,
-;; as its token's index and new text; `None` when there is none to split. A raw
-;; string has no continuations, a doc's strings may not have them, and a table
-;; is left as it is.
-(: split-for (-> Placed int (Option (Tuple int string))))
-(defun (split-for p ln)
-  (def n (vec-length (record-ref p toks)))
-  (let find ((k 0))
-    (cond
-      ((or (>= k n) (> (vec-ref (record-ref p lines) k) ln)) None)
-      (else
-       (match (tok-at p k)
-         ((TStr s) #:when (not (or (vec-ref (record-ref p tabled) k)
-                                   (vec-ref (record-ref p docked) k)
-                                   (string-starts-with? s "\"\"\"")))
-          ;; The closing brackets right after it go where its end goes.
-          (def closers (- (closers-end p k) (closers-end-alone p k)))
-          (match (split-string s (vec-ref (record-ref p cols) k) (- ln (vec-ref (record-ref p lines) k)) closers)
-            ((Some text) (Some (Tuple k text)))
-            (None (find (+ k 1)))))
-         (_ (find (+ k 1))))))))
-
-;; The string `s`, written at `col`, split on its physical line `nth` with a
-;; line continuation: after the last space on it that leaves room for the
-;; backslash within `wide`, with text before it on the line and a word after
-;; it. Never in an escape or an interpolation's hole. What it stands for is
-;; the same: the space stays before the backslash, and the continued line
-;; starts where the text does. `None` when the line has no such space.
-(: split-string (-> string int int int (Option string)))
-(defun (split-string s col nth closers)
-  (def written (with-continued-indent s col))
-  (def text-col (text-column s col))
-  (def cs (string->vec written))
-  (def n (vec-length cs))
-  (def interpolated? (string-starts-with? s "#\""))
-  (def opening (if interpolated? 2 1))
-  ;; `seen` is whether the line has had text, the opening quote aside, and
-  ;; `reach` the column the string reaches on line `nth`: one that does not run
-  ;; past the limit there, with the `closers` columns of brackets after it if
-  ;; it ends there, is not what makes the line too wide, and is left whole.
-  (let go ((p opening) (line 0) (column (+ col opening)) (best None) (seen #f) (reach 0))
-    (def c (char-at cs p))
-    (def reach-now (if (= line nth) column reach))
-    (cond
-      ((or (>= p n) (> line nth))
-       (match best
-         ((Some at) #:when (> (if (and (>= p n) (= line nth)) (+ reach-now closers) reach-now) wide)
-          (Some (without-continued-indent
-                 (str (text-between cs 0 (+ at 1)) "\\\n" (spaces text-col) (text-between cs (+ at 1) n))
-                 col)))
-         (_ None)))
-      ((= c #\newline) (go (+ p 1) (+ line 1) 0 best #f reach-now))
-      ;; A continuation's line break is the next character's to deal with.
-      ((and (= c #\\) (= (char-at cs (+ p 1)) #\newline)) (go (+ p 1) line (+ column 1) best #t reach-now))
-      ((= c #\\) (go (+ p 2) line (+ column 2) best #t reach-now))
-      ((and interpolated? (= c #\$) (= (char-at cs (+ p 1)) #\{))
-       (def past (hole-end cs (+ p 2)))
-       (def (Tuple after breaks) (advance (text-between cs p past) column))
-       (go past (+ line breaks) after best #t reach-now))
-      ((= c #\space)
-       (def next (char-at cs (+ p 1)))
-       (def fits? (<= (+ column 2) wide))
-       (def word-after? (and (< (+ p 2) n) (not (or (= next #\space) (= next #\newline) (= next #\")))))
-       (go (+ p 1) line (+ column 1)
-           (if (and (= line nth) seen fits? word-after?) (Some p) best)
-           seen
-           reach-now))
-      (else (go (+ p 1) line (+ column 1) best #t reach-now)))))
-
-;; The column after token `k`, the closing brackets after it not counted.
-(: closers-end-alone (-> Placed int int))
-(defun (closers-end-alone p k)
-  (def col (vec-ref (record-ref p cols) k))
-  (fst (advance (tok-written (tok-at p k) col) col)))
-
-;; `toks` with the strings `splits` names, by index, given their new text.
-(: with-splits (-> (List Tok) (List (Tuple int string)) (List Tok)))
-(defun (with-splits toks splits)
-  (if (empty? splits)
-      toks
-      (let go ((toks toks) (k 0) (out Nil))
-        (match toks
-          (Nil (list-reverse out))
-          ((Cons t rest)
-           (def now
-             (match (list-filter #(= (fst &) k) splits)
-               ((Cons (Tuple _ text) _) (TStr text))
-               (Nil t)))
-           (go rest (+ k 1) (Cons now out)))))))
-
-;; The tokens to put a line break before, to break line `ln`; and, when there
-;; are none, those that move a first argument down, which is the last resort:
-;; a string that runs past the limit is split before it is moved (see
-;; `broken`).
+;; Returns the line breaks that shorten line `ln`, as a pair:
+;; - the tokens to break before, using the normal rules; and
+;; - if there are none, the tokens that move a call's first argument down,
+;;   which is the last resort.
+;;
+;; Returns no breaks at all if the line holds a single token (a string, a
+;; comment, a long name) that is too wide to fit wherever it is moved. Such a
+;; line can't be fixed by breaking, so it is left alone. Strings are never
+;; split.
 (: breaks-for (-> Placed int (Tuple (List int) (List int))))
 (defun (breaks-for p ln)
   (def n (vec-length (record-ref p toks)))
@@ -1899,36 +1877,18 @@
        (def b (vec-ref (record-ref p cols) first))
        (+ (if (< a b) a b) 1))
       (Nil 1)))
-  ;; A string or comment too wide to fit even moved there keeps the line wide
-  ;; whatever is broken. One that can not be split leaves the line as it is.
-  ;; One that can is split once the line's lists are broken (see `split-for`),
-  ;; and moving it left, by filling or by moving a first argument down, would
-  ;; only split it later.
   (def too-wide
     (list-filter #(and (not (opens? (tok-at p &))) (> (+ least (columns (tok-text (tok-at p &)))) wide))
                  on-line))
-  (def splits-instead? (not (empty? too-wide)))
   (cond
-    ((not (all? #(splittable? p &) too-wide)) (Tuple Nil Nil))
+    ((not (empty? too-wide)) (Tuple Nil Nil))
     (else
      (match (list-filter #(not (empty? &)) (list-map #(breaks-in-list p & ln) crossing))
        ((Cons found _) (Tuple found Nil))
-       (Nil #:when splits-instead? (Tuple Nil Nil))
        (Nil
         (match (if (< first 0) Nil (breaks-continuing p first ln))
           (Nil (Tuple Nil (first-argument-down p (list-append around crossing))))
           (found (Tuple found Nil))))))))
-
-;; Whether the token at `k` is a string `split-for` may split: not a raw one,
-;; not one in a doc or a table, and with a space in it.
-(: splittable? (-> Placed int bool))
-(defun (splittable? p k)
-  (match (tok-at p k)
-    ((TStr s) (not (or (string-starts-with? s "\"\"\"")
-                       (vec-ref (record-ref p tabled) k)
-                       (vec-ref (record-ref p docked) k)
-                       (not (string-contains? s " ")))))
-    (_ #f)))
 
 ;; The laid-out text with its long lines broken, as far as they can be.
 (: broken (-> (Tuple string (List (Tuple int string))) (Tuple string (List (Tuple int string)))))
@@ -1944,24 +1904,18 @@
          (loop (:for ln (range 0 (vec-length widths)))
                (:acc out (listing ln) #:when (> (vec-ref widths ln) wide))
            => out))
-       ;; For each long line the line breaks that break it; when there are
-       ;; none, a string that runs past the limit split with a line
-       ;; continuation; and when there is none of those, a first argument
-       ;; moved down.
-       (def (Tuple wanted splits)
-         (list-foldl (fun (ln acc)
-                       (def (Tuple breaks split) acc)
+       ;; For each long line, the tokens to break before. A first argument is
+       ;; only moved down when the normal rules find nothing to break.
+       (def wanted
+         (list-foldl (fun (ln breaks)
                        (match (breaks-for p ln)
-                         ((Tuple Nil last-resort)
-                          (match (split-for p ln)
-                            ((Some s) (Tuple breaks (Cons s split)))
-                            (None (Tuple (list-append breaks last-resort) split))))
-                         ((Tuple found _) (Tuple (list-append breaks found) split))))
-                     (Tuple Nil Nil)
+                         ((Tuple Nil last-resort) (list-append breaks last-resort))
+                         ((Tuple found _) (list-append breaks found))))
+                     Nil
                      long))
-       (if (or (and (empty? wanted) (empty? splits)) (>= rounds 40))
+       (if (or (empty? wanted) (>= rounds 40))
            laid
-           (again (layout (with-breaks-before (with-splits toks splits) wanted)) (+ rounds 1)))))))
+           (again (layout (with-breaks-before toks wanted)) (+ rounds 1)))))))
 
 (: with-breaks-before (-> (List Tok) (List int) (List Tok)))
 (defun (with-breaks-before toks at)

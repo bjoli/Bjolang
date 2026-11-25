@@ -1,0 +1,17 @@
+;; `_` as a binder binds nothing: as a parameter, in a pattern, in a `def`
+;; and in a loop clause. A name with a `_` in it is illegal
+;; (`errors/illegal_name_*.bjo`).
+(import (std prelude))
+(import (std simpletest))
+
+(: second (-> int int int))
+(defun (second _ y) y)
+
+(defun (main)
+  (ignore (second 0 0))
+  (expect "a _ parameter" (second 1 2) 2)
+  (expect "a _ pattern" (match (Some 3) ((Some _) 1) (None 0)) 1)
+  (expect "a _ lambda parameter" ((fun (_) 5) 1) 5)
+  (expect "a _ in a tuple pattern" (let (((a _) (Tuple 1 2))) a) 1)
+  (expect "a _ loop variable" {summing 2 (:for _ (range 0 3))} 6)
+  0)

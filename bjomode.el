@@ -209,6 +209,25 @@ call want.")
       (lisp-indent-specform 2 state indent-point normal-indent)
     (lisp-indent-specform 1 state indent-point normal-indent)))
 
+(defun bjo-record-set-indent (_state indent-point normal-indent)
+  "Indent `record-set' and its variants.
+
+In (record-set TARGET (FIELD VALUE) ...), if the first setter is on
+the same line as the head, the following setters align under it.
+Otherwise use NORMAL-INDENT, the ordinary call indentation."
+  (let ((head-line (line-number-at-pos)))
+    (condition-case nil
+        (progn
+          (forward-sexp 1)
+          (skip-chars-forward " \t")
+          (if (and (= head-line (line-number-at-pos))
+                   (not (eolp))
+                   (not (looking-at ";"))
+                   (< (point) indent-point))
+              (current-column)
+            normal-indent))
+      (scan-error normal-indent))))
+
 (defun bjo-def-star-indent (_state _indent-point _normal-indent)
   "Indent `def*', whose clauses line up under the first one.
 
@@ -433,37 +452,6 @@ under the form after its head, as a clause's body does."
               (forward-comment (buffer-size)))
             (= (point) open)))))))
 
-(defun bjo--clause-p (open)
-  "Whether the list that opens at OPEN is a clause.
-
-A clause is a form directly in a `cond', a `match', a `case' or a
-`syntax-match', or an arm after the `:leave' of a `def'. Its forms
-go under its head, one column in."
-  (save-excursion
-    (goto-char open)
-    (condition-case nil
-        (progn
-          (backward-up-list 1)
-          (forward-char 1)
-          (skip-chars-forward " \t\n")
-          (or (looking-at "\\(?:cond\\|match\\|case\\|syntax-match\\)\\_>")
-              (bjo--after-leave-p open)))
-      (scan-error nil))))
-
-(defun bjo--after-leave-p (open)
-  "Whether a `:leave' is before OPEN in the list that OPEN is in.
-
-The list at OPEN is then an arm of a `def''s failure part."
-  (save-excursion
-    (goto-char open)
-    (let ((found nil))
-      (condition-case nil
-          (while (not found)
-            (backward-sexp 1)
-            (setq found (looking-at ":leave\\_>")))
-        (scan-error nil))
-      found)))
-
 (defun bjo-indent-function (indent-point state)
   "Indent a Bjolang form at INDENT-POINT, given parser STATE.
 
@@ -522,7 +510,6 @@ is not decided here; see `bjo--calculate-indent'."
 
      (t
       (let* ((head-column (current-column))
-             (head-point (point))
              (function (buffer-substring (point)
                                          (progn (forward-sexp 1) (point))))
              (method (get (intern-soft function) 'bjo-indent-function)))
@@ -544,20 +531,7 @@ is not decided here; see `bjo--calculate-indent'."
          ((integerp method)
           (lisp-indent-specform method state indent-point normal-indent))
          (method
-          (funcall method state indent-point normal-indent))
-         ;; A call with no argument on the line of its head: the arguments
-         ;; go two in from the bracket, not one.
-         ((and (eq (char-after (elt state 1)) ?\()
-               (not (equal function "else"))
-               (not (string-prefix-p ":" function))
-               (not (bjo--clause-p (elt state 1)))
-               (save-excursion
-                 (goto-char (elt state 2))
-                 (skip-syntax-forward "'")
-                 (= (point) head-point)))
-          (save-excursion
-            (goto-char (elt state 1))
-            (+ (current-column) 2)))))))))
+          (funcall method state indent-point normal-indent))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Font lock
@@ -847,6 +821,8 @@ is how font-lock is told the region moved."
   (pcase-dolist (`(,sym . ,n) bjo-indent-forms)
     (put sym 'bjo-indent-function n))
   (put 'let 'bjo-indent-function #'bjo-let-indent)
+  (dolist (form '(record-set record-set! struct-set struct-set!))
+    (put form 'bjo-indent-function #'bjo-record-set-indent))
   (put 'def* 'bjo-indent-function #'bjo-def-star-indent))
 
 ;;; ---------------------------------------------------------------------------

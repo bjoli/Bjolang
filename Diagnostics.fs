@@ -141,9 +141,9 @@ module Diagnostics =
     /// compiler error naming it is not, because it appears in no source file
     /// and the reader has no way to find it.
     ///
-    /// The message of an illegal name (`Unused.rejectNames`) is not changed:
-    /// its name is one the program wrote, `x__1`, with a suffix of the shape
-    /// that is taken away here.
+    /// Illegal-name errors (from `Unused.rejectNames`) are returned unchanged.
+    /// They quote an identifier the user actually wrote, such as `x__1`, and
+    /// stripping the `__1` suffix would report the wrong name.
     let humanize (message: string) =
         if message.EndsWith "is an illegal name." then
             message

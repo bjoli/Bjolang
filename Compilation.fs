@@ -13,28 +13,30 @@
 
 namespace Bjolang
 
-/// Where the state of a compilation is kept.
+/// Per-compilation state, so that several compilations can run in one process
+/// without sharing mutable globals.
 ///
-/// The compiler's passes keep counters, tables and settings in module-level
-/// values. A value that is the same for a whole process is a plain `let`. A
-/// value of one compilation is a `Per`, a `PerDictionary`, a `PerSet` or a
-/// `PerList` of this module: its storage is in a `Context`, and each thread
-/// of control has a current context.
+/// Compiler passes keep counters, tables and settings in module-level values.
+/// Process-wide values stay plain `let` bindings. Anything that belongs to a
+/// single compilation is declared as a `Per`, `PerDictionary`, `PerSet` or
+/// `PerList` instead. Those look like ordinary module-level values but store
+/// their data in the current `Context`.
 ///
-/// - A process that never makes a context has one, the root. Each value then
-///   has one storage, as a module-level `let mutable` has.
-/// - `inNew` runs a function in a context of its own. Two threads that each
-///   run in a context of their own share none of these values.
-/// - The current context goes with the thread of control: a task or a thread
-///   that a compilation starts has the compilation's context.
+/// - If nothing ever creates a context, everything lives in the root context
+///   and behaves exactly like a `let mutable` global.
+/// - `inNew` runs a function in a fresh context. Compilations running in
+///   different contexts (e.g. on different threads) don't see each other's
+///   state.
+/// - The current context is ambient and flows with async control flow: tasks
+///   and threads started by a compilation inherit its context.
 ///
-/// `Session` saves and restores some of these values around a compilation
-/// that another compilation starts. It reads and writes the current context,
-/// so it works the same in every context.
+/// `Session` saves and restores some of these values around a nested
+/// compilation (an import compiled on demand). It works on the current
+/// context, so it behaves the same inside any context.
 ///
-/// Not in a context: a cache of what the process has loaded or read from
-/// disk, and a hook that one module sets once for another. See `Session` for
-/// the list.
+/// Process-wide caches (loaded assemblies, files read from disk) and hooks
+/// that one module installs for another are deliberately not per-context.
+/// `Session` has the full list.
 module Compilation =
     open System
     open System.Collections.Generic
@@ -42,19 +44,20 @@ module Compilation =
     open System.Runtime.InteropServices
     open System.Threading
 
-    /// The state of one compilation: a slot for each `Per`.
+    /// Holds the state of one compilation: an array with one slot per `Per` value.
     [<AllowNullLiteral>]
     type Context internal (parent: Context) =
         let mutable slots: obj[] = Array.zeroCreate 128
 
-        /// The context that made this one. Null for the root.
+        /// The context that was current when this one was created, or null for
+        /// the root context.
         member _.Parent = parent
 
         member internal _.Slots
             with get () = slots
             and set (v: obj[]) = slots <- v
 
-    /// The storage of one `Per` in one context.
+    /// A mutable cell holding the value of one `Per` in one context.
     [<AllowNullLiteral>]
     type internal Holder<'T>(initial: 'T) =
         let mutable value = initial
@@ -65,12 +68,14 @@ module Compilation =
 
     let private root = Context(null)
 
-    /// The current context of each thread.
+    /// Thread-static cache of the current context.
     ///
-    /// An `AsyncLocal` goes with the thread of control into tasks and new
-    /// threads, but to read one costs a search. So the value is kept in a
-    /// thread-static field too, which costs one load, and the `AsyncLocal`
-    /// writes that field on each thread where its value changes.
+    /// The source of truth is the `AsyncLocal` below, which flows into tasks
+    /// and new threads. Reading an `AsyncLocal` is slow (a lookup in the
+    /// execution context), and `Per` values are read on hot paths, so we mirror
+    /// it into a thread-static field, which is a single load. The
+    /// `AsyncLocal`'s change callback keeps the field up to date on every
+    /// thread.
     type private Ambient() =
         [<ThreadStatic; DefaultValue>]
         static val mutable private current: Context
@@ -82,7 +87,7 @@ module Compilation =
     let private flow =
         AsyncLocal<Context>(fun (change: AsyncLocalValueChangedArgs<Context>) -> Ambient.Current <- change.CurrentValue)
 
-    /// The context of the code that runs now.
+    /// Returns the current context, or the root context if none has been set.
     let current () : Context =
         match Ambient.Current with
         | null -> root
@@ -92,16 +97,16 @@ module Compilation =
 
     let internal nextIndex () = Interlocked.Increment(&count) - 1
 
-    /// The holder of slot `index` in `context`, made by `make` when the
-    /// context does not have it yet.
+    /// Returns the holder in slot `index` of `context`, creating it with `make`
+    /// on first access. Grows the slot array if needed.
     let internal holderIn<'T> (context: Context) (index: int) (make: Context -> 'T) : Holder<'T> =
         let slots = context.Slots
 
         if index < slots.Length && not (isNull slots[index]) then
             Unsafe.As<Holder<'T>> slots[index]
         else
-            // A context is used by one compilation, but that compilation can
-            // have a helper thread.
+            // Slow path, taken once per slot per context. Lock because a
+            // compilation may use helper threads that share its context.
             lock context (fun () ->
                 if index >= context.Slots.Length then
                     let bigger = Array.zeroCreate (max (index + 1) (context.Slots.Length * 2))
@@ -115,14 +120,16 @@ module Compilation =
                     holder
                 | made -> Unsafe.As<Holder<'T>> made)
 
-    /// A value of a compilation, in place of a module-level `let mutable`.
+    /// A per-compilation mutable value. Use it instead of a module-level
+    /// `let mutable`, and read or write it through `.Value`.
     ///
-    /// - `Per(make)`: each context starts with `make ()`.
-    /// - `Per(make, true)`: a setting. A context that `inNew` makes starts
-    ///   with the value that the context which made it has when the new one
-    ///   first reads the setting. The root starts with `make ()`.
+    /// - `Per(make)`: every context starts with its own `make ()`.
+    /// - `Per(make, true)`: a setting, which child contexts inherit. A context
+    ///   created by `inNew` starts with its parent's value, copied the first
+    ///   time the child accesses the setting. The root context starts with
+    ///   `make ()`.
     ///
-    /// The value is made when a context first reads or writes it.
+    /// Values are initialized lazily, on a context's first read or write.
     [<Sealed>]
     type Per<'T>(make: unit -> 'T, isSetting: bool) =
         let index = nextIndex ()
@@ -139,8 +146,9 @@ module Compilation =
             with get () : 'T = (holderIn (current ()) index first).Value
             and set (v: 'T) = (holderIn (current ()) index first).Value <- v
 
-    /// A `Dictionary` of a compilation, with the members that the compiler
-    /// uses. `Current` is the dictionary itself.
+    /// A per-compilation `Dictionary`. Forwards the `Dictionary` members the
+    /// compiler uses to the current context's instance, so existing call sites
+    /// compile unchanged. `Current` returns the underlying dictionary.
     [<Sealed>]
     type PerDictionary<'K, 'V when 'K: equality>(make: unit -> Dictionary<'K, 'V>) =
         let cell = Per<Dictionary<'K, 'V>>(make)
@@ -168,7 +176,7 @@ module Compilation =
 
             member d.GetEnumerator() : Collections.IEnumerator = d.Current.GetEnumerator()
 
-    /// A `HashSet` of a compilation.
+    /// A per-compilation `HashSet`, forwarding to the current context's instance.
     [<Sealed>]
     type PerSet<'T>(make: unit -> HashSet<'T>) =
         let cell = Per<HashSet<'T>>(make)
@@ -187,7 +195,8 @@ module Compilation =
             member s.GetEnumerator() : IEnumerator<'T> = s.Current.GetEnumerator()
             member s.GetEnumerator() : Collections.IEnumerator = s.Current.GetEnumerator()
 
-    /// A `ResizeArray` of a compilation.
+    /// A per-compilation `ResizeArray`, forwarding to the current context's
+    /// instance.
     [<Sealed>]
     type PerList<'T>() =
         let cell = Per<List<'T>>(fun () -> List<'T>())
@@ -214,15 +223,16 @@ module Compilation =
             member l.GetEnumerator() : IEnumerator<'T> = l.Current.GetEnumerator()
             member l.GetEnumerator() : Collections.IEnumerator = l.Current.GetEnumerator()
 
-    /// Runs `f` in a new context, and gives its result. The code before and
-    /// after the call has the context that it had.
+    /// Runs `f` in a fresh child context and returns its result. The caller's
+    /// context is restored afterwards, even if `f` throws.
     ///
-    /// - Each `Per` starts in the new context as `Per` says: a value with
-    ///   what its `make` gives, and a setting with what the calling context
-    ///   has.
-    /// - For a compilation that runs at the same time as another one. A
-    ///   compilation that one thread starts inside another, such as that of
-    ///   an import, uses `Session.isolated`, which stays in the context.
+    /// Inside `f`, ordinary `Per` values start from their initial value and
+    /// settings start from the caller's current value (see `Per`).
+    ///
+    /// Use this for compilations that run concurrently with others, such as
+    /// the language server's background checks. A nested compilation on the
+    /// same thread (e.g. compiling an import) should use `Session.isolated`
+    /// instead, which saves and restores state within the current context.
     let inNew (f: unit -> 'a) : 'a =
         let outer = flow.Value
         flow.Value <- Context(current ())

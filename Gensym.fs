@@ -50,12 +50,30 @@ let reserve (name: string) : unit =
     if isFreshShaped name then
         written.Add name |> ignore
 
+/// Identifiers read from real source files, as (file, name) pairs. Unlike
+/// `sourceNames`, this excludes text the compiler lexes for its own purposes,
+/// such as the metadata of imported modules, which contains generated names.
+let private userWritten = Compilation.PerSet<struct (string * string)>()
+
+/// Records that the source file `file` contains the identifier `name`.
+/// Called by `Lexer.tokenizeSource`.
+let noteUserWritten (file: string) (name: string) : unit =
+    userWritten.Add(struct (file, name)) |> ignore
+
+/// Returns true if the lexer read the identifier `name` from the source file
+/// `file` during this compilation, i.e. the user typed it there.
+let isUserWritten (file: string) (name: string) : bool =
+    userWritten.Contains(struct (file, name))
+
 /// Whether source this compilation read has written `name`.
 let isWritten (name: string) : bool = sourceNames.Contains name
 
-/// The names that the compiler writes in source text which it then reads:
-/// those of the REPL's wrapper of an entry (`Repl`). The lexer reads them as
-/// it reads a name of the program, so `isWritten` is true of them.
+/// Identifiers that the compiler itself puts into source text before lexing
+/// it: the bindings the REPL wraps around each entry (see `Repl`).
+///
+/// They go through the lexer like user code, so `isWritten` returns true for
+/// them. `Unused.rejectNames` uses this set to avoid rejecting them as
+/// user-written names containing `_`.
 let compilerWritten: Set<string> =
     set [ "__bjo_value"; "__bjo_show"; "__bjo_anchor" ]
 

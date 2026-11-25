@@ -226,7 +226,21 @@ Where a production's type is expected, a value that is not a literal is read by 
 The design, with all the rules, is in [[file:Grammar-design.org]].
 
 ** Identifiers
-Identifiers may contain any character that is not white space, a parenthesis, a bracket, a brace, ~"~, ~'~, ~:~, ~;~ or ~,~, and may not start with a digit: ~my-var~, ~+~, ~string->int~, ~empty?~, ~x__1~. A name ending in ~__~ and digits is the shape of the names the compiler makes up, and the compiler makes sure it never makes up one that the program writes.
+Identifiers may contain any character that is not white space, a parenthesis, a bracket, a brace, ~"~, ~'~, ~:~, ~;~ or ~,~, and may not start with a digit: ~my-var~, ~+~, ~string->int~, ~empty?~. A name that the program binds may not have a ~_~ in it; see below.
+
+*** A name with a ~_~ in it is illegal
+A program may not bind a name that has a ~_~ in it: ~(def snake_case 1)~ and ~(fun (_x) ...)~ are errors.
+
+#+BEGIN_SRC text
+Syntax Error at shapes.bjo:12:3: 'snake_case' is an illegal name.
+#+END_SRC
+
+- This is for each definition, parameter, local binding and name of a pattern.
+- ~_~ alone binds nothing, so it is not a name: ~(:for _ (range 0 n))~.
+- A name with ~__~ in it, such as ~x__1~, is illegal too: it has the shape of the names the compiler makes.
+- The reason is the generated code. It writes ~_~ in the names it makes from the program's (~a?~ is ~a_QMARK~), so a written ~_~ could make two names the same there.
+- A .NET name can have a ~_~: the target of an ~import/extern~ and a member of a dot call are not bound by the program.
+- The names of types, constructors, fields and traits are not checked.
 
 *** A local binding named like a special form or a macro
 A special form (~list~, ~loop~, ~match~, ...) and a macro are chosen by the name at the head of a list, before anything is known about scope. So a local binding with such a name cannot be called by that name: ~(list 1 2)~ is the list form whatever ~list~ is bound to. The compiler refuses such a call, and names the binding:
@@ -251,18 +265,18 @@ The binding itself is allowed, and so is any use of it that is not a call by tha
 - What the code leaves open is a ~?a~, with what it has to have: ~'_' stands for a value of type ?a, where (Displayed ?a) has to hold~.
 - Every declaration's holes are reported. While a hole's type is open, the other errors in its declaration wait until it is filled: such an error is as likely to be the hole's doing, as when nothing says which implementation a call uses because the hole was to. Once every hole's type is known, they are reported with it.
 - ~(: _ double)~ asks what in scope is a ~double~.
-- ~_~ as a parameter or in a pattern binds nothing, as before. A ~_name~ that something binds is an ordinary name.
+- ~_~ as a parameter or in a pattern binds nothing, as before. Nothing can bind a ~_name~: a name with a ~_~ in it is an illegal name ("Identifiers", above).
 
 ** Definitions nothing uses
 The compiler warns about a definition nothing uses:
 #+BEGIN_SRC text
-Warning: 'stale' is defined at shapes.bjo:24:1 and nothing uses it: this module does not export it, and none of its code reads it. Remove it, export it, or start its name with _ if it is kept on purpose.
-Warning: 'scratch' is bound to the value at shapes.bjo:46:16 and nothing reads it. Remove it, or start its name with _ if it is kept on purpose.
+Warning: 'stale' is defined at shapes.bjo:24:1 and nothing uses it: this module does not export it, and none of its code reads it. Remove it, or export it.
+Warning: 'scratch' is bound to the value at shapes.bjo:46:16 and nothing reads it. Remove it, or write _ in place of the name.
 #+END_SRC
 
 - At the top level: a ~def~ or a ~defun~ the module does not export and none of its code reads. A function that only calls itself is not used by that. ~main~, a macro and a name an ~(:alias ...)~ gives a second spelling are not reported.
 - In a body: a ~let~, ~let*~, ~letrec~, ~let/mutable~ or tuple binding, a ~def~ or a local ~defun~, and a loop variable such as the ~i~ of ~(:for i (range 0 n))~, that nothing in its scope reads.
-- A name that starts with ~_~ is kept on purpose and never reported: ~(def _registered (register!))~, ~(:for _ (range 0 n))~, ~(let (((a _) pair)) a)~.
+- ~_~ binds nothing, so nothing is reported for it: ~(:for _ (range 0 n))~, ~(let (((a _) pair)) a)~. A value that is computed only for its effect is written ~(ignore (register!))~.
 - What a macro wrote is not reported, as the program did not write it.
 - A REPL entry's top-level definitions are not reported, as they are for the entries after it.
 

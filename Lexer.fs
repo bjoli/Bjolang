@@ -1031,6 +1031,21 @@ module Lexer =
     /// The tokens of a file's text, or of any text read as one.
     let tokenize (file: string) (input: string) : LexedToken list = tokenizeFrom file input 0
 
+    /// Tokenizes the text of a real source file, and records every identifier
+    /// in it as user-written for that file (`Gensym.isUserWritten`).
+    ///
+    /// Use this only for source the user wrote. Text the compiler produced,
+    /// such as module metadata, goes through `tokenize`.
+    let tokenizeSource (file: string) (input: string) : LexedToken list =
+        let tokens = tokenize file input
+
+        for t in tokens do
+            match t.Token with
+            | Symbol s -> Gensym.noteUserWritten t.Range.File s
+            | _ -> ()
+
+        tokens
+
     /// `A::b` as one symbol, for text the compiler wrote: a qualified binding
     /// (`Naming.qualifiedBinding`) in a published body. The lexer reads it as
     /// `A`, `:` and the keyword `:b`; written with nothing between them, the

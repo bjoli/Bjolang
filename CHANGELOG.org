@@ -3,6 +3,81 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~bjo fmt~ no longer splits strings, and moves a first argument down earlier
+
+- *A string that ran past the line width was split with a ~\~ line
+  continuation* at the last space that fitted. That could cut a message in
+  the middle of a code example. Strings are no longer split.
+  - A line whose string (or comment, or name) is too wide to fit anywhere
+    is left as it is.
+  - A string that would fit further left is still moved there, by breaking
+    the lists around it.
+  - Continuations that are already in a string are kept and re-indented, as
+    before.
+- *A call's first argument was moved down only as a last resort*, so long
+  calls drifted right: each argument was aligned under the first one and
+  then broken inside. Now the first argument moves down early, when the
+  arguments do not fit aligned under it but do fit under the head:
+
+  #+BEGIN_SRC scheme
+  (some-quite-long-function-name-here-indeed
+   (first 1)
+   (second-argument-is-a-call-with-a-very-long-name-that-goes-on (nested 4 5 6) 7 8))
+  #+END_SRC
+
+  - Arguments that fit under the first one stay there.
+  - Small arguments are filled after the move; others get a line each.
+  - Not applied to a ~(: ...)~ or a keyword-headed clause, and not when the
+    first argument is small and is itself the only thing that does not fit.
+  - The last-resort move is still there for lines nothing else can break.
+- ~run_bjo_tests.py fmt~: the four string-splitting cases are replaced by
+  five cases for the new behaviour.
+
+* ~bjo fmt~: a call's arguments are one column in again
+
+- *The arguments of a call with none on the line of its head were indented
+  two columns from the bracket*, a rule added a few entries below. They are
+  back under the head, one column in, which is what Emacs, DrRacket and
+  ~raco fmt~ do:
+
+  #+BEGIN_SRC scheme
+  (vec-append
+   (first-part x)
+   (second-part x))
+  #+END_SRC
+
+- Two columns is again only for forms with a body (~defun~, ~let~,
+  ~when~, ~match~ ...).
+- The clause detection that the two-column rule needed is removed from
+  ~bjo fmt~ and from ~bjomode.el~. A clause's body was one column in and
+  still is.
+- Kept from that entry: ~:propagate~ on the ~def~'s line, the first clause
+  of a ~cond~, the ~defeffect~ rules, and the named ~let~ with an unquoted
+  name.
+
+* ~bjo fmt~: the setters of a ~record-set~ align under the first one
+
+- *A ~record-set~ too wide for its line was broken like a call*: the
+  setters were filled, or all moved under the record. Now the record and the
+  first setter stay on the head's line and each later setter gets its own
+  line, aligned under the first:
+
+  #+BEGIN_SRC scheme
+  (record-set m (field-one (compute-the-first-value 1 2 3))
+                (field-two (compute-the-second-value 4 5 6))
+                (field-three #t))
+  #+END_SRC
+
+- This applies to ~record-set~, ~record-set!~, ~struct-set~ and
+  ~struct-set!~, and only when the record expression is small (a name, or a
+  one-line call with no nested call). With a larger record expression the
+  form is broken like any call, as before.
+- A ~record-set~ that fits on one line is not changed.
+- Indentation: when the first setter is on the head's line, later setters
+  align under it. When it is not, they align under the record, as before.
+  ~bjomode.el~ has the same rule (~bjo-record-set-indent~).
+- ~run_bjo_tests.py fmt~ has four cases for it.
+
 * A name with a ~_~ in it is an illegal name
 
 - *A program could bind a name with a ~_~ in it*, and a name that starts

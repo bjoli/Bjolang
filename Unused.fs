@@ -23,9 +23,9 @@ module Bjolang.Unused
 open Bjolang.Lexer
 open Bjolang.Ast
 
-/// A name this check says nothing about: `_`, which binds nothing, and one
-/// the compiler made (`x__3`, `f__bjo`, `#name` for a hash macro's
-/// transformer).
+/// Returns true for names the unused-binding warnings should ignore: the
+/// wildcard `_` and compiler-generated names (`x__3`, `f__bjo`, and the
+/// `#name` transformer of a hash macro).
 let private exempt (name: string) =
     name = "_" || name.Contains "__" || name.StartsWith "#" || name.StartsWith "%"
 
@@ -110,24 +110,29 @@ let private defines (d: Decl) : (string * Range) list =
     | DDefPattern(pattern, _, r) -> patternBinders pattern |> List.map (fun n -> n, r)
     | _ -> []
 
-/// Whether the program may not bind `name`: it has a `_` in it.
+/// Returns true if `name` is a user-written identifier containing `_`,
+/// which is not allowed.
 ///
-/// - `_` alone binds nothing and is not a name.
-/// - The generated code writes `_` in the names it makes from a name of the
-///   program (`a?` is `a_QMARK`), and the compiler's own names have `__`
-///   (`x__3`). A written name with a `_` could be the same as one of those.
-/// - A name that the source does not have is the compiler's (`loopcur__7`),
-///   and is not checked. Nor is one of `Gensym.compilerWritten`.
-/// - A parameter of a short lambda, `&1` of `#(f &1)`, is read as `&1__4`.
-///   A program cannot bind a name that starts with `&`.
-let private illegal (name: string) =
+/// Underscores are reserved for the compiler: name mangling emits them
+/// (`a?` becomes `a_QMARK` in C#) and gensyms use a `__N` suffix (`x__3`).
+/// A user identifier with `_` could collide with either.
+///
+/// Not rejected:
+/// - `_` on its own, which is the wildcard, not an identifier.
+/// - Compiler-generated names (`loopcur__7`, or `&1__4` for a short-lambda
+///   parameter). We tell them apart with `Gensym.isUserWritten`: a name only
+///   counts if the lexer read it from `file`, the source file that the binding
+///   is in. Names that merely appear in an imported module's metadata don't
+///   count.
+/// - The REPL's wrapper names in `Gensym.compilerWritten`. The REPL writes
+///   them into the entry's source file, so they look user-written.
+let private illegal (file: string) (name: string) =
     name <> "_"
     && name.Contains "_"
-    && not (name.StartsWith "&")
-    && Gensym.isWritten name
+    && Gensym.isUserWritten file name
     && not (Gensym.compilerWritten.Contains name)
 
-/// Every name the parameters `args` bind.
+/// Returns the names of all parameters in `args`: positional, keyword and rest.
 let private parameters (args: DefunArg list) : string list =
     args
     |> List.map (function
@@ -135,7 +140,9 @@ let private parameters (args: DefunArg list) : string list =
         | KeywordArg(n, _)
         | RestArg n -> n)
 
-/// Every name that `e` binds, each with the range of the form that binds it.
+/// Collects every identifier bound anywhere inside `e` (let bindings, lambda
+/// and local-function parameters, pattern variables), paired with the source
+/// range of the binding form.
 let rec private binders (e: Expr) : (string * Range) list =
     let here =
         match e with
@@ -158,14 +165,16 @@ let rec private binders (e: Expr) : (string * Range) list =
 
     here @ (exprChildren e |> List.collect binders)
 
-/// Rejects each name with a `_` in it that the program binds in `decls`, one
-/// module's: a definition, a parameter, a local binding, and a name of a
-/// pattern.
+/// Reports a syntax error for every identifier containing `_` that the
+/// module's declarations bind: top-level definitions, parameters, local
+/// bindings and pattern variables.
 ///
-/// - Raises one error for each name and form, with the position of the form.
-/// - A name that a macro wrote is not checked.
-/// - A name that nothing binds is not checked: `_total` in an expression is a
-///   hole (`Holes`), and a .NET name can have a `_`.
+/// All offending names are reported at once, each at the range of its binding
+/// form. Bindings produced by macro expansion are skipped.
+///
+/// Only binding sites are checked. References are left alone, because an
+/// unbound `_total` is a typed hole (see `Holes`) and .NET member names may
+/// legitimately contain underscores.
 let rejectNames (decls: Decl list) : unit =
     let sites = Macro.expansionSites ()
     let written (r: Range) = not (Set.contains (r.File, r.Start, r.End) sites)
@@ -188,7 +197,7 @@ let rejectNames (decls: Decl list) : unit =
     let errors =
         decls
         |> List.collect bound
-        |> List.filter (fun (name, r) -> illegal name && written r)
+        |> List.filter (fun (name, r) -> illegal r.File name && written r)
         |> List.distinct
         |> List.sortBy (fun (_, r) -> r.File, r.Start)
         |> List.map (fun (name, r) -> $"Syntax Error at %s{formatPos r}: '%s{name}' is an illegal name.")
