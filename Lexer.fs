@@ -38,10 +38,43 @@ module Lexer =
     let private fileLabel (file: string) =
         if String.IsNullOrEmpty file then "<unknown>" else IO.Path.GetFileName file
 
+    /// The range behind each location that `formatPos` wrote, by the text it
+    /// wrote. A message holds a location as text, which has the file's name
+    /// and where the range starts. An editor needs the file's path and where
+    /// the range ends, and reads them here (`writtenRange`).
+    ///
+    /// - Two ranges with one text: the one written last is kept. A message is
+    ///   made just before it is raised, so that is the range of the message.
+    /// - `forgetWritten` empties it. It also empties itself at 20000
+    ///   locations, so that a process that compiles many files does not keep
+    ///   them all.
+    let private written = System.Collections.Generic.Dictionary<string, Range>()
+
     /// A location for a diagnostic, as `file.bjo:12:5`: the line, and the
     /// column counted from 1, as editors and Emacs' compilation mode read it.
     /// A `Range` counts columns from 0.
-    let formatPos (r: Range) = $"%s{fileLabel r.File}:%d{r.Start.Line}:%d{r.Start.Column + 1}"
+    let formatPos (r: Range) =
+        let text = $"%s{fileLabel r.File}:%d{r.Start.Line}:%d{r.Start.Column + 1}"
+
+        lock written (fun () ->
+            if written.Count >= 20000 then
+                written.Clear()
+
+            written[text] <- r)
+
+        text
+
+    /// The range that `formatPos` wrote as `text`, `file.bjo:12:5`, since the
+    /// last `forgetWritten`. `None` for a location that another function
+    /// wrote, such as `formatAt`.
+    let writtenRange (text: string) : Range option =
+        lock written (fun () ->
+            match written.TryGetValue text with
+            | true, r -> Some r
+            | _ -> None)
+
+    /// Forgets the ranges of `writtenRange`.
+    let forgetWritten () = lock written (fun () -> written.Clear())
 
     /// The same, inside the tokenizer, where there is no `Range` to hand yet.
     /// `col` counts from 0, as a `Range` does.

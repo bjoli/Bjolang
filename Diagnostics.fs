@@ -200,6 +200,8 @@ module Diagnostics =
         collected.Clear()
         reported <- 0
         poisoned.Clear()
+        // The ranges of the locations in the messages that are now gone.
+        Lexer.forgetWritten ()
 
     let record (d: Diagnostic) = collected.Add d
 
@@ -272,6 +274,27 @@ module Diagnostics =
                 m.Groups[1].Value, int m.Groups[2].Value, column
             else
                 "\uffff", System.Int32.MaxValue, 0
+
+    /// The range that a diagnostic is at, with the file's path and the end
+    /// that the text of a location does not have. For an editor.
+    ///
+    /// - `Where`, when the diagnostic has it.
+    /// - Else the range behind the first location in the message, which is
+    ///   the innermost report, as for `sortKey`.
+    /// - `None` when the message has no location, or one that was written
+    ///   without a range: the tokenizer's, which has a line and a column only.
+    ///
+    /// Valid until the next `reset`.
+    let rangeOf (d: Diagnostic) : Lexer.Range option =
+        match d.Where with
+        | Some r -> Some r
+        | None ->
+            let m = locationParts.Match d.Message
+
+            if m.Success && m.Groups[3].Success then
+                Lexer.writtenRange $"%s{m.Groups[1].Value}:%s{m.Groups[2].Value}:%s{m.Groups[3].Value}"
+            else
+                None
 
     /// A diagnostic as it is printed, location included.
     let private render (d: Diagnostic) =
