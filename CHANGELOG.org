@@ -3,6 +3,28 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~bjo fmt --rewrite~
+
+- *~bjo fmt --rewrite~ rewrites forms before it lays them out.* Without the flag
+  ~bjo fmt~ still changes no tokens. The rewrites are:
+  - ~(case k ((5) ...))~ becomes ~(case k (5 ...))~ for a single literal.
+  - An ~if~ whose else branch is another test, an ~if~ or a ~cond~, becomes a
+    ~cond~. Bindings before the test become ~:def~ clauses, and those before
+    the last body become ~def~s in the ~else~. A statement ends the chain. A
+    single ~(if x y (let ...))~ is kept.
+  - An ~if~ whose then branch is a ~(let () ...)~ becomes a ~cond~.
+  - A ~let~ that ends a body becomes ~def~s.
+- *A ~let~ is kept where a ~def~ might differ*: it binds a function, a value
+  mentions its own name, the bindings would see each other, an earlier form
+  mentions a name, or the body has a ~defun~. Quoted data, templates and
+  patterns are kept.
+- The result is refused unless it has the same atoms and comments in the same
+  order, but for the keywords of these forms.
+- Open: names are not resolved, so a macro that reads its forms as data, such
+  as one that shows their source, sees the rewritten ones. Modules built before
+  ~cond~ (~eq~, ~syntax-match~, ~core-macros~ and ~effect~ in ~(std)~) must not
+  be rewritten.
+
 * ~bjo fmt~: the value of a ~def*~ clause starts on the line of its name
 
 - A value over several lines went below the name, as in a ~def~. It is now laid

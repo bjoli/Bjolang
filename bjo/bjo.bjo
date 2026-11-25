@@ -1417,9 +1417,9 @@
 
 ;; `bjo fmt`: each file laid out (see `format.bjo`), and written back if that
 ;; changed it, or with `check?` only named. Returns 1 when a file could not be laid out, or, with `check?`, when one is not.
-(: (-> (List string) bool bool int))
-(defun (cmd-fmt files check? diff?)
-  (def failures (list-foldl (fun (file n) (+ n (fmt-file file check? diff?))) 0 files))
+(: (-> (List string) bool bool bool int))
+(defun (cmd-fmt files rewrite? check? diff?)
+  (def failures (list-foldl (fun (file n) (+ n (fmt-file file rewrite? check? diff?))) 0 files))
   (if (> failures 0)
       1
       0))
@@ -1429,11 +1429,11 @@
 ;; already is not mentioned. With `diff?` nothing is written: what would change
 ;; is printed as a unified diff, which `patch -p0` takes, and so what is said
 ;; about a line goes to standard error, out of the diff's way.
-(: (-> string bool bool int))
-(defun (fmt-file file check? diff?)
+(: (-> string bool bool bool int))
+(defun (fmt-file file rewrite? check? diff?)
   (def source (file-read-text file))
   (def shown (as-seen-from-here file))
-  (match (format-source source)
+  (match (format-source rewrite? source)
     ((Err why)
      (println #"bjo fmt: ${shown}: ${why}")
      1)
@@ -1473,8 +1473,8 @@
 
 ;; `bjo fmt -`: standard input laid out to standard output, for an editor. What
 ;; is wrong goes to standard error, and nothing to standard output.
-(: (-> bool int))
-(defun (fmt-stdin diff?)
+(: (-> bool bool int))
+(defun (fmt-stdin rewrite? diff?)
   (def input (get current-input-port))
   (def lines
     (let go ((acc Nil))
@@ -1482,7 +1482,7 @@
         ((Some line) (go (Cons line acc)))
         (None (list-reverse acc)))))
   (def source (str (string-join (list->vec lines) "\n") "\n"))
-  (match (format-source source)
+  (match (format-source rewrite? source)
     ((Ok (Tuple text long))
      (display (if diff?
                   (unified-diff "-" "-" source text)
@@ -1557,9 +1557,11 @@
   (println "  bjo run --android [-c]                  Build this project's app for the connected")
   (println
    "                                          device, install it, start it, and show its log.")
-  (println "  bjo fmt [--check] [--diff] [files or dirs...]")
+  (println "  bjo fmt [--rewrite] [--check] [--diff] [files or dirs...]")
   (println "                                          Lay source out: the files named,")
   (println "                                          or every file under src/, tests/ and benches/.")
+  (println "                                          --rewrite also rewrites ifs and lets as conds")
+  (println "                                          and defs, and (case k ((5) ...)) as (5 ...).")
   (println "                                          --check writes nothing and names what is not")
   (println "                                          laid out; --diff writes nothing and prints the")
   (println
@@ -1828,17 +1830,18 @@
          (ret (fail "bjo fmt: builds nothing, so it takes no build flags.")))
        (def check? (not (empty? (list-filter #(= & "--check") rest))))
        (def diff? (not (empty? (list-filter #(= & "--diff") rest))))
-       (def named (list-filter #(not (or (= & "--check") (= & "--diff"))) rest))
+       (def rewrite? (list-contains? rest "--rewrite"))
+       (def named (list-filter #(not (list-contains? (list "--check" "--diff" "--rewrite") &)) rest))
        (when (= named (list "-"))
          (ret (if check?
                   (fail "bjo fmt: - writes what it lays out, so it takes no --check.")
-                  (fmt-stdin diff?))))
+                  (fmt-stdin rewrite? diff?))))
        (match (list-filter #(string-starts-with? & "-") named)
          ((Cons flag _) (ret (fail #"bjo fmt: unknown flag '${flag}'.")))
          (Nil (ignore 0)))
        (def (Ok files) (fmt-targets named)
          :leave ((Err why) (fail why)))
-       (cmd-fmt files check? diff?)))
+       (cmd-fmt files rewrite? check? diff?)))
 
     ;; Everything after the task's name is the task's: bjo's own flags come
     ;; before it, and parse-flags stopped there.

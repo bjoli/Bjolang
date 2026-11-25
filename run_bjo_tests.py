@@ -2113,9 +2113,9 @@ def test_bench(work, c):
 
 # --- bjo fmt ----------------------------------------------------------------
 
-def fmt_text(where, text):
+def fmt_text(where, text, *flags):
     """`bjo fmt -` on `text`."""
-    return subprocess.run([str(BJO), "fmt", "-"], cwd=str(where), input=text,
+    return subprocess.run([str(BJO), "fmt", *flags, "-"], cwd=str(where), input=text,
                           capture_output=True, text=True, timeout=120)
 
 
@@ -2391,6 +2391,68 @@ def test_fmt(work, c):
     for label, given, wanted in cases:
         laid = fmt_text(work, given)
         c.that(f"fmt: {label}", laid.stdout == wanted, f"wanted:\n{wanted!r}\ngot:\n{laid.stdout!r}{laid.stderr}")
+
+    chain = ("(cond\n  (a 1)\n  (:def x (f))\n  (:def (Tuple y z) (g x))\n  ((p y) 2)\n"
+             "  (else\n   (def w (h z))\n   (k w)\n   w))\n")
+    rewrites = [
+        ("a single datum loses its brackets",
+         "(case b ((5) x) ((#\\a) x) (('s) x) ((\"t\") x) ((1 2) y) ((else) z) (else z))\n",
+         "(case b\n  (5 x)\n  (#\\a x)\n  ('s x)\n  (\"t\" x)\n  ((1 2) y)\n  ((else) z)\n  (else z))\n"),
+        ("an if chain is a cond", "(if a 1 (if b 2 3))\n", "(cond\n  (a 1)\n  (b 2)\n  (else 3))\n"),
+        ("bindings before a test are :def, and the last ones def",
+         "(if a 1 (let* ((x (f)) ((Tuple y z) (g x))) (if (p y) 2 (let ((w (h z))) (k w) w))))\n", chain),
+        ("a begin branch of a chain is the clause's body",
+         "(if a (begin (f) 1) (if b 2 (begin (g) 3)))\n",
+         "(cond\n  (a\n   (f)\n   1)\n  (b 2)\n  (else\n   (g)\n   3))\n"),
+        ("a (let () ...) branch too", "(if a (let () (f) 1) 2)\n",
+         "(cond\n  (a\n   (f)\n   1)\n  (else 2))\n"),
+        ("a statement before a test ends the chain",
+         "(if a 1 (if b 4 (let ((x 1)) (g) (if x 2 3))))\n",
+         "(cond\n  (a 1)\n  (b 4)\n  (else\n   (def x 1)\n   (g)\n   (if x 2 3)))\n"),
+        ("a let that ends a body is defs",
+         "(defun (f a)\n  (g)\n  (let* ((x a) (y x)) (h x) y))\n",
+         "(defun (f a)\n  (g)\n  (def x a)\n  (def y x)\n  (h x)\n  y)\n"),
+        ("the comments stay with their forms",
+         "(if a ; one\n    1\n    ;; two\n    (if b 2\n    ;; more\n    (let (;; three\n          (x 1))\n      ;; four\n      (f x))))\n",
+         "(cond\n  (a ; one\n   1)\n  ;; two\n  (b 2)\n  ;; more\n  (else\n   ;; three\n   (def x 1)\n   ;; four\n   (f x)))\n"),
+    ]
+    kept = [
+        ("a plain if", "(if a 1 2)"),
+        ("a single if with a let", "(if a 1 (let ((x 1)) (f x)))"),
+        ("a single if with a let and statements", "(if a 1 (let ((x 1)) (g) (if x 2 3)))"),
+        ("a single if with a (let () ...) after it", "(if a 1 (let () (g) 2))"),
+        ("a let that binds a fun", "(defun (f) (let ((g (fun (x) 1))) (g 1)))"),
+        ("a let that binds a short lambda", "(defun (f) (let ((g #(+ & 1))) (g 1)))"),
+        ("an if whose let binds a fun", "(if a 1 (let ((g (fun (x) 1))) (g 1)))"),
+        ("a name its own value mentions", "(defun (f x) (let ((x (g x))) x))"),
+        ("a name mentioned in a string", '(defun (f x) (let ((x #"a${x}")) x))'),
+        ("a let whose bindings would see each other", "(defun (f x) (let ((x 1) (y x)) y))"),
+        ("a let* that binds a name twice", "(defun (f) (let* ((x 1) (x 2)) x))"),
+        ("a name an earlier form mentions", "(defun (f x) (g x) (let ((x 1)) x))"),
+        ("a body with a local function", "(defun (f) (let ((x 1)) (defun (g) x) (g)))"),
+        ("a let that is not last", "(defun (f) (let ((x 1)) (g x)) 2)"),
+        ("a capital, which a pattern might read as a constructor", "(defun (f) (let ((X 1)) X))"),
+        ("a let in a :do, whose defs would be seen below",
+         "(cond (a 1) (:do (let ((x 1)) (g x))) (else 2))"),
+        ("a named let", "(defun (f) (let go ((x 1)) (go x)))"),
+        ("quoted data", "(f '(case x ((5) (if a b (if c d e)))))"),
+        ("a template", "(f #'(if ,a 1 (if b 2 3)))"),
+        ("a pattern", "(syntax-match s ((if a b (if c d e)) 1))"),
+        ("a comment in a datum list", "(case x ((5 ; five\n) 1) (else 2))"),
+    ]
+    for label, given, wanted in rewrites:
+        for text in (given, wanted):
+            laid = fmt_text(work, text, "--rewrite")
+            c.that(f"fmt --rewrite: {label}", laid.stdout == wanted,
+                   f"wanted:\n{wanted!r}\ngot:\n{laid.stdout!r}{laid.stderr}")
+        plain = fmt_text(work, given).stdout
+        c.that(f"fmt without --rewrite does not: {label}",
+               "".join(plain.split()) == "".join(given.split()), plain)
+    for label, given in kept:
+        laid = fmt_text(work, given + "\n", "--rewrite")
+        plain = fmt_text(work, given + "\n")
+        c.that(f"fmt --rewrite leaves {label}", laid.stdout and laid.stdout == plain.stdout,
+               laid.stdout + laid.stderr)
 
     for label, given, wanted in [
         ("an unclosed bracket", "(f\n", "a ( that is never closed"),

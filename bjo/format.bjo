@@ -23,7 +23,8 @@
 ;; A string's lines are text, not code. Its continued lines move with it, but
 ;; its value is never changed. The result is checked against the source: it must
 ;; have the same tokens in the same order, with strings compared by value. If
-;; not, the file is left alone.
+;; not, the file is left alone. Only `--rewrite` changes tokens (see
+;; "Rewriting").
 
 (export format-source wide)
 
@@ -1864,6 +1865,501 @@
   (= (count-items g failing) 0))
 
 ;; ---------------------------------------------------------------------------
+;; Rewriting
+;;
+;; `bjo fmt --rewrite` changes the tree before it is laid out:
+;;
+;; - `(case k ((5) ...))` becomes `(case k (5 ...))`.
+;; - An `if` whose else branch is another test, an `if` or a `cond`, becomes a
+;;   `cond`. Bindings before the test become `:def` clauses, and those before
+;;   the last body become `def`s in the `else`.
+;; - An `if` whose then branch is a `(let () ...)` becomes a `cond`.
+;; - A `let` that ends a body becomes `def`s.
+;;
+;; A `let` is kept (see `defs-of`) if it binds a function, or if a `def` might
+;; not mean the same. Names are not resolved: a name is taken to be used
+;; wherever it is written. Quoted data, templates, patterns, types, tables and
+;; hash macros are not changed, and neither is a form with a comment that would
+;; have no place.
+;;
+;; Every rewrite keeps the order of what is written, which `kept-by-rewrite`
+;; checks.
+
+;; What the rewrites may add or remove, besides brackets.
+(: rewritable? (-> string bool))
+(defun (rewritable? s)
+  (match s
+    ((or "if" "cond" "else" "let" "let*" "def" ":def" "begin") #t)
+    (_ #f)))
+
+;; The tokens a rewrite keeps, in order.
+(: kept-by-rewrite (-> (List Tok) (List string)))
+(defun (kept-by-rewrite toks)
+  (significant (list-filter (fun (t)
+                              (match t
+                                ((TOpen _) #f)
+                                ((TClose _) #f)
+                                ((TAtom s) (not (rewritable? s)))
+                                (_ #t)))
+                            toks)))
+
+;; Every token of `items` and the comments after them, without the spacing and
+;; before `out`, the last first.
+(: all-toks (-> (Vec Item) (List Note) (List Tok) (List Tok)))
+(defun (all-toks items tail out)
+  (defun (notes ns (: out (List Tok)))
+    (list-foldl (fun (c out) (Cons (TComment (record-ref c text)) out)) out ns))
+  (let go ((k 0)
+           (out out))
+    (cond
+      ((= k (vec-length items)) (notes tail out))
+      (else
+       (def it (vec-ref items k))
+       (def led (notes (record-ref it lead) out))
+       (def done
+         (match (record-ref it node)
+           ((Leaf toks) (list-foldl Cons led toks))
+           ((Branch g)
+            (def opened
+              (Cons (TOpen (record-ref g open)) (list-foldl Cons led (record-ref g prefix))))
+            (Cons (TClose (partner (record-ref g open)))
+                  (all-toks (record-ref g items) (record-ref g tail) opened)))))
+       (go (+ k 1)
+           (match (record-ref it trail)
+             ((Some s) (Cons (TComment s) done))
+             (None done)))))))
+
+(: new-item (-> Node Item))
+(defun (new-item node)
+  (Item (lead Nil) (blank #f) (broke #t) (space " ") (node node) (trail None)))
+
+(: new-atom (-> string Item))
+(defun (new-atom s)
+  (new-item (Leaf (list (TAtom s)))))
+
+(: new-list (-> (-> int) (List Item) (List Note) Node))
+(defun (new-list next-id items tail)
+  (Branch (make-group (next-id) Nil "(" (list->vec items) tail)))
+
+;; `items` with the comments of `it` before the first.
+(: led-by (-> Item (List Item) (List Item)))
+(defun (led-by it items)
+  (match items
+    (Nil Nil)
+    ((Cons a rest)
+     (Cons (record-set a (lead (list-append (record-ref it lead) (record-ref a lead)))
+                         (blank (or (record-ref it blank) (record-ref a blank))))
+           rest))))
+
+(: items-between (-> Group int int (List Item)))
+(defun (items-between g from to)
+  (loop (:for i (range from to))
+        (:acc out (listing (vec-ref (record-ref g items) i)))
+    => out))
+
+(: items-from (-> Group int (List Item)))
+(defun (items-from g k)
+  (items-between g k (vec-length (record-ref g items))))
+
+(: uncommented? (-> Item bool))
+(defun (uncommented? it)
+  (and (empty? (record-ref it lead)) (none? (record-ref it trail))))
+
+;; The list that `it` is, if it is in round brackets, has no prefix and has no
+;; comment after it or at its head.
+(: bare-list (-> Item (Option Group)))
+(defun (bare-list it)
+  (match (record-ref it node)
+    ((Branch g) #:when (and (none? (record-ref it trail)) (bare-group? g)) (Some g))
+    (_ None)))
+
+(: bare-group? (-> Group bool))
+(defun (bare-group? g)
+  (and (empty? (record-ref g prefix))
+       (= (record-ref g open) "(")
+       (> (vec-length (record-ref g items)) 0)
+       (uncommented? (vec-ref (record-ref g items) 0))))
+
+;; Whether the atom or string `s` has the name `name` in it. Parts of a name
+;; such as `x.y`, and what is in the holes of a string, count.
+(: text-mentions? (-> string string bool))
+(defun (text-mentions? s name)
+  (def part? (fun (c) (and (symbol-char? c) (not (any? #(= & c) (list #\. #\# #\@ #\` #\$))))))
+  (def cs (string->vec s))
+  (def n (vec-length cs))
+  (if (string-contains? s name)
+      (or (any? #(not (part? &)) (string->list name))
+          (let go ((k 0)
+                   (start 0))
+            (cond
+              ((= k n) (= (text-between cs start k) name))
+              ((part? (vec-ref cs k)) (go (+ k 1) start))
+              ((= (text-between cs start k) name) #t)
+              (else (go (+ k 1) (+ k 1))))))
+      #f))
+
+(: mentions? (-> Node string bool))
+(defun (mentions? n name)
+  (match n
+    ((Leaf toks) (any? #(text-mentions? (tok-text &) name) toks))
+    ((Branch g)
+     (or (any? #(text-mentions? (tok-text &) name) (record-ref g prefix))
+         (any? #(mentions? (record-ref & node) name) (items-from g 0))))))
+
+;; The names that what a `let` binds gives, if a `def` may have it as its
+;; pattern: a name, or a `(Tuple a b)` of them. A capital might make the name a
+;; constructor in a pattern.
+(: bound-names (-> Node (Option (List string))))
+(defun (bound-names n)
+  (defun (name? s)
+    (match (string->list s)
+      ((Cons c _) (and (char-alphabetic? c) (not (char-upper-case? c))))
+      (Nil #f)))
+  (match n
+    ((Branch g) #:when (= (head-of g) "Tuple")
+     (def names (list-map #(node-atom (record-ref & node)) (items-from g 1)))
+     (if (and (bare-group? g) (all? name? names))
+         (Some names)
+         None))
+    (_
+     (def s (node-atom n))
+     (if (name? s)
+         (Some (list s))
+         None))))
+
+(: function? (-> Node bool))
+(defun (function? n)
+  (match n
+    ((Branch g)
+     (or (= (head-of g) "fun")
+         (match (record-ref g prefix)
+           ((Cons (TAtom "#") Nil) #t)
+           (_ #f))))
+    (_ #f)))
+
+;; A `let` as definitions: the items `def` or `:def` goes before, what they
+;; bind, and the body.
+(type (: Defs (Record (: bindings (List (Tuple Item (List Item))))
+                      (: names (List string))
+                      (: body (List Item))
+                      (: tail (List Note)))))
+
+;; The definitions of the `let` or `let*` that `it` is. None if one of them
+;; - binds a function, or a name its own value has in it, which a `def` of a
+;;   function sees as itself;
+;; - has the name of an earlier one, or in a `let` mentions it, where the
+;;   bindings do not see each other.
+;; None, too, if the body defines functions: they might be seen by the values.
+(: defs-of (-> Item (Option Defs)))
+(defun (defs-of it)
+  (def (Some g) (bare-list it)
+    :leave-with None)
+  (def all (items-from g 0))
+  (match all
+    ((Cons _ (Cons bs (Cons first rest)))
+     (def bindings
+       (match (record-ref bs node)
+         ((Branch b)
+          (if (and (uncommented? bs)
+                   (empty? (record-ref b prefix))
+                   (= (record-ref b open) "(")
+                   (empty? (record-ref b tail)))
+              (Some (items-from b 0))
+              None))
+         (_ None)))
+     (def body (Cons first rest))
+     (def let? (= (head-of g) "let"))
+     (cond
+       ((not (or let? (= (head-of g) "let*"))) None)
+       ((any? #(= (head-atom (record-ref & node)) "defun") body) None)
+       (else
+        (def (Some bound) bindings
+          :leave-with None)
+        (let go ((left bound)
+                 (names Nil)
+                 (out Nil))
+          (match left
+            (Nil
+             (Some (Defs (bindings (list-reverse out))
+                         (names names)
+                         (body body)
+                         (tail (record-ref g tail)))))
+            ((Cons b more)
+             (def (Some pair) (bare-list b)
+               :leave-with None)
+             (def target (item-at pair 0))
+             (def value (item-at pair 1))
+             (def (Some new) (bound-names target)
+               :leave-with None)
+             (cond
+               ((not (= (vec-length (record-ref pair items)) 2)) None)
+               ((not (empty? (record-ref pair tail))) None)
+               ((function? value) None)
+               ((any? #(mentions? value &) new) None)
+               ((any? (fun (n) (any? #(= & n) names)) new) None)
+               ((and let? (any? #(mentions? value &) names)) None)
+               (else
+                (go more (list-append new names) (Cons (Tuple b (items-from pair 0)) out))))))))))
+    (_ None)))
+
+;; The definitions written with `head`, `def` or `:def`.
+(: written-defs (-> (-> int) string Defs (List Item)))
+(defun (written-defs next-id head ds)
+  (list-map (fun (pair)
+              (match pair
+                ((Tuple b items)
+                 (record-set b (node (new-list next-id (Cons (new-atom head) items) Nil))))))
+            (record-ref ds bindings)))
+
+;; The forms `it` is in a body, and the comments after them. A `begin` and a
+;; `(let () ...)` are their forms, and other forms themselves. With `lets?` a
+;; `let` is its definitions and its body.
+(: body-of (-> (-> int) bool Item (Tuple (List Item) (List Note))))
+(defun (body-of next-id lets? it)
+  (match (bare-list it)
+    ((Some g) #:when (and (= (head-of g) "begin") (> (vec-length (record-ref g items)) 1))
+     (Tuple (led-by it (items-from g 1)) (record-ref g tail)))
+    (_
+     (match (defs-of it)
+       ((Some ds) #:when (or lets? (empty? (record-ref ds bindings)))
+        (Tuple (led-by it (list-append (written-defs next-id "def" ds) (record-ref ds body)))
+               (record-ref ds tail)))
+       (_ (Tuple (list it) Nil))))))
+
+;; The test, the then branch and the else branch of an `if`.
+(: if-parts (-> Group (Option (Tuple Item Item Item))))
+(defun (if-parts g)
+  (if (and (bare-group? g) (= (head-of g) "if") (empty? (record-ref g tail)))
+      (match (items-from g 1)
+        ((Cons test (Cons a (Cons b Nil))) #:when (empty? (record-ref test lead))
+         (Some (Tuple test a b)))
+        (_ None))
+      None))
+
+(: bare-if (-> Item (Option (Tuple Item Item Item))))
+(defun (bare-if it)
+  (def (Some g) (bare-list it)
+    :leave-with None)
+  (if-parts g))
+
+(: bare-cond (-> Item (Option (List Item))))
+(defun (bare-cond it)
+  (def (Some g) (bare-list it)
+    :leave-with None)
+  (if (and (= (head-of g) "cond")
+           (empty? (record-ref g tail))
+           (> (vec-length (record-ref g items)) 1))
+      (Some (items-from g 1))
+      None))
+
+;; Whether `it` is a test, or bindings and then one, which make clauses.
+(: leads-to-test? (-> Item bool))
+(defun (leads-to-test? it)
+  (or (some? (bare-if it))
+      (some? (bare-cond it))
+      (match (only-body it)
+        ((Some (Tuple _ inner)) (leads-to-test? inner))
+        (None #f))))
+
+;; A `let` with one form in its body, and that form.
+(: only-body (-> Item (Option (Tuple Defs Item))))
+(defun (only-body it)
+  (def (Some ds) (defs-of it)
+    :leave-with None)
+  (match (record-ref ds body)
+    ((Cons inner Nil) #:when (and (empty? (record-ref ds tail)) (none? (record-ref inner trail)))
+     (Some (Tuple ds inner)))
+    (_ None)))
+
+;; A clause `(test ...)` whose body is `it`. The comment after `it` goes after
+;; the clause.
+(: clause-of (-> (-> int) bool Item Item Item))
+(defun (clause-of next-id lets? test it)
+  (def (Tuple forms tail) (body-of next-id lets? it))
+  (match (Tuple forms tail)
+    ((Tuple (Cons only Nil) Nil)
+     (def clause (new-item (new-list next-id (list test (record-set only (trail None))) Nil)))
+     (record-set clause (trail (record-ref only trail))))
+    (_ (new-item (new-list next-id (Cons test forms) tail)))))
+
+;; The clauses for the else branch `it`.
+(: else-clauses (-> (-> int) Item (List Item)))
+(defun (else-clauses next-id it)
+  (match (bare-if it)
+    ((Some (Tuple test a b))
+     (led-by it (Cons (clause-of next-id #f test a) (else-clauses next-id b))))
+    (None
+     (match (bare-cond it)
+       ((Some clauses) (led-by it clauses))
+       (None
+        (match (only-body it)
+          ((Some (Tuple ds inner)) #:when (leads-to-test? inner)
+           (led-by it (list-append (written-defs next-id ":def" ds) (else-clauses next-id inner))))
+          (_
+           (def unled (record-set it (lead Nil) (blank #f)))
+           (led-by it (list (clause-of next-id #t (new-atom "else") unled))))))))))
+
+;; `g` as a `cond`, if it is an `if` that is to be one.
+(: if->cond (-> (-> int) Group (Option Node)))
+(defun (if->cond next-id g)
+  (def (Some (Tuple test a b)) (if-parts g)
+    :leave-with None)
+  (def block?
+    (match (defs-of a)
+      ((Some ds) (empty? (record-ref ds bindings)))
+      (None #f)))
+  (if (or block? (leads-to-test? b))
+      (Some (new-list next-id
+                      (Cons (new-atom "cond")
+                            (Cons (clause-of next-id #f test a) (else-clauses next-id b)))
+                      Nil))
+      None))
+
+;; The index of the first form of the body of `g`, if it has one whose `let`s
+;; may be `def`s.
+(: body-start (-> Group Place Kind (Option int)))
+(defun (body-start g place kind)
+  (def guard? (fun (k) (= (node-atom (item-at g k)) "#:when")))
+  (match kind
+    ;; What a `:do` binds is in scope in the clauses below.
+    (KArm #:when (= (head-of g) ":do") None)
+    (KArm
+     (Some (if (guard? 1)
+               3
+               1)))
+    (KMatchClause #:when (= place Clause)
+                  (Some (if (guard? 3)
+                            5
+                            3)))
+    ((KLet #t) (Some 3))
+    (_
+     (match (head-of g)
+       ((or "defun" "defbjo" "defbjouble" "fun" "when" "unless" "with-return") #:when (= place Code)
+        (Some 2))
+       (_ None)))))
+
+;; `g` with the `let` that ends its body as `def`s, if it has one. None of the
+;; forms before it may have a name that it binds.
+(: with-last-let (-> (-> int) Group Place Kind (Option Group)))
+(defun (with-last-let next-id g place kind)
+  (def (Some start) (body-start g place kind)
+    :leave-with None)
+  (def last (- (vec-length (record-ref g items)) 1))
+  (if (< last start)
+      None
+      (let ((it (vec-ref (record-ref g items) last)))
+        (def (Some ds) (defs-of it)
+          :leave-with None)
+        (def before (items-between g start last))
+        (def clash?
+          (any? (fun (name) (any? #(mentions? (record-ref & node) name) before))
+                (record-ref ds names)))
+        (if (or clash? (and (not (empty? before)) (empty? (record-ref ds bindings))))
+            None
+            (let ((forms (led-by it
+                                 (list-append (written-defs next-id "def" ds) (record-ref ds body)))))
+              (Some (make-group (next-id)
+                                (record-ref g prefix)
+                                (record-ref g open)
+                                (list->vec (list-append (items-between g 0 last) forms))
+                                (list-append (record-ref ds tail) (record-ref g tail)))))))))
+
+;; Whether `n` is a literal that may be a datum of a `case`.
+(: literal? (-> Node bool))
+(defun (literal? n)
+  (match n
+    ((Leaf (Cons (TStr s) Nil)) (not (string-starts-with? s "#")))
+    ((Leaf (Cons (TAtom s) Nil))
+     (match (string->list s)
+       ((Cons #\# _) (or (= s "#t") (= s "#f") (string-starts-with? s "#\\") (keyword-arg? s)))
+       ((Cons #\' _) (and (> (string-length s) 1) (not (prefix-only? s))))
+       ((Cons #\- (Cons c _)) (char-numeric? c))
+       ((Cons c _) (char-numeric? c))
+       (Nil #f)))
+    (_ #f)))
+
+;; A clause of a `case` without the brackets around a single datum.
+(: bare-datum (-> (-> int) Item Item))
+(defun (bare-datum next-id it)
+  (match (record-ref it node)
+    ((Branch g) #:when (bare-group? g)
+     (match (items-from g 0)
+       ((Cons data body)
+        (match (bare-list data)
+          ((Some d) #:when (and (= (vec-length (record-ref d items)) 1)
+                                (empty? (record-ref d tail))
+                                (literal? (item-at d 0)))
+           (def datum (record-set data (node (item-at d 0))))
+           (record-set it (node (new-list next-id (Cons datum body) (record-ref g tail)))))
+          (_ it)))
+       (Nil it)))
+    (_ it)))
+
+;; `g` with the rewrites of the list itself made, as many as there are.
+(: rewritten-list (-> (-> int) Group Place Group))
+(defun (rewritten-list next-id g place)
+  (def kind (kind-of g place))
+  (match (if (= place Code)
+             (if->cond next-id g)
+             None)
+    ((Some (Branch made)) made)
+    (_
+     (match (with-last-let next-id g place kind)
+       ((Some made) (rewritten-list next-id made place))
+       (None
+        (match kind
+          (KMatch #:when (= (head-of g) "case")
+                  (make-group (next-id)
+                              (record-ref g prefix)
+                              (record-ref g open)
+                              (list->vec (list-append (items-between g 0 2)
+                                                      (list-map #(bare-datum next-id &)
+                                                                (items-from g 2))))
+                              (record-ref g tail)))
+          (_ g)))))))
+
+;; Whether what is in `g` is code to rewrite.
+(: rewritable-list? (-> Group Place bool))
+(defun (rewritable-list? g place)
+  (def code?
+    (match (record-ref g prefix)
+      (Nil #t)
+      ((Cons (TAtom "#") Nil) #t)
+      (_ #f)))
+  (def in-code?
+    (match place
+      ((or Data Table InType) #f)
+      (_ #t)))
+  (def head?
+    (match (head-of g)
+      ((or "quote" "quasiquote" "syntax" "quasisyntax" ":doc" "import" "export" "re-export") #f)
+      (_ #t)))
+  (and code? in-code? head?))
+
+(: rewritten (-> (-> int) Node Place Node))
+(defun (rewritten next-id n place)
+  (match n
+    ((Branch g) #:when (rewritable-list? g place)
+     (def made
+       (if (bare-group? g)
+           (rewritten-list next-id g place)
+           g))
+     (def kind (kind-of made place))
+     (def items
+       (loop (:for k (range 0 (vec-length (record-ref made items))))
+             (:acc out (listing (let ((it (vec-ref (record-ref made items) k)))
+                                  (record-set it (node (rewritten next-id
+                                                                  (record-ref it node)
+                                                                  (place-of made place kind k)))))))
+         => out))
+     (Branch (make-group (next-id)
+                         (record-ref made prefix)
+                         (record-ref made open)
+                         (list->vec items)
+                         (record-ref made tail))))
+    (_ n)))
+
+;; ---------------------------------------------------------------------------
 ;; Plans
 
 ;; What comes before an item of a list:
@@ -2481,9 +2977,10 @@
                                 (Cons (TSpace " ") out)))))))
      (Cons (TClose (partner (record-ref g open))) filled))))
 
-;; The tokens with their line breaks chosen again.
-(: rebroken (-> (List Tok) (List Tok)))
-(defun (rebroken toks)
+;; The tokens with their line breaks chosen again, after the tokens the result
+;; must have. These are `toks`, or with `rewrite?` those of the rewritten tree.
+(: rebroken (-> bool (List Tok) (Tuple (List Tok) (List Tok))))
+(defun (rebroken rewrite? toks)
   (def ids (mutablemap))
   (defun (next-id)
     (def id (+ (mutablemap-ref-or ids 0 0) 1))
@@ -2496,7 +2993,13 @@
                   (_ t)))
               toks))
   (def p (parse written next-id))
-  (printed (record-ref p items) (record-ref p tail)))
+  (def tail (record-ref p tail))
+  (if rewrite?
+      (let ((items (vec-map (fun (it)
+                              (record-set it (node (rewritten next-id (record-ref it node) Code))))
+                            (record-ref p items))))
+        (Tuple (list-reverse (all-toks items tail Nil)) (printed items tail)))
+      (Tuple toks (printed (record-ref p items) tail))))
 
 ;; ---------------------------------------------------------------------------
 ;; The whole of it
@@ -2504,20 +3007,24 @@
 ;; `source` laid out, with what is to be said about its lines, each with its
 ;; line number in what is laid out (see `notes-on`); or why it cannot be: it
 ;; does not read, or, which would be a bug here, laying it out would change
-;; its tokens.
-(: format-source (-> string (Result string (Tuple string (List (Tuple int string))))))
-(defun (format-source source)
+;; its tokens. With `rewrite?` the forms are rewritten first (see "Rewriting").
+(: format-source (-> bool string (Result string (Tuple string (List (Tuple int string))))))
+(defun (format-source rewrite? source)
   (def cs (string->vec source))
   (def (Ok toks) (tokenize cs)
     :leave ((Err why) (Err why)))
   (def (Ok _) (balanced toks)
     :leave ((Err why) (Err why)))
-  (def (Tuple result notes) (layout (rebroken toks)))
+  (def (Tuple wanted broken) (rebroken rewrite? toks))
+  (def (Tuple result notes) (layout broken))
   (def (Ok again) (tokenize (string->vec result))
     :leave ((Err why) (Err #"formatting made it unreadable: ${why}")))
-  (if (= (significant again) (significant toks))
-      (Ok (Tuple result (list-sort (list-append notes (width-notes source result)))))
-      (Err "formatting would change its tokens, which is a bug in bjo fmt")))
+  (cond
+    ((not (= (kept-by-rewrite wanted) (kept-by-rewrite toks)))
+     (Err "rewriting would change more than it may, which is a bug in bjo fmt"))
+    ((= (significant again) (significant wanted))
+     (Ok (Tuple result (list-sort (list-append notes (width-notes source result))))))
+    (else (Err "formatting would change its tokens, which is a bug in bjo fmt"))))
 
 ;; The tokens laid out, and what is to be said about their lines.
 (: layout (-> (List Tok) (Tuple string (List (Tuple int string)))))
