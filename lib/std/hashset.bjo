@@ -421,10 +421,10 @@
 (defun (fold-node f acc n)
   (def own (loop (:for i (range 0 (node-size n)))
                  (:acc s (folding acc (f (element n i) s)))
-                 => s))
+             => s))
   (loop (:for i (range 0 (child-count n)))
         (:acc s (folding own (fold-node f s (child n i))))
-        => s))
+    => s))
 
 (: (-> (-?-> %a void) (HashSet %a) void))
 (defun (hashset-for-each f s)
@@ -450,12 +450,14 @@
 ;; The first element in the trie's order that `pred` accepts.
 (: (-> (-?-> %a bool) (HashSet %a) (Option %a)))
 (defun (hashset-find pred s)
-  (let go ((c (cursor-of (.root s))))
-    (cond
-      ((cursor-done? c) None)
-      (:def x (cursor-element c))
-      ((pred x) (Some x))
-      (else (go (cursor-step c))))))
+  {finding x (:for x s) (:when (pred x))})
+;; I should benchmark the above against the old code, just to be safe:
+  ;; (let go ((c (cursor-of (.root s))))
+  ;;   (cond
+  ;;     ((cursor-done? c) None)
+  ;;     (:def x (cursor-element c))
+  ;;     ((pred x) (Some x))
+  ;;     (else (go (cursor-step c))))))
 
 ;; `f` of each element, compared by `%b`'s Eq.
 (: (-> (-?-> %a %b) (HashSet %a) (HashSet %b)) (where (Eq %b)))

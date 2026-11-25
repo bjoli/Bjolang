@@ -40,18 +40,18 @@
 
 (type
   (: Json (Union
-           JsonNull
-           (: JsonBool bool)
-           (: JsonInt long)
-           (: JsonFloat double)
-           (: JsonStr string)
-           ;; An `IArray`: a parsed array is read and not changed, and an
-           ;; `IArray` is its elements' array and no object of its own.
-           (: JsonArr (IArray Json))
-           (: JsonObj (Map string Json))
-           ;; An object read with `#:objects 'fields`: its keys and values in
-           ;; the order the document has them, each key once.
-           (: JsonFields (IArray (Tuple string Json))))))
+            JsonNull
+            (: JsonBool bool)
+            (: JsonInt long)
+            (: JsonFloat double)
+            (: JsonStr string)
+            ;; An `IArray`: a parsed array is read and not changed, and an
+            ;; `IArray` is its elements' array and no object of its own.
+            (: JsonArr (IArray Json))
+            (: JsonObj (Map string Json))
+            ;; An object read with `#:objects 'fields`: its keys and values in
+            ;; the order the document has them, each key once.
+            (: JsonFields (IArray (Tuple string Json))))))
 
 ;; How a reader stores an object: as a Map, or as its fields in an IArray,
 ;; which is quicker to build and keeps their order.
@@ -234,11 +234,11 @@
   (cond
     ((stringbuilder=? sb known) known)
     (else
-     (def s (stringbuilder->string sb))
-     (array-set! cache i s)
-     s)))
+      (def s (stringbuilder->string sb))
+      (array-set! cache i s)
+      s)))
 
-;; Pushes a new element into the array or grows it 
+;; Pushes a new element into the array or grows it
 (: (-> Reader Json void))
 (defun (push! rd v)
   (def a (record-ref rd stack))
@@ -246,9 +246,9 @@
   (cond
     ((< n (array-length a)) (array-set! a n v))
     (else
-     (def bigger (array-resize a (* n 2)))
-     (array-set! bigger n v)
-     (record-set! rd (stack bigger))))
+      (def bigger (array-resize a (* n 2)))
+      (array-set! bigger n v)
+      (record-set! rd (stack bigger))))
   (record-set! rd (top (+ n 1))))
 
 ;; Harvests the array, by copying it out of the stack
@@ -286,19 +286,20 @@
     (cond
       ((>= have n) #t)
       (else
-       (def (Some p) (get rd .port) :leave-with #f)
-       (def ask (record-ref rd ask))
-       (match (read-bytes p (if (> n ask) n ask))
-         (None
-          (record-set! rd (port None))
-          #f)
-         ((Some more)
-          (record-set! rd
-                       (bytes (join-bytes (record-ref rd bytes) (record-ref rd next) have more))
-                       (next 0)
-                       (limit (+ have (array-length more)))
-                       (ask (if (< ask read-most) (* ask 2) read-most)))
-          (go)))))))
+        (def (Some p) (get rd .port)
+          :leave-with #f)
+        (def ask (record-ref rd ask))
+        (match (read-bytes p (if (> n ask) n ask))
+          (None
+            (record-set! rd (port None))
+            #f)
+          ((Some more)
+           (record-set! rd
+                        (bytes (join-bytes (record-ref rd bytes) (record-ref rd next) have more))
+                        (next 0)
+                        (limit (+ have (array-length more)))
+                        (ask (if (< ask read-most) (* ask 2) read-most)))
+           (go)))))))
 
 ;; The byte the reader is looking at, or `spent` at the end of the document.
 (: (-> Reader int))
@@ -369,7 +370,7 @@
   (let go ((i start) (row row) (col col))
     (cond
       ((> (+ i 32) limit)
-        (Tuple i row col #f))
+       (Tuple i row col #f))
       (:def v (simd256-load b i))
       (:def nl (simd-eq v (simd256-splat 10uy)))
       (:def spaces (simd-mask-bits (simd-or (simd-or nl (simd-eq v (simd256-splat 32uy)))
@@ -377,17 +378,17 @@
                                                      (simd-eq v (simd256-splat 13uy))))))
       (:def nls (simd-mask-bits nl))
       ((= spaces -1)
-         (def (Tuple r c) (after-space nls 32 row col))
-         (go (+ i 32) r c))
+       (def (Tuple r c) (after-space nls 32 row col))
+       (go (+ i 32) r c))
       (else
-       (def t (trailing-zeros (bitwise-not spaces)))
-       (def (Tuple r c) (after-space (bitwise-and nls (- (shift-left 1 t) 1)) t row col))
-       (Tuple (+ i t) r c #t)))))
+        (def t (trailing-zeros (bitwise-not spaces)))
+        (def (Tuple r c) (after-space (bitwise-and nls (- (shift-left 1 t) 1)) t row col))
+        (Tuple (+ i t) r c #t)))))
 
 (: (-> (Array byte) int int int int (Tuple int int int bool)))
 (defun (scan-space/128 b start limit row col)
   (let go ((i start) (row row) (col col))
-    (cond 
+    (cond
       ((> (+ i 16) limit) (Tuple i row col #f))
       (:def v (simd128-load b i))
       (:def nl (simd-eq v (simd128-splat 10uy)))
@@ -396,12 +397,12 @@
                                                      (simd-eq v (simd128-splat 13uy))))))
       (:def nls (simd-mask-bits nl))
       ((= spaces 65535)
-        (def (Tuple r c) (after-space nls 16 row col))
-        (go (+ i 16) r c))
+       (def (Tuple r c) (after-space nls 16 row col))
+       (go (+ i 16) r c))
       (else
-       (def t (trailing-zeros (bitwise-xor spaces 65535)))
-       (def (Tuple r c) (after-space (bitwise-and nls (- (shift-left 1 t) 1)) t row col))
-       (Tuple (+ i t) r c #t)))))
+        (def t (trailing-zeros (bitwise-xor spaces 65535)))
+        (def (Tuple r c) (after-space (bitwise-and nls (- (shift-left 1 t) 1)) t row col))
+        (Tuple (+ i t) r c #t)))))
 
 ;; White space a chunk at a time: the chunk is scanned with a local index, and
 ;; the reader is moved once for it. A chunk that ends in white space is
@@ -416,7 +417,7 @@
     (let go ((i fast-end) (row fast-row) (col fast-col))
       (cond
         ((or stopped (>= i limit))
-          (Tuple i row col))
+         (Tuple i row col))
         (:def c (cast int (array-ref b i)))
         ((= c 10) (go (+ i 1) (+ row 1) 1))
         ((or (= c 32) (= c 9) (= c 13)) (go (+ i 1) row (+ col 1)))
@@ -424,7 +425,6 @@
   (record-set! rd (next end) (row row) (col col))
   (when (and (>= end limit) (ensure! rd 1))
     (skip-space-run! rd)))
-
 
 
 ;; ---------------------------------------------------------------------------
@@ -474,18 +474,18 @@
   (cond
     ((<= n 1) n)
     ((> (+ i n) limit) 0)
-     (:def second (cast int (array-ref b (+ i 1))))
-     (:def low (cond ((= lead 224) 160) ((= lead 240) 144) (else 128)))
-     (:def high (cond ((= lead 237) 159) ((= lead 244) 143) (else 191)))
-     ((and (>= second low)
-           (<= second high)
-           (let check ((k 2))
-             (cond
-               ((>= k n) #t)
-               ((continuation? (cast int (array-ref b (+ i k)))) (check (+ k 1)))
-               (else #f))))
-      n)
-     (else 0)))
+    (:def second (cast int (array-ref b (+ i 1))))
+    (:def low (cond ((= lead 224) 160) ((= lead 240) 144) (else 128)))
+    (:def high (cond ((= lead 237) 159) ((= lead 244) 143) (else 191)))
+    ((and (>= second low)
+          (<= second high)
+          (let check ((k 2))
+            (cond
+              ((>= k n) #t)
+              ((continuation? (cast int (array-ref b (+ i k)))) (check (+ k 1)))
+              (else #f))))
+     n)
+    (else 0)))
 
 ;; Copies the `n` bytes of the character being looked at into `sb`, and moves
 ;; past them: one column.
@@ -517,11 +517,11 @@
     ((= c spent) "the document ended")
     ((< c 128) (str "'" (list->string (list (int->char c))) "'"))
     (else
-     (def n (sequence-length rd))
-     (def i (record-ref rd next))
-     (if (= n 0)
-         not-utf-8
-         (str "'" (bytes->string/lossy (record-ref rd bytes) #:start i #:end (+ i n)) "'")))))
+      (def n (sequence-length rd))
+      (def i (record-ref rd next))
+      (if (= n 0)
+          not-utf-8
+          (str "'" (bytes->string/lossy (record-ref rd bytes) #:start i #:end (+ i n)) "'")))))
 
 (: (-> Reader string string))
 (defun (too-deep rd what)
@@ -567,22 +567,22 @@
       (:def d (hex-digit (peek rd)))
       ((< d 0) (Err (at rd (str "a \\u escape takes four hex digits, and this is " (found rd)))))
       (else
-       (step! rd)
-       (go (+ (* n 16) d) (- left 1))))))
+        (step! rd)
+        (go (+ (* n 16) d) (- left 1))))))
 
 ;; The pair is one character. A Bjolang char is a Unicode scalar... Not a match made in heaven
 (: (-> Reader int (Result string string)))
 (defun (read-low-surrogate rd hi)
   (def incomplete "a high surrogate has to be followed by \\u and its low surrogate")
   (cond
-   ((or (at-end? rd) (not (char=? (peek rd) #\\))) (Err (at rd incomplete)))
-   (:do (step! rd))
-   ((or (at-end? rd) (not (char=? (peek rd) #\u))) (Err (at rd incomplete)))
-   (:do (step! rd))
-   (:def (Ok lo) (read-hex4 rd)
-     :propagate)
-   ((low-surrogate? lo) (Ok (list->string (list (int->char (scalar-of hi lo))))))
-   (else (Err (at rd incomplete)))))
+    ((or (at-end? rd) (not (char=? (peek rd) #\\))) (Err (at rd incomplete)))
+    (:do (step! rd))
+    ((or (at-end? rd) (not (char=? (peek rd) #\u))) (Err (at rd incomplete)))
+    (:do (step! rd))
+    (:def (Ok lo) (read-hex4 rd)
+      :propagate)
+    ((low-surrogate? lo) (Ok (list->string (list (int->char (scalar-of hi lo))))))
+    (else (Err (at rd incomplete)))))
 
 (: (-> Reader (Result string string)))
 (defun (read-unicode rd)
@@ -608,7 +608,7 @@
         ((#\t) (step! rd) (Ok "\t"))
         ((#\u) (step! rd) (read-unicode rd))
         (else
-         (Err (at rd (str "\\" (list->string (list (peek rd))) " is not an escape")))))))
+          (Err (at rd (str "\\" (list->string (list (peek rd))) " is not an escape")))))))
 
 ;; Where a run from `start` stops, 32 or 16 bytes at a time: at the first `"`, `\`
 ;; or control character, or at the last whole block before `limit`.
@@ -635,7 +635,8 @@
           (def stops (simd-mask-bits (simd-or (simd-or (simd-eq v (simd128-splat 34uy))
                                                        (simd-eq v (simd128-splat 92uy)))
                                               (simd-lt v (simd128-splat 32uy)))))
-          (def conts (simd-mask-bits (simd-eq (simd-and v (simd128-splat 192uy)) (simd128-splat 128uy))))
+          (def conts
+            (simd-mask-bits (simd-eq (simd-and v (simd128-splat 192uy)) (simd128-splat 128uy))))
           (def highs (simd-mask-bits (simd-ge v (simd128-splat 128uy))))
           (if (= stops 0)
               (go (+ i 16) (+ chars (- 16 (popcount conts))) (or high (not (= highs 0))))
@@ -657,7 +658,8 @@
           (def stops (simd-mask-bits (simd-or (simd-or (simd-eq v (simd256-splat 34uy))
                                                        (simd-eq v (simd256-splat 92uy)))
                                               (simd-lt v (simd256-splat 32uy)))))
-          (def conts (simd-mask-bits (simd-eq (simd-and v (simd256-splat 192uy)) (simd256-splat 128uy))))
+          (def conts
+            (simd-mask-bits (simd-eq (simd-and v (simd256-splat 192uy)) (simd256-splat 128uy))))
           (def highs (simd-mask-bits (simd-ge v (simd256-splat 128uy))))
           (if (= stops 0)
               (go (+ i 32) (+ chars (- 32 (popcount conts))) (or high (not (= highs 0))))
@@ -725,8 +727,8 @@
               ((or (= c 34) (= c 92) (< c 32)) (Tuple i chars))
               ((< c 128) (go (+ i 1) (+ chars 1)))
               (else
-               (let ((n (sequence-length-at b i limit)))
-                 (if (= n 0) (Tuple i chars) (go (+ i n) (+ chars 1))))))))))
+                (let ((n (sequence-length-at b i limit)))
+                  (if (= n 0) (Tuple i chars) (go (+ i n) (+ chars 1))))))))))
   (when (> end start)
     (stringbuilder-add-bytes! sb b start end)
     (record-set! rd
@@ -742,27 +744,27 @@
     (take-run! rd sb)
     (def c (held-code rd))
     (cond
-     ((= c spent) (Err (at rd "the document ended inside a string")))
-     ((= c 34) (step! rd) (Ok (if key? (cached-key rd sb) (stringbuilder->string sb))))
-     ((= c 92)
-      (step! rd)
-      (def (Ok piece) (read-escape rd)
-        :propagate)
-      (stringbuilder-add-string! sb piece)
-      (go))
-     ((< c 32)
-      (Err (at rd "a control character in a string has to be written as an escape")))
-     ((< c 128)
-      (stringbuilder-add-unit! sb c)
-      (step! rd)
-      (go))
-     ;; The first byte of a character of several, all copied once they are
-     ;; known to be UTF-8.
-     (:def n (sequence-length rd))
-     ((= n 0) (Err (at rd "a string has to be UTF-8, and this byte is not")))
-     (else
-      (take-character! rd sb n)
-      (go)))))
+      ((= c spent) (Err (at rd "the document ended inside a string")))
+      ((= c 34) (step! rd) (Ok (if key? (cached-key rd sb) (stringbuilder->string sb))))
+      ((= c 92)
+       (step! rd)
+       (def (Ok piece) (read-escape rd)
+         :propagate)
+       (stringbuilder-add-string! sb piece)
+       (go))
+      ((< c 32)
+       (Err (at rd "a control character in a string has to be written as an escape")))
+      ((< c 128)
+       (stringbuilder-add-unit! sb c)
+       (step! rd)
+       (go))
+      ;; The first byte of a character of several, all copied once they are
+      ;; known to be UTF-8.
+      (:def n (sequence-length rd))
+      ((= n 0) (Err (at rd "a string has to be UTF-8, and this byte is not")))
+      (else
+        (take-character! rd sb n)
+        (go)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Numbers
@@ -833,8 +835,8 @@
          (Err (at rd "a number may not have a leading zero"))
          (scan-fraction rd sb)))
     (else
-     (ignore (take-digits! rd sb))
-     (scan-fraction rd sb))))
+      (ignore (take-digits! rd sb))
+      (scan-fraction rd sb))))
 
 ;; A number byte by byte, fetching more of the document as it goes: for a
 ;; number that the end of a chunk cuts.
@@ -903,7 +905,8 @@
 (defun (scan-exponent-at b i limit frac?)
   (cond
     ((or (byte-at? b i limit 101) (byte-at? b i limit 69))
-     (def signed (if (or (byte-at? b (+ i 1) limit 43) (byte-at? b (+ i 1) limit 45)) (+ i 2) (+ i 1)))
+     (def signed
+       (if (or (byte-at? b (+ i 1) limit 43) (byte-at? b (+ i 1) limit 45)) (+ i 2) (+ i 1)))
      (def end (digits-end b signed limit))
      (if (= end signed) (Tuple num-no-exponent-digit end) (Tuple num-frac end)))
     (frac? (Tuple num-frac i))
@@ -944,9 +947,9 @@
                   acc)))
      (JsonInt (if (= first start) n (- 0L n))))
     (else
-     (match (try (long-at b start end) #:catch (System.OverflowException))
-       ((Ok n) (JsonInt n))
-       ((Err _) (JsonFloat (double-at b start end)))))))
+      (match (try (long-at b start end) #:catch (System.OverflowException))
+        ((Ok n) (JsonInt n))
+        ((Err _) (JsonFloat (double-at b start end)))))))
 
 ;; The number from `start` to `end` of the reader's bytes, parsed where it is.
 ;; In functions of their own, so that the span is not a local of the readers
@@ -968,22 +971,22 @@
   (cond
     ((and more? (>= end limit)) (read-number/slow rd))
     (else
-     (record-set! rd
-                  (next end)
-                  (col (+ (record-ref rd col) (- end start))))
-     (cond
-       ((= status num-int) (Ok (integer-of rd b start first end)))
-       ((= status num-frac) (Ok (JsonFloat (double-at b start end))))
-       ((= status num-no-digit)
-        (Err (at rd (str "a number needs a digit here, and this is " (found rd)))))
-       ((= status num-leading-zero)
-        (Err (at rd "a number may not have a leading zero")))
-       ((= status num-no-fraction-digit)
-        (Err (at rd (str "a number needs a digit after its decimal point, and this is "
-                         (found rd)))))
-       (else
-        (Err (at rd (str "a number needs a digit after its exponent, and this is "
-                         (found rd)))))))))
+      (record-set! rd
+                   (next end)
+                   (col (+ (record-ref rd col) (- end start))))
+      (cond
+        ((= status num-int) (Ok (integer-of rd b start first end)))
+        ((= status num-frac) (Ok (JsonFloat (double-at b start end))))
+        ((= status num-no-digit)
+         (Err (at rd (str "a number needs a digit here, and this is " (found rd)))))
+        ((= status num-leading-zero)
+         (Err (at rd "a number may not have a leading zero")))
+        ((= status num-no-fraction-digit)
+         (Err (at rd (str "a number needs a digit after its decimal point, and this is "
+                          (found rd)))))
+        (else
+          (Err (at rd (str "a number needs a digit after its exponent, and this is "
+                           (found rd)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Values
@@ -1003,37 +1006,37 @@
 (defun (read-word rd word value)
   (let go ((k (string-cursor-start word)))
     (cond
-     ((string-cursor-end? word k)
-      (Ok value))
-     ((or (at-end? rd) (not (char=? (peek rd) (string-cursor-ref word k))))
-      (Err (at rd (str "'" word "' is spelled out to here, and then there is " (found rd)))))
-     (else
-      (step! rd)
-      (go (string-cursor-next word k))))))
+      ((string-cursor-end? word k)
+       (Ok value))
+      ((or (at-end? rd) (not (char=? (peek rd) (string-cursor-ref word k))))
+       (Err (at rd (str "'" word "' is spelled out to here, and then there is " (found rd)))))
+      (else
+        (step! rd)
+        (go (string-cursor-next word k))))))
 
 (: (-> Reader int (Result string Json)))
 (defun (read-array rd depth)
   (cond
-   ((> depth json-max-depth) (Err (too-deep rd "array")))
-   (:do
-    (step! rd)
-    (skip-space! rd))
-   (:def mark (record-ref rd top))
-   ((at-end? rd) (Err (at rd "the document ended inside an array")))
-   ((char=? (peek rd) #\]) (step! rd) (Ok (JsonArr (harvest! rd mark))))
-   (else
-    (let go ()
-      (def (Ok v) (read-value rd (+ depth 1))
-        :propagate)
-      (push! rd v)
-      (skip-space! rd)
-      (cond
-        ((at-end? rd) (Err (at rd "the document ended inside an array")))
-        ((char=? (peek rd) #\,) (step! rd) (go))
-        ((char=? (peek rd) #\]) (step! rd) (Ok (JsonArr (harvest! rd mark))))
-        (else
-         (Err (at rd (str "an array wants ',' or ']' here, and this is "
-                          (found rd))))))))))
+    ((> depth json-max-depth) (Err (too-deep rd "array")))
+    (:do
+      (step! rd)
+      (skip-space! rd))
+    (:def mark (record-ref rd top))
+    ((at-end? rd) (Err (at rd "the document ended inside an array")))
+    ((char=? (peek rd) #\]) (step! rd) (Ok (JsonArr (harvest! rd mark))))
+    (else
+      (let go ()
+        (def (Ok v) (read-value rd (+ depth 1))
+          :propagate)
+        (push! rd v)
+        (skip-space! rd)
+        (cond
+          ((at-end? rd) (Err (at rd "the document ended inside an array")))
+          ((char=? (peek rd) #\,) (step! rd) (go))
+          ((char=? (peek rd) #\]) (step! rd) (Ok (JsonArr (harvest! rd mark))))
+          (else
+            (Err (at rd (str "an array wants ',' or ']' here, and this is "
+                             (found rd))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Objects as fields
@@ -1053,9 +1056,9 @@
   (cond
     ((< n (array-length a)) (array-set! a n p))
     (else
-     (def bigger (array-resize a (if (< n 8) 16 (* n 2))))
-     (array-set! bigger n p)
-     (record-set! rd (pairs bigger))))
+      (def bigger (array-resize a (if (< n 8) 16 (* n 2))))
+      (array-set! bigger n p)
+      (record-set! rd (pairs bigger))))
   (record-set! rd (ptop (+ n 1))))
 
 ;; Up to this many keys, every two are compared.
@@ -1100,15 +1103,15 @@
     (cond
       ((>= i to) #f)
       (else
-       (def k (fst (array-ref a i)))
-       (let probe ((s (bitwise-and (eq-hash k) mask)))
-         (cond
-           ((not (= (array-ref stamps s) stamp))
-            (array-set! stamps s stamp)
-            (array-set! index s i)
-            (go (+ i 1)))
-           ((= (fst (array-ref a (array-ref index s))) k) #t)
-           (else (probe (bitwise-and (+ s 1) mask)))))))))
+        (def k (fst (array-ref a i)))
+        (let probe ((s (bitwise-and (eq-hash k) mask)))
+          (cond
+            ((not (= (array-ref stamps s) stamp))
+             (array-set! stamps s stamp)
+             (array-set! index s i)
+             (go (+ i 1)))
+            ((= (fst (array-ref a (array-ref index s))) k) #t)
+            (else (probe (bitwise-and (+ s 1) mask)))))))))
 
 ;; The pairs from `from` to `to` with each key once: where it was last, with
 ;; its last value, as a Map keeps the last value.
@@ -1139,39 +1142,39 @@
 (: (-> Reader int (Result string Json)))
 (defun (read-object/fields rd depth)
   (cond
-   ((> depth json-max-depth) (Err (too-deep rd "object")))
-   (:do
-    (step! rd)
-    (skip-space! rd))
-   (:def mark (record-ref rd ptop))
-   ((at-end? rd) (Err (at rd "the document ended inside an object")))
-   ((char=? (peek rd) #\}) (step! rd) (Ok (JsonFields (harvest-pairs! rd mark))))
-   (else
-    (let go ()
-      (skip-space! rd)
-      (cond
-        ((at-end? rd) (Err (at rd "the document ended inside an object")))
-        ((not (char=? (peek rd) #\"))
-         (Err (at rd (str "an object's key has to be a string, and this is " (found rd)))))
-        (:def (Ok key) (read-text rd #t)
-              :propagate)
-        (:do (skip-space! rd))
-        ((or (at-end? rd) (not (char=? (peek rd) #\:)))
-         (Err (at rd (str "an object wants ':' after a key, and this is "
-                          (found rd)))))
-        (:do (step! rd))
-        (:def (Ok v) (read-value rd (+ depth 1))
-              :propagate)
-        (:do (push-pair! rd (Tuple key v))
-             (skip-space! rd))
-        ((at-end? rd) (Err (at rd "the document ended inside an object")))
-        ((char=? (peek rd) #\,) (step! rd) (go))
-        ((char=? (peek rd) #\})
-         (step! rd)
-         (Ok (JsonFields (harvest-pairs! rd mark))))
-        (else
-         (Err (at rd (str "an object wants ',' or '}' here, and this is "
-                          (found rd))))))))))
+    ((> depth json-max-depth) (Err (too-deep rd "object")))
+    (:do
+      (step! rd)
+      (skip-space! rd))
+    (:def mark (record-ref rd ptop))
+    ((at-end? rd) (Err (at rd "the document ended inside an object")))
+    ((char=? (peek rd) #\}) (step! rd) (Ok (JsonFields (harvest-pairs! rd mark))))
+    (else
+      (let go ()
+        (skip-space! rd)
+        (cond
+          ((at-end? rd) (Err (at rd "the document ended inside an object")))
+          ((not (char=? (peek rd) #\"))
+           (Err (at rd (str "an object's key has to be a string, and this is " (found rd)))))
+          (:def (Ok key) (read-text rd #t)
+            :propagate)
+          (:do (skip-space! rd))
+          ((or (at-end? rd) (not (char=? (peek rd) #\:)))
+           (Err (at rd (str "an object wants ':' after a key, and this is "
+                            (found rd)))))
+          (:do (step! rd))
+          (:def (Ok v) (read-value rd (+ depth 1))
+            :propagate)
+          (:do (push-pair! rd (Tuple key v))
+               (skip-space! rd))
+          ((at-end? rd) (Err (at rd "the document ended inside an object")))
+          ((char=? (peek rd) #\,) (step! rd) (go))
+          ((char=? (peek rd) #\})
+           (step! rd)
+           (Ok (JsonFields (harvest-pairs! rd mark))))
+          (else
+            (Err (at rd (str "an object wants ',' or '}' here, and this is "
+                             (found rd))))))))))
 
 ;; Reads an object as `#:objects` says.
 (: (-> Reader int (Result string Json)))
@@ -1184,40 +1187,40 @@
 (: (-> Reader int (Result string Json)))
 (defun (read-object/map rd depth)
   (cond
-   ((> depth json-max-depth) (Err (too-deep rd "object")))
-   (:do 
-    (step! rd)
-    (skip-space! rd))
-   (:def b (record-ref rd entries))
-   (:def mark (mapbuilder-length b))
-   ((at-end? rd) (Err (at rd "the document ended inside an object")))
-   ((char=? (peek rd) #\}) (step! rd) (Ok (JsonObj (map-empty))))
-   (else
-    (let go ()
-      (skip-space! rd)
-      (cond
-        ((at-end? rd) (Err (at rd "the document ended inside an object")))
-        ((not (char=? (peek rd) #\"))
-         (Err (at rd (str "an object's key has to be a string, and this is " (found rd)))))
-        (:def (Ok key) (read-text rd #t)
-              :propagate)
-        (:do (skip-space! rd))
-        ((or (at-end? rd) (not (char=? (peek rd) #\:)))
-         (Err (at rd (str "an object wants ':' after a key, and this is "
-                          (found rd)))))
-        (:do (step! rd))
-        (:def (Ok v) (read-value rd (+ depth 1))
-              :propagate)
-        (:do (mapbuilder-add! b key v)
-             (skip-space! rd))
-        ((at-end? rd) (Err (at rd "the document ended inside an object")))
-        ((char=? (peek rd) #\,) (step! rd) (go))
-        ((char=? (peek rd) #\})
-         (step! rd)
-         (Ok (JsonObj (mapbuilder-take! b mark))))
-        (else
-         (Err (at rd (str "an object wants ',' or '}' here, and this is "
-                          (found rd))))))))))
+    ((> depth json-max-depth) (Err (too-deep rd "object")))
+    (:do
+      (step! rd)
+      (skip-space! rd))
+    (:def b (record-ref rd entries))
+    (:def mark (mapbuilder-length b))
+    ((at-end? rd) (Err (at rd "the document ended inside an object")))
+    ((char=? (peek rd) #\}) (step! rd) (Ok (JsonObj (map-empty))))
+    (else
+      (let go ()
+        (skip-space! rd)
+        (cond
+          ((at-end? rd) (Err (at rd "the document ended inside an object")))
+          ((not (char=? (peek rd) #\"))
+           (Err (at rd (str "an object's key has to be a string, and this is " (found rd)))))
+          (:def (Ok key) (read-text rd #t)
+            :propagate)
+          (:do (skip-space! rd))
+          ((or (at-end? rd) (not (char=? (peek rd) #\:)))
+           (Err (at rd (str "an object wants ':' after a key, and this is "
+                            (found rd)))))
+          (:do (step! rd))
+          (:def (Ok v) (read-value rd (+ depth 1))
+            :propagate)
+          (:do (mapbuilder-add! b key v)
+               (skip-space! rd))
+          ((at-end? rd) (Err (at rd "the document ended inside an object")))
+          ((char=? (peek rd) #\,) (step! rd) (go))
+          ((char=? (peek rd) #\})
+           (step! rd)
+           (Ok (JsonObj (mapbuilder-take! b mark))))
+          (else
+            (Err (at rd (str "an object wants ',' or '}' here, and this is "
+                             (found rd))))))))))
 
 (: (-> Reader int (Result string Json)))
 (defun (read-value rd depth)
@@ -1420,27 +1423,27 @@
      (cond
        ((iarray-empty? items) (stringbuilder-add-string! sb "[]"))
        (else
-        (stringbuilder-add! sb #\[)
-        (loop (:for item items)
-              (:with first? #t #f)
-              (:do (unless first? (stringbuilder-add! sb #\,))
-                   (add-newline! sb indent (+ level 1))
-                   (add-value! sb item indent ascii (+ level 1) flush)
-                   (maybe-flush! sb flush)))
-        (add-newline! sb indent level)
-        (stringbuilder-add! sb #\]))))
+         (stringbuilder-add! sb #\[)
+         (loop (:for item items)
+               (:with first? #t #f)
+               (:do (unless first? (stringbuilder-add! sb #\,))
+                    (add-newline! sb indent (+ level 1))
+                    (add-value! sb item indent ascii (+ level 1) flush)
+                    (maybe-flush! sb flush)))
+         (add-newline! sb indent level)
+         (stringbuilder-add! sb #\]))))
     ((JsonObj fields)
      (cond
        ((map-empty? fields) (stringbuilder-add-string! sb "{}"))
        (else
-        ;; The entries, sorted by key once: each is written with the value it
-        ;; already holds, and no key is looked up again.
-        (stringbuilder-add! sb #\{)
-        (loop (:for (Tuple k v) (sorted-entries fields))
-              (:with first? #t #f)
-              (:do (add-field! sb k v first? indent ascii level flush)))
-        (add-newline! sb indent level)
-        (stringbuilder-add! sb #\}))))
+         ;; The entries, sorted by key once: each is written with the value it
+         ;; already holds, and no key is looked up again.
+         (stringbuilder-add! sb #\{)
+         (loop (:for (Tuple k v) (sorted-entries fields))
+               (:with first? #t #f)
+               (:do (add-field! sb k v first? indent ascii level flush)))
+         (add-newline! sb indent level)
+         (stringbuilder-add! sb #\}))))
     ;; In their own order, which for a document read is the document's. The
     ;; same loop as a JsonObj's, written again so that each walks a type it
     ;; knows: a function generic in the collection would have a suspending
@@ -1449,12 +1452,12 @@
      (cond
        ((iarray-empty? fields) (stringbuilder-add-string! sb "{}"))
        (else
-        (stringbuilder-add! sb #\{)
-        (loop (:for (Tuple k v) fields)
-              (:with first? #t #f)
-              (:do (add-field! sb k v first? indent ascii level flush)))
-        (add-newline! sb indent level)
-        (stringbuilder-add! sb #\}))))))
+         (stringbuilder-add! sb #\{)
+         (loop (:for (Tuple k v) fields)
+               (:with first? #t #f)
+               (:do (add-field! sb k v first? indent ascii level flush)))
+         (add-newline! sb indent level)
+         (stringbuilder-add! sb #\}))))))
 
 ;; One field of an object at `level`, and the comma before it unless it is
 ;; the first.
