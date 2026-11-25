@@ -820,6 +820,116 @@ let private applyPins (registry: TraitRegistry) (body: TypedExpr) : TypedExpr =
 /// `checkDefun` remove their own on the way out.
 type Sigs = Map<string, Signature>
 
+/// A function of a module with no signature, for a tool that offers to write
+/// it: the definition, its name, and the signature that its body gives it, as
+/// source writes one above a definition: `(: (-> int int))`.
+type MissingSignature =
+    { Range: Range
+      Name: string
+      Signature: string }
+
+/// Called with each function that is refused for having no signature, when
+/// the type of its body can be found. With no observer, nothing is inferred
+/// for such a function.
+let mutable observeMissingSignature: (MissingSignature -> unit) option = None
+
+/// Whether `checkDefun` is checking a function with no signature to find the
+/// signature for `observeMissingSignature`. The function is then checked as
+/// `main` is, with a fresh type for each parameter.
+let mutable private inferringSignature = false
+
+/// The signature of a function, as source writes it with no name, from the
+/// scheme that its check gave it. `None` when it cannot be written: a type
+/// that is not decided, or a constraint that pins an associated type.
+///
+/// - The scheme's type is flat: the positional parameters, the keyword
+///   parameters in the order of the definition, then the rest array.
+let private writtenSignature (registry: TraitRegistry) (args: DefunArg list) (scheme: Scheme) : string option =
+    let (Scheme(_, constraints, t)) = scheme
+
+    match prune registry t with
+    | TFun(parameters, result, _) ->
+        let keywords =
+            args
+            |> List.choose (function
+                | KeywordArg(n, _) -> Some n
+                | _ -> None)
+
+        let hasRest =
+            args
+            |> List.exists (function
+                | RestArg _ -> true
+                | _ -> false)
+
+        let positional = parameters.Length - keywords.Length - (if hasRest then 1 else 0)
+
+        let targets = constraints |> List.map (fun c -> prune registry c.TargetType)
+        let shown = DotNetInterop.showTypesTogether (parameters @ [ result ] @ targets)
+        let shownParameters = List.truncate parameters.Length shown
+        let shownResult = shown[parameters.Length]
+        let shownTargets = List.skip (parameters.Length + 1) shown
+
+        let parts =
+            shownParameters
+            |> List.mapi (fun i text ->
+                if i < positional then
+                    Some text
+                elif i < positional + keywords.Length then
+                    Some $"(#:%s{keywords[i - positional]} %s{text})"
+                else
+                    // The rest parameter is an array of its element type.
+                    match prune registry parameters[i] with
+                    | TCon("Array", [ element ]) -> Some $"#:rest %s{DotNetInterop.showType element}"
+                    | _ -> None)
+
+        let where =
+            match constraints with
+            | [] -> ""
+            | _ ->
+                List.zip constraints shownTargets
+                |> List.map (fun (c, target) -> $"(%s{Naming.showTraitName c.TraitName} %s{target})")
+                |> String.concat " "
+                |> fun clauses -> $" (where %s{clauses})"
+
+        let text =
+            (parts |> List.choose id) @ [ shownResult ] |> String.concat " " |> fun inner -> $"(: (-> %s{inner})%s{where})"
+
+        // A variable that inference made has an invented name, `%t__3`. It
+        // is written as the first of `%a`, `%b` ... that the signature does
+        // not have, the same letter for each use of one variable.
+        let text =
+            let variable = System.Text.RegularExpressions.Regex @"%[^\s()]+"
+            let invented = System.Text.RegularExpressions.Regex @"^%.*__\d+$"
+            let all = [ for m in variable.Matches text -> m.Value ] |> List.distinct
+            let made, written = all |> List.partition invented.IsMatch
+
+            let letters =
+                Seq.initInfinite (fun i -> if i < 26 then "%" + string (char (int 'a' + i)) else $"%%t%d{i - 25}")
+                |> Seq.filter (fun name -> not (List.contains name written))
+
+            let renamed = Seq.zip made letters |> Map.ofSeq
+
+            variable.Replace(
+                text,
+                fun m ->
+                    match Map.tryFind m.Value renamed with
+                    | Some name -> name
+                    | None -> m.Value
+            )
+
+        // A type that inference left open is shown with a `?`, and source
+        // cannot write it.
+        if
+            positional < 0
+            || parts |> List.exists Option.isNone
+            || text.Contains '?'
+            || constraints |> List.exists (fun c -> not c.Pins.IsEmpty)
+        then
+            None
+        else
+            Some text
+    | _ -> None
+
 /// Checks a single declaration and ensures any errors raised during type checking
 /// have a source location attached.
 /// 
@@ -1310,7 +1420,29 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
 
     // Enforce mandatory signature for all top-level defuns except 'main'
     let sigOpt = Map.tryFind name sigs
-    if name <> "main" && sigOpt.IsNone then
+    if name <> "main" && sigOpt.IsNone && not inferringSignature then
+        // For a tool that offers to write the signature: the function is
+        // checked as if it could have none, and what that gives is handed
+        // over. The function is refused whatever the check gives, and what
+        // the check leaves behind is what a failed check of a body leaves.
+        match observeMissingSignature with
+        | Some tell ->
+            let level = snapshotLevel ()
+            inferringSignature <- true
+
+            try
+                try
+                    let checkedEnv, _, _ = checkDefun env sigs decl name defunArgs body colour r
+
+                    writtenSignature checkedEnv.Registry defunArgs (lookup checkedEnv name).Scheme
+                    |> Option.iter (fun text -> tell { Range = r; Name = name; Signature = text })
+                with ex when Diagnostics.isDiagnostic ex ->
+                    ()
+            finally
+                inferringSignature <- false
+                restoreLevel level
+        | None -> ()
+
         failwithf $"Type Error: Function '%s{name}' requires a type signature (: %s{name} ...) at %s{Lexer.formatPos r}"
 
     // Extract structured keyword/rest info from the raw FType (if available)
@@ -1645,7 +1777,9 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
                 |> List.exists (fun d -> d.TraitName = c.TraitName && d.TargetType = c.TargetType)
             ))
 
-    if not undeclared.IsEmpty then
+    // A function checked for the signature it lacks has no clause yet: the
+    // signature that is offered has it.
+    if not undeclared.IsEmpty && not inferringSignature then
         // The whole clause, explicit ones included, so the message is
         // something to paste rather than something to merge by hand.
         let shown (c: TraitConstraint) =
