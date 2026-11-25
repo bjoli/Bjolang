@@ -23,11 +23,11 @@ module Bjolang.Unused
 open Bjolang.Lexer
 open Bjolang.Ast
 
-/// A name this check says nothing about: one the program keeps on purpose,
-/// written with a leading `_`, and one the compiler made (`x__3`, `f__bjo`,
-/// `#name` for a hash macro's transformer).
+/// A name this check says nothing about: `_`, which binds nothing, and one
+/// the compiler made (`x__3`, `f__bjo`, `#name` for a hash macro's
+/// transformer).
 let private exempt (name: string) =
-    name.StartsWith "_" || name.Contains "__" || name.StartsWith "#" || name.StartsWith "%"
+    name = "_" || name.Contains "__" || name.StartsWith "#" || name.StartsWith "%"
 
 /// Every expression a declaration holds, keyword defaults included.
 let private exprsOf (d: Decl) : Expr list =
@@ -97,7 +97,7 @@ let private warnLocals (written: Range -> bool) (exprs: Expr list) : unit =
     |> List.iter (fun ((name, value), bindings) ->
         if bindings |> List.forall (fun l -> not l.Read) then
             Diagnostics.warn
-                $"'%s{name}' is bound to the value at %s{formatPos value} and nothing reads it. Remove it, or start its name with _ if it is kept on purpose.")
+                $"'%s{name}' is bound to the value at %s{formatPos value} and nothing reads it. Remove it, or write _ in place of the name.")
 
 /// The names a top-level declaration defines, each with where.
 let private defines (d: Decl) : (string * Range) list =
@@ -109,6 +109,89 @@ let private defines (d: Decl) : (string * Range) list =
     | DDefTuple(names, _, r) -> names |> List.map (fun n -> n, r)
     | DDefPattern(pattern, _, r) -> patternBinders pattern |> List.map (fun n -> n, r)
     | _ -> []
+
+/// Whether the program may not bind `name`: it has a `_` in it.
+///
+/// - `_` alone binds nothing and is not a name.
+/// - The generated code writes `_` in the names it makes from a name of the
+///   program (`a?` is `a_QMARK`), and the compiler's own names have `__`
+///   (`x__3`). A written name with a `_` could be the same as one of those.
+/// - A name that the source does not have is the compiler's (`loopcur__7`),
+///   and is not checked. Nor is one of `Gensym.compilerWritten`.
+let private illegal (name: string) =
+    name <> "_"
+    && name.Contains "_"
+    && Gensym.isWritten name
+    && not (Gensym.compilerWritten.Contains name)
+
+/// Every name the parameters `args` bind.
+let private parameters (args: DefunArg list) : string list =
+    args
+    |> List.map (function
+        | MandatoryArg(n, _)
+        | KeywordArg(n, _)
+        | RestArg n -> n)
+
+/// Every name that `e` binds, each with the range of the form that binds it.
+let rec private binders (e: Expr) : (string * Range) list =
+    let here =
+        match e with
+        | ELet(name, _, args, _, _, _, r) -> (name :: parameters args) |> List.map (fun n -> n, r)
+        | ELetMono(name, _, _, r)
+        | ELetMutable(name, _, _, _, r)
+        | EWithReturn(name, _, r) -> [ name, r ]
+        | ELetTuple(names, _, _, r)
+        | EFun(names, _, _, r) -> names |> List.map (fun n -> n, r)
+        | ELetRec(bindings, _, r) ->
+            bindings
+            |> List.collect (fun (name, _, args, _, _) -> name :: parameters args)
+            |> List.map (fun n -> n, r)
+        | EMatch(_, arms, r) ->
+            arms
+            |> List.collect (fun (pattern, _, _) -> patternBinders pattern)
+            |> List.map (fun n -> n, r)
+        | EDefMatch(pattern, _, _, _, r) -> patternBinders pattern |> List.map (fun n -> n, r)
+        | _ -> []
+
+    here @ (exprChildren e |> List.collect binders)
+
+/// Rejects each name with a `_` in it that the program binds in `decls`, one
+/// module's: a definition, a parameter, a local binding, and a name of a
+/// pattern.
+///
+/// - Raises one error for each name and form, with the position of the form.
+/// - A name that a macro wrote is not checked.
+/// - A name that nothing binds is not checked: `_total` in an expression is a
+///   hole (`Holes`), and a .NET name can have a `_`.
+let rejectNames (decls: Decl list) : unit =
+    let sites = Macro.expansionSites ()
+    let written (r: Range) = not (Set.contains (r.File, r.Start, r.End) sites)
+
+    let rec bound (d: Decl) : (string * Range) list =
+        match d with
+        | DModule(_, inner, _) -> inner |> List.collect bound
+        | DDerived _
+        | DLinked _
+        | DInlineImpl _ -> []
+        | _ ->
+            let own =
+                match d with
+                | DDefun(_, args, _, _, r)
+                | DDefDouble(_, args, _, _, r) -> parameters args |> List.map (fun n -> n, r)
+                | _ -> []
+
+            defines d @ own @ (exprsOf d |> List.collect binders)
+
+    let errors =
+        decls
+        |> List.collect bound
+        |> List.filter (fun (name, r) -> illegal name && written r)
+        |> List.distinct
+        |> List.sortBy (fun (_, r) -> r.File, r.Start)
+        |> List.map (fun (name, r) -> $"Syntax Error at %s{formatPos r}: '%s{name}' is an illegal name.")
+
+    if not errors.IsEmpty then
+        Diagnostics.failWithAll "names" errors
 
 /// Warns about the top-level definitions of `decls`, one module's, that it
 /// does not export and nothing in it uses, when `topLevel`, and about the
@@ -158,7 +241,7 @@ let rec warn (topLevel: bool) (decls: Decl list) : unit =
                 && not (usedElsewhere name)
             then
                 Diagnostics.warn
-                    $"'%s{name}' is defined at %s{formatPos r} and nothing uses it: this module does not export it, and none of its code reads it. Remove it, export it, or start its name with _ if it is kept on purpose."
+                    $"'%s{name}' is defined at %s{formatPos r} and nothing uses it: this module does not export it, and none of its code reads it. Remove it, or export it."
 
         match d with
         | DModule(_, inner, _) -> warn topLevel inner

@@ -358,6 +358,9 @@ let private shapeOf (forms: SExpr list) : Shape =
 let private valueName = "__bjo_value"
 let private showName = "__bjo_show"
 
+// These names and `anchorName` are in `Gensym.compilerWritten` too: a name with a `_`
+// is illegal in source, and the REPL writes these in the source of an entry.
+
 /// Rewrites a relative path in an `(import "...")` to an absolute one.
 ///
 /// At a prompt, "relative" means relative to where the user is standing. An

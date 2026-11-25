@@ -3589,7 +3589,9 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         // Before any pass rewrites the module: a binding is then the one the
         // program wrote.
         match List.tryLast parsedModuleDecls with
-        | Some(DModule(_, decls, _)) -> Unused.warn (not TypeEnv.compilingReplEntry.Value) decls
+        | Some(DModule(_, decls, _)) ->
+            Unused.rejectNames decls
+            Unused.warn (not TypeEnv.compilingReplEntry.Value) decls
         | _ -> ()
 
         Diagnostics.progress "=== Step 2: Normalization ==="

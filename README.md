@@ -150,7 +150,7 @@ and it is extensible.
 
 ## Examples
 
-Have a look inte the Examples directory. Or at the code in [the json module](lib/text/json.bjo). It is a decently fast json reader, that reaches a between 150 and 380MB/s on jsonbench. That code is written to be fast, and while a lot of it is idiomatic, there are some things that are not really pretty. For the love of god, do not look at the json-coder.bjo. That is half AI-translated from guile code I wrote a long time ago, and AI does NOT write good bjolang code.
+Have a look inte the Examples directory. Or at the code in [the json module](lib/text/json.bjo). It is a decently fast json reader, that reaches a between 350 and 600MB/s on jsonbench (on a 5900x). That code is written to be fast, and while a lot of it is idiomatic, there are some things that are not really pretty. For the love of god, do not look at the json-coder.bjo. That is half AI-translated from guile code I wrote a long time ago, and AI does NOT write good bjolang code.
 
 ### Do notation
 

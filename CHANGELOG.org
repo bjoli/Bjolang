@@ -3,6 +3,42 @@
 
 What each change guarantees, and what it leaves open.
 
+* A name with a ~_~ in it is an illegal name
+
+- *A program could bind a name with a ~_~ in it*, and a name that starts
+  with ~_~ was the way to keep a binding that nothing reads. Such a name is
+  now an error where the program binds it:
+
+  #+BEGIN_SRC text
+  Syntax Error at shapes.bjo:12:3: 'snake_case' is an illegal name.
+  #+END_SRC
+
+  - This is for each definition, parameter, local binding and name of a
+    pattern. Each one in a module is reported.
+  - ~_~ alone binds nothing and is not a name, as before:
+    ~(:for _ (range 0 n))~, ~(Tuple k _)~, ~(fun (_) 5)~.
+  - A name with ~__~ in it (~x__1~) is illegal too. It is the shape of
+    the compiler's names. The compiler's own names are not checked: only a
+    name that the source has is.
+  - The reason is the generated code, which writes ~_~ in the names it
+    makes from the program's: ~a?~ is ~a_QMARK~ there.
+  - A name that a macro wrote is not checked.
+- A ~_name~ in an expression is a hole, as before. It can no longer be a
+  variable.
+- The warnings for a binding that nothing reads say ~write _ in place of
+  the name~, and for a definition ~Remove it, or export it~. Before, both
+  said to start the name with ~_~.
+- ~(def _ value)~ is not a way to drop a value: the compiler asks for
+  ~(ignore value)~, as it did.
+- Not checked: the names of types, constructors, fields and traits, and
+  the name that an ~import/extern~ or an ~import/class~ gives.
+- The library had 8 such names and the tests 30. Each was a binding that
+  nothing read, and is ~_~ now.
+- Tests: ~errors/illegal_name_binders.bjo~, ~464_underscore_binds_nothing.bjo~
+  (was ~464_underscore_names.bjo~). ~136_mangled_names.bjo~ no longer has
+  the cases ~a_QMARK~ and ~b_BANG~, which cannot be written, and
+  ~342_written_fresh_names.bjo~ is removed for the same reason.
+
 * ~bjo fmt~: ~:propagate~, the first clause of a ~cond~, ~defeffect~, and a call's arguments
 
 - *A ~:propagate~ was moved to a line of its own*, as each failure part of

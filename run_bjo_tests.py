@@ -1819,7 +1819,7 @@ AOT_MAIN = '''(import (std prelude))
   (println (str process-path " " (if server-gc? "server" "workstation")))
   0)
 '''
-AOT_CHECKS = "checks n (2147483645 2147483646) (-9223372036854775807 -9223372036854775808) 2412"
+AOT_CHECKS = "checks n (2147483645 2147483646) (-9223372036854775807) 2412"
 
 
 def aot_manifest(app, aot, runtime="", cpu="", trim=True):

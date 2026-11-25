@@ -53,6 +53,12 @@ let reserve (name: string) : unit =
 /// Whether source this compilation read has written `name`.
 let isWritten (name: string) : bool = sourceNames.Contains name
 
+/// The names that the compiler writes in source text which it then reads:
+/// those of the REPL's wrapper of an entry (`Repl`). The lexer reads them as
+/// it reads a name of the program, so `isWritten` is true of them.
+let compilerWritten: Set<string> =
+    set [ "__bjo_value"; "__bjo_show"; "__bjo_anchor" ]
+
 /// `prefix__N`, with `N` unique across the whole compilation, and not a name
 /// source has written (see `reserve`).
 ///

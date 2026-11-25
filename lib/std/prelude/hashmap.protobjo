@@ -117,10 +117,10 @@
         => c))
 
 (: (-> (Tuple %k %v) %k))
-(defun (hm-key e) (def (Tuple k _v) e) k)
+(defun (hm-key e) (def (Tuple k _) e) k)
 
 (: (-> (Tuple %k %v) %v))
-(defun (hm-value e) (def (Tuple _k v) e) v)
+(defun (hm-value e) (def (Tuple _ v) e) v)
 
 (: (-> int int bool))
 (defun (hm-has? map bit) (not (= (bitwise-and map bit) 0)))
@@ -188,7 +188,7 @@
 
 (: (-> (TrieNode (Tuple %k %v)) %k (EqualityComparer %k) bool))
 (defun (hm-contains? root k cmp)
-  (def (Tuple _n c) (hm-find root k (hm-hash-of cmp k) 0 cmp))
+  (def (Tuple _ c) (hm-find root k (hm-hash-of cmp k) 0 cmp))
   (<= c -4))
 
 (: (-> (TrieNode (Tuple %k %v)) %k (EqualityComparer %k) %v %v))
@@ -627,10 +627,10 @@
       (else (go (map-cursor-next c))))))
 
 (: (-> (Map %k %v) (Seq %k)))
-(defun (map-keys m) (seql (:for (Tuple k _v) m) (:yield k)))
+(defun (map-keys m) (seql (:for (Tuple k _) m) (:yield k)))
 
 (: (-> (Map %k %v) (Seq %v)))
-(defun (map-values m) (seql (:for (Tuple _k v) m) (:yield v)))
+(defun (map-values m) (seql (:for (Tuple _ v) m) (:yield v)))
 
 (: (-> (Map %k %v) (Seq (Tuple %k %v))))
 (defun (map->seq m) (->seq m))
@@ -797,7 +797,7 @@
        (Array (Tuple %k %v)) (Array (TrieNode (Tuple %k %v))) (Tuple (TrieNode (Tuple %k %v)) int)))
 (defun (hm-merge-of cmp f a b shift xs kids)
   (cond
-    ((and (hm-same-node? a b) (match f ((Some _g) #f) (None #t))) (Tuple a (hm-count-under a)))
+    ((and (hm-same-node? a b) (match f ((Some _) #f) (None #t))) (Tuple a (hm-count-under a)))
     ((or (hm-collision? a) (hm-collision? b)) (hm-merge-entries cmp f a b shift))
     (else (hm-merge-nodes cmp f a b shift xs kids))))
 
@@ -821,7 +821,7 @@
     b))
 
 (: (-> (Tuple %a %b) %a))
-(defun (hm-first t) (def (Tuple a _b) t) a)
+(defun (hm-first t) (def (Tuple a _) t) a)
 
 ;; The merge of two leaves or branches, slot by slot.
 (: (-> (EqualityComparer %k) (Option (-> %k %v %v %v)) (TrieNode (Tuple %k %v)) (TrieNode (Tuple %k %v)) int
@@ -1465,7 +1465,7 @@
                    (when (or (= j (- n 1))
                              (and (< made (- parts 1))
                                   (>= done (/ (* total (cast double (+ made 1))) (cast double parts)))))
-                     (def (Tuple part _inline?) (hm-build-part units start (+ j 1) 0))
+                     (def (Tuple part _) (hm-build-part units start (+ j 1) 0))
                      (listbuilder-add! out (Map (root part) (count -1) (comparer cmp)))
                      (set! made (+ made 1))
                      (set! start (+ j 1)))))
