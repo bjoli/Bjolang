@@ -20,7 +20,7 @@
 ;; Macros defined here cannot be used in this file. Those of
 ;; (std prelude core) and (std core-macros), such as cond, can.
 (export
-  file-read-text file-write-text file-append-text file-exists?
+  raise-err file-read-text file-write-text file-append-text file-exists?
   file-delete file-move file-info file-copy file-read-bytes file-write-bytes
   file-append-bytes file-read-lines file-write-lines file-read/seq
   file-read-lines/seq path-absolute path-combine path-filename
@@ -133,8 +133,12 @@
                         (: modified-ms long)
                         (: link? bool))))
 
-;; The operations answer a `Result`; the functions in these two sections raise
-;; the `Err`, as the .NET methods they replaced did.
+;; The functions in the file and directory sections return the `Result` of the
+;; `FS` operations. An exception that the I/O raises after the file is open,
+;; an `IOException` or an `UnauthorizedAccessException`, is an `Err` too.
+;; A cancellation is raised as usual.
+;;
+;; `raise-err` is for a caller that wants the exception instead.
 (: (-> (Result System.Exception %a) %a))
 (defun (raise-err r)
   (match r
@@ -142,31 +146,34 @@
     ((Err e) (raise e))))
 
 ;; Read all text.
-(: (-> %p string) (where (AsPath %p)))
+(: (-> %p (Result Exception string)) (where (AsPath %p)))
 (defun (file-read-text path)
   (match (open-input-file path)
     ((Ok opened)
-     (with-open ((p opened))
-       (read-all p)))
-    ((Err e) (raise e))))
+     (try (with-open ((p opened))
+            (read-all p))
+       #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+    ((Err e) (Err e))))
 
 ;; The flush is explicit so that the suspending copy awaits it. Closing would
 ;; flush too, but synchronously, on whatever thread runs the close.
-(: (-> Path string WriteMode void))
+(: (-> Path string WriteMode (Result Exception Unit)))
 (defun (write-whole-file path contents mode)
   (match (open-output-file path #:mode mode)
     ((Ok opened)
-     (with-open ((p opened))
-       (write-string p contents)
-       (flush-port p)))
-    ((Err e) (raise e))))
+     (try (with-open ((p opened))
+            (write-string p contents)
+            (flush-port p)
+            unit)
+       #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+    ((Err e) (Err e))))
 
 ;; Write text.
-(: (-> %p string void) (where (AsPath %p)))
+(: (-> %p string (Result Exception Unit)) (where (AsPath %p)))
 (defun (file-write-text path contents)
   (write-whole-file (as-path path) contents Truncate))
 
-(: (-> %p string void) (where (AsPath %p)))
+(: (-> %p string (Result Exception Unit)) (where (AsPath %p)))
 (defun (file-append-text path contents)
   (write-whole-file (as-path path) contents Append))
 
@@ -186,15 +193,15 @@
     (_ #f)))
 
 ;; A missing file is not an error, as with `File.Delete`.
-(: (-> %p void) (where (AsPath %p)))
+(: (-> %p (Result Exception Unit)) (where (AsPath %p)))
 (defun (file-delete path)
-  (raise-err (fs-delete-file (as-path path))))
+  (fs-delete-file (as-path path)))
 
 ;; Moves or renames a file or a directory. Fails if `to` exists, unless
 ;; `#:mode MoveReplace` says to replace a file there.
-(: (-> %p %q (#:mode MoveMode) void) (where (AsPath %p) (AsPath %q)))
+(: (-> %p %q (#:mode MoveMode) (Result Exception Unit)) (where (AsPath %p) (AsPath %q)))
 (defun (file-move from to #:mode MoveNew)
-  (raise-err (fs-move (as-path from) (as-path to) mode)))
+  (fs-move (as-path from) (as-path to) mode))
 
 ;; --- Paths ---
 ;; Path strings.
@@ -239,14 +246,14 @@
     (_ #f)))
 
 ;; Create directory.
-(: (-> %p void) (where (AsPath %p)))
+(: (-> %p (Result Exception Unit)) (where (AsPath %p)))
 (defun (directory-create path)
-  (raise-err (fs-create-directory (as-path path))))
+  (fs-create-directory (as-path path)))
 
 ;; Delete directory.
-(: (-> %p void) (where (AsPath %p)))
+(: (-> %p (Result Exception Unit)) (where (AsPath %p)))
 (defun (directory-delete path)
-  (raise-err (fs-delete-directory (as-path path))))
+  (fs-delete-directory (as-path path)))
 
 ;; Built from the operations rather than handed to `Directory.Delete` with its
 ;; recursive flag, so that a handler sees every deletion.
@@ -255,21 +262,33 @@
 ;; that includes `path` itself. Entering one would delete what it points at: a
 ;; link to the home directory inside a build directory would empty the home
 ;; directory, and a link back up the tree would never end.
-(: (-> %p void) (where (AsPath %p)))
+(: (-> %p (Result Exception Unit)) (where (AsPath %p)))
 (defun (directory-delete-tree path)
   (delete-tree (as-path path)))
 
-(: (-> Path void))
+;; Stops at the first error. What was deleted before it stays deleted.
+(: (-> Path (Result Exception Unit)))
 (defun (delete-tree path)
   (if (directory-link? path)
-      (directory-delete path)
-      (let ()
-        (loop (:for entry (raise-err (fs-list path)))
-              (:do (match (record-ref entry entry-kind)
-                     (FsDirectory (delete-tree (record-ref entry entry-path)))
-                     ;; A link is removed, and what it leads to is kept.
-                     (_ (file-delete (record-ref entry entry-path))))))
-        (directory-delete path))))
+      (fs-delete-directory path)
+      (match (fs-list path)
+        ((Ok entries)
+         (match (delete-entries entries 0)
+           ((Ok _) (fs-delete-directory path))
+           (failed failed)))
+        ((Err e) (Err e)))))
+
+(: (-> (Vec FsEntry) int (Result Exception Unit)))
+(defun (delete-entries entries i)
+  (if (= i (vec-length entries))
+      (Ok unit)
+      (let ((entry (vec-ref entries i)))
+        (match (match (record-ref entry entry-kind)
+                 (FsDirectory (delete-tree (record-ref entry entry-path)))
+                 ;; A link is removed, and what it leads to is kept.
+                 (_ (fs-delete-file (record-ref entry entry-path))))
+          ((Ok _) (delete-entries entries (+ i 1)))
+          (failed failed)))))
 
 (: (-> Path bool))
 (defun (directory-link? path)
@@ -289,17 +308,20 @@
 
 ;; The entries of `path` that are files, or directories, with links
 ;; followed.
-(: (-> Path FsKind (Vec Path)))
+(: (-> Path FsKind (Result Exception (Vec Path))))
 (defun (entries-of-kind path kind)
-  (loop (:for entry (raise-err (fs-list path)))
-        (:when (= (followed-kind entry) (Some kind)))
-        (:acc found (vecing (record-ref entry entry-path)))))
+  (match (fs-list path)
+    ((Ok entries)
+     (Ok (loop (:for entry entries)
+               (:when (= (followed-kind entry) (Some kind)))
+               (:acc found (vecing (record-ref entry entry-path))))))
+    ((Err e) (Err e))))
 
-(: (-> %p (Vec Path)) (where (AsPath %p)))
+(: (-> %p (Result Exception (Vec Path))) (where (AsPath %p)))
 (defun (directory-files path)
   (entries-of-kind (as-path path) FsFile))
 
-(: (-> %p (Vec Path)) (where (AsPath %p)))
+(: (-> %p (Result Exception (Vec Path))) (where (AsPath %p)))
 (defun (directory-subdirectories path)
   (entries-of-kind (as-path path) FsDirectory))
 
@@ -340,10 +362,12 @@
   ;; What the `FS` effect's openers answer, and what a file port is over.
   (ClrStream (: System.IO.Stream))
   ;; `IOException` covers `CreateNew` finding the file already there, as well
-  ;; as the not-found exceptions below it.
+  ;; as the not-found exceptions below it. `ArgumentException` is the empty
+  ;; path.
   (FileStream (: System.IO.FileStream (-> string FileMode FileAccess FileShare FileStream)
                  #:exceptions (System.IO.IOException
-                               System.UnauthorizedAccessException)))
+                               System.UnauthorizedAccessException
+                               System.ArgumentException)))
   (FileMode (: System.IO.FileMode))
   (FileAccess (: System.IO.FileAccess))
   (FileShare (: System.IO.FileShare)))
@@ -442,8 +466,8 @@
 ;;   across text and byte I/O.
 ;; - Effect operations are synchronous; coroutine suspension occurs only when reading
 ;;   or writing through the underlying streams/ports.
-;; - Effect operations return `(Result Exception %a)` values, whereas higher-level
-;;   prelude wrappers unwrap them and raise exceptions on error.
+;; - Effect operations return `(Result Exception %a)` values, and so do the
+;;   prelude's file and directory functions over them.
 
 (type (: FsListed Bjolang.Runtime.FsListed))
 
@@ -454,20 +478,26 @@
 (import/extern
   (clr-dir-exists  (: System.IO.Directory.Exists (-> string bool)))
   (clr-list        (: Bjolang.Runtime.FsListing.List (-> (Array byte) (Array FsListed))
-                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException
+                                   System.ArgumentException)))
   (clr-listed-name (: Bjolang.Runtime.FsListed.Name (-> FsListed (Array byte)) #:get))
   (clr-listed-kind (: Bjolang.Runtime.FsListed.Kind (-> FsListed int) #:get))
   (clr-classify    (: Bjolang.Runtime.FsListing.Classify (-> FileInfo int)))
   (clr-dir-create  (: System.IO.Directory.CreateDirectory (-> string DirectoryInfo)
-                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException
+                                   System.ArgumentException)))
   (clr-file-delete (: System.IO.File.Delete (-> string void)
-                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException
+                                   System.ArgumentException)))
   (clr-dir-delete  (: System.IO.Directory.Delete (-> string void)
-                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException
+                                   System.ArgumentException)))
   (clr-file-move   (: System.IO.File.Move (-> string string bool void)
-                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException)))
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException
+                                   System.ArgumentException)))
   (clr-dir-move    (: System.IO.Directory.Move (-> string string void)
-                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException))))
+                      #:exceptions (System.IO.IOException System.UnauthorizedAccessException
+                                   System.ArgumentException))))
 
 (import/class
   (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
@@ -820,7 +850,7 @@
 ;;     (replacing any symlink rather than writing through it).
 ;;   * `Append` copies only the source's initial byte length, preventing an
 ;;     infinite loop when appending a file to itself.
-(: (-> %p %q (#:mode WriteMode) void) (where (AsPath %p) (AsPath %q)))
+(: (-> %p %q (#:mode WriteMode) (Result Exception Unit)) (where (AsPath %p) (AsPath %q)))
 (defun (file-copy from to #:mode CreateNew)
   (copy-file (as-path from) (as-path to) mode))
 
@@ -829,86 +859,123 @@
 (defun (full-path p)
   (path-normalize (path-join (current-directory) p)))
 
-(: (-> Path Path WriteMode void))
+;; `(Err e)` for an exception that I/O raises, and `e` raised again for any
+;; other, such as a cancellation.
+(: (-> Exception (Result Exception %a)))
+(defun (io-failure e)
+  (match e
+    ((:is System.IO.IOException) (Err e))
+    ((:is System.UnauthorizedAccessException) (Err e))
+    (_ (raise e))))
+
+(: (-> Path Path WriteMode (Result Exception Unit)))
 (defun (copy-file from to mode)
-  (when (= (full-path from) (full-path to))
-    (raise (cast Exception
+  (if (= (full-path from) (full-path to))
+      (Err (cast Exception
                  (IOException. (string-append "cannot copy a file onto itself: "
-                                              (path->string/lossy from))))))
-  (with-open ((in (raise-err (open-read-stream from))))
-    (def count (clr-stream-length in))
-    (match mode
-      (Truncate
-       (def fresh
-         (as-path (bytestring-append (path->bytestring to)
-                                     (string->bytestring (str ".copy-"
-                                                              (clr-guid-text (clr-new-guid) "N"))))))
-       (match (try
-                (begin
-                  (with-open ((out (raise-err (open-write-stream fresh CreateNew))))
-                    (stream-copy-count! in out count)
-                    (stream-flush! out))
-                  (raise-err (fs-move fresh to MoveReplace)))
-                #:catch (System.Exception))
-         ((Ok _) unit)
-         ((Err e)
-          (ignore (fs-delete-file fresh))
-          (raise e))))
-      (_
-       (with-open ((out (raise-err (open-write-stream to mode))))
-         (stream-copy-count! in out count)
-         (stream-flush! out))))))
+                                              (path->string/lossy from)))))
+      (match (open-read-stream from)
+        ((Err e) (Err e))
+        ((Ok opened)
+         (with-open ((in opened))
+           (def count (clr-stream-length in))
+           (match mode
+             (Truncate
+              (def fresh
+                (as-path (bytestring-append (path->bytestring to)
+                                            (string->bytestring (str ".copy-"
+                                                                     (clr-guid-text (clr-new-guid) "N"))))))
+              ;; Any exception deletes `fresh`, a cancellation too.
+              (def outcome
+                (try
+                  (match (open-write-stream fresh CreateNew)
+                    ((Ok s)
+                     (with-open ((out s))
+                       (stream-copy-count! in out count)
+                       (stream-flush! out))
+                     (fs-move fresh to MoveReplace))
+                    ((Err e) (Err e)))
+                  #:catch (System.Exception)))
+              (match outcome
+                ((Ok (Ok _)) (Ok unit))
+                ((Ok failed)
+                 (ignore (fs-delete-file fresh))
+                 failed)
+                ((Err e)
+                 (ignore (fs-delete-file fresh))
+                 (io-failure e))))
+             (_
+              (match (open-write-stream to mode)
+                ((Ok s)
+                 (try (with-open ((out s))
+                        (stream-copy-count! in out count)
+                        (stream-flush! out)
+                        unit)
+                   #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+                ((Err e) (Err e))))))))))
 
-(: (-> %p (Array byte)) (where (AsPath %p)))
+(: (-> %p (Result Exception (Array byte))) (where (AsPath %p)))
 (defun (file-read-bytes path)
-  (with-open ((in (raise-err (open-read-stream (as-path path)))))
-    (def buffer (MemoryStream.))
-    (stream-copy! in (cast ClrStream buffer))
-    (.ToArray buffer)))
+  (match (open-read-stream (as-path path))
+    ((Ok opened)
+     (try (with-open ((in opened))
+            (def buffer (MemoryStream.))
+            (stream-copy! in (cast ClrStream buffer))
+            (.ToArray buffer))
+       #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+    ((Err e) (Err e))))
 
-(: (-> Path (Array byte) WriteMode void))
+(: (-> Path (Array byte) WriteMode (Result Exception Unit)))
 (defun (write-whole-bytes path bytes mode)
-  (with-open ((out (raise-err (open-write-stream path mode))))
-    (stream-write! out bytes)
-    (stream-flush! out)))
+  (match (open-write-stream path mode)
+    ((Ok opened)
+     (try (with-open ((out opened))
+            (stream-write! out bytes)
+            (stream-flush! out)
+            unit)
+       #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+    ((Err e) (Err e))))
 
-(: (-> %p (Array byte) void) (where (AsPath %p)))
+(: (-> %p (Array byte) (Result Exception Unit)) (where (AsPath %p)))
 (defun (file-write-bytes path bytes)
   (write-whole-bytes (as-path path) bytes Truncate))
 
-(: (-> %p (Array byte) void) (where (AsPath %p)))
+(: (-> %p (Array byte) (Result Exception Unit)) (where (AsPath %p)))
 (defun (file-append-bytes path bytes)
   (write-whole-bytes (as-path path) bytes Append))
 
 ;; The lines, without their line ends. What ends a line is `#:mode`'s to say;
 ;; by default "\n", "\r" and "\r\n" all do. A last line needs no end, and a
 ;; final line end makes no empty line after it.
-(: (-> %p (#:mode LineMode) (Vec string)) (where (AsPath %p)))
+(: (-> %p (#:mode LineMode) (Result Exception (Vec string))) (where (AsPath %p)))
 (defun (file-read-lines path #:mode Any)
   (match (open-input-file path)
     ((Ok opened)
-     (with-open ((p opened))
-       (def lines (vecbuilder-empty))
-       (let next ()
-         (unless (port-eof? p)
-           (vecbuilder-add! lines (read-line p #:mode mode))
-           (next)))
-       (vecbuilder->vec lines)))
-    ((Err e) (raise e))))
+     (try (with-open ((p opened))
+            (def lines (vecbuilder-empty))
+            (let next ()
+              (unless (port-eof? p)
+                (vecbuilder-add! lines (read-line p #:mode mode))
+                (next)))
+            (vecbuilder->vec lines))
+       #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+    ((Err e) (Err e))))
 
 ;; Each line followed by "\n", the last one too, on every OS: the same lines
 ;; make the same bytes wherever they are written, and `file-read-lines` gives
 ;; them back as long as none holds a line end of its own.
-(: (-> %p (Vec string) void) (where (AsPath %p)))
+(: (-> %p (Vec string) (Result Exception Unit)) (where (AsPath %p)))
 (defun (file-write-lines path lines)
   (match (open-output-file path)
     ((Ok opened)
-     (with-open ((p opened))
-       (loop (:for line lines)
-             (:do (write-string p line)
-                  (write-string p "\n")))
-       (flush-port p)))
-    ((Err e) (raise e))))
+     (try (with-open ((p opened))
+            (loop (:for line lines)
+                  (:do (write-string p line)
+                       (write-string p "\n")))
+            (flush-port p)
+            unit)
+       #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+    ((Err e) (Err e))))
 
 ;; Returns a lazy `Seq` of items produced by repeatedly calling `(reader port)`.
 ;;

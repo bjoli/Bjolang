@@ -66,7 +66,7 @@
 (defun (read-lock file)
   (if (not (file-exists? file))
       (Ok Nil)
-      (match (bjodat-parse-Lock (file-read-text file))
+      (match (bjodat-parse-Lock (raise-err (file-read-text file)))
         ((Err why)
          (Err (str "bjo: " file ": " why "\n  Delete it to resolve from the manifests again.")))
         ((Ok lock) (Ok (record-ref lock locked))))))
@@ -104,7 +104,7 @@
 
 (: write-lock (-> string (List Locked) void) #:sync)
 (defun (write-lock file entries)
-  (file-write-text file (lock-text entries)))
+  (raise-err (file-write-text file (lock-text entries))))
 
 (: (-> (List Locked) (List Symbol) (Option Locked)))
 (defun (lock-entry-for entries name)

@@ -44,7 +44,7 @@
 ;; `warnings/blocking_in_bjoroutine.bjo`, by the lint having nothing to say.
 (: (-> string string))
 (defun (slurp-on-a-fiber path)
-  (match (sync/blocking (promise-join (bjo (file-read-text path))))
+  (match (sync/blocking (promise-join (bjo (raise-err (file-read-text path)))))
     ((Ok text) text)
     ((Err e) "raised")))
 
@@ -163,7 +163,7 @@
   (match (open-output-file out-path)
     ((Ok w) (with-open ((out w)) (write-greeting out)))
     ((Err e) (println "FAILURE: could not open the output file")))
-  (expect "the same writer over a file port" (file-read-text out-path) "hello world")
+  (expect "the same writer over a file port" (raise-err (file-read-text out-path)) "hello world")
   (expect "the same file, read on a fiber" (slurp-on-a-fiber out-path) "hello world")
 
   ;; The one port operation whose wrong argument is not a type error. A file
@@ -179,7 +179,7 @@
                       "threw")))
     ((Err e) (println "FAILURE: could not open the output file")))
 
-  (file-delete out-path)
+  (raise-err (file-delete out-path))
 
   ;; --- Opening failures are values ----------------------------------------
   (expect "missing file is Err"
@@ -387,5 +387,5 @@
   (close-input-port p8)
   (expect "closed a string port" "ok" "ok")
 
-  (file-delete path)
+  (raise-err (file-delete path))
   0)

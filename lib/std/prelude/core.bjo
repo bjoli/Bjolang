@@ -123,7 +123,7 @@
   transientmap-ref-or transientmap-try-ref transientmap-length
   transientmap-empty? transientmap-filter!
   ;; Results
-  ok? err? result-ref result-ref-or result-map result-map-err result->option
+  ok? err? result-ref result-ref-or result-map result-map-err result-and-then result->option
   option-map option-filter option-or option->result
   ;; Pairs
   fst snd
@@ -2418,6 +2418,14 @@
 (defun (result-map f r)
   (match r
     ((Ok v) (Ok (f v)))
+    ((Err e) (Err e))))
+
+;; `(f v)` for `(Ok v)`, where `f` returns a `Result` and may suspend; an
+;; `Err` returns itself.
+(: (-> (-?-> %a (Result %e %b)) (Result %e %a) (Result %e %b)))
+(defun (result-and-then f r)
+  (match r
+    ((Ok v) (f v))
     ((Err e) (Err e))))
 
 ;; The `Err` value through `f`, which may suspend; an `Ok` returns itself.

@@ -477,7 +477,9 @@
 ;; Reads the file at `path`, and names it by its path in a message.
 (: read-source-file (-> string (Result string Source)))
 (defun (read-source-file path)
-  (read-source (file-read-text path) #:name path))
+  (match (file-read-text path)
+    ((Ok text) (read-source text #:name path))
+    ((Err e) (Err (str path ": " (.-Message e))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Indentation

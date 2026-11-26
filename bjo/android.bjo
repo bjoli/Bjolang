@@ -628,11 +628,11 @@
 ;; written keeps its time, so MSBuild does not build again for it.
 (: write-if-changed! (-> string string void) #:sync)
 (defun (write-if-changed! path text)
-  (unless (and (file-exists? path) (= (file-read-text path) text))
+  (unless (and (file-exists? path) (= (raise-err (file-read-text path)) text))
     (match (path-directory path)
-      ((Some d) (directory-create d))
+      ((Some d) (raise-err (directory-create d)))
       (None unit))
-    (file-write-text path text)))
+    (raise-err (file-write-text path text))))
 
 ;; The adaptive icon (Android 8 and later).
 ;; - The foreground is the image, inset by 18dp of the 108dp layer. The image
@@ -664,12 +664,12 @@
 ;; `write-if-changed!`, a file that is not written keeps its time.
 (: copy-if-changed! (-> string string void) #:sync)
 (defun (copy-if-changed! from to)
-  (def bytes (file-read-bytes from))
-  (unless (and (file-exists? to) (same-bytes? (file-read-bytes to) bytes))
+  (def bytes (raise-err (file-read-bytes from)))
+  (unless (and (file-exists? to) (same-bytes? (raise-err (file-read-bytes to)) bytes))
     (match (path-directory to)
-      ((Some d) (directory-create d))
+      ((Some d) (raise-err (directory-create d)))
       (None unit))
-    (file-write-bytes to bytes)))
+    (raise-err (file-write-bytes to bytes))))
 
 ;; Writes the icon's resources in `<dir>/Resources`, or deletes them when the
 ;; app has no icon.
@@ -692,7 +692,7 @@
     (None
      (loop (:for f (list legacy adaptive image))
            (:do (when (file-exists? f)
-                  (file-delete f)))))))
+                  (raise-err (file-delete f))))))))
 
 ;; Copies the program and the assemblies it loads to `<dir>/bjolibs`, each
 ;; under its assembly name. NuGet packages' assemblies are left out. Returns
@@ -701,8 +701,8 @@
 (defun (stage! dir program links)
   (def libs (path-combine dir "bjolibs"))
   (when (directory-exists? libs)
-    (directory-delete-tree libs))
-  (directory-create libs)
+    (raise-err (directory-delete-tree libs)))
+  (raise-err (directory-create libs))
   (def own (filter-out-packages links))
   (match (find #(not (file-exists? (snd &))) own)
     ((Some (Tuple name path))
@@ -712,11 +712,11 @@
                path
                ", and it is not there. Rebuild with -c and publish again.")))
     (None
-     (file-copy program
+     (raise-err (file-copy program
                 (path-combine libs (str (assembly-simple-name (assembly-name-of program)) ".dll"))
-                #:mode Truncate)
+                #:mode Truncate))
      (loop (:for (Tuple name path) own)
-           (:do (file-copy path (path-combine libs (str name ".dll")) #:mode Truncate)))
+           (:do (raise-err (file-copy path (path-combine libs (str name ".dll")) #:mode Truncate))))
      (Ok (+ 1 (length own))))))
 
 (: (-> (List (Tuple string string)) (List (Tuple string string))))
@@ -733,7 +733,7 @@
    #:sync)
 (defun (kept-assemblies libs links packages)
   (def referenced
-    (loop (:for f (directory-files libs))
+    (loop (:for f (raise-err (directory-files libs)))
           (:subloop)
           (:for n (assembly-references (assembly-load-file (path-absolute f))))
           (:acc out (listing (assembly-simple-name n)))
@@ -811,7 +811,7 @@
                      (_ Nil))))
     (def publish-dir (path-combine dir "bin" "Release" framework "publish"))
     (when (directory-exists? publish-dir)
-      (directory-delete-tree publish-dir))
+      (raise-err (directory-delete-tree publish-dir)))
     (def status
       ((record-ref job exec) dotnet
                              (list->vec (list-append (list "publish" csproj "-c" "Release")
@@ -832,9 +832,9 @@
       ((Some why) (ret (Err why)))
       (None unit))
     (def apk (path-combine out (str (record-ref job id) ".apk")))
-    (file-copy built apk #:mode Truncate)
-    (file-write-text (path-combine out published-marker)
-                     "Made by bjo publish --android. Publishing again replaces this directory.\n")
+    (raise-err (file-copy built apk #:mode Truncate))
+    (raise-err (file-write-text (path-combine out published-marker)
+                     "Made by bjo publish --android. Publishing again replaces this directory.\n"))
     (Ok apk)))
 
 ;; ---------------------------------------------------------------------------

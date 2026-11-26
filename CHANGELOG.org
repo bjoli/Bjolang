@@ -3,6 +3,37 @@
 
 What each change guarantees, and what it leaves open.
 
+* The file functions return a ~Result~
+
+*Breaking.* The prelude's file and directory functions that read, write or
+change the file system return a ~(Result Exception a)~, as ~open-input-file~
+and ~open-output-file~ already did. Before, they raised.
+
+- *Changed:* ~file-read-text~, ~file-write-text~, ~file-append-text~,
+  ~file-read-lines~, ~file-write-lines~, ~file-read-bytes~,
+  ~file-write-bytes~, ~file-append-bytes~, ~file-copy~, ~file-delete~,
+  ~file-move~, ~directory-create~, ~directory-delete~,
+  ~directory-delete-tree~, ~directory-files~ and ~directory-subdirectories~.
+  A write, a delete or a move returns ~(Ok unit)~.
+- *What is an ~Err~:* the ~Err~ of the ~FS~ operation, and an
+  ~IOException~ or ~UnauthorizedAccessException~ while an open file is read
+  or written. A copy onto its own path is an ~Err~ too. A cancellation is
+  raised.
+- *Not changed:* the queries ~file-exists?~, ~directory-exists?~ and
+  ~file-info~. The lazy ~file-read/seq~, ~file-read-lines/seq~ and
+  ~directory-walk~ still raise on a pull, because a sequence has no place for
+  a ~Result~.
+- *New:* ~raise-err~, exported from the prelude, returns the ~Ok~ value or
+  raises the ~Err~ with its own type. ~result-and-then~ in the core passes an
+  ~Ok~ value to a function that returns a ~Result~.
+- *Porting:* where a call raised and that was what you wanted, write
+  ~(raise-err (file-read-text path))~. Where a call was in a ~try~, remove
+  the ~try~ and match the result: ~(match (file-read-text path) ((Ok text)
+  ...) ((Err e) ...))~. The type checker finds every call that needs a
+  change.
+- A failed ~directory-delete-tree~ stops at the first error. What it deleted
+  before the error stays deleted.
+
 * How a program ends: signals and the grace period
 
 - *Ctrl-C cancels ~main~'s scope* with ~(Requested "SIGINT")~, so ~finally~

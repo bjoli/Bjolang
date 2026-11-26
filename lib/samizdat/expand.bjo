@@ -725,7 +725,9 @@
   (unless (file-exists? full)
     (refuse cx c (str "there is no file " full)))
   (add-source! cx full)
-  (file-read-text full))
+  (match (file-read-text full)
+    ((Ok text) text)
+    ((Err e) (refuse cx c (str "cannot read " full ": " (.-Message e))))))
 
 ;; Records that the document was made from `file`, as a command that reads a
 ;; file other than with `read-relative` has to, so that what keeps the output
@@ -926,7 +928,8 @@
 
 (: read-document-file (-> string (Map string Command) (#:typography bool) (Result string Document)))
 (defun (read-document-file path commands #:typography #t)
-  (match (read-document (file-read-text path) commands #:name path #:typography typography)
+  (match (result-and-then (fun (text) (read-document text commands #:name path #:typography typography))
+                          (result-map-err (fun (e) (str path ": " (.-Message e))) (file-read-text path)))
     ((Err e) (Err e))
     ((Ok doc)
      (def others (vec-filter (fun (p) (not (= p path))) (record-ref doc sources)))

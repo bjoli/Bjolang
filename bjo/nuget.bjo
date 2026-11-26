@@ -187,8 +187,8 @@
 ;; Writes `path` unless it already says `text`.
 (: write-if-changed (-> string string void) #:sync)
 (defun (write-if-changed path text)
-  (unless (and (file-exists? path) (= (file-read-text path) text))
-    (file-write-text path text)))
+  (unless (and (file-exists? path) (= (raise-err (file-read-text path)) text))
+    (raise-err (file-write-text path text))))
 
 ;; ---------------------------------------------------------------------------
 ;; The glue
@@ -315,7 +315,7 @@
                                                    (not (any? #(path-has-name? d &)
                                                               (list "bin" "obj"))))))
           (:when (path-has-extension? file "cs"))
-          (:acc out (listing (str (path->string/lossy file) "\n" (file-read-text file))))
+          (:acc out (listing (str (path->string/lossy file) "\n" (raise-err (file-read-text file)))))
       => (list-sort out)))
   (def runtime
     (list-map #(str &
@@ -369,7 +369,7 @@
        (string-trim (str out
                          "\n"
                          (if (file-exists? errors)
-                             (file-read-text errors)
+                             (raise-err (file-read-text errors))
                              ""))))
      (def name (name->string (record-ref g name)))
      (Err (match (compile-errors said)
@@ -388,7 +388,7 @@
 (defun (stamp-of csproj lock-file)
   (def lock
     (if (file-exists? lock-file)
-        (file-read-text lock-file)
+        (raise-err (file-read-text lock-file))
         ""))
   (hex (sha256 (encode utf8 (str csproj "\n--- packages.lock.json\n" lock)))))
 
@@ -397,7 +397,7 @@
 (defun (listed file)
   (if (not (file-exists? file))
       None
-      (Some (loop (:for line (string-split (file-read-text file) "\n"))
+      (Some (loop (:for line (string-split (raise-err (file-read-text file)) "\n"))
                   (:let path (string-trim line))
                   (:acc out (listing path) #:when (not (= path "")))
               => out))))
@@ -424,7 +424,7 @@
 (defun (restore-current? dir stamp)
   (def stamp-file (path-combine dir "stamp"))
   (and (file-exists? stamp-file)
-       (= (string-trim (file-read-text stamp-file)) stamp)
+       (= (string-trim (raise-err (file-read-text stamp-file))) stamp)
        (list-current? (path-combine dir "compile.txt"))
        (list-current? (path-combine dir "runtime.txt"))
        (native-current? (path-combine dir "native.txt"))
@@ -466,7 +466,7 @@
     ((Ok (Tuple code out))
      (def said
        (if (file-exists? errors)
-           (file-read-text errors)
+           (raise-err (file-read-text errors))
            ""))
      (Ok (Tuple code (string-trim (str out "\n" said)))))))
 
@@ -603,13 +603,13 @@
     (def inputs (precompile-inputs dir own deps))
     (def inputs-file (path-combine dir "r2r-inputs.txt"))
     (when (and (file-exists? inputs-file)
-               (= (file-read-text inputs-file) inputs)
+               (= (raise-err (file-read-text inputs-file)) inputs)
                (copies-current? (path-combine dir "r2r.txt")))
       (ret (Ok unit)))
     ;; The compiler reads the inputs from the file. It is written again after
     ;; a success, so that a failed run is tried again next time.
     (def pending (path-combine dir "r2r-inputs.pending"))
-    (file-write-text pending inputs)
+    (raise-err (file-write-text pending inputs))
     (def arguments
       (list->vec
        (list (path-combine (compiler-dir) "Bjolang.dll") "--precompile-packages" dir pending)))
@@ -618,7 +618,7 @@
       ((Ok (Tuple 0 out))
        (unless (= (string-trim out) "")
          (println (string-trim out)))
-       (file-write-text inputs-file inputs)
+       (raise-err (file-write-text inputs-file inputs))
        (Ok unit))
       ((Ok (Tuple code out))
        (Err (str "bjo: precompiling the NuGet packages failed (exit code "
@@ -758,12 +758,12 @@
                          "compiling it")
                      " needs the .NET SDK's 'dotnet' command, which is not on PATH."))))
 
-    (directory-create dir)
+    (raise-err (directory-create dir))
     (write-if-changed (path-combine dir "Root.csproj") csproj)
     (loop (:for file (list-append dep-files glue-files))
           (:for text (list-append dep-texts glue-texts))
           (:do (match (parent-directory file)
-                 ((Some parent) (directory-create parent))
+                 ((Some parent) (raise-err (directory-create parent)))
                  (None unit))
                (write-if-changed file text)))
     (def (Ok (Tuple code output)) (run-msbuild dir locked?) :propagate)
@@ -784,10 +784,10 @@
       (loop (:for list-file (list "compile.txt" "runtime.txt"))
             (:let path (path-combine dir list-file))
             (:when (file-exists? path))
-            (:do (file-write-text path (file-read-text path)))))
+            (:do (raise-err (file-write-text path (raise-err (file-read-text path)))))))
 
     ;; After the restore, which may have written the lock file, and after the
     ;; glue is built: a build that failed is tried again next time.
-    (file-write-text (path-combine dir "stamp") (stamp-of generated lock-file))
+    (raise-err (file-write-text (path-combine dir "stamp") (stamp-of generated lock-file)))
     (def (Ok _) (precompile-packages dir packages deps) :propagate)
     (Ok (Some dir))))

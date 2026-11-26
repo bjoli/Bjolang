@@ -181,9 +181,9 @@
 
   ;; A roots file: a relative directory is relative to the file.
   (def dir (path-combine (current-directory) "TestFiles" "265_bjo_docs.roots"))
-  (directory-create dir)
+  (raise-err (directory-create dir))
   (def roots-file (path-combine dir "roots"))
-  (file-write-text roots-file "(roots (root (my pkg) \"src\") (root (other) \"/abs\"))")
+  (raise-err (file-write-text roots-file "(roots (root (my pkg) \"src\") (root (other) \"/abs\"))"))
   (match (read-roots-file roots-file)
     ((Err why) (expect "a roots file reads" why ""))
     ((Ok roots)
@@ -194,10 +194,10 @@
      (expect "a roots package owns its modules"
              (find-module-source (list-append standard roots) (list (sym "my") (sym "pkg") (sym "a") (sym "b")))
              (Some (path-combine dir "src" "a" "b.bjo")))))
-  (file-write-text roots-file "(roots (root my \"src\"))")
+  (raise-err (file-write-text roots-file "(roots (root my \"src\"))"))
   (expect "a malformed roots file"
           (string-contains? (err-text (read-roots-file roots-file)) "expected (root (name ...) \"directory\")")
           #t)
   (expect "no roots file" (err-text (read-roots-file (path-combine dir "none"))) (str "no roots file at " (path-combine dir "none")))
-  (directory-delete-tree dir)
+  (raise-err (directory-delete-tree dir))
   0)

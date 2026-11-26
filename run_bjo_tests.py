@@ -1580,7 +1580,7 @@ GREETER_CORE = (
     '(: greeting (-> string))\n'
     '(defun (greeting)\n'
     '  (def dll (clr-location (clr-this-assembly)))\n'
-    '  (string-trim (file-read-text (path-combine (clr-directory-of dll) ".." "data" "greeting.txt"))))\n')
+    '  (string-trim (raise-err (file-read-text (path-combine (clr-directory-of dll) ".." "data" "greeting.txt")))))\n')
 
 
 def has_native_code(path):

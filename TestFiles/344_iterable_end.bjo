@@ -41,7 +41,7 @@
 
 (: (-> int))
 (defun (open-fds)
-  (vec-length (directory-files "/proc/self/fd")))
+  (vec-length (raise-err (directory-files "/proc/self/fd"))))
 
 (defun (main args)
   (expect "a walk to the end" (ends-of (fun (p) (loop (:for x p)))) 0)
@@ -105,7 +105,7 @@
   ;; where the open descriptors can be counted.
   (when (directory-exists? "/proc/self/fd")
     (def path "344-scratch-lines.txt")
-    (file-write-text path "1\n2\n3\n")
+    (raise-err (file-write-text path "1\n2\n3\n"))
     ;; An empty scope first, so that the assemblies a scope loads are loaded
     ;; before the count. A precompiled (ReadyToRun) assembly holds open
     ;; descriptors of its file, and `System.Threading.ThreadPool` is first
@@ -124,5 +124,5 @@
                                (map (fun (x) (str x "!")) (file-read-lines/seq path))))))
       (ignore (open-fds)))
     (expect "a scope closes what a stopped seql left open" (- (open-fds) before) 0)
-    (file-delete path))
+    (raise-err (file-delete path)))
   0)

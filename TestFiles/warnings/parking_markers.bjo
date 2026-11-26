@@ -16,7 +16,7 @@
 ;; --- NOT reported: a promise of this module ----------------------------------
 
 (: (-> string int) #:non-blocking)
-(defun (promised-length path) (string-length (file-read-text path)))
+(defun (promised-length path) (string-length (raise-err (file-read-text path))))
 
 (: (-> (-> int) int) #:elsewhere work)
 (defun (run-elsewhere work) (work))
@@ -34,7 +34,7 @@
 ;; EXPECT-NO-WARNING: 'quiet-own-elsewhere' is a bjoroutine
 (: (-bjo-> string int))
 (defbjo (quiet-own-elsewhere path)
-  (run-elsewhere (fun () (string-length (file-read-text path)))))
+  (run-elsewhere (fun () (string-length (raise-err (file-read-text path))))))
 
 ;; --- NOT reported: a promise of an imported module ---------------------------
 
@@ -46,12 +46,12 @@
 ;; EXPECT-NO-WARNING: 'quiet-parts' is a bjoroutine
 (: (-bjo-> string int))
 (defbjo (quiet-parts path)
-  (vec-length (computing-each 4 (fun (i) (string-length (file-read-text path))))))
+  (vec-length (computing-each 4 (fun (i) (string-length (raise-err (file-read-text path)))))))
 
 ;; EXPECT-NO-WARNING: 'quiet-in-parts' is a bjoroutine
 (: (-bjo-> string int))
 (defbjo (quiet-in-parts path)
-  (vec-length (in-parts (range 0 8) (fun (part) (string-length (file-read-text path))))))
+  (vec-length (in-parts (range 0 8) (fun (part) (string-length (raise-err (file-read-text path)))))))
 
 ;; --- Reported: the promise is for one parameter, and one function ------------
 
@@ -67,17 +67,17 @@
 ;; EXPECT-WARNING: 'loud-first' is a bjoroutine, and calling 'file-read-text'
 (: (-bjo-> string int))
 (defbjo (loud-first path)
-  (first-here (fun () (string-length (file-read-text path))) (fun () 0)))
+  (first-here (fun () (string-length (raise-err (file-read-text path)))) (fun () 0)))
 
 ;; EXPECT-NO-WARNING: 'quiet-second' is a bjoroutine
 (: (-bjo-> string int))
 (defbjo (quiet-second path)
-  (first-here (fun () 0) (fun () (string-length (file-read-text path)))))
+  (first-here (fun () 0) (fun () (string-length (raise-err (file-read-text path))))))
 
 ;; A function with no promise.
 ;; EXPECT-WARNING: 'loud-plain' is a bjoroutine, and calling 'file-read-text'
 (: (-bjo-> (List string) (List int)))
 (defbjo (loud-plain paths)
-  (list-map (fun (p) (string-length (file-read-text p))) paths))
+  (list-map (fun (p) (string-length (raise-err (file-read-text p)))) paths))
 
 (defun (main) 0)

@@ -119,15 +119,15 @@
 
   ;; On the real file system
   (def dir "582_probe_dir")
-  (when (directory-exists? dir) (directory-delete-tree dir))
-  (directory-create (path-join dir "a/b"))
-  (file-write-text (path-join dir "a/x.c") "")
-  (file-write-text (path-join dir "a/b/y.c") "")
-  (file-write-text (path-join dir "z.h") "")
+  (when (directory-exists? dir) (raise-err (directory-delete-tree dir)))
+  (raise-err (directory-create (path-join dir "a/b")))
+  (raise-err (file-write-text (path-join dir "a/x.c") ""))
+  (raise-err (file-write-text (path-join dir "a/b/y.c") ""))
+  (raise-err (file-write-text (path-join dir "z.h") ""))
   (expect "a real directory" (shown (glob "582_probe_dir/**/*.c"))
           (list "582_probe_dir/a/b/y.c" "582_probe_dir/a/x.c"))
   (expect "..: looked up, not listed" (shown (glob "582_probe_dir/a/../*.h")) (list "582_probe_dir/a/../z.h"))
   (expect "an absolute pattern"
           (shown (glob (str (path->string/lossy (path-normalize (path-join (current-directory) dir))) "/*.h")))
           (list (str (path->string/lossy (path-normalize (path-join (current-directory) dir))) "/z.h")))
-  (directory-delete-tree dir))
+  (raise-err (directory-delete-tree dir)))

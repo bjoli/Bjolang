@@ -15,15 +15,15 @@
 
 (defun (main)
   (def keep (str (temp-directory) "bjolang-into-file-" (random-file-name)))
-  (file-write-text keep "precious")
+  (raise-err (file-write-text keep "precious"))
 
   (expect "into-file: the start fails" (failed? (run/status '(into-file ,keep (no-such-program-bjolang)))) #t)
-  (expect "into-file: the file is as it was" (file-read-text keep) "precious")
+  (expect "into-file: the file is as it was" (raise-err (file-read-text keep)) "precious")
   (expect "append-to-file: the start fails" (failed? (run/status '(append-to-file ,keep (no-such-program-bjolang)))) #t)
-  (expect "append-to-file: the file is as it was" (file-read-text keep) "precious")
+  (expect "append-to-file: the file is as it was" (raise-err (file-read-text keep)) "precious")
 
   (expect "into-file: a command that starts" (failed? (run/status '(into-file ,keep (echo "new")))) #f)
-  (expect "into-file: replaces the file" (file-read-text keep) "new\n")
+  (expect "into-file: replaces the file" (raise-err (file-read-text keep)) "new\n")
   (expect "append-to-file: a command that starts" (failed? (run/status '(append-to-file ,keep (echo "more")))) #f)
-  (expect "append-to-file: adds to the file" (file-read-text keep) "new\nmore\n")
-  (file-delete keep))
+  (expect "append-to-file: adds to the file" (raise-err (file-read-text keep)) "new\nmore\n")
+  (raise-err (file-delete keep)))

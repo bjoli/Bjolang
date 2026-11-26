@@ -133,14 +133,14 @@
 (defun (transform path)
   (println
    (str (string-pad-right (name-of path) 44)
-        (match (try (read-json (open-input-string (file-read-text path)))
+        (match (try (read-json (open-input-string (raise-err (file-read-text path))))
                     #:catch (System.Exception))
           ((Err e) (str "crash " (.ToString e)))
           ((Ok r) (match r ((Ok j) (render j)) ((Err m) (str "refused: " m))))))))
 
 (: (-> string (List string)))
 (defun (sorted-files d)
-  (list-sort (loop (:for p (directory-files d)) (:acc l (listing (path->string/lossy p))))))
+  (list-sort (loop (:for p (raise-err (directory-files d))) (:acc l (listing (path->string/lossy p))))))
 
 (defun (main)
   (if (not (directory-exists? dir))

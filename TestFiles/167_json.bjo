@@ -363,7 +363,7 @@
 
   ;; --- Off a file, and off a fiber -----------------------------------------
   (let ((path (path-combine (current-directory) "167-scratch.json")))
-    (file-write-text path "{\n  \"a\": [1, 2],\n  \"b\": \"x\"\n}\n")
+    (raise-err (file-write-text path "{\n  \"a\": [1, 2],\n  \"b\": \"x\"\n}\n"))
     (match (open-input-file path)
       ((Err e) (expect "the scratch file opens" "no" "yes"))
       ((Ok p)
@@ -371,7 +371,7 @@
                (match (read-json p) ((Ok j) (shape j)) ((Err e) e))
                "{\"a\":[i1,i2],\"b\":\"x\"}")
        (close-input-port p)))
-    (file-delete path))
+    (raise-err (file-delete path)))
 
   (expect "read inside a bjoroutine"
           (run-str (bjo (read-in-a-fiber (open-input-string "[1, 2, 3]"))))

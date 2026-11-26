@@ -8,16 +8,40 @@
 ;; Whole files
 ;; ---------------------------------------------------------------------------
 
+(:doc raise-err
+  (summary "The @code{Ok} value of a result, or its @code{Err} raised.")
+  (arg r "A result whose error is an exception.")
+  (returns "The value in @code{Ok}.")
+  (see file-read-text result-ref)
+  (example """
+    (def text (raise-err (file-read-text "config.toml")))
+    """)
+  (reference """
+    The file and directory functions of the prelude return a
+    @code{(Result Exception a)}. A script that wants the exception instead,
+    for a stack trace or for a @code{try} further out, passes the result to
+    @code{raise-err}. The exception is raised as it is, with its own type,
+    which @code{result-ref} does not keep.
+    """))
+
 (:doc file-read-text
   (summary "The whole of a file, as one string.")
   (arg path "The file to read.")
-  (returns "Everything the file holds.")
-  (see file-read-lines file-read-bytes file-write-text open-input-file)
+  (returns "@code{(Ok text)}, everything the file holds, or the @code{Err} of the failure.")
+  (see file-read-lines file-read-bytes file-write-text open-input-file raise-err)
+  (example """
+    (match (file-read-text "notes.txt")
+      ((Ok text) (println text))
+      ((Err (:is System.IO.FileNotFoundException)) (println "no notes yet"))
+      ((Err e) (println (.-Message e))))
+    """)
   (reference """
     For a file that fits in memory; a port reads one that does not. Opening
-    goes through the @code{FS} effect's @code{open-read-stream}, and an
-    @code{Err} from it is raised, as the .NET methods raise: wrap the call in
-    @code{try} for a @code{Result}. The file is closed before this returns.
+    goes through the @code{FS} effect's @code{open-read-stream}, and its
+    @code{Err} is returned. An @code{IOException} or an
+    @code{UnauthorizedAccessException} while the file is read is an
+    @code{Err} too. A cancellation is raised. The file is closed before this
+    returns.
 
     A bjoroutine calling it awaits the file rather than parking its thread.
     """))
@@ -26,10 +50,11 @@
   (summary "Writes a string to a file, replacing what it held.")
   (arg path "The file to write. Created if it is missing, emptied if it is there.")
   (arg contents "The text to write.")
+  (returns "@code{(Ok unit)}, or the @code{Err} of the failure.")
   (see file-append-text file-write-lines file-read-text)
   (reference """
-    Opened with @code{Truncate} through the @code{FS} effect; an error opening
-    it is raised. The text is flushed before the file is closed, and a
+    Opened with @code{Truncate} through the @code{FS} effect. An error opening
+    or writing it is the @code{Err}. The text is flushed before the file is closed, and a
     bjoroutine awaits the write.
     """))
 
@@ -37,30 +62,32 @@
   (summary "Writes a string after what a file holds.")
   (arg path "The file to add to. Created if it is missing.")
   (arg contents "The text to add.")
+  (returns "@code{(Ok unit)}, or the @code{Err} of the failure.")
   (see file-write-text file-append-bytes)
   (reference """
-    Opened with @code{Append} through the @code{FS} effect; an error opening
-    it is raised.
+    Opened with @code{Append} through the @code{FS} effect. An error opening
+    or writing it is the @code{Err}.
     """))
 
 (:doc file-read-lines
   (summary "The lines of a file, without their line ends.")
   (arg path "The file to read.")
   (key #:mode "What ends a line, as for read-line: Any by default.")
-  (returns "One string per line, in order.")
+  (returns "@code{(Ok lines)}, one string per line, in order, or the @code{Err} of the failure.")
   (see file-write-lines file-read-lines/seq file-read-text LineMode)
   (reference """
     By default @code{"\n"}, @code{"\r\n"} and a lone @code{"\r"} each end
     a line, as @code{read-line} reads them, a last line needs none,
     and a final line end makes no empty line after it. The whole file is
     read before this returns; @code{file-read-lines/seq} pulls the lines
-    lazily instead. An error opening the file is raised.
+    lazily instead. An error opening or reading the file is the @code{Err}.
     """))
 
 (:doc file-write-lines
   (summary "Writes lines to a file, each followed by a newline, replacing what it held.")
   (arg path "The file to write. Created if it is missing, emptied if it is there.")
   (arg lines "The lines, without line ends.")
+  (returns "@code{(Ok unit)}, or the @code{Err} of the failure.")
   (see file-read-lines file-write-text)
   (reference """
     Every line is followed by @code{"\n"}, the last one too, on every OS, so
@@ -72,23 +99,25 @@
 (:doc file-read-bytes
   (summary "The whole of a file, as bytes.")
   (arg path "The file to read.")
-  (returns "A new array holding everything the file holds.")
+  (returns "@code{(Ok bytes)}, a new array holding everything the file holds, or the @code{Err} of the failure.")
   (see file-write-bytes file-read-text)
   (reference """
-    Opened through the @code{FS} effect's @code{open-read-stream}; an
-    @code{Err} from it is raised.
+    Opened through the @code{FS} effect's @code{open-read-stream}, whose
+    @code{Err} is returned.
     """))
 
 (:doc file-write-bytes
   (summary "Writes bytes to a file, replacing what it held.")
   (arg path "The file to write. Created if it is missing, emptied if it is there.")
   (arg bytes "What to write.")
+  (returns "@code{(Ok unit)}, or the @code{Err} of the failure.")
   (see file-append-bytes file-read-bytes))
 
 (:doc file-append-bytes
   (summary "Writes bytes after what a file holds.")
   (arg path "The file to add to. Created if it is missing.")
   (arg bytes "What to add.")
+  (returns "@code{(Ok unit)}, or the @code{Err} of the failure.")
   (see file-write-bytes file-append-text))
 
 (:doc file-copy
@@ -96,10 +125,10 @@
   (arg from "The file to copy.")
   (arg to "Where the copy goes.")
   (key #:mode "How to is written: CreateNew, the default, Truncate or Append.")
-  (raises System.IO.IOException "When from and to are the same path.")
+  (returns "@code{(Ok unit)}, or the @code{Err} of the failure. A copy onto its own path is an @code{(Err IOException)}.")
   (see file-move file-read-bytes)
   (example """
-    (file-copy "a.txt" "b.txt")                    ; fails if b.txt exists
+    (file-copy "a.txt" "b.txt")                    ; an Err if b.txt exists
     (file-copy "a.txt" "b.txt" #:mode Truncate)    ; replaces it
     """)
   (reference """
@@ -108,7 +137,7 @@
     does not default to @code{Truncate}. @code{Truncate} replaces @code{to},
     and @code{Append} adds to it. The source is opened first, so a missing
     one leaves @code{to} as it was. A copy onto its own path, compared after
-    @code{path-absolute}, is refused.
+    @code{path-absolute}, is an error.
 
     @code{to} may be the source under another name, a link say, and the text
     of the paths cannot tell. So nothing that could empty the source is ever
@@ -117,6 +146,9 @@
     rather than writing through it, and @code{Append} copies the length the
     source had when it was opened, so a file appended to itself grows once and
     stops. The copy is a new file, with a modified time of its own.
+
+    With @code{Truncate}, a failed or cancelled copy deletes the new file, and
+    @code{to} stays as it was.
     """))
 
 (:doc file-info
@@ -150,10 +182,11 @@
 (:doc file-delete
   (summary "Deletes a file.")
   (arg path "The file to delete.")
+  (returns "@code{(Ok unit)}, or the @code{Err} of the failure.")
   (see directory-delete fs-delete-file)
   (reference """
     A missing file is not an error. Through the @code{FS} effect's
-    @code{fs-delete-file}; an @code{Err} from it is raised.
+    @code{fs-delete-file}, whose result is returned.
     """))
 
 (:doc file-move
@@ -161,10 +194,11 @@
   (arg from "What to move.")
   (arg to "Its new path.")
   (key #:mode "MoveNew, the default, or MoveReplace.")
+  (returns "@code{(Ok unit)}, or the @code{Err} of the failure.")
   (see MoveMode file-copy fs-move)
   (example """
-    (file-write-text "config.tmp" text)
-    (file-move "config.tmp" "config" #:mode MoveReplace)   ; never seen half-written
+    (raise-err (file-write-text "config.tmp" text))
+    (raise-err (file-move "config.tmp" "config" #:mode MoveReplace))   ; never seen half-written
     """)
   (reference """
     @code{MoveNew} fails if @code{to} exists. @code{MoveReplace} replaces a
@@ -173,8 +207,8 @@
     over the old one. A directory is never replaced, and never replaces
     anything.
 
-    Through the @code{FS} effect's @code{fs-move}; an @code{Err} from it is
-    raised.
+    Through the @code{FS} effect's @code{fs-move}, whose result is
+    returned.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -200,7 +234,8 @@
     that is ambient at the first pull. In @code{main} that is the end of the
     program, so put such a walk in a @code{with-scope} to close it sooner.
 
-    A missing file raises on the first pull. @code{(std ports)}'
+    A sequence has no place for a @code{Result}, so a missing file raises on
+    the first pull, unlike @code{file-read-lines}. @code{(std ports)}'
     @code{file->seq}, which is built on this, reports it as a @code{Result}
     at the call instead.
 
@@ -299,25 +334,28 @@
 (:doc directory-create
   (summary "Creates a directory, and every missing one along its path.")
   (arg path "The directory to create.")
+  (returns "@code{(Ok unit)}, or the @code{Err} of the failure.")
   (see directory-delete fs-create-directory)
   (reference """
     One that is already there is not an error, so the call needs no guard.
-    Through the @code{FS} effect's @code{fs-create-directory}; an @code{Err}
-    from it is raised.
+    Through the @code{FS} effect's @code{fs-create-directory}, whose result
+    is returned.
     """))
 
 (:doc directory-delete
   (summary "Deletes an empty directory.")
   (arg path "The directory to delete. Empty.")
+  (returns "@code{(Ok unit)}, or the @code{Err} of the failure.")
   (see directory-delete-tree file-delete fs-delete-directory)
   (reference """
-    A missing or non-empty directory is an error, raised from the
+    A missing or non-empty directory is an error, the @code{Err} of the
     @code{FS} effect's @code{fs-delete-directory}.
     """))
 
 (:doc directory-delete-tree
   (summary "Deletes a directory and everything under it.")
   (arg path "The directory to delete.")
+  (returns "@code{(Ok unit)}, or the @code{Err} of the failure.")
   (see directory-delete directory-walk)
   (reference """
     Spelled differently from @code{directory-delete} because it is not a
@@ -329,26 +367,29 @@
     points at is deleted: a link to the home directory inside a build
     directory leaves the home directory alone, and a link back up the tree
     does not loop. A link that leads nowhere is removed as a file.
+
+    The first error stops the deletion and is the @code{Err}. What was
+    deleted before it stays deleted.
     """))
 
 (:doc directory-files
   (summary "The files directly in a directory.")
   (arg path "The directory to list.")
-  (returns "Whole paths, in the order the OS lists them.")
+  (returns "@code{(Ok paths)}, whole paths in the order the OS lists them, or the @code{Err} of the failure.")
   (see directory-subdirectories directory-walk Path)
   (example """
-    (vec-filter #(path-has-extension? &1 "bjo") (directory-files dir))
+    (result-map #(vec-filter #(path-has-extension? &1 "bjo") &1) (directory-files dir))
     """)
   (reference """
     Directory listing does not accept a pattern glob; filter the returned
-    vector instead. An error listing is raised from the @code{FS} effect's
-    @code{fs-list}.
+    vector instead. An error listing is the @code{Err} of the @code{FS}
+    effect's @code{fs-list}.
     """))
 
 (:doc directory-subdirectories
   (summary "The directories directly in a directory.")
   (arg path "The directory to list.")
-  (returns "Whole paths, in the order the OS lists them.")
+  (returns "@code{(Ok paths)}, whole paths in the order the OS lists them, or the @code{Err} of the failure.")
   (see directory-files directory-walk))
 
 (:doc directory-walk
@@ -372,8 +413,8 @@
 
     Nothing is listed until the sequence is walked, using whatever @code{FS}
     handler is active during traversal. Stopping early avoids reading further
-    entries. An error listing a directory is raised, as @code{directory-files}
-    raises it. A @code{seq} body cannot await, so a bjoroutine pulling from it
+    entries. A sequence has no place for a @code{Result}, so an error listing
+    a directory is raised. A @code{seq} body cannot await, so a bjoroutine pulling from it
     parks its thread on each pull.
     """))
 

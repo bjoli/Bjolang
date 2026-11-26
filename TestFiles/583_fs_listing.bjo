@@ -33,9 +33,9 @@
 
 (defun (main)
   (when (directory-exists? dir) (ignore (run/status '(rm -rf ,dir))))
-  (directory-create (path-join dir "sub"))
-  (file-write-text (in-dir "f.txt") "f")
-  (file-write-text (in-dir "sub/g.txt") "g")
+  (raise-err (directory-create (path-join dir "sub")))
+  (raise-err (file-write-text (in-dir "f.txt") "f"))
+  (raise-err (file-write-text (in-dir "sub/g.txt") "g"))
   (def made
     (and (ran? (run/status '(ln -s f.txt ,(in-dir "to-file"))))
          (ran? (run/status '(ln -s sub ,(in-dir "to-dir"))))
@@ -48,10 +48,10 @@
                 (kinds)
                 (list "dangling link" "f.txt file" "fifo other" "sub dir" "to-dir link" "to-file link"))
         (expect "the files, with links followed; a link to nothing is a file"
-                (names (directory-files dir))
+                (names (raise-err (directory-files dir)))
                 (list "dangling" "f.txt" "fifo" "to-file"))
         (expect "the directories, with links followed"
-                (names (directory-subdirectories dir))
+                (names (raise-err (directory-subdirectories dir)))
                 (list "sub" "to-dir"))
         (expect "a walk follows a link to a file, and not one to a directory"
                 (list-map path->string/lossy (->list (directory-walk dir)))
@@ -83,11 +83,11 @@
                 (any? (fun (e) (= (record-ref e entry-name) raw)) (result-ref-or (fs-list (path dir)) []))
                 #t)
         (expect "and the listing functions"
-                (any? (fun (p) (= (path-name p) (Some raw))) (directory-files dir))
+                (any? (fun (p) (= (path-name p) (Some raw))) (raise-err (directory-files dir)))
                 #t)
         (expect "glob finds it" (vec-length (->vec (glob "583_probe_dir/caf*.txt"))) 1)
         (expect "a .NET operation on it raises"
-                (match (try (file-read-text (path-join dir raw)) #:catch (System.ArgumentException))
+                (match (file-read-text (path-join dir raw))
                   ((Ok _) #f) ((Err _) #t))
                 #t)))
 

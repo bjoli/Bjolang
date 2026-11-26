@@ -46,7 +46,7 @@
 ;; "# CaseFolding-18.0.0.txt" is "18.0.0".
 (: (-> string string))
 (defun (ucd-version file)
-  (def first (vec-ref (file-read-lines file) 0))
+  (def first (vec-ref (raise-err (file-read-lines file)) 0))
   (def parts (string-split first "-"))
   (string-trim (string-replace (vec-ref parts (- (vec-length parts) 1)) ".txt" "")))
 
@@ -63,7 +63,7 @@
 (: (-> string (Vec (Vec string))))
 (defun (ucd-fields file)
   {vecing (vec-map string-trim (string-split data ";"))
-          (:for line (file-read-lines file))
+          (:for line (raise-err (file-read-lines file)))
           (:let data (string-trim (match (string-split-once line "#")
                                     ((Some (Tuple before _)) before)
                                     (None line))))
@@ -210,7 +210,7 @@
         (:do (unless (and (<= 0 v) (<= v 255))
                (panic! #"unicode-tables: ${v} does not fit in a byte in ${file}"))
              (bytestringbuilder-add-byte! b (cast byte v))))
-  (file-write-bytes file (bytestringbuilder->bytes b)))
+  (raise-err (file-write-bytes file (bytestringbuilder->bytes b))))
 
 ;; Writes `values` as little-endian int32.
 (: (-> string (Vec int) void))
@@ -218,7 +218,7 @@
   (def b (bytestringbuilder-empty))
   (loop (:for v values)
         (:do (bytestringbuilder-add-int! b v)))
-  (file-write-bytes file (bytestringbuilder->bytes b)))
+  (raise-err (file-write-bytes file (bytestringbuilder->bytes b))))
 
 ;; Writes `values` as little-endian int64.
 (: (-> string (Vec long) void))
@@ -226,7 +226,7 @@
   (def b (bytestringbuilder-empty))
   (loop (:for v values)
         (:do (bytestringbuilder-add-long! b v)))
-  (file-write-bytes file (bytestringbuilder->bytes b)))
+  (raise-err (file-write-bytes file (bytestringbuilder->bytes b))))
 
 ;; Writes `text`, making the directory when it is missing.
 (: (-> string string void))
@@ -235,6 +235,6 @@
   (match dir
     ((Some d)
      (unless (directory-exists? d)
-       (directory-create d)))
+       (raise-err (directory-create d))))
     (None unit))
-  (file-write-text file text))
+  (raise-err (file-write-text file text)))

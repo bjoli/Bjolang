@@ -34,8 +34,8 @@
     ((Err e) (panic! (str "could not open the probe file: " (.-Message e))))))
 
 (defbjo (main)
-  (directory-create (probe-dir))
-  (file-write-text (probe) "one\ntwo\n")
+  (raise-err (directory-create (probe-dir)))
+  (raise-err (file-write-text (probe) "one\ntwo\n"))
 
   ;; --- The leak test -------------------------------------------------------
   ;;
@@ -102,7 +102,7 @@
   ;; The scope released it, which is what flushed and closed it - so the file
   ;; has the text even though nothing called close-output-port.
   (expect "an output port nobody closed is flushed and closed by its scope"
-          (file-read-text out-path) "from an owned port")
+          (raise-err (file-read-text out-path)) "from an owned port")
 
   ;; --- The standard ports are never owned ----------------------------------
   ;;
@@ -117,5 +117,5 @@
           (let () (close-output-port (parameter-ref current-output-port)) "still here")
           "still here")
 
-  (directory-delete-tree (probe-dir))
+  (raise-err (directory-delete-tree (probe-dir)))
   0)

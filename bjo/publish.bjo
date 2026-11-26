@@ -180,15 +180,15 @@
 (: copy-to! (-> string string string void) #:sync)
 (defun (copy-to! out rel from)
   (def to (path-combine out rel))
-  (directory-create (clr-directory-of to))
-  (file-copy from to #:mode Truncate))
+  (raise-err (directory-create (clr-directory-of to)))
+  (raise-err (file-copy from to #:mode Truncate)))
 
 ;; Copies a native executable. Through .NET's `File.Copy`, which keeps the file's
 ;; mode on Unix: a copy made by `file-copy` could not be run.
 (: copy-executable! (-> string string string void) #:sync)
 (defun (copy-executable! out rel from)
   (def to (path-combine out rel))
-  (directory-create (clr-directory-of to))
+  (raise-err (directory-create (clr-directory-of to)))
   (clr-file-copy from to #t))
 
 ;; Copies an assembly, and its `.pdb` when there is one, so that a stack trace
@@ -204,11 +204,11 @@
 ;; answers true for.
 (: copy-tree! (-> Path Path (-> Path bool) void) #:sync)
 (defun (copy-tree! from to skip?)
-  (directory-create to)
-  (loop (:for f (directory-files from))
+  (raise-err (directory-create to))
+  (loop (:for f (raise-err (directory-files from)))
         (:when (not (skip? f)))
-        (:do (file-copy f (same-name-under to f) #:mode Truncate)))
-  (loop (:for d (directory-subdirectories from))
+        (:do (raise-err (file-copy f (same-name-under to f) #:mode Truncate))))
+  (loop (:for d (raise-err (directory-subdirectories from)))
         (:do (copy-tree! d (same-name-under to d) skip?))))
 
 ;; `dir` joined with the name of `entry`, an entry of a listing, which has one.
@@ -239,8 +239,8 @@
 ;; How many files are under `dir`, at any depth.
 (: count-files (-> Path int) #:sync)
 (defun (count-files dir)
-  (+ (length (directory-files dir))
-     (loop (:for d (directory-subdirectories dir))
+  (+ (length (raise-err (directory-files dir)))
+     (loop (:for d (raise-err (directory-subdirectories dir)))
            (:acc n (summing (count-files d)))
        => n)))
 
@@ -251,13 +251,13 @@
 (defun (prepare-output! out)
   (cond
     ((not (directory-exists? out))
-     (directory-create out)
+     (raise-err (directory-create out))
      None)
     ((file-exists? (path-combine out published-marker))
-     (directory-delete-tree out)
-     (directory-create out)
+     (raise-err (directory-delete-tree out))
+     (raise-err (directory-create out))
      None)
-    ((and (empty? (directory-files out)) (empty? (directory-subdirectories out))) None)
+    ((and (empty? (raise-err (directory-files out))) (empty? (raise-err (directory-subdirectories out)))) None)
     (else
      (Some (str "bjo publish: "
                 out
@@ -378,10 +378,10 @@
                         (listing
                          (str kind "\t" name "\t" (string-replace (destination path) "\\" "/"))))
               => lines))
-          (file-write-text (path-combine out (str (clr-file-stem program) ".bjolinks"))
-                           (str (string-join (list->vec table) "\n") "\n"))
-          (file-write-text (path-combine out published-marker)
-                           "Made by bjo publish. Publishing again replaces this directory.\n")
+          (raise-err (file-write-text (path-combine out (str (clr-file-stem program) ".bjolinks"))
+                           (str (string-join (list->vec table) "\n") "\n")))
+          (raise-err (file-write-text (path-combine out published-marker)
+                           "Made by bjo publish. Publishing again replaces this directory.\n"))
           (count-files (path out)))
         #:catch (System.Exception)))
 
@@ -419,10 +419,10 @@
               (:do (copy-resource! out
                                    (path-combine (package-prefix package) resource)
                                    (path-combine (record-ref package dir) resource))))
-        (file-write-text (path-combine out (clr-change-ext (clr-file-name native) ".bjolinks"))
-                         (str (string-join (list->vec table) "\n") "\n"))
-        (file-write-text (path-combine out published-marker)
-                         "Made by bjo publish. Publishing again replaces this directory.\n")
+        (raise-err (file-write-text (path-combine out (clr-change-ext (clr-file-name native) ".bjolinks"))
+                         (str (string-join (list->vec table) "\n") "\n")))
+        (raise-err (file-write-text (path-combine out published-marker)
+                         "Made by bjo publish. Publishing again replaces this directory.\n"))
         (count-files (path out)))
       #:catch (System.Exception)))
   (result-map-err (fun (e) (str "bjo publish: " (error-message e))) copied))

@@ -135,7 +135,7 @@
   ;; abandoned. `(sleep 0.3)` also happens to exercise a `double` word, which
   ;; has to reach the program as `0.3` whatever the machine's locale says.
   (let ((marker (scratch "not-killed.txt")))
-    (when (file-exists? marker) (file-delete marker))
+    (when (file-exists? marker) (raise-err (file-delete marker)))
     (expect "running loses a race"
             (match (sync (choose (wrap (running '("sh" "-c" ,(str "sleep 0.3; echo alive > " marker)))
                                        (fun (r) (Finished r)))
@@ -192,7 +192,7 @@
   ;; The loop owns the form: taking the first line kills it. The marker is
   ;; written 300ms later unless it was.
   (let ((marker (scratch "stream-not-killed.txt")))
-    (when (file-exists? marker) (file-delete marker))
+    (when (file-exists? marker) (raise-err (file-delete marker)))
     (expect "a loop left early"
             {taking 1 line (:for line (run/stream '("sh" "-c" ,(str "echo first; sleep 0.3; echo alive > " marker)) read-line))}
             (list "first"))

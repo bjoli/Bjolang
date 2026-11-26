@@ -314,17 +314,16 @@
             #:catch (System.Exception)))
      (match copied
        ((Err e)
-        (file-delete part)
+        (ignore (file-delete part))
         (raise e))
        ((Ok (Err why))
-        (file-delete part)
+        (ignore (file-delete part))
         (Err why))
        ((Ok (Ok count))
-        (match (try (file-move part path #:mode (if overwrite MoveReplace MoveNew))
-                    #:catch (System.Exception))
-          ((Ok moved) (Ok count))
+        (match (file-move part path #:mode (if overwrite MoveReplace MoveNew))
+          ((Ok _) (Ok count))
           ((Err e)
-           (file-delete part)
+           (ignore (file-delete part))
            (Err (File (.-Message e))))))))))
 
 ;; Sends `req` and writes its body to `path`, through `part`.

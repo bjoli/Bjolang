@@ -104,37 +104,36 @@
 
   ;; The file functions take a string, a ByteString or a Path
   (def dir (path "581_probe_dir"))
-  (when (directory-exists? dir) (directory-delete-tree dir))
-  (directory-create dir)
+  (when (directory-exists? dir) (raise-err (directory-delete-tree dir)))
+  (raise-err (directory-create dir))
   (def file (path-join dir "a.txt"))
-  (file-write-text file "one")
-  (expect "a Path to write and read" (file-read-text file) "one")
-  (expect "the same file as a string" (file-read-text "581_probe_dir/a.txt") "one")
+  (raise-err (file-write-text file "one"))
+  (expect "a Path to write and read" (raise-err (file-read-text file)) "one")
+  (expect "the same file as a string" (raise-err (file-read-text "581_probe_dir/a.txt")) "one")
   (expect "the same file as a ByteString"
-          (file-read-text (string->bytestring "581_probe_dir/a.txt")) "one")
+          (raise-err (file-read-text (string->bytestring "581_probe_dir/a.txt"))) "one")
   (expect "exists" (file-exists? file) #t)
   (expect "a directory" (directory-exists? dir) #t)
-  (file-copy file (path-join dir "b.txt"))
-  (file-move (path-join dir "b.txt") (path-join dir "c.txt"))
-  (expect "copied and moved" (vec-sort (directory-files dir))
+  (raise-err (file-copy file (path-join dir "b.txt")))
+  (raise-err (file-move (path-join dir "b.txt") (path-join dir "c.txt")))
+  (expect "copied and moved" (vec-sort (raise-err (directory-files dir)))
           (vec-map path ["581_probe_dir/a.txt" "581_probe_dir/c.txt"]))
-  (expect "a copy onto itself" (threw? (try (file-copy file (path "581_probe_dir/./a.txt") #:mode Truncate)
-                                            #:catch (System.Exception)))
+  (expect "a copy onto itself" (threw? (file-copy file (path "581_probe_dir/./a.txt") #:mode Truncate))
           #t)
 
   ;; .NET takes UTF-8 names only, and a name that is not is not changed
   (def bad (path-join dir raw))
   (expect "a name that is not UTF-8 is not written"
-          (threw? (try (file-write-text bad "x") #:catch (System.ArgumentException)))
+          (threw? (file-write-text bad "x"))
           #t)
   (expect "nor asked about" (threw? (try (file-exists? bad) #:catch (System.ArgumentException))) #t)
-  (expect "the other file is still there" (vec-length (directory-files dir)) 2)
-  (directory-delete-tree dir)
+  (expect "the other file is still there" (vec-length (raise-err (directory-files dir))) 2)
+  (raise-err (directory-delete-tree dir))
   (expect "deleted" (directory-exists? dir) #f)
 
   ;; A handler gets the Path, with the bytes it was given
   (with-fake-fs (("x/y.txt" "fake"))
-    (expect "the fake file system takes a Path" (file-read-text (path-join "x" "y.txt")) "fake")))
+    (expect "the fake file system takes a Path" (raise-err (file-read-text (path-join "x" "y.txt"))) "fake")))
 
 (: (-> (Result System.Exception %a) bool))
 (defun (threw? r)

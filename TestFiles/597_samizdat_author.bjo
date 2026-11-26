@@ -115,22 +115,22 @@
 
   ;; --- files -----------------------------------------------------------------------------
   (def dir (path-combine (temp-dir) "bjolang-597-samizdat-author"))
-  (when (directory-exists? dir) (directory-delete-tree dir))
-  (directory-create (path-combine dir "src" "sub"))
-  (directory-create (path-combine dir "src" ".hidden"))
+  (when (directory-exists? dir) (raise-err (directory-delete-tree dir)))
+  (raise-err (directory-create (path-combine dir "src" "sub")))
+  (raise-err (directory-create (path-combine dir "src" ".hidden")))
   (def index (path-combine dir "src" "index.sz"))
-  (file-write-text index "(meta (title \"Home\"))\nSee @link[\"sub/b.sz\"]{b}.\n\n@include[\"part.txt\"]\n")
-  (file-write-text (path-combine dir "src" "part.txt") "Included.")
-  (file-write-text (path-combine dir "src" "sub" "b.sz") "@section{B}\n")
-  (file-write-text (path-combine dir "src" ".hidden" "c.sz") "C\n")
-  (file-write-text (path-combine dir "src" "bad.sz") "@nosuch{x}\n")
+  (raise-err (file-write-text index "(meta (title \"Home\"))\nSee @link[\"sub/b.sz\"]{b}.\n\n@include[\"part.txt\"]\n"))
+  (raise-err (file-write-text (path-combine dir "src" "part.txt") "Included."))
+  (raise-err (file-write-text (path-combine dir "src" "sub" "b.sz") "@section{B}\n"))
+  (raise-err (file-write-text (path-combine dir "src" ".hidden" "c.sz") "C\n"))
+  (raise-err (file-write-text (path-combine dir "src" "bad.sz") "@nosuch{x}\n"))
 
   (expect "convert-file writes the output beside its source" (convert-file index 'markdown) (Ok #t))
-  (expect "the output" (file-read-text (path-combine dir "src" "index.md")) "# Home\n\nSee [b](sub/b.md).\n\nIncluded.\n")
+  (expect "the output" (raise-err (file-read-text (path-combine dir "src" "index.md"))) "# Home\n\nSee [b](sub/b.md).\n\nIncluded.\n")
   (expect "a second time it changes nothing" (convert-file index 'markdown) (Ok #f))
-  (file-write-text (path-combine dir "src" "index.md") "edited")
+  (raise-err (file-write-text (path-combine dir "src" "index.md") "edited"))
   (expect "#:check says that it would change" (convert-file index 'markdown #:check #t) (Ok #t))
-  (expect "and writes nothing" (file-read-text (path-combine dir "src" "index.md")) "edited")
+  (expect "and writes nothing" (raise-err (file-read-text (path-combine dir "src" "index.md"))) "edited")
   (expect "#:output names the file, and its directory is made"
           (convert-file index 'html #:output (path-combine dir "out" "deep" "i.html")) (Ok #t))
   (expect-true "which is there" (file-exists? (path-combine dir "out" "deep" "i.html")))
@@ -157,21 +157,21 @@
           (vec-map (fun (t) (match t ((Tuple _ target r) (Tuple (file-exists? target) r)))) (vec-drop tree 1))
           [(Tuple #t (Ok #t)) (Tuple #t (Ok #t))])
   (expect-true "a page links to the other page"
-               (string-contains? (file-read-text (path-combine site "index.html")) "<a href=\"sub/b.html\">b</a>"))
+               (string-contains? (raise-err (file-read-text (path-combine site "index.html"))) "<a href=\"sub/b.html\">b</a>"))
   (expect "with #:check after a build, nothing would change"
           (vec-map (fun (t) (match t ((Tuple _ _ r) r))) (vec-drop (convert-tree (path-combine dir "src") 'html #:out site #:check #t) 1))
           [(Ok #f) (Ok #f)])
 
   (def links-dir (path-combine dir "links"))
-  (directory-create (path-combine links-dir "sub"))
-  (file-write-text (path-combine links-dir "sub" "b.sz") "@section{Install}\n")
-  (file-write-text (path-combine links-dir "pic one.png") "")
-  (file-write-text (path-combine links-dir "a.sz")
+  (raise-err (directory-create (path-combine links-dir "sub")))
+  (raise-err (file-write-text (path-combine links-dir "sub" "b.sz") "@section{Install}\n"))
+  (raise-err (file-write-text (path-combine links-dir "pic one.png") ""))
+  (raise-err (file-write-text (path-combine links-dir "a.sz")
                    (str "@section{Top}\n"
                         "@link[\"sub/b.sz#install\"]{1} @link[\"sub/b.sz#instal\"]{2} @link[\"missing.sz\"]{3}\n"
                         "@link[\"#top\"]{4} @link[\"#nope\"]{5} @link[\"sub/b.html#install\"]{6}\n"
                         "@link[\"sub/b.md#nope\"]{7} @image[\"pic%20one.png\"] @link[\"https://x.org/y.sz\"]{8}\n"
-                        "@link[\"/abs.css\"]{9} @link[\"sub/\"]{10} @link[\"mailto:a@b.c\"]{11}\n"))
+                        "@link[\"/abs.css\"]{9} @link[\"sub/\"]{10} @link[\"mailto:a@b.c\"]{11}\n")))
   (match (check-links (path-combine links-dir "a.sz"))
     ((Err why) (expect-true why #f))
     ((Ok broken)
@@ -185,7 +185,7 @@
   (expect "a document that is not there is an Err"
           (match (check-links (path-combine links-dir "none.sz")) ((Err _) #t) (_ #f))
           #t)
-  (directory-delete-tree dir)
+  (raise-err (directory-delete-tree dir))
 
   (println "author ok")
   0)

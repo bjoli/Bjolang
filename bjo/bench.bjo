@@ -278,10 +278,10 @@
 (: listed-cases (-> BenchProgram (List string) (Result string (List Listed))) #:sync)
 (defun (listed-cases p passed)
   (def commands (str (program-exe p) ".serve-input"))
-  (file-write-text commands "(list)\n(quit)\n")
+  (raise-err (file-write-text commands "(list)\n(quit)\n"))
   (def answer
     (run/output '(from-file ,commands (dotnet [,(program-exe p) "--serve" ,@(list->vec passed)]))))
-  (file-delete commands)
+  (raise-err (file-delete commands))
   (match answer
     ((Ok (Tuple 0 text))
      (match (parse-bjodat (string-trim text))

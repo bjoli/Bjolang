@@ -42,18 +42,18 @@
   (def root "112_probe_dir")
   (def nested (path-combine root "inner"))
 
-  (directory-create nested)
+  (raise-err (directory-create nested))
   (expect-true "create makes the parents too" (directory-exists? nested))
-  (directory-create nested)
+  (raise-err (directory-create nested))
   (expect-true "and creating it again is not an error" (directory-exists? nested))
 
-  (file-write-text (path-combine root "a.txt") "a")
-  (file-write-text (path-combine root "b.log") "b")
-  (expect "files, not subdirectories" (length (directory-files root)) 2)
-  (expect "subdirectories, not files" (length (directory-subdirectories root)) 1)
+  (raise-err (file-write-text (path-combine root "a.txt") "a"))
+  (raise-err (file-write-text (path-combine root "b.log") "b"))
+  (expect "files, not subdirectories" (length (raise-err (directory-files root))) 2)
+  (expect "subdirectories, not files" (length (raise-err (directory-subdirectories root))) 1)
   (expect "and a pattern is a filter"
           (int->string (length (vec-filter #(path-has-extension? &1 "txt")
-                                           (directory-files root))))
+                                           (raise-err (directory-files root)))))
           "1")
 
   ;; --- The working directory -----------------------------------------------
@@ -66,15 +66,15 @@
   (expect "and back" (current-directory) home)
 
   ;; --- Deleting ------------------------------------------------------------
-  (directory-delete nested)
+  (raise-err (directory-delete nested))
   (expect-false "an empty directory can be deleted" (directory-exists? nested))
 
   ;; A directory with files in it needs the tree form, and refuses the other.
   (expect-true "a non-empty one refuses"
-               (match (try (directory-delete root) #:catch (System.IO.IOException))
+               (match (directory-delete root)
                  ((Ok u) #f)
                  ((Err e) #t)))
-  (directory-delete-tree root)
+  (raise-err (directory-delete-tree root))
   (expect-false "and the tree form takes it" (directory-exists? root))
 
   (println "112 ok")

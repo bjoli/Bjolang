@@ -305,20 +305,18 @@
 ;; ---------------------------------------------------------------------------
 ;; `(:is Type binder)` — a .NET type test in pattern position.
 ;;
-;; A guarded call gives back `(Result System.Exception %a)`, which says a
-;; failure happened but not which one. `:is` is how an `Err` arm tells them
+;; A guarded call, or a file function of the prelude, gives back
+;; `(Result System.Exception %a)`, which says a failure happened but not which
+;; one. `:is` is how an `Err` arm tells them
 ;; apart, binding the value at the *narrowed* type so the arm can use members
 ;; the scrutinee's static type does not have.
 ;; ---------------------------------------------------------------------------
 
-;; One guard, several failures, told apart by type. The arms are tried in
+;; One result, several failures, told apart by type. The arms are tried in
 ;; order, so the specific type has to precede the general one.
 (: (-> string string))
 (defun (classify path)
-  (match (try (file-read-text path)
-           #:catch (System.IO.FileNotFoundException
-                    System.IO.DirectoryNotFoundException
-                    System.ArgumentException))
+  (match (file-read-text path)
     ((Ok text) "read")
     ((Err (:is System.IO.FileNotFoundException)) "no such file")
     ((Err (:is System.IO.DirectoryNotFoundException)) "no such directory")
@@ -330,7 +328,7 @@
 ;; A `:is` covers nothing, so the `Err` column still needs a clause of its own.
 (: (-> string string))
 (defun (missing-file-name path)
-  (match (try (file-read-text path) #:catch (System.IO.FileNotFoundException))
+  (match (file-read-text path)
     ((Ok text) "")
     ((Err (:is System.IO.FileNotFoundException e)) (.-FileName e))
     ((Err e) "")))
@@ -347,7 +345,7 @@
 (: (-> void))
 (defun (test-type-patterns)
   (def path "56_type_patterns.tmp")
-  (file-write-text path "here")
+  (raise-err (file-write-text path "here"))
 
   (expect "success" (classify path) "read")
   (expect "missing file" (classify "definitely-not-here.txt") "no such file")

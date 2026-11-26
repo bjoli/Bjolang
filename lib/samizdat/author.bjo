@@ -288,15 +288,27 @@
         output))
   (def (Ok doc) (load-document input #:setup setup) :propagate)
   (def text (render doc format #:setup setup))
-  (def changed (not (and (file-exists? target) (= (file-read-text target) text))))
-  (when (and changed (not check))
+  (def changed
+    (match (file-read-text target)
+      ((Ok old) (not (= old text)))
+      ((Err _) #t)))
+  (def made-directory
     (match (path-parent target)
       ((Some dir)
-       (unless (or (string-empty? (path->string/lossy dir)) (directory-exists? dir))
-         (directory-create dir)))
-      (None (ignore 0)))
-    (file-write-text target text))
-  (Ok changed))
+       (if (or (not changed) check (string-empty? (path->string/lossy dir)) (directory-exists? dir))
+           (Ok unit)
+           (directory-create dir)))
+      (None (Ok unit))))
+  (def written
+    (match made-directory
+      ((Ok _)
+       (if (and changed (not check))
+           (file-write-text target text)
+           (Ok unit)))
+      (failed failed)))
+  (match written
+    ((Ok _) (Ok changed))
+    ((Err e) (Err (str "cannot write " target ": " (.-Message e))))))
 
 ;; Every .sz file below `dir`, sorted. Skips a directory whose name begins
 ;; with ".", such as .git and .bjo.

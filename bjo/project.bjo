@@ -218,7 +218,7 @@
   (if (not (file-exists? file))
       (Err #"bjo: no manifest at ${file}.")
       (result-map-err (fun (why) #"bjo: ${file}: ${why}")
-                      (bjodat-parse-Package (file-read-text file)))))
+                      (bjodat-parse-Package (raise-err (file-read-text file))))))
 
 ;; The project a directory holds, manifest read and nothing else checked yet.
 (: (-> string (Result string Project)))
@@ -279,7 +279,7 @@
        (None #f)
        ((Some lib)
         (def head (symbol->string first))
-        (any? #(path-has-name? & head) (directory-subdirectories lib)))))))
+        (any? #(path-has-name? & head) (raise-err (directory-subdirectories lib))))))))
 
 ;; The characters a name segment may be written with.
 ;;
@@ -366,15 +366,15 @@
   (def text (roots-text roots))
   (def current
     (if (file-exists? path)
-        (file-read-text path)
+        (raise-err (file-read-text path))
         ""))
   (cond
     ((= current text) #f)
     (else
      (match (parent-directory path)
-       ((Some dir) (directory-create dir))
+       ((Some dir) (raise-err (directory-create dir)))
        (None unit))
-     (file-write-text path text)
+     (raise-err (file-write-text path text))
      #t)))
 
 ;; ---------------------------------------------------------------------------
@@ -412,7 +412,7 @@
         (manifest-file (path-combine dir manifest-name)))
   (if (not (file-exists? manifest-file))
       None
-      (result->option (bjodat-parse-Package (file-read-text manifest-file)))))
+      (result->option (bjodat-parse-Package (raise-err (file-read-text manifest-file))))))
 
 ;; What one root's package declares, or nothing when it has no manifest to say
 ;; it in — which is what a root without one means.
@@ -451,19 +451,19 @@
   (def text (frameworks-text roots))
   (def current
     (if (file-exists? path)
-        (file-read-text path)
+        (raise-err (file-read-text path))
         ""))
   (cond
     ((= text "")
      (when (file-exists? path)
-       (file-delete path))
+       (raise-err (file-delete path)))
      #f)
     ((= current text) #t)
     (else
      (match (parent-directory path)
-       ((Some dir) (directory-create dir))
+       ((Some dir) (raise-err (directory-create dir)))
        (None unit))
-     (file-write-text path text)
+     (raise-err (file-write-text path text))
      #t)))
 
 ;; ---------------------------------------------------------------------------
@@ -483,12 +483,12 @@
 (defun (collect-sources dir)
   (if (not (directory-exists? dir))
       Nil
-      (let ((here (loop (:for file (directory-files dir))
+      (let ((here (loop (:for file (raise-err (directory-files dir)))
                         (:acc out (listing (path->string/lossy file))
                               #:when (path-has-extension? file "bjo"))
                     => out)))
         (list-append here
-                     (loop (:for sub (directory-subdirectories dir))
+                     (loop (:for sub (raise-err (directory-subdirectories dir)))
                            (:acc out (folding Nil (list-append out (collect-sources sub))))
                        => out)))))
 
@@ -505,9 +505,9 @@
     ((file-exists? path) #f)
     (else
      (match (parent-directory path)
-       ((Some dir) (directory-create dir))
+       ((Some dir) (raise-err (directory-create dir)))
        (None unit))
-     (file-write-text path contents)
+     (raise-err (file-write-text path contents))
      #t)))
 
 (: (-> (List Symbol) string))
@@ -625,7 +625,7 @@
 
     (ignore (write-new (path-combine here manifest-name) (manifest-template name)))
     (ignore (write-new (path-combine here ".gitignore") gitignore-template))
-    (directory-create (path-combine here "tests"))
+    (raise-err (directory-create (path-combine here "tests")))
 
     (if library?
         (ignore (write-new (path-combine here "src" "core.bjo") (core-template name)))

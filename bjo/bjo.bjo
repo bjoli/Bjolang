@@ -310,7 +310,7 @@
     (unless (file-exists? path)
       (ret None))
 
-    (loop (:for line (string-split (file-read-text path) "\n"))
+    (loop (:for line (string-split (raise-err (file-read-text path)) "\n"))
           ;; A line with no key at all is not one. `:when-let` skips it, and an
           ;; accumulator that is not stepped keeps what it had.
           (:when-let (Some (Tuple key value)) (split-line (string-trim line)))
@@ -499,7 +499,7 @@
   (cond
     ((not (file-exists? path)) Nil)
     (:def full (path-absolute file))
-    (:def lines (string-split (file-read-text path) "\n"))
+    (:def lines (string-split (raise-err (file-read-text path)) "\n"))
     ;; Two passes rather than one: the package a file belongs to is the
     ;; longest directory containing it, and which that is cannot be known
     ;; until every line has been seen.
@@ -1431,7 +1431,7 @@
 ;; about a line goes to standard error, out of the diff's way.
 (: (-> string bool bool bool int))
 (defun (fmt-file file rewrite? check? diff?)
-  (def source (file-read-text file))
+  (def source (raise-err (file-read-text file)))
   (def shown (as-seen-from-here file))
   (match (format-source rewrite? source)
     ((Err why)
@@ -1448,7 +1448,7 @@
      (list-for-each #(println (noted shown &)) long)
      1)
     ((Ok (Tuple text long))
-     (file-write-text file text)
+     (raise-err (file-write-text file text))
      (println #"formatted ${shown}")
      (list-for-each #(println (noted shown &)) long)
      0)))

@@ -434,14 +434,14 @@
 (: (-> string string (Result string (List TaskDef))))
 (defun (read-tasks source dll)
   (def (Ok docs) (assembly-docs dll) :propagate)
-  (read-task-defs (file-read-text source) docs))
+  (read-task-defs (raise-err (file-read-text source)) docs))
 
 ;; Writes `text` to `path` only when the file holds something else, so that a
 ;; build that reads it is stale only when it changed. Makes the directory.
 (: (-> string string void))
 (defun (write-if-changed! path text)
-  (unless (and (file-exists? path) (= (file-read-text path) text))
+  (unless (and (file-exists? path) (= (raise-err (file-read-text path)) text))
     (def dir (clr-directory-name (path-absolute path)))
     (unless (directory-exists? dir)
-      (directory-create dir))
-    (file-write-text path text)))
+      (raise-err (directory-create dir)))
+    (raise-err (file-write-text path text))))

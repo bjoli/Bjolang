@@ -137,7 +137,7 @@
 
 (: (-> string SavedRun void))
 (defun (write-saved-run! path r)
-  (file-write-text path (saved-run->string r)))
+  (raise-err (file-write-text path (saved-run->string r))))
 
 ;; ---------------------------------------------------------------------------
 ;; Reading
@@ -273,9 +273,9 @@
 (defun (read-saved-run path)
   (if (not (file-exists? path))
       (Err #"${path} does not exist")
-      (match (try (file-read-text path) #:catch (System.Exception))
+      (match (file-read-text path)
         ((Ok text) (result-map-err (fun (e) #"${path}: ${e}") (parse-saved-run text)))
-        (_ (Err #"${path} could not be read")))))
+        ((Err e) (Err #"${path} could not be read: ${(.-Message e)}")))))
 
 ;; ---------------------------------------------------------------------------
 ;; Comparing

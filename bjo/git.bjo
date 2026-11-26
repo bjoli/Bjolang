@@ -51,13 +51,13 @@
 
 (: tool-for (-> string Tool) #:sync)
 (defun (tool-for tmp)
-  (directory-create tmp)
+  (raise-err (directory-create tmp))
   (Tool (errors (path-combine tmp "git-stderr.txt"))))
 
 (: (-> Tool string))
 (defun (tool-said g)
   (if (file-exists? (record-ref g errors))
-      (string-trim (file-read-text (record-ref g errors)))
+      (string-trim (raise-err (file-read-text (record-ref g errors))))
       ""))
 
 ;; Is there a git to run at all? Asked before the first command, so that a
@@ -113,7 +113,7 @@
      (Err
       (str "bjo: git is not on PATH; it is needed to fetch " (name->string name) " from " url ".")))
     (else
-     (directory-create (path-combine dot-bjo "git"))
+     (raise-err (directory-create (path-combine dot-bjo "git")))
      (def (Ok cloned) (git-must g ["clone" "--bare" "--quiet" url dir] (str "cloning " url))
        :propagate)
      (Ok dir))))
@@ -242,7 +242,7 @@
 (: (-> string string))
 (defun (marked-commit dir)
   (if (file-exists? (commit-marker dir))
-      (string-trim (file-read-text (commit-marker dir)))
+      (string-trim (raise-err (file-read-text (commit-marker dir))))
       ""))
 
 ;; Puts a commit's tree at `target`.
@@ -258,14 +258,14 @@
     (when (and (directory-exists? target) (= (marked-commit target) commit))
       (ret (Ok unit)))
 
-    (directory-create tmp)
+    (raise-err (directory-create tmp))
     (def archive (path-combine tmp (str commit ".zip")))
     (def unpacked (path-combine tmp (str "unpack-" commit)))
 
     (when (directory-exists? unpacked)
-      (directory-delete-tree unpacked))
+      (raise-err (directory-delete-tree unpacked)))
     (when (file-exists? archive)
-      (file-delete archive))
+      (raise-err (file-delete archive)))
 
     (def (Ok archived) (git-must g
                                  ["--git-dir" clone "archive" "--format=zip" "-o" archive commit]
@@ -275,12 +275,12 @@
     (def (Ok unzipped) (zip-extract archive unpacked)
       :leave ((Err e) (Err (str "bjo: could not unpack " archive ": " (error-message e)))))
 
-    (file-write-text (commit-marker unpacked) commit)
-    (file-delete archive)
+    (raise-err (file-write-text (commit-marker unpacked) commit))
+    (raise-err (file-delete archive))
 
     (when (directory-exists? target)
-      (directory-delete-tree target))
-    (directory-create (path-combine target ".."))
+      (raise-err (directory-delete-tree target)))
+    (raise-err (directory-create (path-combine target "..")))
 
     (def (Ok moved) (directory-move unpacked target)
       :leave ((Err e) (Err (str "bjo: could not put " commit " at " target ": " (error-message e)))))

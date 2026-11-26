@@ -152,7 +152,7 @@
   (match (lib-directory)
     (None Nil)
     ((Some lib)
-     (loop (:for dir (directory-subdirectories lib))
+     (loop (:for dir (result-ref-or (directory-subdirectories lib) []))
            (:acc out (listing
                       (PackageRoot
                        (name (Cons (string->symbol (option-ref-or (option-map bytestring->string/lossy
@@ -209,7 +209,7 @@
 (defun (read-roots-file file)
   (if (not (file-exists? file))
       (Err #"no roots file at ${file}")
-      (match (parse-bjodat (file-read-text file))
+      (match (result-and-then parse-bjodat (result-map-err (fun (e) (.-Message e)) (file-read-text file)))
         ((Err why) (Err #"${file}: ${why}"))
         ((Ok (BjoList (Cons (BjoSym head) entries)))
          (if (= (symbol->string head) "roots")

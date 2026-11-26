@@ -167,8 +167,8 @@
   ;; Only where the open descriptors can be counted.
   (when (directory-exists? "/proc/self/fd")
     (def path "406-scratch-lines.txt")
-    (file-write-text path "1\n2\n3\n")
-    (def open-fds (fun () (vec-length (directory-files "/proc/self/fd"))))
+    (raise-err (file-write-text path "1\n2\n3\n"))
+    (def open-fds (fun () (vec-length (raise-err (directory-files "/proc/self/fd")))))
     ;; An empty scope first, so that the assemblies a scope loads are loaded
     ;; before the count.
     (with-scope (ignore (open-fds)))
@@ -181,5 +181,5 @@
     (loop (:for i (range 0 20))
           (:do (ignore (find (fun (l) (= l "1!")) (map (fun (x) (str x "!")) (file-read-lines/seq path))))))
     (expect "find over map closes the file" (- (open-fds) before) 0)
-    (file-delete path))
+    (raise-err (file-delete path)))
   0)
