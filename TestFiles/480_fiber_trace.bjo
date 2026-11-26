@@ -48,9 +48,9 @@
 
         (def command "BJO_FIBER_TRACE=1 dotnet TestFiles/480_fiber_trace.exe child 2>&1")
         (def out
-          (match (sync (blocking (fun () (run/string '(sh "-c" ,command)))))
-            ((Ok (Ok s)) s)
-            ((Ok (Err e)) (str "could not run the child: " (.-Message e)))
+          (match (sync (blocking (fun () (run/output '(sh "-c" ,command)))))
+            ((Ok (Ok (Tuple _ s))) s)
+            ((Ok (Err e)) (str "could not run the child: " (run-error-message e)))
             ((Err e) (str "the child raised: " (.-Message e)))))
 
         (expect-true "the report counts the fibers"

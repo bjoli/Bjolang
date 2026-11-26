@@ -1,0 +1,120 @@
+;; The RunError of each way a form fails, and which command an Exited error
+;; names. Only POSIX programs: `sh`, `cat`, `echo`, `false`, `head`, `yes`.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std run))
+
+(import/class
+  (Refusal (: System.InvalidOperationException (-> string Refusal))))
+
+(import/extern
+  (temp-directory (: System.IO.Path.GetTempPath (-> string)))
+  (random-file-name (: System.IO.Path.GetRandomFileName (-> string))))
+
+(: Filter)
+(defbjo (broken in out)
+  (raise (cast Exception (Refusal. "this filter refuses"))))
+
+;; The case of an error, and what it holds, as a string a check can compare.
+(: (-> (Result RunError %a) string))
+(defun (kind r)
+  (match r
+    ((Ok _) "ok")
+    ((Err (InvalidForm _)) "invalid form")
+    ((Err (NotFound program)) (str "not found " program))
+    ((Err (CannotStart program _)) (str "cannot start " program))
+    ((Err (Redirect path (NotFound _ _))) "redirect not found")
+    ((Err (Redirect path _)) "redirect")
+    ((Err (FilterFailed _)) "filter failed")
+    ((Err (Exited stage code tail))
+     (str "exited " (int->string (record-ref stage stage-index))
+          " " (string-join (record-ref stage stage-argv) " ")
+          " " (int->string code)
+          (match tail ((Some text) (str " tail " text)) (None ""))))))
+
+(defun (main)
+  (def scratch (path-combine (temp-directory) (str "bjo-run-errors-" (random-file-name))))
+  (raise-err (directory-create scratch))
+  (def errors-file (path-combine scratch "errors.txt"))
+
+  ;; --- Starting ---------------------------------------------------------------
+  (expect "a missing program is NotFound"
+          (kind (run/string '(no-such-program-bjolang "x")))
+          "not found no-such-program-bjolang")
+  (expect "a form with a stage among the arguments is InvalidForm"
+          (kind (run/string '(echo "x" (cat))))
+          "invalid form")
+  (expect "a missing file to read from is Redirect"
+          (kind (run/string '(from-file ,(path-combine scratch "none.txt") (cat))))
+          "redirect not found")
+  (expect "a filter that raises is FilterFailed"
+          (kind (run/string '(pipe (echo "x") ,broken)))
+          "filter failed")
+
+  ;; --- Exit codes ---------------------------------------------------------------
+  (expect "run/string makes a failing exit an error"
+          (kind (run/string '(false)))
+          "exited 0 false 1")
+  (expect "run/strings too"
+          (kind (run/strings '(sh "-c" "echo a; exit 4")))
+          "exited 0 sh -c echo a; exit 4 4")
+  (expect "run/status returns the code"
+          (run/status '(false))
+          (Ok 1))
+  (expect "run/output returns the code and the output"
+          (run/output '(sh "-c" "echo a; exit 4"))
+          (Ok (Tuple 4 "a\n")))
+  (expect "a failing first stage is the error, and its index is 0"
+          (kind (run/string '(pipe (sh "-c" "cat; exit 2") (cat))))
+          "exited 0 sh -c cat; exit 2 2")
+  (expect "of two failing stages the rightmost is the error"
+          (kind (run/string '(pipe (sh "-c" "exit 2") (sh "-c" "cat; exit 3") (cat))))
+          "exited 1 sh -c cat; exit 3 3")
+  (expect "a stage before one that stops reading does not count"
+          (run/string '(pipe (sh "-c" "yes 2>/dev/null") (head "-n" "2")))
+          (Ok "y\ny\n"))
+  (expect "the last stage counts, whatever the stage before it did"
+          (kind (run/string '(pipe (echo "x") (sh "-c" "cat >/dev/null; exit 5"))))
+          "exited 1 sh -c cat >/dev/null; exit 5 5")
+  (expect "wait/all returns every code"
+          (match (run '(pipe (sh "-c" "exit 2") (cat)))
+            ((Ok p)
+             (match (proc-input p) ((Some in) (close-output-port in)) (None unit))
+             (match (proc-output p) ((Some out) (ignore (read-all out))) (None unit))
+             (wait/all p))
+            ((Err e) (Err e)))
+          (Ok [2 0]))
+
+  ;; --- Standard error -----------------------------------------------------------
+  (expect "the end of standard error comes with Exited under errors-into-file"
+          (kind (run/string '(errors-into-file ,errors-file (sh "-c" "echo first >&2; echo oops >&2; exit 3"))))
+          "exited 0 sh -c echo first >&2; echo oops >&2; exit 3 3 tail first\noops")
+  (expect "and the file still gets it"
+          (raise-err (file-read-text errors-file))
+          "first\noops\n")
+  (expect "an inherited standard error is not kept"
+          (kind (run/string '(sh "-c" "exit 3")))
+          "exited 0 sh -c exit 3 3")
+
+  ;; --- Messages and exceptions ----------------------------------------------------
+  (expect "the message of NotFound names the program"
+          (match (run/string '(no-such-program-bjolang))
+            ((Err e) (run-error-message e))
+            ((Ok _) ""))
+          "no program named no-such-program-bjolang was found")
+  (expect "the message of Exited has the command, the code and the standard error"
+          (match (run/string '(errors-into-file ,errors-file (sh "-c" "echo oops >&2; exit 3")))
+            ((Err e) (run-error-message e))
+            ((Ok _) ""))
+          "sh -c echo oops >&2; exit 3 exited with code 3:\noops")
+  (expect "raise-err raises the exception of a filter"
+          (match (try (raise-err (run/string '(pipe (echo "x") ,broken))) #:catch (System.Exception))
+            ((Err (:is System.InvalidOperationException e)) (.-Message e))
+            (_ "no exception"))
+          "this filter refuses")
+  (expect-true "raise-err raises an exception for Exited too"
+               (err? (try (raise-err (run/string '(false))) #:catch (System.Exception))))
+
+  (raise-err (directory-delete-tree scratch))
+  0)

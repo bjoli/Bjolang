@@ -99,8 +99,21 @@ public static class BjoProc {
     /// fails, the copy stops, and closing `from` lets the upstream process see
     /// a broken pipe and exit rather than block on a full one. A write that
     /// fails into anything else, such as a file, is still an error.
-    public static async Task PumpAsync(
-            Bjolang.Runtime.BjoInputPort from, Bjolang.Runtime.BjoOutputPort to, CancellationToken cancel) {
+    public static Task PumpAsync(
+            Bjolang.Runtime.BjoInputPort from, Bjolang.Runtime.BjoOutputPort to, CancellationToken cancel) =>
+        Pump(from, to, null, cancel);
+
+    /// `PumpAsync` between two stages. When the next stage stops reading,
+    /// `link` records it, so that `std/run` does not count the upstream
+    /// command's failure from the broken pipe as an error.
+    public static Task PumpLinkAsync(
+            Bjolang.Runtime.BjoInputPort from, Bjolang.Runtime.BjoOutputPort to, PipeLink link,
+            CancellationToken cancel) =>
+        Pump(from, to, link, cancel);
+
+    private static async Task Pump(
+            Bjolang.Runtime.BjoInputPort from, Bjolang.Runtime.BjoOutputPort to, PipeLink? link,
+            CancellationToken cancel) {
         var buffer = new byte[8192];
         var source = from.AsStream();
         bool readerGone = false;
@@ -123,6 +136,7 @@ public static class BjoProc {
                 }
             }
         } finally {
+            if (readerGone) link?.MarkReaderGone();
             try {
                 // Closing flushes what is still buffered, which fails again
                 // once the reader is gone. The stream is closed either way.
@@ -167,6 +181,21 @@ public static class BjoProc {
         await to.FlushValueAsync(cancel).ConfigureAwait(false);
     }
 
+    /// `PumpIntoAsync`, and the bytes copied are also kept in `tail`.
+    public static async Task PumpIntoTailAsync(
+            Bjolang.Runtime.BjoInputPort from, Bjolang.Runtime.BjoOutputPort to, ErrorTail tail,
+            CancellationToken cancel) {
+        var buffer = new byte[8192];
+        var source = from.AsStream();
+        while (true) {
+            int n = await source.ReadAsync(buffer.AsMemory(), cancel).ConfigureAwait(false);
+            if (n == 0) { break; }
+            tail.Add(buffer.AsSpan(0, n));
+            await to.WriteBytesAsync(buffer.AsMemory(0, n), cancel).ConfigureAwait(false);
+        }
+        await to.FlushValueAsync(cancel).ConfigureAwait(false);
+    }
+
     /// Every line of `from`, for `run/strings`.
     ///
     /// An array rather than a Bjolang `Vec`, which has no construction path
@@ -181,4 +210,67 @@ public static class BjoProc {
         }
         return lines.ToArray();
     }
+}
+
+/// The last bytes one command wrote to its standard error, for the message of
+/// a `RunError`. `std/run` keeps one for each command whose standard error it
+/// copies.
+///
+/// - Holds the last `Size` bytes. Older bytes are dropped.
+/// - `Add` and `Text` can run on different threads.
+[NonUserCode]
+public sealed class ErrorTail {
+    public const int Size = 2048;
+
+    private readonly byte[] ring = new byte[Size];
+    private long total;
+    private readonly object gate = new();
+
+    public static ErrorTail Create() => new ErrorTail();
+
+    public void Add(ReadOnlySpan<byte> bytes) {
+        lock (gate) {
+            if (bytes.Length >= Size) bytes = bytes[^Size..];
+            foreach (var b in bytes) {
+                ring[(int)(total % Size)] = b;
+                total++;
+            }
+        }
+    }
+
+    /// The kept bytes as UTF-8 text, without the whitespace at the end. When
+    /// bytes were dropped, the text starts after the first line end, so that
+    /// it does not start in the middle of a line. "" when nothing was kept.
+    public string Text() {
+        byte[] kept;
+        lock (gate) {
+            int n = (int)System.Math.Min(total, Size);
+            kept = new byte[n];
+            long start = total - n;
+            for (int i = 0; i < n; i++) kept[i] = ring[(int)((start + i) % Size)];
+        }
+        int from = 0;
+        if (total > Size) {
+            int newline = System.Array.IndexOf(kept, (byte)'\n');
+            from = newline >= 0 && newline < kept.Length - 1 ? newline + 1 : 0;
+        }
+        return Encoding.UTF8.GetString(kept, from, kept.Length - from).TrimEnd();
+    }
+}
+
+/// The pipe from one command's output to the next stage's input. Records
+/// whether the next stage stopped reading before the command stopped
+/// writing.
+///
+/// .NET ignores SIGPIPE, and a child inherits that. So a command whose reader
+/// has gone gets EPIPE and exits with an ordinary error code, not with 141.
+[NonUserCode]
+public sealed class PipeLink {
+    private volatile bool readerGone;
+
+    public static PipeLink Create() => new PipeLink();
+
+    public bool ReaderGone => readerGone;
+
+    internal void MarkReaderGone() => readerGone = true;
 }

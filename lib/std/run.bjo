@@ -23,6 +23,9 @@
   ;; literal in another module is read by the grammar there.
   Word Form Cmd Filter Proc
 
+  ;; Why a form failed
+  RunError Stage run-error-message
+
   ;; Writing a form
   cmd
 
@@ -58,6 +61,11 @@
   (BufferMode (: Bjolang.Runtime.BufferMode))
   ;; An output port joined to an input port. See `BjolangRuntime/BjoProcess.cs`.
   (BjoPipe (: BjoPipe))
+  ;; The end of what a command wrote to its standard error.
+  (ErrorTail (: ErrorTail))
+  ;; Whether the stage after a command stopped reading its output.
+  (PipeLink (: PipeLink))
+  (Win32Exception (: System.ComponentModel.Win32Exception))
   (InvalidOperationException
    (: System.InvalidOperationException (-> string InvalidOperationException))))
 
@@ -114,7 +122,15 @@
 
   ;; Async pumps.
   (copy-stream  (: BjoProc.PumpAsync (-> InputPort OutputPort void) #:async))
-  (copy-into    (: BjoProc.PumpIntoAsync (-> InputPort OutputPort void) #:async))
+  (copy-into-tail (: BjoProc.PumpIntoTailAsync (-> InputPort OutputPort ErrorTail void) #:async))
+  (make-tail    (: ErrorTail.Create (-> ErrorTail)))
+  (copy-link    (: BjoProc.PumpLinkAsync (-> InputPort OutputPort PipeLink void) #:async))
+  (make-link    (: PipeLink.Create (-> PipeLink)))
+  (reader-gone? (: PipeLink.ReaderGone (-> PipeLink bool) #:get))
+  (tail-text    (: ErrorTail.Text (-> ErrorTail string)))
+  ;; The OS error code. 2 is "no such file", as ERROR_FILE_NOT_FOUND on
+  ;; Windows and as ENOENT on Unix.
+  (win32-code   (: System.ComponentModel.Win32Exception.NativeErrorCode (-> Win32Exception int) #:get))
   (read-lines   (: BjoProc.ReadLinesAsync (-> InputPort (Array string)) #:async))
   (read-rest    (: Bjolang.Runtime.BjoInputPort.ReadToEndUtf8Async (-> InputPort string) #:async)))
 
@@ -125,11 +141,73 @@
 (defun (output-port reader)
   (cast InputPort (PipePort. (reader-bytes reader))))
 
-;; Nothing in the language builds an `Exception`, and every rejection below is
-;; this module's own rather than .NET's, so they need a carrier.
-(: (-> string Exception))
+;; One command of a form: its place among the form's commands, from 0 in the
+;; order they start, and its program and arguments. Filters do not count.
+(type (: Stage (Record (: stage-index int)
+                       (: stage-argv (Vec string)))))
+
+;; Why a form did not run, or did not end well.
+;;
+;; - `InvalidForm`: the form cannot run as written.
+;; - `NotFound`: no program of the name is on PATH.
+;; - `CannotStart`: the program is there, and the OS did not start it.
+;; - `Redirect`: the file of a redirection could not be opened.
+;; - `FilterFailed`: a filter, or a copy between stages, raised.
+;; - `Exited`: a command exited with a code other than 0. Only the runners
+;;   that return output make this error. The `string` is the end of the
+;;   command's standard error, when this module copied it to a file.
+;;
+;; A command killed by a signal exits with 128 + the signal number on Unix.
+(type (: RunError (Union (: InvalidForm string)
+                         (: NotFound string)
+                         (: CannotStart string Exception)
+                         (: Redirect string FsError)
+                         (: FilterFailed Exception)
+                         (: Exited Stage int (Option string)))))
+
+(: (-> string RunError))
 (defun (run-error message)
-  (cast Exception (InvalidOperationException. message)))
+  (InvalidForm message))
+
+(: (-> RunError string))
+(defun (run-error-message e)
+  (match e
+    ((InvalidForm m) m)
+    ((NotFound program) #"no program named ${program} was found")
+    ((CannotStart program x) #"${program} could not be started: ${(.-Message x)}")
+    ((Redirect path x) #"the file ${path} could not be opened: ${(fs-error-message x)}")
+    ((FilterFailed x) #"a filter of the form failed: ${(.-Message x)}")
+    ((Exited stage code tail)
+     (let ((head #"${(string-join (record-ref stage stage-argv) " ")} exited with code ${code}"))
+       (match tail
+         ((Some text) #"${head}:\n${text}")
+         (None head))))))
+
+;; The exception the error holds, or an `InvalidOperationException` with its
+;; message.
+(impl (AsException RunError)
+  (defun (as-exception e)
+    (match e
+      ((CannotStart _ x) x)
+      ((Redirect _ x) (fs-error-exception x))
+      ((FilterFailed x) x)
+      (_ (cast Exception (InvalidOperationException. (run-error-message e)))))))
+
+;; An exception from a fiber of the form, a filter or a copy, as `FilterFailed`.
+;; A cancellation is raised.
+(: (-> Exception RunError))
+(defun (stage-failure e)
+  (match e
+    ((:is Bjolang.Runtime.Cancelled) (raise e))
+    (_ (FilterFailed e))))
+
+;; `Process.Start` raised `e` for `program`.
+(: (-> string Exception RunError))
+(defun (start-failure program e)
+  (match e
+    ((:is System.ComponentModel.Win32Exception w)
+     (if (= (win32-code w) 2) (NotFound program) (CannotStart program e)))
+    (_ (CannotStart program e))))
 
 ;; ===========================================================================
 ;; What you write
@@ -189,10 +267,10 @@
   (: Node (Union (: NCmd Cmd)
                  (: NFilter Filter)
                  (: NPipe (List Node))
-                 (: NRedirect Redirect)))
-  (: Redirect (Record (: how Redirection)
-                      (: path string)
-                      (: inner Node))))
+                 (: NRedirect Redirected)))
+  (: Redirected (Record (: how Redirection)
+                        (: path string)
+                        (: inner Node))))
 
 (: (-> Word string))
 (defun (word->text w)
@@ -206,7 +284,7 @@
     ((WFilter f) "an unquoted filter")
     ((WForm ws) "a nested form")))
 
-(: (-> (Vec string) (Result Exception Node)))
+(: (-> (Vec string) (Result RunError Node)))
 (defun (command-of argv)
   (if (vec-empty? argv)
       (Err (run-error "a command with no program name"))
@@ -216,7 +294,7 @@
 ;; One form, translated to a node. The grammar read each keyword where the
 ;; form was written. What is left is the shape of the pipeline and the words
 ;; of a command, which the grammar gives as a flat list.
-(: (-> Form (Result Exception Node)))
+(: (-> Form (Result RunError Node)))
 (defun (form->node form)
   (match form
     ((FSym s) (command-of [(symbol->string s)]))
@@ -232,7 +310,7 @@
     ((FErrInto path inner) (form->redirect RErrInto path inner))
     ((FErrAppend path inner) (form->redirect RErrAppend path inner))))
 
-(: (-> (List Form) (Result Exception Node)))
+(: (-> (List Form) (Result RunError Node)))
 (defun (parse-stages forms)
   (match forms
     (Nil (Err (run-error "(pipe ...) needs at least one thing to run")))
@@ -242,7 +320,7 @@
        ((Err e) (Err e))
        ((Ok nodes) (Ok (NPipe nodes)))))))
 
-(: (-> (List Form) (Result Exception (List Node))))
+(: (-> (List Form) (Result RunError (List Node))))
 (defun (form->each forms)
   (match forms
     (Nil (Ok Nil))
@@ -252,11 +330,11 @@
      (Ok (Cons node more)))))
 
 ;; A redirection is its file name and the one form it wraps.
-(: (-> Redirection string Form (Result Exception Node)))
+(: (-> Redirection string Form (Result RunError Node)))
 (defun (form->redirect how path inner)
   (match (form->node inner)
     ((Err e) (Err e))
-    ((Ok node) (Ok (NRedirect (Redirect (how how) (path path) (inner node)))))))
+    ((Ok node) (Ok (NRedirect (Redirected (how how) (path path) (inner node)))))))
 
 ;; The words of one command, flattened. The first is the program and the rest
 ;; are its arguments, each one argument whatever it contains — nothing here
@@ -266,11 +344,11 @@
   "pipe, from-file, into-file, append-to-file, errors-into-file, errors-append-to-file")
 
 ;; Adds a hint about the keywords to an error.
-(: (-> (List Word) Exception Exception))
+(: (-> (List Word) RunError RunError))
 (defun (with-tag-hint ws original)
-  (match ws
-    ((Cons (WSym s) rest)
-     (run-error (str (.-Message original)
+  (match (Tuple ws original)
+    ((Tuple (Cons (WSym s) rest) (InvalidForm message))
+     (run-error (str message
                      " If `"
                      (symbol->string s)
                      "` was meant as a keyword, the keywords are: "
@@ -278,13 +356,13 @@
                      ".")))
     (_ original)))
 
-(: (-> (List Word) (Result Exception Node)))
+(: (-> (List Word) (Result RunError Node)))
 (defun (parse-command ws)
   (match (words->argv ws (vec-empty))
     ((Err e) (Err (with-tag-hint ws e)))
     ((Ok argv) (command-of argv))))
 
-(: (-> (List Word) (Vec string) (Result Exception (Vec string))))
+(: (-> (List Word) (Vec string) (Result RunError (Vec string))))
 (defun (words->argv ws acc)
   (match ws
     (Nil (Ok acc))
@@ -304,7 +382,7 @@
 ;; its own: `'(,my-filter)` and `'(,(cmd ...))`. The grammar read the keywords
 ;; before this runs, so a list's head is never one here — `'(sort)` and
 ;; `'(echo "x")` are commands, and `'(pipe ...)` never reaches this at all.
-(: (-> (List Word) (Result Exception Node)))
+(: (-> (List Word) (Result RunError Node)))
 (defun (parse-words ws)
   (match ws
     (Nil (Err (run-error "an empty form: there is nothing here to run")))
@@ -325,7 +403,7 @@
 
 ;; A form that is one thing already carries everything it needs, so a word
 ;; after it is a pipeline nobody named.
-(: (-> Node (List Word) string (Result Exception Node)))
+(: (-> Node (List Word) string (Result RunError Node)))
 (defun (stage-alone node rest what)
   (match rest
     (Nil (Ok node))
@@ -340,12 +418,18 @@
 ;; Running it
 ;; ===========================================================================
 
+;; What the error of a command needs, one for each of `children`.
+(type (: Command (Record (: command-argv (Vec string))
+                         (: command-tail (Option ErrorTail))
+                         (: command-link PipeLink))))
+
 ;; Started process state.
 (type (: Proc
          #:opaque
          (Record (: input (Option OutputPort))
                  (: output (Option InputPort))
                  (: children (Vec Process))
+                 (: commands (Vec Command))
                  (: exits (Vec (Promise Unit)))
                  (: waits (Vec (Promise Unit))))))
 
@@ -356,7 +440,10 @@
          #:opaque
          (Record (: sink (Option OutputPort))
                  (: source (Option InputPort))
+                 ;; The link of the command that `source` is the output of.
+                 (: source-link (Option PipeLink))
                  (: children (Vec Process))
+                 (: commands (Vec Command))
                  (: exits (Vec (Promise Unit)))
                  (: waits (Vec (Promise Unit))))))
 
@@ -366,7 +453,7 @@
   (process-await child)
   unit)
 
-(: (-> Cmd (Option OutputPort) (Result Exception Wired)))
+(: (-> Cmd (Option OutputPort) (Result RunError Wired)))
 (defun (start-command c errors)
   (def settings (ProcessStartInfo.))
   (settings-program! settings (record-ref c program))
@@ -380,16 +467,25 @@
   (settings-redirect-output! settings #t)
   (when (some? errors)
     (settings-redirect-errors! settings #t))
+  (def tail (make-tail))
+  (def link (make-link))
   (match (process-start settings)
-    ((Err e) (Err e))
+    ((Err e) (Err (start-failure (record-ref c program) e)))
     ((Ok child)
      (Ok (Wired (sink (Some (child-input child)))
                 (source (Some (output-port (process-stdout child))))
+                (source-link (Some link))
                 (children [child])
+                (commands [(Command (command-argv (vec-append [(record-ref c program)]
+                                                              (record-ref c arguments)))
+                                    (command-tail (match errors
+                                                    ((Some _) (Some tail))
+                                                    (None None)))
+                                    (command-link link))])
                 (exits [(bjo (awaiting-exit child))])
-                ;; Handle stderr copying.
+                ;; Standard error is copied when a redirection wants it.
                 (waits (match errors
-                         ((Some w) [(bjo (pump-into (output-port (process-stderr child)) w))])
+                         ((Some w) [(bjo (pump-into-tail (output-port (process-stderr child)) w tail))])
                          (None (vec-empty)))))))))
 
 ;; Two pipes, because a filter has no ends of its own: one for what is written
@@ -401,7 +497,9 @@
   (def done (bjo (f (pipe-input in) (pipe-output out))))
   (Wired (sink (Some (pipe-output in)))
          (source (Some (pipe-input out)))
+         (source-link None)
          (children (vec-empty))
+         (commands (vec-empty))
          (exits (vec-empty))
          (waits [(bjo (close-after done (pipe-output out)))])))
 
@@ -423,10 +521,17 @@
   (copy-stream from to)
   unit)
 
-;; The shared-destination pump. Closing is `close-when-all-done`'s job.
-(: (-> InputPort OutputPort Unit))
-(defbjo (pump-into from to)
-  (copy-into from to)
+;; `pump`, which records in `link` that `to` stopped reading.
+(: (-> InputPort OutputPort PipeLink Unit))
+(defbjo (pump-link from to link)
+  (copy-link from to link)
+  unit)
+
+;; The shared-destination pump, which keeps the end of what it copies in
+;; `tail`. Closing is `close-when-all-done`'s job.
+(: (-> InputPort OutputPort ErrorTail Unit))
+(defbjo (pump-into-tail from to tail)
+  (copy-into-tail from to tail)
   unit)
 
 (: (-> (Vec (Promise Unit)) OutputPort Unit))
@@ -457,7 +562,7 @@
 
 ;; Connect wired stages front to back, pumping each one's output into the next
 ;; one's input.
-(: (-> (List Node) (Option OutputPort) (Result Exception Wired)))
+(: (-> (List Node) (Option OutputPort) (Result RunError Wired)))
 (defun (join-stages nodes errors)
   (match nodes
     (Nil (Err (run-error "a pipeline with no stages")))
@@ -466,7 +571,7 @@
        ((Err e) (Err e))
        ((Ok head) (join-onto head rest errors))))))
 
-(: (-> Wired (List Node) (Option OutputPort) (Result Exception Wired)))
+(: (-> Wired (List Node) (Option OutputPort) (Result RunError Wired)))
 (defun (join-onto joined nodes errors)
   (match nodes
     (Nil (Ok joined))
@@ -478,7 +583,7 @@
         (abandon joined)
         (Err e))
        ((Ok w)
-        (match (junction (record-ref joined source) (record-ref w sink))
+        (match (junction (record-ref joined source) (record-ref w sink) (record-ref joined source-link))
           ((Err e)
            (abandon joined)
            (abandon w)
@@ -487,16 +592,19 @@
            (join-onto
             (record-set joined
                         (source (record-ref w source))
+                        (source-link (record-ref w source-link))
                         (children (vec-append (record-ref joined children) (record-ref w children)))
+                        (commands (vec-append (record-ref joined commands) (record-ref w commands)))
                         (exits (vec-append (record-ref joined exits) (record-ref w exits)))
                         (waits (vec-add (vec-append (record-ref joined waits) (record-ref w waits))
                                         link)))
             more
             errors))))))))
 
-;; Creates stream junction.
-(: (-> (Option InputPort) (Option OutputPort) (Result Exception (Promise Unit))))
-(defun (junction upstream downstream)
+;; The pump from one stage to the next. `link`, when the upstream stage is a
+;; command, records whether the next stage stopped reading.
+(: (-> (Option InputPort) (Option OutputPort) (Option PipeLink) (Result RunError (Promise Unit))))
+(defun (junction upstream downstream link)
   (match upstream
     (None
      (Err
@@ -507,14 +615,17 @@
        (None
         (Err (run-error
               "this stage has its input redirected from a file, so nothing can be piped into it")))
-       ((Some to) (Ok (bjo (pump from to))))))))
+       ((Some to)
+        (match link
+          ((Some l) (Ok (bjo (pump-link from to l))))
+          (None (Ok (bjo (pump from to))))))))))
 
 ;; Through the prelude's `FS` effect, as every file is opened, so a handler
 ;; that answers for the disk answers for a redirect too.
-(: (-> string bool (Result Exception OutputPort)))
+(: (-> string bool (Result RunError OutputPort)))
 (defun (open-for-writing path append)
   (match (open-write-stream (as-path path) (if append Append Truncate))
-    ((Err e) (Err (as-exception e)))
+    ((Err e) (Err (Redirect path e)))
     ((Ok stream) (Ok (cast OutputPort (PortOver. stream #t))))))
 
 ;; A child's standard input as a port: unbuffered, as .NET's writer over it
@@ -527,7 +638,7 @@
   (port-mode! port unbuffered)
   port)
 
-(: (-> Node (Option OutputPort) (Result Exception Wired)))
+(: (-> Node (Option OutputPort) (Result RunError Wired)))
 (defun (wire node errors)
   (match node
     ((NCmd c) (start-command c errors))
@@ -535,13 +646,13 @@
     ((NPipe nodes) (join-stages nodes errors))
     ((NRedirect r) (wire-redirect r errors))))
 
-(: (-> Redirect (Option OutputPort) (Result Exception Wired)))
+(: (-> Redirected (Option OutputPort) (Result RunError Wired)))
 (defun (wire-redirect r errors)
   (def path (record-ref r path))
   (def inner (record-ref r inner))
   (match (record-ref r how)
     (RFrom
-     (def (Ok file) (result-map-err as-exception (open-input-file path)) :propagate)
+     (def (Ok file) (result-map-err (fun (e) (Redirect path e)) (open-input-file path)) :propagate)
      (redirect-input inner errors file))
     (RInto (redirect-output inner errors path #f))
     (RAppend (redirect-output inner errors path #t))
@@ -554,7 +665,7 @@
 
 ;; The file replaces the caller as the thing writing in, so `sink` goes away.
 ;; A form that does not start leaves the file closed.
-(: (-> Node (Option OutputPort) InputPort (Result Exception Wired)))
+(: (-> Node (Option OutputPort) InputPort (Result RunError Wired)))
 (defun (redirect-input inner errors file)
   (match (wire inner errors)
     ((Err e)
@@ -576,7 +687,7 @@
 ;; goes away. The file is opened once the form has started and has an output
 ;; to give it, since opening it to write truncates it: a form that does not
 ;; start leaves the file as it was.
-(: (-> Node (Option OutputPort) string bool (Result Exception Wired)))
+(: (-> Node (Option OutputPort) string bool (Result RunError Wired)))
 (defun (redirect-output inner errors path append)
   (def (Ok w) (wire inner errors) :propagate)
   (match (record-ref w source)
@@ -591,6 +702,7 @@
         (Err e))
        ((Ok file)
         (Ok (record-set w (source None)
+                          (source-link None)
                           (waits (vec-add (record-ref w waits) (bjo (pump from file)))))))))))
 
 ;; Standard error is not a stream this module wires between stages — every
@@ -599,7 +711,7 @@
 ;; Unlike `redirect-output`, the file is opened before the form starts: it is
 ;; the error sink each command is started with. A form that does not start
 ;; leaves it closed, but already truncated.
-(: (-> Node OutputPort (Result Exception Wired)))
+(: (-> Node OutputPort (Result RunError Wired)))
 (defun (redirect-errors inner file)
   ;; Every command under here writes to the one file from a fiber of its own;
   ;; a port takes each write whole, so they can share it as it is.
@@ -614,13 +726,14 @@
                                        (bjo (close-when-all-done (record-ref w waits) shared)))))))))
 
 ;; Parses and runs form.
-(: (-> Form (Result Exception Proc)))
+(: (-> Form (Result RunError Proc)))
 (defun (run form)
   (def (Ok node) (form->node form) :propagate)
   (def (Ok w) (wire node None) :propagate)
   (Ok (Proc (input (record-ref w sink))
             (output (record-ref w source))
             (children (record-ref w children))
+            (commands (record-ref w commands))
             (exits (record-ref w exits))
             (waits (record-ref w waits)))))
 
@@ -642,17 +755,17 @@
 ;;
 ;; Checks if process finished.
 
-(: (-> (Vec (Promise Unit)) (Result Exception Unit)))
+(: (-> (Vec (Promise Unit)) (Result RunError Unit)))
 (defbjo (join-all ps)
   (let go ((i 0))
     (if (= i (vec-length ps))
         (Ok unit)
         (match (sync (promise-join (vec-ref ps i)))
-          ((Err e) (Err e))
+          ((Err e) (Err (stage-failure e)))
           ((Ok u) (go (+ i 1)))))))
 
 ;; Awaits process completion.
-(: (-> Proc (Result Exception int)))
+(: (-> Proc (Result RunError int)))
 (defbjo (waiting p)
   (def (Ok _) (join-all (record-ref p exits)) :propagate)
   (def (Ok _) (join-all (record-ref p waits)) :propagate)
@@ -661,36 +774,64 @@
           0
           (process-code (vec-ref children (- (vec-length children) 1))))))
 
-(: (-> Proc (Result Exception (Vec int))))
+;; `Exited` for the rightmost command that exited with a code other than 0.
+;;
+;; A command before the last does not count when the stage after it stopped
+;; reading its output, as `head` does. Its code then comes from the broken
+;; pipe: 141 if SIGPIPE killed it, or the code of an EPIPE error, since .NET
+;; children inherit an ignored SIGPIPE. A 141 alone also does not count.
+(: (-> Proc (Result RunError Unit)))
+(defun (exit-failure p)
+  (def children (record-ref p children))
+  (def commands (record-ref p commands))
+  (def last (- (vec-length children) 1))
+  (let go ((i last))
+    (if (< i 0)
+        (Ok unit)
+        (let ((code (process-code (vec-ref children i)))
+              (command (vec-ref commands i)))
+          (if (or (= code 0)
+                  (and (< i last)
+                       (or (= code 141) (reader-gone? (record-ref command command-link)))))
+              (go (- i 1))
+              (Err (Exited (Stage (stage-index i) (stage-argv (record-ref command command-argv)))
+                           code
+                           (match (record-ref command command-tail)
+                             ((Some t)
+                              (let ((text (tail-text t)))
+                                (if (string-empty? text) None (Some text))))
+                             (None None)))))))))
+
+(: (-> Proc (Result RunError (Vec int))))
 (defbjo (waiting/all p)
   (def (Ok _) (join-all (record-ref p exits)) :propagate)
   (def (Ok _) (join-all (record-ref p waits)) :propagate)
   (Ok (vec-map (fun (c) (process-code c)) (record-ref p children))))
 
 ;; Gets blocking result.
-(: blocking-result (-> (Promise (Result Exception %a)) (Result Exception %a)) #:sync)
+(: blocking-result (-> (Promise (Result RunError %a)) (Result RunError %a)) #:sync)
 (defun (blocking-result p)
   (match (sync/blocking (promise-join p))
-    ((Err e) (Err e))
+    ((Err e) (Err (stage-failure e)))
     ((Ok answer) answer)))
 
 ;; Waits for last command exit.
-(: (-> Proc (Result Exception int)))
+(: (-> Proc (Result RunError int)))
 (defun (wait p)
   (blocking-result (bjo (waiting p))))
 
 ;; Every command's exit code, in the order they were started. Filters
 ;; contribute nothing — their failures arrive as the `Err` instead.
-(: (-> Proc (Result Exception (Vec int))))
+(: (-> Proc (Result RunError (Vec int))))
 (defun (wait/all p)
   (blocking-result (bjo (waiting/all p))))
 
 ;; Returns process exit event.
-(: (-> Proc (Event (Result Exception int))))
+(: (-> Proc (Event (Result RunError int))))
 (defun (exited p)
   (wrap (promise-join (bjo (waiting p))) (fun (r)
                                            (match r
-                                             ((Err e) (Err e))
+                                             ((Err e) (Err (stage-failure e)))
                                              ((Ok answer) answer)))))
 
 ;; Stop everything. The pumps end on their own once the streams they are
@@ -717,7 +858,7 @@
     ((Some w) (close-unbuffered w))
     (None unit)))
 
-(: (-> Form (Result Exception string)) #:sync)
+(: (-> Form (Result RunError string)) #:sync)
 (defun (run/string form)
   (match (run form)
     ((Err e) (Err e))
@@ -727,15 +868,15 @@
 
 ;; Read the output, then wait. The order is what matters: a last stage blocked
 ;; on a full pipe never exits, so waiting first would wait forever.
-(: (-> Proc (Result Exception string)))
+(: (-> Proc (Result RunError string)))
 (defbjo (collecting p)
   (def text
     (match (proc-output p)
       ((Some out) (read-rest out))
       (None "")))
-  (match (waiting p)
-    ((Err e) (Err e))
-    ((Ok code) (Ok text))))
+  (def (Ok _) (waiting p) :propagate)
+  (def (Ok _) (exit-failure p) :propagate)
+  (Ok text))
 
 ;; The output and the exit code, together.
 ;;
@@ -745,7 +886,7 @@
 ;; manifest prints nothing and exits non-zero, and that is not the same as a
 ;; tag whose manifest is empty. Both halves are here so that the caller does
 ;; not have to run the thing twice to get them.
-(: (-> Form (Result Exception (Tuple int string))) #:sync)
+(: (-> Form (Result RunError (Tuple int string))) #:sync)
 (defun (run/output form)
   (match (run form)
     ((Err e) (Err e))
@@ -753,7 +894,7 @@
      (close-input p)
      (blocking-result (bjo (collecting/code p))))))
 
-(: (-> Proc (Result Exception (Tuple int string))))
+(: (-> Proc (Result RunError (Tuple int string))))
 (defbjo (collecting/code p)
   (def text
     (match (proc-output p)
@@ -773,7 +914,7 @@
 ;;         (:acc b (vecing a))
 ;;         => (Ok b)))
 
-(: (-> Form (Result Exception (Vec string))) #:sync)
+(: (-> Form (Result RunError (Vec string))) #:sync)
 (defun (run/strings form)
   (match (run form)
     ((Err e) (Err e))
@@ -781,7 +922,7 @@
      (close-input p)
      (blocking-result (bjo (collecting/lines p))))))
 
-(: (-> Proc (Result Exception (Vec string))))
+(: (-> Proc (Result RunError (Vec string))))
 (defbjo (collecting/lines p)
   (def lines
     (match (proc-output p)
@@ -789,12 +930,12 @@
        (loop (:for l (read-lines out))
              (:acc v (vecing l))))
       (None (vec-empty))))
-  (match (waiting p)
-    ((Err e) (Err e))
-    ((Ok code) (Ok lines))))
+  (def (Ok _) (waiting p) :propagate)
+  (def (Ok _) (exit-failure p) :propagate)
+  (Ok lines))
 
 ;; Runs for status code.
-(: (-> Form (Result Exception int)) #:sync)
+(: (-> Form (Result RunError int)) #:sync)
 (defun (run/status form)
   (match (run form)
     ((Err e) (Err e))
@@ -802,7 +943,7 @@
      (close-input p)
      (blocking-result (bjo (draining p))))))
 
-(: (-> Proc (Result Exception int)))
+(: (-> Proc (Result RunError int)))
 (defbjo (draining p)
   (match (proc-output p)
     ((Some out) (ignore (read-rest out)))
@@ -817,7 +958,7 @@
 (type (: (Reader %a) (-bjo-> InputPort (Chan %a) Unit)))
 
 ;; Runs and streams to channel.
-(: (-> Form (Reader %a) (Result Exception (Tuple (Chan %a) Proc))))
+(: (-> Form (Reader %a) (Result RunError (Tuple (Chan %a) Proc))))
 (defun (run/channel form read)
   (match (run form)
     ((Err e) (Err e))
@@ -866,21 +1007,22 @@
 (: (-> Form (-bjo-> InputPort %a) (Emitter %a) void))
 (defbjo (stream-form form reader out)
   (match (run form)
-    ((Err e) (raise e))
+    ((Err e) (raise (as-exception e)))
     ((Ok p)
      (close-input p)
      (try
        (match (proc-output p)
          (None
-          (raise (run-error
-                  "this form sends its output to a file, so there is nothing left to stream")))
+          (raise (as-exception
+                  (run-error
+                   "this form sends its output to a file, so there is nothing left to stream"))))
          ((Some port)
           (let go ()
             (unless (port-eof? port)
               (emit! out (reader port))
               (go)))
-          (match (waiting p)
-            ((Err e) (raise e))
+          (match (result-and-then (fun (_) (exit-failure p)) (waiting p))
+            ((Err e) (raise (as-exception e)))
             ((Ok _) unit))))
        #:finally (reaping p)))))
 
@@ -921,14 +1063,14 @@
 ;; ===========================================================================
 
 ;; Stops on event.
-(: (-> (Event Unit) Proc (Promise (Result Exception string)) Unit))
+(: (-> (Event Unit) Proc (Promise (Result RunError string)) Unit))
 (defbjo (reap-on-loss nack p done)
   (when (sync (choose (wrap nack (fun (u) #t)) (wrap (promise-join done) (fun (r) #f))))
     (kill p))
   unit)
 
 ;; Wraps process in event.
-(: (-> Form (Event (Result Exception string))))
+(: (-> Form (Event (Result RunError string))))
 (defun (running form)
   (with-nack
     (fun (nack)
@@ -940,7 +1082,7 @@
          (ignore (bjo (reap-on-loss nack p done)))
          (wrap (promise-join done) (fun (r)
                                      (match r
-                                       ((Err e) (Err e))
+                                       ((Err e) (Err (stage-failure e)))
                                        ((Ok answer) answer)))))))))
 
 ;; ===========================================================================

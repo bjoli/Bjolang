@@ -13,15 +13,15 @@
 (import/extern
   (temp-directory (: System.IO.Path.GetTempPath (-> string))))
 
-(: (-> (Result Exception string) string))
+(: (-> (Result RunError string) string))
 (defun (shown r)
   (match r
     ((Ok s) s)
-    ((Err e) (str "Err " (.-Message e)))))
+    ((Err e) (str "Err " (run-error-message e)))))
 
 ;; Raced against a timeout, so that a pipeline that hangs fails a line rather
 ;; than the whole suite.
-(: (-> (-> (Result Exception string)) string))
+(: (-> (-> (Result RunError string)) string))
 (defun (bounded f)
   (sync/blocking
     (choose (wrap (blocking f)

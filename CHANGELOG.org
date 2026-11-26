@@ -3,6 +3,41 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std run)~ returns a ~RunError~
+
+*Breaking.* Every runner of ~(std run)~ returns ~(Result RunError a)~, not
+~(Result Exception a)~.
+
+- *The cases:*
+  - ~InvalidForm~: the form cannot run as written.
+  - ~NotFound~: no program of the name is on ~PATH~.
+  - ~CannotStart~: the OS did not start the program.
+  - ~Redirect~: the file of a redirection could not be opened, with its
+    ~FsError~.
+  - ~FilterFailed~: a filter, or a copy between stages, raised.
+  - ~Exited~: a command exited with a code other than 0. It holds a
+    ~Stage~ (the command's index and argv), the code, and the end of its
+    standard error.
+- *~run/string~ and ~run/strings~ fail on a non-zero exit.* So does
+  ~running~, and ~run/stream~ raises at the end of the output. Before,
+  they dropped the code. ~run/status~, ~run/output~, ~wait~, ~wait/all~ and
+  ~exited~ still return the code.
+- *Which command is the error:* the rightmost one with a code other than
+  0. A command before the last does not count when the stage after it
+  stopped reading, as ~head~ does. .NET children inherit an ignored
+  SIGPIPE, so such a command often exits with 1, not 141. The pump between
+  the stages records when the reader has gone.
+- *The end of standard error* (2 KB) comes with ~Exited~ only under
+  ~errors-into-file~ or ~errors-append-to-file~. An inherited standard
+  error is not read.
+- *Not tested on Windows.* ~NotFound~ is error code 2 of ~Process.Start~,
+  which is the same on Windows and Unix.
+- A cancellation is raised, as before.
+- *New:* ~run-error-message~, and an ~AsException~ instance, so
+  ~raise-err~ takes these results.
+- The runtime has two new classes, ~ErrorTail~ and ~PipeLink~, in
+  ~BjoProcess.cs~.
+
 * File errors are an ~FsError~
 
 *Breaking.* The prelude's file and directory functions, the operations of

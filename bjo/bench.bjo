@@ -504,7 +504,7 @@
   (match (run/output '(git [,@(list->vec args)]))
     ((Ok (Tuple 0 out)) (Ok (string-trim out)))
     ((Ok (Tuple _ _)) (Err (str "git " (string-join (list->vec args) " ") " failed")))
-    ((Err e) (Err (str "could not run git: " (error-message e))))))
+    ((Err e) (Err (str "could not run git: " (run-error-message e))))))
 
 (import/extern
   (clr-directory-name (: System.IO.Path.GetDirectoryName (-> string string))))
@@ -585,7 +585,7 @@
 (: start-server (-> BenchProgram (List string) string (Result string Server)) #:sync)
 (defun (start-server p passed what)
   (match (run '(dotnet [,(program-exe p) "--serve" ,@(list->vec passed)]))
-    ((Err e) (Err #"bjo bench: could not start ${what}: ${(error-message e)}"))
+    ((Err e) (Err #"bjo bench: could not start ${what}: ${(run-error-message e)}"))
     ((Ok proc)
      (match (Tuple (proc-input proc) (proc-output proc))
        ((Tuple (Some in) (Some out)) (Ok (Server (proc proc) (input in) (output out) (what what))))

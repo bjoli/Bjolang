@@ -3,7 +3,7 @@
 
 (:doc #:module
   (summary "Running programs: pipelines and redirections written as quoted forms.")
-  (see run/string run Form running run/stream run/channel with-run)
+  (see run/string run Form RunError running run/stream run/channel with-run)
   (example """
     (import (std run))
 
@@ -56,6 +56,14 @@
     inherited unless @code{errors-into-file} or @code{errors-append-to-file}
     says otherwise.
 
+    @strong{Errors.} Every runner returns a @code{Result} whose error is a
+    @code{RunError}. @code{run/string}, @code{run/strings} and
+    @code{running} make an exit code other than 0 an @code{Exited} error.
+    @code{run/status}, @code{run/output}, @code{wait}, @code{wait/all} and
+    @code{exited} return the code, and their @code{Err} is only for a form
+    that did not start or a filter or redirection that failed. A
+    cancellation is raised.
+
     @strong{Blocking or not.} @code{run/string}, @code{run/strings},
     @code{run/status}, @code{run/output} and @code{wait} block, which is
     right in an ordinary function. Inside a bjoroutine, blocking parks a pool
@@ -89,6 +97,63 @@
 ;; ---------------------------------------------------------------------------
 ;; The types
 ;; ---------------------------------------------------------------------------
+
+(:doc RunError
+  (summary "Why a form did not run, or did not end well.")
+  (case InvalidForm "The form cannot run as written, such as a pipe out of an @code{into-file}: the reason.")
+  (case NotFound "No program of the name is on @code{PATH}: the name.")
+  (case CannotStart "The program is there, and the OS did not start it: the name and the exception.")
+  (case Redirect "The file of a redirection could not be opened: the path and the @code{FsError}.")
+  (case FilterFailed "A filter, or a copy between stages, raised: the exception.")
+  (case Exited "A command exited with a code other than 0: the @code{Stage}, the code, and the end of its standard error.")
+  (see run-error-message Stage run/string)
+  (example """
+    (match (run/string '(pipe (cat "data.txt") (grep "x")))
+      ((Ok text) text)
+      ((Err (Exited _ 1 _)) "")                  ; grep found nothing
+      ((Err e) (panic! (run-error-message e))))
+    """)
+  (reference """
+    @strong{Which command is the error.} In a pipeline, the rightmost
+    command with a code other than 0. A command before the last that exited
+    with 141 does not count: SIGPIPE killed it, because a later stage stopped
+    reading, as @code{head} does.
+
+    @strong{The standard error.} The third field of @code{Exited} is the
+    last 2 KB that the command wrote to standard error, from the first line
+    end in it. It is @code{Some} only under @code{errors-into-file} or
+    @code{errors-append-to-file}, which copy standard error. An inherited
+    standard error goes to the terminal, and the field is @code{None}.
+
+    @strong{Signals.} On Unix, a command killed by a signal exits with 128 +
+    the signal number, as a shell shows it. There is no case of its own.
+
+    @strong{Windows.} @code{NotFound} is error code 2 of
+    @code{Process.Start}, the same on Windows and Unix. A Windows program has
+    no SIGPIPE, so the rule for 141 seldom applies there. Neither is tested on
+    Windows.
+
+    @code{RunError} has an @code{AsException} instance, so
+    @code{raise-err} takes a result of this module. It raises the exception
+    the error holds, or an @code{InvalidOperationException} with the
+    message.
+    """))
+
+(:doc Stage
+  (summary "One command of a form, as an Exited error names it.")
+  (field stage-index "Its place among the form's commands, from 0, in the order they start. Filters do not count.")
+  (field stage-argv "Its program and arguments.")
+  (see RunError wait/all)
+  (reference """
+    The index is the index of the command's code in what @code{wait/all}
+    returns.
+    """))
+
+(:doc run-error-message
+  (summary "A message for a RunError.")
+  (arg e "The error.")
+  (returns "One line, or for @code{Exited} with standard error, the line and the standard error after it.")
+  (see RunError))
 
 (:doc Word
   (summary "One word of a command in a form.")
@@ -202,8 +267,8 @@
 (:doc run/string
   (summary "Runs a form and returns its standard output.")
   (arg form "What to run.")
-  (returns "Everything it wrote, once it has exited. The exit code is dropped.")
-  (see run/output run/strings run/status)
+  (returns "Everything it wrote, once it has exited, or the @code{RunError}. An exit code other than 0 is @code{Exited}.")
+  (see run/output run/strings run/status RunError)
   (reference """
     Its input is closed at once. After an @code{into-file} there is no output
     to read, and this returns @code{""}: use @code{run/status}.
@@ -212,19 +277,19 @@
 (:doc run/strings
   (summary "Runs a form and returns its standard output as a vector of lines.")
   (arg form "What to run.")
-  (returns "Its lines, once it has exited. The exit code is dropped.")
-  (see run/string))
+  (returns "Its lines, once it has exited, or the @code{RunError}. An exit code other than 0 is @code{Exited}.")
+  (see run/string RunError))
 
 (:doc run/status
   (summary "Runs a form, discards its output, and returns its exit code.")
   (arg form "What to run.")
-  (returns "The last command's exit code, or 0 if it has none.")
+  (returns "The last command's exit code, or 0 if it has none. A code other than 0 is not an error.")
   (see run/output wait))
 
 (:doc run/output
   (summary "Runs a form and returns both its exit code and output.")
   (arg form "What to run.")
-  (returns "The last command's exit code and everything the form wrote.")
+  (returns "The last command's exit code and everything the form wrote. A code other than 0 is not an error.")
   (see run/string run/status)
   (reference """
     For a command where non-zero exit is an expected outcome:
@@ -298,7 +363,7 @@
 (:doc running
   (summary "Runs a form as an event, yielding its standard output.")
   (arg form "What to run.")
-  (returns "An event evaluating to what @code{run/string} returns.")
+  (returns "An event evaluating to what @code{run/string} returns, an @code{Exited} error included.")
   (see exited run/string)
   (reference """
     It owns the form: nothing starts until the branch is reached, the input is
@@ -310,7 +375,7 @@
   (arg form "What to run.")
   (arg reader "Reads one item. A bjoroutine, such as @code{read-line}.")
   (returns "A @code{Stream}. Nothing runs until a loop over it starts.")
-  (raises System.InvalidOperationException "In the loop, when the form cannot start or its output goes to a file.")
+  (raises System.InvalidOperationException "In the loop, when the form cannot run as written, or a command exits with a code other than 0 at the end of the output.")
   (see run/channel Stream)
   (example """
     (loop (:for line (run/stream '(git log "--oneline") read-line))
@@ -329,10 +394,13 @@
     child process that a program started and that is still alive can keep a
     pipe open.
 
-    The exit code is dropped, as @code{run/strings} drops it. A filter or a
-    redirection that fails, and what @code{reader} raises, are raised in the
-    loop. For the code, or for output that something else should read too,
-    use @code{run/channel}.
+    A @code{RunError} is raised in the loop as its exception, as
+    @code{raise-err} raises it. An exit code other than 0 is checked as
+    @code{run/strings} checks it, when the loop reaches the end of the
+    output. A loop that ends early kills the form, and its codes are not
+    checked. What @code{reader} raises is raised in the loop. For the code,
+    or for output that something else should read too, use
+    @code{run/channel}.
     """))
 
 (:doc run/channel
@@ -372,7 +440,7 @@
 (:doc with-run
   (summary "Runs a form for the extent of body, and kills it on the way out.")
   (form (with-run (name form) body ...))
-  (arg name "Bound to the @code{(Result Exception Proc)}.")
+  (arg name "Bound to the @code{(Result RunError Proc)}.")
   (arg form "What to run.")
   (rest body "What to run with it. At least one form.")
   (see run kill)
