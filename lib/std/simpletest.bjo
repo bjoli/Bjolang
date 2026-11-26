@@ -394,30 +394,30 @@
   (stream-position! (cast ClrStream s) 0L)
   s)
 
-(: (-> Exception (Result Exception %a)))
-(defun (fake-error e)
-  (Err e))
-
-(: (-> string (Result Exception %a)))
+(: (-> string (Result FsError %a)))
 (defun (not-found path)
-  (fake-error (cast Exception (FileNotFound. #"the fake filesystem has no file ${path}"))))
+  (Err (NotFound (as-path path)
+                 (cast Exception (FileNotFound. #"the fake filesystem has no file ${path}")))))
 
-(: (-> string (Result Exception %a)))
+(: (-> string (Result FsError %a)))
 (defun (no-directory path)
-  (fake-error (cast Exception (DirectoryNotFound. #"the fake filesystem has no directory ${path}"))))
+  (Err (NotFound (as-path path)
+                 (cast Exception (DirectoryNotFound. #"the fake filesystem has no directory ${path}")))))
 
-(: (-> string (Result Exception %a)))
-(defun (io-error message)
-  (fake-error (cast Exception (IOException. message))))
+;; `make` is the case, such as `AlreadyExists`.
+(: (-> (-> Path Exception FsError) string string (Result FsError %a)))
+(defun (io-error make path message)
+  (Err (make (as-path path) (cast Exception (IOException. message)))))
 
-(: (-> string (Result Exception %a)))
+(: (-> string (Result FsError %a)))
 (defun (access-denied path)
-  (fake-error (cast Exception
-                    (AccessDenied. #"the fake filesystem cannot do that to directory ${path}"))))
+  (Err (IsDirectory (as-path path)
+                    (cast Exception
+                          (AccessDenied. #"the fake filesystem cannot do that to directory ${path}")))))
 
 ;; --- The handlers --------------------------------------------------------------
 
-(: (-> FakeFs (-> Path (Result Exception ClrStream))))
+(: (-> FakeFs (-> Path (Result FsError ClrStream))))
 (defun (fake-fs-reader fs)
   (fun (raw)
     (def path (fake-path (path->string/lossy raw)))
@@ -433,7 +433,7 @@
            (no-directory path))))))
 
 ;; `Append` starts the new stream with what the path held.
-(: (-> FakeFs (-> Path WriteMode (Result Exception ClrStream))))
+(: (-> FakeFs (-> Path WriteMode (Result FsError ClrStream))))
 (defun (fake-fs-writer fs)
   (fun (raw mode)
     (def path (fake-path (path->string/lossy raw)))
@@ -443,7 +443,7 @@
       (else
        (match (Tuple mode kind)
          ((Tuple _ (Some FsDirectory)) (access-denied path))
-         ((Tuple CreateNew (Some FsFile)) (io-error #"the fake filesystem already has ${path}"))
+         ((Tuple CreateNew (Some FsFile)) (io-error AlreadyExists path #"the fake filesystem already has ${path}"))
          (_
           (def s
             (match (Tuple mode (fake-bytes-at fs path))
@@ -461,7 +461,7 @@
   (fun (raw) (fake-info fs (fake-path (path->string/lossy raw)))))
 
 ;; The entries, with whole paths, sorted. The fake has no links.
-(: (-> FakeFs (-> Path (Result Exception (Vec FsEntry)))))
+(: (-> FakeFs (-> Path (Result FsError (Vec FsEntry)))))
 (defun (fake-fs-list fs)
   (fun (raw)
     (def path (fake-path (path->string/lossy raw)))
@@ -489,20 +489,20 @@
                                                                      (None FsFile)))))))))))))
 
 ;; Every missing directory along the path, as `Directory.CreateDirectory`.
-(: (-> FakeFs (-> Path (Result Exception Unit))))
+(: (-> FakeFs (-> Path (Result FsError Unit))))
 (defun (fake-fs-create-directory fs)
   (fun (raw)
     (def path (fake-path (path->string/lossy raw)))
     (match (fake-kind fs path)
       ((Some FsDirectory) (Ok unit))
-      ((Some _) (io-error #"the fake filesystem has a file at ${path}"))
+      ((Some _) (io-error AlreadyExists path #"the fake filesystem has a file at ${path}"))
       (None
        (fake-update! fs (map-set (fake-with-ancestors (fake-entries fs) path) path FakeDir))
        (fake-stamp! fs path)
        (Ok unit)))))
 
 ;; A missing file is not an error, as with `File.Delete`.
-(: (-> FakeFs (-> Path (Result Exception Unit))))
+(: (-> FakeFs (-> Path (Result FsError Unit))))
 (defun (fake-fs-delete-file fs)
   (fun (raw)
     (def path (fake-path (path->string/lossy raw)))
@@ -514,7 +514,7 @@
        (Ok unit))
       (None (Ok unit)))))
 
-(: (-> FakeFs (-> Path (Result Exception Unit))))
+(: (-> FakeFs (-> Path (Result FsError Unit))))
 (defun (fake-fs-delete-directory fs)
   (fun (raw)
     (def path (fake-path (path->string/lossy raw)))
@@ -523,14 +523,14 @@
       (None (no-directory path))
       ((Some FsDirectory)
        (cond
-         ((string-empty? path) (io-error "the fake filesystem's root cannot be deleted"))
+         ((string-empty? path) (io-error Io path "the fake filesystem's root cannot be deleted"))
          ((map-any? (fun (k v) (string-starts-with? k prefix)) (fake-entries fs))
-          (io-error #"the fake directory ${path} is not empty"))
+          (io-error NotEmpty path #"the fake directory ${path} is not empty"))
          (else
           (fake-update! fs (map-remove (fake-entries fs) path))
           (fake-forget-time! fs path)
           (Ok unit))))
-      ((Some _) (io-error #"the fake filesystem has a file, not a directory, at ${path}")))))
+      ((Some _) (io-error NotDirectory path #"the fake filesystem has a file, not a directory, at ${path}")))))
 
 ;; `m` with `from`, and everything below it, renamed to `to`. Generic, because
 ;; the entries and their times move by the same renaming.
@@ -549,7 +549,7 @@
 ;; A file, or a directory and everything below it. Fails if `to` exists,
 ;; unless `MoveReplace` asks to replace a file there with a file. The source is
 ;; checked first, as `File.Move` does.
-(: (-> FakeFs (-> Path Path MoveMode (Result Exception Unit))))
+(: (-> FakeFs (-> Path Path MoveMode (Result FsError Unit))))
 (defun (fake-fs-move fs)
   (fun (raw-from raw-to mode)
     (def from (fake-path (path->string/lossy raw-from)))
@@ -562,7 +562,7 @@
         (_ #f)))
     (cond
       ((none? from-kind) (not-found from))
-      ((and (some? to-kind) (not replacing)) (io-error #"the fake filesystem already has ${to}"))
+      ((and (some? to-kind) (not replacing)) (io-error AlreadyExists to #"the fake filesystem already has ${to}"))
       ((not (fake-dir? fs (fake-parent to))) (no-directory to))
       (else
        (when replacing

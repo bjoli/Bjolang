@@ -14,7 +14,7 @@
 (import (std effect))
 (import (std simpletest))
 
-(: (-> string (Result Exception string)))
+(: (-> string (Result FsError string)))
 (defun (read-it path)
   (call-with-input-file path read-all))
 
@@ -48,10 +48,10 @@
 
   ;; --- A missing path is the real error type -------------------------------
   (with-fake-fs (("notes.txt" "x"))
-    (expect-true "a missing fake path is an Err of the real type"
+    (expect-true "a missing fake path is NotFound, with an exception of the real type"
                  (match (open-input-file "nowhere.txt")
-                   ((Ok _) #f)
-                   ((Err e) (string-contains? (displayed e) "FileNotFoundException")))))
+                   ((Err (NotFound _ (:is System.IO.FileNotFoundException _))) #t)
+                   (_ #f))))
 
   ;; --- Writing, and reading what was written -------------------------------
   (def fs (fake-fs (list (Tuple "seed.txt" "seeded"))))
@@ -83,10 +83,10 @@
       (expect-true "and the disk says it does not" (none? (fs-info/raw (path "new.txt"))))))
 
   (with-fake-fs (("taken.txt" "x"))
-    (expect-true "CreateNew on a fake path that exists is an IOException"
+    (expect-true "CreateNew on a fake path that exists is AlreadyExists"
                  (match (open-output-file "taken.txt" #:mode CreateNew)
-                   ((Ok _) #f)
-                   ((Err e) (string-contains? (displayed e) "IOException"))))
+                   ((Err (AlreadyExists _ _)) #t)
+                   (_ #f)))
     (expect "CreateNew on a free fake path writes"
             (call-with-output-file "free.txt" #(write-string &1 "mine") #:mode CreateNew)
             (Ok unit))
@@ -100,10 +100,11 @@
   (expect "a real append" (raise-err (file-read-text real)) "ab")
   (raise-err (file-write-text real "c"))
   (expect "a real truncate" (raise-err (file-read-text real)) "c")
-  (expect-true "a real CreateNew on an existing file is an IOException"
+  (expect-true "a real CreateNew on an existing file is AlreadyExists"
                (match (open-output-file real #:mode CreateNew)
                  ((Ok p) (let () (close-output-port p) #f))
-                 ((Err e) (string-contains? (displayed e) "IOException"))))
+                 ((Err (AlreadyExists _ (:is System.IO.IOException _))) #t)
+                 ((Err e) #f)))
   (raise-err (file-delete real))
   (expect "a real CreateNew on a free path"
           (call-with-output-file real #(write-string &1 "d") #:mode CreateNew)
@@ -151,7 +152,7 @@
       (expect-true "a missing path is the real error type"
                    (match (open-input-file "nowhere.bin")
                      ((Ok _) #f)
-                     ((Err (:is System.IO.FileNotFoundException _)) #t)
+                     ((Err (NotFound _ (:is System.IO.FileNotFoundException _))) #t)
                      ((Err e) #f)))))
 
   ;; --- The lazy readers through the fake ------------------------------------
@@ -208,7 +209,7 @@
       (expect-true "a write into a missing directory is the real error type"
                    (match (open-output-file "nowhere/a.txt")
                      ((Ok _) #f)
-                     ((Err (:is System.IO.DirectoryNotFoundException _)) #t)
+                     ((Err (NotFound _ (:is System.IO.DirectoryNotFoundException _))) #t)
                      ((Err e) #f)))
 
       (expect-true "a non-empty directory refuses a plain delete"

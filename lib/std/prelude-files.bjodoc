@@ -8,32 +8,16 @@
 ;; Whole files
 ;; ---------------------------------------------------------------------------
 
-(:doc raise-err
-  (summary "The @code{Ok} value of a result, or its @code{Err} raised.")
-  (arg r "A result whose error is an exception.")
-  (returns "The value in @code{Ok}.")
-  (see file-read-text result-ref)
-  (example """
-    (def text (raise-err (file-read-text "config.toml")))
-    """)
-  (reference """
-    The file and directory functions of the prelude return a
-    @code{(Result Exception a)}. A script that wants the exception instead,
-    for a stack trace or for a @code{try} further out, passes the result to
-    @code{raise-err}. The exception is raised as it is, with its own type,
-    which @code{result-ref} does not keep.
-    """))
-
 (:doc file-read-text
   (summary "The whole of a file, as one string.")
   (arg path "The file to read.")
-  (returns "@code{(Ok text)}, everything the file holds, or the @code{Err} of the failure.")
-  (see file-read-lines file-read-bytes file-write-text open-input-file raise-err)
+  (returns "@code{(Ok text)}, everything the file holds, or the @code{FsError} of the failure.")
+  (see file-read-lines file-read-bytes file-write-text open-input-file FsError raise-err)
   (example """
     (match (file-read-text "notes.txt")
       ((Ok text) (println text))
-      ((Err (:is System.IO.FileNotFoundException)) (println "no notes yet"))
-      ((Err e) (println (.-Message e))))
+      ((Err (NotFound _ _)) (println "no notes yet"))
+      ((Err e) (println (fs-error-message e))))
     """)
   (reference """
     For a file that fits in memory; a port reads one that does not. Opening
@@ -125,7 +109,7 @@
   (arg from "The file to copy.")
   (arg to "Where the copy goes.")
   (key #:mode "How to is written: CreateNew, the default, Truncate or Append.")
-  (returns "@code{(Ok unit)}, or the @code{Err} of the failure. A copy onto its own path is an @code{(Err IOException)}.")
+  (returns "@code{(Ok unit)}, or the @code{Err} of the failure. A copy onto its own path is an @code{(Err (Io from e))}.")
   (see file-move file-read-bytes)
   (example """
     (file-copy "a.txt" "b.txt")                    ; an Err if b.txt exists
@@ -422,6 +406,69 @@
 ;; The FS effect
 ;; ---------------------------------------------------------------------------
 
+(:doc FsError
+  (summary "Why a file system operation failed.")
+  (case NotFound "No file or directory is at the path.")
+  (case AlreadyExists "Something is at the path: @code{CreateNew}, @code{MoveNew} or a copy found it.")
+  (case PermissionDenied "The OS did not allow the operation.")
+  (case NotEmpty "The directory to delete holds entries.")
+  (case IsDirectory "The path is a directory, and a file was wanted.")
+  (case NotDirectory "The path, or a path to it, is a file, and a directory was wanted.")
+  (case InvalidPath "The path cannot be given to .NET: it is empty, it is not UTF-8, or it is too long.")
+  (case Io "Any other failure.")
+  (see fs-error-message fs-error-path fs-error-exception fs-error-of raise-err)
+  (example """
+    (match (file-read-text "notes.txt")
+      ((Ok text) text)
+      ((Err (NotFound _ _)) "")
+      ((Err e) (raise (as-exception e))))
+    """)
+  (reference """
+    Each case holds the path and the exception the error was made from.
+    The exception has the OS's own message, and @code{raise-err} raises it.
+
+    The file and directory functions of the prelude, the operations of the
+    @code{FS} effect and their @code{/raw} handlers return it. A handler of
+    the effect makes one with @code{fs-error-of}, or with a case directly.
+
+    The case is decided from the .NET exception type, then from its
+    @code{HResult}: the @code{errno} on Linux and macOS, a Win32 error code
+    on Windows. The Windows codes are not tested. When no case fits, the
+    error is @code{Io}.
+    """))
+
+(:doc fs-error-of
+  (summary "Makes the FsError for an exception of an operation on a path.")
+  (arg path "The path the operation was about.")
+  (arg e "The exception .NET raised.")
+  (returns "The case that fits the exception, or @code{Io}.")
+  (see FsError)
+  (reference """
+    A @code{DirectoryNotFoundException} is @code{NotDirectory} when
+    @code{path}, or the nearest ancestor of @code{path} that exists, is a
+    file. An
+    @code{UnauthorizedAccessException} is @code{IsDirectory} when
+    @code{path} is a directory. Both checks look at the real file system.
+    """))
+
+(:doc fs-error-path
+  (summary "The path an FsError is about.")
+  (arg e "The error.")
+  (returns "The path.")
+  (see FsError))
+
+(:doc fs-error-exception
+  (summary "The exception an FsError was made from.")
+  (arg e "The error.")
+  (returns "The exception.")
+  (see FsError as-exception))
+
+(:doc fs-error-message
+  (summary "A message for an FsError.")
+  (arg e "The error.")
+  (returns "The kind of error, the path and the exception's message, as in @code{not found: notes.txt: Could not find file ...}.")
+  (see FsError))
+
 (:doc FsKind
   (summary "What a path names, when it names anything.")
   (case FsFile "A file.")
@@ -520,7 +567,7 @@
 
     The @code{/raw} operations give a path to .NET as a string, which
     must be UTF-8. For a path that is not UTF-8, they return an
-    @code{ArgumentException}, and this one raises it, because
+    @code{InvalidPath}, and this one raises its exception, because
     @code{None} would say that nothing is there.
     """))
 
@@ -550,7 +597,7 @@
 (:doc fs-list/raw
   (summary "The entries of a directory on the real file system, bypassing any FS handler.")
   (arg path "The directory to list.")
-  (returns "The entries, in the order the OS gives them, or the exception: DirectoryNotFoundException, UnauthorizedAccessException or IOException.")
+  (returns "The entries, in the order the OS gives them, or the FsError.")
   (see fs-list FsEntry)
   (reference """
     On Linux and Android it reads the directory with @code{readdir}: the
@@ -581,7 +628,7 @@
 (:doc fs-create-directory/raw
   (summary "Creates a directory on the real file system, bypassing any FS handler.")
   (arg path "The directory to create.")
-  (returns "Ok, or the exception .NET raised.")
+  (returns "Ok, or the FsError.")
   (see fs-create-directory)
   (reference """
     Every missing directory along the path is created, and one that is
@@ -609,7 +656,7 @@
 (:doc fs-delete-file/raw
   (summary "Deletes a file on the real file system, bypassing any FS handler.")
   (arg path "The file to delete.")
-  (returns "Ok, also when the file is missing, or the exception .NET raised.")
+  (returns "Ok, also when the file is missing, or the FsError.")
   (see fs-delete-file))
 
 (:doc fs-delete-directory
@@ -633,7 +680,7 @@
 (:doc fs-delete-directory/raw
   (summary "Deletes an empty directory on the real file system, bypassing any FS handler.")
   (arg path "The directory to delete.")
-  (returns "Ok, or the exception .NET raised: a missing or non-empty directory is an IOException.")
+  (returns "Ok, or the FsError: @code{NotFound} or @code{NotEmpty}, for example.")
   (see fs-delete-directory))
 
 (:doc fs-move
@@ -662,7 +709,7 @@
   (arg from "What to move.")
   (arg to "Its new path.")
   (arg mode "Whether a file at to is replaced. Ignored for a directory, which never replaces.")
-  (returns "Ok, or the exception .NET raised.")
+  (returns "Ok, or the FsError.")
   (see fs-move MoveMode))
 
 ;; ---------------------------------------------------------------------------

@@ -305,9 +305,9 @@
 ;; ---------------------------------------------------------------------------
 ;; `(:is Type binder)` — a .NET type test in pattern position.
 ;;
-;; A guarded call, or a file function of the prelude, gives back
-;; `(Result System.Exception %a)`, which says a failure happened but not which
-;; one. `:is` is how an `Err` arm tells them
+;; A guarded call gives back `(Result System.Exception %a)`, which says a
+;; failure happened but not which one. A file function of the prelude gives
+;; an `FsError`, and `fs-error-exception` is the exception it holds. `:is` is how an `Err` arm tells them
 ;; apart, binding the value at the *narrowed* type so the arm can use members
 ;; the scrutinee's static type does not have.
 ;; ---------------------------------------------------------------------------
@@ -316,7 +316,7 @@
 ;; order, so the specific type has to precede the general one.
 (: (-> string string))
 (defun (classify path)
-  (match (file-read-text path)
+  (match (result-map-err fs-error-exception (file-read-text path))
     ((Ok text) "read")
     ((Err (:is System.IO.FileNotFoundException)) "no such file")
     ((Err (:is System.IO.DirectoryNotFoundException)) "no such directory")
@@ -328,7 +328,7 @@
 ;; A `:is` covers nothing, so the `Err` column still needs a clause of its own.
 (: (-> string string))
 (defun (missing-file-name path)
-  (match (file-read-text path)
+  (match (result-map-err fs-error-exception (file-read-text path))
     ((Ok text) "")
     ((Err (:is System.IO.FileNotFoundException e)) (.-FileName e))
     ((Err e) "")))

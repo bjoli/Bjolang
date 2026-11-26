@@ -53,7 +53,7 @@
 (: (-> string string))
 (defun (in-probe name) (path-combine probe name))
 
-(: (-> (Result System.Exception %a) bool))
+(: (-> (Result %e %a) bool))
 (defun (threw? r)
   (match r ((Ok _) #f) ((Err _) #t)))
 
@@ -376,16 +376,36 @@
 ;; Errors are results
 ;; ---------------------------------------------------------------------------
 
-;; What kind of exception an `Err` holds, as a string a check can compare.
-(: (-> (Result Exception %a) string))
+;; The case of the `FsError` an `Err` holds, as a string a check can compare.
+(: (-> (Result FsError %a) string))
 (defun (failure-kind r)
+  (match r
+    ((Ok _) "ok")
+    ((Err (NotFound _ _)) "not found")
+    ((Err (AlreadyExists _ _)) "exists")
+    ((Err (PermissionDenied _ _)) "denied")
+    ((Err (NotEmpty _ _)) "not empty")
+    ((Err (IsDirectory _ _)) "is directory")
+    ((Err (NotDirectory _ _)) "not directory")
+    ((Err (InvalidPath _ _)) "invalid")
+    ((Err (Io _ _)) "io")))
+
+;; What kind of exception an `Err` holds.
+(: (-> (Result Exception %a) string))
+(defun (exception-kind r)
   (match r
     ((Ok _) "ok")
     ((Err (:is System.IO.FileNotFoundException)) "not found")
     ((Err (:is System.IO.DirectoryNotFoundException)) "no directory")
     ((Err (:is System.IO.IOException)) "io")
-    ((Err (:is System.ArgumentException)) "argument")
     ((Err _) "other")))
+
+;; The path of the error an `Err` holds.
+(: (-> (Result FsError %a) string))
+(defun (failure-path r)
+  (match r
+    ((Ok _) "")
+    ((Err e) (path->string/lossy (fs-error-path e)))))
 
 (: (-> string string void))
 (defun (check-results where dir)
@@ -396,17 +416,37 @@
   (expect #"${where}: so are its lines and bytes"
           (str (failure-kind (file-read-lines missing)) ", " (failure-kind (file-read-bytes missing)))
           "not found, not found")
+  (expect #"${where}: the error holds the path"
+          (failure-path (file-read-text missing)) missing)
   (expect #"${where}: listing a missing directory is an Err"
-          (err? (directory-files (under dir "nowhere"))) #t)
+          (failure-kind (directory-files (under dir "nowhere"))) "not found")
   (expect #"${where}: a write returns (Ok unit)"
           (ok? (file-write-text (under dir "a.txt") "A")) #t)
   (expect #"${where}: deleting a missing file is not an error"
           (ok? (file-delete missing)) #t)
-  (expect #"${where}: deleting a non-empty directory is an Err"
-          (err? (directory-delete dir)) #t)
+  (expect #"${where}: deleting a non-empty directory is NotEmpty"
+          (failure-kind (directory-delete dir)) "not empty")
+  (expect #"${where}: CreateNew onto a file is AlreadyExists"
+          (failure-kind (open-output-file (under dir "a.txt") #:mode CreateNew)) "exists")
+  (expect #"${where}: moving a missing file is NotFound, about the source"
+          (str (failure-kind (file-move missing (under dir "b.txt")))
+               " " (failure-path (file-move missing (under dir "b.txt"))))
+          (str "not found " missing))
+  (raise-err (file-write-text (under dir "m.txt") "m"))
+  (expect #"${where}: MoveNew onto a file is AlreadyExists, about the target"
+          (str (failure-kind (file-move (under dir "m.txt") (under dir "a.txt")))
+               " " (failure-path (file-move (under dir "m.txt") (under dir "a.txt"))))
+          (str "exists " (under dir "a.txt")))
+  (expect #"${where}: reading a directory is IsDirectory"
+          (failure-kind (file-read-text dir)) "is directory")
   (expect #"${where}: raise-err raises the exception with its own type"
-          (failure-kind (try (raise-err (file-read-text missing)) #:catch (System.Exception)))
+          (exception-kind (try (raise-err (file-read-text missing)) #:catch (System.Exception)))
           "not found")
+  (expect-true #"${where}: fs-error-message says the kind and the path"
+               (match (file-read-text missing)
+                 ((Err e) (and (string-starts-with? (fs-error-message e) "not found: ")
+                               (some? (string-search (fs-error-message e) "missing.txt"))))
+                 ((Ok _) #f)))
   (expect #"${where}: result-and-then reads after a write"
           (result-and-then (fun (_) (file-read-text (under dir "a.txt")))
                            (file-append-text (under dir "a.txt") "B"))
@@ -437,7 +477,29 @@
   (links-on-the-disk)
   (with-fake-fs () (check-results "fake" "results"))
   (check-results "disk" (in-probe "results"))
-  (expect "an empty path is an Err, not an exception" (failure-kind (file-read-text "")) "argument"))
+  (expect "an empty path is an Err, not an exception" (failure-kind (file-read-text "")) "invalid")
+  (disk-only-errors (in-probe "errors")))
+
+;; Cases that only the real file system makes.
+(: (-> string void))
+(defun (disk-only-errors dir)
+  (raise-err (directory-create dir))
+  (def file (under dir "f.txt"))
+  (raise-err (file-write-text file "f"))
+  (expect "a path through a file is NotDirectory"
+          (failure-kind (file-read-text (under file "x.txt"))) "not directory")
+  (expect "listing a file is NotDirectory"
+          (failure-kind (directory-files file)) "not directory")
+  (expect "a missing directory on the way is NotFound"
+          (failure-kind (file-read-text (under (under dir "none") "x.txt"))) "not found")
+  (expect "deleting a directory as a file is IsDirectory"
+          (failure-kind (file-delete dir)) "is directory")
+  (raise-err (directory-create (under dir "d")))
+  (expect "moving a directory onto a directory is AlreadyExists"
+          (failure-kind (file-move (under dir "d") dir)) "exists")
+  (expect "moving a file onto a directory is AlreadyExists"
+          (failure-kind (file-move file (under dir "d"))) "exists")
+  (raise-err (directory-delete-tree dir)))
 
 (defbjo (main)
   (when (directory-exists? probe) (raise-err (directory-delete-tree probe)))

@@ -514,7 +514,7 @@
 (: (-> string bool (Result Exception OutputPort)))
 (defun (open-for-writing path append)
   (match (open-write-stream (as-path path) (if append Append Truncate))
-    ((Err e) (Err e))
+    ((Err e) (Err (as-exception e)))
     ((Ok stream) (Ok (cast OutputPort (PortOver. stream #t))))))
 
 ;; A child's standard input as a port: unbuffered, as .NET's writer over it
@@ -541,7 +541,7 @@
   (def inner (record-ref r inner))
   (match (record-ref r how)
     (RFrom
-     (def (Ok file) (open-input-file path) :propagate)
+     (def (Ok file) (result-map-err as-exception (open-input-file path)) :propagate)
      (redirect-input inner errors file))
     (RInto (redirect-output inner errors path #f))
     (RAppend (redirect-output inner errors path #t))
@@ -762,6 +762,16 @@
   (match (waiting p)
     ((Err e) (Err e))
     ((Ok code) (Ok (Tuple code text)))))
+;; (: (-> Form (-> InputPort (Option string)) (Result string (Vec string))))
+;; (defun (run/vec form reader)
+;;   (def (Ok proc) (run form) :leave-with (Err "Could not run form"))
+;;   (match (proc-input proc)
+;;     ((Some out) (close-output-port out))
+;;     (_ unit))
+;;   (def (Some in) (proc-output proc) :leave-with (Err "hej"))
+;;   (loop (:for a (in-port in reader))
+;;         (:acc b (vecing a))
+;;         => (Ok b)))
 
 (: (-> Form (Result Exception (Vec string))) #:sync)
 (defun (run/strings form)

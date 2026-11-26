@@ -3,6 +3,38 @@
 
 What each change guarantees, and what it leaves open.
 
+* File errors are an ~FsError~
+
+*Breaking.* The prelude's file and directory functions, the operations of
+the ~FS~ effect and their ~/raw~ handlers return ~(Result FsError a)~, not
+~(Result Exception a)~.
+
+- *The cases:* ~NotFound~, ~AlreadyExists~, ~PermissionDenied~,
+  ~NotEmpty~, ~IsDirectory~, ~NotDirectory~, ~InvalidPath~ and ~Io~. Each
+  holds the path and the .NET exception it was made from.
+- *How the case is decided:* by the exception type, then by its
+  ~HResult~. That is the ~errno~ on Linux and macOS, and a Win32 code on
+  Windows. The Windows codes are not tested. A failure that fits no case is
+  ~Io~.
+- *A move* reports a missing source about ~from~, and anything else about
+  ~to~. A ~Directory.Move~ onto a path that exists is ~AlreadyExists~.
+- *New:* ~fs-error-of~, ~fs-error-path~, ~fs-error-exception~ and
+  ~fs-error-message~.
+- *~raise-err~ is generic.* It takes a ~Result~ whose error has an
+  ~AsException~ instance, a new trait of the prelude. ~Exception~ and
+  ~FsError~ have one. ~raise-err~ on an ~FsError~ raises the exception it
+  holds, so a caller that catches by .NET type still works.
+- *To port:*
+  - ~(:is System.IO.FileNotFoundException)~ on a file ~Err~ becomes
+    ~(NotFound _ _)~, or ~(NotFound _ (:is ... e))~ to keep the exception.
+  - ~(.-Message e)~ becomes ~(fs-error-message e)~, or
+    ~(.-Message (as-exception e))~ for the old text.
+  - ~(raise e)~ becomes ~(raise (as-exception e))~.
+- A handler of the ~FS~ effect returns an ~FsError~. ~(std simpletest)~'s
+  fake file system returns the case that fits.
+- ~(std run)~ still returns ~(Result Exception a)~. A redirect that cannot
+  open its file gives the exception of the ~FsError~.
+
 * REPL entries compile faster
 
 - A steady entry with only the prelude imported costs about 32 ms, from

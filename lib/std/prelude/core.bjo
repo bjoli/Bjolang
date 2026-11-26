@@ -124,6 +124,7 @@
   transientmap-empty? transientmap-filter!
   ;; Results
   ok? err? result-ref result-ref-or result-map result-map-err result-and-then result->option
+  AsException as-exception raise-err
   option-map option-filter option-or option->result
   ;; Pairs
   fst snd
@@ -2419,6 +2420,23 @@
   (match r
     ((Ok v) (Ok (f v)))
     ((Err e) (Err e))))
+
+;; An error that can be raised: an exception, or an error type that keeps the
+;; exception it was made from, such as the prelude's `FsError`.
+(def/trait (AsException %e)
+  (: as-exception (-> %e Exception)))
+
+(impl (AsException Exception)
+  (defun (as-exception e)
+    e))
+
+;; The `Ok` value, or the exception of the `Err` raised. For a caller that
+;; wants the exception rather than the `Result`.
+(: (-> (Result %e %a) %a) (where (AsException %e)))
+(defun (raise-err r)
+  (match r
+    ((Ok v) v)
+    ((Err e) (raise (as-exception e)))))
 
 ;; `(f v)` for `(Ok v)`, where `f` returns a `Result` and may suspend; an
 ;; `Err` returns itself.

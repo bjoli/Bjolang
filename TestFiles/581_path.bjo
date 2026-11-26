@@ -124,7 +124,7 @@
   ;; .NET takes UTF-8 names only, and a name that is not is not changed
   (def bad (path-join dir raw))
   (expect "a name that is not UTF-8 is not written"
-          (threw? (file-write-text bad "x"))
+          (match (file-write-text bad "x") ((Err (InvalidPath _ _)) #t) (_ #f))
           #t)
   (expect "nor asked about" (threw? (try (file-exists? bad) #:catch (System.ArgumentException))) #t)
   (expect "the other file is still there" (vec-length (raise-err (directory-files dir))) 2)
@@ -135,6 +135,6 @@
   (with-fake-fs (("x/y.txt" "fake"))
     (expect "the fake file system takes a Path" (raise-err (file-read-text (path-join "x" "y.txt"))) "fake")))
 
-(: (-> (Result System.Exception %a) bool))
+(: (-> (Result %e %a) bool))
 (defun (threw? r)
   (match r ((Ok _) #f) ((Err _) #t)))

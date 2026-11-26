@@ -1475,12 +1475,17 @@ Disposes resources automatically:
 Each binding has its own ~try~/~finally~.
 
 *** ~:is~ — telling failures apart
-Narrows the type inside a ~match~. The prelude's file functions return a ~(Result Exception a)~ themselves, so no ~try~ is needed around them:
+Narrows the type inside a ~match~. It works on any field that holds an exception, such as the exception an ~FsError~ case holds:
 #+BEGIN_SRC scheme
-(match (file-read-text path)
+(match (try (File.ReadAllText path) #:catch (System.IO.IOException))
   ((Ok text) text)
   ((Err (:is System.IO.FileNotFoundException e)) (missing (.-FileName e)))
   ((Err (:is System.IO.DirectoryNotFoundException)) (no-directory))
+  ((Err e) (unknown e)))
+
+(match (file-read-text path)          ;; (Result FsError string)
+  ((Ok text) text)
+  ((Err (NotFound _ (:is System.IO.FileNotFoundException e))) (missing (.-FileName e)))
   ((Err e) (unknown e)))
 #+END_SRC
 
@@ -1489,8 +1494,8 @@ Rethrows an exception:
 #+BEGIN_SRC scheme
 (match (file-read-text path)
   ((Ok text) text)
-  ((Err (:is System.IO.FileNotFoundException)) "")
-  ((Err e) (raise e)))            ;; not ours; someone else's problem
+  ((Err (NotFound _ _)) "")
+  ((Err e) (raise (as-exception e))))  ;; not ours; someone else's problem
 #+END_SRC
 
 *** Writing your own

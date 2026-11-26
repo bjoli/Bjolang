@@ -20,7 +20,8 @@
 ;; Macros defined here cannot be used in this file. Those of
 ;; (std prelude core) and (std core-macros), such as cond, can.
 (export
-  raise-err file-read-text file-write-text file-append-text file-exists?
+  FsError fs-error-of fs-error-path fs-error-exception fs-error-message
+  file-read-text file-write-text file-append-text file-exists?
   file-delete file-move file-info file-copy file-read-bytes file-write-bytes
   file-append-bytes file-read-lines file-write-lines file-read/seq
   file-read-lines/seq path-absolute path-combine path-filename
@@ -133,47 +134,74 @@
                         (: modified-ms long)
                         (: link? bool))))
 
+;; Why a file system operation failed. Each case holds the path it is about
+;; and the exception it was made from, which `raise-err` raises and which has
+;; the OS's own message.
+;;
+;; - `NotFound`: no such file or directory.
+;; - `AlreadyExists`: `CreateNew`, `MoveNew` or a copy found something there.
+;; - `PermissionDenied`: the OS refused access.
+;; - `NotEmpty`: `directory-delete` of a directory that holds something.
+;; - `IsDirectory`: a directory where a file was wanted.
+;; - `NotDirectory`: a file where a directory was wanted, the path to it
+;;   included.
+;; - `InvalidPath`: a path .NET cannot take: empty, not UTF-8 or too long.
+;; - `Io`: any other failure.
+;;
+;; `fs-error-of` makes one from an exception. A handler of the `FS` effect
+;; can use it, or make a case itself.
+(type (: FsError (Union (: NotFound Path Exception)
+                        (: AlreadyExists Path Exception)
+                        (: PermissionDenied Path Exception)
+                        (: NotEmpty Path Exception)
+                        (: IsDirectory Path Exception)
+                        (: NotDirectory Path Exception)
+                        (: InvalidPath Path Exception)
+                        (: Io Path Exception))))
+
 ;; The functions in the file and directory sections return the `Result` of the
-;; `FS` operations. An exception that the I/O raises after the file is open,
-;; an `IOException` or an `UnauthorizedAccessException`, is an `Err` too.
-;; A cancellation is raised as usual.
+;; `FS` operations, with an `FsError`. An `IOException` or an
+;; `UnauthorizedAccessException` that the I/O raises after the file is open is
+;; an `Err` too. A cancellation is raised as usual.
 ;;
 ;; `raise-err` is for a caller that wants the exception instead.
-(: (-> (Result System.Exception %a) %a))
-(defun (raise-err r)
+
+;; The `Err` of `r`, an exception, as the `FsError` for `path`.
+(: (-> Path (Result Exception %a) (Result FsError %a)))
+(defun (fs-result path r)
   (match r
-    ((Ok v) v)
-    ((Err e) (raise e))))
+    ((Ok v) (Ok v))
+    ((Err e) (Err (fs-error-of path e)))))
 
 ;; Read all text.
-(: (-> %p (Result Exception string)) (where (AsPath %p)))
+(: (-> %p (Result FsError string)) (where (AsPath %p)))
 (defun (file-read-text path)
   (match (open-input-file path)
     ((Ok opened)
-     (try (with-open ((p opened))
+     (fs-result (as-path path) (try (with-open ((p opened))
             (read-all p))
-       #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+       #:catch (System.IO.IOException System.UnauthorizedAccessException))))
     ((Err e) (Err e))))
 
 ;; The flush is explicit so that the suspending copy awaits it. Closing would
 ;; flush too, but synchronously, on whatever thread runs the close.
-(: (-> Path string WriteMode (Result Exception Unit)))
+(: (-> Path string WriteMode (Result FsError Unit)))
 (defun (write-whole-file path contents mode)
   (match (open-output-file path #:mode mode)
     ((Ok opened)
-     (try (with-open ((p opened))
+     (fs-result (as-path path) (try (with-open ((p opened))
             (write-string p contents)
             (flush-port p)
             unit)
-       #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+       #:catch (System.IO.IOException System.UnauthorizedAccessException))))
     ((Err e) (Err e))))
 
 ;; Write text.
-(: (-> %p string (Result Exception Unit)) (where (AsPath %p)))
+(: (-> %p string (Result FsError Unit)) (where (AsPath %p)))
 (defun (file-write-text path contents)
   (write-whole-file (as-path path) contents Truncate))
 
-(: (-> %p string (Result Exception Unit)) (where (AsPath %p)))
+(: (-> %p string (Result FsError Unit)) (where (AsPath %p)))
 (defun (file-append-text path contents)
   (write-whole-file (as-path path) contents Append))
 
@@ -193,13 +221,13 @@
     (_ #f)))
 
 ;; A missing file is not an error, as with `File.Delete`.
-(: (-> %p (Result Exception Unit)) (where (AsPath %p)))
+(: (-> %p (Result FsError Unit)) (where (AsPath %p)))
 (defun (file-delete path)
   (fs-delete-file (as-path path)))
 
 ;; Moves or renames a file or a directory. Fails if `to` exists, unless
 ;; `#:mode MoveReplace` says to replace a file there.
-(: (-> %p %q (#:mode MoveMode) (Result Exception Unit)) (where (AsPath %p) (AsPath %q)))
+(: (-> %p %q (#:mode MoveMode) (Result FsError Unit)) (where (AsPath %p) (AsPath %q)))
 (defun (file-move from to #:mode MoveNew)
   (fs-move (as-path from) (as-path to) mode))
 
@@ -246,12 +274,12 @@
     (_ #f)))
 
 ;; Create directory.
-(: (-> %p (Result Exception Unit)) (where (AsPath %p)))
+(: (-> %p (Result FsError Unit)) (where (AsPath %p)))
 (defun (directory-create path)
   (fs-create-directory (as-path path)))
 
 ;; Delete directory.
-(: (-> %p (Result Exception Unit)) (where (AsPath %p)))
+(: (-> %p (Result FsError Unit)) (where (AsPath %p)))
 (defun (directory-delete path)
   (fs-delete-directory (as-path path)))
 
@@ -262,12 +290,12 @@
 ;; that includes `path` itself. Entering one would delete what it points at: a
 ;; link to the home directory inside a build directory would empty the home
 ;; directory, and a link back up the tree would never end.
-(: (-> %p (Result Exception Unit)) (where (AsPath %p)))
+(: (-> %p (Result FsError Unit)) (where (AsPath %p)))
 (defun (directory-delete-tree path)
   (delete-tree (as-path path)))
 
 ;; Stops at the first error. What was deleted before it stays deleted.
-(: (-> Path (Result Exception Unit)))
+(: (-> Path (Result FsError Unit)))
 (defun (delete-tree path)
   (if (directory-link? path)
       (fs-delete-directory path)
@@ -278,7 +306,7 @@
            (failed failed)))
         ((Err e) (Err e)))))
 
-(: (-> (Vec FsEntry) int (Result Exception Unit)))
+(: (-> (Vec FsEntry) int (Result FsError Unit)))
 (defun (delete-entries entries i)
   (if (= i (vec-length entries))
       (Ok unit)
@@ -308,7 +336,7 @@
 
 ;; The entries of `path` that are files, or directories, with links
 ;; followed.
-(: (-> Path FsKind (Result Exception (Vec Path))))
+(: (-> Path FsKind (Result FsError (Vec Path))))
 (defun (entries-of-kind path kind)
   (match (fs-list path)
     ((Ok entries)
@@ -317,11 +345,11 @@
                (:acc found (vecing (record-ref entry entry-path))))))
     ((Err e) (Err e))))
 
-(: (-> %p (Result Exception (Vec Path))) (where (AsPath %p)))
+(: (-> %p (Result FsError (Vec Path))) (where (AsPath %p)))
 (defun (directory-files path)
   (entries-of-kind (as-path path) FsFile))
 
-(: (-> %p (Result Exception (Vec Path))) (where (AsPath %p)))
+(: (-> %p (Result FsError (Vec Path))) (where (AsPath %p)))
 (defun (directory-subdirectories path)
   (entries-of-kind (as-path path) FsDirectory))
 
@@ -401,7 +429,7 @@
 ;; An input port over a stream an opener answered, registered on the ambient
 ;; scope. Whatever the stream is - a file, or a `MemoryStream` a fake
 ;; filesystem made - the port is owned the same way.
-(: (-> (Result Exception ClrStream) (Result Exception InputPort)))
+(: (-> (Result FsError ClrStream) (Result FsError InputPort)))
 (defun (stream->input-port opened)
   (match opened
     ((Ok s) (Ok (owned-port-over s)))
@@ -409,7 +437,7 @@
 
 ;; The same for an output port: a file port is buffered a block at a time, and
 ;; closing it, or its scope ending, writes what is left.
-(: (-> (Result Exception ClrStream) (Result Exception OutputPort)))
+(: (-> (Result FsError ClrStream) (Result FsError OutputPort)))
 (defun (stream->output-port opened)
   (match opened
     ((Ok s) (Ok (owned-port-out s)))
@@ -466,7 +494,7 @@
 ;;   across text and byte I/O.
 ;; - Effect operations are synchronous; coroutine suspension occurs only when reading
 ;;   or writing through the underlying streams/ports.
-;; - Effect operations return `(Result Exception %a)` values, and so do the
+;; - Effect operations return `(Result FsError %a)` values, and so do the
 ;;   prelude's file and directory functions over them.
 
 (type (: FsListed Bjolang.Runtime.FsListed))
@@ -477,6 +505,7 @@
 
 (import/extern
   (clr-dir-exists  (: System.IO.Directory.Exists (-> string bool)))
+  (clr-file-exists (: System.IO.File.Exists (-> string bool)))
   (clr-list        (: Bjolang.Runtime.FsListing.List (-> (Array byte) (Array FsListed))
                       #:exceptions (System.IO.IOException System.UnauthorizedAccessException
                                    System.ArgumentException)))
@@ -502,32 +531,154 @@
 (import/class
   (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
 
+;; The `FsError` for exception `e` of an operation on `path`.
+;;
+;; - The type of `e` decides first: `FileNotFoundException`,
+;;   `DirectoryNotFoundException`, `PathTooLongException`,
+;;   `UnauthorizedAccessException`, `ArgumentException`.
+;; - A `DirectoryNotFoundException` is `NotDirectory` when `path`, or the
+;;   nearest ancestor of `path` that exists, is a file.
+;; - An `UnauthorizedAccessException` is `IsDirectory` when `path` is a
+;;   directory. .NET raises it to open or delete a directory as a file.
+;; - For another `IOException`, the `HResult` decides. On Windows it is
+;;   `0x8007xxxx` with a Win32 error code. On Unix it is the `errno`; the codes
+;;   of both Linux and macOS are accepted.
+;; - Any other exception is `Io`.
+(: (-> Path Exception FsError))
+(defun (fs-error-of path e)
+  (match e
+    ((:is System.IO.FileNotFoundException) (NotFound path e))
+    ((:is System.IO.DirectoryNotFoundException)
+     (if (ancestor-is-file? path) (NotDirectory path e) (NotFound path e)))
+    ((:is System.IO.PathTooLongException) (InvalidPath path e))
+    ((:is System.UnauthorizedAccessException)
+     (if (is-os-directory? path) (IsDirectory path e) (PermissionDenied path e)))
+    ((:is System.ArgumentException) (InvalidPath path e))
+    ((:is System.IO.IOException) (fs-error-of-code path e (.-HResult e)))
+    (_ (Io path e))))
+
+;; Win32 codes in the low 16 bits of `0x8007xxxx`, else `errno` values.
+(: (-> Path Exception int FsError))
+(defun (fs-error-of-code path e code)
+  (cond
+    ((= (bitwise-and code -65536) -2147024896)
+     (match (bitwise-and code 0xFFFF)
+       (2 (NotFound path e))
+       (3 (NotFound path e))
+       (5 (PermissionDenied path e))
+       (80 (AlreadyExists path e))
+       (183 (AlreadyExists path e))
+       (145 (NotEmpty path e))
+       (267 (NotDirectory path e))
+       (123 (InvalidPath path e))
+       (206 (InvalidPath path e))
+       (_ (Io path e))))
+    (else
+     (match code
+       (1 (PermissionDenied path e))
+       (2 (NotFound path e))
+       (13 (PermissionDenied path e))
+       (17 (AlreadyExists path e))
+       (20 (NotDirectory path e))
+       (21 (IsDirectory path e))
+       ;; ENAMETOOLONG: 36 on Linux, 63 on macOS and BSD.
+       (36 (InvalidPath path e))
+       (63 (InvalidPath path e))
+       ;; ENOTEMPTY: 39 on Linux, 66 on macOS and BSD.
+       (39 (NotEmpty path e))
+       (66 (NotEmpty path e))
+       (_ (Io path e))))))
+
+(: (-> Path bool))
+(defun (is-os-directory? p)
+  (match (path->string p)
+    ((Ok name) (clr-dir-exists name))
+    ((Err _) #f)))
+
+;; Whether `p`, or else the nearest ancestor of `p` that exists, is a file.
+(: (-> Path bool))
+(defun (ancestor-is-file? p)
+  (match (path->string p)
+    ((Err _) #f)
+    ((Ok name)
+     (cond
+       ((clr-file-exists name) #t)
+       ((clr-dir-exists name) #f)
+       ((= name "") #f)
+       (else (match (path-parent p)
+               (None #f)
+               ((Some parent) (ancestor-is-file? parent))))))))
+
+(: (-> FsError Path))
+(defun (fs-error-path e)
+  (match e
+    ((NotFound p _) p)
+    ((AlreadyExists p _) p)
+    ((PermissionDenied p _) p)
+    ((NotEmpty p _) p)
+    ((IsDirectory p _) p)
+    ((NotDirectory p _) p)
+    ((InvalidPath p _) p)
+    ((Io p _) p)))
+
+(: (-> FsError Exception))
+(defun (fs-error-exception e)
+  (match e
+    ((NotFound _ x) x)
+    ((AlreadyExists _ x) x)
+    ((PermissionDenied _ x) x)
+    ((NotEmpty _ x) x)
+    ((IsDirectory _ x) x)
+    ((NotDirectory _ x) x)
+    ((InvalidPath _ x) x)
+    ((Io _ x) x)))
+
+;; The kind of error, the path and the exception's message.
+(: (-> FsError string))
+(defun (fs-error-message e)
+  (def kind (match e
+              ((NotFound _ _) "not found")
+              ((AlreadyExists _ _) "already exists")
+              ((PermissionDenied _ _) "permission denied")
+              ((NotEmpty _ _) "directory not empty")
+              ((IsDirectory _ _) "is a directory")
+              ((NotDirectory _ _) "not a directory")
+              ((InvalidPath _ _) "invalid path")
+              ((Io _ _) "I/O error")))
+  #"${kind}: ${(path->string/lossy (fs-error-path e))}: ${(.-Message (fs-error-exception e))}")
+
+(impl (AsException FsError)
+  (defun (as-exception e) (fs-error-exception e)))
+
 ;; The name of a path as the .NET file functions take it.
 ;;
 ;; - .NET file names are UTF-16 strings. On Unix, .NET encodes them as UTF-8.
 ;; - A path that is not UTF-8 has no such string, so the result is an
 ;;   `ArgumentException`. The name is not changed to a different one.
-(: (-> Path (Result Exception string)))
+(: (-> Path (Result FsError string)))
 (defun (os-path p)
   (match (path->string p)
     ((Ok s) (Ok s))
     ((Err e)
      (Err
-      (cast
-       Exception
-       (ArgumentException.
-        #"the path ${(path->string/lossy p)} cannot be given to .NET: ${(decode-error-message e)}"))))))
+      (InvalidPath
+       p
+       (cast
+        Exception
+        (ArgumentException.
+         #"the path ${(path->string/lossy p)} cannot be given to .NET: ${(decode-error-message e)}")))))))
 
-;; `(f name)` with the .NET name of `p`, or the error of `os-path`.
-(: (-> Path (-> string (Result Exception %a)) (Result Exception %a)))
+;; `(f name)` with the .NET name of `p`, or the error of `os-path`. An
+;; exception in the `Err` of `f` is made an `FsError` for `p`.
+(: (-> Path (-> string (Result Exception %a)) (Result FsError %a)))
 (defun (with-os-path p f)
   (match (os-path p)
-    ((Ok name) (f name))
+    ((Ok name) (fs-result p (f name)))
     ((Err e) (Err e))))
 
 ;; Read-only, and other readers allowed alongside, as `StreamReader`'s own
 ;; path constructor opens.
-(: (-> Path (Result Exception ClrStream)))
+(: (-> Path (Result FsError ClrStream)))
 (defun (open-read-stream/raw path)
   (with-os-path path (fun (name)
                        (match (FileStream. name FileMode.Open FileAccess.Read FileShare.Read)
@@ -543,7 +694,7 @@
 
 ;; Write-only, readers allowed alongside, as `StreamWriter`'s path constructor
 ;; opens.
-(: (-> Path WriteMode (Result Exception ClrStream)))
+(: (-> Path WriteMode (Result FsError ClrStream)))
 (defun (open-write-stream/raw path mode)
   (with-os-path path
     (fun (name)
@@ -627,9 +778,9 @@
 ;; kinds the listing reports. On Linux, the path and the names are bytes,
 ;; so a name that is not UTF-8 is listed as it is, and no entry is asked
 ;; about. See `Bjolang.Runtime.FsListing`.
-(: (-> Path (Result Exception (Vec FsEntry))))
+(: (-> Path (Result FsError (Vec FsEntry))))
 (defun (fs-list/raw path)
-  (match (clr-list (bytestring->bytes (path->bytestring path)))
+  (match (fs-result path (clr-list (bytestring->bytes (path->bytestring path))))
     ((Ok listed)
      (Ok (loop (:for l listed)
                (:let name (bytes->bytestring (clr-listed-name l)))
@@ -648,7 +799,7 @@
 
 ;; Creates every missing directory along the path. One that is already there is
 ;; not an error.
-(: (-> Path (Result Exception Unit)))
+(: (-> Path (Result FsError Unit)))
 (defun (fs-create-directory/raw path)
   (with-os-path path (fun (name)
                        (match (clr-dir-create name)
@@ -663,40 +814,56 @@
     ((Err e) (Err e))))
 
 ;; A missing file is not an error.
-(: (-> Path (Result Exception Unit)))
+(: (-> Path (Result FsError Unit)))
 (defun (fs-delete-file/raw path)
   (with-os-path path (fun (name) (unit-result (clr-file-delete name)))))
 
 ;; An empty directory. A missing or non-empty one is an `IOException`.
-(: (-> Path (Result Exception Unit)))
+(: (-> Path (Result FsError Unit)))
 (defun (fs-delete-directory/raw path)
   (with-os-path path (fun (name) (unit-result (clr-dir-delete name)))))
 
 ;; A file or a directory. Fails if `to` exists, unless `MoveReplace` asks to
 ;; replace a file there. `Directory.Move` never replaces, which is the rule.
-(: (-> Path Path MoveMode (Result Exception Unit)))
+;;
+;; The error is about `from` when `from` is missing, and about `to` otherwise.
+;; `Directory.Move` onto a path that exists raises a plain `IOException`, so
+;; that is `AlreadyExists` when something is at `to`.
+(: (-> Path Path MoveMode (Result FsError Unit)))
 (defun (fs-move/raw from to mode)
-  (with-os-path from
-    (fun (from-name)
-      (with-os-path to
-        (fun (to-name)
-          (unit-result (if (clr-dir-exists from-name)
-                           (clr-dir-move from-name to-name)
-                           (clr-file-move from-name
-                                          to-name
-                                          (match mode
-                                            (MoveNew #f)
-                                            (MoveReplace #t))))))))))
+  (match (os-path from)
+    ((Err e) (Err e))
+    ((Ok from-name)
+     (match (os-path to)
+       ((Err e) (Err e))
+       ((Ok to-name)
+        (match (unit-result (if (clr-dir-exists from-name)
+                                (clr-dir-move from-name to-name)
+                                (clr-file-move from-name
+                                               to-name
+                                               (match mode
+                                                 (MoveNew #f)
+                                                 (MoveReplace #t)))))
+          ((Ok _) (Ok unit))
+          ((Err e)
+           (Err (cond
+                  ((not (or (clr-file-exists from-name) (clr-dir-exists from-name)))
+                   (fs-error-of from e))
+                  ((or (clr-file-exists to-name) (clr-dir-exists to-name))
+                   (match (fs-error-of to e)
+                     ((Io p x) (AlreadyExists p x))
+                     (other other)))
+                  (else (fs-error-of to e)))))))))))
 
 (defeffect FS
-  (open-read-stream    (-> Path (Result Exception ClrStream)))
-  (open-write-stream   (-> Path WriteMode (Result Exception ClrStream)))
+  (open-read-stream    (-> Path (Result FsError ClrStream)))
+  (open-write-stream   (-> Path WriteMode (Result FsError ClrStream)))
   (fs-info             (-> Path (Option FsInfo)))
-  (fs-list             (-> Path (Result Exception (Vec FsEntry))))
-  (fs-create-directory (-> Path (Result Exception Unit)))
-  (fs-delete-file      (-> Path (Result Exception Unit)))
-  (fs-delete-directory (-> Path (Result Exception Unit)))
-  (fs-move             (-> Path Path MoveMode (Result Exception Unit)))
+  (fs-list             (-> Path (Result FsError (Vec FsEntry))))
+  (fs-create-directory (-> Path (Result FsError Unit)))
+  (fs-delete-file      (-> Path (Result FsError Unit)))
+  (fs-delete-directory (-> Path (Result FsError Unit)))
+  (fs-move             (-> Path Path MoveMode (Result FsError Unit)))
   #:default ((open-read-stream open-read-stream/raw)
              (open-write-stream open-write-stream/raw)
              (fs-info fs-info/raw)
@@ -713,25 +880,25 @@
 ;; The scope is read before the perform, so a program with nowhere to put the
 ;; port fails without having opened anything.
 
-(: (-> %p (Result Exception InputPort)) (where (AsPath %p)))
+(: (-> %p (Result FsError InputPort)) (where (AsPath %p)))
 (defun (open-input-file path)
   (ignore (current-scope))
   (stream->input-port (open-read-stream (as-path path))))
 
 ;; `(open-output-file path)` truncates; `#:mode Append` or `#:mode CreateNew`
 ;; says otherwise.
-(: (-> %p (#:mode WriteMode) (Result Exception OutputPort)) (where (AsPath %p)))
+(: (-> %p (#:mode WriteMode) (Result FsError OutputPort)) (where (AsPath %p)))
 (defun (open-output-file path #:mode Truncate)
   (ignore (current-scope))
   (stream->output-port (open-write-stream (as-path path) mode)))
 
 ;; The same, past whatever handler is installed. The `/raw` says so.
-(: (-> %p (Result Exception InputPort)) (where (AsPath %p)))
+(: (-> %p (Result FsError InputPort)) (where (AsPath %p)))
 (defun (open-input-file/raw path)
   (ignore (current-scope))
   (stream->input-port (open-read-stream/raw (as-path path))))
 
-(: (-> %p WriteMode (Result Exception OutputPort)) (where (AsPath %p)))
+(: (-> %p WriteMode (Result FsError OutputPort)) (where (AsPath %p)))
 (defun (open-output-file/raw path mode)
   (ignore (current-scope))
   (stream->output-port (open-write-stream/raw (as-path path) mode)))
@@ -744,7 +911,7 @@
 ;;
 ;; `proc` is suspension-polymorphic (`-?->`): both synchronous and async/suspending
 ;; variants are compiled, ensuring suspending bodies receive identical cleanup.
-(: (-> %p (-?-> InputPort %a) (Result Exception %a)) (where (AsPath %p)))
+(: (-> %p (-?-> InputPort %a) (Result FsError %a)) (where (AsPath %p)))
 (defun (call-with-input-file path proc)
   (match (open-input-file path)
     ((Ok p)
@@ -752,7 +919,7 @@
        (Ok (proc it))))
     ((Err e) (Err e))))
 
-(: (-> %p (-?-> OutputPort %a) (#:mode WriteMode) (Result Exception %a)) (where (AsPath %p)))
+(: (-> %p (-?-> OutputPort %a) (#:mode WriteMode) (Result FsError %a)) (where (AsPath %p)))
 (defun (call-with-output-file path proc #:mode Truncate)
   (match (open-output-file path #:mode mode)
     ((Ok p)
@@ -850,7 +1017,7 @@
 ;;     (replacing any symlink rather than writing through it).
 ;;   * `Append` copies only the source's initial byte length, preventing an
 ;;     infinite loop when appending a file to itself.
-(: (-> %p %q (#:mode WriteMode) (Result Exception Unit)) (where (AsPath %p) (AsPath %q)))
+(: (-> %p %q (#:mode WriteMode) (Result FsError Unit)) (where (AsPath %p) (AsPath %q)))
 (defun (file-copy from to #:mode CreateNew)
   (copy-file (as-path from) (as-path to) mode))
 
@@ -861,19 +1028,20 @@
 
 ;; `(Err e)` for an exception that I/O raises, and `e` raised again for any
 ;; other, such as a cancellation.
-(: (-> Exception (Result Exception %a)))
-(defun (io-failure e)
+(: (-> Path Exception (Result FsError %a)))
+(defun (io-failure path e)
   (match e
-    ((:is System.IO.IOException) (Err e))
-    ((:is System.UnauthorizedAccessException) (Err e))
+    ((:is System.IO.IOException) (Err (fs-error-of path e)))
+    ((:is System.UnauthorizedAccessException) (Err (fs-error-of path e)))
     (_ (raise e))))
 
-(: (-> Path Path WriteMode (Result Exception Unit)))
+(: (-> Path Path WriteMode (Result FsError Unit)))
 (defun (copy-file from to mode)
   (if (= (full-path from) (full-path to))
-      (Err (cast Exception
-                 (IOException. (string-append "cannot copy a file onto itself: "
-                                              (path->string/lossy from)))))
+      (Err (Io from
+               (cast Exception
+                     (IOException. (string-append "cannot copy a file onto itself: "
+                                                  (path->string/lossy from))))))
       (match (open-read-stream from)
         ((Err e) (Err e))
         ((Ok opened)
@@ -903,78 +1071,78 @@
                  failed)
                 ((Err e)
                  (ignore (fs-delete-file fresh))
-                 (io-failure e))))
+                 (io-failure to e))))
              (_
               (match (open-write-stream to mode)
                 ((Ok s)
-                 (try (with-open ((out s))
+                 (fs-result to (try (with-open ((out s))
                         (stream-copy-count! in out count)
                         (stream-flush! out)
                         unit)
-                   #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+                   #:catch (System.IO.IOException System.UnauthorizedAccessException))))
                 ((Err e) (Err e))))))))))
 
-(: (-> %p (Result Exception (Array byte))) (where (AsPath %p)))
+(: (-> %p (Result FsError (Array byte))) (where (AsPath %p)))
 (defun (file-read-bytes path)
   (match (open-read-stream (as-path path))
     ((Ok opened)
-     (try (with-open ((in opened))
+     (fs-result (as-path path) (try (with-open ((in opened))
             (def buffer (MemoryStream.))
             (stream-copy! in (cast ClrStream buffer))
             (.ToArray buffer))
-       #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+       #:catch (System.IO.IOException System.UnauthorizedAccessException))))
     ((Err e) (Err e))))
 
-(: (-> Path (Array byte) WriteMode (Result Exception Unit)))
+(: (-> Path (Array byte) WriteMode (Result FsError Unit)))
 (defun (write-whole-bytes path bytes mode)
   (match (open-write-stream path mode)
     ((Ok opened)
-     (try (with-open ((out opened))
+     (fs-result (as-path path) (try (with-open ((out opened))
             (stream-write! out bytes)
             (stream-flush! out)
             unit)
-       #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+       #:catch (System.IO.IOException System.UnauthorizedAccessException))))
     ((Err e) (Err e))))
 
-(: (-> %p (Array byte) (Result Exception Unit)) (where (AsPath %p)))
+(: (-> %p (Array byte) (Result FsError Unit)) (where (AsPath %p)))
 (defun (file-write-bytes path bytes)
   (write-whole-bytes (as-path path) bytes Truncate))
 
-(: (-> %p (Array byte) (Result Exception Unit)) (where (AsPath %p)))
+(: (-> %p (Array byte) (Result FsError Unit)) (where (AsPath %p)))
 (defun (file-append-bytes path bytes)
   (write-whole-bytes (as-path path) bytes Append))
 
 ;; The lines, without their line ends. What ends a line is `#:mode`'s to say;
 ;; by default "\n", "\r" and "\r\n" all do. A last line needs no end, and a
 ;; final line end makes no empty line after it.
-(: (-> %p (#:mode LineMode) (Result Exception (Vec string))) (where (AsPath %p)))
+(: (-> %p (#:mode LineMode) (Result FsError (Vec string))) (where (AsPath %p)))
 (defun (file-read-lines path #:mode Any)
   (match (open-input-file path)
     ((Ok opened)
-     (try (with-open ((p opened))
+     (fs-result (as-path path) (try (with-open ((p opened))
             (def lines (vecbuilder-empty))
             (let next ()
               (unless (port-eof? p)
                 (vecbuilder-add! lines (read-line p #:mode mode))
                 (next)))
             (vecbuilder->vec lines))
-       #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+       #:catch (System.IO.IOException System.UnauthorizedAccessException))))
     ((Err e) (Err e))))
 
 ;; Each line followed by "\n", the last one too, on every OS: the same lines
 ;; make the same bytes wherever they are written, and `file-read-lines` gives
 ;; them back as long as none holds a line end of its own.
-(: (-> %p (Vec string) (Result Exception Unit)) (where (AsPath %p)))
+(: (-> %p (Vec string) (Result FsError Unit)) (where (AsPath %p)))
 (defun (file-write-lines path lines)
   (match (open-output-file path)
     ((Ok opened)
-     (try (with-open ((p opened))
+     (fs-result (as-path path) (try (with-open ((p opened))
             (loop (:for line lines)
                   (:do (write-string p line)
                        (write-string p "\n")))
             (flush-port p)
             unit)
-       #:catch (System.IO.IOException System.UnauthorizedAccessException)))
+       #:catch (System.IO.IOException System.UnauthorizedAccessException))))
     ((Err e) (Err e))))
 
 ;; Returns a lazy `Seq` of items produced by repeatedly calling `(reader port)`.

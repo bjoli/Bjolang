@@ -11,7 +11,7 @@
   (case Truncate "Create the file, or empty it if it exists. The default.")
   (case Append "Create the file, or write after what it holds.")
   (case CreateNew """
-    Create the file, and fail with an @code{IOException} if it exists. The
+    Create the file, and fail with @code{AlreadyExists} if it exists. The
     check and the create are one system call, so of two writers racing for
     a path exactly one wins.
     """)
@@ -102,18 +102,18 @@
 (:doc open-input-file
   (summary "Opens a file for reading.")
   (arg path "The file.")
-  (returns "The port, or Err with the .NET exception when the file cannot be opened.")
+  (returns "The port, or Err with the FsError when the file cannot be opened.")
   (see call-with-input-file open-input-file/raw open-read-stream close-input-port read-all)
   (example """
     (match (open-input-file "notes.txt")
       ((Ok p) (read-all p))
-      ((Err (:is System.IO.FileNotFoundException)) "")
-      ((Err e) (raise e)))
+      ((Err (NotFound _ _)) "")
+      ((Err e) (raise (as-exception e))))
     """)
   (reference """
     A missing file is expected, so it is a @code{Result} rather than a
-    raise. The @code{Err} carries the real exception, so an arm can test
-    for @code{System.IO.FileNotFoundException}.
+    raise. The @code{Err} is an @code{FsError}, so an arm can test for
+    @code{NotFound}. The error holds the .NET exception too.
 
     The file is opened through the @code{open-read-stream} operation, so a
     handler of the @code{FS} effect intercepts it. The port is owned by the
@@ -128,7 +128,7 @@
 (:doc open-input-file/raw
   (summary "Opens a file for reading, past any FS handler.")
   (arg path "The file.")
-  (returns "The port, or Err with the .NET exception.")
+  (returns "The port, or Err with the FsError.")
   (see open-input-file open-read-stream/raw)
   (reference """
     @code{open-input-file} over @code{open-read-stream/raw}: the real
@@ -140,7 +140,7 @@
   (summary "Opens a file for writing.")
   (arg path "The file.")
   (key #:mode "How: Truncate, the default, Append or CreateNew.")
-  (returns "The port, or Err with the .NET exception when the file cannot be opened.")
+  (returns "The port, or Err with the FsError when the file cannot be opened.")
   (see call-with-output-file WriteMode open-output-file/raw open-write-stream close-output-port)
   (example """
     (open-output-file "log.txt" #:mode Append)
@@ -159,7 +159,7 @@
   (summary "Opens a file for writing, past any FS handler.")
   (arg path "The file.")
   (arg mode "Truncate, Append or CreateNew.")
-  (returns "The port, or Err with the .NET exception.")
+  (returns "The port, or Err with the FsError.")
   (see open-output-file open-write-stream/raw WriteMode)
   (reference """
     @code{open-output-file} over @code{open-write-stream/raw}: the real
@@ -576,24 +576,23 @@
 (:doc open-read-stream/raw
   (summary "Opens a file on disk as a stream for reading, past any handler.")
   (arg path "The file.")
-  (returns "The stream, or Err with an IOException or UnauthorizedAccessException.")
+  (returns "The stream, or Err with the FsError.")
   (see open-read-stream open-input-file/raw)
   (reference """
     The default handler of @code{open-read-stream}. Read-only, with other
-    readers allowed alongside. A missing file is a
-    @code{FileNotFoundException}, which is an @code{IOException}.
+    readers allowed alongside. A missing file is @code{NotFound}.
     """))
 
 (:doc open-write-stream/raw
   (summary "Opens a file on disk as a stream for writing, past any handler.")
   (arg path "The file.")
   (arg mode "Truncate, Append or CreateNew.")
-  (returns "The stream, or Err with an IOException or UnauthorizedAccessException.")
+  (returns "The stream, or Err with the FsError.")
   (see open-write-stream open-output-file/raw WriteMode)
   (reference """
     The default handler of @code{open-write-stream}. Write-only, with
-    readers allowed alongside. @code{CreateNew} on a file that exists is an
-    @code{IOException}.
+    readers allowed alongside. @code{CreateNew} on a file that exists is
+    @code{AlreadyExists}.
     """))
 
 ;; ---------------------------------------------------------------------------

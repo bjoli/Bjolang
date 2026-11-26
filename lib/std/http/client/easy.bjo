@@ -303,7 +303,7 @@
 (: (-> Response string string bool long (Result EasyError long)))
 (defun (save-body r path part overwrite max)
   (match (open-output-file part)
-    ((Err e) (Err (File (.-Message e))))
+    ((Err e) (Err (File (.-Message (as-exception e)))))
     ((Ok port)
      (def copied
        (try (with-open ((out port))
@@ -324,7 +324,7 @@
           ((Ok _) (Ok count))
           ((Err e)
            (ignore (file-delete part))
-           (Err (File (.-Message e))))))))))
+           (Err (File (.-Message (as-exception e)))))))))))
 
 ;; Sends `req` and writes its body to `path`, through `part`.
 (: (-bjo-> Request string string bool long (Result EasyError long)))

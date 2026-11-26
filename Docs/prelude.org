@@ -342,7 +342,7 @@ All seven are *invariant*, for the reason the string comparisons are ordinal: th
 
 ** Files =(std prelude)=
 
-Each function below that reads, writes or changes the file system returns a ~(Result Exception a)~: ~(Ok unit)~ for a write, a delete or a move. The ~Err~ holds the exception of the failure, an ~IOException~ or an ~UnauthorizedAccessException~, as it comes from the ~FS~ effect or from the I/O. A cancellation is raised as usual. The queries ~file-exists?~, ~directory-exists?~ and ~file-info~ return a ~bool~ or an ~Option~, and the lazy ~file-read/seq~, ~file-read-lines/seq~ and ~directory-walk~ raise on a pull, because a sequence has no place for a ~Result~.
+Each function below that reads, writes or changes the file system returns a ~(Result FsError a)~: ~(Ok unit)~ for a write, a delete or a move. The ~Err~ is an ~FsError~, from the ~FS~ effect or from the I/O: ~NotFound~, ~AlreadyExists~, ~PermissionDenied~, ~NotEmpty~, ~IsDirectory~, ~NotDirectory~, ~InvalidPath~ or ~Io~. Each case holds the path and the .NET exception; ~fs-error-message~ makes a message, and ~raise-err~ raises the exception. A cancellation is raised as usual. The queries ~file-exists?~, ~directory-exists?~ and ~file-info~ return a ~bool~ or an ~Option~, and the lazy ~file-read/seq~, ~file-read-lines/seq~ and ~directory-walk~ raise on a pull, because a sequence has no place for a ~Result~.
 
 ~(raise-err r)~ returns the ~Ok~ value, or raises the ~Err~. A script that wants the exception writes ~(raise-err (file-read-text path))~.
 Whole-file operations, for when the contents fit in memory. They throw as the underlying .NET methods do; wrap a call in ~try~ to get a ~Result~ instead. Reach for the ports below when the file is too large to hold.
@@ -420,12 +420,12 @@ Standard output is buffered as in Racket: by line when it is a terminal, in bloc
 
 Only the drains — ~port->list~, ~port->vec~, ~port->seq~, ~file->seq~ and ~port->lines~ — are in ~(std ports)~ and have to be imported. The first four take the per-item reader as their first argument; ~port->lines~ is ~port->vec~ with ~read-line~ supplied, giving a ~(Vec string)~. Opening, reading, writing and closing are here.
 
-- ~(open-input-file path)~ : ~(Result Exception InputPort)~. The ~Err~ carries the real .NET exception, so an arm can say ~(:is System.IO.FileNotFoundException e)~.
+- ~(open-input-file path)~ : ~(Result FsError InputPort)~. An arm can say ~(NotFound path e)~, and ~e~ is the real .NET exception.
 - ~(open-input-string contents)~ : A string as an input port. Cannot fail, so no ~Result~.
-- ~(open-output-file path)~ : ~(Result Exception OutputPort)~, truncating the file if it exists. ~#:mode~ takes a ~WriteMode~:
+- ~(open-output-file path)~ : ~(Result FsError OutputPort)~, truncating the file if it exists. ~#:mode~ takes a ~WriteMode~:
   - ~Truncate~ (the default): create the file, or empty it.
   - ~Append~: create the file, or write after what it holds.
-  - ~CreateNew~: create the file, and fail with an ~IOException~ if it exists. The check and the create are one system call, so of two writers racing for a path exactly one wins.
+  - ~CreateNew~: create the file, and fail with ~AlreadyExists~ if it exists. The check and the create are one system call, so of two writers racing for a path exactly one wins.
 - ~(close-input-port p)~ / ~(close-output-port p)~ : Rarely needed — ~with-open~ disposes a port however the body ends.
 - ~(flush-port p)~
 - ~(port-eof? p)~ : Whether the port has no more input. Asking consumes nothing.
@@ -1130,14 +1130,14 @@ Everything in the prelude and ~(std ports)~ that reaches the disk goes through t
 
 | Operation                         | Answers                                |
 |-----------------------------------+----------------------------------------|
-| ~(open-read-stream path)~         | ~(Result Exception ClrStream)~         |
-| ~(open-write-stream path mode)~   | ~(Result Exception ClrStream)~         |
+| ~(open-read-stream path)~         | ~(Result FsError ClrStream)~           |
+| ~(open-write-stream path mode)~   | ~(Result FsError ClrStream)~           |
 | ~(fs-info path)~                  | ~(Option FsInfo)~: see ~file-info~     |
-| ~(fs-list path)~                  | ~(Result Exception (Vec string))~: whole paths, files and directories |
-| ~(fs-create-directory path)~      | ~(Result Exception Unit)~              |
-| ~(fs-delete-file path)~           | ~(Result Exception Unit)~              |
-| ~(fs-delete-directory path)~      | ~(Result Exception Unit)~              |
-| ~(fs-move from to mode)~          | ~(Result Exception Unit)~              |
+| ~(fs-list path)~                  | ~(Result FsError (Vec FsEntry))~: whole paths, with each kind |
+| ~(fs-create-directory path)~      | ~(Result FsError Unit)~                |
+| ~(fs-delete-file path)~           | ~(Result FsError Unit)~                |
+| ~(fs-delete-directory path)~      | ~(Result FsError Unit)~                |
+| ~(fs-move from to mode)~          | ~(Result FsError Unit)~                |
 
 The openers return a ~ClrStream~, not a port. ~open-input-file~ and ~open-output-file~ build the port over it and register it on the ambient scope, so one handler serves text and bytes, and a ~MemoryStream~ a handler made is owned exactly as a file is. A handler is installed per operation:
 
