@@ -642,6 +642,48 @@ This is how an aggregate module works:
 Anything importing ~(std prelude)~ sees ~print~ and ~println~ — and nothing else
 from ~core~, ~list~ or ~iter~.
 
+*** ~everything-from~
+
+#+BEGIN_SRC scheme
+;; std/http/client.bjo
+(import (std http client v1))
+
+(re-export (everything-from (std http client v1)))
+#+END_SRC
+
+~(everything-from m)~ inside a ~re-export~ stands for every name that this
+module's imports of ~m~ bring into scope. It may stand beside plain names, and
+a ~re-export~ may hold several.
+
+*The names are the ones the import gives.* The import's modifiers apply before
+the names are taken, so a facade can change what it passes on:
+
+#+BEGIN_SRC scheme
+(import (except (std http client v1) fetch))
+
+(: fetch (-> Request (Result HttpError Response)))
+(defun (fetch req) ...)
+
+(re-export (everything-from (std http client v1)))
+(export fetch)
+#+END_SRC
+
+With ~(import (prefix m "v/"))~ the prefixed names are re-exported.
+
+*It covers what a written ~re-export~ covers*: bindings, macros, types and
+trait methods. A type brings its cases and a trait method
+brings its trait, so constructors and trait names are not listed separately.
+
+Rules:
+- ~m~ is a module path, such as ~(std http)~ or ~"util.bjo"~. Modifiers inside
+  ~everything-from~ are an error; put them on the ~import~.
+- ~m~ must be imported by this module. If it is imported twice, the names of
+  both imports are re-exported.
+- Only a top-level ~re-export~ form is expanded, so a macro that produces a
+  ~re-export~ cannot use ~everything-from~.
+- A trait method under a ~prefix~ is not re-exported, because a prefixed trait
+  method cannot be re-exported by name either.
+
 *** Re-exporting a type
 
 A type may be re-exported, and it is the only way to pass one on:

@@ -689,6 +689,28 @@ let private isActionType (def: Type) =
 let private isValueTupleType (def: Type) =
     not (isNull def.FullName) && def.FullName.StartsWith "System.ValueTuple`"
 
+/// Element types of a closed `ValueTuple` type, with the `TRest` nesting of
+/// arities above 7 flattened. `ValueTuple<T1..T7, ValueTuple<T8>>` returns 8 types.
+let rec clrTupleElements (t: Type) : Type list =
+    let args = t.GetGenericArguments() |> Array.toList
+
+    if args.Length = 8 && args[7].IsConstructedGenericType && isValueTupleType (args[7].GetGenericTypeDefinition()) then
+        List.truncate 7 args @ clrTupleElements args[7]
+    else
+        args
+
+/// Builds the closed `ValueTuple` type for the given element types. Arities above 7
+/// nest the remaining elements in the 8th type argument (`TRest`), as C# does.
+let rec clrTupleOf (elements: Type list) : Type =
+    match elements with
+    | [] -> typeof<ValueTuple>
+    | _ when elements.Length <= 7 ->
+        let def = typeof<ValueTuple>.Assembly.GetType($"System.ValueTuple`%d{elements.Length}")
+        def.MakeGenericType(Array.ofList elements)
+    | _ ->
+        let def = typeof<ValueTuple>.Assembly.GetType("System.ValueTuple`8")
+        def.MakeGenericType(Array.ofList (List.truncate 7 elements @ [ clrTupleOf (List.skip 7 elements) ]))
+
 /// The Bjolang type a .NET type corresponds to.
 ///
 /// Structural, and that is the whole of what makes generic interop possible: a
@@ -721,7 +743,7 @@ let rec mapClrType (t: Type) : HMType =
         elif isActionType def then
             tfun args voidType
         elif isValueTupleType def then
-            TTuple args
+            TTuple(clrTupleElements t |> List.map mapClrType)
         else
             match bjolangOfClrGeneric.TryGetValue(def.FullName) with
             | true, name -> TCon(name, args)
@@ -834,12 +856,10 @@ let rec tryClrTypeOf (t: HMType) : Type option =
         let resolved = items |> List.map tryClrTypeOf
 
         if resolved |> List.forall Option.isSome then
-            tryResolveType $"System.ValueTuple`%d{items.Length}"
-            |> Option.bind (fun def ->
-                try
-                    Some(def.MakeGenericType(resolved |> List.map Option.get |> Array.ofList))
-                with _ ->
-                    None)
+            try
+                Some(clrTupleOf (resolved |> List.map Option.get))
+            with _ ->
+                None
         else
             None
     // A function value is a delegate. `Action` for the interop void, `Func`

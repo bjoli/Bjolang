@@ -109,7 +109,7 @@ let private normalizeRecur
             $"Internal error: tail call to '%s{t.Name}' passes %d{args.Length} positional arguments but %d{mandatoryCount} are mandatory (line %d{source.Range.Start.Line})"
 
     let mandatoryValues = args |> List.truncate mandatoryCount
-    let restValues = args |> List.skip mandatoryCount
+    let restArgs = args |> List.skip mandatoryCount
 
     let supplied (kwName: string) =
         kwArgs |> List.tryFind (fun (n, _) -> n = kwName) |> Option.map snd
@@ -140,18 +140,15 @@ let private normalizeRecur
         t.Keywords
         |> List.exists (fun (kwName, _, defaultValue) -> (supplied kwName).IsNone && mentionsParam defaultValue)
 
+    // Inference has already packed the rest arguments into one array (see
+    // `TApply`), so that array fills the rest slot as it is.
     let restValue =
-        match t.Rest with
-        | Some(_, elemType) ->
-            [ ({ Type = TCon("Array", [ elemType ])
-                 Range = source.Range
-                 Node = TArrayMake restValues }: TypedExpr) ]
-        | None ->
-            if not restValues.IsEmpty then
-                failwithf
-                    $"Internal error: tail call to '%s{t.Name}' passes too many positional arguments (line %d{source.Range.Start.Line})"
-
-            []
+        match t.Rest, restArgs with
+        | Some _, [ packed ] -> [ packed ]
+        | None, [] -> []
+        | _ ->
+            failwithf
+                $"Internal error: tail call to '%s{t.Name}' passes %d{restArgs.Length} positional arguments after the mandatory ones; expected %d{if t.Rest.IsSome then 1 else 0} (line %d{source.Range.Start.Line})"
 
     if not readsNewArguments then
         let keywordValues =

@@ -826,6 +826,40 @@ let private conBaseName (name: string) =
     let mapped = mapPrimitiveType name
     if mapped = name then sanitizeIdent name else mapped
 
+/// C# spellings of a Bjolang tuple. Every site that emits a tuple type, value,
+/// pattern or element access goes through these, so they agree on the shape:
+/// - Arity 0 is the unit: the non-generic `ValueTuple`.
+/// - Arity 1 is `ValueTuple<T>`, because C# tuple syntax needs two elements.
+/// - Arity 2 and up use tuple syntax `(T1, …, Tn)`. Roslyn nests elements past
+///   the 7th in `TRest`, which `ValueTuple<T1, …, Tn>` would not do.
+module private CSharpTuple =
+    /// Returns the C# type for a tuple with the given element types.
+    let typeName (elements: string list) : string =
+        match elements with
+        | [] -> "ValueTuple"
+        | [ single ] -> $"ValueTuple<%s{single}>"
+        | _ -> "(" + String.concat ", " elements + ")"
+
+    /// Returns the text before and after the comma-separated element values
+    /// of a tuple construction. The element types are needed only for arity 1.
+    let constructionDelimiters (elements: string list) : string * string =
+        match elements with
+        | [] -> "default(ValueTuple)", ""
+        | [ single ] -> $"new ValueTuple<%s{single}>(", ")"
+        | _ -> "(", ")"
+
+    /// Returns the text before and after the comma-separated subpatterns of a
+    /// tuple pattern.
+    let patternDelimiters (elements: string list) : string * string =
+        match elements with
+        | [] -> "default(ValueTuple)", ""
+        | [ single ] -> $"ValueTuple<%s{single}> {{ Item1: ", " }"
+        | _ -> "(", ")"
+
+    /// Returns the C# member that holds element `i` (0-based). Tuple syntax
+    /// exposes `Item8` and up directly, through the `TRest` nesting.
+    let itemName (i: int) : string = $"Item%d{i + 1}"
+
 /// Namnet en typ *deklareras* under.
 ///
 /// Returns the bare name of a type for use in its declaration.
@@ -894,10 +928,7 @@ let rec typeToString (hm: HMType) : string =
     // case rather than falling out of the general one. Reachable without ever
     // writing `(Tuple)`: `()` parses as an empty tuple, and so does a body with
     // no forms in it.
-    | TTuple [] -> "ValueTuple"
-    | TTuple types ->
-        let typesStr = types |> List.map elementTypeToString |> String.concat ", "
-        $"ValueTuple<%s{typesStr}>"
+    | TTuple types -> CSharpTuple.typeName (types |> List.map elementTypeToString)
     | TMeta m ->
         match m.Value with
         | Some t -> typeToString t
@@ -2405,18 +2436,12 @@ let rec private generatePatternIn
         | None -> ()
         append ctx "]"
     | TPTuple items ->
-        match items with
-        | [] -> append ctx "default(ValueTuple)"
-        | [ single ] ->
-            append ctx $"ValueTuple<%s{typeToString single.Type}> {{ Item1: "
-            generatePattern ctx single
-            append ctx " }"
-        | _ ->
-            append ctx "("
-            for i, item in List.indexed items do
-                if i > 0 then append ctx ", "
-                generatePattern ctx item
-            append ctx ")"
+        let opening, closing = CSharpTuple.patternDelimiters (items |> List.map (fun p -> elementTypeToString p.Type))
+        append ctx opening
+        for i, item in List.indexed items do
+            if i > 0 then append ctx ", "
+            generatePattern ctx item
+        append ctx closing
     | TPAs _ ->
         failwithf $"'as' patterns have no C# equivalent (line %d{pat.Range.Start.Line})"
 
@@ -3877,11 +3902,12 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TTupleMake [] -> append ctx "default(ValueTuple)"
 
     | TTupleMake args ->
-        append ctx "("
+        let opening, closing = CSharpTuple.constructionDelimiters (args |> List.map (fun a -> elementTypeToString a.Type))
+        append ctx opening
         for i, emit in List.indexed (prepareOperands ctx args) do
             if i > 0 then append ctx ", "
             emit ctx
-        append ctx ")"
+        append ctx closing
 
     | TRecordMake fields ->
         append ctx $"new %s{typeToString expr.Type}("
@@ -5857,7 +5883,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
             // in the method into an assignment to it.
             if name <> "_" then
                 indent ctx
-                appendLine ctx $"var %s{sanitizeIdent name} = %s{tmp}.Item%d{i + 1};"
+                appendLine ctx $"var %s{sanitizeIdent name} = %s{tmp}.%s{CSharpTuple.itemName i};"
         generateBlock ctx target body
 
     | TTryFinally (body, cleanup) ->
@@ -9273,7 +9299,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                                 // A `_` binds nothing, as in `TLetTuple`.
                                 if name <> "_" then
                                     indent c
-                                    appendLine c $"%s{Prelude.moduleMemberName name} = %s{tmp}.Item%d{i + 1};"
+                                    appendLine c $"%s{Prelude.moduleMemberName name} = %s{tmp}.%s{CSharpTuple.itemName i};"
                         | Choice4Of4(pattern, defValue, binders, r) ->
                             let tmp = freshName "__bound"
                             generateBindingValue c (DeclareAndAssign(typeToString defValue.Type, tmp)) defValue

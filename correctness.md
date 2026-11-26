@@ -66,6 +66,8 @@ The repository itself was not modified, apart from adding this file.
 | Values of module-declared types, `Symbol` and `Keyword` cannot be passed to a .NET `object` parameter (interop #12): an `object` parameter takes any value but a function, scored as boxing | `90ae98e` | `TestFiles/438_object_parameter_takes_any_value.bjo` |
 | U+2028, U+2029 and U+0085 in a string literal end the emitted C# literal (CS1010): escaped as `\u` in string literals and in module metadata | `82aa824` | `TestFiles/439_string_line_separators.bjo` |
 | `(- x)` on `uint` is widened to `long` (CS0266) and on `ulong` is undefined (CS0023): emitted as `unchecked(0u - x)` / `unchecked(0UL - x)` | `051cc48` | `TestFiles/440_unsigned_negate.bjo` |
+| Tuples of 8+ elements and 1-tuples emit invalid C# (codegen #4): one module (`Codegen.CSharpTuple`) spells tuple types, values, patterns and element access, with C# tuple syntax for arity 2 and up; `DotNetInterop` builds and flattens the `TRest` nesting, so a .NET 8-tuple reads as a flat tuple | (uncommitted) | `TestFiles/601_tuple_arities.bjo` |
+| A self tail call with `#:rest` arguments wraps the rest array twice (lowering); `apply` in tail position too: `normalizeRecur` passes the array inference built | (uncommitted) | `TestFiles/602_tail_call_rest.bjo` |
 
 ### Found fixed when re-checked (2026-10-20)
 
@@ -102,6 +104,18 @@ These no longer hold as written, because what they were about has changed:
 - `BjoPipe` drops a leading U+FEFF (runtime): `BjoPipe` wraps a `BjoInputPort` now, which keeps a BOM as a character.
 
 The rest still hold, eight of them only in part. The partial ones: template references to builtins are still captured (front end); literal patterns of equal doubles still reach C# (types); an implicit level's `:acc` seed still reads an outer binding (lowering); a record is still refused at an `object` parameter (codegen #12); punctuation other than a space in a module file name (driver); `list-min`/`list-max` pick the last of equal extremes, though they return an `Option` now (prelude); `lcm` raises for `int-min`, and its doc no longer says it wraps but lists no exception (prelude); and of the four `Docs/prelude.org` lines, the `file-read/seq` one is now true (prelude).
+
+### Found fixed when re-checked (2026-11-26)
+
+These repros were run again against the compiler and libraries of `fb0c62d` and now give the expected output. "—" means the commit was not traced.
+
+| Finding | Commit | Regression test |
+|---|---|---|
+| Nested `#(...)` placeholders leak into the outer shorthand lambda's arity (front end): the repro prints `(7 8)` | — | — |
+| A `:subloop` form's collector arguments are hoisted out of the whole loop (lowering): the repro prints `(20 17)`, with or without an outer `row`. An implicit level's `:acc` seed was not re-checked | — | — |
+| `->str` of a tuple prints .NET internals for container elements (prelude): `(vec-split [1 2 3] 1)` prints `(Tuple [1] [2 3])`, through `->str` and `displayed` | — | — |
+
+Re-checked on the same day and still open: `type/derive (Eq)` on a single-case union; a top-level tuple `def` of a mutable value; a capitalised function as a constructor pattern; exporting a constrained function without its trait; cyclic imports (still an internal compiler error); `(% int-min -1)` (codegen #9); `fmt` `numeric` in exponent form; json-codec `Option` with a `#:default`; the `nan?` doc; the http cookie jar (`make-client` still leaves `UseCookies` on; checked by reading).
 
 Accepted as is: "Seq fusion moves a yield point out of a `seql`" (lowering). A fused program produces valid C# and runs. A suspending call in a `seq` body is defined as illegal, so a program that relies on it compiling is not expected to work.
 

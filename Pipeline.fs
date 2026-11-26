@@ -1051,6 +1051,80 @@ let private offeredNames
 
     defs @ bare @ spelled
 
+/// Returns the names one import edge brings into scope that `re-export`
+/// accepts, as this module sees them. Constructors and traits are left out,
+/// because a type brings its cases and a trait method brings its trait.
+let private reExportableNames
+    (surface: ImportSurface)
+    (renaming: Map<string, string>)
+    (modifiers: ImportModifier list)
+    : string list =
+    let kept = keptSpellings surface modifiers
+    let defs = renaming |> Map.toList |> List.map snd
+    let hashes = hashRenaming surface modifiers |> Map.toList |> List.map snd
+
+    let types =
+        surface.Types
+        |> Map.toList
+        |> List.filter (fun (_, key) -> Set.contains key kept)
+        |> List.map fst
+
+    let methods =
+        surface.TraitMethods
+        |> Map.toList
+        |> List.filter (fun (_, (key, _)) -> Set.contains key kept)
+        |> List.map fst
+
+    let spelled =
+        typeRenaming surface modifiers
+        |> List.choose (fun (_, visible, kind) ->
+            match kind with
+            | AliasType -> Some visible
+            | _ -> None)
+
+    List.distinct (defs @ hashes @ types @ methods @ spelled)
+
+/// Replaces each `(everything-from path)` inside a top-level `(re-export ...)`
+/// with the names that this module's imports of `path` bring into scope.
+/// `offered` holds each import edge's path and its re-exportable names.
+let private expandEverythingFrom (offered: (ImportPath * string list) list) (forms: SExpr list) : SExpr list =
+    let expandItem (item: SExpr) : SExpr list =
+        match item with
+        | SList([ SAtom({ Token = Lexer.Symbol "everything-from" } as head); pathForm ], r) ->
+            let where = Lexer.formatPos r
+
+            let path =
+                match DeclParser.parseDecl (SList([ SAtom { head with Token = Lexer.Symbol "import" }; pathForm ], r)) with
+                | DImport([ { Path = path; Modifiers = [] } ], _) -> path
+                | _ ->
+                    failwithf
+                        $"Invalid (everything-from ...) at %s{where}: it takes a module path, such as (std http) or \"util.bjo\", with no import modifiers. Put the modifiers on the (import ...) instead."
+
+            let names =
+                offered
+                |> List.filter (fun (p, _) -> p = path)
+                |> List.map snd
+
+            if names.IsEmpty then
+                failwithf
+                    $"Invalid (everything-from ...) at %s{where}: this module does not import that module. Import it, and (everything-from ...) re-exports what the import brings into scope."
+
+            names
+            |> List.concat
+            |> List.distinct
+            |> List.map (fun name -> SAtom { Token = Lexer.Symbol name; Range = r })
+        | SList(SAtom { Token = Lexer.Symbol "everything-from" } :: _, r) ->
+            failwithf
+                $"Invalid (everything-from ...) at %s{Lexer.formatPos r}: it takes exactly one module path."
+        | other -> [ other ]
+
+    forms
+    |> List.map (fun form ->
+        match form with
+        | SList((SAtom { Token = Lexer.Symbol "re-export" } as head) :: items, r) ->
+            SList(head :: List.collect expandItem items, r)
+        | other -> other)
+
 /// The bare type and constructor names an `only` or an `except` left out of
 /// every import of their module, with the module and, for a constructor, the
 /// name of its type. A module some import spells its own way is left to
@@ -3045,6 +3119,9 @@ let loadModuleGraph
                     // macro: a binding, a type, a constructor or a trait
                     // method. Read by `takeMacroExports`.
                     let plainImports = System.Collections.Generic.HashSet<string>()
+                    // Each edge's path and the names `(everything-from ...)`
+                    // re-exports from it.
+                    let reExportable = ResizeArray<ImportPath * string list>()
 
                     for (dep, spec, r) in importEdges do
                         load dep
@@ -3062,6 +3139,7 @@ let loadModuleGraph
                                 offers.Add offer
 
                         edgeSurfaces.Add((m.ModuleName, surface, spec.Modifiers))
+                        reExportable.Add((spec.Path, reExportableNames surface renaming spec.Modifiers))
 
                         for name in plainNamesOf m.ParsedDecls surface renaming do
                             plainImports.Add name |> ignore
@@ -3158,6 +3236,8 @@ let loadModuleGraph
                         match withheldNames edgeSurfaces with
                         | w when w.IsEmpty -> Map.remove ownKey Diagnostics.withheldNames.Value
                         | w -> Map.add ownKey w Diagnostics.withheldNames.Value
+
+                    let forms = expandEverythingFrom (List.ofSeq reExportable) forms
 
                     let parsed =
                         try

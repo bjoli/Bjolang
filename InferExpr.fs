@@ -3184,8 +3184,8 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
         // spellings the same call. C# still accepts an explicit array for a
         // `params` parameter, so the direct case is unaffected.
         //
-        // `LoopLowering` already builds the same node for a tail call into
-        // a rest parameter.
+        // `LoopLowering` passes this array unchanged into a tail call's
+        // rest slot.
         let restArgTypes, restTypedArgs =
             match meta.RestParam with
             | Some _ ->

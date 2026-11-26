@@ -65,7 +65,7 @@ let dictionaryType (env: Env) (traitName: string) (implType: HMType) : HMType =
 /// The type of the dictionary a function's constraint `c` takes, where the
 /// constraint may pin associated types: a pinned one is the pinned type, as
 /// `(where (Iterable %s #:elem (Tuple %k %v)))` makes the dictionary an
-/// `Iterable<T_s, ValueTuple<T_k, T_v>, T_s_cursor>`.
+/// `Iterable<T_s, (T_k, T_v), T_s_cursor>`.
 let pinnedDictionaryType (env: Env) (c: TraitConstraint) : HMType =
     match dictionaryType env c.TraitName c.TargetType with
     | TCon(traitName, implType :: assocArgs) when not c.Pins.IsEmpty ->

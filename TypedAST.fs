@@ -1082,6 +1082,9 @@ and TExprNode =
     | TLetRec of (string * bool * LocalFun * TypedExpr) list * TypedExpr
     | TLetTuple of string list * TypedExpr * TypedExpr
     | TLambda of string list * TypedExpr
+    /// A call. For a callee with a `#:rest` parameter, the positional arguments
+    /// are the mandatory ones followed by exactly one array that holds the rest
+    /// arguments. Inference builds that array, so later passes never repack it.
     | TApply of TypedExpr * TypedExpr list * (string * TypedExpr) list
     | TTupleMake of TypedExpr list
     | TListMake of TypedExpr list
@@ -1221,8 +1224,7 @@ and TExprNode =
     | TGetField of TypedExpr * string
     | TTypeEq of TypedExpr * TypedExpr
     /// An array, from its elements: what `#[1 2 3]` is, and the `params`-style
-    /// array a call packs a rest argument into. Also produced by `LoopLowering`
-    /// when a `TRecur` argument vector has to re-pack a rest parameter.
+    /// array a call packs a rest argument into.
     | TArrayMake of TypedExpr list
     /// A group of loops produced by `LoopLowering`. Every member is a single
     /// strongly-connected component's worth of tail recursion.
@@ -2564,7 +2566,7 @@ let dictionaryConstraints (registry: TraitRegistry) (target: ImplTarget) : Trait
 /// The impl class takes one more type parameter for each, after those of its
 /// target: a field of type `Iterable<T_s, T_s_elem, T_s_cursor>` has to have
 /// them declared, and an associated type of the impl may be a projection of
-/// them, such as `ValueTuple<int, T_s_elem>`. `CheckDecl` types the fields,
+/// them, such as `(int, T_s_elem)`. `CheckDecl` types the fields,
 /// `Codegen` declares the parameters and `Lowering` passes their arguments, all
 /// from this one list, which an importer derives the same way from the
 /// exported where clause.
