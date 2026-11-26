@@ -24,13 +24,14 @@
 
 (export
   EasyError easy-error-message
-  get-text get-bytes get-json download
+  get-text get-bytes get-json get-json-as post-json download
   fetch-many url-ok?)
 
 (import (std prelude))
 (import (std atomic))
 (import (only (std ports) read-some write-bytes!))
 (import (only (text json) Json parse-json))
+(import (text json-codec))
 (import (std http client v1))
 
 (re-export (everything-from (std http client v1)))
@@ -235,6 +236,45 @@
      (match (parse-json text)
        ((Ok j) (Ok j))
        ((Err m) (Err (Decode m)))))))
+
+;; Returns `text` read as JSON. An empty body is `null`.
+(: (-> string (Result EasyError Json)))
+(defun (json-of text)
+  (if (string-empty? (string-trim text))
+      (Ok JsonNull)
+      (match (parse-json text)
+        ((Ok j) (Ok j))
+        ((Err m) (Err (Decode m))))))
+
+(: (-> string (#:query (Vec Pair)) (#:headers (Vec Pair)) (#:timeout Duration) (#:max-bytes long)
+       (Result EasyError %a))
+   (where (json-> %a)))
+(defun (get-json-as url
+                    #:query (vec-empty)
+                    #:headers (vec-empty)
+                    #:timeout (seconds 30)
+                    #:max-bytes memory-limit)
+  (match (get-json url #:query query #:headers headers #:timeout timeout #:max-bytes max-bytes)
+    ((Err e) (Err e))
+    ((Ok j)
+     (match (json-> j)
+       ((Ok value) (Ok value))
+       ((Err why) (Err (Decode why)))))))
+
+(: (-> string %a (#:query (Vec Pair)) (#:headers (Vec Pair)) (#:timeout Duration) (#:max-bytes long)
+       (Result EasyError Json))
+   (where (->json %a)))
+(defun (post-json url value
+                  #:query (vec-empty)
+                  #:headers (vec-empty)
+                  #:timeout (seconds 30)
+                  #:max-bytes memory-limit)
+  (def req (http-post url (json-body (->json value))
+                      #:query query
+                      #:headers (accepting-json headers)))
+  (match (within timeout (spawn-evt (text-of req max-bytes)))
+    ((Err e) (Err e))
+    ((Ok text) (json-of text))))
 
 ;; ===========================================================================
 ;; Downloading

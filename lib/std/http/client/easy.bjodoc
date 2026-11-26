@@ -90,6 +90,47 @@
   (returns "@code{(Ok json)}, or @code{(Err (Decode message))} when the body is not JSON.")
   (see get-text))
 
+(:doc get-json-as
+  (summary "Gets a URL and decodes its JSON body into a value.")
+  (arg url "An absolute http or https URL.")
+  (key #:query "Query parameters.")
+  (key #:headers "Header fields. @code{Accept: application/json} is added unless there is an Accept.")
+  (key #:timeout "The time limit for the whole call.")
+  (key #:max-bytes "The largest body that is read.")
+  (returns "@code{(Ok value)}, or @code{(Err (Decode why))} when the body is not JSON or not of the type.")
+  (see get-json post-json)
+  (example """
+    (import (text json-codec))
+
+    (def/json-type
+      (: Fruit (Record (: name string) (: count int))))
+
+    (: (Result EasyError Fruit))
+    (def got (get-json-as "https://api.example.com/fruit/1"))
+    """)
+  (reference """
+    The type to decode is the type the call is expected to return, so the
+    caller says it, as above. Any type with a @code{json->} instance of
+    @code{(text json-codec)} works: a record declared with
+    @code{def/json-type}, a @code{Vec} or a @code{Map} of one, or
+    @code{Json}.
+    """))
+
+(:doc post-json
+  (summary "Posts a value as JSON and reads the JSON that comes back.")
+  (arg url "An absolute http or https URL.")
+  (arg value "What to send: any type with a @code{->json} instance, such as a @code{Json} or a record declared with @code{def/json-type}.")
+  (key #:query "Query parameters.")
+  (key #:headers "Header fields. @code{Accept: application/json} is added unless there is an Accept.")
+  (key #:timeout "The time limit for the whole call.")
+  (key #:max-bytes "The largest response body that is read.")
+  (returns "@code{(Ok json)}. An empty response body, as with a 204, is @code{JsonNull}.")
+  (see get-json-as)
+  (reference """
+    The body is sent as @code{application/json; charset=utf-8}. To decode
+    the answer into a type, pass the @code{json} to @code{json->}.
+    """))
+
 (:doc download
   (summary "Gets a URL and writes its body to a file.")
   (arg url "An absolute http or https URL.")

@@ -9,7 +9,8 @@
 (import (only (std maths) modulo))
 (import (std stopwatch))
 (import (only (std os) make-temp-directory))
-(import (only (text json) json->string))
+(import (only (text json) Json json->string))
+(import (text json-codec))
 (import (std http client easy))
 
 (import/class
@@ -18,7 +19,9 @@
   (Context        (: System.Net.HttpListenerContext))
   (ServerRequest  (: System.Net.HttpListenerRequest))
   (ServerResponse (: System.Net.HttpListenerResponse))
-  (Stream         (: System.IO.Stream)))
+  (Stream         (: System.IO.Stream))
+  ;; An input port over a request's stream, registered on no scope.
+  (StreamPort     (: Bjolang.Runtime.BjoInputPort (-> Stream StreamPort))))
 
 (import/extern
   (listener-prefixes (: System.Net.HttpListener.Prefixes (-> Listener Prefixes) #:get))
@@ -32,6 +35,7 @@
   (context-response  (: System.Net.HttpListenerContext.Response (-> Context ServerResponse) #:get))
   (request-path      (: System.Net.HttpListenerRequest.RawUrl (-> ServerRequest string) #:get))
   (request-verb      (: System.Net.HttpListenerRequest.HttpMethod (-> ServerRequest string) #:get))
+  (request-stream    (: System.Net.HttpListenerRequest.InputStream (-> ServerRequest Stream) #:get))
   (reply-status!     (: System.Net.HttpListenerResponse.StatusCode (-> ServerResponse int void) #:set))
   (reply-length!     (: System.Net.HttpListenerResponse.ContentLength64 (-> ServerResponse long void) #:set))
   (reply-header!     (: System.Net.HttpListenerResponse.AddHeader (-> ServerResponse string string void)))
@@ -76,6 +80,20 @@
               (reply! 200 "text/plain; charset=utf-8" (string->bytes "hello, bjolang")))
              ((string-starts-with? path "/missing")
               (reply! 404 "text/plain" (string->bytes "no such fruit\n")))
+             ((string-starts-with? path "/fruit")
+              (reply! 200 "application/json" (string->bytes "{\"name\": \"banana\", \"count\": 3}")))
+             ((string-starts-with? path "/not-a-fruit")
+              (reply! 200 "application/json" (string->bytes "{\"name\": \"banana\"}")))
+             ;; The method, the Content-Type and the body, as a JSON object.
+             ((string-starts-with? path "/echo-json")
+              (def body (read-all (cast InputPort (StreamPort. (request-stream req)))))
+              (reply! 201 "application/json"
+                      (string->bytes (str "{\"verb\": \"" verb "\", "
+                                          "\"type\": \"" (.-ContentType req) "\", "
+                                          "\"got\": " body "}"))))
+             ((string-starts-with? path "/no-content")
+              (reply-status! resp 204)
+              (reply-done! resp))
              ((string-starts-with? path "/json")
               (reply! 200 "application/json" (string->bytes "{\"accept\": \"x\"}")))
              ((string-starts-with? path "/accept")
@@ -173,6 +191,23 @@
 (defun (part-left? path)
   (if (file-exists? (str path ".part")) "a .part is left" "no .part"))
 
+;; What `/fruit` returns.
+(def/json-type
+  (: Fruit (Record (: name string) (: count int))))
+
+(: (-> (Result EasyError Fruit) string))
+(defun (shown-fruit r)
+  (match r
+    ((Ok f) (str (record-ref f name) " x" (int->string (record-ref f count))))
+    ((Err (Decode m)) "Decode")
+    ((Err e) (easy-error-message e))))
+
+(: (-> (Result EasyError Json) string))
+(defun (shown-json r)
+  (match r
+    ((Ok j) (json->string j))
+    ((Err e) (easy-error-message e))))
+
 ;; A call whose own limit is long, under a caller's deadline that is short.
 (: (-bjo-> string string))
 (defbjo (under-own-deadline url)
@@ -209,6 +244,24 @@
   (expect (named "a body that is not JSON is Decode")
           (match (get-json (at "/notjson")) ((Ok j) "read") ((Err (Decode m)) "Decode") ((Err e) "other"))
           "Decode")
+
+  ;; --- get-json-as and post-json ---------------------------------------
+  (expect (named "get-json-as decodes into the type the caller expects")
+          (shown-fruit (get-json-as (at "/fruit"))) "banana x3")
+  (expect (named "a body of the wrong shape is Decode")
+          (shown-fruit (get-json-as (at "/not-a-fruit"))) "Decode")
+  (expect (named "and a status is still a Status")
+          (shown-fruit (get-json-as (at "/missing"))) "status 404: no such fruit")
+  (expect (named "post-json sends the value as JSON, and reads the JSON back")
+          (shown-json (post-json (at "/echo-json") (Fruit (name "pear") (count 2))))
+          "{\"got\":{\"count\":2,\"name\":\"pear\"},\"type\":\"application/json; charset=utf-8\",\"verb\":\"POST\"}")
+  (expect (named "post-json of a Json")
+          (shown-json (post-json (at "/echo-json/x") (JsonArr (vec->iarray [(JsonInt 1) JsonNull]))))
+          "{\"got\":[1,null],\"type\":\"application/json; charset=utf-8\",\"verb\":\"POST\"}")
+  (expect (named "an empty answer is null") (shown-json (post-json (at "/no-content") (JsonInt 1))) "null")
+  (expect (named "post-json of a 404 is a Status")
+          (match (post-json (at "/missing") (JsonInt 1)) ((Err (Status code body)) code) (_ 0))
+          404)
 
   ;; --- Limits -----------------------------------------------------------
   (expect (named "a Content-Length over the limit is TooLarge")
