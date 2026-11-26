@@ -1,17 +1,17 @@
-;; `(std http)` against a server on the loopback, both ends written here.
+;; `(std http client)` against a server on the loopback, both ends written here.
 ;;
 ;; The server is an `HttpListener` driven by a bjoroutine, which is worth as
 ;; much as the client half: it is the same interop surface — properties, a
 ;; stream, an `#:async` call — seen from the other side.
 ;;
 ;; `main` is a plain `defun` on purpose. `fetch` is a `defbjouble`, so the very
-;; same call is a parked thread here and a suspended fiber inside `fetch-lines`
-;; below — the two colours of this module are exercised through one name.
+;; same call blocks a thread here and suspends a fiber inside `fetch-lines`
+;; below. One name tests both copies.
 
 (import (std prelude))
 (import (std ports))
 (import (std simpletest))
-(import (std http))
+(import (std http client))
 (import (only (text encodings) iso-8859-1))
 
 (import/class
@@ -173,9 +173,9 @@
 ;; The suspending half
 ;; ---------------------------------------------------------------------------
 
-;; A body read as lines, from a fiber. Nothing here names a colour: `fetch` and
-;; `read-line` both pick their awaiting copy because this is a `defbjo`, and
-;; the source is the same as the blocking calls in `main`.
+;; A body read as lines, from a fiber. `fetch` and `read-line` call their
+;; suspending copies because this is a `defbjo`. The source is the same as the
+;; blocking calls in `main`.
 (: (-bjo-> string (Vec string)))
 (defbjo (fetch-lines url)
   (match (fetch (http-get url))
@@ -185,7 +185,7 @@
        (response-close r)
        lines))))
 
-(type (: Race (Union (: Answered (Result Exception Response)) TimedOut)))
+(type (: Race (Union (: Answered (Result HttpError Response)) TimedOut)))
 
 ;; A request as a losing branch. The timeout wins, the request is withdrawn,
 ;; and its token is cancelled — the server is left writing into a socket that
@@ -227,7 +227,7 @@
 
        ;; --- A 404 is a value ------------------------------------------------
        ;;
-       ;; `EnsureSuccessStatusCode` is not imported anywhere in `std/http`, and
+       ;; `EnsureSuccessStatusCode` is not called anywhere in `(std http client)`, and
        ;; this is the test that says so: a 404 is an `Ok` holding a 404.
        (match (fetch (http-get (str base "/missing")))
          ((Err e) (fail "a 404 arrived as an Err"))
@@ -259,7 +259,7 @@
        ;;
        ;; `X-Basket` belongs on the request and `Content-Type` on the content,
        ;; and the caller writes both in the same vector.
-       (match (fetch (http-post (str base "/echo") (Text "bananas")
+       (match (fetch (http-post (str base "/echo") (text-body "bananas")
                            #:headers [("X-Basket" . "full")]))
          ((Err e) (fail "a POST failed"))
          ((Ok r)
@@ -317,7 +317,7 @@
                     ((Ok text) (str "read as " text))
                     ((Err e) (.-Message e)))
                   (str "the response declares charset=x-klingon, which is not an encoding "
-                       "(text encodings) knows. response-bytes-port reads its bytes as they are"))
+                       "(text encodings) knows. response-bytes reads its bytes as they are"))
           (response-close r)))
 
        (match (fetch (http-get (str base "/klingon")))

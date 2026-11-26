@@ -1,39 +1,37 @@
-;; `(std http)` is colourless, and this is what that means in the emitted C#.
+;; `(std http client)` blocks in a `defun` and suspends in a `defbjo`. This
+;; checks the emitted C# for both.
 ;;
-;; `fetch`, `response-port` and `response-text` are all leaves with two halves:
-;; waiting for an event is `sync` on a fiber and `sync/blocking` on a thread,
-;; and reading a body is `ReadAsStreamAsync` or `ReadAsStream`. Nothing derives
-;; either pairing, so each is a `defbjouble` — and everything written on top of
-;; them, including `fetch-body` below, is emitted twice for free.
+;; - `fetch` is a `defbjouble`: `sync` on a fiber, `sync/blocking` on a thread.
+;; - `response-text` reads through a port, so it is emitted twice like any
+;;   other `defun` that reads a port.
+;; - `response-port` only builds the port. The read on it suspends.
+;; - Everything written on top of them, `fetch-body` below included, is
+;;   emitted twice.
 ;;
 ;; No behavioural test can see this. A suspending copy that reached the
-;; blocking half would return the same bytes and pass every assertion in
-;; `172_http.bjo`, while parking a pool thread for the length of an HTTP
-;; request — which is the difference between a client that scales and one that
-;; does not.
+;; blocking half returns the same bytes and passes every check in
+;; `604_http_client.bjo`, but it holds a pool thread for the whole request.
 
 ;; A plain `defun` over the http API is emitted twice, whether or not this file
 ;; has a bjoroutine that calls it.
 ;; EXPECT-CS: public static BjoString\.Utf8String fetchsubbody\(
 ;; EXPECT-CS: public static async .*fetchsubbody__bjo\(
 
-;; The suspending copy awaits all the way down: the request, the body's stream
-;; and the read.
-;; EXPECT-CS: await http_Module\.fetch__bjo\(
+;; The suspending copy awaits the request, the body and the read.
+;; EXPECT-CS: await v1_Module\.fetch__bjo\(
 ;; EXPECT-CS: await .*responsesubtext__bjo\(
-;; EXPECT-CS: await .*responsesubport__bjo\(
+;; EXPECT-CS: await .*readsubline__bjo\(.*responsesubport\(
 
 ;; The blocking copy calls the blocking halves of the same names.
-;; EXPECT-CS: = http_Module\.fetch\(http_Module\.httpsubget\(url\)\);
+;; EXPECT-CS: = v1_Module\.fetch\(v1_Module\.httpsubget\(url\)\);
 ;; EXPECT-CS: responsesubtext\(r\)
 
-;; And nothing anywhere waits on a task by hand, which is what any of these
-;; would decay into if a pair were ever collapsed to one method.
+;; Nothing waits on a task by hand. A pair collapsed to one method would.
 ;; EXPECT-NO-CS: \.Result
 ;; EXPECT-NO-CS: GetAwaiter\(\)\.GetResult\(\)
 
 (import (std prelude))
-(import (std http))
+(import (std http client))
 
 ;; Written once. No colour is named anywhere in it.
 (: (-> string string))

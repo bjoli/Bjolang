@@ -47,7 +47,10 @@
 (:doc #:file "base.bjodoc")
 
 (import/class
-  (Failure (: System.Net.Http.HttpRequestException (-> string Failure))))
+  (Failure (: System.Net.Http.HttpRequestException (-> string Failure)))
+  ;; A port over a stream, registered on no scope: the response owns the
+  ;; stream and frees it in `response-close`.
+  (StreamPort (: Bjolang.Runtime.BjoInputPort (-> ClrStream StreamPort))))
 
 (import/extern
   ;; Bytes in a declared encoding as a text input port.
@@ -254,7 +257,7 @@
 ;; readers of (std ports). Call it once: it reads the stream.
 (: (-> Response InputPort))
 (defun (response-bytes-port r)
-  (stream->input-port (record-ref r stream)))
+  (cast InputPort (StreamPort. (record-ref r stream))))
 
 (: (-> Response string))
 (defun (response-text r)

@@ -68,7 +68,7 @@ The repository itself was not modified, apart from adding this file.
 | `(- x)` on `uint` is widened to `long` (CS0266) and on `ulong` is undefined (CS0023): emitted as `unchecked(0u - x)` / `unchecked(0UL - x)` | `051cc48` | `TestFiles/440_unsigned_negate.bjo` |
 | Tuples of 8+ elements and 1-tuples emit invalid C# (codegen #4): one module (`Codegen.CSharpTuple`) spells tuple types, values, patterns and element access, with C# tuple syntax for arity 2 and up; `DotNetInterop` builds and flattens the `TRest` nesting, so a .NET 8-tuple reads as a flat tuple | `cc00fe2` | `TestFiles/601_tuple_arities.bjo` |
 | A self tail call with `#:rest` arguments wraps the rest array twice (lowering); `apply` in tail position too: `normalizeRecur` passes the array inference built | `cc00fe2` | `TestFiles/602_tail_call_rest.bjo` |
-| http: the default client keeps a process-wide cookie jar (stdlib): `make-client` sets `UseCookies` off. `(std http client)` has an opt-in jar, the `cookies` middleware | (uncommitted) | `TestFiles/172_http.bjo`, `TestFiles/604_http_client.bjo` |
+| http: the default client keeps a process-wide cookie jar (stdlib): `make-client` set `UseCookies` off, and `(std http)` was then removed. `(std http client)` keeps no cookies unless the `cookies` middleware is added | `e311038`, (uncommitted) | `TestFiles/172_http.bjo`, `TestFiles/604_http_client.bjo` |
 
 ### Found fixed when re-checked (2026-10-20)
 
@@ -2618,8 +2618,8 @@ Covered with no bugs found (differential/randomised tests, all passed):
 
 ### http: a URL with a `#fragment` silently loses all `#:query` parameters
 - Severity: Medium
-- Status: Confirmed (repro run, local Python server)
-- Location: lib/std/http.bjo:228-235 (`full-url`)
+- Status: Fixed. `(std http)` is removed; `(std http client)` adds the query before the fragment (`TestFiles/172_http.bjo`)
+- Location: lib/std/http.bjo:228-235 (`full-url`), removed
 - Description: `full-url` appends `?`/`&` plus the encoded query to the end of the url string. When the url has a fragment (`http://h/p#sec`), the query ends up inside the fragment (`/p#sec?a=1`), and .NET never sends a fragment. The request is sent with no query and no error. The doc says "Query parameters are percent-encoded and appended to the url."
 - Repro:
 ```
@@ -2636,8 +2636,8 @@ Covered with no bugs found (differential/randomised tests, all passed):
 
 ### http: the default client keeps a process-wide cookie jar and replays cookies on later requests
 - Severity: Medium
-- Status: Confirmed (repro run)
-- Location: lib/std/http.bjo:157-170 (`make-client`: `SocketsHttpHandler` is created with its default `UseCookies = true`), 176 (`current-http-client` shared default)
+- Status: Fixed. `(std http)` is removed; `make-transport` in `(std http client)` sets `UseCookies` off (`TestFiles/172_http.bjo`, `TestFiles/604_http_client.bjo`)
+- Location: lib/std/http.bjo:157-170, removed (`make-client`: `SocketsHttpHandler` is created with its default `UseCookies = true`), 176 (`current-http-client` shared default)
 - Description: `SocketsHttpHandler` stores every `Set-Cookie` it receives in its own `CookieContainer` and attaches matching cookies to later requests. `current-http-client` is one client per process, so a cookie set by any response leaks into every later request to that host, from unrelated code and requests. The module never mentions this. Its doc says "nothing here reads cookies yet", and a `Cookie` header passed in `#:headers` is combined with the jar's. That is hidden shared mutable state, which is a correctness issue and also a security one (session cookies cross between callers). The fix is `UseCookies = false` in `make-client`.
 - Repro: t5/h.bjo. Make a GET to `/dup`, whose response has `Set-Cookie: a=1...` and `Set-Cookie: b=2`, then a POST to `/c` with no cookie headers.
 - Observed: the second request's headers, as echoed by the server, include `"Cookie": "a=1; b=2"`. A later, unrelated `GET /p?&a=1` also carries `Cookie: a=1; b=2`.   Expected: no `Cookie` header unless the caller wrote one.

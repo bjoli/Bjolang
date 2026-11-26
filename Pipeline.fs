@@ -1098,7 +1098,7 @@ let private expandEverythingFrom (offered: (ImportPath * string list) list) (for
                 | DImport([ { Path = path; Modifiers = [] } ], _) -> path
                 | _ ->
                     failwithf
-                        $"Invalid (everything-from ...) at %s{where}: it takes a module path, such as (std http) or \"util.bjo\", with no import modifiers. Put the modifiers on the (import ...) instead."
+                        $"Invalid (everything-from ...) at %s{where}: it takes a module path, such as (std http client) or \"util.bjo\", with no import modifiers. Put the modifiers on the (import ...) instead."
 
             let names =
                 offered

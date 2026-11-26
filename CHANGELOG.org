@@ -19,9 +19,18 @@ What each change guarantees, and what it leaves open.
   at a newer version; ~(std http client v1)~ keeps this one.
 - An error has a kind: ~InvalidRequest~, ~NameResolution~, ~Connection~,
   ~Tls~, ~Protocol~, ~Cancelled~ or ~Failed~. A status is still a value.
-- *Neither client keeps cookies by itself.* The old ~(std http)~ client is
-  shared by the whole process and sent one caller's cookies with every later
-  request; its ~UseCookies~ is now off. Its API is otherwise unchanged.
+- *The client keeps no cookies by itself.* Add the ~cookies~ middleware to
+  keep them.
+- *~(std http)~ is removed.* Its client was shared by the whole process and
+  sent one caller's cookies with every later request. To port a caller:
+  - Import ~(std http client)~.
+  - An error is an ~HttpError~, not an ~Exception~: read it with
+    ~http-error-message~, not ~.-Message~.
+  - ~(Text s)~ becomes ~(text-body s)~, and ~(Form fields)~ becomes
+    ~(form-body fields)~.
+  - ~response-headers~ returns ~Headers~, not a map. Use ~response-header~ or
+    ~response-header-all~.
+  - ~response-port~ no longer suspends; reads on the port do.
 - Open: request bodies are text or bytes in memory; there is no streaming
   upload, multipart or file body. The transport follows redirects itself, so
   the ~cookies~ middleware does not see cookies set by a redirect response.
