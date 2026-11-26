@@ -1,0 +1,45 @@
+;; Each function of `(std http client easy)` blocks in a `defun` and suspends
+;; in a `defbjo`. This checks the emitted C# for both.
+;;
+;; `use-all` is a plain `defun`, so it is emitted twice. Its blocking copy
+;; calls the blocking functions, and its suspending copy awaits the
+;; suspending ones. A function that had only one copy would fail one of the
+;; two patterns.
+
+;; EXPECT-CS: = easy_Module\.getsubtext\(
+;; EXPECT-CS: = easy_Module\.getsubjson\(
+;; EXPECT-CS: = easy_Module\.download\(
+;; EXPECT-CS: = easy_Module\.fetchsubmany\(
+;; EXPECT-CS: = easy_Module\.urlsubok_QMARK\(
+
+;; EXPECT-CS: await easy_Module\.getsubtext__bjo\(
+;; EXPECT-CS: await easy_Module\.getsubjson__bjo\(
+;; EXPECT-CS: await easy_Module\.download__bjo\(
+;; EXPECT-CS: await easy_Module\.fetchsubmany__bjo\(
+;; EXPECT-CS: await easy_Module\.urlsubok_QMARK__bjo\(
+
+;; Nothing waits on a task by hand.
+;; EXPECT-NO-CS: \.Result[;) ,]
+;; EXPECT-NO-CS: GetAwaiter\(\)\.GetResult\(\)
+
+(import (std prelude))
+(import (std http client easy))
+
+(: (-> string string))
+(defun (use-all url)
+  (def text (get-text url))
+  (def json (get-json url))
+  (def saved (download url "out.bin"))
+  (def many (fetch-many [url url]))
+  (def ok (url-ok? url))
+  (str (match text ((Ok t) t) ((Err e) (easy-error-message e)))
+       (match json ((Ok j) "json") ((Err e) "no json"))
+       (match saved ((Ok n) "saved") ((Err e) "not saved"))
+       (int->string (vec-length many))
+       (if ok "ok" "not ok")))
+
+(: (-bjo-> string string))
+(defbjo (from-a-fiber url)
+  (use-all url))
+
+(export from-a-fiber)

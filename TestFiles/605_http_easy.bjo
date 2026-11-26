@@ -1,0 +1,322 @@
+;; `(std http client easy)` against a server on the loopback.
+;;
+;; Every check runs twice: once from `main`, a `defun`, where the calls block,
+;; and once from a `defbjo`, where they suspend. `checks` is one `defun`; the
+;; second run calls its suspending copy.
+
+(import (std prelude))
+(import (std simpletest))
+(import (only (std maths) modulo))
+(import (std stopwatch))
+(import (only (std os) make-temp-directory))
+(import (only (text json) json->string))
+(import (std http client easy))
+
+(import/class
+  (Listener       (: System.Net.HttpListener (-> Listener)))
+  (Prefixes       (: System.Net.HttpListenerPrefixCollection))
+  (Context        (: System.Net.HttpListenerContext))
+  (ServerRequest  (: System.Net.HttpListenerRequest))
+  (ServerResponse (: System.Net.HttpListenerResponse))
+  (Stream         (: System.IO.Stream)))
+
+(import/extern
+  (listener-prefixes (: System.Net.HttpListener.Prefixes (-> Listener Prefixes) #:get))
+  (prefix-add!       (: System.Net.HttpListenerPrefixCollection.Add (-> Prefixes string void)))
+  (listener-start    (: System.Net.HttpListener.Start (-> Listener void)
+                        #:exceptions (System.Net.HttpListenerException)))
+  (listener-close    (: System.Net.HttpListener.Close (-> Listener void)))
+  (next-context      (: System.Net.HttpListener.GetContextAsync (-> Listener Context)
+                        #:async #:uncancellable))
+  (context-request   (: System.Net.HttpListenerContext.Request (-> Context ServerRequest) #:get))
+  (context-response  (: System.Net.HttpListenerContext.Response (-> Context ServerResponse) #:get))
+  (request-path      (: System.Net.HttpListenerRequest.RawUrl (-> ServerRequest string) #:get))
+  (request-verb      (: System.Net.HttpListenerRequest.HttpMethod (-> ServerRequest string) #:get))
+  (reply-status!     (: System.Net.HttpListenerResponse.StatusCode (-> ServerResponse int void) #:set))
+  (reply-length!     (: System.Net.HttpListenerResponse.ContentLength64 (-> ServerResponse long void) #:set))
+  (reply-header!     (: System.Net.HttpListenerResponse.AddHeader (-> ServerResponse string string void)))
+  (reply-stream      (: System.Net.HttpListenerResponse.OutputStream (-> ServerResponse Stream) #:get))
+  (reply-done!       (: System.Net.HttpListenerResponse.Close (-> ServerResponse void)))
+  (stream-write!     (: System.IO.Stream.Write (-> Stream (Array byte) int int void)))
+  (stream-flush!     (: System.IO.Stream.Flush (-> Stream void)))
+  (sleep             (: System.Threading.Tasks.Task.Delay (-> int void) #:async)))
+
+;; ---------------------------------------------------------------------------
+;; The server
+;; ---------------------------------------------------------------------------
+
+;; `n` bytes, byte i being i mod 251, so a misplaced chunk shows.
+(: (-> int (Array byte)))
+(defun (pattern n)
+  (def out (make-array n))
+  (loop (:for i (range 0 n))
+        (:do (array-set! out i (cast byte (modulo i 251)))))
+  out)
+
+(: (-> ServerResponse Stream (Array byte) void))
+(defun (write-all! resp out bytes)
+  (stream-write! out bytes 0 (array-length bytes)))
+
+;; Answers one request. A client that has gone away makes the write raise,
+;; which the timeout checks cause on purpose, so every failure is ignored.
+(: (-bjo-> Context void))
+(defbjo (handle ctx)
+  (def req (context-request ctx))
+  (def resp (context-response ctx))
+  (def path (request-path req))
+  (def verb (request-verb req))
+  (defun (reply! code content-type body)
+    (reply-status! resp code)
+    (reply-header! resp "Content-Type" content-type)
+    (write-all! resp (reply-stream resp) body)
+    (reply-done! resp))
+  (match (try
+           (cond
+             ((string-starts-with? path "/hello")
+              (reply! 200 "text/plain; charset=utf-8" (string->bytes "hello, bjolang")))
+             ((string-starts-with? path "/missing")
+              (reply! 404 "text/plain" (string->bytes "no such fruit\n")))
+             ((string-starts-with? path "/json")
+              (reply! 200 "application/json" (string->bytes "{\"accept\": \"x\"}")))
+             ((string-starts-with? path "/accept")
+              (reply! 200 "application/json"
+                      (string->bytes (str "\"" (.Get (.-Headers req) "Accept") "\""))))
+             ((string-starts-with? path "/notjson")
+              (reply! 200 "application/json" (string->bytes "{")))
+             ;; "grüße" in Latin-1.
+             ((string-starts-with? path "/latin1")
+              (reply! 200 "text/plain; charset=iso-8859-1" #[103 114 252 223 101]))
+             ((string-starts-with? path "/klingon")
+              (reply! 200 "text/plain; charset=x-klingon" #[103 114]))
+             ;; 2000 bytes with a Content-Length.
+             ((string-starts-with? path "/big-declared")
+              (reply-length! resp 2000L)
+              (reply! 200 "application/octet-stream" (pattern 2000)))
+             ;; 2000 bytes, chunked: no length to check before reading.
+             ((string-starts-with? path "/big-chunked")
+              (reply-status! resp 200)
+              (def out (reply-stream resp))
+              (loop (:for _ (range 0 4))
+                    (:do (write-all! resp out (pattern 500))
+                         (stream-flush! out)))
+              (reply-done! resp))
+             ((string-starts-with? path "/file")
+              (reply! 200 "application/octet-stream" (pattern 100000)))
+             ((string-starts-with? path "/slow-headers")
+              (sleep 1500)
+              (reply! 200 "text/plain" (string->bytes "late")))
+             ;; The headers and half the body at once, the rest after 1.5 s.
+             ((string-starts-with? path "/slow-body")
+              (reply-status! resp 200)
+              (def out (reply-stream resp))
+              (write-all! resp out (pattern 1000))
+              (stream-flush! out)
+              (sleep 1500)
+              (write-all! resp out (pattern 1000))
+              (reply-done! resp))
+             ((string-starts-with? path "/half-second")
+              (sleep 500)
+              (reply! 200 "text/plain" (string->bytes "done")))
+             ((string-starts-with? path "/no-head")
+              (if (= verb "HEAD")
+                  (reply! 405 "text/plain" (vec->array (vec-empty)))
+                  (reply! 200 "text/plain" (string->bytes "got"))))
+             (else (reply! 500 "text/plain" (string->bytes "unknown path"))))
+           #:catch (System.Exception))
+    ((Ok done) unit)
+    ((Err e) unit)))
+
+;; Answers each request in a fiber of its own, until the listener is closed.
+(: (-bjo-> Listener void))
+(defbjo (serve listener)
+  (match (try (next-context listener) #:catch (System.Exception))
+    ((Err e) unit)
+    ((Ok ctx)
+     (ignore (bjo (handle ctx)))
+     (serve listener))))
+
+;; A started listener on the first free port from `port` on. A listener that
+;; fails to start is disposed, so each try makes a new one.
+(: (-> int int (Option (Tuple Listener int))))
+(defun (listen-on port tries)
+  (if (= tries 0)
+      None
+      (let ((listener (Listener.)))
+        (prefix-add! (listener-prefixes listener) (str "http://127.0.0.1:" (int->string port) "/"))
+        (match (listener-start listener)
+          ((Ok listening) (Some (Tuple listener port)))
+          ((Err e) (listen-on (+ port 1) (- tries 1)))))))
+
+;; ---------------------------------------------------------------------------
+;; The checks
+;; ---------------------------------------------------------------------------
+
+;; A result as text: the value, or the kind of the error and its data.
+(: (-> (Result EasyError string) string))
+(defun (shown r)
+  (match r
+    ((Ok text) text)
+    ((Err (Http e)) "Http")
+    ((Err (Status code body)) (str "Status " (int->string code) " " body))
+    ((Err (TooLarge limit)) (str "TooLarge " (long->string limit)))
+    ((Err (TimedOut d)) "TimedOut")
+    ((Err (Decode m)) "Decode")
+    ((Err (File m)) "File")))
+
+(: (-> (Result EasyError long) string))
+(defun (shown-count r)
+  (match r
+    ((Ok n) (str "Ok " (long->string n)))
+    ((Err e) (shown (Err e)))))
+
+(: (-> string string))
+(defun (part-left? path)
+  (if (file-exists? (str path ".part")) "a .part is left" "no .part"))
+
+;; A call whose own limit is long, under a caller's deadline that is short.
+(: (-bjo-> string string))
+(defbjo (under-own-deadline url)
+  (with-deadline (milliseconds 300)
+    (shown (get-text url #:timeout (seconds 10)))))
+
+(: (-> string string string void))
+(defun (checks base dir run)
+  (defun (at path) (str base path))
+  (defun (named label) (str run ": " label))
+
+  ;; --- get-text ---------------------------------------------------------
+  (expect (named "get-text returns the body") (shown (get-text (at "/hello"))) "hello, bjolang")
+  (expect (named "a 404 is an error with the start of the body")
+          (shown (get-text (at "/missing"))) "Status 404 no such fruit")
+  (expect (named "the declared charset decodes the text")
+          (shown (get-text (at "/latin1"))) "grüße")
+  (expect (named "an unknown charset is Decode") (shown (get-text (at "/klingon"))) "Decode")
+  (expect (named "no server is Http")
+          (shown (get-text "http://127.0.0.1:1/" #:timeout (seconds 5))) "Http")
+
+  ;; --- get-json ---------------------------------------------------------
+  (expect (named "get-json reads JSON")
+          (match (get-json (at "/json")) ((Ok j) (json->string j)) ((Err e) (easy-error-message e)))
+          "{\"accept\":\"x\"}")
+  (expect (named "get-json sends Accept: application/json")
+          (match (get-json (at "/accept")) ((Ok j) (json->string j)) ((Err e) (easy-error-message e)))
+          "\"application/json\"")
+  (expect (named "an Accept of the caller's stays")
+          (match (get-json (at "/accept") #:headers [(Tuple "accept" "text/x-json")])
+            ((Ok j) (json->string j))
+            ((Err e) (easy-error-message e)))
+          "\"text/x-json\"")
+  (expect (named "a body that is not JSON is Decode")
+          (match (get-json (at "/notjson")) ((Ok j) "read") ((Err (Decode m)) "Decode") ((Err e) "other"))
+          "Decode")
+
+  ;; --- Limits -----------------------------------------------------------
+  (expect (named "a Content-Length over the limit is TooLarge")
+          (shown (get-text (at "/big-declared") #:max-bytes 1000L)) "TooLarge 1000")
+  (expect (named "a chunked body over the limit is TooLarge")
+          (shown (get-text (at "/big-chunked") #:max-bytes 1000L)) "TooLarge 1000")
+  (expect (named "a body at the limit is read")
+          (match (get-bytes (at "/big-chunked") #:max-bytes 2000L)
+            ((Ok bytes) (int->string (bytestring-length bytes)))
+            ((Err e) (easy-error-message e)))
+          "2000")
+  (expect (named "slow headers are TimedOut")
+          (shown (get-text (at "/slow-headers") #:timeout (milliseconds 300))) "TimedOut")
+  (expect (named "a slow body is TimedOut")
+          (shown (get-text (at "/slow-body") #:timeout (milliseconds 300))) "TimedOut")
+  (def own (bjo (under-own-deadline (at "/slow-headers"))))
+  (expect (named "the caller's own deadline cancels the call, and is not TimedOut")
+          (match (by-colour (#:sync (sync/blocking (promise-join own)))
+                            (#:bjo (sync (promise-join own))))
+            ((Ok text) text)
+            ((Err e) "cancelled"))
+          "cancelled")
+
+  ;; --- download ---------------------------------------------------------
+  (def target (path-combine dir (str run "-file.bin")))
+  (expect (named "download writes the body")
+          (shown-count (download (at "/file") target)) "Ok 100000")
+  (expect (named "and the file holds the bytes")
+          (let ((got (file-read-bytes target)))
+            (and (= (array-length got) 100000)
+                 (= (array-ref got 0) (cast byte 0))
+                 (= (array-ref got 99999) (cast byte (modulo 99999 251)))))
+          #t)
+  (expect (named "and leaves no .part") (part-left? target) "no .part")
+  (expect (named "a file that exists is not replaced")
+          (shown-count (download (at "/file") target)) "File")
+  (expect (named "unless #:overwrite says so")
+          (shown-count (download (at "/file") target #:overwrite #t)) "Ok 100000")
+
+  (def missing (path-combine dir (str run "-missing.bin")))
+  (expect (named "a 404 writes nothing")
+          (shown-count (download (at "/missing") missing)) "Status 404 no such fruit")
+  (expect (named "no file") (file-exists? missing) #f)
+
+  (def big (path-combine dir (str run "-big.bin")))
+  (expect (named "a body over #:max-bytes is TooLarge")
+          (shown-count (download (at "/big-chunked") big #:max-bytes 1000L)) "TooLarge 1000")
+  (expect (named "and leaves no file") (file-exists? big) #f)
+  (expect (named "and no .part") (part-left? big) "no .part")
+
+  (def slow (path-combine dir (str run "-slow.bin")))
+  (expect (named "a download that times out midway is TimedOut")
+          (shown-count (download (at "/slow-body") slow #:timeout (milliseconds 300))) "TimedOut")
+  (expect (named "and leaves no file") (file-exists? slow) #f)
+  (expect (named "and no .part") (part-left? slow) "no .part")
+
+  ;; --- url-ok? ----------------------------------------------------------
+  (expect (named "url-ok? of a 200") (url-ok? (at "/hello")) #t)
+  (expect (named "url-ok? of a 404") (url-ok? (at "/missing")) #f)
+  (expect (named "url-ok? asks with GET when HEAD is rejected") (url-ok? (at "/no-head")) #t)
+  (expect (named "url-ok? with no server") (url-ok? "http://127.0.0.1:1/") #f)
+  (expect (named "url-ok? that times out")
+          (url-ok? (at "/slow-headers") #:timeout (milliseconds 300)) #f)
+
+  ;; --- fetch-many -------------------------------------------------------
+  (expect (named "fetch-many keeps the order of the URLs")
+          (string-join (vec-map shown (fetch-many [(at "/hello") (at "/missing") (at "/latin1")
+                                                   (at "/hello") (at "/big-declared")]
+                                                  #:parallel 2
+                                                  #:max-bytes 1000L))
+                       "|")
+          "hello, bjolang|Status 404 no such fruit|grüße|hello, bjolang|TooLarge 1000")
+  (expect (named "fetch-many of nothing") (vec-length (fetch-many (vec-empty))) 0)
+
+  ;; Four half-second requests, four at a time: about 0.5 s, against 2 s one
+  ;; after another.
+  (def sw (stopwatch))
+  (stopwatch-start! sw)
+  (def four (fetch-many [(at "/half-second") (at "/half-second") (at "/half-second")
+                         (at "/half-second")]
+                        #:parallel 4))
+  (stopwatch-stop! sw)
+  (expect (named "fetch-many runs the requests at the same time")
+          (string-join (vec-map shown four) "|") "done|done|done|done")
+  (expect-true (named "in less time than one after another") (< (stopwatch-ms sw) 1500L))
+
+  (expect (named "#:parallel 0 raises")
+          (match (try (fetch-many [(at "/hello")] #:parallel 0) #:catch (System.ArgumentException))
+            ((Ok rs) "returned")
+            ((Err e) "raised"))
+          "raised"))
+
+;; The suspending copy of every check.
+(: (-bjo-> string string void))
+(defbjo (checks-in-a-fiber base dir)
+  (checks base dir "defbjo"))
+
+(defun (main args)
+  (match (listen-on 8697 20)
+    (None (fail "no free port to listen on") 1)
+    ((Some (Tuple listener port))
+     (ignore (bjo (serve listener)))
+     (def base (str "http://127.0.0.1:" (int->string port)))
+     (def dir (make-temp-directory #:prefix "bjo-http-easy-"))
+     (checks base dir "defun")
+     (match (sync/blocking (promise-join (bjo (checks-in-a-fiber base dir))))
+       ((Ok done) unit)
+       ((Err e) (fail (str "the fiber run raised: " (.-Message e)))))
+     (directory-delete-tree dir)
+     (listener-close listener)
+     0)))

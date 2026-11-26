@@ -1,0 +1,370 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/http/client/easy.bjo: one call for each common HTTP task.
+;;
+;; Each function sends a request, checks the status, reads the body and closes
+;; the response. Each returns a `Result` whose error is an `EasyError`:
+;;
+;; - A status that is not 2xx is an error.
+;; - Each call has a time limit (`#:timeout`) and a body limit (`#:max-bytes`).
+;; - Each function blocks in a `defun` and suspends in a `defbjo`.
+;;
+;; Requests go through `current-handler`, so middleware and test doubles apply.
+;; The module re-exports (std http client v1).
+
+(export
+  EasyError easy-error-message
+  get-text get-bytes get-json download
+  fetch-many url-ok?)
+
+(import (std prelude))
+(import (std atomic))
+(import (only (std ports) read-some write-bytes!))
+(import (only (text json) Json parse-json))
+(import (std http client v1))
+
+(re-export (everything-from (std http client v1)))
+
+(:doc #:file "easy.bjodoc")
+
+(import/class
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+;; ===========================================================================
+;; Errors
+;; ===========================================================================
+
+(type (: EasyError (Union (: Http HttpError)
+                          (: Status int string)
+                          (: TooLarge long)
+                          (: TimedOut Duration)
+                          (: Decode string)
+                          (: File string))))
+
+(: (-> EasyError string))
+(defun (easy-error-message e)
+  (match e
+    ((Http h) (http-error-message h))
+    ((Status code body)
+     (if (string-empty? body)
+         (str "status " (int->string code))
+         (str "status " (int->string code) ": " body)))
+    ((TooLarge limit) (str "the body is larger than " (long->string limit) " bytes"))
+    ((TimedOut d)
+     (str "timed out after " (long->string (/ (duration-ticks d) 10000L)) " ms"))
+    ((Decode m) (str "cannot decode the body: " m))
+    ((File m) (str "file error: " m))))
+
+;; ===========================================================================
+;; Limits
+;; ===========================================================================
+
+;; The default `#:max-bytes` of the functions that hold the body in memory.
+(: long)
+(def memory-limit 10485760L)
+
+;; `#:max-bytes` of `download` when none is given.
+(: long)
+(def no-limit 9223372036854775807L)
+
+;; How much of an error body `Status` keeps.
+(: int)
+(def snippet-bytes 1024)
+
+;; Runs `work` in a fiber of its own, and returns its result, or `TimedOut`
+;; when `limit` passes first.
+;;
+;; - The fiber that loses is cancelled. `with-scope` waits for it to end, so
+;;   its cleanup is done when this returns.
+;; - An exception in the fiber is raised again here.
+;; - A cancellation of the caller raises as usual, and cancels the fiber.
+(: (-> Duration (Event (Result Exception (Result EasyError %a))) (Result EasyError %a)))
+(defun (within limit work)
+  (def race (choose (wrap work
+                          (fun (outcome)
+                            (match outcome
+                              ((Ok result) result)
+                              ((Err e) (raise e)))))
+                    (wrap (timeout limit) (fun (fired) (Err (TimedOut limit))))))
+  (with-scope
+    (by-colour (#:sync (sync/blocking race))
+               (#:bjo (sync race)))))
+
+;; Returns #t when the response says its body is longer than `max`.
+(: (-> Response long bool))
+(defun (declared-too-large? r max)
+  (match (response-header r "content-length")
+    (None #f)
+    ((Some text)
+     (match (try (string->long (string-trim text)) #:catch (System.FormatException))
+       ((Ok n) (> n max))
+       ((Err e) #f)))))
+
+;; Reads the rest of `port`. Returns `TooLarge` as soon as more than `max`
+;; bytes have arrived.
+(: (-> InputPort long (Result EasyError ByteString)))
+(defun (read-capped port max)
+  (def builder (bytestringbuilder-empty))
+  (let more ((count 0L))
+    (match (read-some port)
+      (None (Ok (bytestringbuilder->bytestring builder)))
+      ((Some chunk)
+       (let ((total (+ count (cast long (array-length chunk)))))
+         (if (> total max)
+             (Err (TooLarge max))
+             (let ()
+               (bytestringbuilder-add-bytes! builder chunk)
+               (more total))))))))
+
+;; Returns the first `snippet-bytes` of the body as text, for a `Status` error.
+(: (-> Response string))
+(defun (snippet-of r)
+  (def port (response-bytes-port r))
+  (def builder (bytestringbuilder-empty))
+  (let more ((count 0))
+    (if (>= count snippet-bytes)
+        unit
+        (match (read-some port)
+          (None unit)
+          ((Some chunk)
+           (bytestringbuilder-add-bytes! builder chunk)
+           (more (+ count (array-length chunk)))))))
+  (def bytes (bytestringbuilder->bytestring builder))
+  (def kept (if (> (bytestring-length bytes) snippet-bytes)
+                (bytestring-slice bytes 0 snippet-bytes)
+                bytes))
+  (string-trim (bytestring->string/lossy kept)))
+
+;; Returns the response if its status is 2xx and its declared length fits.
+;; Otherwise returns the error, and reads what `Status` needs from the body.
+(: (-> Response long (Result EasyError Response)))
+(defun (accepted r max)
+  (cond
+    ((not (response-ok? r)) (Err (Status (response-status r) (snippet-of r))))
+    ((declared-too-large? r max) (Err (TooLarge max)))
+    (else (Ok r))))
+
+;; Sends `req` and returns its body as bytes, with the response's encoding.
+(: (-bjo-> Request long (Result EasyError (Tuple ByteString Encoding))))
+(defbjo (body-of req max)
+  (with-response (answer (fetch req))
+    (match answer
+      ((Err e) (Err (Http e)))
+      ((Ok r)
+       (match (accepted r max)
+         ((Err e) (Err e))
+         ((Ok got)
+          (match (response-encoding got)
+            ((Err m) (Err (Decode m)))
+            ((Ok encoding)
+             (match (read-capped (response-bytes-port got) max)
+               ((Err e) (Err e))
+               ((Ok bytes) (Ok (Tuple bytes encoding))))))))))))
+
+;; ===========================================================================
+;; Reading a body
+;; ===========================================================================
+
+;; The body of `req` as text, decoded by the declared charset.
+(: (-bjo-> Request long (Result EasyError string)))
+(defbjo (text-of req max)
+  (match (body-of req max)
+    ((Err e) (Err e))
+    ((Ok (Tuple bytes encoding))
+     (Ok (bytestring->string/lossy bytes #:encoding encoding)))))
+
+;; The body of `req` as bytes.
+(: (-bjo-> Request long (Result EasyError ByteString)))
+(defbjo (bytes-of req max)
+  (match (body-of req max)
+    ((Err e) (Err e))
+    ((Ok (Tuple bytes encoding)) (Ok bytes))))
+
+(: (-> string (#:query (Vec Pair)) (#:headers (Vec Pair)) (#:timeout Duration) (#:max-bytes long)
+       (Result EasyError string)))
+(defun (get-text url
+                 #:query (vec-empty)
+                 #:headers (vec-empty)
+                 #:timeout (seconds 30)
+                 #:max-bytes memory-limit)
+  (def req (http-get url #:query query #:headers headers))
+  (within timeout (spawn-evt (text-of req max-bytes))))
+
+(: (-> string (#:query (Vec Pair)) (#:headers (Vec Pair)) (#:timeout Duration) (#:max-bytes long)
+       (Result EasyError ByteString)))
+(defun (get-bytes url
+                  #:query (vec-empty)
+                  #:headers (vec-empty)
+                  #:timeout (seconds 30)
+                  #:max-bytes memory-limit)
+  (def req (http-get url #:query query #:headers headers))
+  (within timeout (spawn-evt (bytes-of req max-bytes))))
+
+;; Returns `fields` with `Accept: application/json` unless they have an Accept.
+(: (-> (Vec Pair) (Vec Pair)))
+(defun (accepting-json fields)
+  (if (any? (fun (p) (match p ((Tuple name value) (= (string-downcase name) "accept"))))
+                fields)
+      fields
+      (vec-add fields (Tuple "Accept" "application/json"))))
+
+(: (-> string (#:query (Vec Pair)) (#:headers (Vec Pair)) (#:timeout Duration) (#:max-bytes long)
+       (Result EasyError Json)))
+(defun (get-json url
+                 #:query (vec-empty)
+                 #:headers (vec-empty)
+                 #:timeout (seconds 30)
+                 #:max-bytes memory-limit)
+  (match (get-text url
+                   #:query query
+                   #:headers (accepting-json headers)
+                   #:timeout timeout
+                   #:max-bytes max-bytes)
+    ((Err e) (Err e))
+    ((Ok text)
+     (match (parse-json text)
+       ((Ok j) (Ok j))
+       ((Err m) (Err (Decode m)))))))
+
+;; ===========================================================================
+;; Downloading
+;; ===========================================================================
+
+;; Copies `in` to `out`. Returns the byte count, or `TooLarge` as soon as
+;; more than `max` bytes have arrived.
+(: (-> InputPort OutputPort long (Result EasyError long)))
+(defun (copy-capped in out max)
+  (let more ((count 0L))
+    (match (read-some in)
+      (None (Ok count))
+      ((Some chunk)
+       (let ((total (+ count (cast long (array-length chunk)))))
+         (if (> total max)
+             (Err (TooLarge max))
+             (let ()
+               (write-bytes! out chunk)
+               (more total))))))))
+
+;; Writes the body of `r` to `part`, then moves `part` to `path`.
+;;
+;; - An I/O error is `File`. `part` is deleted on every failure.
+;; - Any other exception, such as a cancellation, deletes `part` and is
+;;   raised again.
+(: (-> Response string string bool long (Result EasyError long)))
+(defun (save-body r path part overwrite max)
+  (match (open-output-file part)
+    ((Err e) (Err (File (.-Message e))))
+    ((Ok port)
+     (def copied
+       (try (with-open ((out port))
+              (match (try (copy-capped (response-bytes-port r) out max)
+                          #:catch (System.IO.IOException))
+                ((Ok result) result)
+                ((Err e) (Err (File (.-Message e))))))
+            #:catch (System.Exception)))
+     (match copied
+       ((Err e)
+        (file-delete part)
+        (raise e))
+       ((Ok (Err why))
+        (file-delete part)
+        (Err why))
+       ((Ok (Ok count))
+        (match (try (file-move part path #:mode (if overwrite MoveReplace MoveNew))
+                    #:catch (System.Exception))
+          ((Ok moved) (Ok count))
+          ((Err e)
+           (file-delete part)
+           (Err (File (.-Message e))))))))))
+
+;; Sends `req` and writes its body to `path`, through `part`.
+(: (-bjo-> Request string string bool long (Result EasyError long)))
+(defbjo (download-of req path part overwrite max)
+  (with-response (answer (fetch req))
+    (match answer
+      ((Err e) (Err (Http e)))
+      ((Ok r)
+       (match (accepted r max)
+         ((Err e) (Err e))
+         ((Ok got) (save-body got path part overwrite max)))))))
+
+(: (-> string string (#:query (Vec Pair)) (#:headers (Vec Pair)) (#:timeout Duration)
+       (#:max-bytes long) (#:overwrite bool)
+       (Result EasyError long)))
+(defun (download url path
+                 #:query (vec-empty)
+                 #:headers (vec-empty)
+                 #:timeout (minutes 10)
+                 #:max-bytes no-limit
+                 #:overwrite #f)
+  (def req (http-get url #:query query #:headers headers))
+  (if (and (not overwrite) (file-exists? path))
+      (Err (File (str path " exists. Pass #:overwrite #t to replace it")))
+      (within timeout (spawn-evt (download-of req path (str path ".part") overwrite max-bytes)))))
+
+;; ===========================================================================
+;; Many requests, and checks
+;; ===========================================================================
+
+;; Takes the next index from `next` until none is left, and stores the text of
+;; each URL in `results`.
+(: (-bjo-> (Vec string) (Array (Result EasyError string)) (Atomic int) Duration long Unit))
+(defbjo (fetch-worker urls results next limit max)
+  (let more ()
+    (let ((index (- (atomic-increment! next) 1)))
+      (if (< index (vec-length urls))
+          (let ()
+            (array-set! results index (get-text (vec-ref urls index) #:timeout limit #:max-bytes max))
+            (more))
+          unit))))
+
+(: (-> (Vec string) (#:parallel int) (#:timeout Duration) (#:max-bytes long)
+       (Vec (Result EasyError string))))
+(defun (fetch-many urls
+                   #:parallel 8
+                   #:timeout (seconds 30)
+                   #:max-bytes memory-limit)
+  (when (< parallel 1)
+    (raise (cast Exception (ArgumentException. "fetch-many: #:parallel must be 1 or more"))))
+  (def results (: (make-array (vec-length urls)) (Array (Result EasyError string))))
+  (def next (make-atomic 0))
+  (with-scope
+    (loop (:for _ (range 0 (min parallel (vec-length urls))))
+          (:do (spawn (fetch-worker urls results next timeout max-bytes)))))
+  (array->vec results))
+
+;; Sends `req` and returns its status, without reading the body.
+(: (-bjo-> Request (Result EasyError int)))
+(defbjo (status-of req)
+  (with-response (answer (fetch req))
+    (match answer
+      ((Ok r) (Ok (response-status r)))
+      ((Err e) (Err (Http e))))))
+
+(: (-> int bool))
+(defun (success? status)
+  (and (>= status 200) (< status 300)))
+
+(: (-> string (#:headers (Vec Pair)) (#:timeout Duration) bool))
+(defun (url-ok? url #:headers (vec-empty) #:timeout (seconds 10))
+  (match (within timeout (spawn-evt (status-of (http-head url #:headers headers))))
+    ((Ok status)
+     (cond
+       ((success? status) #t)
+       ;; Some servers reject HEAD. Ask again with a GET, and read no body.
+       ((or (= status 405) (= status 501))
+        (match (within timeout (spawn-evt (status-of (http-get url #:headers headers))))
+          ((Ok again) (success? again))
+          ((Err e) #f)))
+       (else #f)))
+    ((Err e) #f)))

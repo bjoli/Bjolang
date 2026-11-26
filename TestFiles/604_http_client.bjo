@@ -24,7 +24,6 @@
 (import/extern
   (listener-prefixes (: System.Net.HttpListener.Prefixes (-> Listener Prefixes) #:get))
   (prefix-add!       (: System.Net.HttpListenerPrefixCollection.Add (-> Prefixes string void)))
-  (prefix-clear!     (: System.Net.HttpListenerPrefixCollection.Clear (-> Prefixes void)))
   (listener-start    (: System.Net.HttpListener.Start (-> Listener void)
                         #:exceptions (System.Net.HttpListenerException)))
   (listener-close    (: System.Net.HttpListener.Close (-> Listener void)))
@@ -108,16 +107,17 @@
          (else (respond! resp 500 (vec-empty) "unknown path"))))
      (serve listener))))
 
-(: (-> Listener int int (Option int)))
-(defun (listen-on listener port tries)
+;; A started listener on the first free port from `port` on. A listener that
+;; fails to start is disposed, so each try makes a new one.
+(: (-> int int (Option (Tuple Listener int))))
+(defun (listen-on port tries)
   (if (= tries 0)
       None
-      (let ()
-        (prefix-clear! (listener-prefixes listener))
+      (let ((listener (Listener.)))
         (prefix-add! (listener-prefixes listener) (str "http://127.0.0.1:" (int->string port) "/"))
         (match (listener-start listener)
-          ((Ok listening) (Some port))
-          ((Err e) (listen-on listener (+ port 1) (- tries 1)))))))
+          ((Ok listening) (Some (Tuple listener port)))
+          ((Err e) (listen-on (+ port 1) (- tries 1)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Helpers
@@ -198,10 +198,9 @@
           "invalid")
 
   ;; --- The transport -----------------------------------------------------------
-  (def listener (Listener.))
-  (match (listen-on listener 8597 20)
+  (match (listen-on 8597 20)
     (None (fail "no free port to listen on") 1)
-    ((Some port)
+    ((Some (Tuple listener port))
      (ignore (bjo (serve listener)))
      (def base (str "http://127.0.0.1:" (int->string port)))
 

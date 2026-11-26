@@ -31,7 +31,7 @@
   Response make-response
   response-status response-ok? response-reason response-url
   response-headers response-header response-header-all
-  response-port response-bytes-port response-text response-bytes
+  response-encoding response-port response-bytes-port response-text response-bytes
   response-close
 
   ;; Errors
@@ -229,23 +229,30 @@
                                (None found))
                              found))))))
 
-;; The charset the response declares, UTF-8 when it declares none. An unknown
-;; charset raises.
-(: (-> Response Encoding))
-(defun (charset-of r)
+;; Returns the charset the response declares, or UTF-8 when it declares none.
+;; An unknown charset is an `Err` with a message that names it.
+(: (-> Response (Result string Encoding)))
+(defun (response-encoding r)
   (match (response-header r "content-type")
-    (None utf-8)
+    (None (Ok utf-8))
     ((Some content-type)
      (match (charset-name content-type)
-       (None utf-8)
+       (None (Ok utf-8))
        ((Some name)
         (match (encoding-named name)
-          ((Some found) found)
+          ((Some found) (Ok found))
           (None
-           (raise (http-failure (str "the response declares charset="
-                                     name
-                                     ", which is not an encoding (text encodings) knows. "
-                                     "response-bytes reads its bytes as they are"))))))))))
+           (Err (str "the response declares charset="
+                     name
+                     ", which is not an encoding (text encodings) knows. "
+                     "response-bytes reads its bytes as they are")))))))))
+
+;; The same, but an unknown charset raises.
+(: (-> Response Encoding))
+(defun (charset-of r)
+  (match (response-encoding r)
+    ((Ok found) found)
+    ((Err message) (raise (http-failure message)))))
 
 ;; Returns the body as text, decoded by the charset the response declares.
 ;; Call it once: it reads the stream.

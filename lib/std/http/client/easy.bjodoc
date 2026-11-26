@@ -1,0 +1,139 @@
+;; Docs for std/http/client/easy.bjo, read through (:doc #:file "easy.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "One call for each common HTTP task: get text, bytes or JSON, download a file, fetch many URLs, check a URL.")
+  (see get-text get-json download fetch-many url-ok? EasyError)
+  (example """
+    (import (std http client easy))
+
+    (defun (main args)
+      (match (get-json "https://api.example.com/fruit" #:query [(Tuple "q" "banana")])
+        ((Ok j) (println (json->string j)) 0)
+        ((Err e) (println (easy-error-message e)) 1)))
+    """)
+  (example """
+    (match (download "https://example.com/big.iso" "big.iso" #:max-bytes 5000000000L)
+      ((Ok n) (println #"wrote ${n} bytes"))
+      ((Err e) (println (easy-error-message e))))
+    """)
+  (reference """
+    Each function sends a request, checks the status, reads the body and
+    closes the response. It returns a @code{Result} whose error is an
+    @code{EasyError}.
+
+    @itemlist{
+    @item{A status that is not 2xx is an error: @code{Status}.}
+    @item{Each call has a time limit, @code{#:timeout}, for the whole call:
+    connecting, the headers and the body. It is 30 seconds, and 10 minutes
+    for @code{download}.}
+    @item{Each call that holds the body in memory reads at most
+    @code{#:max-bytes}, 10 MB by default. @code{download} has no limit
+    unless one is given.}
+    @item{Each function blocks in a @code{defun} and suspends in a
+    @code{defbjo}.}
+    }
+
+    Requests go through @code{current-handler}, so middleware such as
+    @code{retrying} and test doubles such as @code{handler-of} apply.
+
+    The module re-exports @code{(std http client v1)}, so one import is
+    enough.
+
+    A cancellation from outside the call, such as the caller's own
+    @code{with-deadline}, is raised as usual. Only the call's own time limit
+    becomes @code{TimedOut}.
+    """))
+
+(:doc EasyError
+  (summary "Why a call of @code{(std http client easy)} failed.")
+  (case Http "No response came: the @code{HttpError}.")
+  (case Status "The status was not 2xx: the code, and the start of the body as text.")
+  (case TooLarge "The body is larger than @code{#:max-bytes}: the limit.")
+  (case TimedOut "The call took longer than @code{#:timeout}: the limit.")
+  (case Decode "The body is not text in its declared charset, or not JSON.")
+  (case File "@code{download} could not write the file.")
+  (see easy-error-message))
+
+(:doc easy-error-message
+  (summary "Returns a message for an error.")
+  (arg e "The error.")
+  (returns "A message that starts with the kind of error."))
+
+(:doc get-text
+  (summary "Gets a URL and returns its body as text.")
+  (arg url "An absolute http or https URL.")
+  (key #:query "Query parameters.")
+  (key #:headers "Header fields.")
+  (key #:timeout "The time limit for the whole call.")
+  (key #:max-bytes "The largest body that is read.")
+  (returns "@code{(Ok text)}, decoded by the charset the response declares, or UTF-8. Bytes that do not decode become U+FFFD.")
+  (see get-bytes get-json fetch-many))
+
+(:doc get-bytes
+  (summary "Gets a URL and returns its body as bytes.")
+  (arg url "An absolute http or https URL.")
+  (key #:query "Query parameters.")
+  (key #:headers "Header fields.")
+  (key #:timeout "The time limit for the whole call.")
+  (key #:max-bytes "The largest body that is read.")
+  (returns "@code{(Ok bytes)}.")
+  (see get-text download))
+
+(:doc get-json
+  (summary "Gets a URL and reads its body as JSON.")
+  (arg url "An absolute http or https URL.")
+  (key #:query "Query parameters.")
+  (key #:headers "Header fields. @code{Accept: application/json} is added unless there is an Accept.")
+  (key #:timeout "The time limit for the whole call.")
+  (key #:max-bytes "The largest body that is read.")
+  (returns "@code{(Ok json)}, or @code{(Err (Decode message))} when the body is not JSON.")
+  (see get-text))
+
+(:doc download
+  (summary "Gets a URL and writes its body to a file.")
+  (arg url "An absolute http or https URL.")
+  (arg path "The file to write.")
+  (key #:query "Query parameters.")
+  (key #:headers "Header fields.")
+  (key #:timeout "The time limit for the whole call, the transfer included.")
+  (key #:max-bytes "The largest body that is written. No limit by default.")
+  (key #:overwrite "Whether a file at @code{path} is replaced.")
+  (returns "@code{(Ok count)}, the number of bytes written.")
+  (see get-bytes)
+  (reference """
+    The body is streamed to @code{path.part}, which is moved to @code{path}
+    when the whole body has arrived. A failed, cut off or cancelled download
+    deletes @code{path.part} and leaves no file at @code{path}.
+
+    Without @code{#:overwrite #t}, a file at @code{path} is an error and no
+    request is sent.
+
+    @code{#:max-bytes} counts the bytes as they arrive. A Content-Length
+    larger than the limit is an error before anything is written.
+    """))
+
+(:doc fetch-many
+  (summary "Gets many URLs at the same time and returns the text of each.")
+  (arg urls "The URLs.")
+  (key #:parallel "How many requests are in flight at once.")
+  (key #:timeout "The time limit for each request.")
+  (key #:max-bytes "The largest body that is read, for each request.")
+  (returns "A result for each URL, in the order of @code{urls}.")
+  (raises System.ArgumentException "When @code{#:parallel} is less than 1.")
+  (see get-text)
+  (reference """
+    Each URL is fetched as by @code{get-text}. A failure of one URL is its
+    result and does not stop the others.
+    """))
+
+(:doc url-ok?
+  (summary "Checks whether a URL returns a 2xx status.")
+  (arg url "An absolute http or https URL.")
+  (key #:headers "Header fields.")
+  (key #:timeout "The time limit.")
+  (returns "@code{#t} for a 2xx status. @code{#f} for any other status, an error or a timeout.")
+  (reference """
+    It sends a HEAD request. When the server rejects HEAD with 405 or 501,
+    it sends a GET and reads no body.
+    """))
