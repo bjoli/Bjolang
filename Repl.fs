@@ -1762,6 +1762,9 @@ let run () : int =
     // lose by the caveat that keeps this off for builds — see
     // `Pipeline.cacheLoadedModules`.
     Pipeline.cacheLoadedModules.Value <- true
+    // The standard library cannot be loaded again in a session, so a module of
+    // it found current stays current: see `Pipeline.memoStandardLibrary`.
+    Pipeline.memoStandardLibrary.Value <- true
     // The modules an entry imports, checked once and taken by each entry
     // after: see `Inference.checkModulesKept`.
     Inference.cacheCheckedModules.Value <- true

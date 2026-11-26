@@ -1791,6 +1791,13 @@ type private CachedDll =
 
 let private dllCache = System.Collections.Generic.Dictionary<string * int64, CachedDll>()
 
+/// The trait and impl declarations of a `.dll` that a compilation links and
+/// does not import, as `loadModuleGraph` wraps them: the trait group, then the
+/// impl group. Keyed and switched like `dllCache`, by `cacheLoadedModules`, and
+/// for the same reason: the parse can invent names.
+let private linkedCache =
+    System.Collections.Generic.Dictionary<string * int64, Decl option * Decl option>()
+
 // ---------------------------------------------------------------------------
 // Building an imported source module
 // ---------------------------------------------------------------------------
@@ -1809,6 +1816,22 @@ let mutable compileLibrary: string -> string =
 /// remembered between two builds in one process: what a `.dll`'s timestamp says
 /// is only true until something rebuilds it, and a REPL rebuilds things.
 let private walking = Compilation.PerSet<string>()
+
+/// Whether a standard-library module that a staleness walk found current stays
+/// current for the rest of this process. Off for a build, on for a REPL.
+///
+/// - A REPL entry resolves `(std prelude)`, and the walk then visits the
+///   prelude and every module it imports. That was about 5 ms of each entry.
+/// - A session loads the standard library into the default load context,
+///   where nothing can be unloaded. A standard-library module rebuilt during a
+///   session is therefore not loaded again, whether or not this is on.
+/// - Modules outside the standard library are walked as before, because the
+///   REPL reloads the session when one of them is rebuilt.
+let memoStandardLibrary = Compilation.Per((fun () -> false), true)
+
+/// The standard-library sources found current, while `memoStandardLibrary` is
+/// on. Per process, as `dllCache` is.
+let private currentStandardLibrary = System.Collections.Generic.HashSet<string>()
 
 /// `(std prelude)`, which every program gets whether it asks or not.
 let private preludePath = ModulePath [ "std"; "prelude" ]
@@ -2204,7 +2227,9 @@ let rec ensureLibrary (bjoPath: string) : string =
     // path through it, and a cycle terminates here rather than recurring —
     // an illegal one is `Build.checkNotCyclic`'s to report, and it says so in
     // terms of the import chain rather than as a stack overflow.
-    if not (walking.Add bjoPath) then
+    if memoStandardLibrary.Value && currentStandardLibrary.Contains bjoPath then
+        dllPath
+    elif not (walking.Add bjoPath) then
         dllPath
     else
 
@@ -2214,10 +2239,16 @@ let rec ensureLibrary (bjoPath: string) : string =
         // `resolveDependency` builds each import that is out of date before
         // its timestamp is compared, so a change anywhere below this module
         // reaches it.
-        if upToDateAgainst (resolveDependency bjoPath) bjoPath then
-            dllPath
-        else
-            compileLibrary bjoPath
+        let built =
+            if upToDateAgainst (resolveDependency bjoPath) bjoPath then
+                dllPath
+            else
+                compileLibrary bjoPath
+
+        if memoStandardLibrary.Value && isStandardLibrary bjoPath then
+            currentStandardLibrary.Add bjoPath |> ignore
+
+        built
     finally
         // Only the walk that started it forgets, so that everything one build
         // decided stays decided for the whole of it — including for the
@@ -3468,7 +3499,6 @@ let loadModuleGraph
             |> Seq.filter (fun dll -> not (Set.contains (Path.GetFullPath dll) loaded))
             |> Seq.distinctBy Path.GetFullPath
             |> List.ofSeq
-            |> List.map (fun dll -> dll, snd (metadataOf dll))
 
         let groupOf (dll: string) (texts: string list) =
             let moduleKey = Naming.moduleKeyOfPath dll
@@ -3488,8 +3518,26 @@ let loadModuleGraph
             | [] -> None
             | first :: _ -> Some(DModule(moduleKey, decls, declRange first))
 
-        (linked |> List.choose (fun (dll, meta) -> groupOf dll meta.TraitDecls))
-        @ (linked |> List.choose (fun (dll, meta) -> groupOf dll meta.ImplDecls))
+        let groupsOf (dll: string) =
+            let read () =
+                let meta = snd (metadataOf dll)
+                groupOf dll meta.TraitDecls, groupOf dll meta.ImplDecls
+
+            if cacheLoadedModules.Value then
+                let key = Path.GetFullPath dll, File.GetLastWriteTimeUtc(dll).Ticks
+
+                match linkedCache.TryGetValue key with
+                | true, hit -> hit
+                | _ ->
+                    let groups = read ()
+                    linkedCache[key] <- groups
+                    groups
+            else
+                read ()
+
+        let groups = linked |> List.map groupsOf
+
+        (groups |> List.choose fst) @ (groups |> List.choose snd)
 
     let allDecls =
         let groups =

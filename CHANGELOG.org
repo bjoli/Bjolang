@@ -3,6 +3,23 @@
 
 What each change guarantees, and what it leaves open.
 
+* REPL entries compile faster
+
+- A steady entry with only the prelude imported costs about 32 ms, from
+  about 43. The module-graph phase of an entry fell from about 17.6 ms to
+  3.7 ms.
+- *The linked modules are read once.* An entry read the metadata of the 9
+  modules the prelude links, and parsed their trait and impl declarations,
+  every time. They are now kept per path and timestamp, like the modules an
+  entry imports (~Pipeline.cacheLoadedModules~).
+- *The standard library is walked once.* Each entry checked whether the
+  prelude and every module it imports needed a rebuild. A standard-library
+  module found current now stays current for the session
+  (~Pipeline.memoStandardLibrary~). A module outside the standard library is
+  checked as before, so editing one during a session still reloads it.
+- Builds are not changed: both are off outside the REPL.
+- See "Speed" in ~Docs/Repl.org~.
+
 * The file functions return a ~Result~
 
 *Breaking.* The prelude's file and directory functions that read, write or

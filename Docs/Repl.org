@@ -508,7 +508,7 @@ one, and a session spends long in it: 81 entries took 2.8 s with it and 2.0 s
 without, and a warm entry 18-27 ms and 14. In the long run both reach the
 same code.
 
-Three things make that possible, all switched on by ~Repl.run~ and off elsewhere:
+Five things make that possible, all switched on by ~Repl.run~ and off elsewhere:
 
 - ~CSharpEmit.preferInProcess~. Every entry is one Roslyn ~Emit~ in this
   process, against a reference set parsed once. The first emit is expensive and
@@ -533,8 +533,25 @@ Three things make that possible, all switched on by ~Repl.run~ and off elsewhere
   variables start from 0 in each entry. The type check of an entry is about 2
   ms with the prelude, and about 4 ms with bjostat.
 
-What is left of a warm entry with bjostat imported is mostly ~parse + module
-graph~, about 20 ms.
+- ~Pipeline.cacheLoadedModules~ also keeps the trait and impl declarations of
+  the modules an entry links and does not import, such as ~(std prelude core)~
+  behind the prelude. Each entry read their metadata and parsed those
+  declarations again: about 8 ms of an entry, for 9 modules.
+- ~Pipeline.memoStandardLibrary~. Resolving ~(std prelude)~ starts a
+  staleness walk over the prelude and everything it imports, and an entry
+  started several: about 5 ms. A standard-library module that a walk found
+  current stays current for the session. The session cannot load a rebuilt
+  one anyway, since the standard library is in the default load context.
+  Modules outside the standard library are walked as before, so a module
+  edited during the session is still rebuilt and the session reloaded.
+
+With those two, ~parse + module graph~ fell from about 17.6 ms to 3.7 ms of
+an entry, and a steady entry with only the prelude from about 43 ms to 32
+(measured over an 80-entry session of definitions and calls, against a
+40-entry one, so that the first entry's warm-up drops out). What is left is
+mostly the type check, about 7 ms, and Roslyn's emit, about 6 ms. Compiling
+an entry without optimisation saves nothing measurable in the emit, and makes
+the entry's code slower to run.
 
 ~BJOLANG_TIMING=1~ prints a per-phase breakdown at exit, with one line per
 entry-level phase and a count beside it.
