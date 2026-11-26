@@ -133,6 +133,15 @@
         ;; "grüße" in Latin-1, under a charset nothing knows.
         ((string-starts-with? path "/klingon")
          (respond-bytes! resp "text/plain; charset=x-klingon" #[103 114 252 223 101]))
+        ((string-starts-with? path "/set-cookie")
+         (match (try (let ()
+                       (reply-header! resp "Set-Cookie" "fruit=banana; Path=/")
+                       (respond! resp 200 "set"))
+                     #:catch (System.Exception))
+           ((Ok done) unit)
+           ((Err e) unit)))
+        ((string-starts-with? path "/cookie")
+         (respond! resp 200 (str "cookie=" (header-or-empty req "Cookie"))))
         ((string-starts-with? path "/echo")
          (respond! resp 200 (str verb " " (request-body req)
                                  " basket=" (header-or-empty req "X-Basket")
@@ -198,9 +207,9 @@
   (match (listen-on listener 8497 20)
     (None (fail "no free port to listen on") 1)
     ((Some port)
-     ;; Fourteen requests reach the server below. The fiber is detached: nothing
+     ;; Sixteen requests reach the server below. The fiber is detached: nothing
      ;; joins it, and `Discard`'s impl for a promise is what says so.
-     (ignore (bjo (serve listener 14)))
+     (ignore (bjo (serve listener 16)))
 
      (let ((base (str "http://127.0.0.1:" (int->string port))))
 
@@ -319,6 +328,19 @@
                   "grüße")
           (response-close r)))
 
+       ;; --- No cookie jar ----------------------------------------------------
+       ;;
+       ;; The client is shared by the whole process, so it must not send one
+       ;; caller's cookies with another caller's requests.
+       (match (fetch (http-get (str base "/set-cookie")))
+         ((Err e) (fail "the /set-cookie GET failed"))
+         ((Ok r) (response-close r)))
+       (match (fetch (http-get (str base "/cookie")))
+         ((Err e) (fail "the /cookie GET failed"))
+         ((Ok r)
+          (expect "a cookie a response set is not sent again" (response-text r) "cookie=")
+          (response-close r)))
+
        ;; --- with-response ---------------------------------------------------
        (with-response (r (fetch (http-get (str base "/hello"))))
          (match r
@@ -328,8 +350,8 @@
 
        ;; --- A url that is not http ------------------------------------------
        ;;
-       ;; Refused before anything is sent, which is why it does not count
-       ;; against the server's fourteen.
+       ;; Rejected before anything is sent, which is why it does not count
+       ;; against the server's sixteen.
        (match (fetch (http-get "ftp://example.com/fruit"))
          ((Ok r) (fail "an ftp url was accepted") (ignore r))
          ((Err e) (expect-true "a non-http url is refused as a value" #t)))

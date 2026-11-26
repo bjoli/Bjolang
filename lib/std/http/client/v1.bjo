@@ -1,0 +1,574 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/http/client/v1.bjo: an HTTP client built on (std http base).
+;;
+;; - A transport over System.Net.Http, as a `Handler`.
+;; - Functions that build requests and bodies, and send them.
+;; - Middleware: a base URL, default headers, authentication, retries and an
+;;   opt-in cookie jar.
+;; - Test doubles: a handler from a function, and a response from text.
+;;
+;; Import it through (std http client), which re-exports this version.
+
+(export
+  ;; The transport
+  make-transport current-handler
+
+  ;; Requests
+  request http-get http-post http-put http-patch http-delete http-head
+  text-body json-body form-body bytes-body
+
+  ;; Sending
+  fetching fetch with-response
+
+  ;; Reading
+  response-json
+
+  ;; Middleware
+  base-url default-headers bearer-auth basic-auth retrying
+  CookieJar make-cookie-jar cookies
+
+  ;; Test doubles
+  handler-of text-response)
+
+(import (std prelude))
+(import (std syntax-match))
+(import (std http base))
+(import (only (std ports) ClrStream))
+(import (only (text encodings) utf-8))
+(import (only (text json) Json read-json json->string))
+(import (only (std url) encode-query-part encode-form))
+
+(re-export (everything-from (std http base)))
+
+(:doc #:file "v1.bjodoc")
+
+;; ===========================================================================
+;; Interop
+;; ===========================================================================
+
+(import/class
+  (SocketsHandler  (: System.Net.Http.SocketsHttpHandler (-> SocketsHandler)))
+  (MessageHandler  (: System.Net.Http.HttpMessageHandler))
+  (Client          (: System.Net.Http.HttpClient (-> MessageHandler Client)))
+  (Verb            (: System.Net.Http.HttpMethod (-> string Verb)))
+  (Message         (: System.Net.Http.HttpRequestMessage (-> Verb Uri Message)))
+  (Reply           (: System.Net.Http.HttpResponseMessage))
+  (Content         (: System.Net.Http.HttpContent))
+  (StringContent   (: System.Net.Http.StringContent (-> string Encoding StringContent)))
+  (BytesContent    (: System.Net.Http.ByteArrayContent (-> (Array byte) BytesContent)))
+  (HeaderStore     (: System.Net.Http.Headers.HttpHeaders))
+  (RequestHeaders  (: System.Net.Http.Headers.HttpRequestHeaders))
+  (ReplyHeaders    (: System.Net.Http.Headers.HttpResponseHeaders))
+  (ContentHeaders  (: System.Net.Http.Headers.HttpContentHeaders))
+  (Completion      (: System.Net.Http.HttpCompletionOption))
+  (StatusCode      (: System.Net.HttpStatusCode))
+  (Decompression   (: System.Net.DecompressionMethods))
+  (Span            (: System.TimeSpan))
+  (Uri             (: System.Uri (-> string Uri) #:exceptions (System.UriFormatException)))
+  (WebProxy        (: System.Net.WebProxy (-> string WebProxy)))
+  (ProxySettings   (: System.Net.IWebProxy))
+  (Jar             (: System.Net.CookieContainer (-> Jar)))
+  (MemoryStream    (: System.IO.MemoryStream (-> (Array byte) MemoryStream)))
+  ((Pairing %k %v) (: System.Collections.Generic.KeyValuePair)))
+
+(import/extern
+  (headers-read   (: System.Net.Http.HttpCompletionOption.ResponseHeadersRead #:get))
+  (decompress-all (: System.Net.DecompressionMethods.All #:get))
+  (no-timeout     (: System.Threading.Timeout.InfiniteTimeSpan #:get))
+  (span-seconds   (: System.TimeSpan.FromSeconds (-> double Span)))
+  (span-ticks     (: System.TimeSpan.FromTicks (-> long Span)))
+  (base64         (: System.Convert.ToBase64String (-> (Array byte) string)))
+
+  (handler-lifetime!      (: System.Net.Http.SocketsHttpHandler.PooledConnectionLifetime
+                             (-> SocketsHandler Span void) #:set))
+  (handler-decompress!    (: System.Net.Http.SocketsHttpHandler.AutomaticDecompression
+                             (-> SocketsHandler Decompression void) #:set))
+  (handler-redirects!     (: System.Net.Http.SocketsHttpHandler.AllowAutoRedirect
+                             (-> SocketsHandler bool void) #:set))
+  (handler-max-redirects! (: System.Net.Http.SocketsHttpHandler.MaxAutomaticRedirections
+                             (-> SocketsHandler int void) #:set))
+  (handler-cookies!       (: System.Net.Http.SocketsHttpHandler.UseCookies
+                             (-> SocketsHandler bool void) #:set))
+  (handler-proxy!         (: System.Net.Http.SocketsHttpHandler.Proxy
+                             (-> SocketsHandler ProxySettings void) #:set))
+  (handler-use-proxy!     (: System.Net.Http.SocketsHttpHandler.UseProxy
+                             (-> SocketsHandler bool void) #:set))
+  (handler-connect-timeout! (: System.Net.Http.SocketsHttpHandler.ConnectTimeout
+                               (-> SocketsHandler Span void) #:set))
+  (client-timeout!        (: System.Net.Http.HttpClient.Timeout (-> Client Span void) #:set))
+
+  ;; Declared with two arguments after the receiver, so the overload that takes
+  ;; a CancellationToken is selected and gets the ambient token.
+  (send (: System.Net.Http.HttpClient.SendAsync (-> Client Message Completion Reply) #:async))
+
+  (url-scheme       (: System.Uri.Scheme (-> Uri string) #:get))
+  (uri-text         (: System.Uri.AbsoluteUri (-> Uri string) #:get))
+  (message-headers  (: System.Net.Http.HttpRequestMessage.Headers (-> Message RequestHeaders) #:get))
+  (message-content! (: System.Net.Http.HttpRequestMessage.Content (-> Message Content void) #:set))
+  (message-uri      (: System.Net.Http.HttpRequestMessage.RequestUri (-> Message Uri) #:get))
+  (content-headers  (: System.Net.Http.HttpContent.Headers (-> Content ContentHeaders) #:get))
+  (header-add!      (: System.Net.Http.Headers.HttpHeaders.TryAddWithoutValidation
+                       (-> HeaderStore string string bool)))
+  (header-remove!   (: System.Net.Http.Headers.HttpHeaders.Remove (-> HeaderStore string bool)))
+
+  (reply-status   (: System.Net.Http.HttpResponseMessage.StatusCode (-> Reply StatusCode) #:get))
+  (reply-reason   (: System.Net.Http.HttpResponseMessage.ReasonPhrase (-> Reply string) #:get))
+  (reply-headers  (: System.Net.Http.HttpResponseMessage.Headers (-> Reply ReplyHeaders) #:get))
+  (reply-content  (: System.Net.Http.HttpResponseMessage.Content (-> Reply Content) #:get))
+  (reply-request  (: System.Net.Http.HttpResponseMessage.RequestMessage (-> Reply Message) #:get))
+  (content-stream (: System.Net.Http.HttpContent.ReadAsStream (-> Content ClrStream)))
+
+  (jar-header     (: System.Net.CookieContainer.GetCookieHeader (-> Jar Uri string)))
+  (jar-store!     (: System.Net.CookieContainer.SetCookies (-> Jar Uri string void)
+                     #:exceptions (System.Net.CookieException))))
+
+;; ===========================================================================
+;; The transport
+;; ===========================================================================
+
+(: (-> Request (Result HttpError Uri)))
+(defun (target-of req)
+  (match (Uri. (record-ref req url))
+    ((Err e) (Err (InvalidRequest (str "not a url: " (record-ref req url)))))
+    ((Ok uri)
+     (def scheme (url-scheme uri))
+     (if (or (= scheme "http") (= scheme "https"))
+         (Ok uri)
+         (Err (InvalidRequest (str "not an http or https url: " (record-ref req url))))))))
+
+;; Sets `content` on `message`, with `content-type` as its Content-Type.
+(: (-> Message Content string (Option Content)))
+(defun (attach! message content content-type)
+  (message-content! message content)
+  (ignore (header-remove! (cast HeaderStore (content-headers content)) "Content-Type"))
+  (ignore (header-add! (cast HeaderStore (content-headers content)) "Content-Type" content-type))
+  (Some content))
+
+(: (-> Message Body (Option Content)))
+(defun (attach-body! message body)
+  (match body
+    (Empty None)
+    ((Text text content-type) (attach! message (cast Content (StringContent. text utf-8)) content-type))
+    ((Bytes bytes content-type)
+     (attach! message (cast Content (BytesContent. (bytestring->bytes bytes))) content-type))))
+
+;; .NET keeps headers about the body (Content-Type, Content-Length, ...) on the
+;; content, and rejects them on the request. A field the request rejects goes
+;; on the content.
+(: (-> Message (Option Content) Pair (Result HttpError Unit)))
+(defun (add-header! message content pair)
+  (match pair
+    ((Tuple name value)
+     (cond
+       ((header-add! (cast HeaderStore (message-headers message)) name value) (Ok unit))
+       (else
+        (match content
+          (None
+           (Err (InvalidRequest (str "'" name "' is a header about a body, and this request has none"))))
+          ((Some body)
+           (if (header-add! (cast HeaderStore (content-headers body)) name value)
+               (Ok unit)
+               (Err (InvalidRequest (str "not a usable header: " name)))))))))))
+
+(: (-> Request (Result HttpError Message)))
+(defun (message-of req)
+  (match (target-of req)
+    ((Err e) (Err e))
+    ((Ok uri)
+     (def message (Message. (Verb. (method-name (record-ref req method))) uri))
+     (def content (attach-body! message (record-ref req body)))
+     (loop (:for pair (headers->vec (record-ref req headers)))
+           (:acc outcome (folding (Ok message)
+                                  (match outcome
+                                    ((Err e) (Err e))
+                                    ((Ok m) (match (add-header! message content pair)
+                                              ((Err e) (Err e))
+                                              ((Ok added) (Ok m)))))))))))
+
+;; Adds every value of every field in `store` to `into`, one field per value.
+(: (-> (Seq (Pairing System.String (Seq System.String))) Headers Headers))
+(defun (collect-headers store into)
+  (loop (:for field store)
+        (:acc all (folding into
+                           (loop (:for value (.-Value field))
+                                 (:acc h (folding all
+                                                  (headers-add h
+                                                               (.-Key field)
+                                                               (clr-string->string value)))))))))
+
+(: (-> Reply Response))
+(defun (response-of raw)
+  (def content (reply-content raw))
+  (def fields
+    (collect-headers (cast (Seq (Pairing System.String (Seq System.String))) (content-headers content))
+                     (collect-headers (cast (Seq (Pairing System.String (Seq System.String)))
+                                            (reply-headers raw))
+                                      headers-empty)))
+  (make-response (cast int (reply-status raw))
+                 (content-stream content)
+                 #:reason (reply-reason raw)
+                 #:url (uri-text (message-uri (reply-request raw)))
+                 #:headers fields
+                 #:release (fun () (.Dispose raw))))
+
+;; Maps .NET's HttpRequestError to the error kinds of (std http base).
+(: (-> string string HttpError))
+(defun (request-error kind message)
+  (case kind
+    ("NameResolutionError" (NameResolution message))
+    (("ConnectionError" "ProxyTunnelError") (Connection message))
+    ("SecureConnectionError" (Tls message))
+    (("HttpProtocolError" "InvalidResponse" "ResponseEnded" "VersionNegotiationError"
+      "ExtendedConnectNotSupported" "ConfigurationLimitExceeded")
+     (Protocol message))
+    (else (Failed message))))
+
+(: (-> Exception HttpError))
+(defun (error-of e)
+  (match e
+    ((:is System.Net.Http.HttpRequestException h)
+     (request-error (.ToString (.-HttpRequestError h)) (.-Message h)))
+    ((:is System.OperationCanceledException c) (Cancelled (.-Message c)))
+    (_ (Failed (.-Message e)))))
+
+;; Returns a handler that sends requests over a connection pool of its own.
+;;
+;; - `#:connection-seconds`: how long a pooled connection is reused. A
+;;   connection that is never replaced keeps an address after DNS changes it.
+;; - `#:redirects`, `#:max-redirects`: whether and how far to follow redirects.
+;; - `#:proxy`: a proxy URL. None uses the system proxy.
+;; - `#:connect-timeout`: how long to wait for a connection.
+;;
+;; The handler keeps no cookies; see `cookies`. It sets no request timeout:
+;; use `with-deadline`, or race the event with `(timeout d)`.
+(: (-> (#:connection-seconds double) (#:redirects bool) (#:max-redirects int)
+       (#:proxy (Option string)) (#:connect-timeout (Option Duration))
+       Handler))
+(defun (make-transport #:connection-seconds 120.0
+                       #:redirects #t
+                       #:max-redirects 10
+                       #:proxy None
+                       #:connect-timeout None)
+  (def sockets (SocketsHandler.))
+  (handler-lifetime! sockets (span-seconds connection-seconds))
+  (handler-decompress! sockets decompress-all)
+  (handler-redirects! sockets redirects)
+  (when redirects
+    (handler-max-redirects! sockets max-redirects))
+  (handler-cookies! sockets #f)
+  (match proxy
+    (None unit)
+    ((Some address)
+     (handler-use-proxy! sockets #t)
+     (handler-proxy! sockets (cast ProxySettings (WebProxy. address)))))
+  (match connect-timeout
+    (None unit)
+    ((Some d) (handler-connect-timeout! sockets (span-ticks (duration-ticks d)))))
+  (def client (Client. (cast MessageHandler sockets)))
+  (client-timeout! client no-timeout)
+  (fun (req)
+    (guard (fun ()
+             (match (message-of req)
+               ((Err e) (always (Err e)))
+               ((Ok message)
+                (wrap (task->event (send client message headers-read))
+                      (fun (outcome)
+                        (match outcome
+                          ((Ok raw) (Ok (response-of raw)))
+                          ((Err e) (Err (error-of e))))))))))))
+
+;; The handler `fetch` and `fetching` use. Parameterize another one in for a
+;; test double, a proxy, or a stack of middleware.
+(: (Param Handler))
+(def current-handler (make-parameter (make-transport)))
+
+;; ===========================================================================
+;; Requests
+;; ===========================================================================
+
+;; Returns `url` with `query` added before any fragment.
+(: (-> string (Vec Pair) string))
+(defun (with-query url query)
+  (if (empty? query)
+      url
+      (let ()
+        (def (Tuple before after)
+          (match (string-split-once url "#")
+            ((Some (Tuple head fragment)) (Tuple head (str "#" fragment)))
+            (None (Tuple url ""))))
+        (def encoded
+          (string-join (vec-map (fun (pair)
+                                  (match pair
+                                    ((Tuple name value)
+                                     (str (encode-query-part name) "=" (encode-query-part value)))))
+                                query)
+                       "&"))
+        (str before (if (string-contains? before "?") "&" "?") encoded after))))
+
+(: (-> (Vec Pair) Headers))
+(defun (pairs->headers pairs)
+  (headers pairs))
+
+(: (-> Method string (#:query (Vec Pair)) (#:headers (Vec Pair)) (#:body Body) Request))
+(defun (request method url #:query (vec-empty) #:headers (vec-empty) #:body Empty)
+  (make-request method (with-query url query) #:headers (pairs->headers headers) #:body body))
+
+(: (-> string (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
+(defun (http-get url #:query (vec-empty) #:headers (vec-empty))
+  (request GET url #:query query #:headers headers))
+
+(: (-> string (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
+(defun (http-head url #:query (vec-empty) #:headers (vec-empty))
+  (request HEAD url #:query query #:headers headers))
+
+(: (-> string (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
+(defun (http-delete url #:query (vec-empty) #:headers (vec-empty))
+  (request DELETE url #:query query #:headers headers))
+
+(: (-> string Body (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
+(defun (http-post url body #:query (vec-empty) #:headers (vec-empty))
+  (request POST url #:query query #:headers headers #:body body))
+
+(: (-> string Body (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
+(defun (http-put url body #:query (vec-empty) #:headers (vec-empty))
+  (request PUT url #:query query #:headers headers #:body body))
+
+(: (-> string Body (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
+(defun (http-patch url body #:query (vec-empty) #:headers (vec-empty))
+  (request PATCH url #:query query #:headers headers #:body body))
+
+(: (-> string (#:content-type string) Body))
+(defun (text-body text #:content-type "text/plain; charset=utf-8")
+  (Text text content-type))
+
+(: (-> Json Body))
+(defun (json-body j)
+  (Text (json->string j) "application/json; charset=utf-8"))
+
+;; Returns the fields as application/x-www-form-urlencoded.
+(: (-> (Vec Pair) Body))
+(defun (form-body fields)
+  (Text (string-join (vec-map (fun (pair)
+                                (match pair
+                                  ((Tuple name value) (str (encode-form name) "=" (encode-form value)))))
+                              fields)
+                     "&")
+        "application/x-www-form-urlencoded"))
+
+(: (-> ByteString (#:content-type string) Body))
+(defun (bytes-body bytes #:content-type "application/octet-stream")
+  (Bytes bytes content-type))
+
+;; ===========================================================================
+;; Sending
+;; ===========================================================================
+
+;; Returns an event that sends `req` through the current handler when it is
+;; synced.
+(: (-> Request (Event (Result HttpError Response))))
+(defun (fetching req)
+  ((parameter-ref current-handler) req))
+
+;; Sends `req` and waits for the response headers, blocking or suspending as
+;; the caller does.
+(: (-> Request (Result HttpError Response)))
+(defbjouble (fetch req)
+  (#:sync (sync/blocking (fetching req)))
+  (#:bjo (sync (fetching req))))
+
+;; `(with-response (r (fetch (http-get url))) body ...)` closes the response
+;; when the body ends, also when it raises.
+(def/macro (with-response form
+             inject
+             compare)
+  (syntax-match form
+    ((_ (name spec) first body ...)
+     #'(let ()
+         (def answer ,spec)
+         (try
+           (let ((,name answer))
+             ,first
+             ,@body)
+           #:finally (match answer
+                       ((Ok got) (response-close got))
+                       ((Err failed) unit)))))
+    (bad
+     (syntax-error
+      bad
+      "with-response names a response and takes a body: (with-response (r (fetch (http-get url))) body ...)"))))
+
+;; ===========================================================================
+;; Reading
+;; ===========================================================================
+
+;; Reads the body as JSON.
+(: (-> Response (Result string Json)))
+(defun (response-json r)
+  (read-json (response-port r)))
+
+;; ===========================================================================
+;; Middleware
+;; ===========================================================================
+
+;; Returns a request whose headers have `name` set to `value`, unless the
+;; request already has a field of that name.
+(: (-> Request string string Request))
+(defun (with-default-header req name value)
+  (def h (record-ref req headers))
+  (if (headers-has? h name)
+      req
+      (record-set req (headers (headers-add h name value)))))
+
+;; Sends a relative URL under `prefix`. A URL that starts with http:// or
+;; https:// is sent as it is. `prefix` and the URL are joined with one "/".
+(: (-> string Middleware))
+(defun (base-url prefix)
+  (def trimmed (if (string-ends-with? prefix "/") (string-drop-right prefix 1) prefix))
+  (fun (inner)
+    (fun (req)
+      (def url (record-ref req url))
+      (inner (if (or (string-starts-with? url "http://") (string-starts-with? url "https://"))
+                 req
+                 (record-set req (url (str trimmed "/" (if (string-starts-with? url "/") (string-drop url 1) url)))))))))
+
+;; Adds each field to requests that do not have a field of that name.
+(: (-> (Vec Pair) Middleware))
+(defun (default-headers fields)
+  (fun (inner)
+    (fun (req)
+      (inner (loop (:for pair fields)
+                   (:acc r (folding req
+                                    (match pair
+                                      ((Tuple name value) (with-default-header r name value))))))))))
+
+;; Sends `Authorization: Bearer token`, unless a request has its own.
+(: (-> string Middleware))
+(defun (bearer-auth token)
+  (default-headers [(Tuple "Authorization" (str "Bearer " token))]))
+
+;; Sends HTTP Basic credentials, unless a request has its own Authorization.
+(: (-> string string Middleware))
+(defun (basic-auth user password)
+  (default-headers [(Tuple "Authorization"
+                           (str "Basic " (base64 (string->bytes (str user ":" password)))))]))
+
+(: (-> HttpError bool))
+(defun (transient? e)
+  (match e
+    ((Connection _) #t)
+    ((Protocol _) #t)
+    ((NameResolution _) #t)
+    (_ #f)))
+
+(: (-> Method bool))
+(defun (idempotent? m)
+  (match m
+    (POST #f)
+    (PATCH #f)
+    (_ #t)))
+
+(: (-bjo-> Handler Request int Duration (-> int bool) (Result HttpError Response)))
+(defbjo (retry-loop inner req attempts wait retry-status?)
+  (defun (again)
+    (sync (timeout wait))
+    (retry-loop inner req (- attempts 1) (ticks->duration (* 2L (duration-ticks wait))) retry-status?))
+  (match (sync (inner req))
+    ((Ok r)
+     (if (and (> attempts 1) (retry-status? (response-status r)))
+         (let ()
+           (response-close r)
+           (again))
+         (Ok r)))
+    ((Err e)
+     (if (and (> attempts 1) (transient? e))
+         (again)
+         (Err e)))))
+
+;; Sends a request again when it fails to connect or its status matches
+;; `#:retry-status?`, up to `#:attempts` times in all.
+;;
+;; - The wait starts at `#:delay` and doubles after each attempt.
+;; - Only GET, HEAD, PUT, DELETE, OPTIONS and custom methods are retried,
+;;   because a POST or PATCH may have had its effect. `#:all-methods #t`
+;;   retries those too.
+;; - A response that is retried is closed.
+(: (-> (#:attempts int) (#:delay Duration) (#:retry-status? (-> int bool)) (#:all-methods bool)
+       Middleware))
+(defun (retrying #:attempts 3
+                 #:delay (milliseconds 200)
+                 #:retry-status? (fun (status) (or (= status 429) (>= status 500)))
+                 #:all-methods #f)
+  (fun (inner)
+    (fun (req)
+      (if (or all-methods (idempotent? (record-ref req method)))
+          (wrap (spawn-evt (retry-loop inner req attempts delay retry-status?))
+                (fun (outcome)
+                  (match outcome
+                    ((Ok result) result)
+                    ((Err e) (Err (Failed (.-Message e)))))))
+          (inner req)))))
+
+;; Cookies received through `cookies`, by the rules of RFC 6265.
+(type (: CookieJar #:opaque (Record (: jar Jar))))
+
+(: (-> CookieJar))
+(defun (make-cookie-jar)
+  (CookieJar (jar (Jar.))))
+
+;; Sends the jar's cookies for each request's URL and stores the cookies each
+;; response sets.
+;;
+;; The transport follows redirects itself, so a cookie set by a redirect
+;; response is not stored. Use `(make-transport #:redirects #f)` when that
+;; matters.
+(: (-> CookieJar Middleware))
+(defun (cookies jar)
+  (def store (record-ref jar jar))
+  (fun (inner)
+    (fun (req)
+      (match (Uri. (record-ref req url))
+        ((Err e) (inner req))
+        ((Ok uri)
+         (def header (jar-header store uri))
+         (def sent (if (= header "") req (with-default-header req "Cookie" header)))
+         (wrap (inner sent)
+               (fun (outcome)
+                 (match outcome
+                   ((Ok r)
+                    (def from (match (Uri. (if (= (response-url r) "") (record-ref req url) (response-url r)))
+                                ((Ok u) u)
+                                ((Err e) uri)))
+                    (loop (:for value (response-header-all r "Set-Cookie"))
+                          (:do (ignore (jar-store! store from value))))
+                    (Ok r))
+                   ((Err e) (Err e))))))))))
+
+;; ===========================================================================
+;; Test doubles
+;; ===========================================================================
+
+;; Returns a handler that calls `respond` when the event is synced.
+(: (-> (-> Request (Result HttpError Response)) Handler))
+(defun (handler-of respond)
+  (fun (req)
+    (guard (fun () (always (respond req))))))
+
+;; Returns a response with `text` as its UTF-8 body.
+(: (-> int string (#:headers (Vec Pair)) (#:content-type string) Response))
+(defun (text-response status text
+                      #:headers (vec-empty)
+                      #:content-type "text/plain; charset=utf-8")
+  (make-response status
+                 (cast ClrStream (MemoryStream. (string->bytes text)))
+                 #:headers (headers-set (pairs->headers headers) "Content-Type" content-type)))

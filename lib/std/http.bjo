@@ -97,6 +97,8 @@
                           (-> SocketsHandler Decompression void) #:set))
   (handler-redirects!  (: System.Net.Http.SocketsHttpHandler.AllowAutoRedirect
                           (-> SocketsHandler bool void) #:set))
+  (handler-cookies!    (: System.Net.Http.SocketsHttpHandler.UseCookies
+                          (-> SocketsHandler bool void) #:set))
   (client-timeout!     (: System.Net.Http.HttpClient.Timeout (-> Client Span void) #:set))
 
   ;; The call. Declared with two arguments after the receiver, so the overload
@@ -150,6 +152,9 @@
   (handler-lifetime! handler (span-seconds connection-seconds))
   (handler-decompress! handler decompress-all)
   (handler-redirects! handler redirects)
+  ;; Off: the client is shared by the whole process, so a cookie jar in it
+  ;; would send one caller's cookies with every other caller's requests.
+  (handler-cookies! handler #f)
   (def client (Client. (cast MessageHandler handler)))
   ;; Off, on purpose. It applies to every call made through the client,
   ;; cannot be varied per request, and arrives as a cancellation that

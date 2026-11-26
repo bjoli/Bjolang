@@ -1,0 +1,263 @@
+;; Docs for std/http/base.bjo, read through (:doc #:file "base.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "The HTTP types every client layer shares: requests, responses, headers, errors, handlers and middleware.")
+  (see Handler Middleware layered Request Response)
+  (example """
+    ;; A middleware that adds a header to every request.
+    (import (std http base))
+
+    (: (-> string Middleware))
+    (defun (user-agent name)
+      (fun (inner)
+        (fun (req)
+          (inner (record-set req (headers (headers-set (record-ref req headers)
+                                                       "User-Agent" name)))))))
+    """)
+  (reference """
+    Nothing in this module sends a request. It holds the types that a
+    transport, a test double and a middleware agree on, so that they
+    combine. @code{(std http client)} has the transport and the
+    functions that build and send requests; it re-exports this module.
+
+    A @code{Handler} is a function from a @code{Request} to an event of a
+    @code{(Result HttpError Response)}. Syncing the event sends the request,
+    and a branch that loses a @code{choose} cancels it. A @code{Middleware}
+    is a function from a handler to a handler.
+
+    A status code is a value: a 404 is an @code{Ok} that holds a 404. An
+    @code{HttpError} means that no response came.
+    """))
+
+(:doc Method
+  (summary "An HTTP method. @code{Custom} holds any other method name.")
+  (see method-name make-request))
+
+(:doc method-name
+  (summary "Returns the method as it is sent.")
+  (arg m "The method.")
+  (returns "The method name, such as @code{\"GET\"}."))
+
+(:doc Pair
+  (summary "A header field or a query parameter: a name and a value."))
+
+(:doc Headers
+  (summary "Header fields in the order they were added.")
+  (see headers headers-add headers-set headers-ref headers-ref-all)
+  (reference """
+    A name can occur more than once, and names compare without regard to
+    ASCII case. A value is immutable: the functions return new headers.
+    """))
+
+(:doc headers-empty
+  (summary "Headers with no fields."))
+
+(:doc headers
+  (summary "Returns headers that hold the given fields, in order.")
+  (arg pairs "The fields.")
+  (returns "The headers."))
+
+(:doc headers-add
+  (summary "Adds a field at the end. Fields of the same name stay.")
+  (arg h "The headers.")
+  (arg name "The field name.")
+  (arg value "The field value.")
+  (returns "The new headers."))
+
+(:doc headers-set
+  (summary "Replaces every field of a name with one field.")
+  (arg h "The headers.")
+  (arg name "The field name.")
+  (arg value "The field value.")
+  (returns "The new headers, with the field at the end."))
+
+(:doc headers-remove
+  (summary "Removes every field of a name.")
+  (arg h "The headers.")
+  (arg name "The field name.")
+  (returns "The new headers."))
+
+(:doc headers-ref
+  (summary "Returns the first value of a field.")
+  (arg h "The headers.")
+  (arg name "The field name, in any case.")
+  (returns "@code{(Some value)}, or @code{None} when there is no such field."))
+
+(:doc headers-ref-all
+  (summary "Returns every value of a field, in order.")
+  (arg h "The headers.")
+  (arg name "The field name, in any case.")
+  (returns "The values. Empty when there is no such field."))
+
+(:doc headers-has?
+  (summary "Checks whether there is a field of a name.")
+  (arg h "The headers.")
+  (arg name "The field name, in any case.")
+  (returns "@code{#t} when there is at least one."))
+
+(:doc headers->vec
+  (summary "Returns the fields as pairs, in order.")
+  (arg h "The headers.")
+  (returns "The fields."))
+
+(:doc Body
+  (summary "What a request sends after its headers.")
+  (case Empty "No body.")
+  (case Text "Text, sent as UTF-8, and its Content-Type.")
+  (case Bytes "Bytes and their Content-Type.")
+  (see make-request))
+
+(:doc Request
+  (summary "A request, not yet sent.")
+  (field method "The HTTP method.")
+  (field url "An absolute http or https URL, with any query already in it.")
+  (field headers "The header fields.")
+  (field body "The body, or @code{Empty}.")
+  (see make-request Handler)
+  (reference """
+    A transparent record: a middleware changes a request with
+    @code{record-set}.
+    """))
+
+(:doc make-request
+  (summary "Builds a request.")
+  (arg method "The method.")
+  (arg url "The URL.")
+  (key #:headers "The header fields.")
+  (key #:body "The body.")
+  (returns "The request."))
+
+(:doc Response
+  (summary "A response whose headers have arrived. The body is not read yet.")
+  (see make-response response-status response-text response-close)
+  (reference """
+    A response holds a connection, or whatever its handler holds, until
+    @code{response-close}. @code{ignore} closes it too, and dropping a
+    response without either is a compile error.
+    """))
+
+(:doc make-response
+  (summary "Builds a response. A transport calls this, and so does a test double.")
+  (arg status "The status code.")
+  (arg stream "The body. It is read once.")
+  (key #:reason "The reason phrase.")
+  (key #:url "The URL the response came from.")
+  (key #:headers "The header fields.")
+  (key #:release "Called by @code{response-close}, to free what the response holds.")
+  (returns "The response."))
+
+(:doc response-status
+  (summary "Returns the status code.")
+  (arg r "The response.")
+  (returns "The status code, such as 200 or 404."))
+
+(:doc response-ok?
+  (summary "Checks whether the status is 2xx.")
+  (arg r "The response.")
+  (returns "@code{#t} for a status from 200 to 299."))
+
+(:doc response-reason
+  (summary "Returns the reason phrase.")
+  (arg r "The response.")
+  (returns "The reason phrase. Empty over HTTP/2 and later."))
+
+(:doc response-url
+  (summary "Returns the URL the response came from, after any redirects.")
+  (arg r "The response.")
+  (returns "The URL. Empty when the handler did not set one."))
+
+(:doc response-headers
+  (summary "Returns the header fields, the body's fields included.")
+  (arg r "The response.")
+  (returns "The headers. Repeated fields stay apart."))
+
+(:doc response-header
+  (summary "Returns the first value of a header field.")
+  (arg r "The response.")
+  (arg name "The field name, in any case.")
+  (returns "@code{(Some value)}, or @code{None}."))
+
+(:doc response-header-all
+  (summary "Returns every value of a header field, such as each Set-Cookie.")
+  (arg r "The response.")
+  (arg name "The field name, in any case.")
+  (returns "The values, in order."))
+
+(:doc response-port
+  (summary "Returns the body as a text port.")
+  (arg r "The response.")
+  (returns "A port that decodes the body by the charset the response declares, or UTF-8.")
+  (raises System.Net.Http.HttpRequestException "When the declared charset is not one that @code{(text encodings)} knows.")
+  (reference """
+    Call it once. A second port would read the same stream as the first.
+    """))
+
+(:doc response-bytes-port
+  (summary "Returns the body as a byte port.")
+  (arg r "The response.")
+  (returns "A port for @code{read-some} and the other byte readers of @code{(std ports)}.")
+  (reference """
+    Call it once. A second port would read the same stream as the first.
+    """))
+
+(:doc response-text
+  (summary "Reads the whole body as text.")
+  (arg r "The response.")
+  (returns "The body, decoded by the charset the response declares, or UTF-8.")
+  (raises System.Net.Http.HttpRequestException "When the declared charset is not one that @code{(text encodings)} knows."))
+
+(:doc response-bytes
+  (summary "Reads the whole body as bytes.")
+  (arg r "The response.")
+  (returns "The body."))
+
+(:doc response-close
+  (summary "Frees what the response holds, such as its connection.")
+  (arg r "The response."))
+
+(:doc HttpError
+  (summary "Why a request got no response. A status such as 404 is not an error.")
+  (case InvalidRequest "The request could not be sent: a bad URL or header.")
+  (case NameResolution "The host name did not resolve.")
+  (case Connection "No connection could be made, or it failed.")
+  (case Tls "The TLS handshake failed.")
+  (case Protocol "The server did not speak HTTP correctly.")
+  (case Cancelled "The request was cancelled, for example by @code{with-deadline}.")
+  (case Failed "Any other failure.")
+  (see http-error-message))
+
+(:doc http-error-message
+  (summary "Returns a message for an error.")
+  (arg e "The error.")
+  (returns "A message that starts with the kind of error."))
+
+(:doc Handler
+  (summary "A function from a request to an event of a response.")
+  (see Middleware layered)
+  (reference """
+    Syncing the event sends the request. A branch that loses a
+    @code{choose} cancels it. A transport is a handler, and so is a test
+    double that never touches the network.
+    """))
+
+(:doc Middleware
+  (summary "A function from a handler to a handler.")
+  (see layered Handler)
+  (reference """
+    A middleware can change the request before it calls the inner handler,
+    and change the event the inner handler returns, for example with
+    @code{wrap}.
+    """))
+
+(:doc layered
+  (summary "Wraps a handler in middleware.")
+  (arg handler "The innermost handler, such as a transport.")
+  (rest middlewares "The middleware. The first is the outermost.")
+  (returns "The wrapped handler.")
+  (example """
+    (layered (make-transport) (base-url "https://api.example.com") (bearer-auth token))
+    """)
+  (reference """
+    The first middleware sees each request first and each response last.
+    """))

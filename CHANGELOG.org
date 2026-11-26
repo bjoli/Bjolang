@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std http base)~ and ~(std http client)~
+
+- *~(std http base)~ holds the HTTP types and does no I/O*: ~Request~,
+  ~Response~, ~Headers~ (ordered, repeated fields kept apart, names compared
+  without case), ~Body~, ~HttpError~, ~Handler~ and ~Middleware~. A
+  ~Handler~ is a function from a request to an event of a
+  ~(Result HttpError Response)~, and ~layered~ wraps one in middleware.
+- *~(std http client v1)~ is a client on it*: ~make-transport~ over
+  System.Net.Http, ~fetch~ and ~fetching~ through ~current-handler~, request
+  and body builders (~json-body~, ~form-body~, ~bytes-body~), ~response-json~,
+  middleware (~base-url~, ~default-headers~, ~bearer-auth~, ~basic-auth~,
+  ~retrying~, ~cookies~) and test doubles (~handler-of~, ~text-response~).
+- *~(std http client)~ re-exports ~v1~.* A later major release can point it
+  at a newer version; ~(std http client v1)~ keeps this one.
+- An error has a kind: ~InvalidRequest~, ~NameResolution~, ~Connection~,
+  ~Tls~, ~Protocol~, ~Cancelled~ or ~Failed~. A status is still a value.
+- *Neither client keeps cookies by itself.* The old ~(std http)~ client is
+  shared by the whole process and sent one caller's cookies with every later
+  request; its ~UseCookies~ is now off. Its API is otherwise unchanged.
+- Open: request bodies are text or bytes in memory; there is no streaming
+  upload, multipart or file body. The transport follows redirects itself, so
+  the ~cookies~ middleware does not see cookies set by a redirect response.
+  There are no TLS options.
+
 * ~(re-export (everything-from m))~
 
 - *~(everything-from m)~ in a ~re-export~ stands for every name the imports of

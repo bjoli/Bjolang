@@ -1,0 +1,282 @@
+;; Docs for std/http/client/v1.bjo, read through (:doc #:file "v1.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "An HTTP client: a transport, request builders, middleware and test doubles, on (std http base).")
+  (see fetch fetching make-transport layered current-handler)
+  (example """
+    (import (std http client))
+
+    (defun (main args)
+      (match (fetch (http-get "https://example.com/fruit" #:query [(Tuple "q" "banana")]))
+        ((Err e) (println (http-error-message e)) 1)
+        ((Ok r)
+         (println (response-status r))
+         (println (response-text r))
+         (response-close r)
+         0)))
+    """)
+  (example """
+    ;; A client for one API: a base URL, a token, and retries.
+    (def api
+      (layered (make-transport)
+               (base-url "https://api.example.com/v1")
+               (bearer-auth token)
+               (retrying #:attempts 4)))
+
+    (parameterize ((current-handler api))
+      (fetch (http-get "/users")))
+    """)
+  (example """
+    ;; A test double: no network.
+    (def fake
+      (handler-of (fun (req) (Ok (text-response 200 "{\"ok\": true}"
+                                                #:content-type "application/json")))))
+    """)
+  (reference """
+    Import this module as @code{(std http client)}, which re-exports the
+    current version. Import @code{(std http client v1)} to keep this
+    version when a later one becomes the default. Everything in
+    @code{(std http base)} is re-exported too.
+
+    @code{fetch} and @code{fetching} send through @code{current-handler}.
+    The default is a transport from @code{make-transport}; parameterize
+    another handler in for middleware or a test double. A handler can also
+    be called directly: @code{(sync (api req))}.
+
+    @strong{What to watch out for.}
+
+    @itemlist{
+    @item{@strong{Close the response.} It holds a connection until
+    @code{response-close}, @code{ignore} or @code{with-response}.}
+    @item{@strong{A status is not an error.} Check @code{response-ok?}.}
+    @item{@strong{Timeouts are yours.} The transport has no request
+    timeout. Use @code{with-deadline}, or race @code{fetching} against
+    @code{(timeout d)}.}
+    @item{@strong{No cookies by default.} Add @code{(cookies jar)} to keep
+    them.}
+    @item{@strong{A branch that loses after the headers arrived leaks that
+    response.} Losing cancels the request, so the window is small.}
+    }
+    """))
+
+(:doc make-transport
+  (summary "Returns a handler that sends requests over a connection pool of its own.")
+  (key #:connection-seconds "How long a pooled connection is reused before it is replaced.")
+  (key #:redirects "Whether redirects are followed.")
+  (key #:max-redirects "How many redirects are followed.")
+  (key #:proxy "A proxy URL. @code{None} uses the system proxy.")
+  (key #:connect-timeout "How long to wait for a connection. @code{None} waits as long as the system does.")
+  (returns "The handler. Responses are decompressed.")
+  (see current-handler layered)
+  (reference """
+    A pooled connection is replaced after @code{#:connection-seconds}, so
+    that a DNS change is seen.
+
+    The transport keeps no cookies. It has no request timeout, because a
+    deadline belongs to the event system: use @code{with-deadline}, or race
+    the event with @code{(timeout d)}.
+    """))
+
+(:doc current-handler
+  (summary "The handler that @code{fetch} and @code{fetching} send through.")
+  (see make-transport layered handler-of))
+
+(:doc request
+  (summary "Builds a request with any method.")
+  (arg method "The method.")
+  (arg url "An absolute http or https URL.")
+  (key #:query "Query parameters, percent-encoded and added before any fragment.")
+  (key #:headers "Header fields, for the request or its body.")
+  (key #:body "The body.")
+  (returns "The request.")
+  (see http-get http-post text-body json-body form-body bytes-body))
+
+(:doc http-get
+  (summary "Builds a GET request.")
+  (arg url "The URL.")
+  (key #:query "Query parameters.")
+  (key #:headers "Header fields.")
+  (returns "The request."))
+
+(:doc http-head
+  (summary "Builds a HEAD request.")
+  (arg url "The URL.")
+  (key #:query "Query parameters.")
+  (key #:headers "Header fields.")
+  (returns "The request."))
+
+(:doc http-delete
+  (summary "Builds a DELETE request.")
+  (arg url "The URL.")
+  (key #:query "Query parameters.")
+  (key #:headers "Header fields.")
+  (returns "The request."))
+
+(:doc http-post
+  (summary "Builds a POST request.")
+  (arg url "The URL.")
+  (arg body "The body.")
+  (key #:query "Query parameters.")
+  (key #:headers "Header fields.")
+  (returns "The request."))
+
+(:doc http-put
+  (summary "Builds a PUT request.")
+  (arg url "The URL.")
+  (arg body "The body.")
+  (key #:query "Query parameters.")
+  (key #:headers "Header fields.")
+  (returns "The request."))
+
+(:doc http-patch
+  (summary "Builds a PATCH request.")
+  (arg url "The URL.")
+  (arg body "The body.")
+  (key #:query "Query parameters.")
+  (key #:headers "Header fields.")
+  (returns "The request."))
+
+(:doc text-body
+  (summary "Returns a text body, sent as UTF-8.")
+  (arg text "The text.")
+  (key #:content-type "The Content-Type.")
+  (returns "The body."))
+
+(:doc json-body
+  (summary "Returns a JSON body.")
+  (arg j "The JSON value.")
+  (returns "The body, as @code{application/json; charset=utf-8}."))
+
+(:doc form-body
+  (summary "Returns a form body.")
+  (arg fields "The fields.")
+  (returns "The body, as @code{application/x-www-form-urlencoded}."))
+
+(:doc bytes-body
+  (summary "Returns a body of bytes.")
+  (arg bytes "The bytes.")
+  (key #:content-type "The Content-Type.")
+  (returns "The body."))
+
+(:doc fetching
+  (summary "Returns an event that sends a request through @code{current-handler}.")
+  (arg req "The request.")
+  (returns "An event of @code{(Ok response)} or @code{(Err error)}.")
+  (see fetch current-handler)
+  (reference """
+    The request is sent when the event is synced. A branch that loses a
+    @code{choose} cancels it.
+    """))
+
+(:doc fetch
+  (summary "Sends a request and waits for the response headers.")
+  (arg req "The request.")
+  (returns "@code{(Ok response)} or @code{(Err error)}.")
+  (see fetching with-response)
+  (reference """
+    Blocks in a @code{defun} and suspends in a @code{defbjo}.
+    """))
+
+(:doc with-response
+  (summary "Binds a response for a body, and closes it when the body ends.")
+  (form (with-response (name form) body ...))
+  (arg name "Bound to the @code{(Result HttpError Response)}.")
+  (arg form "What produces it, such as @code{(fetch req)}.")
+  (rest body "The body.")
+  (example """
+    (with-response (r (fetch (http-get url)))
+      (match r
+        ((Ok got) (response-text got))
+        ((Err e) (http-error-message e))))
+    """)
+  (reference """
+    The response is closed also when the body raises.
+    """))
+
+(:doc response-json
+  (summary "Reads the body as JSON.")
+  (arg r "The response.")
+  (returns "@code{(Ok json)}, or @code{(Err message)} when the body is not JSON."))
+
+(:doc base-url
+  (summary "Returns a middleware that sends relative URLs under a prefix.")
+  (arg prefix "An absolute URL, such as @code{\"https://api.example.com/v1\"}.")
+  (returns "The middleware.")
+  (reference """
+    The prefix and the URL are joined with one @code{/}. A URL that starts
+    with @code{http://} or @code{https://} is sent as it is.
+    """))
+
+(:doc default-headers
+  (summary "Returns a middleware that adds fields to requests that do not have them.")
+  (arg fields "The fields.")
+  (returns "The middleware.")
+  (reference """
+    A request that has a field of the same name keeps its own.
+    """))
+
+(:doc bearer-auth
+  (summary "Returns a middleware that sends @code{Authorization: Bearer token}.")
+  (arg token "The token.")
+  (returns "The middleware. A request with its own Authorization keeps it."))
+
+(:doc basic-auth
+  (summary "Returns a middleware that sends HTTP Basic credentials.")
+  (arg user "The user name.")
+  (arg password "The password.")
+  (returns "The middleware. A request with its own Authorization keeps it."))
+
+(:doc retrying
+  (summary "Returns a middleware that sends a request again after a transient failure.")
+  (key #:attempts "How many times to send a request in all.")
+  (key #:delay "The wait before the second attempt. It doubles after each attempt.")
+  (key #:retry-status? "Which statuses to retry. The default retries 429 and 5xx.")
+  (key #:all-methods "Whether to retry POST and PATCH too.")
+  (returns "The middleware.")
+  (reference """
+    A request is sent again after a connection, name resolution or
+    protocol error, or a status that @code{#:retry-status?} accepts. A
+    response that is retried is closed.
+
+    POST and PATCH are not retried unless @code{#:all-methods} is
+    @code{#t}, because the first attempt may have had its effect.
+
+    The retries run in a fiber of their own, so a branch that loses a
+    @code{choose} stops them.
+    """))
+
+(:doc CookieJar
+  (summary "Cookies kept by the @code{cookies} middleware.")
+  (see make-cookie-jar cookies))
+
+(:doc make-cookie-jar
+  (summary "Returns an empty cookie jar.")
+  (returns "The jar."))
+
+(:doc cookies
+  (summary "Returns a middleware that keeps cookies in a jar.")
+  (arg jar "The jar.")
+  (returns "The middleware.")
+  (reference """
+    Each request gets the jar's cookies for its URL, by the rules of RFC
+    6265, unless it has a Cookie field of its own. Each Set-Cookie of a
+    response is stored.
+
+    The transport follows redirects itself, so a cookie that a redirect
+    response sets is not stored. Use @code{(make-transport #:redirects #f)}
+    when that matters.
+    """))
+
+(:doc handler-of
+  (summary "Returns a handler that calls a function, for tests.")
+  (arg respond "Called with each request when its event is synced.")
+  (returns "The handler."))
+
+(:doc text-response
+  (summary "Returns a response with a text body, for tests.")
+  (arg status "The status code.")
+  (arg text "The body, as UTF-8.")
+  (key #:headers "Header fields.")
+  (key #:content-type "The Content-Type.")
+  (returns "The response."))

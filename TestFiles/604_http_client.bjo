@@ -1,0 +1,275 @@
+;; `(std http client)` against a server on the loopback, and against test
+;; doubles that need no server.
+;;
+;; Covers: the transport, multi-valued headers, bodies, middleware (base URL,
+;; default headers, bearer auth, cookies, retries), error kinds, and that the
+;; transport keeps no cookies by itself.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std http client))
+(import (only (text json) Json json-object-ref))
+
+(import/class
+  (Listener       (: System.Net.HttpListener (-> Listener)))
+  (Prefixes       (: System.Net.HttpListenerPrefixCollection))
+  (Context        (: System.Net.HttpListenerContext))
+  (ServerRequest  (: System.Net.HttpListenerRequest))
+  (ServerResponse (: System.Net.HttpListenerResponse))
+  (NameValues     (: System.Collections.Specialized.NameValueCollection))
+  (Stream         (: System.IO.Stream))
+  (Writer         (: System.IO.StreamWriter (-> Stream Writer)))
+  (StreamPort     (: Bjolang.Runtime.BjoInputPort (-> Stream StreamPort))))
+
+(import/extern
+  (listener-prefixes (: System.Net.HttpListener.Prefixes (-> Listener Prefixes) #:get))
+  (prefix-add!       (: System.Net.HttpListenerPrefixCollection.Add (-> Prefixes string void)))
+  (prefix-clear!     (: System.Net.HttpListenerPrefixCollection.Clear (-> Prefixes void)))
+  (listener-start    (: System.Net.HttpListener.Start (-> Listener void)
+                        #:exceptions (System.Net.HttpListenerException)))
+  (listener-close    (: System.Net.HttpListener.Close (-> Listener void)))
+  (next-context      (: System.Net.HttpListener.GetContextAsync (-> Listener Context)
+                        #:async #:uncancellable))
+  (context-request   (: System.Net.HttpListenerContext.Request (-> Context ServerRequest) #:get))
+  (context-response  (: System.Net.HttpListenerContext.Response (-> Context ServerResponse) #:get))
+  (request-path      (: System.Net.HttpListenerRequest.RawUrl (-> ServerRequest string) #:get))
+  (request-verb      (: System.Net.HttpListenerRequest.HttpMethod (-> ServerRequest string) #:get))
+  (request-stream    (: System.Net.HttpListenerRequest.InputStream (-> ServerRequest Stream) #:get))
+  (request-headers   (: System.Net.HttpListenerRequest.Headers (-> ServerRequest NameValues) #:get))
+  (name-value        (: System.Collections.Specialized.NameValueCollection.Get
+                        (-> NameValues string string)))
+  (reply-status!     (: System.Net.HttpListenerResponse.StatusCode (-> ServerResponse int void) #:set))
+  (reply-header!     (: System.Net.HttpListenerResponse.AddHeader (-> ServerResponse string string void)))
+  (reply-append!     (: System.Net.HttpListenerResponse.AppendHeader (-> ServerResponse string string void)))
+  (reply-stream      (: System.Net.HttpListenerResponse.OutputStream (-> ServerResponse Stream) #:get))
+  (reply-done!       (: System.Net.HttpListenerResponse.Close (-> ServerResponse void))))
+
+;; ---------------------------------------------------------------------------
+;; The server
+;; ---------------------------------------------------------------------------
+
+(: (-> ServerRequest string string))
+(defun (header-or-empty req name)
+  (name-value (request-headers req) name))
+
+(: (-> ServerRequest string))
+(defun (request-body req)
+  (read-all (cast InputPort (StreamPort. (request-stream req)))))
+
+;; Writes a response. Extra headers are appended, so a name can repeat.
+(: (-> ServerResponse int (Vec (Tuple string string)) string void))
+(defun (respond! resp code extra body)
+  (match (try (let ()
+                (reply-status! resp code)
+                (reply-header! resp "Content-Type" "text/plain; charset=utf-8")
+                (loop (:for (Tuple name value) extra)
+                      (:do (reply-append! resp name value)))
+                (let ((out (Writer. (reply-stream resp))))
+                  (.Write out body)
+                  (.Flush out)
+                  (.Dispose out))
+                (reply-done! resp))
+              #:catch (System.Exception))
+    ((Ok written) unit)
+    ((Err e) unit)))
+
+;; How many requests /flaky has failed so far.
+(def flaky-count (make-box 0))
+
+(: (-bjo-> Listener void))
+(defbjo (serve listener)
+  (match (try (next-context listener) #:catch (System.Exception))
+    ((Err e) unit)
+    ((Ok ctx)
+     (let* ((req (context-request ctx))
+            (resp (context-response ctx))
+            (path (request-path req))
+            (verb (request-verb req)))
+       (cond
+         ((string-starts-with? path "/hello")
+          (respond! resp 200 [(Tuple "X-Fruit" "banana")] "hello"))
+         ((string-starts-with? path "/missing") (respond! resp 404 (vec-empty) "no such fruit"))
+         ((string-starts-with? path "/echo")
+          (respond! resp 200 (vec-empty)
+                    (str verb " " path " " (request-body req)
+                         " type=" (header-or-empty req "Content-Type")
+                         " auth=" (header-or-empty req "Authorization")
+                         " agent=" (header-or-empty req "X-Agent")
+                         " cookie=" (header-or-empty req "Cookie"))))
+         ((string-starts-with? path "/set-cookie")
+          (respond! resp 200 [(Tuple "Set-Cookie" "fruit=banana; Path=/")
+                              (Tuple "Set-Cookie" "size=large; Path=/")]
+                    "set"))
+         ((string-starts-with? path "/flaky")
+          (box-set! flaky-count (+ (box-ref flaky-count) 1))
+          (if (< (box-ref flaky-count) 3)
+              (respond! resp 503 (vec-empty) "try again")
+              (respond! resp 200 (vec-empty) (str "ok after " (int->string (box-ref flaky-count))))))
+         (else (respond! resp 500 (vec-empty) "unknown path"))))
+     (serve listener))))
+
+(: (-> Listener int int (Option int)))
+(defun (listen-on listener port tries)
+  (if (= tries 0)
+      None
+      (let ()
+        (prefix-clear! (listener-prefixes listener))
+        (prefix-add! (listener-prefixes listener) (str "http://127.0.0.1:" (int->string port) "/"))
+        (match (listener-start listener)
+          ((Ok listening) (Some port))
+          ((Err e) (listen-on listener (+ port 1) (- tries 1)))))))
+
+;; ---------------------------------------------------------------------------
+;; Helpers
+;; ---------------------------------------------------------------------------
+
+;; Returns the status and body text of a request, or the error message.
+(: (-> Request string))
+(defun (fetch-text req)
+  (match (fetch req)
+    ((Err e) (str "error: " (http-error-message e)))
+    ((Ok r)
+     (def text (response-text r))
+     (response-close r)
+     (str (int->string (response-status r)) " " text))))
+
+;; The same, through `handler` rather than the current one.
+(: (-> Handler Request string))
+(defun (fetch-text-with handler req)
+  (parameterize ((current-handler handler))
+    (fetch-text req)))
+
+(defun (main args)
+  ;; --- Test doubles: no server ---------------------------------------------
+  (def seen (make-box ""))
+  (def double
+    (handler-of (fun (req)
+                  (box-set! seen (str (method-name (record-ref req method)) " " (record-ref req url)
+                                      " " (match (headers-ref (record-ref req headers) "Authorization")
+                                            ((Some a) a)
+                                            (None "-"))))
+                  (Ok (text-response 200 "{\"fruit\": \"banana\", \"n\": 3}"
+                                     #:content-type "application/json")))))
+  (def api (layered double (base-url "https://api.example.com/v1/") (bearer-auth "t0k")))
+
+  (match (sync/blocking (api (http-get "/fruit" #:query [(Tuple "q" "a b")])))
+    ((Err e) (fail (str "the double failed: " (http-error-message e))))
+    ((Ok r)
+     (expect "base-url and bearer-auth reach the handler"
+             (box-ref seen) "GET https://api.example.com/v1/fruit?q=a%20b Bearer t0k")
+     (expect "a response from text has the content type it was given"
+             (response-header r "content-type") (Some "application/json"))
+     (expect "response-json reads the body"
+             (match (response-json r)
+               ((Ok j) (match (json-object-ref j "fruit") ((Some (JsonStr s)) s) (_ "no fruit")))
+               ((Err e) e))
+             "banana")))
+
+  (match (sync/blocking (api (http-get "https://other.example.com/x" #:headers [(Tuple "Authorization" "mine")])))
+    ((Err e) (fail "the double failed"))
+    ((Ok r)
+     (expect "an absolute url and a request's own Authorization are kept"
+             (box-ref seen) "GET https://other.example.com/x mine")
+     (response-close r)))
+
+  ;; The first middleware is the outermost: it sees the request first.
+  (def order (make-box ""))
+  (defun (tag label)
+    (fun (inner)
+      (fun (req)
+        (box-set! order (str (box-ref order) label))
+        (inner req))))
+  (ignore (sync/blocking ((layered double (tag "a") (tag "b") (tag "c")) (http-get "https://x.example/"))))
+  (expect "layered applies middleware outermost first" (box-ref order) "abc")
+
+  ;; --- Headers ---------------------------------------------------------------
+  (def h (headers-add (headers-add headers-empty "Accept" "a") "accept" "b"))
+  (expect "headers keep repeated fields, in order" (headers-ref-all h "ACCEPT") ["a" "b"])
+  (expect "headers-set replaces every field of the name"
+          (headers->vec (headers-set h "Accept" "c")) [(Tuple "Accept" "c")])
+  (expect "headers-remove ignores case" (headers-has? (headers-remove h "ACCEPT") "accept") #f)
+
+  ;; --- Errors that need no server -------------------------------------------
+  (expect "a url that is not http is an InvalidRequest"
+          (match (fetch (http-get "ftp://example.com/fruit"))
+            ((Err (InvalidRequest _)) "invalid")
+            ((Err e) (http-error-message e))
+            ((Ok r) (ignore r) "sent"))
+          "invalid")
+
+  ;; --- The transport -----------------------------------------------------------
+  (def listener (Listener.))
+  (match (listen-on listener 8597 20)
+    (None (fail "no free port to listen on") 1)
+    ((Some port)
+     (ignore (bjo (serve listener)))
+     (def base (str "http://127.0.0.1:" (int->string port)))
+
+     (match (fetch (http-get (str base "/hello")))
+       ((Err e) (fail (str "a plain GET failed: " (http-error-message e))))
+       ((Ok r)
+        (expect "a GET returns 200" (response-status r) 200)
+        (expect "a response header, by any case" (response-header r "x-fruit") (Some "banana"))
+        (expect "the response knows its url" (response-url r) (str base "/hello"))
+        (expect "the body" (response-text r) "hello")
+        (response-close r)))
+
+     (expect "a 404 is a response" (fetch-text (http-get (str base "/missing"))) "404 no such fruit")
+
+     (expect "a JSON body"
+             (fetch-text (http-post (str base "/echo") (json-body (JsonObj (map-set (map-empty) "n" (JsonInt 1L))))))
+             "200 POST /echo {\"n\":1} type=application/json; charset=utf-8 auth= agent= cookie=")
+     (expect "a form body"
+             (fetch-text (http-put (str base "/echo") (form-body [(Tuple "a" "1 2") (Tuple "b" "&")])))
+             "200 PUT /echo a=1+2&b=%26 type=application/x-www-form-urlencoded auth= agent= cookie=")
+     (expect "a bytes body"
+             (fetch-text (http-patch (str base "/echo") (bytes-body (string->bytestring "raw")
+                                                                    #:content-type "text/x-raw")))
+             "200 PATCH /echo raw type=text/x-raw auth= agent= cookie=")
+
+     ;; Middleware on the transport, through the parameter.
+     (def site (layered (make-transport)
+                        (base-url base)
+                        (default-headers [(Tuple "X-Agent" "test")])
+                        (basic-auth "ann" "pw")))
+     (expect "middleware on the transport"
+             (fetch-text-with site (http-get "/echo"))
+             "200 GET /echo  type= auth=Basic YW5uOnB3 agent=test cookie=")
+
+     ;; The transport keeps no cookies: the jar is opt-in.
+     ;; HttpListener folds repeated fields into one, except Set-Cookie.
+     (match (fetch (http-get (str base "/set-cookie")))
+       ((Err e) (fail "the /set-cookie GET failed"))
+       ((Ok r)
+        (expect "repeated response fields are kept apart"
+                (response-header-all r "set-cookie") ["fruit=banana; Path=/" "size=large; Path=/"])
+        (response-close r)))
+     (expect "and the plain transport does not send it back"
+             (fetch-text (http-get (str base "/echo")))
+             "200 GET /echo  type= auth= agent= cookie=")
+
+     (def jar (make-cookie-jar))
+     (def with-jar (layered (make-transport) (cookies jar)))
+     (expect "a cookie is set into a jar" (fetch-text-with with-jar (http-get (str base "/set-cookie"))) "200 set")
+     (expect "and the jar sends both back"
+             (fetch-text-with with-jar (http-get (str base "/echo")))
+             "200 GET /echo  type= auth= agent= cookie=fruit=banana; size=large")
+
+     ;; Retries: /flaky returns 503 twice, then 200.
+     (def patient (layered (make-transport) (retrying #:attempts 3 #:delay (milliseconds 10))))
+     (expect "retrying gets past two 503s" (fetch-text-with patient (http-get (str base "/flaky"))) "200 ok after 3")
+     (box-set! flaky-count 0)
+     (expect "a POST is not retried"
+             (fetch-text-with patient (http-post (str base "/flaky") (text-body "x")))
+             "503 try again")
+
+     (listener-close listener)
+
+     ;; Nothing listens on the port now.
+     (expect "a refused connection is a Connection error"
+             (match (fetch (http-get (str base "/hello")))
+               ((Err (Connection _)) "connection")
+               ((Err e) (http-error-message e))
+               ((Ok r) (ignore r) "answered"))
+             "connection")
+     0)))

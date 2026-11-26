@@ -1,0 +1,325 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/http/base.bjo: the HTTP types that every client layer shares.
+;;
+;; - Requests, responses, headers, bodies and errors.
+;; - `Handler`: a function from a request to an event of a response. A
+;;   transport is a handler, and so is a test double.
+;; - `Middleware`: a function from a handler to a handler.
+;;
+;; Nothing here sends a request. `(std http client)` has the transport.
+
+(export
+  ;; Requests
+  Method method-name
+  Pair Headers
+  headers-empty headers headers-add headers-set headers-remove
+  headers-ref headers-ref-all headers-has? headers->vec
+  Body Request make-request
+
+  ;; Responses
+  Response make-response
+  response-status response-ok? response-reason response-url
+  response-headers response-header response-header-all
+  response-port response-bytes-port response-text response-bytes
+  response-close
+
+  ;; Errors
+  HttpError http-error-message
+
+  ;; Composition
+  Handler Middleware layered)
+
+(import (std prelude))
+(import (std ports))
+(import (only (text encodings) utf-8 encoding-named))
+
+(:doc #:file "base.bjodoc")
+
+(import/class
+  (Failure (: System.Net.Http.HttpRequestException (-> string Failure))))
+
+(import/extern
+  ;; Bytes in a declared encoding as a text input port.
+  (text-port-over (: Bjolang.Runtime.InputPorts.Over (-> ClrStream Encoding InputPort))))
+
+;; ===========================================================================
+;; Requests
+;; ===========================================================================
+
+(type (: Method (Union GET POST PUT PATCH DELETE HEAD OPTIONS (: Custom string))))
+
+;; Returns the method as it is sent on the wire.
+(: (-> Method string))
+(defun (method-name m)
+  (match m
+    (GET "GET")
+    (POST "POST")
+    (PUT "PUT")
+    (PATCH "PATCH")
+    (DELETE "DELETE")
+    (HEAD "HEAD")
+    (OPTIONS "OPTIONS")
+    ((Custom name) name)))
+
+(type (: Pair (Alias (Tuple string string))))
+
+;; Header fields in the order they were added. A name can occur more than
+;; once, and names compare without regard to ASCII case.
+(type (: Headers #:opaque (Record (: entries (Vec Pair)))))
+
+(: (-> string string bool))
+(defun (same-name? a b)
+  (= (string-downcase a) (string-downcase b)))
+
+(: (-> Pair string))
+(defun (pair-name p)
+  (match p ((Tuple name value) name)))
+
+(: (-> Pair string))
+(defun (pair-value p)
+  (match p ((Tuple name value) value)))
+
+(: Headers)
+(def headers-empty (Headers (entries (vec-empty))))
+
+;; Returns headers that hold `pairs` in order.
+(: (-> (Vec Pair) Headers))
+(defun (headers pairs)
+  (Headers (entries pairs)))
+
+;; Returns `h` with one more field at the end. Fields of the same name stay.
+(: (-> Headers string string Headers))
+(defun (headers-add h name value)
+  (Headers (entries (vec-add (record-ref h entries) (Tuple name value)))))
+
+;; Returns `h` without any field called `name`.
+(: (-> Headers string Headers))
+(defun (headers-remove h name)
+  (Headers (entries (vec-filter (fun (p) (not (same-name? (pair-name p) name)))
+                                (record-ref h entries)))))
+
+;; Returns `h` with `name` set to `value` alone, at the end.
+(: (-> Headers string string Headers))
+(defun (headers-set h name value)
+  (headers-add (headers-remove h name) name value))
+
+;; Returns every value of `name`, in order.
+(: (-> Headers string (Vec string)))
+(defun (headers-ref-all h name)
+  (vec-map pair-value
+           (vec-filter (fun (p) (same-name? (pair-name p) name)) (record-ref h entries))))
+
+;; Returns the first value of `name`.
+(: (-> Headers string (Option string)))
+(defun (headers-ref h name)
+  (def all (headers-ref-all h name))
+  (if (empty? all)
+      None
+      (Some (vec-ref all 0))))
+
+(: (-> Headers string bool))
+(defun (headers-has? h name)
+  (not (empty? (headers-ref-all h name))))
+
+(: (-> Headers (Vec Pair)))
+(defun (headers->vec h)
+  (record-ref h entries))
+
+;; What a request sends after its headers. The second field of `Text` and
+;; `Bytes` is the Content-Type. `Text` is sent as UTF-8.
+(type (: Body (Union Empty
+                     (: Text string string)
+                     (: Bytes ByteString string))))
+
+;; `url` is absolute: http or https, with any query already in it.
+(type (: Request (Record (: method Method)
+                         (: url string)
+                         (: headers Headers)
+                         (: body Body))))
+
+(: (-> Method string (#:headers Headers) (#:body Body) Request))
+(defun (make-request method url #:headers headers-empty #:body Empty)
+  (Request (method method) (url url) (headers headers) (body body)))
+
+;; ===========================================================================
+;; Responses
+;; ===========================================================================
+
+;; A response whose headers have arrived. `stream` is the body, read once.
+;; `release` frees the connection, or whatever else the handler holds.
+(type (: Response
+         #:opaque
+         (Record (: status int)
+                 (: reason string)
+                 (: url string)
+                 (: headers Headers)
+                 (: stream ClrStream)
+                 (: release (-> void)))))
+
+;; Builds a response. A transport calls this, and so does a test double.
+(: (-> int ClrStream (#:reason string) (#:url string) (#:headers Headers) (#:release (-> void))
+       Response))
+(defun (make-response status stream
+                      #:reason ""
+                      #:url ""
+                      #:headers headers-empty
+                      #:release (fun () unit))
+  (Response (status status) (reason reason) (url url) (headers headers) (stream stream)
+            (release release)))
+
+(: (-> Response int))
+(defun (response-status r)
+  (record-ref r status))
+
+;; Returns #t for a 2xx status.
+(: (-> Response bool))
+(defun (response-ok? r)
+  (def code (record-ref r status))
+  (and (>= code 200) (< code 300)))
+
+(: (-> Response string))
+(defun (response-reason r)
+  (record-ref r reason))
+
+;; Returns the URL the response came from, after any redirects.
+(: (-> Response string))
+(defun (response-url r)
+  (record-ref r url))
+
+(: (-> Response Headers))
+(defun (response-headers r)
+  (record-ref r headers))
+
+(: (-> Response string (Option string)))
+(defun (response-header r name)
+  (headers-ref (record-ref r headers) name))
+
+(: (-> Response string (Vec string)))
+(defun (response-header-all r name)
+  (headers-ref-all (record-ref r headers) name))
+
+(: (-> string Exception))
+(defun (http-failure message)
+  (cast Exception (Failure. message)))
+
+(: (-> string (Option string)))
+(defun (charset-name content-type)
+  (loop (:for part (string-split content-type ";"))
+        (:acc found
+              (folding None
+                       (let ((trimmed (string-trim part)))
+                         (if (string-starts-with? (string-downcase trimmed) "charset=")
+                             (match (string-split-once trimmed "=")
+                               ((Some (Tuple key value))
+                                (Some (string-replace (string-trim value) "\"" "")))
+                               (None found))
+                             found))))))
+
+;; The charset the response declares, UTF-8 when it declares none. An unknown
+;; charset raises.
+(: (-> Response Encoding))
+(defun (charset-of r)
+  (match (response-header r "content-type")
+    (None utf-8)
+    ((Some content-type)
+     (match (charset-name content-type)
+       (None utf-8)
+       ((Some name)
+        (match (encoding-named name)
+          ((Some found) found)
+          (None
+           (raise (http-failure (str "the response declares charset="
+                                     name
+                                     ", which is not an encoding (text encodings) knows. "
+                                     "response-bytes reads its bytes as they are"))))))))))
+
+;; Returns the body as text, decoded by the charset the response declares.
+;; Call it once: it reads the stream.
+(: (-> Response InputPort))
+(defun (response-port r)
+  (text-port-over (record-ref r stream) (charset-of r)))
+
+;; Returns the body as a byte port, for `read-some` and the other byte
+;; readers of (std ports). Call it once: it reads the stream.
+(: (-> Response InputPort))
+(defun (response-bytes-port r)
+  (stream->input-port (record-ref r stream)))
+
+(: (-> Response string))
+(defun (response-text r)
+  (read-all (response-port r)))
+
+;; Returns the whole body as bytes.
+(: (-> Response ByteString))
+(defun (response-bytes r)
+  (def port (response-bytes-port r))
+  (def builder (bytestringbuilder-empty))
+  (let more ()
+    (match (read-some port)
+      (None (bytestringbuilder->bytestring builder))
+      ((Some chunk)
+       (bytestringbuilder-add-bytes! builder chunk)
+       (more)))))
+
+;; Frees the connection. A response holds one until it is closed.
+(: (-> Response void))
+(defun (response-close r)
+  ((record-ref r release)))
+
+(impl (Discard Response)
+  (defun (ignore r)
+    (response-close r)))
+
+;; ===========================================================================
+;; Errors
+;; ===========================================================================
+
+;; Why a request got no response. A status such as 404 is not an error.
+(type (: HttpError (Union (: InvalidRequest string)
+                          (: NameResolution string)
+                          (: Connection string)
+                          (: Tls string)
+                          (: Protocol string)
+                          (: Cancelled string)
+                          (: Failed string))))
+
+(: (-> HttpError string))
+(defun (http-error-message e)
+  (match e
+    ((InvalidRequest m) (str "invalid request: " m))
+    ((NameResolution m) (str "name resolution failed: " m))
+    ((Connection m) (str "connection failed: " m))
+    ((Tls m) (str "TLS failed: " m))
+    ((Protocol m) (str "protocol error: " m))
+    ((Cancelled m) (str "cancelled: " m))
+    ((Failed m) m)))
+
+;; ===========================================================================
+;; Composition
+;; ===========================================================================
+
+;; Sends a request. Syncing the event sends it; a branch that loses a
+;; `choose` cancels it.
+(type (: Handler (Alias (-> Request (Event (Result HttpError Response))))))
+
+;; Wraps a handler to change what it sends or what it returns.
+(type (: Middleware (Alias (-> Handler Handler))))
+
+;; Returns `handler` wrapped in each middleware. The first one is the
+;; outermost: it sees the request first and the response last.
+(: (-> Handler #:rest Middleware Handler))
+(defun (layered handler #:rest middlewares)
+  (loop (:for i (range 0 (array-length middlewares)))
+        (:acc h (folding handler
+                         ((array-ref middlewares (- (array-length middlewares) i 1)) h)))))
