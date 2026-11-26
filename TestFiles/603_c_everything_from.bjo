@@ -1,0 +1,20 @@
+;; `(re-export (everything-from m))` re-exports what the import of `m` brought
+;; into scope, under the names the import gave it: values, types with their
+;; cases, trait methods with their trait, and macros.
+(import (std prelude))
+(import (std simpletest))
+(import "603_b_facade.bjo")
+(import "603_b_prefixed.bjo")
+
+(defun (main args)
+  (expect "a value" (area (Square 2.0)) 4.0)
+  (expect "a type's cases" (area (Circle 1.0)) 3.0)
+  (expect "a trait method" (name-of (Circle 1.0)) "circle")
+  (expect "the facade's own definition replaces the excluded one" (greet "x") "hi x")
+  (expect "a prefixed value" (v/greet "y") "hello y")
+  (expect "a prefixed value of the same type" (v/area (Square 3.0)) 9.0)
+  (def count (make-box 0))
+  (twice (box-set! count (+ (box-ref count) 1)))
+  (v/twice (box-set! count (+ (box-ref count) 1)))
+  (expect "macros, plain and prefixed" (box-ref count) 4)
+  0)

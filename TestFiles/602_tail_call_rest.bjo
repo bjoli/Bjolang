@@ -1,0 +1,25 @@
+;; A self tail call into a #:rest parameter passes the array inference built.
+;; Loop lowering wrapped it in a second array, which C# did not compile.
+(import (std prelude))
+(import (std simpletest))
+
+(: count-rest (-> int #:rest int int))
+(defun (count-rest n #:rest xs)
+  (if (= n 0) (array-length xs) (count-rest (- n 1) 7 8 9)))
+
+(: count-applied (-> int #:rest int int))
+(defun (count-applied n #:rest xs)
+  (if (= n 0) (array-length xs) (apply count-applied (- n 1) xs)))
+
+(: sum-rest (-> int #:rest int int))
+(defun (sum-rest n #:rest xs)
+  (if (= n 0)
+      (array-ref xs 0)
+      (sum-rest (- n 1) (+ (array-ref xs 0) 1))))
+
+(defun (main args)
+  (expect "rest arguments in a tail call" (count-rest 3) 3)
+  (expect "no rest arguments" (count-rest 0) 0)
+  (expect "apply in a tail call" (count-applied 2 4 5) 2)
+  (expect "a million iterations" (sum-rest 1000000 0) 1000000)
+  0)

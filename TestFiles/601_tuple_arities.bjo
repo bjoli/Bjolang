@@ -1,0 +1,47 @@
+;; Tuples of every arity compile and keep their element types. A 1-tuple was
+;; emitted as `(x)`, which C# reads as `x`, and tuples of 8 or more elements as
+;; `ValueTuple<T1, …, Tn>`, which does not exist past 7 type arguments. A .NET
+;; 8-tuple nests its 8th element in `TRest` and must read as a flat tuple.
+(import (std prelude))
+(import (std simpletest))
+(import/extern
+  (clr-tuple8 (: System.ValueTuple.Create
+                 (-> int int int int int int int int
+                     (Tuple int int int int int int int int)))))
+
+(: first-and-last8 (-> (Tuple int int int int int int int int) int))
+(defun (first-and-last8 t) (match t ((Tuple a b c d e f g h) (+ a h))))
+
+(: swap-ends9 (-> (Tuple int string int int int int int int bool)
+                  (Tuple bool string int int int int int int int)))
+(defun (swap-ends9 t)
+  (match t ((Tuple a b c d e f g h i) (Tuple i b c d e f g h a))))
+
+(: unwrap1 (-> (Tuple %a) %a))
+(defun (unwrap1 t) (match t ((Tuple x) x)))
+
+(: identity (-> %a %a))
+(defun (identity x) x)
+
+(def module-nine (Tuple 1 2 3 4 5 6 7 8 9))
+(def (Tuple m1 m2 m3 m4 m5 m6 m7 m8 m9) (Tuple 10 20 30 40 50 60 70 80 90))
+
+(defun (main args)
+  (expect "a 1-tuple through a pattern" (unwrap1 (Tuple 5)) 5)
+  (expect "a 1-tuple of a string" (unwrap1 (identity (Tuple "x"))) "x")
+  (expect "an 8-tuple" (first-and-last8 (Tuple 1 2 3 4 5 6 7 8)) 9)
+  (expect "a 9-tuple of mixed types"
+          (match (swap-ends9 (Tuple 1 "b" 3 4 5 6 7 8 #t))
+            ((Tuple i b c d e f g h a) (and i (= b "b") (= h 8) (= a 1))))
+          #t)
+  (def (Tuple a b c d e f g h i j k l m n o) (Tuple 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15))
+  (expect "a local 15-tuple def" (+ a h i o) 33)
+  (expect "a module-level 9-tuple" (match module-nine ((Tuple a b c d e f g h i) i)) 9)
+  (expect "a module-level 9-tuple def" (+ m1 m9) 100)
+  (expect "a 9-tuple through a generic function"
+          (match (identity (Tuple 1 2 3 4 5 6 7 8 9)) ((Tuple a b c d e f g h i) (+ a i)))
+          10)
+  (expect "a .NET 8-tuple reads flat"
+          (first-and-last8 (clr-tuple8 1 2 3 4 5 6 7 8))
+          9)
+  0)
