@@ -1,0 +1,15 @@
+;; A .NET type as the receiver of a member of an unrelated .NET type. A
+;; string is no StringBuilder, and no conversion makes it one.
+
+;; EXPECT-ERROR: foreign_receiver_other_class.bjo:14:36
+;; EXPECT-ERROR: the .NET type 'System.Text.StringBuilder' is wanted here
+
+(import (std prelude))
+
+(import/class (Sb (: System.Text.StringBuilder (-> Sb))))
+(import/extern
+  (sb-length (: System.Text.StringBuilder.Length (-> Sb int) #:get)))
+
+(defun (main args)
+  (println (int->string (sb-length "not a builder")))
+  0)

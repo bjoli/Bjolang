@@ -2295,7 +2295,7 @@ and private inferDotMethod (env: Env) (name: string) (args: Expr list) (r: Range
                 resolved.ParameterTypes
 
             let coercedArgs =
-                reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes
+                reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes resolved.ClrParameterTypes
 
             let retType = seenType resolved.ReturnType
 
@@ -2317,7 +2317,7 @@ and private inferDotMethod (env: Env) (name: string) (args: Expr list) (r: Range
                 DotNetInterop.resolveMethod where false (Option.defaultValue clrTarget target) methodName argTypes)
 
         let coercedArgs =
-            reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes
+            reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes resolved.ClrParameterTypes
 
         // Never exception-wrapped: `import/class` declares one signature —
         // the constructor's — so there is nowhere to say what a method may
@@ -2357,7 +2357,7 @@ and private inferClassConstruct (env: Env) (name: string) (args: Expr list) (r: 
     let resolved = DotNetInterop.resolveConstructor where clrType argTypes
 
     let coercedArgs =
-        reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes
+        reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes resolved.ClrParameterTypes
 
     let retType = wrapForeignExceptions info.CtorExceptions resolved.ReturnType
 
@@ -2403,9 +2403,11 @@ and private inferGenericConstruct
 
     let resultType = TCon(info.ClrName, typeArgs)
 
-    let paramTypes =
+    let paramTypes, clrParamTypes =
         match DotNetInterop.tryClrTypeOf resultType with
-        | Some closed -> (DotNetInterop.resolveConstructor where closed argTypes).ParameterTypes
+        | Some closed ->
+            let resolved = DotNetInterop.resolveConstructor where closed argTypes
+            resolved.ParameterTypes, resolved.ClrParameterTypes
         | None ->
             match fits with
             | [ ps ] ->
@@ -2417,13 +2419,14 @@ and private inferGenericConstruct
                     argTypes
                     paramTypes
 
-                paramTypes
+                // The parameters hold the type's own variables.
+                paramTypes, paramTypes |> List.map (fun _ -> None)
             | _ ->
                 failwithf
                     $"Type Error at %s{where}: these arguments fit more than one constructor of '%s{DotNetInterop.showType resultType}', and its type arguments are not known here, so the constructor cannot be selected. Annotate the value, or the arguments."
 
     let coercedArgs =
-        reconcileForeignArgs env.Registry (typedArgs |> List.map snd) paramTypes
+        reconcileForeignArgs env.Registry (typedArgs |> List.map snd) paramTypes clrParamTypes
 
     let meta =
         { ClrType = info.ClrName
@@ -2502,7 +2505,8 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
         match typedArgs with
         | (_, recv) :: rest ->
             let coerced =
-                reconcileForeignArgs env.Registry [ recv ] [ receiverType ] |> List.head
+                reconcileForeignArgs env.Registry [ recv ] [ receiverType ] [ receiverParam clrType ]
+                |> List.head
 
             coerced, rest
         | [] ->
@@ -2572,7 +2576,8 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
     // value.
     | ExternSet ->
         let typedArgs = args |> List.map (infer env)
-        let memberType = DotNetInterop.resolveMemberWrite where clrType info.MemberName (not info.IsInstance)
+        let memberType, clrMemberType =
+            DotNetInterop.resolveMemberWriteClr where clrType info.MemberName (not info.IsInstance)
 
         let receiver, rest =
             if info.IsInstance then
@@ -2583,7 +2588,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
 
         let value =
             match rest with
-            | [ v ] -> reconcileForeignArgs env.Registry [ snd v ] [ memberType ] |> List.head
+            | [ v ] -> reconcileForeignArgs env.Registry [ snd v ] [ memberType ] [ Some clrMemberType ] |> List.head
             | _ ->
                 let wanted = if info.IsInstance then "the object to write it on and the value" else "the value"
 
@@ -2710,7 +2715,11 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
                 resolved, resolved.ParameterTypes, resolved.ReturnType, false
 
         let coercedArgs =
-            reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
+            reconcileForeignArgs
+                env.Registry
+                (typedArgs |> List.map snd)
+                visibleParams
+                (resolved.ClrParameterTypes |> List.truncate visibleParams.Length)
 
         checkDeclaredExtern where env.Registry info receiverType receiver.IsSome visibleParams callResultType
 
@@ -3920,7 +3929,11 @@ and private inferTaskEvent (env: Env) (call: Expr) (r: Range) : HMType * TypedEx
         if info.IsInstance then
             match allTypedArgs with
             | (_, recv) :: rest ->
-                Some(reconcileForeignArgs env.Registry [ recv ] [ receiverType ] |> List.head), rest
+                Some(
+                    reconcileForeignArgs env.Registry [ recv ] [ receiverType ] [ receiverParam clrType ]
+                    |> List.head
+                ),
+                rest
             | [] ->
                 failwithf
                     $"Type Error at %s{where}: '%s{name}' names the instance method '%s{info.ClrType}.%s{info.MemberName}', so its first argument is the object to call it on, but it was given none."
@@ -3952,7 +3965,12 @@ and private inferTaskEvent (env: Env) (call: Expr) (r: Range) : HMType * TypedEx
                 $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' returns %s{resolved.RawReturnType.Name}, which is not a task."
 
     let visibleParams = resolved.ParameterTypes |> List.truncate (resolved.ParameterTypes.Length - 1)
-    let coercedArgs = reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
+    let coercedArgs =
+        reconcileForeignArgs
+            env.Registry
+            (typedArgs |> List.map snd)
+            visibleParams
+            (resolved.ClrParameterTypes |> List.truncate visibleParams.Length)
 
     checkDeclaredExtern where env.Registry info receiverType receiver.IsSome visibleParams awaited
 

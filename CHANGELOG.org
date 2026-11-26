@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* A foreign argument with no conversion is a Bjolang type error
+
+Before, some values of the wrong type reached a .NET member, and the C#
+compiler rejected the generated cast (CS0030), at a line of generated code:
+
+- the receiver of an instance member: a method, a property, a setter or an
+  event,
+- the value of a property write,
+- the value of a ~ref~-indexer write.
+
+Overload selection scores only the arguments after the receiver, and the
+others were cast to the parameter's type unchecked. Any known type passed:
+a type the module declares, and also a ~string~ as a ~StringBuilder~.
+
+- *One rule now decides.* ~DotNetInterop.conversionTo~ returns the
+  conversion that makes an argument fit a .NET parameter, or none:
+  ~Exact~, ~Settle~, ~ClrString~, ~ArrayToSpan~, ~OpenArrayToSpan~,
+  ~Widen~, ~Upcast~ or ~Box~. Overload selection ranks by it, and
+  ~reconcileForeignArgs~ writes what it returns. A cast is written only
+  where it found one. An argument without one is a type error at the
+  argument.
+- *A type with an unsolved part* (such as a number whose carrier is not
+  known yet) is settled by unification, as an open type is. Before, it fit
+  only ~object~ in overload selection.
+- A parameter that holds a type variable has no .NET type. Its argument is
+  unified with it, never cast.
+
 * ~(std run)~ returns a ~RunError~
 
 *Breaking.* Every runner of ~(std run)~ returns ~(Result RunError a)~, not

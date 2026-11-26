@@ -347,66 +347,67 @@ let internal unifyForeignArgs (registry: TraitRegistry) (argTypes: HMType list) 
 /// Reconciles the arguments of a foreign call with the parameters of the
 /// overload that was selected for it, one argument at a time.
 ///
-/// `DotNetInterop.scoreArgument` accepts an argument that fits by an implicit
-/// conversion — a numeric widening, a reference upcast, a box — and ranks it
-/// below an exact match so that an exact one always wins. Unifying every
-/// argument against its parameter afterwards threw that away: unification is
-/// nominal equality, Bjolang having no subtyping, so an `int` argument reaching
-/// a `double` parameter failed with a diagnostic naming a type the caller never
-/// wrote. Widenings were selectable and then unusable, and `(sin 1)` was an
-/// error while `(sin 1.0)` was not.
+/// Unification is nominal equality, Bjolang having no subtyping. A .NET
+/// parameter also takes an argument that C# converts implicitly: a numeric
+/// widening, a reference upcast, a box, a Bjolang string for a .NET one, an
+/// array for a span. `DotNetInterop.conversionTo` decides which conversion,
+/// if any, makes the argument fit. Overload selection ranks candidates by the
+/// same function, so the two cannot disagree.
 ///
-/// So the two cases are now told apart:
-///
-///   * An argument whose type is still **open** is unified, exactly as before.
-///     That is the case the docstring above describes and the one that lets
-///     reflection settle a type inference has not.
-///
-///   * An argument whose type is **known** is left alone, and converted where
-///     it differs. Nothing is being weakened: the overload was chosen because
-///     the argument fits by C#'s own conversion rules, and one that fits no
-///     way at all was rejected as a candidate before ever getting here.
-///
-/// The conversion is *written into the tree* rather than left to the C# that
-/// eventually reads it. It has to be. The code generator emits a foreign call
-/// as its receiver, its name and its arguments, so C# resolves the overload a
-/// second time from what it is given — and a call this pass typed by one
-/// overload's return type must not be free to land on another's. `((double)(x))`
-/// pins it to the method that was actually chosen.
+/// - The conversion is written into the tree, not left to the C# that reads
+///   it. C# resolves the overload a second time from the call, and
+///   `((double)(x))` pins it to the method this pass chose.
+/// - An argument with no conversion is a type error here, at the argument.
+///   This matters for what selection does not score: the receiver of an
+///   instance member and the value of a property or indexer write.
+/// - A parameter without a .NET type (`None`) holds a type variable. Its
+///   argument is unified with it, after the string and span views. It is
+///   never cast.
 let internal reconcileForeignArgs
     (registry: TraitRegistry)
     (typedArgs: TypedExpr list)
     (paramTypes: HMType list)
+    (clrParamTypes: System.Type option list)
     : TypedExpr list =
-    List.map2
-        (fun (arg: TypedExpr) paramType ->
-            let argType = prune registry arg.Type
-            let paramType = prune registry paramType
+    let reconcile (arg: TypedExpr) (paramType: HMType) (clrParam: System.Type option) =
+        let argType = prune registry arg.Type
+        let paramType = prune registry paramType
 
+        /// The argument unified with the parameter as Bjolang sees it, and
+        /// converted to the parameter where the two differ.
+        let settled () =
             match bjolangViewOf paramType, DotNetInterop.spanArrayViewOf paramType with
             | Some wanted, _ when argType <> paramType ->
-                // A .NET string parameter takes a Bjolang string, converted
-                // here; an argument that already is a .NET string passes as it is.
                 unify registry argType wanted
                 toClrString arg paramType
             | _, Some array when argType <> paramType ->
-                // A span parameter takes an array, or a span of its own type,
-                // which passes as it is.
                 unify registry argType array
                 toSpan arg paramType
             | _ ->
-
-            if not (List.isEmpty (freeVars registry argType)) then
                 unify registry argType paramType
                 arg
-            elif argType = paramType then
+
+        let cast () =
+            if argType = paramType then
                 arg
             else
                 { arg with
                     Type = paramType
-                    Node = TCast(arg, paramType) })
-        typedArgs
-        paramTypes
+                    Node = TCast(arg, paramType) }
+
+        match clrParam with
+        | None -> settled ()
+        | Some clrParam ->
+            match DotNetInterop.conversionTo clrParam argType with
+            | Some(DotNetInterop.Settle | DotNetInterop.ClrString | DotNetInterop.ArrayToSpan _ | DotNetInterop.OpenArrayToSpan) ->
+                settled ()
+            | Some DotNetInterop.Exact -> cast ()
+            | Some(DotNetInterop.Widen | DotNetInterop.Upcast | DotNetInterop.Box) -> cast ()
+            | None ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos arg.Range}: this has the type '%s{DotNetInterop.showType argType}', and the .NET type '%s{DotNetInterop.showType paramType}' is wanted here. There is no conversion from one to the other."
+
+    List.map3 reconcile typedArgs paramTypes clrParamTypes
 
 /// What every use of an `import/extern` alias starts from: the position its
 /// diagnostics carry, the reflected type it names, and the type an instance
@@ -430,6 +431,12 @@ let internal externTarget (info: ClrExternInfo) (r: Range) : string * System.Typ
             DotNetInterop.mapClrType clrType
 
     where, clrType, receiverType
+
+/// The receiver of an instance member as .NET has it, for
+/// `reconcileForeignArgs`. `None` for a member of a generic type definition:
+/// its receiver is unified with the signature.
+let internal receiverParam (clrType: System.Type) : System.Type option =
+    if clrType.IsGenericTypeDefinition then None else Some clrType
 
 /// The metadata of a *generic* `import/extern` call.
 ///

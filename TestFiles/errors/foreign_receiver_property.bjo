@@ -1,0 +1,20 @@
+;; The receiver of a property read is a value of a type the module declares,
+;; which is no .NET exception.
+;;
+;; A receiver is not part of overload selection, which scores only the
+;; arguments after it. It was cast to the declaring type without a check, and
+;; the C# compiler rejected the cast.
+
+;; EXPECT-ERROR: foreign_receiver_property.bjo:19:27
+;; EXPECT-ERROR: the .NET type 'System.Exception' is wanted here
+
+(import (std prelude))
+
+(import/extern
+  (error-message (: System.Exception.Message (-> Exception string) #:get)))
+
+(type (: Thing (Union (: A string) B)))
+
+(defun (main args)
+  (println (error-message (A "x")))
+  0)

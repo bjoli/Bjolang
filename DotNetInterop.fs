@@ -1941,71 +1941,126 @@ let private isNewtype (t: HMType) =
     | TCon(name, _) -> newtypeKeys.ContainsKey name
     | _ -> false
 
-/// How well an argument fits a parameter. Lower is better; `None` is no fit.
+/// How an argument becomes a value of a .NET parameter's type.
 ///
-/// The scores are ordered so that an exact match always beats a widening and a
-/// widening always beats a reference upcast — which is what makes `(.Write w
-/// 42)` pick `Write(int)` rather than `Write(long)` or `Write(object)`.
-let private scoreArgument (param: Type) (arg: HMType) : int option =
+/// One function, `conversionTo`, decides whether an argument fits a parameter
+/// and how. Overload selection ranks candidates by it, and
+/// `ForeignTyping.reconcileForeignArgs` writes into the tree what it returns.
+/// So a conversion is written only where this function found one.
+type Conversion =
+    /// The argument is a value of the parameter's type.
+    | Exact
+    /// The argument's type is still open. It is unified with the parameter,
+    /// as Bjolang sees the parameter.
+    | Settle
+    /// A Bjolang string for a .NET `string`, or for a `string[]`.
+    | ClrString
+    /// An array for a span over its elements. `true` for a read-only span.
+    | ArrayToSpan of readOnly: bool
+    /// An array whose element type is still open, for a span.
+    | OpenArrayToSpan
+    /// An implicit numeric widening of C#.
+    | Widen
+    /// An implicit reference conversion: to a base class or an interface.
+    | Upcast
+    /// A value of any type as an `object`.
+    | Box
+
+/// The rank of a conversion in overload selection. Lower is better.
+///
+/// - An exact match beats a widening, and a widening beats a reference
+///   upcast. This is what makes `(.Write w 42)` pick `Write(int)` rather
+///   than `Write(long)` or `Write(object)`.
+/// - An open argument fits every parameter, and ranks worst, so that any
+///   candidate that genuinely matches wins.
+let conversionRank (c: Conversion) : int =
+    match c with
+    | Exact -> 0
+    | ClrString
+    | Widen -> 1
+    | ArrayToSpan readOnly -> if readOnly then 1 else 2
+    | Upcast -> 2
+    | Box -> 3
+    | OpenArrayToSpan -> 50
+    | Settle -> 100
+
+/// Whether a type still has an unsolved part: a metavariable, or an
+/// associated type not yet resolved.
+let rec private hasOpenPart (t: HMType) : bool =
+    match pruneLocal t with
+    | TMeta _
+    | TAssoc _ -> true
+    | TCon(_, args)
+    | TTuple args -> List.exists hasOpenPart args
+    | TFun(args, ret, _) -> List.exists hasOpenPart (ret :: args)
+    | TNum(carrier, _) -> hasOpenPart carrier
+    | TVar _ -> false
+
+/// The conversion that makes `arg` a value of `param`, or `None` when there is
+/// none.
+///
+/// - A newtype fits no .NET parameter. It is its underlying type at run time,
+///   so C# could choose a different overload than the checker.
+/// - A type that has no .NET type while the module is checked (a type the
+///   module declares, a `Symbol`, a generic over one, a type variable) fits
+///   only `object`. Not a function: a lambda has no delegate type of its own
+///   to convert from.
+/// - A type with an unsolved part has no .NET type yet either. Except for
+///   `object`, it is settled by unification, as an open type is.
+let conversionTo (param: Type) (arg: HMType) : Conversion option =
     if isNewtype arg then
         None
     elif isUnresolved arg then
-        // Nothing to judge yet. Accepting it is what lets a parameter type flow
-        // *into* an argument whose type inference has not settled — but it
-        // scores worst, so any candidate that genuinely matches wins.
-        Some 100
+        Some Settle
     else
         match tryClrTypeOf arg with
-        // Every value is an object. A type this module declares has no .NET
-        // type while the module is checked, nor has a `Symbol`, a `Keyword` or
-        // a generic over one, nor a type variable; each of them is still an
-        // object to pass, scored as boxing so that any other fit wins. Not a
-        // function: a lambda has no delegate type of its own to convert from.
         | None ->
             match pruneLocal arg with
             // An array whose elements are not known yet, for a span: the
             // span's element type is what settles them, as an open argument's
             // type is settled by its parameter.
-            | TCon("Array", [ elem ]) when isUnresolved elem && (spanElementOf param).IsSome -> Some 50
+            | TCon("Array", [ elem ]) when isUnresolved elem && (spanElementOf param).IsSome -> Some OpenArrayToSpan
             | TCon _
             | TTuple _
-            | TVar _ when param = typeof<obj> -> Some 3
+            | TVar _ when param = typeof<obj> -> Some Box
+            | _ when hasOpenPart arg -> Some Settle
             | _ -> None
         | Some argType ->
-            // An array for a span over its elements, made by C# at the call.
-            // Scored as a conversion, so that an overload taking the array
-            // itself wins, and the read-only span below the writable one: the
-            // one C# prefers too, and the one that cannot fail on an array of a
-            // derived element type.
-            let spanScore =
+            // The read-only span ranks above the writable one: C# prefers it
+            // too, and it cannot fail on an array of a derived element type.
+            let toSpan =
                 match spanElementOf param with
                 | Some(elem, readOnly) when argType.IsArray && argType.GetElementType() = elem ->
-                    Some(if readOnly then 1 else 2)
+                    Some(ArrayToSpan readOnly)
                 | _ -> None
 
-            if argType = param then Some 0
-            // A Bjolang string for a .NET one, converted at the call. Scored as
-            // a widening, so that `Write(string)` beats `Write(object)`.
+            if argType = param then
+                Some Exact
             elif
                 (param = typeof<string> && argType.FullName = "BjoString.Utf8String")
                 || (param = typeof<string[]> && argType.FullName = "BjoString.Utf8String[]")
             then
-                Some 1
+                Some ClrString
             elif
                 widenings.ContainsKey argType
                 && widenings[argType] |> List.contains param
             then
-                Some 1
-            elif spanScore.IsSome then
-                spanScore
+                Some Widen
+            elif toSpan.IsSome then
+                toSpan
             elif param.IsAssignableFrom argType then
-                // A reference upcast, including anything to `object`.
-                Some 2
+                // Anything to `object` included.
+                Some Upcast
             elif param = typeof<obj> then
-                // Boxing a value type.
-                Some 3
+                // A value type.
+                Some Box
             else
                 None
+
+/// How well an argument fits a parameter, for overload selection. `None` is
+/// no fit.
+let private scoreArgument (param: Type) (arg: HMType) : int option =
+    conversionTo param arg |> Option.map conversionRank
 
 /// The signature of a candidate, for diagnostics.
 let private showParams (ps: ParameterInfo[]) =
@@ -2092,6 +2147,10 @@ type ResolvedCall =
       /// arguments against these, which is also how a still-open argument type
       /// gets pinned down.
       ParameterTypes: HMType list
+      /// The same parameters as .NET has them, for `conversionTo`. `None` for a
+      /// parameter that holds a type variable, which has no .NET type: its
+      /// argument is unified with it.
+      ClrParameterTypes: Type option list
       ReturnType: HMType
       /// The return type as .NET has it, before `mapClrType` flattened it.
       ///
@@ -2344,10 +2403,15 @@ and resolveMethodReturning
                 let keys = List.truncate (argTypes.Length - 1) argTypes
                 let ps, m = selectOverload (describeMethod t "get_Item") where getters keys
 
+                // The value is written through the `ref` the getter returns,
+                // so its type is what the reference refers to.
                 Some
                     { ParameterTypes =
                         (ps |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList)
                         @ [ mapClrResultType m.ReturnType ]
+                      ClrParameterTypes =
+                        (ps |> Array.map (fun p -> Some p.ParameterType) |> Array.toList)
+                        @ [ Some(m.ReturnType.GetElementType()) ]
                       ReturnType = voidType
                       RawReturnType = typeof<Void>
                       DeclaringType = t.FullName
@@ -2391,6 +2455,7 @@ and resolveMethodReturning
             | n -> failwith (ex.Message.TrimEnd() + n)
 
     { ParameterTypes = ps |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList
+      ClrParameterTypes = ps |> Array.map (fun p -> Some p.ParameterType) |> Array.toList
       ReturnType = mapClrResultType m.ReturnType
       RawReturnType = m.ReturnType
       DeclaringType = t.FullName
@@ -2488,6 +2553,7 @@ let resolveConstructor (where: string) (targetType: Type) (argTypes: HMType list
                 | n -> failwith (ex.Message.TrimEnd() + n + "\n  Constructors with out parameters are not supported.")
 
     { ParameterTypes = ps |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList
+      ClrParameterTypes = ps |> Array.map (fun p -> Some p.ParameterType) |> Array.toList
       ReturnType = mapClrType targetType
       RawReturnType = targetType
       DeclaringType = targetType.FullName
@@ -2661,6 +2727,7 @@ let resolveOpenReceiverMethod
     match candidates |> List.filter (fun (_, ps, _) -> List.forall2 fitsArg ps argTypes) with
     | [ (m, ps, ret) ] ->
         { ParameterTypes = ps
+          ClrParameterTypes = ps |> List.map (fun _ -> None)
           ReturnType = ret
           RawReturnType = m.ReturnType
           DeclaringType = clrTypeName definition
@@ -2710,7 +2777,10 @@ let resolveMemberRead (where: string) (declaringType: Type) (name: string) (isSt
 /// import is where the claim that it can be written was made. `readonly` and
 /// `const` are separate cases only in the message: knowing which one it is is
 /// the difference between looking for a setter and looking for another way.
-let resolveMemberWrite (where: string) (declaringType: Type) (name: string) (isStatic: bool) : HMType =
+///
+/// Returns the member's type, and the same type as .NET has it, for the
+/// conversion of the value written.
+let resolveMemberWriteClr (where: string) (declaringType: Type) (name: string) (isStatic: bool) : HMType * Type =
     let flags = memberFlags isStatic
 
     match findProperty declaringType name flags with
@@ -2728,7 +2798,7 @@ let resolveMemberWrite (where: string) (declaringType: Type) (name: string) (isS
                 failwithf
                     $"Type Error at %s{where}: '%s{declaringType.FullName}.%s{name}' is a readonly field, so it can only be assigned by the type's own constructor. Import it with #:get."
 
-            mapClrType field.FieldType
+            mapClrType field.FieldType, field.FieldType
     | prop ->
         if not prop.CanWrite then
             failwithf
@@ -2748,7 +2818,11 @@ let resolveMemberWrite (where: string) (declaringType: Type) (name: string) (isS
             failwithf
                 $"Type Error at %s{where}: '%s{declaringType.FullName}.%s{name}' is init-only, so it can only be assigned while the object is being constructed. Import it with #:get."
 
-        mapClrType prop.PropertyType
+        mapClrType prop.PropertyType, prop.PropertyType
+
+/// `resolveMemberWriteClr`, the member's type only.
+let resolveMemberWrite (where: string) (declaringType: Type) (name: string) (isStatic: bool) : HMType =
+    resolveMemberWriteClr where declaringType name isStatic |> fst
 
 /// Checks a `#:get` or `#:set` import of a property or field of a generic
 /// type definition against its declared signature.
