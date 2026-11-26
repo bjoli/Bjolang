@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* How a program ends: signals and the grace period
+
+- *Ctrl-C cancels ~main~'s scope* with ~(Requested "SIGINT")~, so ~finally~
+  blocks and scope releases run, and the program exits with 130. A second
+  Ctrl-C ends it at once. A SIGINT that the program handles itself, with
+  ~with-signal-cancel~ or ~signal-subscribe~, is left to it.
+- *SIGINT, SIGTERM and SIGHUP flush standard output.* .NET raises no
+  ~ProcessExit~ for them, so a redirected program that was killed lost its
+  buffered output.
+- *A program no longer hangs when a fiber cannot be cancelled.* After ~main~'s
+  scope is cancelled (~main~ raised, a fiber of ~main~ failed, or Ctrl-C), the
+  fibers get ~BJO_EXIT_GRACE~ seconds, 3 by default. Then the cause and the
+  number of fibers that did not stop go to standard error, and the program
+  exits with 1, or 130 after Ctrl-C. A ~main~ that returns normally still
+  waits for its fibers.
+- See "How a program ends" in ~Docs/Debugging.org~. Tested by
+  ~run_signal_tests~ in ~run_tests.py~ over ~TestFiles/signals/exit.bjo~.
+
 * ~(std http client easy)~
 
 - *One call for each common task*: ~get-text~, ~get-bytes~, ~get-json~,

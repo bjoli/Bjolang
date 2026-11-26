@@ -1,0 +1,76 @@
+;; How a program ends when it is signalled, or fails while fibers still run.
+;; Run by `run_signal_tests` in run_tests.py, which sends the signals.
+;;
+;; Each mode writes "before" to standard output, which the test redirects, so
+;; it sits in a block buffer. Then it writes "ready" to standard error, which is
+;; not buffered, and waits. The test signals it after "ready".
+
+(import (std prelude))
+(import (std os))
+
+(import/class (Boom (: System.InvalidOperationException (-> string Boom))))
+
+(import/extern
+  (wait-forever (: System.Threading.Tasks.Task.Delay (-> int void) #:async #:uncancellable))
+  (nap          (: System.Threading.Tasks.Task.Delay (-> int void) #:async))
+  (block        (: System.Threading.Thread.Sleep (-> int void))))
+
+;; A wait that no cancellation reaches.
+(: (-bjo-> void))
+(defbjo (stuck) (wait-forever -1))
+
+(: (-bjo-> void))
+(defbjo (napping) (nap 100000))
+
+(: (-bjo-> void))
+(defbjo (failing)
+  (nap 100)
+  (raise (cast Exception (Boom. "the fiber failed"))))
+
+(: (-> string void))
+(defun (say-on-stderr text)
+  (write-string (parameter-ref current-error-port) (str text "\n")))
+
+(defun (main args)
+  (def mode (vec-ref args 0))
+  (println "before")
+  (cond
+    ;; main blocks a thread. The output must survive a signal.
+    ((= mode "block")
+     (say-on-stderr "ready")
+     (block 100000))
+    ;; main raises while a fiber cannot be cancelled.
+    ((= mode "fail")
+     (ignore (bjo (stuck)))
+     (raise (cast Exception (Boom. "boom"))))
+    ;; main returns while a fiber naps.
+    ((= mode "nap")
+     (ignore (bjo (napping)))
+     (say-on-stderr "ready"))
+    ;; main returns while a fiber cannot be cancelled.
+    ((= mode "stuck")
+     (ignore (bjo (stuck)))
+     (say-on-stderr "ready"))
+    ;; A fiber fails while another cannot be cancelled. main returns.
+    ((= mode "fiber-fails")
+     (spawn (stuck))
+     (spawn (failing)))
+    ;; A release of main's own scope that takes longer than the grace period.
+    ((= mode "slow-release")
+     (ignore (own! (fun () (block 1000) (println "released")))))
+    ;; main waits in a scope that owns a release.
+    ((= mode "release")
+     (with-scope
+       (ignore (own! (fun () (println "released"))))
+       (say-on-stderr "ready")
+       (sync/blocking (timeout (seconds 100)))))
+    ;; The program handles the first SIGINT itself, then goes on.
+    ((= mode "handled")
+     (def r (with-signal-cancel [Interrupt]
+              (say-on-stderr "ready")
+              (sync/blocking (timeout (seconds 100)))))
+     (println (match r ((Ok v) "finished") ((Err s) "stopped by the signal")))
+     (say-on-stderr "ready")
+     (sync/blocking (timeout (seconds 100))))
+    (else (say-on-stderr (str "no mode " mode))))
+  0)

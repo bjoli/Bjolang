@@ -1578,6 +1578,120 @@ def run_check_tests():
 
     return "check", c_total, c_failed, c_failures
 
+def run_signal_tests():
+    # How a program ends when it is signalled, or fails while fibers still run.
+    # `TestFiles/signals/exit.bjo` has a mode for each case. It writes "ready"
+    # to standard error, which is not buffered, before it waits, and each
+    # signal is sent after a "ready". See `BjolangRuntime/MainExit.cs`.
+    SOURCE = Path("TestFiles/signals/exit.bjo")
+    s_total, s_failed = 0, 0
+    s_failures = []
+
+    def check_that(label, condition, detail=""):
+        nonlocal s_total, s_failed
+        s_total += 1
+        if not condition:
+            s_failed += 1
+            s_failures.append(f"{label}{': ' + str(detail) if detail else ''}")
+
+    if os.name == "nt" or not SOURCE.exists():
+        return "signals", s_total, s_failed, s_failures
+
+    built = subprocess.run(["dotnet", COMPILER_DLL, str(SOURCE)], capture_output=True, text=True)
+    if built.returncode != 0:
+        check_that("the signal test program builds", False, built.stdout[-500:])
+        return "signals", s_total, s_failed, s_failures
+
+    # A short grace period, so that a case that waits for it is quick.
+    env = {**os.environ, "BJO_EXIT_GRACE": "0.5"}
+
+    def run(mode, signals):
+        """Runs a mode, sends each signal after the next "ready", and returns
+        (exit code, stdout, stderr, seconds from the first signal to the exit)."""
+        proc = subprocess.Popen(["dotnet", str(SOURCE.with_suffix(".exe")), mode],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        err_lines = []
+        sent_at = None
+        try:
+            for sig in signals:
+                # A signal after another one, given as a negative number, is
+                # sent 0.1 s later rather than after a "ready".
+                if sig < 0:
+                    sig = -sig
+                    time.sleep(0.1)
+                else:
+                    while True:
+                        line = proc.stderr.readline()
+                        if not line:
+                            break
+                        if line.strip() == "ready":
+                            break
+                        err_lines.append(line)
+                if sent_at is None:
+                    sent_at = time.time()
+                proc.send_signal(sig)
+            out, err = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            return None, out, "".join(err_lines) + err, None
+        ended = time.time()
+        return proc.returncode, out, "".join(err_lines) + err, ended - (sent_at or ended)
+
+    import signal as sig
+
+    code, out, err, took = run("block", [sig.SIGTERM])
+    check_that("SIGTERM keeps the output a block buffer held", out == "before\n", repr(out))
+    check_that("and SIGTERM still ends the program", code == -sig.SIGTERM, code)
+
+    code, out, err, took = run("block", [sig.SIGHUP])
+    check_that("SIGHUP keeps the output a block buffer held", out == "before\n", repr(out))
+
+    code, out, err, took = run("fail", [])
+    check_that("main that raises while a fiber cannot stop exits with 1", code == 1, code)
+    check_that("and says what main raised", "main raised" in err and "boom" in err, err[-400:])
+    check_that("and how many fibers did not stop", "1 fiber did not stop" in err, err[-400:])
+    check_that("and keeps the output", out == "before\n", repr(out))
+
+    code, out, err, took = run("fiber-fails", [])
+    check_that("a fiber that fails while another cannot stop exits with 1", code == 1, code)
+    check_that("and says which failure", "a fiber that main started failed" in err and "the fiber failed" in err,
+               err[-400:])
+
+    code, out, err, took = run("slow-release", [])
+    check_that("a release longer than the grace period runs to its end", out == "before\nreleased\n", repr(out))
+    check_that("and the program exits with 0", code == 0, (code, err[-400:]))
+
+    code, out, err, took = run("nap", [sig.SIGINT])
+    check_that("Ctrl-C stops a fiber that can be cancelled, with 130", code == 130, code)
+    check_that("at once, not after the grace period", took is not None and took < 0.45, took)
+    check_that("and says nothing", err == "", err[-400:])
+
+    code, out, err, took = run("stuck", [sig.SIGINT])
+    check_that("Ctrl-C with a fiber that cannot stop exits after the grace period, with 130", code == 130, code)
+    check_that("and says why", "interrupted (SIGINT)" in err and "1 fiber did not stop" in err, err[-400:])
+
+    code, out, err, took = run("release", [sig.SIGINT])
+    check_that("Ctrl-C runs the releases of main's scopes", out == "before\nreleased\n", repr(out))
+    check_that("and exits with 130", code == 130, code)
+
+    code, out, err, took = run("stuck", [sig.SIGINT, -sig.SIGINT])
+    check_that("a second Ctrl-C ends the program at once", took is not None and took < 0.45, took)
+    check_that("with 130", code in (130, -sig.SIGINT), code)
+    check_that("and says what main's scope waited for", "still waiting for 1 fiber" in err, err[-400:])
+
+    code, out, err, took = run("block", [sig.SIGINT])
+    check_that("Ctrl-C while main blocks a thread names main", "main did not stop" in err, err[-400:])
+    check_that("and keeps the output", out == "before\n", repr(out))
+
+    code, out, err, took = run("handled", [sig.SIGINT, sig.SIGINT])
+    check_that("a SIGINT the program handles is the program's",
+               out == "before\nstopped by the signal\n", repr(out))
+    check_that("and the one after it ends the program", code in (130, -sig.SIGINT), code)
+
+    remove_artifacts(SOURCE)
+    return "signals", s_total, s_failed, s_failures
+
 def run_pdb_tests():
     # The locals a debugger shows of a build: the ones the program wrote,
     # under the names it wrote, and none of the compiler's; the PDB still the
@@ -1735,6 +1849,10 @@ with ThreadPoolExecutor(max_workers=16) as executor:
     phases.append(executor.submit(run_pdb_tests))
 
     print("-" * 50)
+    print_color(BLUE, "Checking how a program ends on a signal...")
+    phases.append(executor.submit(run_signal_tests))
+
+    print("-" * 50)
     print_color(BLUE, "Checking packages and roots...")
     phases.append(packages_future)
 
@@ -1756,6 +1874,8 @@ with ThreadPoolExecutor(max_workers=16) as executor:
     check_total = check_failed = 0
     pdb_total = pdb_failed = 0
     pdb_failures = []
+    signal_total = signal_failed = 0
+    signal_failures = []
     codegen_failures, repl_failures, repro_failures, stale_failures = [], [], [], []
     check_failures = []
     
@@ -1812,6 +1932,13 @@ with ThreadPoolExecutor(max_workers=16) as executor:
             else:
                 for f in pdb_failures:
                     print(f"  [{RED}FAIL{NC}] {f}")
+        elif name == "signals":
+            signal_total, signal_failed, signal_failures = total, failed, failures
+            if failed == 0:
+                print(f"  [{GREEN}PASS{NC}] signals and exit")
+            else:
+                for f in signal_failures:
+                    print(f"  [{RED}FAIL{NC}] {f}")
         elif name == "packages":
             package_total, package_failed, package_failures = total, failed, failures
             if failed == 0:
@@ -1856,6 +1983,8 @@ if check_total > 0:
     print(f"--check:            {check_total - check_failed}/{check_total} checks behaved")
 if pdb_total > 0:
     print(f"Debug symbols:      {pdb_total - pdb_failed}/{pdb_total} as a debugger should see them")
+if signal_total > 0:
+    print(f"Signals:            {signal_total - signal_failed}/{signal_total} ended as they should")
 if package_total > 0:
     print(f"Packages:           {package_total - package_failed}/{package_total} package rules held")
 if graph_total > 0:
@@ -1879,10 +2008,11 @@ print_failures("Staleness Failures", stale_failures)
 print_failures("Codegen Test Failures", codegen_failures)
 print_failures("--check Failures", check_failures)
 print_failures("Debug Symbol Failures", pdb_failures)
+print_failures("Signal Failures", signal_failures)
 print_failures("Package Failures", package_failures)
 print_failures("Graph Build Failures", graph_failures)
 
-if (error_failed or codegen_failed or repl_failed or units_failed or repro_failed or stale_failed or warning_failed or check_failed or pdb_failed or package_failed or graph_failed) and not compiled_failed and not run_failed:
+if (error_failed or codegen_failed or repl_failed or units_failed or repro_failed or stale_failed or warning_failed or check_failed or pdb_failed or signal_failed or package_failed or graph_failed) and not compiled_failed and not run_failed:
     sys.exit(1)
     
 if compiled_failed or run_failed:

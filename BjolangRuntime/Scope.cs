@@ -467,6 +467,17 @@ public static partial class BjolangRuntime {
         /// <summary>Has closing started? Read by the daemon and detached spawns.</summary>
         internal bool IsClosed => System.Threading.Volatile.Read(ref _outstanding.Value) < 0;
 
+        /// <summary>
+        /// How many fibers the scope still waits for. Before the scope is
+        /// closed this counts the body as one.
+        /// </summary>
+        internal int RunningChildren => System.Threading.Volatile.Read(ref _outstanding.Value) & int.MaxValue;
+
+        /// <summary>The first failure of a child, or null.</summary>
+        internal System.Exception? FirstFailure {
+            get { lock (_gate) return _failures is { Count: > 0 } f ? f[0].SourceException : null; }
+        }
+
         /// <summary>How many handles the scope is still holding. Test hook.</summary>
         internal int OwnedCount { get { lock (_gate) return _ownedCount; } }
 
@@ -1708,6 +1719,21 @@ public static partial class BjolangRuntime {
         return default;
     }
 
+    /// Whether `e` is how main leaves after the first SIGINT cancelled it.
+    private static bool InterruptedBy(System.Exception e) =>
+        Bjolang.Runtime.MainExit.Interrupted
+        && e is Bjolang.Runtime.Cancelled { Reason: var reason }
+        && ReferenceEquals(reason, Bjolang.Runtime.MainExit.Interrupt);
+
+    /// Main was stopped by SIGINT: exit with 130, as a shell expects of a
+    /// program that Ctrl-C stopped. `T` is `int` for every generated entry point.
+    private static T ExitInterrupted<T>() {
+        StdOut.FlushAtExit();
+        if (typeof(T) == typeof(int)) return (T)(object)130;
+        System.Environment.Exit(130);
+        return default!;
+    }
+
     /// The entry point for a bjoroutine `main`.
     ///
     /// The shape is the `with-scope` macro's, written out: install, run, close
@@ -1720,17 +1746,29 @@ public static partial class BjolangRuntime {
 
         var scope = OpenMainScope();
         var saved = scopesubpush_BANG(scope);
+        Bjolang.Runtime.MainExit.Started(scope);
         try {
             T answer;
             try {
                 answer = await body();
             } catch (System.Exception e) {
-                await scope.Close(new Option<System.Exception>(e));
+                Bjolang.Runtime.MainExit.Failed(e);
+                try {
+                    await scope.Close(new Option<System.Exception>(e));
+                } finally {
+                    Bjolang.Runtime.MainExit.Closed();
+                }
+                if (InterruptedBy(e)) return ExitInterrupted<T>();
                 throw;
             }
 
-            await scope.Close(default);
-            return answer;
+            Bjolang.Runtime.MainExit.Returned();
+            try {
+                await scope.Close(default);
+            } finally {
+                Bjolang.Runtime.MainExit.Closed();
+            }
+            return Bjolang.Runtime.MainExit.Interrupted ? ExitInterrupted<T>() : answer;
         } finally {
             _ = dynsubrestore_BANG(saved);
         }
@@ -1754,17 +1792,29 @@ public static partial class BjolangRuntime {
 
         var scope = OpenMainScope();
         var saved = scopesubpush_BANG(scope);
+        Bjolang.Runtime.MainExit.Started(scope);
         try {
             T answer;
             try {
                 answer = body();
             } catch (System.Exception e) {
-                _ = Bjo.RunToCompletion([NonUserCode] () => scope.Close(new Option<System.Exception>(e)));
+                Bjolang.Runtime.MainExit.Failed(e);
+                try {
+                    _ = Bjo.RunToCompletion([NonUserCode] () => scope.Close(new Option<System.Exception>(e)));
+                } finally {
+                    Bjolang.Runtime.MainExit.Closed();
+                }
+                if (InterruptedBy(e)) return ExitInterrupted<T>();
                 throw;
             }
 
-            _ = Bjo.RunToCompletion([NonUserCode] () => scope.Close(default));
-            return answer;
+            Bjolang.Runtime.MainExit.Returned();
+            try {
+                _ = Bjo.RunToCompletion([NonUserCode] () => scope.Close(default));
+            } finally {
+                Bjolang.Runtime.MainExit.Closed();
+            }
+            return Bjolang.Runtime.MainExit.Interrupted ? ExitInterrupted<T>() : answer;
         } finally {
             _ = dynsubrestore_BANG(saved);
             if (FiberTrace.Enabled) FiberTrace.LeaveOutside();

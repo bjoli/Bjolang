@@ -141,6 +141,53 @@ it to find where a program is stuck, not in production.
   executable has no pdb, so the report of a deadline gives the name of the
   bjoroutine: ~at worker in app (no line: this build has none)~.
 
+* How a program ends
+
+What a program does when it is signalled, or when it fails while its fibers
+still run. It applies to a program's ~main~, not to a REPL session.
+
+** Signals
+
+- *Ctrl-C (SIGINT), the first time*: cancels ~main~'s scope with
+  ~(Requested "SIGINT")~. Every ~sync~ in it raises ~Cancelled~, so ~finally~
+  blocks and the releases of scopes run. The program then exits with 130.
+- *Ctrl-C, the second time*: ends the program at once.
+- *SIGTERM and SIGHUP*: end the program at once, as before.
+- *Every one of them* flushes standard output first. A program whose output
+  goes to a file or a pipe keeps what it wrote before the signal.
+- A signal that the program handles itself, with ~with-signal-cancel~ or
+  ~signal-subscribe~, is the program's. The runtime only flushes. A second
+  Ctrl-C after ~with-signal-cancel~ gave the signal back ends the program.
+
+** The grace period: ~BJO_EXIT_GRACE~
+
+When ~main~'s scope is cancelled, the fibers in it get a grace period to stop:
+3 s by default, or ~BJO_EXIT_GRACE~ seconds. The scope is cancelled when
+
+- ~main~ raises,
+- a fiber that ~main~ started fails, or
+- the first Ctrl-C arrives.
+
+A fiber that does not stop in the grace period, such as one in an
+~#:uncancellable~ wait or one that never syncs, would make the program hang.
+Instead the program writes the cause and the number of fibers to standard
+error, and exits: with 1 after a failure, with 130 after Ctrl-C.
+
+#+BEGIN_SRC
+bjolang: main raised:
+System.InvalidOperationException: boom
+   at ...
+bjolang: 1 fiber did not stop within 3 s, so the program exits without waiting.
+bjolang: run with BJO_FIBER_TRACE=1 to see where the program waits.
+#+END_SRC
+
+With ~BJO_FIBER_TRACE=1~, the fiber trace follows in place of the last line.
+
+A ~main~ that returns while its fibers run is not cancelled: its scope waits
+for them, as every scope does. A server is written that way. A signal that
+ends such a program says on standard error how many fibers the scope still
+waited for.
+
 * Setting it up
 
 - [[https://github.com/Samsung/netcoredbg/releases][netcoredbg]], unpacked to ~~/.local/share/netcoredbg~. It speaks the Debug

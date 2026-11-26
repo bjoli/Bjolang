@@ -41,6 +41,28 @@ public sealed class SignalGroup : System.IDisposable
     // Null after Dispose.
     private List<PosixSignalRegistration>? _registrations = new();
 
+    // The signals of this group, for the counts below.
+    private readonly List<int> _signals = new();
+
+    // How many live registrations the program has for each signal, and when
+    // one of its handlers last ran. Read by `HandlesNow`.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, int> s_live = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, long> s_ranAt = new();
+
+    /// <summary>
+    /// Whether the program handles <paramref name="signal"/> itself: it has a
+    /// registration for it, or one of its handlers for it ran within the last
+    /// second. The second test covers a handler that disposed its own group
+    /// before the runtime's handler for the same delivery ran: .NET does not
+    /// say in which order the handlers of one signal run.
+    /// </summary>
+    internal static bool HandlesNow(int signal)
+    {
+        if (s_live.TryGetValue(signal, out var n) && n > 0) return true;
+        return s_ranAt.TryGetValue(signal, out var at)
+               && System.Diagnostics.Stopwatch.GetElapsedTime(at).TotalMilliseconds < 1000;
+    }
+
     /// <summary>
     /// Registers <paramref name="handler"/> for <paramref name="signal"/>: a
     /// <see cref="PosixSignal"/> value, negative for .NET's names and a raw
@@ -60,9 +82,12 @@ public sealed class SignalGroup : System.IDisposable
                 (PosixSignal)signal,
                 [NonUserCode] (ctx) => {
                     if (cancelDefault) ctx.Cancel = true;
+                    s_ranAt[(int)ctx.Signal] = System.Diagnostics.Stopwatch.GetTimestamp();
                     try { handler(); }
                     catch (System.Exception e) { Scheduler.ReportUnhandled(e); }
                 }));
+            _signals.Add(signal);
+            s_live.AddOrUpdate(signal, 1, [NonUserCode] static (_, n) => n + 1);
         }
         return default;
     }
@@ -80,6 +105,7 @@ public sealed class SignalGroup : System.IDisposable
         }
         if (registrations is null) return;
         foreach (var r in registrations) r.Dispose();
+        foreach (var signal in _signals) s_live.AddOrUpdate(signal, 0, [NonUserCode] static (_, n) => n - 1);
     }
 
     /// <summary>
