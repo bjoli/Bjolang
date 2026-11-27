@@ -2714,6 +2714,7 @@ def test_dep(work, c):
            (app / "manifest.bjodat").read_text(), (app / "manifest.bjodat").read_text())
     listed = run_bjo(app, "dep", "list")
     c.worked("dep list", listed)
+    c.that("and writes no colour to a pipe", "\x1b" not in listed.stdout, repr(listed.stdout))
     rows = [l.split() for l in listed.stdout.splitlines()]
     c.that("has a header", rows and rows[0] == ["package", "clause", "wants", "uses", "source"], listed.stdout)
     c.that("a row for the git dependency, with what it wants and what the lock chose",

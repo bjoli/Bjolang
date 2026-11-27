@@ -60,6 +60,7 @@
 (import (std prelude))
 (import (std syntax-match))
 (import (std random))
+(import (only (std fmt) show as-red as-green as-yellow as-bold))
 
 (:doc #:file "test.bjodoc")
 
@@ -1045,13 +1046,15 @@
           (:do
            (match (record-ref result status)
              (Failed
-              (println
-               #"FAIL ${(record-ref t name)} (${(shown-file (record-ref t file))}:${(record-ref t line)})")
+              (show
+               [(as-bold (as-red "FAIL"))
+                #" ${(record-ref t name)} (${(shown-file (record-ref t file))}:${(record-ref t line)})\n"])
               (loop (:for f (record-ref result failures))
                     (:do (println f))))
              (Fixed
-              (println
-               #"FIXED ${(record-ref t name)} (${(shown-file (record-ref t file))}:${(record-ref t line)}): it passes, so its #:todo can go"))
+              (show
+               [(as-bold (as-yellow "FIXED"))
+                #" ${(record-ref t name)} (${(shown-file (record-ref t file))}:${(record-ref t line)}): it passes, so its #:todo can go\n"]))
              (_ unit)))
           (:acc out (listing result))))
   (loop (:for h (list-reverse (box-ref run-end-hooks)))
@@ -1066,7 +1069,10 @@
       (println (if (vec-empty? (record-ref o filters))
                    "There are no tests."
                    "No test's name contains any of the names given."))
-      (println (summary-line results ms)))
+      (show [(if (= failed 0)
+                 (as-green (summary-line results ms))
+                 (as-bold (as-red (summary-line results ms))))
+             "\n"]))
   (if (= failed 0)
       0
       1))

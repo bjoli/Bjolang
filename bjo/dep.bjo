@@ -25,7 +25,7 @@
 (import "project.bjo")
 (import "git.bjo")
 (import "lock.bjo")
-(import (only (std fmt) Block show tabular/rows TableStyle))
+(import (only (std fmt) Block show tabular/rows TableStyle as-bold as-dim as-yellow))
 
 ;; ---------------------------------------------------------------------------
 ;; The text
@@ -726,14 +726,13 @@
     (def indirect
       (loop (:for l locked)
             (:when (not (list-contains? named (locked-name l))))
-            (:acc out (listing (vec-map BStr
-                                        [(module-name->string (locked-name l))
-                                         (if (list-contains? needed (locked-name l))
-                                             "(indirect)"
-                                             "(unused)")
-                                         ""
-                                         (version->string (locked-version l))
-                                         (source-shown (Some (locked-source l)))])))
+            (:acc out (listing [(BStr (module-name->string (locked-name l)))
+                                (if (list-contains? needed (locked-name l))
+                                    (as-dim (BStr "(indirect)"))
+                                    (as-yellow (BStr "(unused)")))
+                                (BStr "")
+                                (BStr (version->string (locked-version l)))
+                                (BStr (source-shown (Some (locked-source l))))]))
         => out))
     (def nugets
       (loop (:for p (record-ref package packages))
@@ -743,7 +742,8 @@
     (if (= (vec-length rows) 0)
         (println "bjo dep list: the manifest names no dependencies.")
         (show (tabular/rows rows
-                            #:titles (vec-map BStr ["package" "clause" "wants" "uses" "source"])
+                            #:titles (vec-map #(as-bold (BStr &))
+                                              ["package" "clause" "wants" "uses" "source"])
                             #:style StyleSimple)))
     0))
 
