@@ -386,38 +386,119 @@
   (when (= (record-ref st stored-left) 0)
     (record-set! st (mode (if (record-ref st last) StreamEnd BlockHeader)))))
 
+;; Copies `len` bytes from `dist` back to `at`, byte by byte where the two
+;; overlap, so that a copy can repeat what it has just written.
+(: (-> (Array byte) int int int void) #:inline)
+(defun (copy-back! win at dist len)
+  (if (>= dist len)
+      (array-copy! win (- at dist) win at len)
+      (loop (:for i (range 0 len))
+            (:do (array-set! win (+ at i) (array-ref win (- (+ at i) dist)))))))
+
+;; Decodes one symbol of a coded block, with every check.
+(: (-> Inflater void))
+(defun (coded-one! st)
+  (def win (record-ref st win))
+  (def sym (decode! st (record-ref st lit)))
+  (cond
+    ((< sym 256)
+     (array-set! win (record-ref st wpos) (cast byte sym))
+     (record-set! st (wpos (+ (record-ref st wpos) 1))))
+    ((= sym 256) (record-set! st (mode (if (record-ref st last) StreamEnd BlockHeader))))
+    ((> sym 285) (bad-data (str (record-ref st what) " has a length code that is not one")))
+    (else
+     (def l (- sym 257))
+     (def len (+ (array-ref length-base l) (take-bits! st (array-ref length-extra l))))
+     (def d (decode! st (record-ref st dist)))
+     (when (> d 29)
+       (bad-data (str (record-ref st what) " has a distance code that is not one")))
+     (def dist (+ (array-ref dist-base d) (take-bits! st (array-ref dist-extra d))))
+     (def at (record-ref st wpos))
+     (when (> dist at)
+       (bad-data (str (record-ref st what) " refers back past its start")))
+     (copy-back! win at dist len)
+     (record-set! st (wpos (+ at len))))))
+
+;; The low `n` bits of `bits`.
+(: (-> long int int) #:inline)
+(defun (low-bits bits n)
+  (cast int (bitwise-and bits (- (shift-left 1L n) 1L))))
+
+;; Decodes the symbols of a coded block that need no more than the fast
+;; tables, while at least symbol-room bytes are in hand.
+;; - The bit buffer and the positions are loop variables, written back to
+;;   `st` when it returns.
+;; - It returns before a symbol the fast tables do not decode: a code longer
+;;   than fast-bits, the end of the block, and a value that is not valid.
+;;   That symbol's bits are left in the buffer for `coded-one!`.
+;; - The buffer is kept above 48 bits before each symbol, which is the most a
+;;   length, a distance and their extra bits take. It holds at most 56, so
+;;   the sign bit is never set.
+(: (-> Inflater int void))
+(defun (coded-fast! st limit)
+  (def in (record-ref st in))
+  (def last-safe (- (record-ref st end) symbol-room))
+  (def win (record-ref st win))
+  (def lit-fast (record-ref (record-ref st lit) fast))
+  (def dist-fast (record-ref (record-ref st dist) fast))
+  (let go ((bits (record-ref st bits))
+           (nbits (record-ref st nbits))
+           (pos (record-ref st pos))
+           (wpos (record-ref st wpos)))
+    (cond
+      ((or (>= wpos limit) (> pos last-safe))
+       (record-set! st (bits bits) (nbits nbits) (pos pos) (wpos wpos)))
+      ((<= nbits 48)
+       (go (bitwise-ior bits (shift-left (cast long (array-ref in pos)) nbits))
+           (+ nbits 8)
+           (+ pos 1)
+           wpos))
+      (else
+       (def e (array-ref lit-fast (cast int (bitwise-and bits 1023L))))
+       (def l (bitwise-and e 15))
+       (def sym (shift-right e 4))
+       (cond
+         ((and (> l 0) (< sym 256))
+          (array-set! win wpos (cast byte sym))
+          (go (shift-right bits l) (- nbits l) pos (+ wpos 1)))
+         ((or (= l 0) (= sym 256) (> sym 285))
+          (record-set! st (bits bits) (nbits nbits) (pos pos) (wpos wpos)))
+         (else
+          (def li (- sym 257))
+          (def b1 (shift-right bits l))
+          (def lx (array-ref length-extra li))
+          (def len (+ (array-ref length-base li) (low-bits b1 lx)))
+          (def b2 (shift-right b1 lx))
+          (def de (array-ref dist-fast (cast int (bitwise-and b2 1023L))))
+          (def dl (bitwise-and de 15))
+          (def d (shift-right de 4))
+          (if (or (= dl 0) (> d 29))
+              (record-set! st (bits bits) (nbits nbits) (pos pos) (wpos wpos))
+              (let ()
+                (def b3 (shift-right b2 dl))
+                (def dx (array-ref dist-extra d))
+                (def dist (+ (array-ref dist-base d) (low-bits b3 dx)))
+                (if (> dist wpos)
+                    (record-set! st (bits bits) (nbits nbits) (pos pos) (wpos wpos))
+                    (let ()
+                      (copy-back! win wpos dist len)
+                      (go (shift-right b3 dx) (- nbits (+ l lx dl dx)) pos (+ wpos len))))))))))))
+
 ;; Decodes symbols of a coded block until the output reaches `limit`, the
 ;; block ends, or the bytes in hand may not hold the next symbol.
+;; - The fast loop decodes what it can; `coded-one!` decodes the symbol it
+;;   stops at, and the symbols near the end of the input.
 (: (-> Inflater int void))
 (defun (coded! st limit)
-  (def win (record-ref st win))
   (let go ()
-    (when (and (< (record-ref st wpos) limit)
+    (when (and (= (record-ref st mode) Coded)
+               (< (record-ref st wpos) limit)
                (or (record-ref st eof) (>= (available st) symbol-room)))
-      (def sym (decode! st (record-ref st lit)))
-      (cond
-        ((< sym 256)
-         (array-set! win (record-ref st wpos) (cast byte sym))
-         (record-set! st (wpos (+ (record-ref st wpos) 1)))
-         (go))
-        ((= sym 256) (record-set! st (mode (if (record-ref st last) StreamEnd BlockHeader))))
-        ((> sym 285) (bad-data (str (record-ref st what) " has a length code that is not one")))
-        (else
-         (def l (- sym 257))
-         (def len (+ (array-ref length-base l) (take-bits! st (array-ref length-extra l))))
-         (def d (decode! st (record-ref st dist)))
-         (when (> d 29)
-           (bad-data (str (record-ref st what) " has a distance code that is not one")))
-         (def dist (+ (array-ref dist-base d) (take-bits! st (array-ref dist-extra d))))
-         (def at (record-ref st wpos))
-         (when (> dist at)
-           (bad-data (str (record-ref st what) " refers back past its start")))
-         (if (>= dist len)
-             (array-copy! win (- at dist) win at len)
-             (loop (:for i (range 0 len))
-                   (:do (array-set! win (+ at i) (array-ref win (- (+ at i) dist))))))
-         (record-set! st (wpos (+ at len)))
-         (go))))))
+      (coded-fast! st limit)
+      (when (and (< (record-ref st wpos) limit)
+                 (or (record-ref st eof) (>= (available st) symbol-room)))
+        (coded-one! st))
+      (go))))
 
 ;; What a step of decoding needs next.
 (type (: Step (Union OutputFull StreamDone (: NeedBytes int))))
@@ -512,10 +593,13 @@
 ;; Checksums
 ;; ---------------------------------------------------------------------------
 
+;; The CRC-32 tables of slicing-by-8: table k, at k*256, is the CRC of a
+;; byte followed by k zero bytes. Table 0 is the ordinary byte-at-a-time
+;; table.
 (: (Array long))
-(def crc-table
+(def crc-tables
   (let ()
-    (def (: t (Array long)) (make-array 256 #:fill 0L))
+    (def (: t (Array long)) (make-array 2048 #:fill 0L))
     (loop (:for n (range 0 256))
           (:do (array-set! t
                            n
@@ -526,18 +610,58 @@
                                          (bitwise-xor 0xEDB88320L (shift-right c 1))
                                          (shift-right c 1))
                                      (+ k 1)))))))
+    (loop (:for k (range 1 8))
+          (:do (loop (:for n (range 0 256))
+                     (:do (def prev (array-ref t (+ (* (- k 1) 256) n)))
+                          (array-set! t
+                                      (+ (* k 256) n)
+                                      (bitwise-xor
+                                       (shift-right prev 8)
+                                       (array-ref t (cast int (bitwise-and prev 255L)))))))))
     t))
 
+;; The 4 bytes at `i` as a little-endian number.
+(: (-> (Array byte) int long) #:inline)
+(defun (le32 bytes i)
+  (bitwise-ior (bitwise-ior (cast long (array-ref bytes i))
+                            (shift-left (cast long (array-ref bytes (+ i 1))) 8))
+               (bitwise-ior (shift-left (cast long (array-ref bytes (+ i 2))) 16)
+                            (shift-left (cast long (array-ref bytes (+ i 3))) 24))))
+
+;; Entry `n` of table `k`.
+(: (-> int long long) #:inline)
+(defun (crc-at k n)
+  (array-ref crc-tables (+ (* k 256) (cast int (bitwise-and n 255L)))))
+
 ;; The CRC-32 of gzip, of `bytes` after `crc`.
+;; - Eight bytes a step, by slicing-by-8; the bytes after the last whole
+;;   eight, one at a time.
 (: (-> long (Array byte) long))
 (defun (crc32 crc bytes)
-  (def/mutable c (bitwise-xor crc 0xFFFFFFFFL))
-  (loop (:for i (range 0 (array-length bytes)))
-        (:do (def b (cast long (array-ref bytes i)))
-             (set! c
-                   (bitwise-xor (array-ref crc-table (cast int (bitwise-and (bitwise-xor c b) 255L)))
-                                (shift-right c 8)))))
-  (bitwise-xor c 0xFFFFFFFFL))
+  (def n (array-length bytes))
+  (def whole (- n (% n 8)))
+  (def eights
+    (let go ((i 0) (c (bitwise-xor crc 0xFFFFFFFFL)))
+      (if (>= i whole)
+          c
+          (let ()
+            (def lo (bitwise-xor c (le32 bytes i)))
+            (def hi (le32 bytes (+ i 4)))
+            (go (+ i 8)
+                (bitwise-xor (bitwise-xor (bitwise-xor (crc-at 7 lo) (crc-at 6 (shift-right lo 8)))
+                                          (bitwise-xor (crc-at 5 (shift-right lo 16))
+                                                       (crc-at 4 (shift-right lo 24))))
+                             (bitwise-xor (bitwise-xor (crc-at 3 hi) (crc-at 2 (shift-right hi 8)))
+                                          (bitwise-xor (crc-at 1 (shift-right hi 16))
+                                                       (crc-at 0 (shift-right hi 24))))))))))
+  (def rest
+    (let go ((i whole) (c eights))
+      (if (>= i n)
+          c
+          (go (+ i 1)
+              (bitwise-xor (crc-at 0 (bitwise-xor c (cast long (array-ref bytes i))))
+                           (shift-right c 8))))))
+  (bitwise-xor rest 0xFFFFFFFFL))
 
 ;; The Adler-32 of zlib, of `bytes` after `adler`.
 (: (-> long (Array byte) long))
