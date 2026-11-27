@@ -78,9 +78,13 @@
           (render->string [(with-pad #\. [(padded/left 3 ["a"])]) (padded/left 3 ["b"])])
           "..a  b")
 
-  ;; Width is in characters: an astral pad is one of them, not two.
-  (expect "an astral pad is one character"
+  ;; Width is in terminal columns: an emoji pad takes two of them.
+  (expect "an emoji pad takes two columns"
           (render->string [(with-pad #\😀 [(padded/left 3 ["a"])])])
+          "😀a")
+  (expect "and one character when characters are counted"
+          (render->string [(with-fmt current-string-width string-count
+                             [(with-pad #\😀 [(padded/left 3 ["a"])])])])
           "😀😀a")
 
   ;; --- Joining -------------------------------------------------------------
@@ -181,8 +185,13 @@
   ;; --- The width function --------------------------------------------------
   ;;
   ;; An emoji is one character and two terminal columns. Which of those a width
-  ;; is counted in is the caller's to say, and everything follows it.
-  (expect "characters by default" (render->string [(padded/left 5 ["😀"])]) "    😀")
+  ;; is counted in is the caller's to say, and everything follows it. The
+  ;; default is terminal columns.
+  (expect "columns by default" (render->string [(padded/left 5 ["😀"])]) "   😀")
+  (expect "characters when told to count them"
+          (render->string [(with-fmt current-string-width string-count
+                             [(padded/left 5 ["😀"])])])
+          "    😀")
   (expect "columns when told to count them"
           (render->string [(with-fmt current-string-width terminal-width
                              [(padded/left 5 ["😀"])])])

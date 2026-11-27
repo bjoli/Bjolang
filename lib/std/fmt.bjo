@@ -174,7 +174,7 @@
 
 ;; Calculates string width in columns.
 (: (Param (-> string int)))
-(def current-string-width (make-cold-parameter #(string-count &1)))
+(def current-string-width (make-cold-parameter #(terminal-width &1)))
 
 ;; --- Number settings -------------------------------------------------------
 
@@ -1679,9 +1679,25 @@
          (else (lp (string-cursor-next s k))))))
     (else (string-cursor-next s next))))
 
+;; A string of printable ASCII only is checked in SIMD blocks on its UTF-8
+;; bytes, and is as wide as it has bytes.
+(import/extern
+  (utf8-bytes (: BjoString.Utf8String.AsSpan (-> string (RoSpan byte))))
+  (index-outside-range
+   (: System.MemoryExtensions.IndexOfAnyExceptInRange (-> (RoSpan byte) byte byte int))))
+
 ;; How many columns `s` takes in a terminal.
+;; - Printable ASCII only: its length, without the scan below.
+;; - Otherwise each code point is measured, and escape sequences take none.
 (: (-> string int))
 (defun (terminal-width s)
+  (def bytes (utf8-bytes s))
+  (if (< (index-outside-range bytes 32uy 126uy) 0)
+      (ro-span-length bytes)
+      (scanned-width s)))
+
+(: (-> string int))
+(defun (scanned-width s)
   (let lp ((c (string-cursor-start s))
            (total 0)
            (last 0)

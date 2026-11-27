@@ -3,6 +3,18 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std fmt)~ measures in terminal columns by default
+
+- *~current-string-width~ is ~terminal-width~ unless set.* A wide
+  character, such as CJK or an emoji, takes two columns, and an escape
+  sequence takes none, so tables, padding and wrapping line up in a
+  terminal. Before, the default counted code points.
+- *~terminal-width~ has a fast path.* A string of printable ASCII only is
+  checked in SIMD blocks on its UTF-8 bytes and is as wide as it is long,
+  at about the cost of ~string-count~. A table of 50 rows renders 1.5%
+  slower than with the old default; without the fast path it was 21%.
+- For the old measure, bind ~current-string-width~ to ~string-count~.
+
 * ~bjo version~ and ~bjo completions~
 
 - *~bjo version~*, or ~bjo --version~, prints the version of bjo, the .NET

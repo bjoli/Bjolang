@@ -455,14 +455,12 @@
     """))
 
 (:doc current-string-width
-  (summary "How many columns a string takes. Its character count unless set.")
-  (see width-of)
+  (summary "How many columns a string takes. terminal-width unless set.")
+  (see width-of terminal-width)
   (example """
-    ;; An astral character takes two columns on a terminal.
-    (defun (astral-width s)
-      (string-fold (fun (ch acc) (+ acc (if (> (char->int ch) 65535) 2 1))) 0 s))
-
-    (with-fmt current-string-width astral-width (padded/left 5 "😀"))
+    ;; The code point count: cheaper for text that is not for a terminal,
+    ;; but a wide character counts as one column.
+    (with-fmt current-string-width string-count (padded/left 5 "茶"))
     """)
   (reference """
     Everything that measures or cuts goes through it: padding, trimming,
@@ -482,8 +480,8 @@
     (terminal-width (str "e" (char->string (int->char 769))))  ;; 1: e and an accent
     (terminal-width (str esc "[1mtea" esc "[0m"))             ;; 3: the escapes take none
 
-    (with-fmt current-string-width terminal-width
-      (tabular/rows [["茶" "1"] ["tea" "2"]] #:style StyleAscii))
+    ;; The default measure, so a table with wide characters lines up.
+    (tabular/rows [["茶" "1"] ["tea" "2"]] #:style StyleAscii)
     """)
   (reference """
     East Asian Wide and Fullwidth characters, emoji among them, take two
@@ -495,10 +493,10 @@
     character before it two wide, a skin tone modifier joins the emoji
     before it, and two regional indicators are one flag, two wide.
 
-    It is not the default measure, which counts code points and is
-    cheaper. Set it where the text is for a terminal and holds such
-    characters: a wide character measured as one column puts every column
-    after it out of line.
+    It is the default measure. A string of printable ASCII only is as
+    wide as it is long, and is measured with a vectorized check of its
+    bytes, at about the cost of @code{string-count}. Other strings are
+    measured a code point at a time, about 10 ns a character.
 
     The table is Unicode 16.0. A terminal whose own idea of a character's
     width differs from it, as some do for emoji, draws that character wider

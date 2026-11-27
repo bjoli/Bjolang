@@ -43,4 +43,18 @@
   (expect "and padding counts in columns"
           (render->string [(with-fmt current-string-width terminal-width [(padded/left 6 ["茶茶"])])])
           "  茶茶")
+
+  ;; Printable ASCII only takes the fast path; a control character or a byte
+  ;; past ~ takes the scan.
+  (expect "a long ascii string is its length"
+          (terminal-width (string-join (list->vec {listing "xxxxxxxxxx" (:for i (range 0 20))}) ""))
+          200)
+  (expect "space and tilde are the ends of the fast path" (terminal-width " ~") 2)
+  (expect "a tab takes nothing" (terminal-width "a\tb") 2)
+  (expect "a newline takes nothing" (terminal-width "a\nb") 2)
+  (expect "DEL takes nothing" (terminal-width (str "a" (cp 127))) 1)
+  (expect "ascii with one wide character is scanned" (terminal-width "tea 茶") 6)
+  (expect "the default measure is terminal-width"
+          (render->string [(tabular/rows [["茶" "1"] ["tea" "22"]] #:style StyleLight)])
+          "┌─────┬────┐\n│ 茶  │ 1  │\n│ tea │ 22 │\n└─────┴────┘\n")
   0)
