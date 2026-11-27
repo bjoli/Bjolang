@@ -178,9 +178,11 @@
 (defun (file-read-text path)
   (match (open-input-file path)
     ((Ok opened)
-     (fs-result (as-path path) (try (with-open ((p opened))
-            (read-all p))
-       #:catch (System.IO.IOException System.UnauthorizedAccessException))))
+     (fs-result (as-path path)
+                (try
+                  (with-open ((p opened))
+                    (read-all p))
+                  #:catch (System.IO.IOException System.UnauthorizedAccessException))))
     ((Err e) (Err e))))
 
 ;; The flush is explicit so that the suspending copy awaits it. Closing would
@@ -189,11 +191,13 @@
 (defun (write-whole-file path contents mode)
   (match (open-output-file path #:mode mode)
     ((Ok opened)
-     (fs-result (as-path path) (try (with-open ((p opened))
-            (write-string p contents)
-            (flush-port p)
-            unit)
-       #:catch (System.IO.IOException System.UnauthorizedAccessException))))
+     (fs-result (as-path path)
+                (try
+                  (with-open ((p opened))
+                    (write-string p contents)
+                    (flush-port p)
+                    unit)
+                  #:catch (System.IO.IOException System.UnauthorizedAccessException))))
     ((Err e) (Err e))))
 
 ;; Write text.
@@ -605,9 +609,10 @@
        ((clr-file-exists name) #t)
        ((clr-dir-exists name) #f)
        ((= name "") #f)
-       (else (match (path-parent p)
-               (None #f)
-               ((Some parent) (ancestor-is-file? parent))))))))
+       (else
+        (match (path-parent p)
+          (None #f)
+          ((Some parent) (ancestor-is-file? parent))))))))
 
 (: (-> FsError Path))
 (defun (fs-error-path e)
@@ -636,15 +641,16 @@
 ;; The kind of error, the path and the exception's message.
 (: (-> FsError string))
 (defun (fs-error-message e)
-  (def kind (match e
-              ((NotFound _ _) "not found")
-              ((AlreadyExists _ _) "already exists")
-              ((PermissionDenied _ _) "permission denied")
-              ((NotEmpty _ _) "directory not empty")
-              ((IsDirectory _ _) "is a directory")
-              ((NotDirectory _ _) "not a directory")
-              ((InvalidPath _ _) "invalid path")
-              ((Io _ _) "I/O error")))
+  (def kind
+    (match e
+      ((NotFound _ _) "not found")
+      ((AlreadyExists _ _) "already exists")
+      ((PermissionDenied _ _) "permission denied")
+      ((NotEmpty _ _) "directory not empty")
+      ((IsDirectory _ _) "is a directory")
+      ((NotDirectory _ _) "not a directory")
+      ((InvalidPath _ _) "invalid path")
+      ((Io _ _) "I/O error")))
   #"${kind}: ${(path->string/lossy (fs-error-path e))}: ${(.-Message (fs-error-exception e))}")
 
 (impl (AsException FsError)
@@ -1052,7 +1058,8 @@
               (def fresh
                 (as-path (bytestring-append (path->bytestring to)
                                             (string->bytestring (str ".copy-"
-                                                                     (clr-guid-text (clr-new-guid) "N"))))))
+                                                                     (clr-guid-text (clr-new-guid)
+                                                                                    "N"))))))
               ;; Any exception deletes `fresh`, a cancellation too.
               (def outcome
                 (try
@@ -1075,33 +1082,39 @@
              (_
               (match (open-write-stream to mode)
                 ((Ok s)
-                 (fs-result to (try (with-open ((out s))
-                        (stream-copy-count! in out count)
-                        (stream-flush! out)
-                        unit)
-                   #:catch (System.IO.IOException System.UnauthorizedAccessException))))
+                 (fs-result to
+                            (try
+                              (with-open ((out s))
+                                (stream-copy-count! in out count)
+                                (stream-flush! out)
+                                unit)
+                              #:catch (System.IO.IOException System.UnauthorizedAccessException))))
                 ((Err e) (Err e))))))))))
 
 (: (-> %p (Result FsError (Array byte))) (where (AsPath %p)))
 (defun (file-read-bytes path)
   (match (open-read-stream (as-path path))
     ((Ok opened)
-     (fs-result (as-path path) (try (with-open ((in opened))
-            (def buffer (MemoryStream.))
-            (stream-copy! in (cast ClrStream buffer))
-            (.ToArray buffer))
-       #:catch (System.IO.IOException System.UnauthorizedAccessException))))
+     (fs-result (as-path path)
+                (try
+                  (with-open ((in opened))
+                    (def buffer (MemoryStream.))
+                    (stream-copy! in (cast ClrStream buffer))
+                    (.ToArray buffer))
+                  #:catch (System.IO.IOException System.UnauthorizedAccessException))))
     ((Err e) (Err e))))
 
 (: (-> Path (Array byte) WriteMode (Result FsError Unit)))
 (defun (write-whole-bytes path bytes mode)
   (match (open-write-stream path mode)
     ((Ok opened)
-     (fs-result (as-path path) (try (with-open ((out opened))
-            (stream-write! out bytes)
-            (stream-flush! out)
-            unit)
-       #:catch (System.IO.IOException System.UnauthorizedAccessException))))
+     (fs-result (as-path path)
+                (try
+                  (with-open ((out opened))
+                    (stream-write! out bytes)
+                    (stream-flush! out)
+                    unit)
+                  #:catch (System.IO.IOException System.UnauthorizedAccessException))))
     ((Err e) (Err e))))
 
 (: (-> %p (Array byte) (Result FsError Unit)) (where (AsPath %p)))
@@ -1119,14 +1132,16 @@
 (defun (file-read-lines path #:mode Any)
   (match (open-input-file path)
     ((Ok opened)
-     (fs-result (as-path path) (try (with-open ((p opened))
-            (def lines (vecbuilder-empty))
-            (let next ()
-              (unless (port-eof? p)
-                (vecbuilder-add! lines (read-line p #:mode mode))
-                (next)))
-            (vecbuilder->vec lines))
-       #:catch (System.IO.IOException System.UnauthorizedAccessException))))
+     (fs-result (as-path path)
+                (try
+                  (with-open ((p opened))
+                    (def lines (vecbuilder-empty))
+                    (let next ()
+                      (unless (port-eof? p)
+                        (vecbuilder-add! lines (read-line p #:mode mode))
+                        (next)))
+                    (vecbuilder->vec lines))
+                  #:catch (System.IO.IOException System.UnauthorizedAccessException))))
     ((Err e) (Err e))))
 
 ;; Each line followed by "\n", the last one too, on every OS: the same lines
@@ -1136,13 +1151,15 @@
 (defun (file-write-lines path lines)
   (match (open-output-file path)
     ((Ok opened)
-     (fs-result (as-path path) (try (with-open ((p opened))
-            (loop (:for line lines)
-                  (:do (write-string p line)
-                       (write-string p "\n")))
-            (flush-port p)
-            unit)
-       #:catch (System.IO.IOException System.UnauthorizedAccessException))))
+     (fs-result (as-path path)
+                (try
+                  (with-open ((p opened))
+                    (loop (:for line lines)
+                          (:do (write-string p line)
+                               (write-string p "\n")))
+                    (flush-port p)
+                    unit)
+                  #:catch (System.IO.IOException System.UnauthorizedAccessException))))
     ((Err e) (Err e))))
 
 ;; Returns a lazy `Seq` of items produced by repeatedly calling `(reader port)`.

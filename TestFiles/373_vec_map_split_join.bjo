@@ -39,23 +39,30 @@
   (+ n 1))
 
 (: (-bjo-> (Vec int) (Vec int)))
-(defbjo (noted v) (vec-map (bjoroutine (x) (noting x)) v))
+(defbjo (noted v)
+  (vec-map (bjoroutine (x) (noting x)) v))
 
 (: (-> (Vec string) int))
 (defun (main args)
   (loop (:for n (list 0 1 31 32 33 100 1025 5000 40000))
-        (:let v (loop (:for i (range 0 n)) (:acc (vecing i))))
+        (:let v (loop (:for i (range 0 n))
+                      (:acc (vecing i))))
         (:let want (vec-map (fun (x) (* x 2)) v))
-        (:do
-          (loop (:for at (list 0 1 (/ n 3) (/ n 2) n))
-                (:do (expect (str "split " (int->string n) " at " (int->string at) ", mapped in two bjoroutines, merged")
-                             (run-vec (bjo (halves-doubled v at)))
-                             want)))))
+        (:do (loop (:for at (list 0 1 (/ n 3) (/ n 2) n))
+                   (:do (expect (str "split " (int->string n) " at " (int->string at)
+                                     ", mapped in two bjoroutines, merged")
+                                (run-vec (bjo (halves-doubled v at)))
+                                want)))))
 
-  (def v (loop (:for i (range 0 70)) (:acc (vecing i))))
+  (def v
+    (loop (:for i (range 0 70))
+          (:acc (vecing i))))
   (def mapped (run-vec (bjo (noted v))))
   (expect "the suspending vec-map gives what the ordinary one does"
-          mapped (vec-map (fun (x) (+ x 1)) v))
+          mapped
+          (vec-map (fun (x) (+ x 1)) v))
   (expect "and calls the function in order"
-          (list-reverse (box-ref seen)) (loop (:for i (range 0 70)) (:acc (listing i))))
+          (list-reverse (box-ref seen))
+          (loop (:for i (range 0 70))
+                (:acc (listing i))))
   0)

@@ -10,12 +10,12 @@
 (import (std orderedset))
 
 ;; A mean in parts: the count and the sum, returned unfinished by each part.
-(type (: Mean (Struct (: n long) (: sum double))))
+(type (: Mean (Struct (: n long)
+                      (: sum double))))
 
 (impl (Combinable Mean)
   (defun (combine a b)
-    (Mean (n (+ (record-ref a n) (record-ref b n)))
-          (sum (+ (record-ref a sum) (record-ref b sum))))))
+    (Mean (n (+ (record-ref a n) (record-ref b n))) (sum (+ (record-ref a sum) (record-ref b sum))))))
 
 (: (-> Mean double))
 (defun (mean-value m) (/ (record-ref m sum) (cast double (record-ref m n))))
@@ -25,7 +25,7 @@
   (loop (:for i r)
         (:acc n (counting i))
         (:acc s (summing (cast double i)))
-        => (Mean (n (cast long n)) (sum s))))
+    => (Mean (n (cast long n)) (sum s))))
 
 (: left-fold (-> (Vec %a) %a) (where (Combinable %a)))
 (defun (left-fold xs)
@@ -68,15 +68,14 @@
           (combine-all [(list 1) (list) (list 2 3) (list 4)])
           (list 1 2 3 4))
   (expect "combine-all of strings" (combine-all ["ab" "" "c" "de"]) "abcde")
-  (expect "combine-all of immutable arrays"
-          (iarray->vec (combine-all [(array->iarray #[1]) (array->iarray #[2 3]) (array->iarray #[])]))
-          [1 2 3])
+  (expect
+   "combine-all of immutable arrays"
+   (iarray->vec (combine-all [(array->iarray #[1]) (array->iarray #[2 3]) (array->iarray #[])]))
+   [1 2 3])
   (expect "combine-all of Unit" (combine-all [unit unit]) unit)
 
   ;; --- Associative ---
-  (expect "associative: vecs"
-          (combine (combine [1] [2]) [3])
-          (combine [1] (combine [2] [3])))
+  (expect "associative: vecs" (combine (combine [1] [2]) [3]) (combine [1] (combine [2] [3])))
   (expect "associative: strings and lists in a tuple"
           (combine (combine (Tuple "a" (list 1)) (Tuple "b" (list 2))) (Tuple "c" (list 3)))
           (combine (Tuple "a" (list 1)) (combine (Tuple "b" (list 2)) (Tuple "c" (list 3)))))

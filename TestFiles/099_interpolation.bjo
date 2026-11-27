@@ -39,12 +39,11 @@
 ;; number is not a spelling of the thing being tested.
 (: (-> string string))
 (defun (codes s)
-  (string-fold (fun (ch acc)
-                 (string-append acc
-                                (string-append (if (string-empty? acc) "" ",")
-                                               (int->string (char->int ch)))))
-               ""
-               s))
+  (string-fold
+   (fun (ch acc)
+     (string-append acc (string-append (if (string-empty? acc) "" ",") (int->string (char->int ch)))))
+   ""
+   s))
 
 ;; A type with a `Displayed` of its own, to pin that a hole goes through the trait.
 (type (: Money (Union (: Kr int))))
@@ -113,23 +112,22 @@
   (expect "a written backslash before u" (codes "\\u{41}") "92,117,123,52,49,125")
   (expect "in an interpolated string" (codes #"\u{41}${x}\u{1B}") "65,53,27")
   (expect "in a string in a hole" #"${"\u{42}"}" "B")
-  (expect "after a line continuation" (codes "a\
-                                              \u{42}") "97,66")
+  (expect "after a line continuation"
+          (codes "a\
+                  \u{42}")
+          "97,66")
 
   ;; The same table on the interpolated side — `\r` in particular, which a
   ;; plain string used to leave as two characters while `#"..."` decoded it.
   (expect "interpolated escapes agree" (codes #"\\n${x}") "92,110,53")
   (expect "including carriage return" (codes #"\r${x}") "13,53")
-  (expect "and the dollar escape is still interpolation's own"
-          (codes #"\$") "36")
+  (expect "and the dollar escape is still interpolation's own" (codes #"\$") "36")
 
   ;; ---- What a hole may contain --------------------------------------------
   ;;
   ;; A hole is lexed by the whole reader, so it is an arbitrary expression.
   (expect "a let inside a hole" #"got ${(let ((y 7)) (* y y))}" "got 49")
-  (expect "a string containing a brace"
-          #"brace: ${(string-append "}" "!")}"
-          "brace: }!")
+  (expect "a string containing a brace" #"brace: ${(string-append "}" "!")}" "brace: }!")
   (expect "a character literal that is a brace" #"char: ${#\}}" "char: }")
   (expect "a comprehension inside a hole"
           #"squares: ${(list-length {listing (* a a) (:for a (range 0 4))})}"

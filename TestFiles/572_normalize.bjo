@@ -19,9 +19,13 @@
 (: (-> string int))
 (defun (hex->int s)
   (loop (:for ch s)
-        (:acc n (folding 0 (+ (* 16 n)
-                              (let ((d (char->int ch)))
-                                (cond ((<= d 57) (- d 48)) ((<= d 70) (- d 55)) (else (- d 87)))))))))
+        (:acc n (folding 0
+                         (+ (* 16 n)
+                            (let ((d (char->int ch)))
+                              (cond
+                                ((<= d 57) (- d 48))
+                                ((<= d 70) (- d 55))
+                                (else (- d 87)))))))))
 
 ;; The string of the code points written in hex in `field`, separated by '.'.
 (: (-> string string))
@@ -36,9 +40,11 @@
 (: (-> string (Vec string)))
 (defun (columns line)
   (loop (:for f (string-split line ";"))
-        (:acc out (folding [] (vec-add out (if (= (string-length f) 1)
-                                               (vec-ref out (hex->int f))
-                                               (codes->string f)))))))
+        (:acc out (folding []
+                           (vec-add out
+                                    (if (= (string-length f) 1)
+                                        (vec-ref out (hex->int f))
+                                        (codes->string f)))))))
 
 (: (-> int string))
 (defun (hex n)
@@ -68,8 +74,10 @@
      #"string-nfc? of c1..c3 is not whether it is c2")
     ((not (all? (fun (x) (= (string-nfd? x) (= x c3))) [c1 c2 c3]))
      #"string-nfd? of c1..c3 is not whether it is c3")
-    ((not (all? (fun (x) (= (string-nfkc? x) (= x c4))) c)) #"string-nfkc? of c1..c5 is not whether it is c4")
-    ((not (all? (fun (x) (= (string-nfkd? x) (= x c5))) c)) #"string-nfkd? of c1..c5 is not whether it is c5")
+    ((not (all? (fun (x) (= (string-nfkc? x) (= x c4))) c))
+     #"string-nfkc? of c1..c5 is not whether it is c4")
+    ((not (all? (fun (x) (= (string-nfkd? x) (= x c5))) c))
+     #"string-nfkd? of c1..c5 is not whether it is c5")
     (else "")))
 
 ;; The code points other than those of part 1 and the surrogates that are not
@@ -83,9 +91,14 @@
   (loop (:for cp (range 0 0x110000))
         (:when (and (not (array-ref listed cp)) (or (< cp 0xD800) (> cp 0xDFFF))))
         (:acc (vecing (let ((s (char->string (int->char cp))))
-                        (if (and (eq? (string-nfc s) s) (eq? (string-nfd s) s)
-                                 (eq? (string-nfkc s) s) (eq? (string-nfkd s) s)
-                                 (string-nfc? s) (string-nfd? s) (string-nfkc? s) (string-nfkd? s))
+                        (if (and (eq? (string-nfc s) s)
+                                 (eq? (string-nfd s) s)
+                                 (eq? (string-nfkc s) s)
+                                 (eq? (string-nfkd s) s)
+                                 (string-nfc? s)
+                                 (string-nfd? s)
+                                 (string-nfkc? s)
+                                 (string-nfkd? s))
                             ""
                             (hex cp)))))))
 
@@ -93,19 +106,23 @@
   (expect "the tables are of the cases' version" normalize-unicode-version normalize-cases-version)
 
   ;; --- NormalizationTest.txt ----------------------------------------------------
-  (def lines (vec-filter (fun (l) (not (string-empty? l))) (vec-map string-trim (string-split normalize-cases "\n"))))
+  (def lines
+    (vec-filter (fun (l) (not (string-empty? l)))
+                (vec-map string-trim (string-split normalize-cases "\n"))))
   (expect "the cases are all there" (vec-length lines) 20171)
   (def bad
     (loop (:for line lines)
           (:acc (vecing (let ((why (case-failure (columns line))))
                           (if (string-empty? why) "" #"${why}: ${line}"))))))
   (def failed (vec-filter (fun (f) (not (string-empty? f))) bad))
-  (loop (:for f (vec-take failed (min 20 (vec-length failed)))) (:do (println f)))
+  (loop (:for f (vec-take failed (min 20 (vec-length failed))))
+        (:do (println f)))
   (expect "every case of NormalizationTest.txt" (vec-length failed) 0)
 
   ;; --- the code points not in part 1 ---------------------------------------------
   (def others (vec-filter (fun (f) (not (string-empty? f))) (part1-failures)))
-  (loop (:for f (vec-take others (min 20 (vec-length others)))) (:do (println #"not its own normal form: ${f}")))
+  (loop (:for f (vec-take others (min 20 (vec-length others))))
+        (:do (println #"not its own normal form: ${f}")))
   (expect "every other code point is its own normal form, with no copy" (vec-length others) 0)
 
   ;; --- examples -------------------------------------------------------------------
@@ -122,7 +139,8 @@
   (expect "a mark at the start" (shown (string-nfc "\u{301}a")) "301 61")
   (expect "the empty string" (string-nfc "") "")
   (def sb (stringbuilder-empty))
-  (loop (:for _ (range 0 10000)) (:do (stringbuilder-add! sb (int->char 0xE9))))
+  (loop (:for _ (range 0 10000))
+        (:do (stringbuilder-add! sb (int->char 0xE9))))
   (def long-e (stringbuilder->string sb))
   (expect "a long string" (string-count (string-nfd long-e)) 20000)
 
@@ -132,6 +150,9 @@
   (expect-true "ASCII: NFKD is the same string" (eq? (string-nfkd ascii) ascii))
   (def nfc "blåbär, smörgåsbord")
   (expect-true "a string in NFC: the same string" (eq? (string-nfc nfc) nfc))
-  (expect-true "a string in NFD: the same string" (eq? (string-nfd (string-nfd nfc)) (string-nfd nfc)))
-  (expect "only the part from the change is normalized" (string-nfc "abc blåbär e\u{301}") "abc blåbär \u{E9}")
+  (expect-true "a string in NFD: the same string"
+               (eq? (string-nfd (string-nfd nfc)) (string-nfd nfc)))
+  (expect "only the part from the change is normalized"
+          (string-nfc "abc blåbär e\u{301}")
+          "abc blåbär \u{E9}")
   0)

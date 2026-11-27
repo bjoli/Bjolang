@@ -7,7 +7,8 @@
 (import (std simpletest))
 
 (def/bjodat-type
-  (: Limits (Record (: name string) (: n int #:default 0))))
+  (: Limits (Record (: name string)
+                    (: n int #:default 0))))
 
 (: (-> string string))
 (defun (one-pass text)
@@ -18,22 +19,24 @@
 (: (-> string string))
 (defun (through-tree text)
   (match (parse-bjodat text)
-    ((Ok v) (match (bjodat->Limits v)
-              ((Ok m) (displayed (record-ref m n)))
-              ((Err e) e)))
+    ((Ok v)
+     (match (bjodat->Limits v)
+       ((Ok m) (displayed (record-ref m n)))
+       ((Err e) e)))
     ((Err e) e)))
 
 (defun (main args)
   (def too-big "{:name \"a\" :n 4294967297}")
   (def too-small "{:name \"a\" :n -2147483649}")
   (expect "one pass refuses an int that does not fit"
-          (one-pass too-big) "Limits.n: expected an integer that fits in an int")
+          (one-pass too-big)
+          "Limits.n: expected an integer that fits in an int")
   (expect "and so does the tree"
-          (through-tree too-big) "Limits.n: expected an integer that fits in an int")
+          (through-tree too-big)
+          "Limits.n: expected an integer that fits in an int")
   (expect "below the range as well"
-          (one-pass too-small) "Limits.n: expected an integer that fits in an int")
-  (expect "the largest int is read"
-          (one-pass "{:name \"a\" :n 2147483647}") "2147483647")
-  (expect "and the smallest"
-          (through-tree "{:name \"a\" :n -2147483648}") "-2147483648")
+          (one-pass too-small)
+          "Limits.n: expected an integer that fits in an int")
+  (expect "the largest int is read" (one-pass "{:name \"a\" :n 2147483647}") "2147483647")
+  (expect "and the smallest" (through-tree "{:name \"a\" :n -2147483648}") "-2147483648")
   0)

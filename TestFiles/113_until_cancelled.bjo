@@ -35,9 +35,10 @@
   (let go ((total 0) (taken 0))
     (match (sync (until-cancelled tok (chan-recv jobs)))
       ((Some j) (go (+ total j) (+ taken 1)))
-      (None (sync (chan-send results
-                             (string-append (int->string taken)
-                                            (string-append "/" (int->string total)))))))))
+      (None
+       (sync (chan-send results
+                        (string-append (int->string taken)
+                                       (string-append "/" (int->string total)))))))))
 
 ;; Handed a token nobody holds the other half of, `until-cancelled` is `Some`
 ;; for as long as there is anything to take, and the loop leaves on its own
@@ -73,7 +74,7 @@
   (loop (:for i (range 0 limit))
         (:until-cancelled)
         (:acc n (counting i))
-        => n))
+    => n))
 
 ;; The explicit form does no lookup at all, and is the only way to watch a token
 ;; that is not the ambient one.
@@ -82,7 +83,7 @@
   (loop (:for i (range 0 limit))
         (:until-cancelled tok)
         (:acc n (counting i))
-        => n))
+    => n))
 
 ;; The exit is where it is written, not at the top: this one accumulates first,
 ;; so the iteration that notices the cancellation has already counted.
@@ -91,15 +92,14 @@
   (loop (:for i (range 0 limit))
         (:acc n (counting i))
         (:until-cancelled tok)
-        => n))
+    => n))
 
 (defbjo (main args)
   ;; ---- The combinator, uncancelled -----------------------------------------
   (def (never-fires! idle) (make-cancel))
   (def jobs (make-chan))
   (spawn (feed jobs 4))
-  (expect "an uncancelled until-cancelled is just the event"
-          (bounded idle jobs 4) 6)
+  (expect "an uncancelled until-cancelled is just the event" (bounded idle jobs 4) 6)
 
   ;; ---- The combinator, cancelled while parked ------------------------------
   ;;
@@ -114,22 +114,26 @@
   (def s2 (sync (chan-send jobs2 22)))
   (def stopped (stop! (Requested "the test")))
   (expect "a parked until-cancelled wakes on the token it was handed"
-          (sync (chan-recv results)) "2/42")
+          (sync (chan-recv results))
+          "2/42")
 
   ;; And the fiber came home rather than spinning: a `None` that is not
   ;; recursed on is a loop that has left.
   (expect "and the worker finished"
-          (match (sync (promise-join w)) ((Ok u) "done") ((Err e) "failed"))
+          (match (sync (promise-join w))
+            ((Ok u) "done")
+            ((Err e) "failed"))
           "done")
 
   ;; ---- The loop clause -----------------------------------------------------
-  (expect "an uncancelled ambient clause runs to the limit"
-          (count-ambient 100) 100)
+  (expect "an uncancelled ambient clause runs to the limit" (count-ambient 100) 100)
 
   (def (stop-scope! scope) (make-cancel))
   (def sc (stop-scope! Deadline))
   (expect "a cancelled ambient clause stops at once"
-          (parameterize ((current-cancel scope)) (count-ambient 100)) 0)
+          (parameterize ((current-cancel scope))
+            (count-ambient 100))
+          0)
 
   ;; The read is hoisted to loop *entry*, and entry is inside the
   ;; `parameterize` here — which is exactly why it is loop entry and not
@@ -137,23 +141,22 @@
   ;; count to 100.
   (def (stop-later! later) (make-cancel))
   (expect "an ambient clause under an unfired token runs to the limit"
-          (parameterize ((current-cancel later)) (count-ambient 100)) 100)
+          (parameterize ((current-cancel later))
+            (count-ambient 100))
+          100)
 
   ;; ---- The explicit form ---------------------------------------------------
   (def (never! quiet) (make-cancel))
-  (expect "an explicit clause on an unfired token runs to the limit"
-          (count-explicit quiet 100) 100)
+  (expect "an explicit clause on an unfired token runs to the limit" (count-explicit quiet 100) 100)
 
   (def (now! fired) (make-cancel))
   (def n (now! (Requested "the test")))
-  (expect "an explicit clause on a fired token stops at once"
-          (count-explicit fired 100) 0)
+  (expect "an explicit clause on a fired token stops at once" (count-explicit fired 100) 0)
 
   ;; Clause order is the author's, and it is observable: with the exit written
   ;; after the accumulator, the iteration that sees the token has already
   ;; counted.
-  (expect "and the exit happens where it was written"
-          (count-after fired 100) 1)
+  (expect "and the exit happens where it was written" (count-after fired 100) 1)
 
   (println "113 ok")
   0)

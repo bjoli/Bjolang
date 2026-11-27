@@ -16,12 +16,14 @@
   (loop (:for n sizes)
         (:acc at (folding 0 (+ at n)))
         (:acc out (listing (from-to (- at n) at)))
-        => out))
+    => out))
 
 ;; The same joined one merge at a time.
 (: (-> (List (Vec int)) (Vec int)))
 (defun (two-at-a-time ps)
-  (loop (:for p ps) (:acc acc (folding [] (vec-append acc p))) => acc))
+  (loop (:for p ps)
+        (:acc acc (folding [] (vec-append acc p)))
+    => acc))
 
 (: (-> (List int) int))
 (defun (total sizes) (fold + 0 sizes))
@@ -34,22 +36,22 @@
   ;; Small vecs only, which are copied; big only, which are merged; and the
   ;; two mixed, with runs of small ones between big ones.
   (list-for-each
-    (fun (sizes)
-      (def ps (pieces sizes))
-      (def want (from-to 0 (total sizes)))
-      (match ps
-        ((Cons a (Cons b rest))
-         (expect #"apply over ${(list-length sizes)} vecs"
-                 (apply vec-append a b rest) want)
-         (expect #"as two at a time, over ${(list-length sizes)} vecs"
-                 (apply vec-append a b rest) (two-at-a-time ps))
-         (expect #"walked, over ${(list-length sizes)} vecs"
-                 {listing x (:for x (apply vec-append a b rest))}
-                 {listing x (:for x want)}))
-        (_ (expect "two vecs at least" #f #t))))
-    (list {listing (+ 1 (% (* k 7) 40)) (:for k (range 0 500))}
-          (list 3000 5000 300 256 10000)
-          (list 5 1000 20 20 20 4000 1 255 256 257 31 32 33 2000 7)))
+   (fun (sizes)
+     (def ps (pieces sizes))
+     (def want (from-to 0 (total sizes)))
+     (match ps
+       ((Cons a (Cons b rest))
+        (expect #"apply over ${(list-length sizes)} vecs" (apply vec-append a b rest) want)
+        (expect #"as two at a time, over ${(list-length sizes)} vecs"
+                (apply vec-append a b rest)
+                (two-at-a-time ps))
+        (expect #"walked, over ${(list-length sizes)} vecs"
+                {listing x (:for x (apply vec-append a b rest))}
+                {listing x (:for x want)}))
+       (_ (expect "two vecs at least" #f #t))))
+   (list {listing (+ 1 (% (* k 7) 40)) (:for k (range 0 500))}
+         (list 3000 5000 300 256 10000)
+         (list 5 1000 20 20 20 4000 1 255 256 257 31 32 33 2000 7)))
 
   (expect "lists: two" (list-append (list 1 2) (list 3)) (list 1 2 3))
   (expect "lists: four" (list-append (list 1) (list) (list 2 3) (list 4)) (list 1 2 3 4))
@@ -58,5 +60,6 @@
           (list 1 2 3 4 5))
   (def last (list 9 10))
   (expect "lists: the last is shared, not copied"
-          (eq? (list-tail (list-tail (list-append (list 1) (list 2) last))) last) #t)
+          (eq? (list-tail (list-tail (list-append (list 1) (list 2) last))) last)
+          #t)
   0)

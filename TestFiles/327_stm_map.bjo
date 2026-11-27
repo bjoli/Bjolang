@@ -29,10 +29,9 @@
 
 (: (-> (TMap int int) int int int))
 (defun (present m from to)
-  (atomically
-   (fun (tx)
-     (loop (:for i (range from to))
-           (:acc n (summing (if (= (tmap-try-ref tx m i) (Some (* i 10))) 1 0)))))))
+  (atomically (fun (tx)
+                (loop (:for i (range from to))
+                      (:acc n (summing (if (= (tmap-try-ref tx m i) (Some (* i 10))) 1 0)))))))
 
 (: (-> Tx (TMap %k int) int))
 (defun (entry-sum tx m)
@@ -65,9 +64,11 @@
 
 (: (-bjo-> (TMap string int) (Chan int) void))
 (defbjo (wait-for-key m out)
-  (chan-put out (atomically (fun (tx) (match (tmap-try-ref tx m "late")
-                                        ((Some v) v)
-                                        (None (tx-retry tx)))))))
+  (chan-put out
+            (atomically (fun (tx)
+                          (match (tmap-try-ref tx m "late")
+                            ((Some v) v)
+                            (None (tx-retry tx)))))))
 
 (defbjo (main args)
   ;; --- empty -----------------------------------------------------------------
@@ -78,13 +79,16 @@
   (expect "ref-or of a missing key" (atomically (fun (tx) (tmap-ref-or tx m 1 -1))) -1)
   (expect "contains? of a missing key" (atomically (fun (tx) (tmap-contains? tx m 1))) #f)
   (expect-true "ref of a missing key raises"
-               (match (try (atomically (fun (tx) (tmap-ref tx m 1)))
-                           #:catch (System.Collections.Generic.KeyNotFoundException))
+               (match (try
+                        (atomically (fun (tx) (tmap-ref tx m 1)))
+                        #:catch (System.Collections.Generic.KeyNotFoundException))
                  ((Ok _) #f)
                  ((Err _) #t)))
 
   ;; --- the operations --------------------------------------------------------
-  (atomically (fun (tx) (tmap-set! tx m 1 10) (tmap-set! tx m 2 20)))
+  (atomically (fun (tx)
+                (tmap-set! tx m 1 10)
+                (tmap-set! tx m 2 20)))
   (expect "ref" (atomically (fun (tx) (tmap-ref tx m 1))) 10)
   (expect "length" (atomically (fun (tx) (tmap-length tx m))) 2)
   (atomically (fun (tx) (tmap-set! tx m 1 11)))
@@ -96,7 +100,11 @@
   (expect "remove of a missing key changes nothing" (atomically (fun (tx) (tmap-length tx m))) 1)
   (atomically (fun (tx) (tmap-update! tx m 3 (fun (old) (Some 30)))))
   (expect "update adds" (atomically (fun (tx) (tmap-ref tx m 3))) 30)
-  (atomically (fun (tx) (tmap-update! tx m 3 (fun (old) (match old ((Some v) (Some (+ v 1))) (None None))))))
+  (atomically (fun (tx)
+                (tmap-update! tx m 3 (fun (old)
+                                       (match old
+                                         ((Some v) (Some (+ v 1)))
+                                         (None None))))))
   (expect "update changes" (atomically (fun (tx) (tmap-ref tx m 3))) 31)
   (atomically (fun (tx) (tmap-update! tx m 3 (fun (old) None))))
   (expect "update removes" (atomically (fun (tx) (tmap-try-ref tx m 3))) None)
@@ -121,7 +129,8 @@
   (loop (:for i (range-by 1 10000 2))
         (:do (atomically (fun (tx) (tmap-remove! tx big i)))))
   (expect "all removed: empty?, which reads only the root"
-          (atomically (fun (tx) (tmap-empty? tx big))) #t)
+          (atomically (fun (tx) (tmap-empty? tx big)))
+          #t)
   (expect "all removed: length" (atomically (fun (tx) (tmap-length tx big))) 0)
 
   ;; --- buckets ---------------------------------------------------------------
@@ -129,13 +138,16 @@
   (loop (:for i (range 0 100))
         (:do (atomically (fun (tx) (tmap-set! tx c (Collide (n i)) i)))))
   (expect "100 keys in 4 buckets: length" (atomically (fun (tx) (tmap-length tx c))) 100)
-  (expect "every one is found"
-          (atomically (fun (tx) (loop (:for i (range 0 100))
-                                      (:acc k (summing (if (= (tmap-try-ref tx c (Collide (n i))) (Some i)) 1 0))))))
-          100)
+  (expect
+   "every one is found"
+   (atomically (fun (tx)
+                 (loop (:for i (range 0 100))
+                       (:acc k (summing (if (= (tmap-try-ref tx c (Collide (n i))) (Some i)) 1 0))))))
+   100)
   (loop (:for i (range 0 99))
         (:do (atomically (fun (tx) (tmap-remove! tx c (Collide (n i)))))))
-  (expect "a bucket emptied to one entry" (atomically (fun (tx) (tmap->list tx c)))
+  (expect "a bucket emptied to one entry"
+          (atomically (fun (tx) (tmap->list tx c)))
           (list (Tuple (Collide (n 99)) 99)))
   (atomically (fun (tx) (tmap-remove! tx c (Collide (n 99)))))
   (expect "and then to none" (atomically (fun (tx) (tmap-empty? tx c))) #t)
@@ -144,14 +156,15 @@
   (def d (make-tmap))
   (loop (:for i (range 0 64))
         (:do (atomically (fun (tx) (tmap-set! tx d (Deep (n i)) i)))))
-  (expect "64 keys whose hashes differ only above bit 24: every one is found"
-          (atomically (fun (tx) (loop (:for i (range 0 64))
-                                      (:acc k (summing (if (= (tmap-try-ref tx d (Deep (n i))) (Some i)) 1 0))))))
-          64)
+  (expect
+   "64 keys whose hashes differ only above bit 24: every one is found"
+   (atomically (fun (tx)
+                 (loop (:for i (range 0 64))
+                       (:acc k (summing (if (= (tmap-try-ref tx d (Deep (n i))) (Some i)) 1 0))))))
+   64)
   (loop (:for i (range 0 64))
         (:do (atomically (fun (tx) (tmap-remove! tx d (Deep (n i)))))))
-  (expect "and they can all be removed again"
-          (atomically (fun (tx) (tmap-empty? tx d))) #t)
+  (expect "and they can all be removed again" (atomically (fun (tx) (tmap-empty? tx d))) #t)
 
   ;; --- a retry that waits for a key ------------------------------------------
   (def w (make-tmap))
@@ -172,13 +185,17 @@
     (spawn (checker shared done bad)))
   (expect "eight fibers: length" (atomically (fun (tx) (tmap-length tx shared))) 8000)
   (expect "eight fibers: the size and the entries agree"
-          (atomically (fun (tx) (size-agrees? tx shared))) #t)
+          (atomically (fun (tx) (size-agrees? tx shared)))
+          #t)
   (expect "eight fibers: the odd keys are there"
-          (atomically (fun (tx) (loop (:for j (range 0 8000))
-                                      (:acc k (summing (if (tmap-contains? tx shared
-                                                                           (+ (* (/ j 1000) 100000)
-                                                                              (+ 1 (* 2 (% j 1000)))))
-                                                           1 0))))))
+          (atomically (fun (tx)
+                        (loop (:for j (range 0 8000))
+                              (:acc k (summing (if (tmap-contains? tx
+                                                                   shared
+                                                                   (+ (* (/ j 1000) 100000)
+                                                                      (+ 1 (* 2 (% j 1000)))))
+                                                   1
+                                                   0))))))
           8000)
   (expect "no snapshot saw a size that did not agree" (loc-ref bad) 0)
   0)

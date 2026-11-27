@@ -45,30 +45,33 @@
 ;; A named loop whose jump reads a def made before it.
 (: (-> (List int) int))
 (defun (tenfold-after-two xs)
-  (loop lp (:for x xs)
-           (:acc total (summing x))
-           (:do (def big? (> x 2))
-                (def scaled (* total 10))
-                (if big? (lp #:total scaled) (lp)))
-           => total))
+  (loop lp
+        (:for x xs)
+        (:acc total (summing x))
+        (:do (def big? (> x 2))
+             (def scaled (* total 10))
+             (if big? (lp #:total scaled) (lp)))
+    => total))
 
 ;; A def that shadows an accumulator: the jump still carries the slot.
 (: (-> (List int) int))
 (defun (shadowed xs)
-  (loop lp (:for x xs)
-           (:acc total (summing x))
-           (:do (def total 1000)
-                (lp))
-           => total))
+  (loop lp
+        (:for x xs)
+        (:acc total (summing x))
+        (:do (def total 1000)
+             (lp))
+    => total))
 
 ;; A named loop that stops when its last :do does not jump.
 (: (-> (List int) int))
 (defun (until-negative xs)
-  (loop lp (:for x xs)
-           (:acc n (summing x))
-           (:do (def keep? (>= x 0))
-                (if keep? (lp) (display "")))
-           => n))
+  (loop lp
+        (:for x xs)
+        (:acc n (summing x))
+        (:do (def keep? (>= x 0))
+             (if keep? (lp) (display "")))
+    => n))
 
 (defun (main args)
   (if (and (check "def and defun" (displayed (squares 4)) "(0 1 4 9)")

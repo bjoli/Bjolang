@@ -59,7 +59,10 @@
       ((.-IsFaulted t) (.-Message (.-Exception t)))
       ((.-IsCompleted t) "completed")
       ((<= left 0) "still pending")
-      (else (begin (sync (timeout (milliseconds 1))) (go (- left 1)))))))
+      (else
+       (begin
+         (sync (timeout (milliseconds 1)))
+         (go (- left 1)))))))
 
 ;; Answers `n` calls by doubling the request.
 (: (-bjo-> (Inbox (Call int int)) int void))
@@ -87,7 +90,9 @@
 
 (: (-bjo-> Cancelling void))
 (defbjo (cancel-off-fiber cts)
-  (off-task (fun () (.Cancel cts) done)))
+  (off-task (fun ()
+              (.Cancel cts)
+              done)))
 
 ;; One round of the token-versus-receive race (prompt test 14). Answers "" when
 ;; the trial came out as exactly one of the two permitted outcomes, and what
@@ -103,7 +108,8 @@
   ;; already queued and a queued item commits a receive without publishing
   ;; anything. A pause here lets the token get there first, which is the
   ;; cancelled-while-queued path.
-  (when token-first? (sync (timeout (milliseconds 2))))
+  (when token-first?
+    (sync (timeout (milliseconds 2))))
 
   (def outcome
     ;; A live call is already queued, so a receive that can happen commits
@@ -146,7 +152,9 @@
   ;; exactly what a .NET middleware signature wants.
   (def caller (bjo (call-off-fiber calls 21)))
   (expect "a call made on a pool thread is answered"
-          (match (sync (promise-join caller)) ((Ok u) "answered") ((Err e) (.-Message e)))
+          (match (sync (promise-join caller))
+            ((Ok u) "answered")
+            ((Err e) (.-Message e)))
           "answered")
 
   ;; -------------------------------------------------------------------------
@@ -173,17 +181,19 @@
   (def queued (inbox-call tight 1))
   (def refused (inbox-call tight 2))
   (expect "a call into a full DropNewest inbox faults"
-          (.Contains (settled refused 1000) "inbox is full") #t)
+          (.Contains (settled refused 1000) "inbox is full")
+          #t)
   (expect "and the one that fitted is still pending" (settled queued 0) "still pending")
   (expect "the refusal was counted" (inbox-dropped-count tight) 1)
 
   (def evicting (make-inbox 1 DropOldest))
   (def evicted (inbox-call evicting 1))
   (def survivor (inbox-call evicting 2))
-  (expect "the call DropOldest evicted faults"
-          (.Contains (settled evicted 1000) "inbox is full") #t)
+  (expect "the call DropOldest evicted faults" (.Contains (settled evicted 1000) "inbox is full") #t)
   (expect "and the newest one is what a receiver gets"
-          (match (recv-call evicting 500) ((Some c) (call-request c)) (None -1))
+          (match (recv-call evicting 500)
+            ((Some c) (call-request c))
+            (None -1))
           2)
 
   ;; -------------------------------------------------------------------------
@@ -196,16 +206,26 @@
   ;; own protocol says for "busy".
   (def tried (make-inbox 1 DropNewest))
   (expect "a try-call into an inbox with room answers Some"
-          (match (inbox-try-call tried 7) ((Some t) "posted") (None "refused"))
+          (match (inbox-try-call tried 7)
+            ((Some t) "posted")
+            (None "refused"))
           "posted")
   (expect "and into a full one answers None, rather than faulting a task"
-          (match (inbox-try-call tried 8) ((Some t) "posted") (None "refused"))
+          (match (inbox-try-call tried 8)
+            ((Some t) "posted")
+            (None "refused"))
           "refused")
   (expect "a refusal is still counted" (inbox-dropped-count tried) 1)
   (expect "and nothing but the first call is there to receive"
-          (match (recv-call tried 500) ((Some c) (call-request c)) (None -1))
+          (match (recv-call tried 500)
+            ((Some c) (call-request c))
+            (None -1))
           7)
-  (expect "the inbox is empty again" (match (recv-call tried 20) ((Some c) 1) (None 0)) 0)
+  (expect "the inbox is empty again"
+          (match (recv-call tried 20)
+            ((Some c) 1)
+            (None 0))
+          0)
 
   ;; A closed inbox refuses the same way. The distinction the faulting form
   ;; makes — full faults, closed cancels — is one this form deliberately does
@@ -213,7 +233,9 @@
   (def shut (make-inbox 4 DropNewest))
   (inbox-close! shut)
   (expect "a try-call into a closed inbox answers None"
-          (match (inbox-try-call shut 1) ((Some t) "posted") (None "refused"))
+          (match (inbox-try-call shut 1)
+            ((Some t) "posted")
+            (None "refused"))
           "refused")
 
   ;; With a token, and room: the call is real, and answering it completes the
@@ -224,7 +246,9 @@
           (match (inbox-try-call/token tokened 21 (.-Token live))
             ((Some t)
              (match (recv-call tokened 1000)
-               ((Some c) (ignore (call-reply! c (* 2 (call-request c)))) (settled t 1000))
+               ((Some c)
+                (ignore (call-reply! c (* 2 (call-request c))))
+                (settled t 1000))
                (None "nothing arrived")))
             (None "refused"))
           "completed")
@@ -234,9 +258,11 @@
   ;; -------------------------------------------------------------------------
   (def observed (make-inbox 64 DropNewest))
   (def obs (inbox-observer observed))
-  (def feeders (loop (:for i (range 1 6))
-                     (:acc out (listing (bjo (feed obs i))))))
-  (loop (:for p feeders) (:do (ignore (sync (promise-join p)))))
+  (def feeders
+    (loop (:for i (range 1 6))
+          (:acc out (listing (bjo (feed obs i))))))
+  (loop (:for p feeders)
+        (:do (ignore (sync (promise-join p)))))
   (expect "everything the observer was given arrives"
           (let go ((left 5) (sum 0))
             (if (= left 0)
@@ -262,8 +288,7 @@
   ;; the failure below is met by an inbox with nothing left in it.
   (expect-true "the inbox takes an item" (inbox-post! failed-by-observer 1))
   (expect "and gives it back"
-          (sync (choose (inbox-recv failed-by-observer)
-                        (wrap (timeout (seconds 2)) (fun (u) -1))))
+          (sync (choose (inbox-recv failed-by-observer) (wrap (timeout (seconds 2)) (fun (u) -1))))
           1)
   (.OnError (inbox-observer failed-by-observer) (cast Exception (Boom. "the source failed")))
   (expect "OnError ends it with the error"
@@ -285,7 +310,9 @@
 
   (expect "a call cancelled before anyone had it is cancelled" (settled lost 1000) "cancelled")
   (expect "and a receiver never sees it, only the next one"
-          (match (recv-call abandoned 500) ((Some c) (call-request c)) (None -1))
+          (match (recv-call abandoned 500)
+            ((Some c) (call-request c))
+            (None -1))
           2)
 
   ;; -------------------------------------------------------------------------
@@ -356,4 +383,6 @@
 ;; `IObservable` would call it.
 (: (-bjo-> (IObserver int) int void))
 (defbjo (feed obs x)
-  (off-task (fun () (.OnNext obs x) done)))
+  (off-task (fun ()
+              (.OnNext obs x)
+              done)))

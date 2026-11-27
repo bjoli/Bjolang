@@ -11,7 +11,8 @@
 (import (std prelude))
 (import (std simpletest))
 
-(type (: Plain (Record (: a int) (: b string))))
+(type (: Plain (Record (: a int)
+                       (: b string))))
 
 ;; Exactly the shape that would stack-overflow written with `clr-equals`:
 ;; full delegation, nothing tweaked.
@@ -21,7 +22,8 @@
 
 ;; The reason to want the primitive at all: `hits` is bookkeeping, not
 ;; identity, so equality reads only `key`.
-(type (: Entry (Record (: key string) (: hits int))))
+(type (: Entry (Record (: key string)
+                       (: hits int))))
 
 (impl (Eq Entry)
   (defun (= x y) (= (record-ref x key) (record-ref y key)))
@@ -31,7 +33,8 @@
 ;; its own: the field compares through its own `Equals`, which *is* that
 ;; implementation. Composition is wanted; only the top-level dispatch is the
 ;; loop.
-(type (: Wrap (Record (: entry Entry) (: n int))))
+(type (: Wrap (Record (: entry Entry)
+                      (: n int))))
 
 (impl (Eq Wrap)
   (defun (= x y) (structural-equals x y))
@@ -44,18 +47,15 @@
   (expect-true "full delegation terminates and agrees" (= p1 p2))
   (expect-true "and separates" (not (= p1 p3)))
   (expect-true "the hashes agree" (= (eq-hash p1) (eq-hash p2)))
-  (expect-true "usable as a Map key"
-          (= "v" (map-ref-or (map-set (map-empty) p1 "v") p2 "MISSING")))
+  (expect-true "usable as a Map key" (= "v" (map-ref-or (map-set (map-empty) p1 "v") p2 "MISSING")))
 
   (def e1 (Entry (key "k") (hits 1)))
   (def e2 (Entry (key "k") (hits 999)))
   (def w1 (Wrap (entry e1) (n 5)))
   (def w2 (Wrap (entry e2) (n 5)))
   (expect-true "a field's own implementation is reached" (= w1 w2))
-  (expect-true "field-wise still separates what differs"
-          (not (= w1 (Wrap (entry e1) (n 6)))))
-  (expect-true "the hash composes through the field's implementation"
-          (= (eq-hash w1) (eq-hash w2)))
+  (expect-true "field-wise still separates what differs" (not (= w1 (Wrap (entry e1) (n 6)))))
+  (expect-true "the hash composes through the field's implementation" (= (eq-hash w1) (eq-hash w2)))
 
   ;; Called directly on a value of a type no Bjolang module declares, it is
   ;; that type's own equality. A string built at run time used to compare

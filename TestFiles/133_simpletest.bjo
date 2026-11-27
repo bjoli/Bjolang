@@ -39,27 +39,33 @@
 (defun (same label actual wanted)
   (if (.Equals actual wanted)
       (println (string-append "ok: " label))
-      (println (string-append "FAILURE: " (string-append label
-                (string-append " gave [" (string-append actual
-                (string-append "] but wanted [" (string-append wanted "]")))))))))
+      (println (string-append "FAILURE: "
+                              (string-append label
+                                             (string-append " gave ["
+                                                            (string-append
+                                                             actual
+                                                             (string-append
+                                                              "] but wanted ["
+                                                              (string-append wanted "]")))))))))
 
 ;; A type of the test's own, to show that `expect` reaches anything with the two
 ;; impls rather than a fixed list of builtins.
 (type (: Money (Union (: Kr int))))
 
 (impl (Written Money)
-  (defun (written m) (match m ((Kr n) #"${n} kr")))
+  (defun (written m)
+    (match m ((Kr n) #"${n} kr")))
   (defun (write-into m b) (stringbuilder-add-string! b (written m))))
 
 (impl (Eq Money)
-  (defun (= a b) (match (Tuple a b) ((Tuple (Kr x) (Kr y)) (= x y))))
-  (defun (eq-hash m) (match m ((Kr n) (eq-hash n)))))
+  (defun (= a b)
+    (match (Tuple a b) ((Tuple (Kr x) (Kr y)) (= x y))))
+  (defun (eq-hash m)
+    (match m ((Kr n) (eq-hash n)))))
 
 (defun (main)
   ;; --- A passing assertion -------------------------------------------------
-  (same "a pass says ok"
-        (printed (fun () (expect "the label" 4 4)))
-        "ok: the label\n")
+  (same "a pass says ok" (printed (fun () (expect "the label" 4 4))) "ok: the label\n")
 
   ;; The property the harness rests on: nothing in a green run may contain the
   ;; word it greps for.
@@ -83,12 +89,12 @@
   ;;
   ;; Each of these was a separate hand-written helper before, or a call that
   ;; converted its value to a string to fit one.
-  (same "strings"  (printed (fun () (expect "s" "ab" "ab"))) "ok: s\n")
-  (same "ints"     (printed (fun () (expect "i" (+ 2 2) 4))) "ok: i\n")
-  (same "bools"    (printed (fun () (expect "b" (< 1 2) #t))) "ok: b\n")
-  (same "chars"    (printed (fun () (expect "c" #\a #\a))) "ok: c\n")
-  (same "doubles"  (printed (fun () (expect "d" 1.5 1.5))) "ok: d\n")
-  (same "lists"    (printed (fun () (expect "l" (list 1 2) (list 1 2)))) "ok: l\n")
+  (same "strings" (printed (fun () (expect "s" "ab" "ab"))) "ok: s\n")
+  (same "ints" (printed (fun () (expect "i" (+ 2 2) 4))) "ok: i\n")
+  (same "bools" (printed (fun () (expect "b" (< 1 2) #t))) "ok: b\n")
+  (same "chars" (printed (fun () (expect "c" #\a #\a))) "ok: c\n")
+  (same "doubles" (printed (fun () (expect "d" 1.5 1.5))) "ok: d\n")
+  (same "lists" (printed (fun () (expect "l" (list 1 2) (list 1 2)))) "ok: l\n")
 
   ;; And a type declared here, reported through its own `written`.
   (same "a type of the test's own"
@@ -98,9 +104,7 @@
   ;; --- expect-true ---------------------------------------------------------
   ;;
   ;; No value is reported: there is only one way for a `bool` to be wrong.
-  (same "expect-true passes quietly"
-        (printed (fun () (expect-true "p" #t)))
-        "ok: p\n")
+  (same "expect-true passes quietly" (printed (fun () (expect-true "p" #t))) "ok: p\n")
 
   (same "expect-true fails with just the label"
         (printed (fun () (expect-true "p" #f)))
@@ -110,9 +114,7 @@
   ;;
   ;; For an arm that should not have been reached, where there is no pair of
   ;; values to compare.
-  (same "fail always fails"
-        (printed (fun () (fail "unreachable arm")))
-        "FAILURE: unreachable arm\n")
+  (same "fail always fails" (printed (fun () (fail "unreachable arm"))) "FAILURE: unreachable arm\n")
 
   ;; --- the exit code -------------------------------------------------------
   ;;

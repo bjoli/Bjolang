@@ -74,7 +74,10 @@
       ((.-IsFaulted t) (.-Message (.-Exception t)))
       ((.-IsCompleted t) "completed")
       ((<= left 0) "still pending")
-      (else (begin (sync (timeout (milliseconds 5))) (go (- left 5)))))))
+      (else
+       (begin
+         (sync (timeout (milliseconds 5)))
+         (go (- left 5)))))))
 
 (: (-> (Option Exception) string))
 (defun (ended e)
@@ -93,7 +96,9 @@
 
 (: (-bjo-> (Inbox int) int void))
 (defbjo (post-off-fiber ib x)
-  (off-task (fun () (ignore (inbox-post! ib x)) done)))
+  (off-task (fun ()
+              (ignore (inbox-post! ib x))
+              done)))
 
 ;; Sends 1..n, each from a pool thread, waiting for each to be accepted before
 ;; making the next. On a full inbox that wait is the backpressure.
@@ -106,13 +111,17 @@
 ;; the order they were sent.
 (: (-bjo-> (Inbox int) int (Tuple int bool)))
 (defbjo (consume-in-order ib n)
-  (let go ((left n) (sum 0) (ordered #t) (last 0))
+  (let go ((left n)
+           (sum 0)
+           (ordered #t)
+           (last 0))
     (if (= left 0)
         (Tuple sum ordered)
         (match (recv-within ib 5000)
-          ((Some x) (begin
-                      (sync (timeout (milliseconds 1)))
-                      (go (- left 1) (+ sum x) (and ordered (= x (+ last 1))) x)))
+          ((Some x)
+           (begin
+             (sync (timeout (milliseconds 1)))
+             (go (- left 1) (+ sum x) (and ordered (= x (+ last 1))) x)))
           (None (Tuple sum #f))))))
 
 ;; Receives `n` items, timing out constantly so that the withdrawal path is
@@ -136,8 +145,12 @@
   (expect-true "the third is refused" (not (inbox-post! newest 3)))
   (expect "the refusal was counted" (inbox-dropped-count newest) 1)
   (expect "what fitted is still there, in order"
-          (str (match (recv-within newest 500) ((Some x) (int->string x)) (None "-"))
-               (match (recv-within newest 500) ((Some x) (int->string x)) (None "-")))
+          (str (match (recv-within newest 500)
+                 ((Some x) (int->string x))
+                 (None "-"))
+               (match (recv-within newest 500)
+                 ((Some x) (int->string x))
+                 (None "-")))
           "12")
 
   ;; -------------------------------------------------------------------------
@@ -150,9 +163,15 @@
   (loop (:for i (range 1 11))
         (:do (ignore (inbox-post! oldest i))))
   (expect "the newest three survive"
-          (str (match (recv-within oldest 500) ((Some x) (int->string x)) (None "-"))
-               (match (recv-within oldest 500) ((Some x) (int->string x)) (None "-"))
-               (match (recv-within oldest 500) ((Some x) (int->string x)) (None "-")))
+          (str (match (recv-within oldest 500)
+                 ((Some x) (int->string x))
+                 (None "-"))
+               (match (recv-within oldest 500)
+                 ((Some x) (int->string x))
+                 (None "-"))
+               (match (recv-within oldest 500)
+                 ((Some x) (int->string x))
+                 (None "-")))
           "8910")
   (expect "and the seven evicted were counted" (inbox-dropped-count oldest) 7)
 
@@ -160,12 +179,16 @@
   ;; Withdrawal (prompt test 3)
   ;; -------------------------------------------------------------------------
   (def busy (make-inbox 64 DropNewest))
-  (def posts (loop (:for i (range 1 21))
-                   (:acc out (listing (bjo (post-off-fiber busy i))))))
+  (def posts
+    (loop (:for i (range 1 21))
+          (:acc out (listing (bjo (post-off-fiber busy i))))))
   (def received (bjo (gather busy 20)))
-  (loop (:for p posts) (:do (ignore (sync (promise-join p)))))
+  (loop (:for p posts)
+        (:do (ignore (sync (promise-join p)))))
   (expect "every posted item was received exactly once"
-          (match (sync (promise-join received)) ((Ok v) v) ((Err e) -1))
+          (match (sync (promise-join received))
+            ((Ok v) v)
+            ((Err e) -1))
           210)
   (expect "and nothing was dropped on the way" (inbox-dropped-count busy) 0)
 
@@ -200,8 +223,12 @@
   (.Cancel cancelling)
   (expect "the cancelled send is cancelled" (settled cancelled-send 2000) "cancelled")
   (expect "and what it offered is never received"
-          (str (match (recv-within stopped 500) ((Some x) (int->string x)) (None "-"))
-               (match (recv-within stopped 50) ((Some x) (int->string x)) (None "-")))
+          (str (match (recv-within stopped 500)
+                 ((Some x) (int->string x))
+                 (None "-"))
+               (match (recv-within stopped 50)
+                 ((Some x) (int->string x))
+                 (None "-")))
           "1-")
 
   ;; -------------------------------------------------------------------------
@@ -216,8 +243,12 @@
           "timed out")
 
   (expect "and the item it offered was never queued"
-          (str (match (recv-within full 200) ((Some x) (int->string x)) (None "-"))
-               (match (recv-within full 50) ((Some x) (int->string x)) (None "-")))
+          (str (match (recv-within full 200)
+                 ((Some x) (int->string x))
+                 (None "-"))
+               (match (recv-within full 50)
+                 ((Some x) (int->string x))
+                 (None "-")))
           "1-")
 
   (expect "with room, the same sync commits"
@@ -225,14 +256,17 @@
                         (wrap (timeout (milliseconds 500)) (fun (u) "timed out"))))
           "sent")
   (expect "and what it offered is received"
-          (match (recv-within full 500) ((Some x) (int->string x)) (None "-"))
+          (match (recv-within full 500)
+            ((Some x) (int->string x))
+            (None "-"))
           "7")
 
   ;; -------------------------------------------------------------------------
   ;; Closing (prompt test 8)
   ;; -------------------------------------------------------------------------
   (def closing (make-inbox 8 DropNewest))
-  (loop (:for i (range 1 4)) (:do (ignore (inbox-post! closing i))))
+  (loop (:for i (range 1 4))
+        (:do (ignore (inbox-post! closing i))))
   (inbox-close! closing)
 
   (expect-true "a post after closing is refused" (not (inbox-post! closing 4)))
@@ -248,8 +282,10 @@
   ;; is received before the end.
   (def late (make-inbox 1 DropNewest))
   (expect-true "the inbox is full again" (inbox-post! late 1))
-  (def waiting (bjo (sync (choose (wrap (inbox-send-evt late 2) (fun (u) "in"))
-                                  (wrap (timeout (seconds 2)) (fun (u) "never got in"))))))
+  (def waiting
+    (bjo
+      (sync (choose (wrap (inbox-send-evt late 2) (fun (u) "in"))
+                    (wrap (timeout (seconds 2)) (fun (u) "never got in"))))))
   (sync (timeout (milliseconds 20)))
   (inbox-close! late)
 
@@ -260,7 +296,9 @@
   (expect "the waiting sender still got in, in order" after-close "1 2 ")
   (expect "and it was received before the end" (ended ended-after) "none")
   (expect "the sender was told it got in"
-          (match (sync (promise-join waiting)) ((Ok v) v) ((Err e) "raised"))
+          (match (sync (promise-join waiting))
+            ((Ok v) v)
+            ((Err e) "raised"))
           "in")
 
   ;; -------------------------------------------------------------------------
@@ -299,8 +337,9 @@
 
   ;; A send waiting for room, and an event sender waiting beside it.
   (def aborted-sender
-    (bjo (sync (choose (wrap (inbox-send-evt aborting 3) (fun (u) "committed"))
-                       (wrap (timeout (seconds 2)) (fun (u) "never committed"))))))
+    (bjo
+      (sync (choose (wrap (inbox-send-evt aborting 3) (fun (u) "committed"))
+                    (wrap (timeout (seconds 2)) (fun (u) "never committed"))))))
   (sync (timeout (milliseconds 20)))
   (inbox-abort! aborting)
 
@@ -311,7 +350,9 @@
   (expect "an abort drops what was queued" nothing-left "")
   (expect "and the inbox has ended" (ended abort-why) "none")
   (expect "a waiting event sender never commits"
-          (match (sync (promise-join aborted-sender)) ((Ok v) v) ((Err e) "raised"))
+          (match (sync (promise-join aborted-sender))
+            ((Ok v) v)
+            ((Err e) "raised"))
           "never committed")
   (expect "and an abort is not counted as dropping" (inbox-dropped-count aborting) 0)
 

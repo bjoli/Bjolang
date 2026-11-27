@@ -73,8 +73,20 @@
 
 ;; `Lexer.Token`. A token of the reader's own, such as `TResolved`, has no
 ;; spelling that reads as it.
-(type (: Tok (Union TLParen TRParen TLBracket TRBracket TLBrace TRBrace
-                    THash TQuote TComma TCommaAt TSynQuote TColon TDot TSpread
+(type (: Tok (Union TLParen
+                    TRParen
+                    TLBracket
+                    TRBracket
+                    TLBrace
+                    TRBrace
+                    THash
+                    TQuote
+                    TComma
+                    TCommaAt
+                    TSynQuote
+                    TColon
+                    TDot
+                    TSpread
                     (: TStr string)
                     (: TChar int)
                     (: TBool bool)
@@ -189,7 +201,8 @@
     ((< lead 128) lead)
     ((< lead 224) (bitwise-ior (shift-left (bitwise-and lead 31) 6) (more 1)))
     ((< lead 240)
-     (bitwise-ior (shift-left (bitwise-and lead 15) 12) (bitwise-ior (shift-left (more 1) 6) (more 2))))
+     (bitwise-ior (shift-left (bitwise-and lead 15) 12)
+                  (bitwise-ior (shift-left (more 1) 6) (more 2))))
     (else
      (bitwise-ior (bitwise-ior (shift-left (bitwise-and lead 7) 18) (shift-left (more 1) 12))
                   (bitwise-ior (shift-left (more 2) 6) (more 3))))))
@@ -199,7 +212,9 @@
 ;; other code point, a `\r` too, moves the column by 1.
 (: (-> (Array byte) int int int int (Tuple int int)))
 (defun (advance b from to line col)
-  (let go ((i from) (l line) (c col))
+  (let go ((i from)
+           (l line)
+           (c col))
     (cond
       ((>= i to) (Tuple l c))
       (:def x (byte-at b i))
@@ -378,50 +393,83 @@
   (def b (record-ref lx bytes))
   (def x (byte-at b (+ i 1)))
   (case x
-    ((110) (stringbuilder-add! sb #\newline) (+ i 2))
-    ((116) (stringbuilder-add! sb #\tab) (+ i 2))
-    ((114) (stringbuilder-add! sb #\return) (+ i 2))
-    ((34) (stringbuilder-add! sb #\") (+ i 2))
-    ((92) (stringbuilder-add! sb #\\) (+ i 2))
+    ((110)
+     (stringbuilder-add! sb #\newline)
+     (+ i 2))
+    ((116)
+     (stringbuilder-add! sb #\tab)
+     (+ i 2))
+    ((114)
+     (stringbuilder-add! sb #\return)
+     (+ i 2))
+    ((34)
+     (stringbuilder-add! sb #\")
+     (+ i 2))
+    ((92)
+     (stringbuilder-add! sb #\\)
+     (+ i 2))
     ((36)
      (if allow-dollar
-         (begin (stringbuilder-add! sb #\$) (+ i 2))
-         (escape-error lx line col "\\$ escapes nothing in a plain string: $ opens a hole only in #\"...\". Write the $ alone.")))
+         (begin
+           (stringbuilder-add! sb #\$)
+           (+ i 2))
+         (escape-error
+          lx
+          line
+          col
+          "\\$ escapes nothing in a plain string: $ opens a hole only in #\"...\". Write the $ alone.")))
     ((117)
-     (def shape "\\u is written \\u{...}, with 1 to 6 hex digits between the braces, as in \\u{E9} or \\u{1F600}.")
+     (def shape
+       "\\u is written \\u{...}, with 1 to 6 hex digits between the braces, as in \\u{E9} or \\u{1F600}.")
      (def first (+ i 3))
      (when (or (>= first end) (not (= (byte-at b (+ i 2)) 123)))
        (escape-error lx line col shape))
-     (def j (let go ((j first))
-              (if (and (< j end) (<= (- j first) 6) (hex-digit? (byte-at b j)))
-                  (go (+ j 1))
-                  j)))
+     (def j
+       (let go ((j first))
+         (if (and (< j end) (<= (- j first) 6) (hex-digit? (byte-at b j)))
+             (go (+ j 1))
+             j)))
      (def count (- j first))
      (when (or (= count 0) (> count 6) (>= j end) (not (= (byte-at b j) 125)))
        (escape-error lx line col shape))
-     (def value (let go ((k first) (v 0))
-                  (if (< k j)
-                      (go (+ k 1) (+ (* v 16) (hex-value (byte-at b k))))
-                      v)))
+     (def value
+       (let go ((k first) (v 0))
+         (if (< k j)
+             (go (+ k 1) (+ (* v 16) (hex-value (byte-at b k))))
+             v)))
      (when (or (> value 1114111) (and (>= value 55296) (<= value 57343)))
-       (escape-error lx line col (str "\\u{" (text-of b first j) "} is not a Unicode scalar value. A surrogate, D800 to DFFF, is half of a UTF-16 pair, and nothing is above 10FFFF.")))
+       (escape-error
+        lx
+        line
+        col
+        (str "\\u{" (text-of b first j)
+             "} is not a Unicode scalar value. A surrogate, D800 to DFFF, is half of a UTF-16 pair, and nothing is above 10FFFF.")))
      (stringbuilder-add! sb (int->char value))
      (+ j 1))
     (else
      (if (space? (code-at b (+ i 1)))
-         (escape-error lx line col "a backslash before a space is an escape only at the end of a line, where it continues the string on the next. For a backslash, write \\\\.")
-         (escape-error lx line col (str "\\" (first-grapheme (text-of b (+ i 1) end))
-                      " is not an escape. A string's escapes are \\n, \\t, \\r, \\\", \\\\ and \\u{...}, and \\$ in #\"...\". For a backslash, write \\\\, or write the text as a raw string, \"\"\"...\"\"\"."))))))
+         (escape-error
+          lx
+          line
+          col
+          "a backslash before a space is an escape only at the end of a line, where it continues the string on the next. For a backslash, write \\\\.")
+         (escape-error
+          lx
+          line
+          col
+          (str "\\" (first-grapheme (text-of b (+ i 1) end))
+               " is not an escape. A string's escapes are \\n, \\t, \\r, \\\", \\\\ and \\u{...}, and \\$ in #\"...\". For a backslash, write \\\\, or write the text as a raw string, \"\"\"...\"\"\"."))))))
 
 ;; `continuationEnd`: when the backslash at `i` ends its line, perhaps with
 ;; spaces or tabs after it, the index past the line break and past the next
 ;; line's spaces and tabs up to `text-col` of them. -1 when it does not.
 (: (-> (Array byte) int int int int))
 (defun (continuation-end b i end text-col)
-  (def k (let go ((k (+ i 1)))
-           (if (and (< k end) (or (= (byte-at b k) 32) (= (byte-at b k) 9)))
-               (go (+ k 1))
-               k)))
+  (def k
+    (let go ((k (+ i 1)))
+      (if (and (< k end) (or (= (byte-at b k) 32) (= (byte-at b k) 9)))
+          (go (+ k 1))
+          k)))
   (def start
     (cond
       ((byte-is? b k end 10) (+ k 1))
@@ -495,9 +543,15 @@
 
 (: (-> Lexer int int int int int int %a))
 (defun (too-many-quotes lx start line col n i k)
-  (fail-in-raw lx start line col i
-               (fun (pos) (str "A raw string opened with " (int->string n) " quotes has " (int->string k)
-                               " in a row at " pos ". Open and close it with more quotes than it holds in a row."))))
+  (fail-in-raw lx
+               start
+               line
+               col
+               i
+               (fun (pos)
+                 (str "A raw string opened with " (int->string n) " quotes has " (int->string k)
+                      " in a row at " pos
+                      ". Open and close it with more quotes than it holds in a row."))))
 
 ;; `readRawString`: the raw string whose quotes start at `start`, at `line`
 ;; and `col`. Returns its text and the index past its closing quotes.
@@ -518,7 +572,13 @@
           (cond
             ((>= p limit) (fail lx line col (str "Unterminated raw string at " here)))
             ((break-at? b p limit)
-             (fail lx line col (str "The raw string at " here " begins on the line of its opening quotes, so it ends on that line, and it does not. A raw string over several lines begins on the line after its opening " delimiter ".")))
+             (fail
+              lx
+              line
+              col
+              (str "The raw string at " here
+                   " begins on the line of its opening quotes, so it ends on that line, and it does not. A raw string over several lines begins on the line after its opening "
+                   delimiter ".")))
             ((= (byte-at b p) 34)
              (def k (quotes-at b p limit))
              (cond
@@ -531,29 +591,42 @@
              (stringbuilder-add-byte! sb (byte-at b p))
              (go (+ p 1))))))
       ;; Several lines, up to the one holding only the closing quotes.
-      (let ((unterminated (str "Unterminated raw string at " here ": it closes with " delimiter " on a line of its own.")))
+      (let ((unterminated (str "Unterminated raw string at " here ": it closes with " delimiter
+                               " on a line of its own.")))
         (let go ((p (after-break b after-opening)) (lines Nil))
-          (when (>= p limit) (fail lx line col unterminated))
+          (when (>= p limit)
+            (fail lx line col unterminated))
           (def w (skip-blanks b p limit))
           (def lead (quotes-at b w limit))
           (cond
-            ((= lead n) (Tuple (strip-margin lx b start line col here delimiter p w (list-reverse lines)) (+ w n)))
+            ((= lead n)
+             (Tuple (strip-margin lx b start line col here delimiter p w (list-reverse lines))
+                    (+ w n)))
             ((> lead n) (too-many-quotes lx start line col n w lead))
             (else
-             (def e (let scan ((e (+ w lead)))
-                      (cond
-                        ((or (>= e limit) (break-at? b e limit)) e)
-                        ((= (byte-at b e) 34)
-                         (def k (quotes-at b e limit))
-                         (cond
-                           ((> k n) (too-many-quotes lx start line col n e k))
-                           ((= k n)
-                            (fail-in-raw lx start line col e (fun (pos) (str "The raw string at " here " has " delimiter " inside a line at " pos
-                                                         ". It closes only on a line of its own; for " delimiter
-                                                         " in the text, open and close it with more quotes."))))
-                           (else (scan (+ e k)))))
-                        (else (scan (+ e 1))))))
-             (when (>= e limit) (fail lx line col unterminated))
+             (def e
+               (let scan ((e (+ w lead)))
+                 (cond
+                   ((or (>= e limit) (break-at? b e limit)) e)
+                   ((= (byte-at b e) 34)
+                    (def k (quotes-at b e limit))
+                    (cond
+                      ((> k n) (too-many-quotes lx start line col n e k))
+                      ((= k n)
+                       (fail-in-raw lx
+                                    start
+                                    line
+                                    col
+                                    e
+                                    (fun (pos)
+                                      (str "The raw string at " here " has " delimiter
+                                           " inside a line at " pos
+                                           ". It closes only on a line of its own; for " delimiter
+                                           " in the text, open and close it with more quotes."))))
+                      (else (scan (+ e k)))))
+                   (else (scan (+ e 1))))))
+             (when (>= e limit)
+               (fail lx line col unterminated))
              (go (after-break b e) (Cons (Tuple p e) lines))))))))
 
 ;; The lines of a raw string over several lines, the margin from `m-start` to
@@ -573,16 +646,23 @@
     (match rest
       (Nil (stringbuilder->string sb))
       ((Cons (Tuple from to) more)
-       (unless first (stringbuilder-add! sb #\newline))
+       (unless first
+         (stringbuilder-add! sb #\newline))
        (cond
          ((has-margin? from to) (stringbuilder-add-bytes! sb b (+ from m) to))
          ((= (skip-blanks b from to) to) unit)
          (else
           (match (advance b start from line col)
             ((Tuple l c)
-             (fail lx l c (str "A line of the raw string at " here " does not begin with its margin, at " (at lx l c)
-                               ". The whitespace before the closing " delimiter
-                               " is removed from every line, so every line with text in it begins with that whitespace."))))))
+             (fail
+              lx
+              l
+              c
+              (str "A line of the raw string at " here " does not begin with its margin, at " (at lx
+                                                                                                  l
+                                                                                                  c)
+                   ". The whitespace before the closing " delimiter
+                   " is removed from every line, so every line with text in it begins with that whitespace."))))))
        (go more #f)))))
 
 ;; ---------------------------------------------------------------------------
@@ -622,7 +702,10 @@
          (def past (continuation-end b (pos) limit (+ col 2)))
          (if (>= past 0)
              (move-to! b c past)
-             (move-to! b c (read-escape! lx (pos) limit #t (record-ref c line) (record-ref c col) literal)))
+             (move-to!
+              b
+              c
+              (read-escape! lx (pos) limit #t (record-ref c line) (record-ref c col) literal)))
          (go segments))
         ((and (= x 36) (byte-is? b (+ (pos) 1) limit 123))
          (def before (flush literal segments))
@@ -654,17 +737,22 @@
                    (def inner (new-buf))
                    (lex-range! lx inner (Cur (p from) (line hl) (col hc) (limit to)))
                    (when (= (record-ref inner n) 0)
-                     (fail lx hl hc (str "Empty ${} in the interpolated string at " (at lx hl hc) ": there is nothing to interpolate.")))
+                     (fail lx
+                           hl
+                           hc
+                           (str "Empty ${} in the interpolated string at " (at lx hl hc)
+                                ": there is nothing to interpolate.")))
                    (list-append (list (mk TLParen) (mk (TResolved "displayed")))
-                                (list-append (buf->list inner)
-                                             (list (mk TRParen)))))))
+                                (list-append (buf->list inner) (list (mk TRParen)))))))
               segments))
   (def expansion
     (match parts
       (Nil (list (mk (TStr ""))))
       ((Cons single Nil) single)
-      (_ (list-append (list (mk TLParen) (mk (TResolved "str")))
-                      (list-append (fold (fun (part acc) (list-append acc part)) Nil parts) (list (mk TRParen)))))))
+      (_
+       (list-append (list (mk TLParen) (mk (TResolved "str")))
+                    (list-append (fold (fun (part acc) (list-append acc part)) Nil parts)
+                                 (list (mk TRParen)))))))
   (list-for-each (fun (t) (push! out t)) expansion)
   (record-set! cur (p (pos)) (line el) (col ec)))
 
@@ -691,7 +779,10 @@
   (let go ((depth 1))
     (when (> depth 0)
       (when (>= (pos) limit)
-        (fail lx line col (str "Unterminated ${ ... } in the interpolated string at " (at lx line col))))
+        (fail lx
+              line
+              col
+              (str "Unterminated ${ ... } in the interpolated string at " (at lx line col))))
       (def x (byte-at b (pos)))
       (cond
         ((three-quotes? b (pos) limit)
@@ -703,22 +794,33 @@
          (let in-string ()
            (cond
              ((>= (pos) limit)
-              (fail lx hole-line hole-col (str "Unterminated string inside ${ ... } at " (at lx hole-line hole-col))))
+              (fail lx
+                    hole-line
+                    hole-col
+                    (str "Unterminated string inside ${ ... } at " (at lx hole-line hole-col))))
              ((and (= (byte-at b (pos)) 92) (< (+ (pos) 1) limit))
               (step!)
               (step!)
               (in-string))
              ((= (byte-at b (pos)) 34) (step!))
-             (else (step!) (in-string))))
+             (else
+              (step!)
+              (in-string))))
          (go depth))
         ((and (= x 35) (< (+ (pos) 2) limit) (= (byte-at b (+ (pos) 1)) 92))
          (step!)
          (step!)
          (step!)
          (go depth))
-        ((= x 123) (step!) (go (+ depth 1)))
-        ((= x 125) (step!) (go (- depth 1)))
-        (else (step!) (go depth))))))
+        ((= x 123)
+         (step!)
+         (go (+ depth 1)))
+        ((= x 125)
+         (step!)
+         (go (- depth 1)))
+        (else
+         (step!)
+         (go depth))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Character literals
@@ -730,8 +832,9 @@
 (defun (hex-int32 digits)
   (def b (string->bytes digits))
   (def n (array-length b))
-  (def start (let go ((i 0))
-               (if (and (< i n) (= (byte-at b i) 48)) (go (+ i 1)) i)))
+  (def start
+    (let go ((i 0))
+      (if (and (< i n) (= (byte-at b i) 48)) (go (+ i 1)) i)))
   (cond
     ((= n 0) -1)
     ((> (- n start) 8) -1)
@@ -774,8 +877,7 @@
   (def s (+ pos 2))
   (def name-end (symbol-end b s limit))
   (cond
-    ((and (< s limit) (>= (byte-at b s) 240))
-     (emit! (TChar (code-at b s)) 6))
+    ((and (< s limit) (>= (byte-at b s) 240)) (emit! (TChar (code-at b s)) 6))
     ((and (< s limit) (> name-end (+ s (seq-len (byte-at b s)))))
      (def name (text-of b s name-end))
      (def lower (downcase name))
@@ -786,12 +888,16 @@
          ((and (string-starts-with? lower "x") (> (string-length lower) 1))
           (def v (hex-int32 (string-drop lower 1)))
           (if (or (< v 0) (> v 1114111) (and (>= v 55296) (<= v 57343)))
-              (fail lx line col (str "Invalid character literal #\\" name " at " (at lx line col) ": not a Unicode scalar value."))
+              (fail lx
+                    line
+                    col
+                    (str "Invalid character literal #\\" name " at " (at lx line col)
+                         ": not a Unicode scalar value."))
               v))
-         (else (fail lx line col (str "Unknown character name #\\" name " at " (at lx line col) ".")))))
+         (else
+          (fail lx line col (str "Unknown character name #\\" name " at " (at lx line col) ".")))))
      (emit! (TChar code) (- name-end pos)))
-    ((< s limit)
-     (emit! (TChar (code-at b s)) (+ 2 (seq-len (byte-at b s)))))
+    ((< s limit) (emit! (TChar (code-at b s)) (+ 2 (seq-len (byte-at b s)))))
     (else (fail lx line col (str "Unterminated character literal at " (at lx line col) ".")))))
 
 ;; ---------------------------------------------------------------------------
@@ -810,30 +916,65 @@
 ;; - A real takes `d` and `M`. An integer also takes `I`, for a bigint.
 (: Rx)
 (def number-spelling
-  #rx(seq :bos
-          (? "-")
-          (or (seq "0" (in "xX") (+ :hex-digit)
-                   (? (or (seq (in "uU") (? (in "lL"))) (in "lL"))))
-              (seq "0" (in "bB") (+ (in "01"))
-                   (? (or (seq (in "uU") (? (in "lL"))) (in "lL"))))
-              (seq (+ :ascii-digit)
-                   (? (or "uy" "us" (seq (in "uU") (? (in "lL"))) "s" (in "lL") (in "dD") (in "mM") "I")))
-              (seq (+ :ascii-digit)
-                   (or (seq "." (+ :ascii-digit) (? (in "eE") (? (in "-+")) (+ :ascii-digit)))
-                       (seq (in "eE") (? (in "-+")) (+ :ascii-digit)))
-                   (? (in "dDmM"))))
-          :eos))
+  #rx(seq
+       :bos
+       (? "-")
+       (or (seq
+             "0"
+             (in "xX")
+             (+ :hex-digit)
+             (? (or (seq
+                      (in "uU")
+                      (? (in "lL")))
+                    (in "lL"))))
+           (seq
+             "0"
+             (in "bB")
+             (+ (in "01"))
+             (? (or (seq
+                      (in "uU")
+                      (? (in "lL")))
+                    (in "lL"))))
+           (seq
+             (+ :ascii-digit)
+             (? (or "uy"
+                    "us"
+                    (seq
+                      (in "uU")
+                      (? (in "lL")))
+                    "s"
+                    (in "lL")
+                    (in "dD")
+                    (in "mM")
+                    "I")))
+           (seq
+             (+ :ascii-digit)
+             (or (seq
+                   "."
+                   (+ :ascii-digit)
+                   (? (in "eE") (? (in "-+")) (+ :ascii-digit)))
+                 (seq
+                   (in "eE")
+                   (? (in "-+"))
+                   (+ :ascii-digit)))
+             (? (in "dDmM"))))
+       :eos))
 
 ;; `quantityNumber`: the number at the start of a quantity literal: `9.81`,
 ;; `-2`, `1e-3`, `1|3`, `.5`. A digit is any decimal digit, as `\d` is.
 (: Rx)
 (def quantity-number
-  #rx(seq :bos
-          (? "-")
-          (or (seq (+ :digit) (? "." (* :digit)))
-              (seq "." (+ :digit)))
-          (? (in "eE") (? (in "-+")) (+ :digit))
-          (? "|" (+ :digit))))
+  #rx(seq
+       :bos
+       (? "-")
+       (or (seq
+             (+ :digit)
+             (? "." (* :digit)))
+           (seq
+             "."
+             (+ :digit)))
+       (? (in "eE") (? (in "-+")) (+ :digit))
+       (? "|" (+ :digit))))
 
 ;; The number at the start of the body of a quantity literal, "" when there is
 ;; none, and the rest of the body without the white space around it.
@@ -864,8 +1005,14 @@
     (def sc (record-ref cur col))
     (def so (record-ref cur p))
     (move-to! b cur (+ so len))
-    (push! out (Token (tok t) (sl sl) (sc sc) (so so)
-                      (el (record-ref cur line)) (ec (record-ref cur col)) (eo (record-ref cur p)))))
+    (push! out
+           (Token (tok t)
+                  (sl sl)
+                  (sc sc)
+                  (so so)
+                  (el (record-ref cur line))
+                  (ec (record-ref cur col))
+                  (eo (record-ref cur p)))))
   (let go ()
     (def pos (record-ref cur p))
     (when (< pos limit)
@@ -879,24 +1026,35 @@
         ((space? (code-at b pos)) (record-set! cur (p (+ pos (seq-len x))) (col (+ col 1))))
         ;; A comment, to the end of its line.
         ((= x 59)
-         (move-to! b cur (let skip ((k pos))
-                           (if (or (>= k limit) (= (byte-at b k) 10)) k (skip (+ k 1))))))
+         (move-to! b
+                   cur
+                   (let skip ((k pos))
+                     (if (or (>= k limit) (= (byte-at b k) 10)) k (skip (+ k 1))))))
         ;; `<9.81 m/s^2>`: `(quantity "9.81" "m/s^2")`.
-        ((and (= x 60)
-              (< (+ pos 1) limit)
-              (or (digit? next)
-                  (and (or (= next 46) (= next 45))
-                       (< (+ pos 2) limit)
-                       (digit? (code-at b (+ pos 2))))))
+        ((and
+          (= x 60)
+          (< (+ pos 1) limit)
+          (or (digit? next)
+              (and (or (= next 46) (= next 45)) (< (+ pos 2) limit) (digit? (code-at b (+ pos 2))))))
          (def close (index-of b 62 (+ pos 1) limit))
          (def line-end (index-of b 10 (+ pos 1) limit))
          (when (or (< close 0) (and (>= line-end 0) (< line-end close)))
-           (fail lx line col (str "Syntax error at " (at lx line col)
-                                  ": a quantity literal starting with '<' has no '>' on its line. Write it as <9.81 m/s^2>; a comparison is (< a b), with a space.")))
+           (fail
+            lx
+            line
+            col
+            (str "Syntax error at " (at lx line col)
+                 ": a quantity literal starting with '<' has no '>' on its line. Write it as <9.81 m/s^2>; a comparison is (< a b), with a space.")))
          (def body (text-of b (+ pos 1) close))
          (move-to! b cur (+ close 1))
-         (defun (mk t) (Token (tok t) (sl line) (sc col) (so pos)
-                              (el (record-ref cur line)) (ec (record-ref cur col)) (eo (record-ref cur p))))
+         (defun (mk t)
+           (Token (tok t)
+                  (sl line)
+                  (sc col)
+                  (so pos)
+                  (el (record-ref cur line))
+                  (ec (record-ref cur col))
+                  (eo (record-ref cur p))))
          (push! out (mk TLParen))
          (push! out (mk (TSym "quantity")))
          (match (quantity-parts body)
@@ -929,7 +1087,8 @@
                ((Tuple text past) (emit! (TStr text) (- past pos))))
              (let ((end (let scan ((k (+ pos 1)))
                           (cond
-                            ((>= k limit) (fail lx line col (str "Unterminated string at " (at lx line col))))
+                            ((>= k limit)
+                             (fail lx line col (str "Unterminated string at " (at lx line col))))
                             ((= (byte-at b k) 34) (+ k 1))
                             ((and (= (byte-at b k) 92) (< (+ k 1) limit)) (scan (+ k 2)))
                             (else (scan (+ k 1)))))))
@@ -945,28 +1104,36 @@
               (emit! (TDatum (text-of b (+ pos 1) end)) (- end pos))))
            (else (emit! TQuote 1))))
         ((or (digit? (code-at b pos)) (and (= x 45) (>= next 0) (digit? next)))
-         (def end (let scan ((k pos))
-                    (cond
-                      ((>= k limit) k)
-                      (:def y (byte-at b k))
-                      ((or (letter-or-digit? (code-at b k))
-                           (= y 46)
-                           (= y 45)
-                           (and (= y 43) (or (= (byte-at b (- k 1)) 101) (= (byte-at b (- k 1)) 69))))
-                       (scan (+ k (seq-len y))))
-                      (else k))))
+         (def end
+           (let scan ((k pos))
+             (cond
+               ((>= k limit) k)
+               (:def y (byte-at b k))
+               ((or (letter-or-digit? (code-at b k))
+                    (= y 46)
+                    (= y 45)
+                    (and (= y 43) (or (= (byte-at b (- k 1)) 101) (= (byte-at b (- k 1)) 69))))
+                (scan (+ k (seq-len y))))
+               (else k))))
          (def text (text-of b pos end))
          (unless (rx-match? number-spelling text)
-           (fail lx line col (str "Syntax error at " (at lx line col) ": '" text
-                                  "' is not a number. A number is digits, with a fraction and an exponent if it is a real, as in 1.5 or 2e-3, or 0x or 0b and hex or binary digits, and one of the type suffixes. Separate it from what follows with a space.")))
+           (fail
+            lx
+            line
+            col
+            (str "Syntax error at " (at lx line col) ": '" text
+                 "' is not a number. A number is digits, with a fraction and an exponent if it is a real, as in 1.5 or 2e-3, or 0x or 0b and hex or binary digits, and one of the type suffixes. Separate it from what follows with a space.")))
          (emit! (TNum text) (- end pos)))
         ((and (= x 35) (< (+ pos 1) limit))
          (def y (byte-at b (+ pos 1)))
          (cond
            ((or (= y 40) (= y 91)) (emit! THash 1))
            ((and (= y 34) (three-quotes? b (+ pos 1) limit))
-            (fail lx line col (str "An interpolated string cannot be a raw one, at " (at lx line col)
-                                   ". Write the raw string, and join the values to it with str.")))
+            (fail lx
+                  line
+                  col
+                  (str "An interpolated string cannot be a raw one, at " (at lx line col)
+                       ". Write the raw string, and join the values to it with str.")))
            ((= y 34) (read-interpolated! lx out cur))
            ((= y 39) (emit! TSynQuote 2))
            ((= y 58)
@@ -982,8 +1149,12 @@
               ((= text "#f") (emit! (TBool #f) 2))
               ((and (> end (+ pos 1)) bracket-follows) (emit! (TSym text) (- end pos)))
               (else
-               (fail lx line col (str "Unknown reader syntax '" text "' at " (at lx line col)
-                                      ". '#' begins a reader form — #t, #f, #\\c, #:keyword, #'template, #(...), #[...], #name(...) or #\"...\" — and is not part of a name.")))))))
+               (fail
+                lx
+                line
+                col
+                (str "Unknown reader syntax '" text "' at " (at lx line col)
+                     ". '#' begins a reader form — #t, #f, #\\c, #:keyword, #'template, #(...), #[...], #name(...) or #\"...\" — and is not part of a name.")))))))
         ((= x 35) (emit! THash 1))
         (else
          (def end (symbol-end b pos limit))
@@ -1022,13 +1193,21 @@
 ;; `eo`, with `origin`.
 (: (-> Rd Syntax int int int int int int SyntaxOrigin Syntax))
 (defun (place rd s sl sc so el ec eo origin)
-  (.WithOrigin (.WithRange s (SrcRange. (record-ref (record-ref rd lx) file) sl sc el ec "" so eo)) origin))
+  (.WithOrigin (.WithRange s (SrcRange. (record-ref (record-ref rd lx) file) sl sc el ec "" so eo))
+               origin))
 
 ;; `s` at the range of the token `t`, with `origin`.
 (: (-> Rd Syntax Token SyntaxOrigin Syntax))
 (defun (place-token rd s t origin)
-  (place rd s (record-ref t sl) (record-ref t sc) (record-ref t so)
-         (record-ref t el) (record-ref t ec) (record-ref t eo) origin))
+  (place rd
+         s
+         (record-ref t sl)
+         (record-ref t sc)
+         (record-ref t so)
+         (record-ref t el)
+         (record-ref t ec)
+         (record-ref t eo)
+         origin))
 
 (: (-> Rd Syntax Token Syntax))
 (defun (place-at rd s t)
@@ -1049,8 +1228,7 @@
   (defun (punct text) (place-at rd (SPunct text) t))
   (match (record-ref t tok)
     ((TSym s) (symbol-at rd s t))
-    ((TResolved s)
-     (place-token rd (SSym (string->symbol s)) t SyntaxOrigin.Resolved))
+    ((TResolved s) (place-token rd (SSym (string->symbol s)) t SyntaxOrigin.Resolved))
     ((TDatum s) (place-at rd (SDatum (string->symbol s)) t))
     ((TNum s) (place-at rd (SInt s) t))
     ((TStr s) (place-at rd (SStr s) t))
@@ -1088,11 +1266,17 @@
 
 (: (-> int string))
 (defun (open-text kind)
-  (case kind ((1) "(") ((2) "[") (else "{")))
+  (case kind
+    ((1) "(")
+    ((2) "[")
+    (else "{")))
 
 (: (-> int string))
 (defun (close-text kind)
-  (case kind ((1) ")") ((2) "]") (else "}")))
+  (case kind
+    ((1) ")")
+    ((2) "]")
+    (else "}")))
 
 (: (-> Syntax string bool))
 (defun (punct? s text)
@@ -1119,16 +1303,33 @@
            (match acc
              (Nil
               (def lx (record-ref rd lx))
-              (fail lx (start-line node) (start-col node)
-                    (str "Unexpected #' at end of form at " (at lx (start-line node) (start-col node)))))
+              (fail
+               lx
+               (start-line node)
+               (start-col node)
+               (str "Unexpected #' at end of form at " (at lx (start-line node) (start-col node)))))
              ((Cons form tail)
-              (def head (place rd (SSym (string->symbol "syntax-quote"))
-                               (start-line node) (start-col node) (start-offset node)
-                               (end-line node) (end-col node) (end-offset node) SyntaxOrigin.CallSite))
-              (go more (Cons (place rd (SList (list head form))
-                                    (start-line node) (start-col node) (start-offset node)
-                                    (end-line form) (end-col form) (end-offset form) SyntaxOrigin.CallSite)
-                             tail))))
+              (def head
+                (place rd
+                       (SSym (string->symbol "syntax-quote"))
+                       (start-line node)
+                       (start-col node)
+                       (start-offset node)
+                       (end-line node)
+                       (end-col node)
+                       (end-offset node)
+                       SyntaxOrigin.CallSite))
+              (go more
+                  (Cons (place rd
+                               (SList (list head form))
+                               (start-line node)
+                               (start-col node)
+                               (start-offset node)
+                               (end-line form)
+                               (end-col form)
+                               (end-offset form)
+                               SyntaxOrigin.CallSite)
+                        tail))))
            (go more (Cons node acc)))))))
 
 ;; `readIn`: the forms from the current token up to the bracket that closes
@@ -1143,8 +1344,9 @@
           (None (collapse rd (list-reverse acc)))
           ((Some o)
            (def kind (opener-kind (record-ref o tok)))
-           (fail-at rd o (fun (pos) (str "Syntax error at " pos ": the '" (open-text kind)
-                                         "' opened here is never closed. The file ends first.")))))
+           (fail-at rd o (fun (pos)
+                           (str "Syntax error at " pos ": the '" (open-text kind)
+                                "' opened here is never closed. The file ends first.")))))
         (let ((t (tok-at rd i)))
           (def tk (record-ref t tok))
           (def closer (closer-kind tk))
@@ -1161,14 +1363,18 @@
                 (if (= kind closer)
                     (collapse rd (list-reverse acc))
                     (let ((lx (record-ref rd lx)))
-                      (fail-at rd o (fun (pos) (str "Syntax error at " pos ": the '" (open-text kind)
-                                                    "' opened here is closed by the '" (close-text closer) "' at "
-                                                    (at lx (record-ref t sl) (record-ref t sc))
-                                                    ". A form opened with '" (open-text kind)
-                                                    "' is closed with '" (close-text kind) "'."))))))
+                      (fail-at rd o (fun (pos)
+                                      (str "Syntax error at " pos ": the '" (open-text kind)
+                                           "' opened here is closed by the '" (close-text closer)
+                                           "' at " (at lx (record-ref t sl) (record-ref t sc))
+                                           ". A form opened with '" (open-text kind)
+                                           "' is closed with '" (close-text kind) "'."))))))
                (None
-                (fail-at rd t (fun (pos) (str "Syntax error at " pos ": this '" (close-text closer)
-                                              "' closes nothing. Every bracket before it is already closed."))))))
+                (fail-at rd
+                         t
+                         (fun (pos)
+                           (str "Syntax error at " pos ": this '" (close-text closer)
+                                "' closes nothing. Every bracket before it is already closed."))))))
             ;; '(items...) → (quoted-list items...)
             ((and (= tk TQuote) (next-opens? 1))
              (record-set! rd (i (+ i 1)))
@@ -1188,8 +1394,7 @@
                ((TSym name)
                 (go (Cons (read-form rd #f (tok-at rd (+ i 1)) t (Some (Tuple name t))) acc)))
                (_ (go acc))))
-            ((= (opener-kind tk) 1)
-             (go (Cons (read-form rd #t t t None) acc)))
+            ((= (opener-kind tk) 1) (go (Cons (read-form rd #t t t None) acc)))
             ;; {collector expr clause...} → (comprehension collector expr clause...)
             ((= (opener-kind tk) 3)
              (go (Cons (read-form rd #f t t (Some (Tuple "comprehension" t))) acc)))
@@ -1222,8 +1427,15 @@
         (match head
           ((Some (Tuple name t)) (Cons (symbol-at rd name t) items))
           (None items))))
-  (place rd (SList final) (record-ref from sl) (record-ref from sc) (record-ref from so)
-         (record-ref closer el) (record-ref closer ec) (record-ref closer eo) SyntaxOrigin.CallSite))
+  (place rd
+         (SList final)
+         (record-ref from sl)
+         (record-ref from sc)
+         (record-ref from so)
+         (record-ref closer el)
+         (record-ref closer ec)
+         (record-ref closer eo)
+         SyntaxOrigin.CallSite))
 
 ;; ---------------------------------------------------------------------------
 ;; #(...)
@@ -1242,7 +1454,10 @@
       -1
       (let go ((i sign) (v 0L))
         (cond
-          ((>= i n) (if negative (if (= v 0L) 0 -1) (cast int v)))
+          ((>= i n)
+           (if negative
+               (if (= v 0L) 0 -1)
+               (cast int v)))
           (:def y (byte-at b i))
           ((and (>= y 48) (<= y 57))
            (def w (+ (* v 10L) (cast long (- y 48))))
@@ -1298,11 +1513,14 @@
 (defun (read-lambda rd bracket hash)
   (def body (expand-bare (read-form rd #t bracket hash None)))
   (def most (max-positional body))
-  (def names (loop (:for k (range 1 (+ most 1)))
-                   (:acc out (listing (Tuple (str "&" (int->string k)) (fresh rd (str "&" (int->string k))))))
-               => out))
-  (def params (place-at rd (SList (list-map (fun (pair) (match pair ((Tuple _ to) (symbol-at rd to hash)))) names))
-                        hash))
+  (def names
+    (loop (:for k (range 1 (+ most 1)))
+          (:acc out (listing (Tuple (str "&" (int->string k)) (fresh rd (str "&" (int->string k))))))
+      => out))
+  (def params
+    (place-at rd
+              (SList (list-map (fun (pair) (match pair ((Tuple _ to) (symbol-at rd to hash)))) names))
+              hash))
   (like body (SList (list (symbol-at rd "fun" hash) params (rename names body)))))
 
 ;; ---------------------------------------------------------------------------
@@ -1315,11 +1533,12 @@
   (if (string-empty? file)
       "<unknown>"
       (let ((b (string->bytes file)))
-        (def after (let go ((i (- (array-length b) 1)))
-                     (cond
-                       ((< i 0) 0)
-                       ((or (= (byte-at b i) 47) (= (byte-at b i) 92)) (+ i 1))
-                       (else (go (- i 1))))))
+        (def after
+          (let go ((i (- (array-length b) 1)))
+            (cond
+              ((< i 0) 0)
+              ((or (= (byte-at b i) 47) (= (byte-at b i) 92)) (+ i 1))
+              (else (go (- i 1))))))
         (text-of b after (array-length b)))))
 
 ;; The forms of the text of `lx` from the byte `start`. Raises `ReadFailure`
@@ -1341,8 +1560,13 @@
 ;; A lexer of the UTF-8 text `bytes`, read as from `file`.
 (: (-> (Array byte) string Lexer))
 (defun (new-lexer bytes file)
-  (Lexer (bytes bytes) (file file) (label (file-label file)) (written Nil)
-         (err-message "") (err-line 0) (err-col 0)))
+  (Lexer (bytes bytes)
+         (file file)
+         (label (file-label file))
+         (written Nil)
+         (err-message "")
+         (err-line 0)
+         (err-col 0)))
 
 ;; The error `fail` recorded in `lx`.
 (: (-> Lexer ReadError))
@@ -1375,7 +1599,9 @@
      (def bom (and (>= n 3) (= (byte-at raw 0) 239) (= (byte-at raw 1) 187) (= (byte-at raw 2) 191)))
      (if (bytes-utf-8? raw 0 n)
          (read-bytes raw (if bom 3 0) path)
-         (read-bytes (string->bytes (bytes->string/lossy (if bom (copy-bytes raw 3 (- n 3)) raw))) 0 path)))))
+         (read-bytes (string->bytes (bytes->string/lossy (if bom (copy-bytes raw 3 (- n 3)) raw)))
+                     0
+                     path)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Ranges
@@ -1393,8 +1619,12 @@
 
 (: (-> Syntax SourceRange))
 (defun (syntax-range s)
-  (SourceRange (start-line (start-line s)) (start-column (start-col s)) (start-offset (start-offset s))
-               (end-line (end-line s)) (end-column (end-col s)) (end-offset (end-offset s))))
+  (SourceRange (start-line (start-line s))
+               (start-column (start-col s))
+               (start-offset (start-offset s))
+               (end-line (end-line s))
+               (end-column (end-col s))
+               (end-offset (end-offset s))))
 
 ;; ---------------------------------------------------------------------------
 ;; Tokens as written
@@ -1420,14 +1650,17 @@
 (defun (source-token src k from to sl sc el ec)
   (SourceToken (kind k)
                (text (slice-bytes src from (- to from)))
-               (range (SourceRange (start-line sl) (start-column sc) (start-offset from)
-                                   (end-line el) (end-column ec) (end-offset to)))))
+               (range (SourceRange (start-line sl)
+                                   (start-column sc)
+                                   (start-offset from)
+                                   (end-line el)
+                                   (end-column ec)
+                                   (end-offset to)))))
 
 ;; Whether a line break, `\n` or `\r\n`, starts at `i`, before `to`.
 (: (-> (Array byte) int int bool))
 (defun (line-break-at? b i to)
-  (or (= (byte-at b i) 10)
-      (and (= (byte-at b i) 13) (< (+ i 1) to) (= (byte-at b (+ i 1)) 10))))
+  (or (= (byte-at b i) 10) (and (= (byte-at b i) 13) (< (+ i 1) to) (= (byte-at b (+ i 1)) 10))))
 
 ;; The end of the comment at `i`: the line break after it, or `to`.
 (: (-> (Array byte) int int int))
@@ -1444,7 +1677,10 @@
 ;; compiler's lexer reads nothing else between two tokens.
 (: (-> string (Array byte) int int int int (-> SourceToken %a %a) %a %a))
 (defun (trivia src b from to line col f acc)
-  (let go ((i from) (line line) (col col) (acc acc))
+  (let go ((i from)
+           (line line)
+           (col col)
+           (acc acc))
     (cond
       ((>= i to) acc)
       (:def x (byte-at b i))
@@ -1477,7 +1713,11 @@
 (defun (as-written src b buf start f init)
   (def items (record-ref buf items))
   (def n (record-ref buf n))
-  (let go ((k 0) (pos start) (line 1) (col 0) (acc init))
+  (let go ((k 0)
+           (pos start)
+           (line 1)
+           (col 0)
+           (acc init))
     (cond
       ((>= k n) (trivia src b pos (array-length b) line col f acc))
       (:def t (array-ref items k))
@@ -1486,9 +1726,18 @@
       (else
        (def eo (record-ref t eo))
        (def before (trivia src b pos so line col f acc))
-       (go (+ k 1) eo (record-ref t el) (record-ref t ec)
-           (f (source-token src (written-kind b so eo) so eo (record-ref t sl) (record-ref t sc)
-                            (record-ref t el) (record-ref t ec))
+       (go (+ k 1)
+           eo
+           (record-ref t el)
+           (record-ref t ec)
+           (f (source-token src
+                            (written-kind b so eo)
+                            so
+                            eo
+                            (record-ref t sl)
+                            (record-ref t sc)
+                            (record-ref t el)
+                            (record-ref t ec))
               before))))))
 
 (: (-> string (-> SourceToken %a %a) %a (#:file string) (Result ReadError %a)))
@@ -1516,7 +1765,14 @@
 ;;   first appear in.
 
 (: Rx)
-(def fresh-name #rx(seq :bos "&" (+ :digit) "__" (+ :digit) :eos))
+(def fresh-name
+  #rx(seq
+       :bos
+       "&"
+       (+ :digit)
+       "__"
+       (+ :digit)
+       :eos))
 
 ;; - `renamed`: each fresh name written so far, and what it is written as.
 (type (: Dumper (Record (: out StringBuilder)
@@ -1524,7 +1780,8 @@
 
 (: (-> int string))
 (defun (hex-text n)
-  (defun (digit d) (int->char (if (< d 10) (+ d 48) (+ d 55))))
+  (defun (digit d)
+    (int->char (if (< d 10) (+ d 48) (+ d 55))))
   (let go ((n n) (acc Nil))
     (def acc2 (Cons (digit (bitwise-and n 15)) acc))
     (if (< n 16)
@@ -1536,17 +1793,17 @@
 (: (-> StringBuilder string void))
 (defun (add-quoted! sb text)
   (stringbuilder-add! sb #\")
-  (string-for-each
-   (fun (c)
-     (cond
-       ((= c #\\) (stringbuilder-add-string! sb "\\\\"))
-       ((= c #\") (stringbuilder-add-string! sb "\\\""))
-       ((= c #\newline) (stringbuilder-add-string! sb "\\n"))
-       ((= c #\tab) (stringbuilder-add-string! sb "\\t"))
-       ((= c #\return) (stringbuilder-add-string! sb "\\r"))
-       ((< (char->int c) 32) (stringbuilder-add-string! sb (str "\\u{" (hex-text (char->int c)) "}")))
-       (else (stringbuilder-add! sb c))))
-   text)
+  (string-for-each (fun (c)
+                     (cond
+                       ((= c #\\) (stringbuilder-add-string! sb "\\\\"))
+                       ((= c #\") (stringbuilder-add-string! sb "\\\""))
+                       ((= c #\newline) (stringbuilder-add-string! sb "\\n"))
+                       ((= c #\tab) (stringbuilder-add-string! sb "\\t"))
+                       ((= c #\return) (stringbuilder-add-string! sb "\\r"))
+                       ((< (char->int c) 32)
+                        (stringbuilder-add-string! sb (str "\\u{" (hex-text (char->int c)) "}")))
+                       (else (stringbuilder-add! sb c))))
+                   text)
   (stringbuilder-add! sb #\"))
 
 ;; `name`, or what the fresh name `name` is written as.
@@ -1558,8 +1815,11 @@
         ((Some (Tuple _ to)) to)
         (None
          (def b (string->bytes name))
-         (def cut (let go ((i 0)) (if (= (byte-at b i) 95) i (go (+ i 1)))))
-         (def to (str (text-of b 0 cut) "__g" (int->string (+ (list-length (record-ref d renamed)) 1))))
+         (def cut
+           (let go ((i 0))
+             (if (= (byte-at b i) 95) i (go (+ i 1)))))
+         (def to
+           (str (text-of b 0 cut) "__g" (int->string (+ (list-length (record-ref d renamed)) 1))))
          (record-set! d (renamed (Cons (Tuple name to) (record-ref d renamed))))
          to))))
 

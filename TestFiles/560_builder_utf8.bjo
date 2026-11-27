@@ -21,7 +21,8 @@
 (defun (builder-of bytes)
   (def sb (stringbuilder-empty))
   (stringbuilder-add-string! sb "ok ")
-  (loop (:for b bytes) (:do (stringbuilder-add-byte! sb b)))
+  (loop (:for b bytes)
+        (:do (stringbuilder-add-byte! sb b)))
   sb)
 
 ;; True if making a string of `sb` raises.
@@ -33,7 +34,8 @@
 (: (-> (List int) (Array byte)))
 (defun (byte-array bytes)
   (def (: out (Array byte)) (make-array (list-length bytes)))
-  (loop (:for b bytes) (:for i (range 0 (list-length bytes)))
+  (loop (:for b bytes)
+        (:for i (range 0 (list-length bytes)))
         (:do (array-set! out i (cast byte b))))
   out)
 
@@ -42,7 +44,8 @@
   (expect "ASCII" (stringbuilder->string (builder-of (list 104 105))) "ok hi")
   (expect "a character of two bytes" (stringbuilder->string (builder-of (list 0xC3 0xA5))) "ok å")
   (expect "a character of four bytes"
-          (stringbuilder->string (builder-of (list 0xF0 0x9F 0x98 0x80))) "ok 😀")
+          (stringbuilder->string (builder-of (list 0xF0 0x9F 0x98 0x80)))
+          "ok 😀")
   (expect "a byte at a time between checked appends"
           (let ((sb (builder-of (list 0xC3 0xA5))))
             (stringbuilder-add! sb #\ä)
@@ -94,7 +97,8 @@
   (expect "a valid builder is written" (get-output-string good) "ok å")
   (def bad (open-output-string))
   (expect-true "an invalid builder raises when written"
-               (raised? (try (write-builder bad (builder-of (list 0xC3)))
-                             #:catch (System.InvalidOperationException))))
+               (raised? (try
+                          (write-builder bad (builder-of (list 0xC3)))
+                          #:catch (System.InvalidOperationException))))
   (expect "and nothing was written" (get-output-string bad) "")
   0)

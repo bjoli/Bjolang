@@ -63,9 +63,10 @@
 
   ;; --- a thunk that forces its own value ---------------------------------------
   (def (: self-ref (Box (Option (Lazy int)))) (make-box None))
-  (def selfish (delay (match (box-ref self-ref)
-                        ((Some me) (+ 1 (force me)))
-                        (None 0))))
+  (def selfish
+    (delay (match (box-ref self-ref)
+             ((Some me) (+ 1 (force me)))
+             (None 0))))
   (box-set! self-ref (Some selfish))
   (expect-true "a thunk that forces its own value raises" (raises? (fun () (force selfish))))
   (expect-true "and the value is not forced" (not (lazy-forced? selfish)))
@@ -86,9 +87,10 @@
   ;; The first run raises. One fiber gets the exception. Another fiber runs the
   ;; thunk again, and the others get its value.
   (def shaky-runs (make-atomic 0))
-  (def shaky (delay (def n (atomic-increment! shaky-runs))
-                    (thread-sleep 30)
-                    (if (= n 1) (boom "first run") n)))
+  (def shaky
+    (delay (def n (atomic-increment! shaky-runs))
+           (thread-sleep 30)
+           (if (= n 1) (boom "first run") n)))
   (def errors (make-atomic 0))
   (def values (make-atomic (list)))
   (eight (fun ()
@@ -97,5 +99,7 @@
              ((Err _) (ignore (atomic-increment! errors))))))
   (expect "a failed run: one fiber gets the exception" (atomic-ref errors) 1)
   (expect "a failed run: the thunk ran two times" (atomic-ref shaky-runs) 2)
-  (expect "a failed run: the other fibers get the second value" (atomic-ref values) (list 2 2 2 2 2 2 2))
+  (expect "a failed run: the other fibers get the second value"
+          (atomic-ref values)
+          (list 2 2 2 2 2 2 2))
   0)

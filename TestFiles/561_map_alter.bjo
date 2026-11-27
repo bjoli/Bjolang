@@ -50,29 +50,40 @@
 (: (-bjo-> (Option int) (Option int)))
 (defbjo (slow-change old)
   (sync (timeout (milliseconds 0)))
-  (match old ((Some v) (Some (* v 10))) (None (Some 1))))
+  (match old
+    ((Some v) (Some (* v 10)))
+    (None (Some 1))))
 
 (defbjo (main args)
   ;; --- Map --------------------------------------------------------------------
   (def m (list->map (list (Tuple "a" 1) (Tuple "b" 2))))
   (expect "alter inserts" (map-ref (map-alter m "c" (fun (o) (Some 3))) "c") 3)
-  (expect "alter is given the value" (map-ref (map-alter m "a" (fun (o) (match o ((Some v) (Some (+ v 10))) (None None)))) "a") 11)
+  (expect "alter is given the value"
+          (map-ref (map-alter m "a" (fun (o)
+                                      (match o
+                                        ((Some v) (Some (+ v 10)))
+                                        (None None))))
+                   "a")
+          11)
   (expect "alter removes" (map-length (map-alter m "a" (fun (o) None))) 1)
-  (expect "alter of an absent key to None changes nothing"
-          (map-alter m "z" (fun (o) None)) m)
+  (expect "alter of an absent key to None changes nothing" (map-alter m "z" (fun (o) None)) m)
   (expect "the count follows an insert" (map-length (map-alter m "c" (fun (o) (Some 3)))) 3)
   (expect "update" (map-ref (map-update m "b" (fun (n) (* n 5))) "b") 10)
   (expect "update with a default, absent"
-          (map-ref (map-update m "z" (fun (n) (+ n 1)) #:default (Some 0)) "z") 1)
+          (map-ref (map-update m "z" (fun (n) (+ n 1)) #:default (Some 0)) "z")
+          1)
   (expect "update with a default, present"
-          (map-ref (map-update m "a" (fun (n) (+ n 1)) #:default (Some 0)) "a") 2)
+          (map-ref (map-update m "a" (fun (n) (+ n 1)) #:default (Some 0)) "a")
+          2)
   (expect-true "update of an absent key raises"
-               (raised? (try (map-update m "z" (fun (n) n))
-                             #:catch (System.Collections.Generic.KeyNotFoundException))))
+               (raised? (try
+                          (map-update m "z" (fun (n) n))
+                          #:catch (System.Collections.Generic.KeyNotFoundException))))
   (expect "and m is as it was" (map-ref m "a") 1)
-  (def counts (loop (:for w (list "x" "y" "x" "z" "x"))
-                    (:acc out (folding (: (map-empty) (Map string int))
-                                       (map-update out w (fun (n) (+ n 1)) #:default (Some 0))))))
+  (def counts
+    (loop (:for w (list "x" "y" "x" "z" "x"))
+          (:acc out (folding (: (map-empty) (Map string int))
+                             (map-update out w (fun (n) (+ n 1)) #:default (Some 0))))))
   (expect "a count" (map-ref counts "x") 3)
 
   ;; --- TransientMap ------------------------------------------------------------
@@ -90,13 +101,15 @@
   ;; --- OrderedMap and its transient ---------------------------------------------
   (def om (list->orderedmap (list (Tuple 1 "one") (Tuple 2 "two"))))
   (expect "orderedmap alter"
-          (orderedmap->list (orderedmap-alter (orderedmap-alter om 3 (fun (o) (Some "three"))) 1 (fun (o) None)))
+          (orderedmap->list
+           (orderedmap-alter (orderedmap-alter om 3 (fun (o) (Some "three"))) 1 (fun (o) None)))
           (list (Tuple 2 "two") (Tuple 3 "three")))
   (expect "orderedmap alter of an absent key to None" (orderedmap-alter om 9 (fun (o) None)) om)
   (expect "orderedmap update" (orderedmap-ref (orderedmap-update om 2 string-upcase) 2) "TWO")
   (expect-true "orderedmap update of an absent key raises"
-               (raised? (try (orderedmap-update om 9 string-upcase)
-                             #:catch (System.Collections.Generic.KeyNotFoundException))))
+               (raised? (try
+                          (orderedmap-update om 9 string-upcase)
+                          #:catch (System.Collections.Generic.KeyNotFoundException))))
   (def tom (orderedmap->transientorderedmap om))
   (transientorderedmap-alter! tom 1 (fun (o) None))
   (transientorderedmap-update! tom 5 (fun (s) (string-append s "!")) #:default (Some "five"))
@@ -109,12 +122,15 @@
   (mutablemap-update! mm "k" (fun (n) (+ n 1)) #:default (Some 0))
   (mutablemap-update! mm "k" (fun (n) (+ n 1)) #:default (Some 0))
   (mutablemap-alter! mm "j" (fun (o) (Some 7)))
-  (expect "mutablemap update and alter" (Tuple (mutablemap-ref mm "k") (mutablemap-ref mm "j")) (Tuple 2 7))
+  (expect "mutablemap update and alter"
+          (Tuple (mutablemap-ref mm "k") (mutablemap-ref mm "j"))
+          (Tuple 2 7))
   (mutablemap-alter! mm "j" (fun (o) None))
   (expect "mutablemap alter removes" (mutablemap-contains? mm "j") #f)
   (expect-true "mutablemap update of an absent key raises"
-               (raised? (try (mutablemap-update! mm "z" (fun (n) n))
-                             #:catch (System.Collections.Generic.KeyNotFoundException))))
+               (raised? (try
+                          (mutablemap-update! mm "z" (fun (n) n))
+                          #:catch (System.Collections.Generic.KeyNotFoundException))))
 
   ;; --- the same random alters on every map ---------------------------------------
   (def steps 6000)
@@ -124,8 +140,13 @@
   (def (: mmm (MutableMap int int)) (mutablemap))
   (def (: ctm (TransientMap Clash int)) (transientmap-empty))
   (def result
-    (let go ((i 0) (x 7) (pm (: (map-empty) (Map int int))) (om (: (orderedmap-empty) (OrderedMap int int)))
-             (cm (: (map-empty) (Map Clash int))) (ref (: (mutablemap) (MutableMap int int))) (bad ""))
+    (let go ((i 0)
+             (x 7)
+             (pm (: (map-empty) (Map int int)))
+             (om (: (orderedmap-empty) (OrderedMap int int)))
+             (cm (: (map-empty) (Map Clash int)))
+             (ref (: (mutablemap) (MutableMap int int)))
+             (bad ""))
       (if (or (= i steps) (not (string-empty? bad)))
           (Tuple bad pm cm)
           (begin
@@ -142,20 +163,25 @@
             (def want (sorted (mutablemap->map ref)))
             (def bad2
               (cond
-                ((not (= (map-length pm2) (mutablemap-length ref))) (str "Map's length at step " (displayed i)))
-                ((not (= (map-length cm2) (mutablemap-length ref))) (str "the clashing Map's length at step " (displayed i)))
-                ((not (= (transientmap-length tm) (mutablemap-length ref))) (str "TransientMap's length at step " (displayed i)))
+                ((not (= (map-length pm2) (mutablemap-length ref)))
+                 (str "Map's length at step " (displayed i)))
+                ((not (= (map-length cm2) (mutablemap-length ref)))
+                 (str "the clashing Map's length at step " (displayed i)))
+                ((not (= (transientmap-length tm) (mutablemap-length ref)))
+                 (str "TransientMap's length at step " (displayed i)))
                 ((and (= (% i 97) 0) (not (= (sorted pm2) want))) (str "Map at step " (displayed i)))
-                ((and (= (% i 97) 0) (not (= (orderedmap->list om2) want))) (str "OrderedMap at step " (displayed i)))
-                ((and (= (% i 97) 0)
-                      (not (= (sorted (mutablemap->map mmm)) want)))
+                ((and (= (% i 97) 0) (not (= (orderedmap->list om2) want)))
+                 (str "OrderedMap at step " (displayed i)))
+                ((and (= (% i 97) 0) (not (= (sorted (mutablemap->map mmm)) want)))
                  (str "MutableMap at step " (displayed i)))
                 (else "")))
             (go (+ i 1) (next-random x) pm2 om2 cm2 ref bad2)))))
   (def (Tuple bad final-map final-clash) result)
   (expect "every map agrees with the reference at every step" bad "")
   (expect "TransientMap at the end" (sorted (transientmap->map tm)) (sorted final-map))
-  (expect "TransientOrderedMap at the end" (orderedmap->list (transientorderedmap->orderedmap ttm)) (sorted final-map))
+  (expect "TransientOrderedMap at the end"
+          (orderedmap->list (transientorderedmap->orderedmap ttm))
+          (sorted final-map))
   (expect "the clashing maps at the end"
           (Tuple (map-length final-clash) (transientmap-length ctm))
           (Tuple (map-length final-map) (map-length final-map)))
@@ -170,7 +196,9 @@
   (def t2 (map->transientmap m))
   (transientmap-update! t2 "b" slow-inc)
   (expect "transientmap-update! with a suspending function" (transientmap-ref t2 "b") 3)
-  (expect "orderedmap-update with a suspending function" (orderedmap-ref (orderedmap-update (list->orderedmap (list (Tuple 1 1))) 1 slow-inc) 1) 2)
+  (expect "orderedmap-update with a suspending function"
+          (orderedmap-ref (orderedmap-update (list->orderedmap (list (Tuple 1 1))) 1 slow-inc) 1)
+          2)
   (mutablemap-update! mm "k" slow-inc)
   (expect "mutablemap-update! with a suspending function" (mutablemap-ref mm "k") 3)
   0)

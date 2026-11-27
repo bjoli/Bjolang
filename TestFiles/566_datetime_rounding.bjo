@@ -35,18 +35,23 @@
 
 (: (-> void))
 (defun (modes)
-  (expect "half-expand by default: 89 minutes" (displayed (round-to-duration (minutes 89) an-hour)) "PT1H")
+  (expect "half-expand by default: 89 minutes"
+          (displayed (round-to-duration (minutes 89) an-hour))
+          "PT1H")
   (expect "a half rounds away from zero" (hour-of 90 TimeHalfExpand) "PT2H")
   (expect "and below zero" (hour-of -90 TimeHalfExpand) "-PT2H")
   (expect "floor" (hour-of 119 TimeFloor) "PT1H")
   (expect "floor below zero" (hour-of -61 TimeFloor) "-PT2H")
   (expect "ceil" (hour-of 61 TimeCeil) "PT2H")
   (expect "ceil below zero" (hour-of -119 TimeCeil) "-PT1H")
-  (expect "trunc goes toward zero" (Tuple (hour-of 119 TimeTrunc) (hour-of -119 TimeTrunc))
+  (expect "trunc goes toward zero"
+          (Tuple (hour-of 119 TimeTrunc) (hour-of -119 TimeTrunc))
           (Tuple "PT1H" "-PT1H"))
-  (expect "expand goes away from it" (Tuple (hour-of 61 TimeExpand) (hour-of -61 TimeExpand))
+  (expect "expand goes away from it"
+          (Tuple (hour-of 61 TimeExpand) (hour-of -61 TimeExpand))
           (Tuple "PT2H" "-PT2H"))
-  (expect "half-even: 1.5 h and 2.5 h are 2 h" (Tuple (hour-of 90 TimeHalfEven) (hour-of 150 TimeHalfEven))
+  (expect "half-even: 1.5 h and 2.5 h are 2 h"
+          (Tuple (hour-of 90 TimeHalfEven) (hour-of 150 TimeHalfEven))
           (Tuple "PT2H" "PT2H"))
   (expect "half-even off the half is nearest" (hour-of 151 TimeHalfEven) "PT3H")
   (expect "a multiple is itself in every mode" (hour-of 120 TimeCeil) "PT2H")
@@ -55,22 +60,27 @@
 (: (-> void))
 (defun (calendar-types)
   (expect "a datetime to 15 minutes"
-          (displayed (round-to-duration (the (datetime 2026 1 1 #:hours 10 #:minutes 7)) (minutes 15)))
+          (displayed (round-to-duration (the (datetime 2026 1 1 #:hours 10 #:minutes 7))
+                                        (minutes 15)))
           "2026-01-01T10:00:00")
   (expect "half way is up"
-          (displayed (round-to-duration (the (datetime 2026 1 1 #:hours 10 #:minutes 7 #:seconds 30)) (minutes 15)))
+          (displayed (round-to-duration (the (datetime 2026 1 1 #:hours 10 #:minutes 7 #:seconds 30))
+                                        (minutes 15)))
           "2026-01-01T10:15:00")
   (expect "a datetime to the day"
           (displayed (round-to-duration (the (datetime 2026 1 1 #:hours 12)) a-day))
           "2026-01-02T00:00:00")
   (expect "a time rounded up to 24:00 wraps"
-          (displayed (round-to-duration (the (time 23 50)) an-hour)) "00:00:00")
+          (displayed (round-to-duration (the (time 23 50)) an-hour))
+          "00:00:00")
   (expect "an instant before 1970, floored"
-          (displayed (round-to-duration (the (iso8601->instant "1969-12-31T23:59:59.5Z")) (duration #:seconds 1)
+          (displayed (round-to-duration (the (iso8601->instant "1969-12-31T23:59:59.5Z"))
+                                        (duration #:seconds 1)
                                         #:mode TimeFloor))
           "1969-12-31T23:59:59Z")
   (expect "start-of-day of a datetime"
-          (displayed (start-of-day (the (datetime 2026 5 17 #:hours 10)))) "2026-05-17T00:00:00"))
+          (displayed (start-of-day (the (datetime 2026 5 17 #:hours 10))))
+          "2026-05-17T00:00:00"))
 
 (: (-> void))
 (defun (errors)
@@ -78,15 +88,19 @@
   (expect-true "rounding past 9999-12-31 raises"
                (raises? (fun () (round-to-duration last (duration #:seconds 2)))))
   (expect-true "and is None with /opt" (none? (round-to-duration/opt last (duration #:seconds 2))))
-  (expect "rounding down there is fine" (round-to-duration/opt last an-hour #:mode TimeFloor)
+  (expect "rounding down there is fine"
+          (round-to-duration/opt last an-hour #:mode TimeFloor)
           (datetime 9999 12 31 #:hours 23))
   (expect-true "a duration past ±29 227 years"
-               (none? (round-to-duration/opt (duration #:hours 256204778) (duration #:hours 1000)
+               (none? (round-to-duration/opt (duration #:hours 256204778)
+                                             (duration #:hours 1000)
                                              #:mode TimeCeil)))
   (expect-true "7 minutes does not divide a day"
                (refused? (fun () (round-to-duration (the (time 1 0)) (minutes 7)))))
   (expect-true "nor does 25 hours" (refused? (fun () (round-to-duration last (duration #:hours 25)))))
-  (expect "a duration takes any increment" (displayed (round-to-duration (minutes 20) (minutes 7))) "PT21M")
+  (expect "a duration takes any increment"
+          (displayed (round-to-duration (minutes 20) (minutes 7)))
+          "PT21M")
   (expect-true "zero raises" (refused? (fun () (round-to-duration (minutes 20) (duration)))))
   (expect-true "and /opt still raises it"
                (refused? (fun () (round-to-duration/opt (the (time 1 0)) (minutes 7))))))
@@ -100,8 +114,10 @@
   (expect "into the gap: pushed forward"
           (displayed (round-to-duration (at z 2026 3 29 1 50) an-hour))
           "2026-03-29T03:00:00+02:00[Europe/Stockholm]")
-  (def second-0210 (datetime->moment (the (datetime 2026 10 25 #:hours 2 #:minutes 10)) z
-                                     (resolver GapPush OverlapLater)))
+  (def second-0210
+    (datetime->moment (the (datetime 2026 10 25 #:hours 2 #:minutes 10))
+                      z
+                      (resolver GapPush OverlapLater)))
   (expect "in an overlap a moment keeps its offset"
           (displayed (round-to-duration second-0210 an-hour #:mode TimeFloor))
           "2026-10-25T02:00:00+01:00[Europe/Stockholm]")
@@ -152,6 +168,8 @@
   (calendar-types)
   (errors)
   (match (timezone "Europe/Stockholm")
-    ((Some z) (stockholm z) (other-zones))
+    ((Some z)
+     (stockholm z)
+     (other-zones))
     (None (fail "the IANA time zone database was not found. Install tzdata.")))
   0)

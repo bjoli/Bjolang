@@ -37,11 +37,11 @@
   (expect "the callee's binding is seen inside it" (nested-depth 7) 7)
   (expect "and is gone after it" (parameter-ref depth) 0)
 
-  (def failed
-    (try (fails-after zero)
-         #:catch (System.DivideByZeroException)))
+  (def failed (try (fails-after zero) #:catch (System.DivideByZeroException)))
   (expect "a failure in the callee is the call's"
-          (match failed ((Ok v) "returned") ((Err e) "raised"))
+          (match failed
+            ((Ok v) "returned")
+            ((Err e) "raised"))
           "raised")
 
   ;; The scope waits for `p`, so it has ended when the scope has; the join
@@ -54,14 +54,18 @@
       (def stopped (cancel (Requested "stop")))
       p))
   (expect "a fiber parked in a copy is cancelled"
-          (match (sync (promise-join p)) ((Ok v) "returned") ((Err e) "cancelled"))
+          (match (sync (promise-join p))
+            ((Ok v) "returned")
+            ((Err e) "cancelled"))
           "cancelled")
 
   (def ch2 (make-chan))
   (def answer (bjo (caller ch2)))
   (sync (chan-send ch2 41))
   (expect "and one that is answered returns the value"
-          (match (sync (promise-join answer)) ((Ok v) v) ((Err e) -1))
+          (match (sync (promise-join answer))
+            ((Ok v) v)
+            ((Err e) -1))
           42)
 
   (println "370 ok")

@@ -22,7 +22,9 @@
 ;; `,a` and `,b` come from the input and are left exactly as written.
 (def/macro (my-or form inject compare)
   (syntax-match form
-    ((_ a b) #'(let ((tmp ,a)) (if (= tmp 0) ,b tmp)))
+    ((_ a b)
+     #'(let ((tmp ,a))
+         (if (= tmp 0) ,b tmp)))
     (bad (syntax-error bad "my-or takes two arguments."))))
 
 ;; `(my-let ((name value) ...) body ...)`.
@@ -37,9 +39,10 @@
 ;; and not a `let*`.
 (def/macro (my-let form inject compare)
   (syntax-match form
-    ((_ ((name value) ...) body ...)
-     #'((fun (,@name) ,@body) ,@value))
-    (bad (syntax-error bad "my-let takes a binding list and a body: (my-let ((name value) ...) body ...)"))))
+    ((_ ((name value) ...) body ...) #'((fun (,@name) ,@body) ,@value))
+    (bad
+     (syntax-error bad
+                   "my-let takes a binding list and a body: (my-let ((name value) ...) body ...)"))))
 
 ;; `(my-cond (test body ...) ... (else body ...))`.
 ;;
@@ -53,11 +56,19 @@
 (: (-> (List Syntax) Syntax Syntax))
 (defun (cond-chain clauses whole)
   (match clauses
-    (Nil (syntax-error whole "my-cond needs a final (else ...) clause: every branch has to answer something."))
+    (Nil
+     (syntax-error whole
+                   "my-cond needs a final (else ...) clause: every branch has to answer something."))
     ((Cons clause rest)
      (syntax-match clause
-       (('else body ...) #'(let () ,@body))
-       ((test body ...) #'(if ,test (let () ,@body) ,(cond-chain rest whole)))
+       (('else body ...)
+        #'(let ()
+            ,@body))
+       ((test body ...)
+        #'(if ,test
+              (let ()
+                ,@body)
+              ,(cond-chain rest whole)))
        (bad (syntax-error bad "A my-cond clause is (test body ...) or (else body ...)."))))))
 
 ;; Recursion, the `syntax-rules` shape: the template contains a call to the
@@ -71,7 +82,8 @@
     ((_) #'0)
     ((_ only) only)
     ((_ first rest ...)
-     #'(let ((tmp ,first)) (if (= tmp 0) (any-of ,@rest) tmp)))))
+     #'(let ((tmp ,first))
+         (if (= tmp 0) (any-of ,@rest) tmp)))))
 
 ;; The same, expanding to a *definition* each round. `def` is read by
 ;; `parseBody` rather than by the expression parser, and a template's `def`
@@ -104,6 +116,5 @@
 ;; and a call site that has a `twice` of its own still gets this one.
 (def/macro (double-all form inject compare)
   (syntax-match form
-    ((_ first rest ...)
-     #'(+ (twice ,first) ,@(list-map (fun (each) #'(twice ,each)) rest)))
+    ((_ first rest ...) #'(+ (twice ,first) ,@(list-map (fun (each) #'(twice ,each)) rest)))
     (bad (syntax-error bad "double-all takes at least one argument."))))

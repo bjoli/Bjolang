@@ -21,15 +21,20 @@
 
 (: (-> (Promise int) int))
 (defun (run-int p)
-  (match (sync/blocking (promise-join p)) ((Ok n) n) ((Err e) -1)))
+  (match (sync/blocking (promise-join p))
+    ((Ok n) n)
+    ((Err e) -1)))
 
 (: (-> (Promise string) string))
 (defun (run-str p)
-  (match (sync/blocking (promise-join p)) ((Ok s) s) ((Err e) "raised")))
+  (match (sync/blocking (promise-join p))
+    ((Ok s) s)
+    ((Err e) "raised")))
 
 (: (-> (List int) int))
 (defun (total xs)
-  (loop (:for x xs) (:acc s (summing x))))
+  (loop (:for x xs)
+        (:acc s (summing x))))
 
 ;; ---------------------------------------------------------------------------
 ;; Functor
@@ -49,7 +54,9 @@
 
 (impl (Functor (Option %a))
   (defun (fmap g o)
-    (match o ((Some v) (Some (g v))) (None None))))
+    (match o
+      ((Some v) (Some (g v)))
+      (None None))))
 
 (: (-bjo-> int))
 (defbjo (mapped-list)
@@ -61,7 +68,9 @@
 
 (: (-bjo-> int))
 (defbjo (mapped-option)
-  (match (fmap slow-double (Some 5)) ((Some n) n) (None 0)))
+  (match (fmap slow-double (Some 5))
+    ((Some n) n)
+    (None 0)))
 
 ;; The ordinary copy is still there, in the same file, over the same trait.
 (: (-> int))
@@ -155,7 +164,8 @@
 (defbjo (walked) (total (walk (three) slow-double)))
 
 (: (-> int))
-(defun (walked-plainly) (total (walk (three) (fun (n) (* n 2)))))
+(defun (walked-plainly)
+  (total (walk (three) (fun (n) (* n 2)))))
 
 (defun (main)
   (expect "map over a list, suspending" (run-int (bjo (mapped-list))) 12)

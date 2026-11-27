@@ -11,8 +11,7 @@
 ;; The `#:bjo` body awaits, so the copy is kept.
 (: (-> string))
 (defun (which)
-  (by-colour (#:sync "sync")
-             (#:bjo (sync (always "bjo")))))
+  (by-colour (#:sync "sync") (#:bjo (sync (always "bjo")))))
 
 ;; The `#:bjo` body awaits nothing, so the copy is dropped.
 (: (-> string))
@@ -53,14 +52,17 @@
 (: (-> string))
 (defun (raise-it) (raise (cast Exception (Refusal. "no"))))
 
-
 (defbjo (main args)
   (expect "a defun called from a defun" (call-sync) "sync")
   (expect "a defun called from a bjoroutine" (which) "bjo")
   (expect "a copy that awaits nothing is dropped" (idle) "sync")
   (expect "a defbjo" (which/bjo) "bjo")
-  (expect "an ordinary lambda" (call0 (fun () (by-colour (#:sync "sync") (#:bjo (sync (always "bjo")))))) "sync")
-  (expect "a bjoroutine lambda" ((bjoroutine () (by-colour (#:sync "sync") (#:bjo (sync (always "bjo")))))) "bjo")
+  (expect "an ordinary lambda"
+          (call0 (fun () (by-colour (#:sync "sync") (#:bjo (sync (always "bjo"))))))
+          "sync")
+  (expect "a bjoroutine lambda"
+          ((bjoroutine () (by-colour (#:sync "sync") (#:bjo (sync (always "bjo"))))))
+          "bjo")
   (expect "a bjo block"
           (match (sync (promise-join (bjo (by-colour (#:sync "sync") (#:bjo (sync (always "bjo")))))))
             ((Ok s) s)
@@ -85,8 +87,10 @@
 
 ;; Called only from ordinary code, so only the ordinary copy of `which` runs.
 (: (-> string))
-(defun (call-sync) (call0 (fun () (which))))
+(defun (call-sync)
+  (call0 (fun () (which))))
 
 ;; `spawned`, reached through a lambda so that its ordinary copy runs.
 (: (-> string))
-(defun (spawned-in-sync) (call0 (fun () (spawned))))
+(defun (spawned-in-sync)
+  (call0 (fun () (spawned))))

@@ -25,9 +25,7 @@
   (expect "a Converter keeps the result"
           (->list (array-convert #[1 2 3] (as-delegate (fun (x) (* x 10)))))
           '(10 20 30))
-  (expect "a Predicate returns bool"
-          (array-find #[5 6 7] (as-delegate (fun (x) (= x 6))))
-          1)
+  (expect "a Predicate returns bool" (array-find #[5 6 7] (as-delegate (fun (x) (= x 6)))) 1)
 
   ;; An Action returns nothing, so the unit of the function is dropped.
   (def/mutable total 0)
@@ -36,8 +34,7 @@
   (expect "an Action calls the function" total 5)
 
   ;; --- as-delegate/type: the type is a value -------------------------------
-  (def again (as-delegate/type (clr-type-of (cast Object act))
-                               (fun (x) (set! total (* total x)))))
+  (def again (as-delegate/type (clr-type-of (cast Object act)) (fun (x) (set! total (* total x)))))
   (expect "as-delegate/type makes that type"
           (eq? (clr-type-of (cast Object again)) (clr-type-of (cast Object act)))
           #t)
@@ -47,16 +44,18 @@
   ;; --- events --------------------------------------------------------------
   (def/mutable seen '())
   (def c (Component.))
-  (ignore (add-event-handler! c "Disposed"
-                              (: (fun (sender e) (set! seen (cons "c" seen)))
-                                 (-> Object EventArgs void))))
+  (ignore (add-event-handler! c
+                              "Disposed"
+                              (: (fun (sender e) (set! seen (cons "c" seen))) (-> Object EventArgs
+                                                                                  void))))
   (.Dispose c)
   (expect "the handler ran" seen '("c"))
 
   (def d (Component.))
-  (def h (add-event-handler! d "Disposed"
-                             (: (fun (sender e) (set! seen (cons "d" seen)))
-                                (-> Object EventArgs void))))
+  (def h
+    (add-event-handler! d
+                        "Disposed"
+                        (: (fun (sender e) (set! seen (cons "d" seen))) (-> Object EventArgs void))))
   (remove-event-handler! d "Disposed" h)
   (.Dispose d)
   (expect "a removed handler does not run" seen '("c"))
@@ -66,22 +65,25 @@
   ;; A default string is null and not "": IsNullOrEmpty holds, and Length
   ;; would throw.
   (expect "a string default is null" (null-or-empty? (: (clr-default) ClrString)) #t)
-  (expect "it is not a string" (ok? (try (.-Length (: (clr-default) ClrString))
-                                         #:catch (System.NullReferenceException)))
+  (expect "it is not a string"
+          (ok? (try (.-Length (: (clr-default) ClrString)) #:catch (System.NullReferenceException)))
           #f)
   (expect "a number default is zero" (: (clr-default) int) 0)
 
   ;; --- what does not fit ---------------------------------------------------
   (expect "a wrong number of arguments is refused"
-          (ok? (try (add-event-handler! (Component.) "Disposed" (: (fun (x) x) (-> Object Object)))
-                    #:catch (System.ArgumentException)))
+          (ok? (try
+                 (add-event-handler! (Component.) "Disposed" (: (fun (x) x) (-> Object Object)))
+                 #:catch (System.ArgumentException)))
           #f)
-  (expect "an event that is not there is refused"
-          (ok? (try (add-event-handler! (Component.) "Nope"
-                                        (: (fun (s e) unit) (-> Object EventArgs void)))
-                    #:catch (System.ArgumentException)))
-          #f)
+  (expect
+   "an event that is not there is refused"
+   (ok? (try
+          (add-event-handler! (Component.) "Nope" (: (fun (s e) unit) (-> Object EventArgs void)))
+          #:catch (System.ArgumentException)))
+   #f)
   (expect "a function returning nothing does not fit a Converter"
-          (ok? (try (: (as-delegate (: (fun (x) (set! total x)) (-> int void))) (Conv int int))
-                    #:catch (System.ArgumentException)))
+          (ok? (try
+                 (: (as-delegate (: (fun (x) (set! total x)) (-> int void))) (Conv int int))
+                 #:catch (System.ArgumentException)))
           #f))

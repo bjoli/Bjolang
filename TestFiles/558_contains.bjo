@@ -11,7 +11,8 @@
 
 ;; Equal when the names are equal, whatever the count. Membership has to go
 ;; through this `=`, not through field-wise equality.
-(type (: Tag (Record (: name string) (: count int))))
+(type (: Tag (Record (: name string)
+                     (: count int))))
 
 (impl (Eq Tag)
   (defun (= a b) (= (record-ref a name) (record-ref b name)))
@@ -60,10 +61,14 @@
   (def m (list->map (list (Tuple "k" 1))))
   (expect "map-has-key?" (Tuple (map-has-key? m "k") (map-has-key? m "z")) (Tuple #t #f))
   (def tm (map->transientmap m))
-  (expect "transientmap-has-key?" (Tuple (transientmap-has-key? tm "k") (transientmap-has-key? tm "z")) (Tuple #t #f))
+  (expect "transientmap-has-key?"
+          (Tuple (transientmap-has-key? tm "k") (transientmap-has-key? tm "z"))
+          (Tuple #t #f))
 
   (def om (list->orderedmap (list (Tuple 1 "one"))))
-  (expect "orderedmap-has-key?" (Tuple (orderedmap-has-key? om 1) (orderedmap-has-key? om 2)) (Tuple #t #f))
+  (expect "orderedmap-has-key?"
+          (Tuple (orderedmap-has-key? om 1) (orderedmap-has-key? om 2))
+          (Tuple #t #f))
   (def tom (orderedmap->transientorderedmap om))
   (expect "transientorderedmap-has-key?"
           (Tuple (transientorderedmap-has-key? tom 1) (transientorderedmap-has-key? tom 2))
@@ -71,11 +76,14 @@
 
   (def mm (mutablemap))
   (mutablemap-set! mm "k" 1)
-  (expect "mutablemap-has-key?" (Tuple (mutablemap-has-key? mm "k") (mutablemap-has-key? mm "z")) (Tuple #t #f))
+  (expect "mutablemap-has-key?"
+          (Tuple (mutablemap-has-key? mm "k") (mutablemap-has-key? mm "z"))
+          (Tuple #t #f))
 
   (def stm-map (make-tmap))
   (atomically (fun (tx) (tmap-set! tx stm-map "k" 1)))
   (expect "tmap-has-key?"
-          (atomically (fun (tx) (Tuple (tmap-has-key? tx stm-map "k") (tmap-has-key? tx stm-map "z"))))
+          (atomically (fun (tx)
+                        (Tuple (tmap-has-key? tx stm-map "k") (tmap-has-key? tx stm-map "z"))))
           (Tuple #t #f))
   0)

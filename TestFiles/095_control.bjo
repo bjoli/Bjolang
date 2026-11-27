@@ -74,27 +74,46 @@
 
   ;; An arm may be several forms, and only the arm that is taken runs.
   (set! calls 0)
-  (expect "cond-body" (cond ((= 1 2) (bump 1)) ((= 1 1) (def a 3) (* a 4)) (else (bump 0))) 12)
+  (expect "cond-body"
+          (cond
+            ((= 1 2) (bump 1))
+            ((= 1 1)
+             (def a 3)
+             (* a 4))
+            (else (bump 0)))
+          12)
   (expect "cond-lazy" calls 0)
 
   ;; --- if-let -------------------------------------------------------------
-  (expect "if-let-some" (if-let (half (halve 8)) half -1) 4)
-  (expect "if-let-none" (if-let (half (halve 7)) half -1) -1)
+  (expect "if-let-some"
+          (if-let (half (halve 8))
+            half
+            -1)
+          4)
+  (expect "if-let-none"
+          (if-let (half (halve 7))
+            half
+            -1)
+          -1)
 
   ;; The name is bound in the `then` branch only, and the `else` branch is not
   ;; evaluated when there was something to bind.
   (set! calls 0)
-  (expect "if-let-then-only" (if-let (half (halve 10)) half (bump -1)) 5)
+  (expect "if-let-then-only"
+          (if-let (half (halve 10))
+            half
+            (bump -1))
+          5)
   (expect "if-let-lazy" calls 0)
 
   ;; What it binds is the unwrapped value, so it nests without ceremony.
   (expect "if-let-nested"
-         (if-let (first (halve 12))
-           (if-let (second (halve first))
-             second
-             -1)
-           -2)
-         3)
+          (if-let (first (halve 12))
+            (if-let (second (halve first))
+              second
+              -1)
+            -2)
+          3)
 
   ;; --- when-let -----------------------------------------------------------
   (set! calls 0)
@@ -146,7 +165,9 @@
 
   ;; The error is the one the failing step gave, not a new one.
   (expect "try-keeps-the-error"
-          (match (try-> 7 (halve/try) (noted/try)) ((Ok v) "ok") ((Err e) e))
+          (match (try-> 7 (halve/try) (noted/try))
+            ((Ok v) "ok")
+            ((Err e) e))
           "odd")
 
   ;; With no steps there is nothing that could have failed.

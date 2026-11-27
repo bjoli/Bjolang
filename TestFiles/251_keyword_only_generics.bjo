@@ -17,11 +17,13 @@
 
 ;; The variable is in keyword handlers only, as a case analysis has it. `#:else`
 ;; comes first because the other defaults name it.
-(: (-> int (#:else (-> int %r)) (#:negative (-> int %r)) (#:zero (-> %r))
-       (#:positive (-> int %r)) %r))
-(defun (sign-case n #:else (fun (k) (panic! "sign-case: no clause"))
-                    #:negative (fun (k) (else k)) #:zero (fun () (else 0))
-                    #:positive (fun (k) (else k)))
+(: (-> int (#:else (-> int %r)) (#:negative (-> int %r)) (#:zero (-> %r)) (#:positive (-> int %r))
+       %r))
+(defun (sign-case n
+                  #:else (fun (k) (panic! "sign-case: no clause"))
+                  #:negative (fun (k) (else k))
+                  #:zero (fun () (else 0))
+                  #:positive (fun (k) (else k)))
   (if (< n 0)
       (negative n)
       (if (= n 0) (zero) (positive n))))
@@ -33,17 +35,11 @@
   (expect "every clause given"
           (sign-case -3 #:negative (fun (k) "neg") #:zero (fun () "zero") #:positive (fun (k) "pos"))
           "neg")
-  (expect "one clause and else"
-          (sign-case 0 #:zero (fun () 0) #:else (fun (k) 1))
-          0)
-  (expect "else answers for the rest"
-          (sign-case 5 #:zero (fun () 0.0) #:else (fun (k) 1.5))
-          1.5)
+  (expect "one clause and else" (sign-case 0 #:zero (fun () 0) #:else (fun (k) 1)) 0)
+  (expect "else answers for the rest" (sign-case 5 #:zero (fun () 0.0) #:else (fun (k) 1.5)) 1.5)
 
   (expect "across a module, one clause and else"
           (shape-case (circle 2.0) #:circle (fun (r) "circle") #:else (fun (s) "other"))
           "circle")
-  (expect "across a module, else"
-          (shape-case (square 1.0) #:circle (fun (r) 0) #:else (fun (s) 7))
-          7)
+  (expect "across a module, else" (shape-case (square 1.0) #:circle (fun (r) 0) #:else (fun (s) 7)) 7)
   0)

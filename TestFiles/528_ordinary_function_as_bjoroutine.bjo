@@ -15,7 +15,9 @@
 (defun (twice x) (* 2 x))
 
 (: sum-all (-bjo-> (Vec (-bjo-> int int)) int int))
-(defbjo (sum-all fs x) (loop (:for f fs) (:acc s (summing (f x)))))
+(defbjo (sum-all fs x)
+  (loop (:for f fs)
+        (:acc s (summing (f x)))))
 
 (: call-it (-bjo-> (-bjo-> int int) int int))
 (defbjo (call-it f x) (f x))
@@ -34,18 +36,8 @@
 
 (defbjo (main)
   (def (: fs (Vec (-bjo-> int int))) [(fun (x) x) twice (bjoroutine (x) (+ x 1))])
-  (expect "a vec literal of an ordinary lambda, a name and a bjoroutine"
-          (sum-all fs 10)
-          41)
-  (expect "a vec literal as an argument"
-          (sum-all [twice (fun (x) (* x x))] 3)
-          15)
-  (expect "a list made by list"
-          (call-each (list (fun (x) x) twice) 5)
-          15)
-  (expect "a name as an argument"
-          (call-it twice 21)
-          42)
-  (expect "a bjoroutine lambda in Some"
-          (call-option (Some (bjoroutine () 1.5)))
-          1.5))
+  (expect "a vec literal of an ordinary lambda, a name and a bjoroutine" (sum-all fs 10) 41)
+  (expect "a vec literal as an argument" (sum-all [twice (fun (x) (* x x))] 3) 15)
+  (expect "a list made by list" (call-each (list (fun (x) x) twice) 5) 15)
+  (expect "a name as an argument" (call-it twice 21) 42)
+  (expect "a bjoroutine lambda in Some" (call-option (Some (bjoroutine () 1.5))) 1.5))

@@ -44,7 +44,8 @@
 (defun (port-of settings override?)
   (cond
     (override? 9999)
-    (:def (Some port) (map-try-ref settings "port") :leave-with 8080)
+    (:def (Some port) (map-try-ref settings "port")
+      :leave-with 8080)
     ((< port 1024) 0)
     (else port)))
 
@@ -53,7 +54,8 @@
 (: (-> (Map string int) string))
 (defun (port-class settings)
   (cond
-    (:def (Some port) (map-try-ref settings "port") :default 8080)
+    (:def (Some port) (map-try-ref settings "port")
+      :default 8080)
     ((< port 1024) "privileged")
     (else (str "user " (int->string port)))))
 
@@ -88,8 +90,7 @@
 (defun (listen-port env override?)
   (cond
     (override? 9999)
-    (:match (Some text) (map-try-ref env "PORT") #:when (not (string-empty? text))
-     (string->int text))
+    (:match (Some text) (map-try-ref env "PORT") #:when (not (string-empty? text)) (string->int text))
     (:match (Some port) (map-try-ref env "FALLBACK_PORT")
      (note! "fallback ")
      (string->int port))
@@ -106,19 +107,15 @@
   (expect "a binding under a test that failed is evaluated" (after-a-test #f) 7)
   (expect "once" (box-ref probes) 1)
 
-  (expect "a refutable :def falls to its failure value"
-          (port-of (map-empty) #f) 8080)
-  (expect "and binds when it matches"
-          (port-of (map-set (map-empty) "port" 3000) #f) 3000)
-  (expect "a clause above it still wins"
-          (port-of (map-empty) #t) 9999)
-  (expect "and a test below it sees the binding"
-          (port-of (map-set (map-empty) "port" 80) #f) 0)
+  (expect "a refutable :def falls to its failure value" (port-of (map-empty) #f) 8080)
+  (expect "and binds when it matches" (port-of (map-set (map-empty) "port" 3000) #f) 3000)
+  (expect "a clause above it still wins" (port-of (map-empty) #t) 9999)
+  (expect "and a test below it sees the binding" (port-of (map-set (map-empty) "port" 80) #f) 0)
 
-  (expect "a :def with :default carries on when it fails"
-          (port-class (map-empty)) "user 8080")
+  (expect "a :def with :default carries on when it fails" (port-class (map-empty)) "user 8080")
   (expect "and uses the value when it matches"
-          (port-class (map-set (map-empty) "port" 80)) "privileged")
+          (port-class (map-set (map-empty) "port" 80))
+          "privileged")
 
   (expect "a :def may propagate" (doubled (Err "no")) (Err "no"))
   (expect "and carry on when it matches" (doubled (Ok 21)) (Ok 42))
@@ -134,8 +131,8 @@
   (expect "a :match answers when it matches" (listen-port env #f) 3000)
   (expect "a clause above it still wins" (listen-port env #t) 9999)
   (expect "a failed guard falls through to the next clause"
-          (listen-port (map-set env "PORT" "") #f) 4000)
-  (expect "a body may have several forms"
-          (box-ref trace) "checked checked and againfallback ")
+          (listen-port (map-set env "PORT" "") #f)
+          4000)
+  (expect "a body may have several forms" (box-ref trace) "checked checked and againfallback ")
   (expect "a failed pattern falls through too" (listen-port (map-empty) #f) 8080)
   0)

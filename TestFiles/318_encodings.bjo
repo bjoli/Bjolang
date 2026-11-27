@@ -9,8 +9,18 @@
 (import (std ports))
 (import (std simpletest))
 (import (only (text encodings)
-              utf-16le utf-16be utf-32le utf-32be iso-8859-1 windows-1252 dos-862
-              us-ascii shift_jis encoding-named encoding-of-code-page encoding-name))
+              utf-16le
+              utf-16be
+              utf-32le
+              utf-32be
+              iso-8859-1
+              windows-1252
+              dos-862
+              us-ascii
+              shift_jis
+              encoding-named
+              encoding-of-code-page
+              encoding-name))
 
 ;; Bytes as text: "104.105." for "hi".
 (: (-> (Array byte) string))
@@ -63,11 +73,12 @@
   (expect "and are text again" (bytes->string bs) (Ok text))
   (expect "a range of them" (bytes->string bs #:start 4 #:end 12) (Ok "räksmö"))
   (expect "an empty range" (bytes->string bs #:start 3 #:end 3) (Ok ""))
-  (expect "a range outside the array raises"
-          (match (try (bytes->string bs #:start 4 #:end 99) #:catch (System.ArgumentOutOfRangeException))
-            ((Ok _) #f)
-            ((Err _) #t))
-          #t)
+  (expect
+   "a range outside the array raises"
+   (match (try (bytes->string bs #:start 4 #:end 99) #:catch (System.ArgumentOutOfRangeException))
+     ((Ok _) #f)
+     ((Err _) #t))
+   #t)
   (expect "a range that cuts a character fails where it cuts"
           (decoded (bytes->string bs #:start 4 #:end 11))
           "Err: the bytes at offset 10 (0xC3) are not valid utf-8")
@@ -79,11 +90,11 @@
           "Err: the bytes at offset 1 (0xFF) are not valid utf-8")
   (expect "or is replaced" (bytes->string/lossy #[104 255 105] #:replace #\?) "h?i")
   (expect "by U+FFFD by default" (bytes->string/lossy #[104 255 105]) (str "h" replacement "i"))
-  (expect "once per invalid sequence"
-          (bytes->string/lossy #[104 226 130 105] #:replace #\?) "h?i")
+  (expect "once per invalid sequence" (bytes->string/lossy #[104 226 130 105] #:replace #\?) "h?i")
   (expect "a lossy range" (bytes->string/lossy bs #:start 4 #:end 11 #:replace #\?) "räksm?")
   (expect "a byte order mark is a character"
-          (char->int (vec-ref (string->vec (bytes->string/lossy #[239 187 191 104])) 0)) 65279)
+          (char->int (vec-ref (string->vec (bytes->string/lossy #[239 187 191 104])) 0))
+          65279)
 
   ;; --- The Unicode encodings ------------------------------------------------
   (expect "utf-16le" (shown (string->bytes "hi" #:encoding utf-16le)) "104.0.105.0.")
@@ -107,12 +118,15 @@
   (expect "a byte us-ascii lacks fails"
           (decoded (bytes->string #[97 128] #:encoding us-ascii))
           "Err: the bytes at offset 1 (0x80) are not valid us-ascii")
-  (expect "or is replaced in us-ascii" (bytes->string/lossy #[97 128] #:encoding us-ascii #:replace #\?) "a?")
+  (expect "or is replaced in us-ascii"
+          (bytes->string/lossy #[97 128] #:encoding us-ascii #:replace #\?)
+          "a?")
   (expect "a character us-ascii lacks fails"
           (failure (fun () (shown (string->bytes "aé" #:encoding us-ascii))))
           "string->bytes: U+00E9 (é) at offset 1 is not in us-ascii.")
   (expect "or is replaced, once per character"
-          (bytes->string (string->bytes "ok ✓😀" #:encoding us-ascii #:replace (Some #\?))) (Ok "ok ??"))
+          (bytes->string (string->bytes "ok ✓😀" #:encoding us-ascii #:replace (Some #\?)))
+          (Ok "ok ??"))
   (expect "a replacement the encoding lacks fails"
           (failure (fun () (shown (string->bytes "é" #:encoding us-ascii #:replace (Some #\ü)))))
           "string->bytes: the replacement U+00FC (ü) is not in us-ascii either.")

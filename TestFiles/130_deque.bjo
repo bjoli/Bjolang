@@ -5,17 +5,20 @@
 
 (: (-> string int int void))
 (defun (expect-int label actual want)
-  (expect-true (string-append label (string-append " => " (int->string actual)))
-          (= actual want)))
+  (expect-true (string-append label (string-append " => " (int->string actual))) (= actual want)))
 
 ;; `(Some x)` holding what was wanted.
 (: (-> (Option int) int bool))
 (defun (gave? o want)
-  (match o ((Some x) (= x want)) (None #f)))
+  (match o
+    ((Some x) (= x want))
+    (None #f)))
 
 (: (-> (Option int) bool))
 (defun (nothing? o)
-  (match o ((Some _) #f) (None #t)))
+  (match o
+    ((Some _) #f)
+    (None #t)))
 
 ;; An empty deque has nothing in it to pin its element type, and `->str` and `=`
 ;; both need one. A signature is the whole of the fix.
@@ -24,7 +27,8 @@
 
 (: (-> (Deque int) string))
 (defun (show d)
-  (list-foldl (fun (x acc) (string-append acc (string-append (int->string x) " "))) ""
+  (list-foldl (fun (x acc) (string-append acc (string-append (int->string x) " ")))
+              ""
               (deque->list d)))
 
 ;; ---------------------------------------------------------------------------
@@ -147,7 +151,8 @@
   (match (deque-try-pop-first! work)
     (None acc)
     ((Some n)
-     (when (> n 1) (deque-push-back! work (- n 1)))
+     (when (> n 1)
+       (deque-push-back! work (- n 1)))
      (drain-worklist work (string-append acc (string-append (int->string n) " "))))))
 
 (: (-> void))
@@ -193,7 +198,9 @@
 
 (: (-> (Result System.Exception %a) bool))
 (defun (threw? r)
-  (match r ((Ok _) #f) ((Err _) #t)))
+  (match r
+    ((Ok _) #f)
+    ((Err _) #t)))
 
 (: (-> void))
 (defun (equality)
@@ -227,9 +234,9 @@
   ;; A deque has no hash and says so, which is what stops .NET being asked a
   ;; question it would answer differently.
   (expect-true "hashing a deque throws"
-          (threw? (try (eq-hash a) #:catch (System.InvalidOperationException))))
+               (threw? (try (eq-hash a) #:catch (System.InvalidOperationException))))
   (expect-true "and so does using one as a Map key"
-          (threw? (try (map-set (map-empty) a "x") #:catch (System.InvalidOperationException)))))
+               (threw? (try (map-set (map-empty) a "x") #:catch (System.InvalidOperationException)))))
 
 (defun (main args)
   (as-a-queue)

@@ -13,7 +13,8 @@
 (import (std simpletest))
 
 ;; An unordered pair.
-(type (: (Pair %a) (Record (: fst %a) (: snd %a))))
+(type (: (Pair %a) (Record (: fst %a)
+                           (: snd %a))))
 
 (impl (Eq (Pair %a))
   (where (Eq %a))
@@ -31,11 +32,14 @@
 (defun (pair a b) (Pair (fst a) (snd b)))
 
 ;; Two cases `=` equates.
-(type (: Money (Union (: Cents int) (: Dollars int))))
+(type (: Money (Union (: Cents int)
+                      (: Dollars int))))
 
 (: (-> Money int))
 (defun (money->cents m)
-  (match m ((Cents c) c) ((Dollars d) (* d 100))))
+  (match m
+    ((Cents c) c)
+    ((Dollars d) (* d 100))))
 
 (impl (Eq Money)
   (defun (= x y) (= (money->cents x) (money->cents y)))
@@ -44,11 +48,17 @@
 ;; .NET's own equality of a union is the union's, so it agrees with `=` across
 ;; cases: what a Dictionary through interop, or LINQ, would see. Money is a
 ;; struct union; Tally contains itself, so it is a class.
-(type-rec (: Tally (Union (: Ones int) (: Tens int) (: Both Tally Tally))))
+(type-rec
+  (: Tally (Union (: Ones int)
+                  (: Tens int)
+                  (: Both Tally Tally))))
 
 (: (-> Tally int))
 (defun (tally-value t)
-  (match t ((Ones n) n) ((Tens n) (* 10 n)) ((Both a b) (+ (tally-value a) (tally-value b)))))
+  (match t
+    ((Ones n) n)
+    ((Tens n) (* 10 n))
+    ((Both a b) (+ (tally-value a) (tally-value b)))))
 
 (impl (Eq Tally)
   (defun (= x y) (= (tally-value x) (tally-value y)))
@@ -74,20 +84,25 @@
           (orderedset-length (list->orderedset (list (pair 1 2) (pair 3 1) (pair 2 2) (pair 1 5))))
           3)
   (expect "an OrderedMap likewise"
-          (orderedmap-length (orderedmap-set (orderedmap-set (orderedmap-empty) (pair 1 9) "a") (pair 1 2) "b"))
+          (orderedmap-length
+           (orderedmap-set (orderedmap-set (orderedmap-empty) (pair 1 9) "a") (pair 1 2) "b"))
           1)
   (expect "through a generic function" (distinct-count (list (Cents 100) (Dollars 1) (Cents 5))) 2)
   (expect "a list of such keys"
           (map-length (list->map (list (Tuple (list (Cents 100)) 1) (Tuple (list (Dollars 1)) 2))))
           1)
   (expect "a set mapped into a new element type asks that type"
-          (hashset-length (hashset-map (fun (c) (if (= c 100) (Cents c) (Dollars 1))) (list->hashset (list 100 200))))
+          (hashset-length (hashset-map (fun (c) (if (= c 100) (Cents c) (Dollars 1)))
+                                       (list->hashset (list 100 200))))
           1)
   (expect "a filtered set keeps its comparer"
-          (hashset-length (hashset-add (hashset-filter (fun (m) #t) (list->hashset (list (Cents 100)))) (Dollars 1)))
+          (hashset-length
+           (hashset-add (hashset-filter (fun (m) #t) (list->hashset (list (Cents 100)))) (Dollars 1)))
           1)
   (expect "an emptied map keeps it"
-          (map-length (map-set (map-set (map-clear (map-set (map-empty) (Cents 1) 0)) (Cents 100) 1) (Dollars 1) 2))
+          (map-length (map-set (map-set (map-clear (map-set (map-empty) (Cents 1) 0)) (Cents 100) 1)
+                               (Dollars 1)
+                               2))
           1)
   (expect "a collected map asks the key's Eq"
           (map-length {mapping (Tuple m 0) (:for m (list (Cents 100) (Dollars 1)))})
@@ -108,6 +123,8 @@
           (object-equals (cast Obj (pair 1 2)) (cast Obj (pair 2 1)))
           #t)
   (expect "a case of it is still matched by position"
-          (match (Both (Ones 1) (Tens 2)) ((Both (Ones a) (Tens b)) (+ a b)) (_ 0))
+          (match (Both (Ones 1) (Tens 2))
+            ((Both (Ones a) (Tens b)) (+ a b))
+            (_ 0))
           3)
   0)

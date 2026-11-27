@@ -14,7 +14,8 @@
 ;; The lines as one string, each made visible: "\r" as <CR>, "\n" as <LF>.
 (: (-> (Vec string) string))
 (defun (shown lines)
-  (string-join (vec-map (fun (l) (string-replace (string-replace l "\r" "<CR>") "\n" "<LF>")) lines) "|"))
+  (string-join (vec-map (fun (l) (string-replace (string-replace l "\r" "<CR>") "\n" "<LF>")) lines)
+               "|"))
 
 (: (-> LineMode (Vec string)))
 (defun (lines-sync mode)
@@ -22,7 +23,9 @@
   (def out (vecbuilder-empty))
   (let go ()
     (match (read-line/opt p #:mode mode)
-      ((Some l) (vecbuilder-add! out l) (go))
+      ((Some l)
+       (vecbuilder-add! out l)
+       (go))
       (None (vecbuilder->vec out)))))
 
 (: (-bjo-> LineMode (Vec string)))
@@ -32,13 +35,17 @@
   (let go ()
     (if (port-eof? p)
         (vecbuilder->vec out)
-        (let () (vecbuilder-add! out (read-line p #:mode mode)) (go)))))
+        (let ()
+          (vecbuilder-add! out (read-line p #:mode mode))
+          (go)))))
 
 (: (-bjo-> string LineMode string Unit))
 (defbjo (check name mode wanted)
   (expect (str name ", read-line/opt in a defun") (shown (lines-sync mode)) wanted)
   (expect (str name ", read-line on a fiber") (shown (lines-bjo mode)) wanted)
-  (expect (str name ", port->lines") (shown (port->lines (open-input-string input) #:mode mode)) wanted))
+  (expect (str name ", port->lines")
+          (shown (port->lines (open-input-string input) #:mode mode))
+          wanted))
 
 (defbjo (main args)
   (check "Any" Any "a|b|c|d||e")
@@ -53,7 +60,9 @@
   (def path (path-combine (current-directory) "316-scratch.txt"))
   (raise-err (file-write-text path input))
   (expect "file-read-lines" (shown (raise-err (file-read-lines path))) "a|b|c|d||e")
-  (expect "file-read-lines, Linefeed" (shown (raise-err (file-read-lines path #:mode Linefeed))) "a<CR>b|c<CR>|d|<CR>e")
+  (expect "file-read-lines, Linefeed"
+          (shown (raise-err (file-read-lines path #:mode Linefeed)))
+          "a<CR>b|c<CR>|d|<CR>e")
   (expect "file-read-lines/seq, ReturnLinefeed"
           (shown (->vec (file-read-lines/seq path #:mode ReturnLinefeed)))
           "a<CR>b<LF>c|d<LF><CR>e")

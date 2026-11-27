@@ -25,9 +25,14 @@
 (: (-> string string))
 (defun (described path)
   (match (file-info path)
-    ((Some info) (str (match (record-ref info kind) (FsFile "file") (FsDirectory "dir") (FsLink "link") (FsOther "other"))
-                      " "
-                      (displayed (record-ref info size))))
+    ((Some info)
+     (str (match (record-ref info kind)
+            (FsFile "file")
+            (FsDirectory "dir")
+            (FsLink "link")
+            (FsOther "other"))
+          " "
+          (displayed (record-ref info size))))
     (None "none")))
 
 ;; The modified time, or -1 for a path that names nothing.
@@ -55,7 +60,9 @@
 
 (: (-> (Result %e %a) bool))
 (defun (threw? r)
-  (match r ((Ok _) #f) ((Err _) #t)))
+  (match r
+    ((Ok _) #f)
+    ((Err _) #t)))
 
 (: (-> string string string))
 (defun (under dir name) (path-combine dir name))
@@ -74,8 +81,7 @@
 (defun (same-bytes? a b)
   (and (= (array-length a) (array-length b))
        (let loop ((i 0))
-         (or (= i (array-length a))
-             (and (= (array-ref a i) (array-ref b i)) (loop (+ i 1)))))))
+         (or (= i (array-length a)) (and (= (array-ref a i) (array-ref b i)) (loop (+ i 1)))))))
 
 (: (-> (List string) (Vec string)))
 (defun (vec-of xs) (list->vec xs))
@@ -133,8 +139,7 @@
   (expect "an empty path names nothing, and throws nothing" (described "") "none")
   (def now-ms (instant->unix-milliseconds (now)))
   (def age (- now-ms (modified (in-probe "abc.txt"))))
-  (expect-true "the time is the write's, give or take a minute"
-               (and (> age -60000L) (< age 60000L)))
+  (expect-true "the time is the write's, give or take a minute" (and (> age -60000L) (< age 60000L)))
   (expect-true "a plain file is not a link" (not (link? (in-probe "abc.txt"))))
   ;; Some systems refuse an unprivileged symbolic link. There is nothing to
   ;; check then.
@@ -158,9 +163,10 @@
   (raise-err (directory-create d))
   (raise-err (file-write-text a "A"))
   (raise-err (file-write-text b "B"))
-  (expect-true #"${where}: MoveNew onto a file fails"
-               (threw? (file-move a b)))
-  (expect #"${where}: and changes nothing" (str (raise-err (file-read-text a)) (raise-err (file-read-text b))) "AB")
+  (expect-true #"${where}: MoveNew onto a file fails" (threw? (file-move a b)))
+  (expect #"${where}: and changes nothing"
+          (str (raise-err (file-read-text a)) (raise-err (file-read-text b)))
+          "AB")
   (raise-err (file-move a b #:mode MoveReplace))
   (expect #"${where}: MoveReplace replaces a file" (raise-err (file-read-text b)) "A")
   (expect-true #"${where}: and the source is gone" (not (file-exists? a)))
@@ -190,20 +196,22 @@
   (def dst (under dir "dst.txt"))
   (raise-err (file-write-text src "source"))
   (raise-err (file-write-text dst "old"))
-  (expect-true #"${where}: a copy refuses an existing target by default"
-               (threw? (file-copy src dst)))
+  (expect-true #"${where}: a copy refuses an existing target by default" (threw? (file-copy src dst)))
   (expect #"${where}: and leaves it as it was" (raise-err (file-read-text dst)) "old")
   (raise-err (file-copy src dst #:mode Truncate))
   (expect #"${where}: Truncate replaces it" (raise-err (file-read-text dst)) "source")
   (raise-err (file-copy src dst #:mode Append))
   (expect #"${where}: Append adds to it" (raise-err (file-read-text dst)) "sourcesource")
   (raise-err (file-copy src (under dir "fresh.txt")))
-  (expect #"${where}: the default copies to a free path" (raise-err (file-read-text (under dir "fresh.txt"))) "source")
+  (expect #"${where}: the default copies to a free path"
+          (raise-err (file-read-text (under dir "fresh.txt")))
+          "source")
   (expect-true #"${where}: a missing source fails"
                (threw? (file-copy (under dir "missing.txt") dst #:mode Truncate)))
-  (expect #"${where}: and leaves the target as it was" (raise-err (file-read-text dst)) "sourcesource")
-  (expect-true #"${where}: a copy onto itself fails"
-               (threw? (file-copy src src #:mode Truncate)))
+  (expect #"${where}: and leaves the target as it was"
+          (raise-err (file-read-text dst))
+          "sourcesource")
+  (expect-true #"${where}: a copy onto itself fails" (threw? (file-copy src src #:mode Truncate)))
   (expect #"${where}: and the file is intact" (raise-err (file-read-text src)) "source")
   (raise-err (directory-create (under dir "sub")))
   (expect-true #"${where}: a directory as the source fails"
@@ -225,19 +233,23 @@
     ((Ok _)
      (raise-err (file-copy src (under dir "to-src.txt") #:mode Truncate))
      (expect #"${where}: Truncate onto a link to the source leaves the source whole"
-             (raise-err (file-read-text src)) "source")
+             (raise-err (file-read-text src))
+             "source")
      (expect #"${where}: and replaces the link with the copy"
              (match (file-info (under dir "to-src.txt"))
                ((Some info) (record-ref info link?))
                (None #t))
              #f)
-     (expect #"${where}: which holds the source" (raise-err (file-read-text (under dir "to-src.txt"))) "source"))
+     (expect #"${where}: which holds the source"
+             (raise-err (file-read-text (under dir "to-src.txt")))
+             "source"))
     ((Err _) unit))
   (match (clr-symlink (under dir "again.txt") (path-absolute src))
     ((Ok _)
      (raise-err (file-copy src (under dir "again.txt") #:mode Append))
      (expect #"${where}: Append onto a link to the source adds the source once, and ends"
-             (raise-err (file-read-text src)) "sourcesource"))
+             (raise-err (file-read-text src))
+             "sourcesource"))
     ((Err _) unit)))
 
 (: (-> string string void))
@@ -245,7 +257,8 @@
   (raise-err (directory-create dir))
   (def f (under dir "bytes.bin"))
   (raise-err (file-write-bytes f all-bytes))
-  (expect-true #"${where}: every byte value round trips" (same-bytes? (raise-err (file-read-bytes f)) all-bytes))
+  (expect-true #"${where}: every byte value round trips"
+               (same-bytes? (raise-err (file-read-bytes f)) all-bytes))
   (expect #"${where}: and the size is 256" (described f) "file 256")
   (def three (make-array 3))
   (array-set! three 0 (cast byte 7))
@@ -266,11 +279,17 @@
   (def lines (vec-of (list "one" "" "three")))
   (raise-err (file-write-lines f lines))
   (expect #"${where}: lines round trip" (vec->list (raise-err (file-read-lines f))) (vec->list lines))
-  (expect #"${where}: each ends in a newline, the last too" (raise-err (file-read-text f)) "one\n\nthree\n")
+  (expect #"${where}: each ends in a newline, the last too"
+          (raise-err (file-read-text f))
+          "one\n\nthree\n")
   (raise-err (file-write-text f "x\ny"))
-  (expect #"${where}: a last line without a newline" (vec->list (raise-err (file-read-lines f))) (list "x" "y"))
+  (expect #"${where}: a last line without a newline"
+          (vec->list (raise-err (file-read-lines f)))
+          (list "x" "y"))
   (raise-err (file-write-text f "x\r\ny\r\n"))
-  (expect #"${where}: CRLF ends a line too" (vec->list (raise-err (file-read-lines f))) (list "x" "y"))
+  (expect #"${where}: CRLF ends a line too"
+          (vec->list (raise-err (file-read-lines f)))
+          (list "x" "y"))
   (raise-err (file-write-text f ""))
   (expect #"${where}: an empty file has no lines" (vec-length (raise-err (file-read-lines f))) 0)
   (raise-err (file-write-lines f (vec-of '())))
@@ -299,17 +318,19 @@
   ;; "." sorts before "a", so `.git` comes first.
   (expect #"${where}: every file, depth first, each directory in order"
           (->list (directory-walk dir))
-          (list-map path (list (path-combine dir ".git" "HEAD")
-                               (path-combine dir "a" "m" "k.txt")
-                               (path-combine dir "a" "z.txt")
-                               (path-combine dir "b.txt")
-                               (path-combine dir "c.bjo"))))
+          (list-map path
+                    (list (path-combine dir ".git" "HEAD")
+                          (path-combine dir "a" "m" "k.txt")
+                          (path-combine dir "a" "z.txt")
+                          (path-combine dir "b.txt")
+                          (path-combine dir "c.bjo"))))
   (expect #"${where}: into? leaves a directory out"
           (->list (directory-walk dir #:into? (fun (d) (not (path-has-name? d ".git")))))
-          (list-map path (list (path-combine dir "a" "m" "k.txt")
-                               (path-combine dir "a" "z.txt")
-                               (path-combine dir "b.txt")
-                               (path-combine dir "c.bjo"))))
+          (list-map path
+                    (list (path-combine dir "a" "m" "k.txt")
+                          (path-combine dir "a" "z.txt")
+                          (path-combine dir "b.txt")
+                          (path-combine dir "c.bjo"))))
   (expect #"${where}: filter asks what a glob would"
           (->list (filter #(path-has-extension? & "bjo") (directory-walk dir)))
           (list (path (path-combine dir "c.bjo"))))
@@ -331,7 +352,8 @@
       (expect "making a walk lists nothing" (box-ref listed) 0)
       ;; The first `.txt` is under `a/m`: the root, `.git`, `a` and `a/m` are
       ;; listed on the way, and `empty` is not.
-      (expect "a walk stopped early" (find #(path-has-extension? & "txt") walk)
+      (expect "a walk stopped early"
+              (find #(path-has-extension? & "txt") walk)
               (Some (path (path-combine "lazy" "a" "m" "k.txt"))))
       (expect "lists only what it passed" (box-ref listed) 4)
       (ignore (->list walk))
@@ -340,7 +362,8 @@
   ;; directory is answered by the handler installed where it is walked.
   (def elsewhere (directory-walk "249_nowhere"))
   (with-fake-fs (("249_nowhere/x.txt" "x"))
-    (expect "the handler at the walk answers" (->list elsewhere)
+    (expect "the handler at the walk answers"
+            (->list elsewhere)
             (list (path (path-combine "249_nowhere" "x.txt"))))))
 
 ;; On the disk only: a link to a directory is never entered, by a walk or by
@@ -359,9 +382,7 @@
      (ignore (clr-dir-symlink (path-combine dir "a" "out") (path-combine ".." ".." "outside")))
      (ignore (clr-dir-symlink (in-probe "to-outside") "outside"))
      (expect-true "a link to a directory says so" (link? (path-combine dir "a" "up")))
-     (expect "a link back up the tree is not entered"
-             (list-length (->list (directory-walk dir)))
-             5)
+     (expect "a link back up the tree is not entered" (list-length (->list (directory-walk dir))) 5)
      (raise-err (directory-delete-tree dir))
      (expect-true "a tree with links in it is deleted" (not (directory-exists? dir)))
      (expect-true "and what a link pointed at outside it is not"
@@ -412,22 +433,23 @@
   (raise-err (directory-create dir))
   (def missing (under dir "missing.txt"))
   (expect #"${where}: reading a missing file is an Err"
-          (failure-kind (file-read-text missing)) "not found")
+          (failure-kind (file-read-text missing))
+          "not found")
   (expect #"${where}: so are its lines and bytes"
           (str (failure-kind (file-read-lines missing)) ", " (failure-kind (file-read-bytes missing)))
           "not found, not found")
-  (expect #"${where}: the error holds the path"
-          (failure-path (file-read-text missing)) missing)
+  (expect #"${where}: the error holds the path" (failure-path (file-read-text missing)) missing)
   (expect #"${where}: listing a missing directory is an Err"
-          (failure-kind (directory-files (under dir "nowhere"))) "not found")
-  (expect #"${where}: a write returns (Ok unit)"
-          (ok? (file-write-text (under dir "a.txt") "A")) #t)
-  (expect #"${where}: deleting a missing file is not an error"
-          (ok? (file-delete missing)) #t)
+          (failure-kind (directory-files (under dir "nowhere")))
+          "not found")
+  (expect #"${where}: a write returns (Ok unit)" (ok? (file-write-text (under dir "a.txt") "A")) #t)
+  (expect #"${where}: deleting a missing file is not an error" (ok? (file-delete missing)) #t)
   (expect #"${where}: deleting a non-empty directory is NotEmpty"
-          (failure-kind (directory-delete dir)) "not empty")
+          (failure-kind (directory-delete dir))
+          "not empty")
   (expect #"${where}: CreateNew onto a file is AlreadyExists"
-          (failure-kind (open-output-file (under dir "a.txt") #:mode CreateNew)) "exists")
+          (failure-kind (open-output-file (under dir "a.txt") #:mode CreateNew))
+          "exists")
   (expect #"${where}: moving a missing file is NotFound, about the source"
           (str (failure-kind (file-move missing (under dir "b.txt")))
                " " (failure-path (file-move missing (under dir "b.txt"))))
@@ -438,14 +460,16 @@
                " " (failure-path (file-move (under dir "m.txt") (under dir "a.txt"))))
           (str "exists " (under dir "a.txt")))
   (expect #"${where}: reading a directory is IsDirectory"
-          (failure-kind (file-read-text dir)) "is directory")
+          (failure-kind (file-read-text dir))
+          "is directory")
   (expect #"${where}: raise-err raises the exception with its own type"
           (exception-kind (try (raise-err (file-read-text missing)) #:catch (System.Exception)))
           "not found")
   (expect-true #"${where}: fs-error-message says the kind and the path"
                (match (file-read-text missing)
-                 ((Err e) (and (string-starts-with? (fs-error-message e) "not found: ")
-                               (some? (string-search (fs-error-message e) "missing.txt"))))
+                 ((Err e)
+                  (and (string-starts-with? (fs-error-message e) "not found: ")
+                       (some? (string-search (fs-error-message e) "missing.txt"))))
                  ((Ok _) #f)))
   (expect #"${where}: result-and-then reads after a write"
           (result-and-then (fun (_) (file-read-text (under dir "a.txt")))
@@ -487,22 +511,27 @@
   (def file (under dir "f.txt"))
   (raise-err (file-write-text file "f"))
   (expect "a path through a file is NotDirectory"
-          (failure-kind (file-read-text (under file "x.txt"))) "not directory")
-  (expect "listing a file is NotDirectory"
-          (failure-kind (directory-files file)) "not directory")
+          (failure-kind (file-read-text (under file "x.txt")))
+          "not directory")
+  (expect "listing a file is NotDirectory" (failure-kind (directory-files file)) "not directory")
   (expect "a missing directory on the way is NotFound"
-          (failure-kind (file-read-text (under (under dir "none") "x.txt"))) "not found")
+          (failure-kind (file-read-text (under (under dir "none") "x.txt")))
+          "not found")
   (expect "deleting a directory as a file is IsDirectory"
-          (failure-kind (file-delete dir)) "is directory")
+          (failure-kind (file-delete dir))
+          "is directory")
   (raise-err (directory-create (under dir "d")))
   (expect "moving a directory onto a directory is AlreadyExists"
-          (failure-kind (file-move (under dir "d") dir)) "exists")
+          (failure-kind (file-move (under dir "d") dir))
+          "exists")
   (expect "moving a file onto a directory is AlreadyExists"
-          (failure-kind (file-move file (under dir "d"))) "exists")
+          (failure-kind (file-move file (under dir "d")))
+          "exists")
   (raise-err (directory-delete-tree dir)))
 
 (defbjo (main)
-  (when (directory-exists? probe) (raise-err (directory-delete-tree probe)))
+  (when (directory-exists? probe)
+    (raise-err (directory-delete-tree probe)))
   ;; Off the fiber, since the ordinary copies park the thread they run on. A
   ;; failure comes back as an `Err`, and is raised here.
   (match (sync (blocking (fun () (ordinary-copies))))

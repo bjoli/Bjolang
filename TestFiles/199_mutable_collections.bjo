@@ -39,11 +39,15 @@
 
 (: (-> (Option int) int bool))
 (defun (gave? o want)
-  (match o ((Some x) (= x want)) (None #f)))
+  (match o
+    ((Some x) (= x want))
+    (None #f)))
 
 (: (-> (Option int) bool))
 (defun (nothing? o)
-  (match o ((Some _) #f) (None #t)))
+  (match o
+    ((Some _) #f)
+    (None #t)))
 
 ;; The heap answers a pair, so its `Option` needs an unwrapping of its own.
 (: (-> (Option (Tuple string int)) string int bool))
@@ -54,7 +58,9 @@
 
 (: (-> (Option (Tuple string int)) bool))
 (defun (nothing-popped? o)
-  (match o ((Some _) #f) (None #t)))
+  (match o
+    ((Some _) #f)
+    (None #t)))
 
 (: (-> (List int) (MutableVec int)))
 (defun (vec-of xs) (list->mutablevec xs))
@@ -170,17 +176,16 @@
   (expect "the first ones kept" (mutablevec-ref v 3) 4)
   (expect-true "a negative count raises"
                (err? (try (mutablevec-grow! v -1) #:catch (System.ArgumentOutOfRangeException))))
-  (expect-true "a span past the end raises"
-               (err? (try (span-length (mutablevec-span v 100 5)) #:catch (System.ArgumentOutOfRangeException))))
+  (expect-true
+   "a span past the end raises"
+   (err? (try (span-length (mutablevec-span v 100 5)) #:catch (System.ArgumentOutOfRangeException))))
   (expect "and nothing changed" (mutablevec-length v) 104))
 
 (: (-> void))
 (defun (vec-conversions)
   (def xs (Cons 1 (Cons 2 (Cons 3 Nil))))
   (expect "a list round trip" (mutablevec->list (list->mutablevec xs)) xs)
-  (expect "a vec round trip"
-          (mutablevec->vec (vec->mutablevec [1 2 3]))
-          [1 2 3])
+  (expect "a vec round trip" (mutablevec->vec (vec->mutablevec [1 2 3])) [1 2 3])
   (expect "a seq round trip" (->list (mutablevec->seq (vec-of xs))) xs)
   (expect "capacity is not length" (mutablevec-length (mutablevec-with-capacity 16)) 0)
   (expect "an array" (array-length (mutablevec->array (vec-of xs))) 3))
@@ -199,20 +204,20 @@
 
   ;; Iterable. The cursor is an `int`, so this is an index walk and nothing is
   ;; allocated for it.
-  (expect "summed by a loop" (loop (:for x v) (:acc total (summing x))) 6)
+  (expect "summed by a loop"
+          (loop (:for x v)
+                (:acc total (summing x)))
+          6)
   (expect "folded" (fold (fun (x acc) (+ acc x)) 0 v) 6)
-  (expect "mapped" (->list (map (fun (x) (* x 2)) v))
-          (Cons 2 (Cons 4 (Cons 6 Nil))))
-  (expect "filtered" (->list (filter (fun (x) (> x 1)) v))
-          (Cons 2 (Cons 3 Nil)))
+  (expect "mapped" (->list (map (fun (x) (* x 2)) v)) (Cons 2 (Cons 4 (Cons 6 Nil))))
+  (expect "filtered" (->list (filter (fun (x) (> x 1)) v)) (Cons 2 (Cons 3 Nil)))
 
   ;; Addable!, both halves. `add-all!` walks any `Iterable`, which is what the
   ;; member-level `(where ...)` on the trait buys.
   (def sink (ints))
   (add! sink 1)
   (add-all! sink v)
-  (expect "the sink took a run" (mutablevec->list sink)
-          (Cons 1 (Cons 1 (Cons 2 (Cons 3 Nil))))))
+  (expect "the sink took a run" (mutablevec->list sink) (Cons 1 (Cons 1 (Cons 2 (Cons 3 Nil))))))
 
 ;; Structural, and built twice from the same elements so that nothing is shared
 ;; and only a structural answer can find it.
@@ -221,7 +226,7 @@
   (expect-true "equal vectors are ="
                (= (vec-of (Cons 1 (Cons 2 Nil))) (vec-of (Cons 1 (Cons 2 Nil)))))
   (expect-true "a different element is not ="
-               (not (= (vec-of (Cons 1 (Cons 2 Nil))) (vec-of (Cons 1 (Cons 9 Nil)))))) 
+               (not (= (vec-of (Cons 1 (Cons 2 Nil))) (vec-of (Cons 1 (Cons 9 Nil))))))
   (expect-true "a different length is not ="
                (not (= (vec-of (Cons 1 Nil)) (vec-of (Cons 1 (Cons 2 Nil))))))
   (expect "->str" (displayed (vec-of (Cons 1 (Cons 2 Nil)))) "#mvec(1 2)")
@@ -255,11 +260,15 @@
           "raised")
   (expect "leaving the value alone" (mutablemap-ref m "a") 11)
   (expect "try-add-new! answers the value that is there"
-          (match (mutablemap-try-add-new! m "a" 99) ((Ok _) -1) ((Err old) old))
+          (match (mutablemap-try-add-new! m "a" 99)
+            ((Ok _) -1)
+            ((Err old) old))
           11)
   (expect "and leaves it alone too" (mutablemap-ref m "a") 11)
   (expect-true "try-add-new! of a new key is Ok"
-               (match (mutablemap-try-add-new! m "e" 5) ((Ok _) #t) ((Err _) #f)))
+               (match (mutablemap-try-add-new! m "e" 5)
+                 ((Ok _) #t)
+                 ((Err _) #f)))
   (expect "and writes it" (mutablemap-ref m "e") 5)
   (ignore (mutablemap-remove! m "e"))
 
@@ -279,9 +288,15 @@
 
   ;; The order a table walks in is not the order it was filled in, so every
   ;; check here is order-free: a sum, a count, or a lookup.
-  (expect "summed values" (loop (:for (Tuple k v) m) (:acc total (summing v))) 3)
+  (expect "summed values"
+          (loop (:for (Tuple k v) m)
+                (:acc total (summing v)))
+          3)
   (expect "counted keys" (count (mutablemap-keys m)) 2)
-  (expect "summed the values view" (loop (:for v (mutablemap-values m)) (:acc t (summing v))) 3)
+  (expect "summed the values view"
+          (loop (:for v (mutablemap-values m))
+                (:acc t (summing v)))
+          3)
 
   (def/mutable seen 0)
   (mutablemap-for-each (fun (k v) (set! seen (+ seen v))) m)
@@ -391,9 +406,13 @@
             ((Err _) "raised"))
           "raised")
   (expect-true "try-add-new! of a member is an Err"
-               (match (mutableset-try-add-new! s "a") ((Ok _) #f) ((Err y) (= y "a"))))
+               (match (mutableset-try-add-new! s "a")
+                 ((Ok _) #f)
+                 ((Err y) (= y "a"))))
   (expect-true "try-add-new! of a new element is Ok"
-               (match (mutableset-try-add-new! s "z") ((Ok _) #t) ((Err _) #f)))
+               (match (mutableset-try-add-new! s "z")
+                 ((Ok _) #t)
+                 ((Err _) #f)))
   (expect "and adds it" (mutableset-length s) 2)
   (ignore (mutableset-remove! s "z"))
   (expect "one member" (mutableset-length s) 1)
@@ -418,8 +437,7 @@
 (defun (set-algebra)
   (def a (set-of (Cons "1" (Cons "2" Nil))))
   (mutableset-union! a (set-of (Cons "2" (Cons "3" Nil))))
-  (expect-true "union! wrote the left-hand side"
-               (= a (set-of (Cons "1" (Cons "2" (Cons "3" Nil))))))
+  (expect-true "union! wrote the left-hand side" (= a (set-of (Cons "1" (Cons "2" (Cons "3" Nil))))))
 
   (def b (set-of (Cons "1" (Cons "2" (Cons "3" Nil)))))
   (mutableset-intersect! b (set-of (Cons "2" (Cons "3" (Cons "4" Nil)))))
@@ -470,9 +488,7 @@
   (expect-true "and back" (mutableset-contains? (hashset->mutableset persistent) "a"))
 
   ;; A duplicate is one member, however it arrived.
-  (expect "a duplicate is one member"
-          (mutableset-length (set-of (Cons "a" (Cons "a" Nil))))
-          1))
+  (expect "a duplicate is one member" (mutableset-length (set-of (Cons "a" (Cons "a" Nil)))) 1))
 
 (: (-> void))
 (defun (set-traits)
@@ -483,7 +499,10 @@
   (expect-true "ref is membership" (ref s "a"))
 
   ;; The walk is unordered, so it is counted rather than listed.
-  (expect "counted by a loop" (loop (:for x s) (:acc n (summing 1))) 2)
+  (expect "counted by a loop"
+          (loop (:for x s)
+                (:acc n (summing 1)))
+          2)
 
   (def/mutable seen 0)
   (mutableset-for-each (fun (x) (set! seen (+ seen 1))) s)
@@ -573,13 +592,9 @@
   ;; Push and pop as one rebalance. The count does not grow, and what comes off
   ;; may be the element just pushed.
   (def bounded (list->mutableheap (Cons (Tuple "b" 2) Nil)))
-  (expect "pushing something larger pops the smaller"
-          (mutableheap-add-pop! bounded "c" 3)
-          "b")
+  (expect "pushing something larger pops the smaller" (mutableheap-add-pop! bounded "c" 3) "b")
   (expect "the count held" (mutableheap-length bounded) 1)
-  (expect "pushing something smaller pops itself"
-          (mutableheap-add-pop! bounded "a" 1)
-          "a")
+  (expect "pushing something smaller pops itself" (mutableheap-add-pop! bounded "a" 1) "a")
   (expect "the count still held" (mutableheap-length bounded) 1)
 
   (mutableheap-clear! bounded)

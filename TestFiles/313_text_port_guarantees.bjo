@@ -21,7 +21,10 @@
      (write-string tout "abc")
      (flush-port tout)
      (def first
-       (match (try (with-deadline (milliseconds 100) (read-line tin)) #:catch (System.Exception))
+       (match (try
+                (with-deadline (milliseconds 100)
+                  (read-line tin))
+                #:catch (System.Exception))
          ((Ok l) (str "got [" l "]"))
          ((Err e) "deadline")))
      (write-string tout "def\n")
@@ -53,7 +56,10 @@
 
   (def path (path-combine (current-directory) "313-scratch.txt"))
   (def lines 50000)
-  (raise-err (file-write-lines path (loop (:for i (range 0 lines)) (:acc out (vecing (str "line-" (displayed i)))) => out)))
+  (raise-err (file-write-lines path
+                               (loop (:for i (range 0 lines))
+                                     (:acc out (vecing (str "line-" (displayed i))))
+                                 => out)))
   (expect "two fibers draining one port see every line once" (two-readers path lines) lines)
   (raise-err (file-delete path))
   0)

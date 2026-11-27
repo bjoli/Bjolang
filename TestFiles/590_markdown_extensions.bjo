@@ -16,23 +16,26 @@
   ;; Footnotes are numbered in the order of their first reference. A note
   ;; without a reference is not written, and a reference without a note is
   ;; text.
-  (def notes "A[^b] B[^a] C[^b] D[^none].\n\n[^a]: Note *a*.\n[^b]: Note b.\n\n    More of b.\n[^unused]: x\n")
-  (check "footnotes"
-         (markdown->html (markdown-parse notes))
-         (str "<p>A<sup class=\"footnote-ref\"><a href=\"#fn-1\" id=\"fnref-1\" data-footnote-ref>1</a></sup>"
-              " B<sup class=\"footnote-ref\"><a href=\"#fn-2\" id=\"fnref-2\" data-footnote-ref>2</a></sup>"
-              " C<sup class=\"footnote-ref\"><a href=\"#fn-1\" id=\"fnref-1-2\" data-footnote-ref>1</a></sup>"
-              " D[^none].</p>\n"
-              "<section class=\"footnotes\" data-footnotes>\n<ol>\n"
-              "<li id=\"fn-1\">\n<p>Note b.</p>\n"
-              "<p>More of b. <a href=\"#fnref-1\" class=\"footnote-backref\" data-footnote-backref data-footnote-backref-idx=\"1\" aria-label=\"Back to reference 1\">\u{21A9}</a>"
-              " <a href=\"#fnref-1-2\" class=\"footnote-backref\" data-footnote-backref data-footnote-backref-idx=\"1-2\" aria-label=\"Back to reference 1-2\">\u{21A9}<sup class=\"footnote-ref\">2</sup></a></p>\n"
-              "</li>\n"
-              "<li id=\"fn-2\">\n<p>Note <em>a</em>. <a href=\"#fnref-2\" class=\"footnote-backref\" data-footnote-backref data-footnote-backref-idx=\"2\" aria-label=\"Back to reference 2\">\u{21A9}</a></p>\n"
-              "</li>\n</ol>\n</section>\n"))
-  (check "footnote tree"
-         (written (record-ref (markdown-parse notes) footnotes))
-         "[(Tuple 1 [(MdParagraph [(MdText \"Note b.\")]) (MdParagraph [(MdText \"More of b.\")])]) (Tuple 2 [(MdParagraph [(MdText \"Note \") (MdEmph [(MdText \"a\")]) (MdText \".\")])])]")
+  (def notes
+    "A[^b] B[^a] C[^b] D[^none].\n\n[^a]: Note *a*.\n[^b]: Note b.\n\n    More of b.\n[^unused]: x\n")
+  (check
+   "footnotes"
+   (markdown->html (markdown-parse notes))
+   (str "<p>A<sup class=\"footnote-ref\"><a href=\"#fn-1\" id=\"fnref-1\" data-footnote-ref>1</a></sup>"
+        " B<sup class=\"footnote-ref\"><a href=\"#fn-2\" id=\"fnref-2\" data-footnote-ref>2</a></sup>"
+        " C<sup class=\"footnote-ref\"><a href=\"#fn-1\" id=\"fnref-1-2\" data-footnote-ref>1</a></sup>"
+        " D[^none].</p>\n"
+        "<section class=\"footnotes\" data-footnotes>\n<ol>\n"
+        "<li id=\"fn-1\">\n<p>Note b.</p>\n"
+        "<p>More of b. <a href=\"#fnref-1\" class=\"footnote-backref\" data-footnote-backref data-footnote-backref-idx=\"1\" aria-label=\"Back to reference 1\">\u{21A9}</a>"
+        " <a href=\"#fnref-1-2\" class=\"footnote-backref\" data-footnote-backref data-footnote-backref-idx=\"1-2\" aria-label=\"Back to reference 1-2\">\u{21A9}<sup class=\"footnote-ref\">2</sup></a></p>\n"
+        "</li>\n"
+        "<li id=\"fn-2\">\n<p>Note <em>a</em>. <a href=\"#fnref-2\" class=\"footnote-backref\" data-footnote-backref data-footnote-backref-idx=\"2\" aria-label=\"Back to reference 2\">\u{21A9}</a></p>\n"
+        "</li>\n</ol>\n</section>\n"))
+  (check
+   "footnote tree"
+   (written (record-ref (markdown-parse notes) footnotes))
+   "[(Tuple 1 [(MdParagraph [(MdText \"Note b.\")]) (MdParagraph [(MdText \"More of b.\")])]) (Tuple 2 [(MdParagraph [(MdText \"Note \") (MdEmph [(MdText \"a\")]) (MdText \".\")])])]")
   (check "footnotes off"
          (markdown->html (markdown-parse "x[^1]\n\n[^1]: /url\n" #:footnotes #f))
          "<p>x<a href=\"/url\">^1</a></p>\n")
@@ -55,19 +58,26 @@
          "<hr />\n<h2>a</h2>\n")
 
   ;; The tree.
-  (check "tree"
-         (written (record-ref (markdown-parse "# H *e*\n\n1. [ ] one\n2. two\n\n| a | b |\n|:-|-:|\n| `c` | d |\n") blocks))
-         (str "[(MdHeading 1 [(MdText \"H \") (MdEmph [(MdText \"e\")])])"
-              " (MdListBlock (MdList (ordered #t) (start 1) (loose #f) (items [[(MdParagraph [(MdCheckbox #f) (MdText \" one\")])] [(MdParagraph [(MdText \"two\")])]])))"
-              " (MdTableBlock (MdTable (aligns [MdAlignLeft MdAlignRight]) (head [[(MdText \"a\")] [(MdText \"b\")]]) (body [[[(MdCode \"c\")] [(MdText \"d\")]]])))]"))
+  (check
+   "tree"
+   (written (record-ref
+             (markdown-parse "# H *e*\n\n1. [ ] one\n2. two\n\n| a | b |\n|:-|-:|\n| `c` | d |\n")
+             blocks))
+   (str "[(MdHeading 1 [(MdText \"H \") (MdEmph [(MdText \"e\")])])"
+        " (MdListBlock (MdList (ordered #t) (start 1) (loose #f) (items [[(MdParagraph [(MdCheckbox #f) (MdText \" one\")])] [(MdParagraph [(MdText \"two\")])]])))"
+        " (MdTableBlock (MdTable (aligns [MdAlignLeft MdAlignRight]) (head [[(MdText \"a\")] [(MdText \"b\")]]) (body [[[(MdCode \"c\")] [(MdText \"d\")]]])))]"))
   (check "plain text"
-         (inlines->plain-text [(MdText "a ") (MdStrong [(MdCode "b")]) MdSoftBreak (MdLink "/u" "" [(MdText "c")])])
+         (inlines->plain-text
+          [(MdText "a ") (MdStrong [(MdCode "b")]) MdSoftBreak (MdLink "/u" "" [(MdText "c")])])
          "a b\nc")
 
   ;; The other extensions off.
   (check "extensions off"
          (markdown->html (markdown-parse "- [x] ~~s~~ www.a.com\n\n| a |\n| - |\n"
-                                         #:tables #f #:task-lists #f #:strikethrough #f #:autolinks #f))
+                                         #:tables #f
+                                         #:task-lists #f
+                                         #:strikethrough #f
+                                         #:autolinks #f))
          "<ul>\n<li>[x] ~~s~~ www.a.com</li>\n</ul>\n<p>| a |\n| - |</p>\n")
   (check "tag filter off"
          (markdown->html (markdown-parse "<script>x</script>\n"))
@@ -78,15 +88,22 @@
 
   ;; The examples of markdown.bjodoc.
   (def doc (markdown-parse "# Title\n\nSome *text*.\n"))
-  (check "doc: module tree" (written (record-ref doc blocks))
-         "[(MdHeading 1 [(MdText \"Title\")]) (MdParagraph [(MdText \"Some \") (MdEmph [(MdText \"text\")]) (MdText \".\")])]")
+  (check
+   "doc: module tree"
+   (written (record-ref doc blocks))
+   "[(MdHeading 1 [(MdText \"Title\")]) (MdParagraph [(MdText \"Some \") (MdEmph [(MdText \"text\")]) (MdText \".\")])]")
   (check "doc: module html" (markdown->html doc) "<h1>Title</h1>\n<p>Some <em>text</em>.</p>\n")
-  (check "doc: markdown-parse list" (written (record-ref (markdown-parse "- [x] done\n- ~~old~~\n") blocks))
-         "[(MdListBlock (MdList (ordered #f) (start 1) (loose #f) (items [[(MdParagraph [(MdCheckbox #t) (MdText \" done\")])] [(MdParagraph [(MdStrike [(MdText \"old\")])])]])))]")
+  (check
+   "doc: markdown-parse list"
+   (written (record-ref (markdown-parse "- [x] done\n- ~~old~~\n") blocks))
+   "[(MdListBlock (MdList (ordered #f) (start 1) (loose #f) (items [[(MdParagraph [(MdCheckbox #t) (MdText \" done\")])] [(MdParagraph [(MdStrike [(MdText \"old\")])])]])))]")
   (check "doc: markdown-parse front matter"
          (written (record-ref (markdown-parse "---\ntitle: Notes\n---\nText.\n") front-matter))
          "(Some \"title: Notes\")")
-  (check "doc: markdown->html"
-         (markdown->html (markdown-parse "A note[^1].\n\n[^1]: The note.\n"))
-         "<p>A note<sup class=\"footnote-ref\"><a href=\"#fn-1\" id=\"fnref-1\" data-footnote-ref>1</a></sup>.</p>\n<section class=\"footnotes\" data-footnotes>\n<ol>\n<li id=\"fn-1\">\n<p>The note. <a href=\"#fnref-1\" class=\"footnote-backref\" data-footnote-backref data-footnote-backref-idx=\"1\" aria-label=\"Back to reference 1\">\u{21A9}</a></p>\n</li>\n</ol>\n</section>\n")
-  (check "doc: inlines->plain-text" (inlines->plain-text [(MdText "a ") (MdStrong [(MdCode "b")])]) "a b"))
+  (check
+   "doc: markdown->html"
+   (markdown->html (markdown-parse "A note[^1].\n\n[^1]: The note.\n"))
+   "<p>A note<sup class=\"footnote-ref\"><a href=\"#fn-1\" id=\"fnref-1\" data-footnote-ref>1</a></sup>.</p>\n<section class=\"footnotes\" data-footnotes>\n<ol>\n<li id=\"fn-1\">\n<p>The note. <a href=\"#fnref-1\" class=\"footnote-backref\" data-footnote-backref data-footnote-backref-idx=\"1\" aria-label=\"Back to reference 1\">\u{21A9}</a></p>\n</li>\n</ol>\n</section>\n")
+  (check "doc: inlines->plain-text"
+         (inlines->plain-text [(MdText "a ") (MdStrong [(MdCode "b")])])
+         "a b"))

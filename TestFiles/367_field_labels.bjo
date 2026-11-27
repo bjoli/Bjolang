@@ -17,7 +17,9 @@
 (import (std simpletest))
 (import "inc/field_label_lib.bjo")
 
-(type (: Local (Record (: get int #:mutable) (: when int) (: or int))))
+(type (: Local (Record (: get int #:mutable)
+                       (: when int)
+                       (: or int))))
 
 (defun (main args)
   ;; --- construction, record-set and record-set! -------------------------
@@ -31,21 +33,29 @@
   (def b (make-box 7))
   (expect "a macro under a union case" (Some (get b)) (Some 7))
   (expect "a special form under a union case"
-          (match (Ok (cast long 5)) ((Ok n) n) ((Err _) 0L))
+          (match (Ok (cast long 5))
+            ((Ok n) n)
+            ((Err _) 0L))
           5L)
 
   ;; --- patterns ------------------------------------------------------------
-  (expect "fields in a pattern"
-          (match l ((Local (get g) (when w) or) (+ g (+ w or))))
-          15)
+  (expect "fields in a pattern" (match l ((Local (get g) (when w) or) (+ g (+ w or)))) 15)
   (expect "and under a union case is the pattern"
-          (match (Some 4) ((Some (and n)) n) (None 0))
+          (match (Some 4)
+            ((Some (and n)) n)
+            (None 0))
           4)
 
   ;; --- published bodies, inlined here --------------------------------------
   (def o (make-ops (fun (x) (* x 2)) 5))
   (expect "a published construction" (sum-ops (fun (x) x) o) 16)
-  (expect "a published union case with a macro" (boxed (fun (opt) (match opt ((Some n) n) (None 0))) b) 7)
+  (expect "a published union case with a macro"
+          (boxed (fun (opt)
+                   (match opt
+                     ((Some n) n)
+                     (None 0)))
+                 b)
+          7)
   (expect "a published pattern with or and and" (pair-sum (fun (x) x) (Pair (or 1) (and 2))) 3)
 
   ;; --- a macro that writes the labels -------------------------------------

@@ -26,8 +26,9 @@
   (def ch (make-chan))
   (def done (make-chan))
   (spawn/detached (send-as "SENDER" ch done))
-  (def seen (parameterize ((who "RECEIVER"))
-              (sync (wrap (chan-recv ch) (fun (v) (parameter-ref who))))))
+  (def seen
+    (parameterize ((who "RECEIVER"))
+      (sync (wrap (chan-recv ch) (fun (v) (parameter-ref who))))))
   (ignore (sync (chan-recv done)))
   seen)
 
@@ -47,21 +48,20 @@
   (def done (make-chan))
   (spawn/detached (send-as "SENDER" ch done))
   (def caught
-    (match (try (sync (choose (wrap (chan-recv ch) boom)
-                              (wrap (timeout (seconds 2)) (fun (u) -1))))
-                #:catch (System.Exception))
+    (match (try
+             (sync (choose (wrap (chan-recv ch) boom) (wrap (timeout (seconds 2)) (fun (u) -1))))
+             #:catch (System.Exception))
       ((Ok -1) "receiver timed out")
       ((Ok v) "receiver got a value")
       ((Err e) "receiver caught it")))
-  (def sender (sync (choose (chan-recv done)
-                            (wrap (timeout (seconds 2)) (fun (u) "sender never finished")))))
+  (def sender
+    (sync (choose (chan-recv done) (wrap (timeout (seconds 2)) (fun (u) "sender never finished")))))
   (str caught ", " sender))
 
 (defbjo (main args)
-  (expect "a wrap across a channel sees the receiver's bindings"
-          (seen-across-a-channel) "RECEIVER")
-  (expect "a wrap on a timeout sees the syncing fiber's bindings"
-          (seen-after-a-timeout) "RECEIVER")
+  (expect "a wrap across a channel sees the receiver's bindings" (seen-across-a-channel) "RECEIVER")
+  (expect "a wrap on a timeout sees the syncing fiber's bindings" (seen-after-a-timeout) "RECEIVER")
   (expect "a wrap's exception is raised in the fiber that synced"
-          (raised-in-the-receiver) "receiver caught it, sender finished")
+          (raised-in-the-receiver)
+          "receiver caught it, sender finished")
   0)

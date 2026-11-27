@@ -29,9 +29,11 @@
     (compare y x)))
 
 ;; Ordered by key only, so two items with one key are equal and still differ.
-(type (: Item (Record (: key int) (: tag string))))
+(type (: Item (Record (: key int)
+                      (: tag string))))
 (impl (Eq Item)
-  (defun (= a b) (and (= (record-ref a key) (record-ref b key)) (= (record-ref a tag) (record-ref b tag))))
+  (defun (= a b)
+    (and (= (record-ref a key) (record-ref b key)) (= (record-ref a tag) (record-ref b tag))))
   (defun (eq-hash a) (eq-hash (record-ref a key))))
 (impl (Ord Item)
   (defun (compare a b) (compare (record-ref a key) (record-ref b key))))
@@ -62,7 +64,7 @@
 (defun (counts v)
   (loop (:for x v)
         (:acc m (folding (map-empty) (map-set m x (+ (map-ref-or m x 0) 1))))
-        => m))
+    => m))
 
 ;; Whether `got` is in order and holds each value as many times as `v` does.
 (: (-> (Vec %a) (Vec %a) bool) (where (Ord %a)))
@@ -70,7 +72,7 @@
   (and (= (vec-length got) (vec-length v))
        (loop (:for i (range 1 (vec-length got)))
              (:acc ok (folding #t (and ok (<= (compare (vec-ref got (- i 1)) (vec-ref got i)) 0))))
-             => ok)
+         => ok)
        (= (counts got) (counts v))))
 
 ;; Whether the four unstable sorts each give a sorted permutation of `v`.
@@ -97,7 +99,8 @@
 
 ;; Whether `thunk` raises ArgumentException, which Touchy's compare raises.
 (: (-> (-> %a) bool))
-(defun (refused? thunk) (err? (try (thunk) #:catch (System.ArgumentException))))
+(defun (refused? thunk)
+  (err? (try (thunk) #:catch (System.ArgumentException))))
 
 (defun (main args)
   (def rng (make-random/seed64 7UL))
@@ -135,10 +138,12 @@
   ;; Every length around the runs of 16 and the merge widths.
   (expect "each length from 0 to 100"
           (loop (:for n (range 0 101))
-                (:acc ok (folding #t (and ok
-                                          (let ((v {vecing (Tuple (draw rng 0 5) i) (:for i (range 0 n))}))
-                                            (and (stable-sorts-agree? v) (unstable-sorts-agree? v))))))
-                => ok)
+                (:acc ok (folding #t
+                                  (and ok
+                                       (let ((v {vecing (Tuple (draw rng 0 5) i)
+                                                        (:for i (range 0 n))}))
+                                         (and (stable-sorts-agree? v) (unstable-sorts-agree? v))))))
+            => ok)
           #t)
 
   ;; ---- Stable where it can be seen -----------------------------------------
@@ -170,17 +175,26 @@
   ;; ---- An Ord that is not the run-time type's ------------------------------
   (def downs (vec-map (fun (x) (Down (cast long x))) [3 1 2 5 4]))
   (: (-> (Vec Down) (Vec long)))
-  (defun (unwrap v) (vec-map (fun (d) (def (Down x) d) x) v))
+  (defun (unwrap v)
+    (vec-map (fun (d)
+               (def (Down x) d)
+               x)
+             v))
   (expect "a newtype over long sorts by its own compare" (unwrap (vec-sort downs)) [5L 4L 3L 2L 1L])
   (expect "unstable too" (unwrap (vec-sort-unstable downs)) [5L 4L 3L 2L 1L])
   (expect "through a generic function" (unwrap (generic-sort downs)) [5L 4L 3L 2L 1L])
-  (expect "unstable, through a generic function" (unwrap (generic-sort-unstable downs)) [5L 4L 3L 2L 1L])
+  (expect "unstable, through a generic function"
+          (unwrap (generic-sort-unstable downs))
+          [5L 4L 3L 2L 1L])
   (expect "long through the same generic function" (generic-sort [3L 1L 2L]) [1L 2L 3L])
   (expect "list-sort of the newtype"
-          (unwrap (list->vec (list-sort (vec->list downs)))) [5L 4L 3L 2L 1L])
+          (unwrap (list->vec (list-sort (vec->list downs))))
+          [5L 4L 3L 2L 1L])
   (def mdowns (vec->mutablevec downs))
   (mutablevec-sort-unstable! mdowns)
-  (expect "mutablevec-sort-unstable! of the newtype" (unwrap (mutablevec->vec mdowns)) [5L 4L 3L 2L 1L])
+  (expect "mutablevec-sort-unstable! of the newtype"
+          (unwrap (mutablevec->vec mdowns))
+          [5L 4L 3L 2L 1L])
   (def adowns (vec->array downs))
   (array-sort! adowns)
   (expect "array-sort! of the newtype" (unwrap (array->vec adowns)) [5L 4L 3L 2L 1L])
@@ -196,7 +210,8 @@
   (expect-true "vec-sort raises it" (refused? #(vec-sort touchy)))
   (expect-true "vec-sort-unstable raises it" (refused? #(vec-sort-unstable touchy)))
   (expect-true "list-sort-unstable raises it" (refused? #(list-sort-unstable (vec->list touchy))))
-  (expect-true "array-sort-unstable! raises it" (refused? #(array-sort-unstable! (vec->array touchy))))
+  (expect-true "array-sort-unstable! raises it"
+               (refused? #(array-sort-unstable! (vec->array touchy))))
 
   ;; ---- Short ones ------------------------------------------------------------
   (def (: none (Vec long)) (vec-empty))

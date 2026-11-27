@@ -402,7 +402,8 @@
 (: (-> string (Result FsError %a)))
 (defun (no-directory path)
   (Err (NotFound (as-path path)
-                 (cast Exception (DirectoryNotFound. #"the fake filesystem has no directory ${path}")))))
+                 (cast Exception
+                       (DirectoryNotFound. #"the fake filesystem has no directory ${path}")))))
 
 ;; `make` is the case, such as `AlreadyExists`.
 (: (-> (-> Path Exception FsError) string string (Result FsError %a)))
@@ -411,9 +412,9 @@
 
 (: (-> string (Result FsError %a)))
 (defun (access-denied path)
-  (Err (IsDirectory (as-path path)
-                    (cast Exception
-                          (AccessDenied. #"the fake filesystem cannot do that to directory ${path}")))))
+  (Err (IsDirectory
+        (as-path path)
+        (cast Exception (AccessDenied. #"the fake filesystem cannot do that to directory ${path}")))))
 
 ;; --- The handlers --------------------------------------------------------------
 
@@ -443,7 +444,8 @@
       (else
        (match (Tuple mode kind)
          ((Tuple _ (Some FsDirectory)) (access-denied path))
-         ((Tuple CreateNew (Some FsFile)) (io-error AlreadyExists path #"the fake filesystem already has ${path}"))
+         ((Tuple CreateNew (Some FsFile))
+          (io-error AlreadyExists path #"the fake filesystem already has ${path}"))
          (_
           (def s
             (match (Tuple mode (fake-bytes-at fs path))
@@ -530,7 +532,8 @@
           (fake-update! fs (map-remove (fake-entries fs) path))
           (fake-forget-time! fs path)
           (Ok unit))))
-      ((Some _) (io-error NotDirectory path #"the fake filesystem has a file, not a directory, at ${path}")))))
+      ((Some _)
+       (io-error NotDirectory path #"the fake filesystem has a file, not a directory, at ${path}")))))
 
 ;; `m` with `from`, and everything below it, renamed to `to`. Generic, because
 ;; the entries and their times move by the same renaming.
@@ -562,7 +565,8 @@
         (_ #f)))
     (cond
       ((none? from-kind) (not-found from))
-      ((and (some? to-kind) (not replacing)) (io-error AlreadyExists to #"the fake filesystem already has ${to}"))
+      ((and (some? to-kind) (not replacing))
+       (io-error AlreadyExists to #"the fake filesystem already has ${to}"))
       ((not (fake-dir? fs (fake-parent to))) (no-directory to))
       (else
        (when replacing

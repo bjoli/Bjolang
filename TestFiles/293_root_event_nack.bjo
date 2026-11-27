@@ -14,9 +14,10 @@
 ;; The nack the generator was handed, kept so the trial can look at it.
 (: (-bjo-> (Box (Option (Event Unit))) (Chan int) bool void))
 (defbjo (nack-waiter slot silent in-choose)
-  (def ev (with-nack (fun (nack)
-                       (box-set! slot (Some nack))
-                       (chan-recv silent))))
+  (def ev
+    (with-nack (fun (nack)
+                 (box-set! slot (Some nack))
+                 (chan-recv silent))))
   (ignore (sync (if in-choose (choose ev (never)) ev))))
 
 (: (-bjo-> bool string))
@@ -60,11 +61,15 @@
 
 (defbjo (main args)
   (expect "a with-nack inside a choose is nacked when its scope is cancelled"
-          (nack-trial #t) "nack fired")
+          (nack-trial #t)
+          "nack fired")
   (expect "a with-nack synced on its own is nacked when its scope is cancelled"
-          (nack-trial #f) "nack fired")
+          (nack-trial #f)
+          "nack fired")
   (expect "a spawn-evt inside a choose lets its scope close when cancelled"
-          (spawn-trial #t) "scope closed")
+          (spawn-trial #t)
+          "scope closed")
   (expect "a spawn-evt synced on its own lets its scope close when cancelled"
-          (spawn-trial #f) "scope closed")
+          (spawn-trial #f)
+          "scope closed")
   0)

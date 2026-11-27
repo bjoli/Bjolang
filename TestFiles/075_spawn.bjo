@@ -56,7 +56,8 @@
 ;; what needs a bjoroutine, because joining is what waits.
 
 (: (-> int (Promise int)))
-(defun (start-work x) (bjo (work x)))
+(defun (start-work x)
+  (bjo (work x)))
 
 ;; ---------------------------------------------------------------------------
 ;; Operands are evaluated in the parent
@@ -113,42 +114,56 @@
     (match remaining
       ((Nil) acc)
       ((Cons p rest)
-       (go rest (+ acc (match (sync (promise-join p))
-                         ((Ok v) v)
-                         ((Err e) 0))))))))
+       (go rest
+           (+ acc
+              (match (sync (promise-join p))
+                ((Ok v) v)
+                ((Err e) 0))))))))
 
 (defbjo (main args)
   ;; Spawn, join, unwrap.
   (def p (bjo (work 21)))
   (expect "spawn and join"
-          (match (sync (promise-join p)) ((Ok v) (int->string v)) ((Err e) "err"))
+          (match (sync (promise-join p))
+            ((Ok v) (int->string v))
+            ((Err e) "err"))
           "42")
 
   ;; A promise joined from a bjoroutine that a plain `defun` started.
   (expect "a defun may spawn"
-          (match (sync (promise-join (start-work 50))) ((Ok v) (int->string v)) ((Err e) "err"))
+          (match (sync (promise-join (start-work 50)))
+            ((Ok v) (int->string v))
+            ((Err e) "err"))
           "100")
 
   ;; The spawned body may itself suspend, which is the ordinary case.
   (expect "the spawned body suspends"
-          (match (sync (promise-join (bjo (chained 5)))) ((Ok v) (int->string v)) ((Err e) "err"))
+          (match (sync (promise-join (bjo (chained 5))))
+            ((Ok v) (int->string v))
+            ((Err e) "err"))
           "20")
 
   ;; And it may be an ordinary function, which never suspends but still runs
   ;; concurrently.
   (expect "spawning an ordinary function"
-          (match (sync (promise-join (bjo (slow-sum 100)))) ((Ok v) (int->string v)) ((Err e) "err"))
+          (match (sync (promise-join (bjo (slow-sum 100))))
+            ((Ok v) (int->string v))
+            ((Err e) "err"))
           "5050")
 
   ;; Failure is a value, not a throw at the join.
   (expect "a dead fiber joins as Err"
-          (match (sync (promise-join (bjo (explode 1)))) ((Ok v) "ok") ((Err e) "err"))
+          (match (sync (promise-join (bjo (explode 1))))
+            ((Ok v) "ok")
+            ((Err e) "err"))
           "err")
 
   ;; ...and the joining fiber carries on afterwards, which is the point of
   ;; failure being a value.
   (expect "and the joiner survives it"
-          (match (sync (promise-join (bjo (work 3)))) ((Ok v) (int->string v)) ((Err e) "err"))
+          (match (sync (promise-join (bjo (work 3))))
+            ((Ok v) (int->string v))
+            ((Err e) "err"))
           "6")
 
   ;; The argument runs before the spawn returns, on this fiber. Deterministic
@@ -157,23 +172,29 @@
   (def p2 (bjo (work (note 7))))
   (expect "the operand ran in the parent" trace 1)
   (expect "and the child got its value"
-          (match (sync (promise-join p2)) ((Ok v) (int->string v)) ((Err e) "err"))
+          (match (sync (promise-join p2))
+            ((Ok v) (int->string v))
+            ((Err e) "err"))
           "14")
 
   ;; `spawn-thunk`, for the higher-order case a special form cannot serve.
   (expect "spawn-thunk"
           (match (sync (promise-join (spawn-thunk (fun () (slow-sum 10)))))
-            ((Ok v) (int->string v)) ((Err e) "err"))
+            ((Ok v) (int->string v))
+            ((Err e) "err"))
           "55")
 
   ;; Fan out with `map`, collect with a loop. 2*(1+2+3+4+5) = 30.
-  (expect "spawn with map, collect with a loop"
-          (collect-all (spawn-all (list 1 2 3 4 5))) 30)
+  (expect "spawn with map, collect with a loop" (collect-all (spawn-all (list 1 2 3 4 5))) 30)
 
   ;; Spawned inside a `parameterize`, the child sees the binding...
-  (def inside (parameterize ((depth 100)) (bjo (read-depth 3))))
+  (def inside
+    (parameterize ((depth 100))
+      (bjo (read-depth 3))))
   (expect "a child inherits the environment at spawn time"
-          (match (sync (promise-join inside)) ((Ok v) (int->string v)) ((Err e) "err"))
+          (match (sync (promise-join inside))
+            ((Ok v) (int->string v))
+            ((Err e) "err"))
           "300")
 
   ;; ...and spawned outside it, the child does not. The parent's `finally` has
@@ -181,7 +202,9 @@
   ;; was exactly the value the *first* child would have raced to read.
   (def outside (bjo (read-depth 3)))
   (expect "and does not inherit one it was not spawned under"
-          (match (sync (promise-join outside)) ((Ok v) (int->string v)) ((Err e) "err"))
+          (match (sync (promise-join outside))
+            ((Ok v) (int->string v))
+            ((Err e) "err"))
           "3")
 
   ;; A promise is persistent: once it has landed, every sync on it succeeds
@@ -189,10 +212,14 @@
   ;; trap — inside a `choose` loop such a branch wins every iteration.
   (def p3 (bjo (work 4)))
   (expect "a promise is persistent, sync 1"
-          (match (sync (promise-join p3)) ((Ok v) (int->string v)) ((Err e) "err"))
+          (match (sync (promise-join p3))
+            ((Ok v) (int->string v))
+            ((Err e) "err"))
           "8")
   (expect "a promise is persistent, sync 2"
-          (match (sync (promise-join p3)) ((Ok v) (int->string v)) ((Err e) "err"))
+          (match (sync (promise-join p3))
+            ((Ok v) (int->string v))
+            ((Err e) "err"))
           "8")
   (expect "and it knows it is done" (if (promise-done? p3) "yes" "no") "yes")
 

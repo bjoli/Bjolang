@@ -135,18 +135,21 @@
 
   ;; `#:exceptions` over an await, both ways.
   (expect "an async call that succeeds"
-          (match (read-file "/etc/hostname") ((Ok t) "read") ((Err e) "failed"))
+          (match (read-file "/etc/hostname")
+            ((Ok t) "read")
+            ((Err e) "failed"))
           "read")
   (expect "an async call that fails is an Err"
-          (match (read-file "/no/such/file/anywhere") ((Ok t) "read") ((Err e) "failed"))
+          (match (read-file "/no/such/file/anywhere")
+            ((Ok t) "read")
+            ((Err e) "failed"))
           "failed")
 
   ;; `try` around an await, which needs the same async guard by a different
   ;; route: the region being guarded is an arbitrary expression rather than one
   ;; call.
   (expect "a try around an await"
-          (match (try (read-file "/no/such/file/anywhere")
-                      #:catch (System.Exception))
+          (match (try (read-file "/no/such/file/anywhere") #:catch (System.Exception))
             ((Ok inner) "no throw")
             ((Err e) "threw"))
           "no throw")
@@ -160,8 +163,12 @@
   (def p (bjo (nap 30)))
   (def q (bjo (nap 30)))
   (expect "two spawned tasks, joined"
-          (string-append (match (sync (promise-join p)) ((Ok v) (int->string v)) ((Err e) "err"))
-                         (match (sync (promise-join q)) ((Ok v) (int->string v)) ((Err e) "err")))
+          (string-append (match (sync (promise-join p))
+                           ((Ok v) (int->string v))
+                           ((Err e) "err"))
+                         (match (sync (promise-join q))
+                           ((Ok v) (int->string v))
+                           ((Err e) "err")))
           "3030")
 
   ;; ---- The ambient token really does reach .NET ----------------------------
@@ -176,24 +183,32 @@
   ;; .NET a token that is already cancelled, so the delay never starts; cancel
   ;; later and the token source fires and the running delay faults.
   (def (cancel! tok) (make-cancel))
-  (def slow (parameterize ((current-cancel tok)) (bjo (sleep-forever))))
+  (def slow
+    (parameterize ((current-cancel tok))
+      (bjo (sleep-forever))))
   (def c (cancel! (Requested "the test")))
   (expect "the ambient token cancels a .NET call"
-          (match (sync (promise-join slow)) ((Ok s) s) ((Err e) "cancelled"))
+          (match (sync (promise-join slow))
+            ((Ok s) s)
+            ((Err e) "cancelled"))
           "cancelled")
 
   ;; And with nothing parameterized there is no token at all — `None`, not a
   ;; source nobody can fire — so an ordinary call is unaffected by any of this.
   (expect "an uncancelled scope is unaffected"
-          (match (sync (promise-join (bjo (nap 10)))) ((Ok v) (int->string v)) ((Err e) "err"))
+          (match (sync (promise-join (bjo (nap 10))))
+            ((Ok v) (int->string v))
+            ((Err e) "err"))
           "10")
 
   ;; ---- task->event --------------------------------------------------------
   ;;
   ;; Winning, against a timeout that will not fire.
   (expect "a task->event that wins"
-          (match (sync (choose (wrap (task->event (fetch "/etc/hostname"))
-                                     (fun (r) (match r ((Ok t) (Got "read")) ((Err e) Failed))))
+          (match (sync (choose (wrap (task->event (fetch "/etc/hostname")) (fun (r)
+                                                                             (match r
+                                                                               ((Ok t) (Got "read"))
+                                                                               ((Err e) Failed))))
                                (wrap (timeout (seconds 10)) (fun (u) TimedOut))))
             ((Got s) s)
             (TimedOut "timed out")
@@ -217,8 +232,7 @@
   ;; the same machinery under an ambient token, where the cancellation *is*
   ;; observable, in the value that comes back.
   (expect "a losing task->event leaves the winner alone"
-          (match (sync (choose (wrap (task->event (pause 30000))
-                                     (fun (r) (Got "slept")))
+          (match (sync (choose (wrap (task->event (pause 30000)) (fun (r) (Got "slept")))
                                (wrap (timeout (milliseconds 50)) (fun (u) TimedOut))))
             ((Got s) s)
             (TimedOut "timed out")
@@ -236,11 +250,15 @@
   ;; Raced against a timeout so that a broken link is a FAILURE line rather than
   ;; a test that sits for thirty seconds.
   (def (stop! scope) (make-cancel))
-  (def waiting (parameterize ((current-cancel scope)) (bjo (patient))))
+  (def waiting
+    (parameterize ((current-cancel scope))
+      (bjo (patient))))
   (def s2 (stop! (Requested "the test")))
   (expect "the ambient token cancels a synced task->event"
-          (match (sync (choose (wrap (promise-join waiting)
-                                     (fun (r) (match r ((Ok u) (Got "finished")) ((Err e) (Got "cancelled")))))
+          (match (sync (choose (wrap (promise-join waiting) (fun (r)
+                                                              (match r
+                                                                ((Ok u) (Got "finished"))
+                                                                ((Err e) (Got "cancelled")))))
                                (wrap (timeout (seconds 10)) (fun (u) TimedOut))))
             ((Got m) m)
             (TimedOut "timed out")
@@ -270,6 +288,8 @@
       #:catch (System.Exception)))
 
   (expect "a child cancelled inside a .NET call is not a scope failure"
-          (match clean ((Ok v) v) ((Err e) "raised"))
+          (match clean
+            ((Ok v) v)
+            ((Err e) "raised"))
           "returned")
   0)

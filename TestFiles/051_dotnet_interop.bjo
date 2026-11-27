@@ -203,9 +203,10 @@
 (: (-> string string))
 (defun (try-open path)
   (match (FileStream. path FileMode.Open)
-    ((Ok fs) (let ()
-               (.Dispose fs)
-               "opened"))
+    ((Ok fs)
+     (let ()
+       (.Dispose fs)
+       "opened"))
     ((Err e) "missing")))
 
 (: (-> string string))
@@ -248,8 +249,9 @@
 ;; One guard around the whole region, not around each call.
 (: (-> string (Result System.Exception string)))
 (defun (slurp path)
-  (try (with-open ((r (StreamReader. path)))
-         (.ReadToEnd r))
+  (try
+    (with-open ((r (StreamReader. path)))
+      (.ReadToEnd r))
     #:catch (System.IO.FileNotFoundException System.IO.DirectoryNotFoundException)))
 
 ;; The shape a stdlib wrapper wants: no exceptions in the surface API at all.
@@ -283,7 +285,8 @@
 
   ;; `#:finally` runs on the way out, including out of a failure.
   (def sb (StringBuilder.))
-  (match (try (.Substring "abc" 99)
+  (match (try
+           (.Substring "abc" 99)
            #:catch (System.ArgumentOutOfRangeException)
            ;; A #:finally runs for its effect, so its value is dropped by
            ;; construction and §8.2 wants that said.

@@ -46,7 +46,8 @@
 (defun (greet who) (say (str "hello " who)))
 
 (: (-> (Box string) (-> string void)))
-(defun (collect-into b) (fun (s) (box-set! b (str (box-ref b) "[" s "]"))))
+(defun (collect-into b)
+  (fun (s) (box-set! b (str (box-ref b) "[" s "]"))))
 
 (: (-> string void))
 (defun (boom s) (raise (cast Exception (Refusal. (str "refused: " s)))))
@@ -99,9 +100,10 @@
 
   ;; Restored through a throw out of the body, too.
   (def buf2 (make-box ""))
-  (ignore (try (with-handler ((say (collect-into buf2)))
-                 (greet "before")
-                 (boom "stop"))
+  (ignore (try
+            (with-handler ((say (collect-into buf2)))
+              (greet "before")
+              (boom "stop"))
             #:catch (System.InvalidOperationException)))
   (greet "after")
   (expect "restored when the body throws" (box-ref buf2) "[hello before]")
@@ -111,10 +113,10 @@
   ;; Nothing is captured, so there is no installer frame to unwind to. The
   ;; handler runs where the perform is, and its exception leaves from there —
   ;; which is what a `try` around the `with-handler` catches.
-  (expect "a handler that throws unwinds the performer"
-          (caught (try (with-handler ((say boom)) (greet "you"))
-                    #:catch (System.InvalidOperationException)))
-          "refused: hello you")
+  (expect
+   "a handler that throws unwinds the performer"
+   (caught (try (with-handler ((say boom)) (greet "you")) #:catch (System.InvalidOperationException)))
+   "refused: hello you")
 
   ;; --- nesting -------------------------------------------------------------
   (expect "the innermost handler wins"
@@ -166,7 +168,10 @@
                  ((Err e) (string-contains? (.-Message e) "'fetch'"))))
 
   (expect "a bjoroutine handler answers a -bjo-> operation"
-          (with-handler ((fetch (bjoroutine (path) (let () (sync (timeout (milliseconds 0))) (str "body of " path)))))
+          (with-handler ((fetch (bjoroutine (path)
+                                  (let ()
+                                    (sync (timeout (milliseconds 0)))
+                                    (str "body of " path)))))
             (fetch "/here"))
           "body of /here")
 

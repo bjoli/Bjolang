@@ -113,7 +113,10 @@
 (defbjo (echo-once l)
   (match (accept l)
     ((Tuple in out)
-     (def who (match (peer-address in) ((Some a) "peer") (None "nobody")))
+     (def who
+       (match (peer-address in)
+         ((Some a) "peer")
+         (None "nobody")))
      (def got (drain-bytes in))
      (write-bytes! out #[9 9])
      (flush-port out)
@@ -143,7 +146,10 @@
        (write-bytes! out bs)
        (flush-port out)
        (go (+ n (array-length bs))))
-      (None (let () (shutdown! out) n)))))
+      (None
+       (let ()
+         (shutdown! out)
+         n)))))
 
 (: (-bjo-> Listener int))
 (defbjo (echo-server l)
@@ -191,8 +197,12 @@
      ;; Done reading, and the socket must survive it.
      (close-input-port in)
      (def after
-       (match (try (let () (write-bytes! out #[2 3]) (flush-port out) "wrote")
-                   #:catch (System.Exception))
+       (match (try
+                (let ()
+                  (write-bytes! out #[2 3])
+                  (flush-port out)
+                  "wrote")
+                #:catch (System.Exception))
          ((Ok what) what)
          ((Err e) (str "refused: " (.-Message e)))))
      (shutdown! out)
@@ -242,8 +252,7 @@
   (let go ((i 0) (bad 0))
     (if (= i (array-length bs))
         bad
-        (go (+ i 1)
-            (+ bad (if (= (byte->int (array-ref bs i)) (pattern-at (+ from i))) 0 1))))))
+        (go (+ i 1) (+ bad (if (= (byte->int (array-ref bs i)) (pattern-at (+ from i))) 0 1))))))
 
 (: (-bjo-> OutputPort (Array byte) int))
 (defbjo (send-all out payload)
@@ -311,7 +320,8 @@
 ;; `TryCommit`, and the one worth having.
 (: (-bjo-> (Inbox int) long int))
 (defbjo (post-stop stop after)
-  (when (> after 0) (sync (timeout (milliseconds after))))
+  (when (> after 0)
+    (sync (timeout (milliseconds after))))
   (ignore (inbox-post! stop 1))
   0)
 
@@ -326,8 +336,7 @@
   (def stopper (bjo (post-stop stop after)))
 
   (def first
-    (sync (choose (wrap (accept-evt l) (fun (r) (Some r)))
-                  (wrap (inbox-recv stop) (fun (n) None)))))
+    (sync (choose (wrap (accept-evt l) (fun (r) (Some r))) (wrap (inbox-recv stop) (fun (n) None)))))
 
   ;; Whichever branch won, the connection is accepted exactly once: from the
   ;; accept that won, or from the one after the stop that did.
@@ -347,19 +356,22 @@
   (ignore (sync (promise-join caller)))
   (ignore (sync (promise-join stopper)))
 
-  (Tuple (match first ((Some _) #t) (None #f)) carried))
+  (Tuple (match first
+           ((Some _) #t)
+           (None #f))
+         carried))
 
 ;; How many rounds came out wrong, and how many the accept branch won.
 (: (-bjo-> Listener int int (Tuple int int)))
 (defbjo (race-rounds l port rounds)
-  (let loop ((i 0) (bad 0) (wins 0))
+  (let loop ((i 0)
+             (bad 0)
+             (wins 0))
     (if (= i rounds)
         (Tuple bad wins)
         (match (race-once l port (cast long (% i 2)))
           ((Tuple accepted carried)
-           (loop (+ i 1)
-                 (+ bad (if (= carried "11.22.33.44.") 0 1))
-                 (+ wins (if accepted 1 0))))))))
+           (loop (+ i 1) (+ bad (if (= carried "11.22.33.44.") 0 1)) (+ wins (if accepted 1 0))))))))
 
 (: (-bjo-> string))
 (defbjo (scenario-race)
@@ -466,9 +478,10 @@
 (defbjo (framed-server l)
   (match (accept l)
     ((Tuple in out)
-     (def n (match (read-bytes in 1)
-              ((Some bs) (byte->int (array-ref bs 0)))
-              (None 0)))
+     (def n
+       (match (read-bytes in 1)
+         ((Some bs) (byte->int (array-ref bs 0)))
+         (None 0)))
      (def message (drain-bytes (limited in n)))
      (def trailer (drain-bytes in))
      (closing in out)
@@ -513,7 +526,10 @@
   (match (sync (choose (wrap (accept-evt l) (fun (r) (Some r)))
                        (wrap (listener-closed l) (fun (u) None))))
     (None "closed")
-    ((Some (Ok (Tuple in out))) (let () (closing in out) "accepted"))
+    ((Some (Ok (Tuple in out)))
+     (let ()
+       (closing in out)
+       "accepted"))
     ((Some (Err e)) (str "raised " (.-Message e)))))
 
 (: (-bjo-> string))
@@ -527,13 +543,15 @@
        ;; Let it get as far as parking, then stop the listener under it.
        (sync (timeout (milliseconds 50)))
        (close-listener! l)
-       (def woken (match (sync (promise-join acceptor))
-                    ((Ok s) s)
-                    ((Err e) (str "raised " (.-Message e)))))
+       (def woken
+         (match (sync (promise-join acceptor))
+           ((Ok s) s)
+           ((Err e) (str "raised " (.-Message e)))))
        ;; And it is available from then on, and the port is still answerable.
-       (def again (match (sync (choose (wrap (accept-evt l) (fun (r) "accepted"))
-                                       (wrap (listener-closed l) (fun (u) "closed"))))
-                    (s s)))
+       (def again
+         (match (sync (choose (wrap (accept-evt l) (fun (r) "accepted"))
+                              (wrap (listener-closed l) (fun (u) "closed"))))
+           (s s)))
        (str woken "|" again "|" (if (= port (listener-port l)) "same-port" "moved"))))))
 
 ;; ---------------------------------------------------------------------------
@@ -549,13 +567,20 @@
   (def client (TcpClient. "127.0.0.1" port))
   (match (stream->ports (cast ClrStream (client-stream client)) #:peer "adopted")
     ((Tuple in out)
-     (def who (match (peer-address in) ((Some a) a) (None "none")))
+     (def who
+       (match (peer-address in)
+         ((Some a) a)
+         (None "none")))
      (write-bytes! out #[1])
      (flush-port out)
      (close-input-port in)
      (def after
-       (match (try (let () (write-bytes! out #[2 3]) (flush-port out) "wrote")
-                   #:catch (System.Exception))
+       (match (try
+                (let ()
+                  (write-bytes! out #[2 3])
+                  (flush-port out)
+                  "wrote")
+                #:catch (System.Exception))
          ((Ok what) what)
          ((Err e) (str "refused: " (.-Message e)))))
      (shutdown! out)
@@ -574,7 +599,10 @@
        (def anonymous
          (match (stream->ports (cast ClrStream (MemoryStream.)))
            ((Tuple in out)
-            (def who (match (peer-address in) ((Some a) a) (None "none")))
+            (def who
+              (match (peer-address in)
+                ((Some a) a)
+                (None "none")))
             (closing in out)
             who)))
        (str said "|" anonymous "|"
@@ -596,7 +624,10 @@
      (close-listener! l)
      (close-owned-or-dispose l)
      (match (tcp-connect "127.0.0.1" port)
-       ((Ok (Tuple in out)) (let () (closing in out) "connected"))
+       ((Ok (Tuple in out))
+        (let ()
+          (closing in out)
+          "connected"))
        ((Err (:is System.Net.Sockets.SocketException _)) "refused")
        ((Err e) (str "other: " (.-Message e)))))))
 
@@ -621,9 +652,7 @@
           (ran (bjo (scenario-ephemeral)))
           "11.22.33.44.11.22.33.44.11.22.33.44.")
 
-  (expect "a line protocol over a connection"
-          (ran (bjo (scenario-text)))
-          "hello, world|world")
+  (expect "a line protocol over a connection" (ran (bjo (scenario-text))) "hello, world|world")
 
   (expect "limited stops at the end of the message"
           (ran (bjo (scenario-framed)))
@@ -637,7 +666,5 @@
           (ran (bjo (scenario-stream-ports)))
           "adopted|wrote|none|1.2.3.")
 
-  (expect "connecting to nothing is Err, not a raise"
-          (ran (bjo (scenario-refused)))
-          "refused")
+  (expect "connecting to nothing is Err, not a raise" (ran (bjo (scenario-refused))) "refused")
   0)

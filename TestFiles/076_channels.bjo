@@ -134,7 +134,9 @@
   (def prod (bjo (producer ch 5)))
   (expect "producer and consumer rendezvous" (consumer ch) 10)
   (expect "and the producer finished"
-          (match (sync (promise-join prod)) ((Ok u) "done") ((Err e) "failed"))
+          (match (sync (promise-join prod))
+            ((Ok u) "done")
+            ((Err e) "failed"))
           "done")
 
   ;; A select between two channels, driven to a clean shutdown.
@@ -212,7 +214,6 @@
   ;; nothing and so has nothing to release, but it does mean a nack is only ever
   ;; a promise about branches that actually raced.
   (def report (make-chan))
-  (expect "the winner still wins"
-          (sync (choose (always-loses report) (always 42))) 42)
+  (expect "the winner still wins" (sync (choose (always-loses report) (always 42))) 42)
   (expect "and the losing branch was told" (sync (chan-recv report)) "nacked")
   0)

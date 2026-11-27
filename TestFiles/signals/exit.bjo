@@ -57,7 +57,9 @@
      (spawn (failing)))
     ;; A release of main's own scope that takes longer than the grace period.
     ((= mode "slow-release")
-     (ignore (own! (fun () (block 1000) (println "released")))))
+     (ignore (own! (fun ()
+                     (block 1000)
+                     (println "released")))))
     ;; main waits in a scope that owns a release.
     ((= mode "release")
      (with-scope
@@ -66,10 +68,13 @@
        (sync/blocking (timeout (seconds 100)))))
     ;; The program handles the first SIGINT itself, then goes on.
     ((= mode "handled")
-     (def r (with-signal-cancel [Interrupt]
-              (say-on-stderr "ready")
-              (sync/blocking (timeout (seconds 100)))))
-     (println (match r ((Ok v) "finished") ((Err s) "stopped by the signal")))
+     (def r
+       (with-signal-cancel [Interrupt]
+         (say-on-stderr "ready")
+         (sync/blocking (timeout (seconds 100)))))
+     (println (match r
+                ((Ok v) "finished")
+                ((Err s) "stopped by the signal")))
      (say-on-stderr "ready")
      (sync/blocking (timeout (seconds 100))))
     (else (say-on-stderr (str "no mode " mode))))

@@ -16,7 +16,9 @@
 (defun (numbers-some? s i)
   (def valid (record-ref s valid))
   (or (= (array-length valid) 0)
-      (not (= (bitwise-and (cast int (array-ref valid (shift-right i 3))) (shift-left 1 (bitwise-and i 7))) 0))))
+      (not (= (bitwise-and (cast int (array-ref valid (shift-right i 3)))
+                           (shift-left 1 (bitwise-and i 7)))
+              0))))
 
 (impl (Iterable Numbers)
   (type %elem (Option double))
@@ -38,14 +40,19 @@
 (: (-> int (-> int bool) bool Numbers))
 (defun (numbers n none? split)
   (def values (make-array n #:fill 0.0))
-  (def any-none (loop (:for i (range 0 n)) (:acc (counting (none? i)))))
+  (def any-none
+    (loop (:for i (range 0 n))
+          (:acc (counting (none? i)))))
   (def valid (make-array (if (= any-none 0) 0 (+ (/ n 8) 1)) #:fill (cast byte 0)))
   (loop (:for i (range 0 n))
         (:do (array-set! values i (+ (cast double i) 0.5))
              (when (and (> (array-length valid) 0) (not (none? i)))
                (def at (shift-right i 3))
-               (array-set! valid at (cast byte (bitwise-ior (cast int (array-ref valid at))
-                                                             (shift-left 1 (bitwise-and i 7))))))))
+               (array-set! valid
+                           at
+                           (cast byte
+                                 (bitwise-ior (cast int (array-ref valid at))
+                                              (shift-left 1 (bitwise-and i 7))))))))
   (Numbers (values values) (valid valid) (split split)))
 
 ;; A growable column of Options: the collector, and its accumulator.
@@ -59,9 +66,8 @@
   (def wanted (+ (record-ref acc count) n))
   (when (> wanted (array-length (record-ref acc values)))
     (def size (max wanted (* 2 (array-length (record-ref acc values)))))
-    (record-set! acc
-                 (values (array-resize (record-ref acc values) size))
-                 (some (array-resize (record-ref acc some) size)))))
+    (record-set! acc (values (array-resize (record-ref acc values) size))
+                     (some (array-resize (record-ref acc some) size)))))
 
 (impl (Collector Building)
   (type %elem (Option double))
@@ -73,8 +79,12 @@
     (make-room! acc 1)
     (def i (record-ref acc count))
     (match x
-      ((Some v) (array-set! (record-ref acc values) i v) (array-set! (record-ref acc some) i #t))
-      (None (array-set! (record-ref acc values) i 0.0) (array-set! (record-ref acc some) i #f)))
+      ((Some v)
+       (array-set! (record-ref acc values) i v)
+       (array-set! (record-ref acc some) i #t))
+      (None
+       (array-set! (record-ref acc values) i 0.0)
+       (array-set! (record-ref acc some) i #f)))
     (record-set! acc (count (+ i 1)))
     acc)
   (defun (collector-finish c acc)
@@ -88,7 +98,8 @@
   (defun (block-grow c acc n)
     (make-room! acc n)
     (def start (record-ref acc count))
-    (loop (:for i (range start (+ start n))) (:do (array-set! (record-ref acc some) i #t)))
+    (loop (:for i (range start (+ start n)))
+          (:do (array-set! (record-ref acc some) i #t)))
     (record-set! acc (count (+ start n)))
     acc)
   (defun (block-span c acc start n)
@@ -99,7 +110,8 @@
 
 (: (-> Numbers Numbers (Vec (Option double))))
 (defun (products xs ys)
-  (loop (:for x* xs) (:for y* ys)
+  (loop (:for x* xs)
+        (:for y* ys)
         (:acc (building (match (Tuple x* y*)
                           ((Tuple (Some x) (Some y)) (Some (* x y)))
                           (_ None))))))
@@ -107,15 +119,20 @@
 (: (-> Numbers double (Vec (Option double))))
 (defun (scaled xs k)
   (loop (:for x* xs)
-        (:acc (building (match x* ((Some x) (Some (/ x k))) (None None))))))
+        (:acc (building (match x*
+                          ((Some x) (Some (/ x k)))
+                          (None None))))))
 
 ;; A `:when` keeps some elements, and of those some are None.
 (: (-> Numbers Numbers double (Vec (Option double))))
 (defun (products-above xs ys lo)
-  (loop (:for x* xs) (:for y* ys)
+  (loop (:for x* xs)
+        (:for y* ys)
         (:when-let (Some y) y*)
         (:when (> y lo))
-        (:acc (building (match x* ((Some x) (Some (* x y))) (None None))))))
+        (:acc (building (match x*
+                          ((Some x) (Some (* x y)))
+                          (None None))))))
 
 ;; The positions where `got` is not what `want` says.
 (: (-> (Vec (Option double)) (-> int (Option double)) int))
@@ -125,34 +142,32 @@
         (:acc (counting i))))
 
 (defun (main)
-  (loop
-    (:for n [0 1 3 4 5 8 9 15 16 17 100 1001])
-    (:do
-     (def none-at-3 (fun (i) (= (% i 5) 3)))
-     (def none-at-2 (fun (i) (= (% i 7) 2)))
-     (def never (fun (i) #f))
-     (def x (fun (i) (+ (cast double i) 0.5)))
-     (loop
-       (:for split [#f #t])
-       (:do
-        (def where (str (displayed n) (if split ", scalar" ", vector")))
-        (def ps (products (numbers n none-at-3 split) (numbers (+ n 3) none-at-2 #f)))
-        (expect (str "products, length, " where) (vec-length ps) n)
-        (expect (str "products, " where)
-                (wrong ps (fun (i) (if (or (none-at-3 i) (none-at-2 i)) None (Some (* (x i) (x i))))))
-                0)
-        (def ss (scaled (numbers n never split) 2.0))
-        (expect (str "scaled, " where)
-                (wrong ss (fun (i) (Some (/ (x i) 2.0))))
-                0)
-        (def kept (products-above (numbers n none-at-3 split) (numbers n none-at-2 #f) 20.0))
-        (def kept-want
-          {vecing (if (none-at-3 i) None (Some (* (x i) (x i))))
-                  (:for i (range 0 n))
-                  (:when (and (not (none-at-2 i)) (> (x i) 20.0)))})
-        (expect (str "products above, " where) kept kept-want)
-        (def us (scaled (numbers n none-at-2 split) 4.0))
-        (expect (str "scaled with None, " where)
-                (wrong us (fun (i) (if (none-at-2 i) None (Some (/ (x i) 4.0)))))
-                0)))))
+  (loop (:for n [0 1 3 4 5 8 9 15 16 17 100 1001])
+        (:do (def none-at-3 (fun (i) (= (% i 5) 3)))
+             (def none-at-2 (fun (i) (= (% i 7) 2)))
+             (def never (fun (i) #f))
+             (def x (fun (i) (+ (cast double i) 0.5)))
+             (loop (:for split [#f #t])
+                   (:do (def where (str (displayed n) (if split ", scalar" ", vector")))
+                        (def ps (products (numbers n none-at-3 split) (numbers (+ n 3) none-at-2 #f)))
+                        (expect (str "products, length, " where) (vec-length ps) n)
+                        (expect (str "products, " where)
+                                (wrong ps (fun (i)
+                                            (if (or (none-at-3 i) (none-at-2 i))
+                                                None
+                                                (Some (* (x i) (x i))))))
+                                0)
+                        (def ss (scaled (numbers n never split) 2.0))
+                        (expect (str "scaled, " where) (wrong ss (fun (i) (Some (/ (x i) 2.0)))) 0)
+                        (def kept
+                          (products-above (numbers n none-at-3 split) (numbers n none-at-2 #f) 20.0))
+                        (def kept-want
+                          {vecing (if (none-at-3 i) None (Some (* (x i) (x i))))
+                                  (:for i (range 0 n))
+                                  (:when (and (not (none-at-2 i)) (> (x i) 20.0)))})
+                        (expect (str "products above, " where) kept kept-want)
+                        (def us (scaled (numbers n none-at-2 split) 4.0))
+                        (expect (str "scaled with None, " where)
+                                (wrong us (fun (i) (if (none-at-2 i) None (Some (/ (x i) 4.0)))))
+                                0)))))
   0)

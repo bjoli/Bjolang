@@ -34,116 +34,168 @@
 (defun (main args)
   (expect "the fixture is what it documents" (bound 0 10 50) 10)
 
-  (expect "the module's doc, its markup expanded, and the body"
-          (tree "@defmodule[\"assets/samizdat/apidoc-lib.bjo\"]{More.}")
-          "(div \"doc-module\" (para \"Things to \" (em \"document\") \".\") (para \"See also: \" (code \"bound\")) (para \"More.\"))")
+  (expect
+   "the module's doc, its markup expanded, and the body"
+   (tree "@defmodule[\"assets/samizdat/apidoc-lib.bjo\"]{More.}")
+   "(div \"doc-module\" (para \"Things to \" (em \"document\") \".\") (para \"See also: \" (code \"bound\")) (para \"More.\"))")
 
-  (expect "a function: its heading, kind, code, terms in order, example, and what the document adds"
-          (tree (str lib "@defdoc[bound]{Added.}"))
-          (str "(div \"doc-module\" (para \"Things to \" (em \"document\") \".\") (para \"See also: \" (link \"#apidoc-lib-bound\" (code \"bound\"))))\n"
-               "(div \"doc-entry\" (heading 4 \"apidoc-lib-bound\" (code \"bound\")) (para (span \"doc-kind\" \"function\"))"
-               " (codeblock \"bjolang\" \"(: bound (-> int int int (#:scale int) int))\\n(bound lo hi x #:scale 1)\")"
-               " (para \"A number kept between two others.\")"
-               " (deflist (entry (term (code \"lo\")) (def (para \"The least.\"))) (entry (term (code \"hi\")) (def (para \"The most.\")))"
-               " (entry (term (code \"x\")) (def (para \"The number.\"))) (entry (term (code \"#:scale\")) (def (para \"Multiplied in first.\")))"
-               " (entry (term (em \"returns\")) (def (para \"x, kept between lo and hi.\")))"
-               " (entry (term (em \"raises\") \" \" (code \"System.ArgumentException\")) (def (para \"When lo is more than hi.\"))))"
-               " (codeblock \"bjolang\" \"(bound 0 10 50) ; 10\")"
-               " (para \"See also: \" (code \"Point\") \", \" (code \"with-twice\")) (para \"Added.\"))"))
+  (expect
+   "a function: its heading, kind, code, terms in order, example, and what the document adds"
+   (tree (str lib "@defdoc[bound]{Added.}"))
+   (str "(div \"doc-module\" (para \"Things to \" (em \"document\") \".\") (para \"See also: \" (link \"#apidoc-lib-bound\" (code \"bound\"))))\n"
+        "(div \"doc-entry\" (heading 4 \"apidoc-lib-bound\" (code \"bound\")) (para (span \"doc-kind\" \"function\"))"
+        " (codeblock \"bjolang\" \"(: bound (-> int int int (#:scale int) int))\\n(bound lo hi x #:scale 1)\")"
+        " (para \"A number kept between two others.\")"
+        " (deflist (entry (term (code \"lo\")) (def (para \"The least.\"))) (entry (term (code \"hi\")) (def (para \"The most.\")))"
+        " (entry (term (code \"x\")) (def (para \"The number.\"))) (entry (term (code \"#:scale\")) (def (para \"Multiplied in first.\")))"
+        " (entry (term (em \"returns\")) (def (para \"x, kept between lo and hi.\")))"
+        " (entry (term (em \"raises\") \" \" (code \"System.ArgumentException\")) (def (para \"When lo is more than hi.\"))))"
+        " (codeblock \"bjolang\" \"(bound 0 10 50) ; 10\")"
+        " (para \"See also: \" (code \"Point\") \", \" (code \"with-twice\")) (para \"Added.\"))"))
 
   (def all (tree (str lib "@defdocs[#:level 3]")))
   (def lines (string-split all "\n"))
   (expect "the module, then every definition" (vec-length lines) 4)
   (expect "the module first" (string-starts-with? (vec-ref lines 0) "(div \"doc-module\"") #t)
-  (expect "then the definitions in the module's order, at the level asked for"
-          (list (string-starts-with? (vec-ref lines 1) "(div \"doc-entry\" (heading 3 \"apidoc-lib-bound\" (code \"bound\"))")
-                (string-starts-with? (vec-ref lines 2) "(div \"doc-entry\" (heading 3 \"apidoc-lib-point\" (code \"Point\"))")
-                (string-starts-with? (vec-ref lines 3) "(div \"doc-entry\" (heading 3 \"apidoc-lib-with-twice\" (code \"with-twice\"))"))
-          (list #t #t #t))
-  (expect "see links to the definitions shown, before or after"
-          (string-contains? all "(para \"See also: \" (link \"#apidoc-lib-point\" (code \"Point\")) \", \" (link \"#apidoc-lib-with-twice\" (code \"with-twice\")))")
-          #t)
-  (expect "a record: its fields, and no code"
-          (string-contains? all "(heading 3 \"apidoc-lib-point\" (code \"Point\")) (para (span \"doc-kind\" \"record\")) (para \"A point.\") (deflist (entry (term (code \"x\"))")
-          #t)
-  (expect "a macro: how it is written, and its rest variable"
-          (string-contains? all "(codeblock \"bjolang\" \"(with-twice body ...)\") (para \"Runs a body twice.\") (deflist (entry (term (code \"body ...\"))")
-          #t)
+  (expect
+   "then the definitions in the module's order, at the level asked for"
+   (list (string-starts-with? (vec-ref lines 1)
+                              "(div \"doc-entry\" (heading 3 \"apidoc-lib-bound\" (code \"bound\"))")
+         (string-starts-with? (vec-ref lines 2)
+                              "(div \"doc-entry\" (heading 3 \"apidoc-lib-point\" (code \"Point\"))")
+         (string-starts-with?
+          (vec-ref lines 3)
+          "(div \"doc-entry\" (heading 3 \"apidoc-lib-with-twice\" (code \"with-twice\"))"))
+   (list #t #t #t))
+  (expect
+   "see links to the definitions shown, before or after"
+   (string-contains?
+    all
+    "(para \"See also: \" (link \"#apidoc-lib-point\" (code \"Point\")) \", \" (link \"#apidoc-lib-with-twice\" (code \"with-twice\")))")
+   #t)
+  (expect
+   "a record: its fields, and no code"
+   (string-contains?
+    all
+    "(heading 3 \"apidoc-lib-point\" (code \"Point\")) (para (span \"doc-kind\" \"record\")) (para \"A point.\") (deflist (entry (term (code \"x\"))")
+   #t)
+  (expect
+   "a macro: how it is written, and its rest variable"
+   (string-contains?
+    all
+    "(codeblock \"bjolang\" \"(with-twice body ...)\") (para \"Runs a body twice.\") (deflist (entry (term (code \"body ...\"))")
+   #t)
 
-  (expect "a link to a definition shown later, with its name or its own text"
-          (vec-ref (string-split (tree (str lib "@docref[Point] and @docref[with-twice]{the macro}\n@defdocs")) "\n") 1)
-          "(para (link \"#apidoc-lib-point\" (code \"Point\")) \" and \" (link \"#apidoc-lib-with-twice\" \"the macro\"))")
+  (expect
+   "a link to a definition shown later, with its name or its own text"
+   (vec-ref
+    (string-split (tree (str lib "@docref[Point] and @docref[with-twice]{the macro}\n@defdocs")) "\n")
+    1)
+   "(para (link \"#apidoc-lib-point\" (code \"Point\")) \" and \" (link \"#apidoc-lib-with-twice\" \"the macro\"))")
 
   (def by-name (tree "@defmodule[(bjo docs)]\n@docref[module-docs]\n@defdoc[module-docs]"))
   (expect "a module by name, found in the installed library"
           (vec-ref (string-split by-name "\n") 1)
           "(para (link \"#bjo-docs-module-docs\" (code \"module-docs\")))")
-  (expect "its definition's code"
-          (string-contains? by-name "(codeblock \"bjolang\" \"(: module-docs (-> (List PackageRoot) (List Symbol) (Result string (Vec Doc))))\\n(module-docs roots name)\")")
-          #t)
+  (expect
+   "its definition's code"
+   (string-contains?
+    by-name
+    "(codeblock \"bjolang\" \"(: module-docs (-> (List PackageRoot) (List Symbol) (Result string (Vec Doc))))\\n(module-docs roots name)\")")
+   #t)
   (expect "#:module names another module than @defmodule's"
           (string-starts-with? (tree (str lib "@defdoc[module-docs #:module (bjo docs)]"))
                                "(div \"doc-module\" (para \"Things to")
           #t)
 
   ;; --- a whole page ---------------------------------------------------------
-  (def page (string-split (tree "@generate-docs[#:path \"assets/samizdat/apidoc-lib.bjo\"]{Ours.}") "\n"))
-  (expect "a page: a link to the reference, the overview, the reference, an index by kind"
-          (list (vec-ref page 0) (vec-ref page 1) (vec-ref page 3) (vec-ref page 4))
-          (list "(para (link \"#reference\" \"Reference\"))"
-                "(heading 1 \"overview\" \"Overview\")"
-                "(heading 1 \"reference\" \"Reference\")"
-                (str "(div \"doc-index\""
-                     " (para (anchor \"index-types\") (link \"#types\" (strong \"Types\"))) (bullets (item (para (link \"#apidoc-lib-point\" (code \"Point\")))))"
-                     " (para (anchor \"index-functions\") (link \"#functions\" (strong \"Functions\"))) (bullets (item (para (link \"#apidoc-lib-bound\" (code \"bound\")))))"
-                     " (para (anchor \"index-macros\") (link \"#macros\" (strong \"Macros\"))) (bullets (item (para (link \"#apidoc-lib-with-twice\" (code \"with-twice\"))))))")))
-  (expect "each entry links back up to its kind's names in the index"
-          (list (string-contains? (vec-ref page 6) "(para (span \"doc-kind\" \"record\") \" \" (span \"doc-up\" (link \"#index-types\" \"↑ Types\")))")
-                (string-contains? (vec-ref page 8) "(para (span \"doc-kind\" \"function\") \" \" (span \"doc-up\" (link \"#index-functions\" \"↑ Functions\")))")
-                (string-contains? (vec-ref page 10) "(para (span \"doc-kind\" \"macro\") \" \" (span \"doc-up\" (link \"#index-macros\" \"↑ Macros\")))"))
-          (list #t #t #t))
+  (def page
+    (string-split (tree "@generate-docs[#:path \"assets/samizdat/apidoc-lib.bjo\"]{Ours.}") "\n"))
+  (expect
+   "a page: a link to the reference, the overview, the reference, an index by kind"
+   (list (vec-ref page 0) (vec-ref page 1) (vec-ref page 3) (vec-ref page 4))
+   (list
+    "(para (link \"#reference\" \"Reference\"))"
+    "(heading 1 \"overview\" \"Overview\")"
+    "(heading 1 \"reference\" \"Reference\")"
+    (str "(div \"doc-index\""
+         " (para (anchor \"index-types\") (link \"#types\" (strong \"Types\"))) (bullets (item (para (link \"#apidoc-lib-point\" (code \"Point\")))))"
+         " (para (anchor \"index-functions\") (link \"#functions\" (strong \"Functions\"))) (bullets (item (para (link \"#apidoc-lib-bound\" (code \"bound\")))))"
+         " (para (anchor \"index-macros\") (link \"#macros\" (strong \"Macros\"))) (bullets (item (para (link \"#apidoc-lib-with-twice\" (code \"with-twice\"))))))")))
+  (expect
+   "each entry links back up to its kind's names in the index"
+   (list
+    (string-contains?
+     (vec-ref page 6)
+     "(para (span \"doc-kind\" \"record\") \" \" (span \"doc-up\" (link \"#index-types\" \"↑ Types\")))")
+    (string-contains?
+     (vec-ref page 8)
+     "(para (span \"doc-kind\" \"function\") \" \" (span \"doc-up\" (link \"#index-functions\" \"↑ Functions\")))")
+    (string-contains?
+     (vec-ref page 10)
+     "(para (span \"doc-kind\" \"macro\") \" \" (span \"doc-up\" (link \"#index-macros\" \"↑ Macros\")))"))
+   (list #t #t #t))
   (expect "an entry shown by @defdocs has no index to link up to"
           (string-contains? (tree (str lib "@defdocs")) "doc-up")
           #f)
   (expect "the overview is the module's doc and the body"
           (string-ends-with? (vec-ref page 2) "(para \"Ours.\"))")
           #t)
-  (expect "the entries follow under a heading for each kind"
-          (list (= (vec-ref page 5) "(heading 2 \"types\" \"Types\")")
-                (string-starts-with? (vec-ref page 6) "(div \"doc-entry\" (heading 3 \"apidoc-lib-point\"")
-                (= (vec-ref page 7) "(heading 2 \"functions\" \"Functions\")")
-                (string-starts-with? (vec-ref page 8) "(div \"doc-entry\" (heading 3 \"apidoc-lib-bound\"")
-                (= (vec-ref page 9) "(heading 2 \"macros\" \"Macros\")")
-                (string-starts-with? (vec-ref page 10) "(div \"doc-entry\" (heading 3 \"apidoc-lib-with-twice\""))
-          (list #t #t #t #t #t #t))
+  (expect
+   "the entries follow under a heading for each kind"
+   (list (= (vec-ref page 5) "(heading 2 \"types\" \"Types\")")
+         (string-starts-with? (vec-ref page 6) "(div \"doc-entry\" (heading 3 \"apidoc-lib-point\"")
+         (= (vec-ref page 7) "(heading 2 \"functions\" \"Functions\")")
+         (string-starts-with? (vec-ref page 8) "(div \"doc-entry\" (heading 3 \"apidoc-lib-bound\"")
+         (= (vec-ref page 9) "(heading 2 \"macros\" \"Macros\")")
+         (string-starts-with? (vec-ref page 10)
+                              "(div \"doc-entry\" (heading 3 \"apidoc-lib-with-twice\""))
+   (list #t #t #t #t #t #t))
   (expect "a module by name, with or without its parentheses"
-          (list (string-contains? (tree "@generate-docs[#:module \"bjo docs\"]") "(heading 3 \"bjo-docs-module-docs\"")
-                (string-contains? (tree "@generate-docs[#:module \"(bjo docs)\"]") "(heading 3 \"bjo-docs-module-docs\""))
+          (list (string-contains? (tree "@generate-docs[#:module \"bjo docs\"]")
+                                  "(heading 3 \"bjo-docs-module-docs\"")
+                (string-contains? (tree "@generate-docs[#:module \"(bjo docs)\"]")
+                                  "(heading 3 \"bjo-docs-module-docs\""))
           (list #t #t))
   (expect "the page's module is @docref's"
           (string-contains? (tree "@generate-docs[#:module \"bjo docs\"]\n@docref[doc-named]")
                             "(para (link \"#bjo-docs-doc-named\" (code \"doc-named\")))")
           #t)
-  (expect "neither #:module nor #:path" (refusal "@generate-docs")
-          "TestFiles/post.sz:1:1: @generate-docs: needs #:module \"std datetime\" or #:path \"the/module.bjo\"")
-  (expect "both" (refusal "@generate-docs[#:module \"std random\" #:path \"x.bjo\"]")
+  (expect
+   "neither #:module nor #:path"
+   (refusal "@generate-docs")
+   "TestFiles/post.sz:1:1: @generate-docs: needs #:module \"std datetime\" or #:path \"the/module.bjo\"")
+  (expect "both"
+          (refusal "@generate-docs[#:module \"std random\" #:path \"x.bjo\"]")
           "TestFiles/post.sz:1:1: @generate-docs: takes #:module or #:path, not both")
 
   ;; --- refusals -----------------------------------------------------------
-  (expect "no module yet" (refusal "@defdoc[bound]")
-          "TestFiles/post.sz:1:1: @defdoc: names no module: write @defmodule[(the module)] before it, or give it #:module")
-  (expect "no such definition" (refusal (str lib "@defdoc[nothing]"))
+  (expect
+   "no module yet"
+   (refusal "@defdoc[bound]")
+   "TestFiles/post.sz:1:1: @defdoc: names no module: write @defmodule[(the module)] before it, or give it #:module")
+  (expect "no such definition"
+          (refusal (str lib "@defdoc[nothing]"))
           "TestFiles/post.sz:2:1: @defdoc: assets/samizdat/apidoc-lib.bjo has no doc for nothing")
-  (expect "shown twice" (refusal (str lib "@defdoc[bound]\n@defdoc[bound]"))
-          "TestFiles/post.sz:3:1: @defdoc: bound of assets/samizdat/apidoc-lib.bjo is shown twice in this document")
-  (expect "a link to what is not shown" (refusal (str lib "@docref[Point]"))
-          "TestFiles/post.sz:2:1: @docref: Point of assets/samizdat/apidoc-lib.bjo is not shown in this document: @defdoc it")
-  (expect "no package" (refusal "@defmodule[(nopackage here)]")
+  (expect
+   "shown twice"
+   (refusal (str lib "@defdoc[bound]\n@defdoc[bound]"))
+   "TestFiles/post.sz:3:1: @defdoc: bound of assets/samizdat/apidoc-lib.bjo is shown twice in this document")
+  (expect
+   "a link to what is not shown"
+   (refusal (str lib "@docref[Point]"))
+   "TestFiles/post.sz:2:1: @docref: Point of assets/samizdat/apidoc-lib.bjo is not shown in this document: @defdoc it")
+  (expect "no package"
+          (refusal "@defmodule[(nopackage here)]")
           "TestFiles/post.sz:1:1: @defmodule: no package provides (nopackage here)")
-  (expect "not compiled"
-          (string-starts-with? (refusal "@defmodule[\"assets/samizdat/none.bjo\"]")
-                               "TestFiles/post.sz:1:1: @defmodule: assets/samizdat/none.bjo is not compiled: there is no /")
-          #t)
-  (expect "not a module" (refusal "@defmodule[12]")
-          "TestFiles/post.sz:1:1: @defmodule: a module is a name, (std random), or the path of its source, and not 12")
+  (expect
+   "not compiled"
+   (string-starts-with?
+    (refusal "@defmodule[\"assets/samizdat/none.bjo\"]")
+    "TestFiles/post.sz:1:1: @defmodule: assets/samizdat/none.bjo is not compiled: there is no /")
+   #t)
+  (expect
+   "not a module"
+   (refusal "@defmodule[12]")
+   "TestFiles/post.sz:1:1: @defmodule: a module is a name, (std random), or the path of its source, and not 12")
   0)

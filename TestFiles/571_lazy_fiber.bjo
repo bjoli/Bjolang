@@ -59,9 +59,8 @@
 
   ;; --- a failed run -------------------------------------------------------------
   (def shaky-runs (make-atomic 0))
-  (def shaky (delay/fiber (def n (atomic-increment! shaky-runs))
-                          (pause 30)
-                          (if (= n 1) (boom "first run") n)))
+  (def shaky
+    (delay/fiber (def n (atomic-increment! shaky-runs)) (pause 30) (if (= n 1) (boom "first run") n)))
   (def errors (make-atomic 0))
   (def values (make-atomic (list)))
   (fibers 8 (bjoroutine ()
@@ -70,7 +69,9 @@
                 ((Err _) (ignore (atomic-increment! errors))))))
   (expect "a failed run: one fiber gets the exception" (atomic-ref errors) 1)
   (expect "a failed run: the thunk ran two times" (atomic-ref shaky-runs) 2)
-  (expect "a failed run: the other fibers get the second value" (atomic-ref values) (list 2 2 2 2 2 2 2))
+  (expect "a failed run: the other fibers get the second value"
+          (atomic-ref values)
+          (list 2 2 2 2 2 2 2))
 
   ;; --- a waiter is cancelled ------------------------------------------------------
   ;; The runner is in another fiber. The waiter's deadline passes long before
@@ -80,7 +81,11 @@
     (spawn (ignore (force/fiber late)))
     (pause 20)
     (def w0 (monotonic-ms))
-    (def waited (try (with-deadline (milliseconds 50L) (force/fiber late)) #:catch (System.Exception)))
+    (def waited
+      (try
+        (with-deadline (milliseconds 50L)
+          (force/fiber late))
+        #:catch (System.Exception)))
     (def waited-ms (- (monotonic-ms) w0))
     (expect-true "a waiter whose deadline passes raises" (err? waited))
     (expect-true "and does not wait for the run" (< waited-ms 300L))
@@ -90,10 +95,12 @@
 
   ;; --- the runner is cancelled ---------------------------------------------------
   (def tries (make-atomic 0))
-  (def retry (delay/fiber (def n (atomic-increment! tries))
-                          (pause (if (= n 1) 500 10))
-                          n))
-  (def first (try (with-deadline (milliseconds 30L) (force/fiber retry)) #:catch (System.Exception)))
+  (def retry (delay/fiber (def n (atomic-increment! tries)) (pause (if (= n 1) 500 10)) n))
+  (def first
+    (try
+      (with-deadline (milliseconds 30L)
+        (force/fiber retry))
+      #:catch (System.Exception)))
   (expect-true "a runner whose deadline passes raises" (err? first))
   (expect-true "and the value is not forced" (not (fiber-lazy-forced? retry)))
   (expect "the next force runs the thunk again" (force/fiber retry) 2)
@@ -107,7 +114,8 @@
   (with-scope
     (spawn (ignore (force/fiber watched)))
     (expect "lazy-evt is ready when another fiber's force completes"
-            (sync (choose (lazy-evt watched) (wrap (timeout (milliseconds 2000L)) (fun (_) "timed out"))))
+            (sync (choose (lazy-evt watched)
+                          (wrap (timeout (milliseconds 2000L)) (fun (_) "timed out"))))
             "watched"))
   (expect "lazy-evt of a forced value is ready at once" (sync (lazy-evt watched)) "watched")
   0)

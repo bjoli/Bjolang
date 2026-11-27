@@ -65,7 +65,8 @@
 ;; --- A failure value -------------------------------------------------------
 (: (-> string int))
 (defun (length-or-zero k)
-  (def (Some found) (lookup k) :leave-with 0)
+  (def (Some found) (lookup k)
+    :leave-with 0)
   (string-length found))
 
 ;; --- `:leave` arms ---------------------------------------------------------
@@ -87,7 +88,8 @@
 ;; `List`.
 (: (-> (List string) string))
 (defun (head-or xs)
-  (def (Cons first _) xs :leave (Nil "empty"))
+  (def (Cons first _) xs
+    :leave (Nil "empty"))
   (str "first = " first))
 
 ;; --- def*: several clauses, in order ---------------------------------------
@@ -96,8 +98,10 @@
 ;; a failure produces.
 (: (-> string string (Result string string)))
 (defun (greet key number)
-  (def* ((Some found) (lookup key) :leave-with (Err "no such key"))
-        ((Ok n) (parse-int number) :leave ((Err why) (Err why))))
+  (def* ((Some found) (lookup key)
+          :leave-with (Err "no such key"))
+        ((Ok n) (parse-int number)
+          :leave ((Err why) (Err why))))
   (Ok (str found "/" (int->string n))))
 
 ;; A `def*` whose clauses all propagate.
@@ -126,7 +130,11 @@
 ;; In a lambda that is the lambda, not the function around it.
 (: (-> (Option string) (Option string) string))
 (defun (measured a b)
-  (def size (fun (o) (def (Some s) o :leave-with 0) (string-length s)))
+  (def size
+    (fun (o)
+      (def (Some s) o
+        :leave-with 0)
+      (string-length s)))
   (str (int->string (size a)) "/" (int->string (size b))))
 
 ;; In a `when` it is the `when`, and what follows the `when` still runs. The
@@ -136,7 +144,8 @@
 (defun (trace o)
   (def/mutable log "")
   (when #t
-    (def (Some s) o :leave-with (set! log (str log "missing ")))
+    (def (Some s) o
+      :leave-with (set! log (str log "missing ")))
     (set! log (str log s " ")))
   (set! log (str log "after"))
   log)
@@ -148,9 +157,12 @@
 ;; new one.
 (: (-> string string))
 (defun (parity s)
-  (defun (even? k) (if (= k 0) #t (odd? (- k 1))))
-  (defun (odd? k) (if (= k 0) #f (even? (- k 1))))
-  (def (Ok n) (parse-int s) :leave-with "unparseable")
+  (defun (even? k)
+    (if (= k 0) #t (odd? (- k 1))))
+  (defun (odd? k)
+    (if (= k 0) #f (even? (- k 1))))
+  (def (Ok n) (parse-int s)
+    :leave-with "unparseable")
   (def answer (if (even? n) "even" "odd"))
   (str s " is " answer))
 
@@ -160,13 +172,15 @@
 ;; body runs either way.
 (: (-> string int))
 (defun (port-of k)
-  (def (Some found) (lookup k) :default "8080")
+  (def (Some found) (lookup k)
+    :default "8080")
   (+ 1 (string-length found)))
 
 ;; Reaching past the outer case: `n` is the int inside `(Ok (Some n))`.
 (: (-> (Result string (Option int)) int))
 (defun (inner-or-zero r)
-  (def (Ok (Some n)) r :default 0)
+  (def (Ok (Some n)) r
+    :default 0)
   (* n 10))
 
 ;; The value is evaluated only when the pattern fails.
@@ -179,14 +193,16 @@
 
 (: (-> (Option string) string))
 (defun (default-once o)
-  (def (Some s) o :default (made-default))
+  (def (Some s) o
+    :default (made-default))
   s)
 
 ;; In a def*, a defaulted clause never short-circuits, and the clauses after
 ;; it see the name.
 (: (-> string (Result string int)))
 (defun (defaulted-then-parsed key)
-  (def* ((Some found) (lookup key) :default "12")
+  (def* ((Some found) (lookup key)
+          :default "12")
         ((Ok n) (parse-int found) :propagate))
   (Ok (+ n (string-length found))))
 
@@ -194,12 +210,18 @@
 ;; def whose pattern binds the same name. The two are one C# scope.
 (: (-> (Option int) int))
 (defun (rebound o)
-  (def n (begin (def (Some n) o :leave-with 0) (+ n 1)))
+  (def n
+    (begin
+      (def (Some n) o
+        :leave-with 0)
+      (+ n 1)))
   n)
 
 ;; At the top level, where no failure part that leaves is allowed.
-(def (Some top-host) (lookup "host") :default "nowhere")
-(def (Some top-port) (lookup "port") :default "8080")
+(def (Some top-host) (lookup "host")
+  :default "nowhere")
+(def (Some top-port) (lookup "port")
+  :default "8080")
 
 (defun (main)
   (expect "a plain binding and a tuple destructuring" (plain 3) "x6")
@@ -215,7 +237,9 @@
   (expect ":default, evaluated on a failure" (default-once None) "made")
   (expect "once" defaults-made 1)
   (expect ":default in a def*, then a clause reading it"
-          (match (defaulted-then-parsed "port") ((Ok n) n) ((Err _) -1))
+          (match (defaulted-then-parsed "port")
+            ((Ok n) n)
+            ((Err _) -1))
           14)
   (expect "a def's binder named as the def around it, matching" (rebound (Some 4)) 5)
   (expect "a def's binder named as the def around it, failing" (rebound None) 0)
@@ -223,14 +247,20 @@
   (expect ":default at the top level, failing" top-port "8080")
 
   (expect "a bare clause matching"
-          (match (name-length "host") ((Some n) n) (None -1))
+          (match (name-length "host")
+            ((Some n) n)
+            (None -1))
           9)
   (expect "a bare clause propagating None"
-          (match (name-length "port") ((Some n) n) (None -1))
+          (match (name-length "port")
+            ((Some n) n)
+            (None -1))
           -1)
 
   (expect "a propagated Ok"
-          (match (fetch-length 1) ((Ok n) (int->string n)) ((Err _) "err"))
+          (match (fetch-length 1)
+            ((Ok n) (int->string n))
+            ((Err _) "err"))
           "6")
   (expect "a propagated Err, payload and all"
           (match (fetch-length 2)
@@ -240,41 +270,53 @@
           "refused:closed")
 
   (expect "a propagated case of a user union"
-          (match (relabel (Data "x")) ((Data p) p) (Idle "idle") (Closed "closed"))
+          (match (relabel (Data "x"))
+            ((Data p) p)
+            (Idle "idle")
+            (Closed "closed"))
           "<x>")
   (expect "another leftover case of the same union"
-          (match (relabel Closed) ((Data p) p) (Idle "idle") (Closed "closed"))
+          (match (relabel Closed)
+            ((Data p) p)
+            (Idle "idle")
+            (Closed "closed"))
           "closed")
 
   (expect "a failure value, matching" (length-or-zero "host") 9)
   (expect "a failure value, failing" (length-or-zero "port") 0)
 
-  (expect "an arm binding what the failure carried"
-          (explain "xx")
-          "refused (not a number: xx)")
-  (expect "a literal arm ahead of the general one"
-          (explain "zero")
-          "a zero is not a number here")
+  (expect "an arm binding what the failure carried" (explain "xx") "refused (not a number: xx)")
+  (expect "a literal arm ahead of the general one" (explain "zero") "a zero is not a number here")
   (expect "and the clause still binding its own" (explain "12") "accepted 12")
 
   (expect "two arms covering a list, matching" (head-or (list "a" "b")) "first = a")
   (expect "two arms covering a list, empty" (head-or Nil) "empty")
 
   (expect "def*, both clauses matching"
-          (match (greet "host" "12") ((Ok s) s) ((Err e) e))
+          (match (greet "host" "12")
+            ((Ok s) s)
+            ((Err e) e))
           "localhost/12")
   (expect "def*, the first clause failing"
-          (match (greet "port" "12") ((Ok s) s) ((Err e) e))
+          (match (greet "port" "12")
+            ((Ok s) s)
+            ((Err e) e))
           "no such key")
   (expect "def*, the second clause failing"
-          (match (greet "host" "xx") ((Ok s) s) ((Err e) e))
+          (match (greet "host" "xx")
+            ((Ok s) s)
+            ((Err e) e))
           "not a number: xx")
 
   (expect "def*, all of it propagating"
-          (match (both "host" "host") ((Some n) n) (None -1))
+          (match (both "host" "host")
+            ((Some n) n)
+            (None -1))
           18)
   (expect "def*, propagating from the second clause"
-          (match (both "host" "port") ((Some n) n) (None -1))
+          (match (both "host" "port")
+            ((Some n) n)
+            (None -1))
           -1)
 
   (set! probes 0)
@@ -285,16 +327,12 @@
   (ignore (short-circuit (Some "a") (Some "b")))
   (expect "and a matching one evaluates the next" probes 2)
 
-  (expect "a failure in a lambda leaves the lambda"
-          (measured (Some "abc") None)
-          "3/0")
+  (expect "a failure in a lambda leaves the lambda" (measured (Some "abc") None) "3/0")
 
   (expect "a failure in a when leaves the when, and what follows still runs"
           (trace None)
           "missing after")
-  (expect "and the when runs to its end when the pattern matches"
-          (trace (Some "here"))
-          "here after")
+  (expect "and the when runs to its end when the pattern matches" (trace (Some "here")) "here after")
 
   (expect "a conditional bind between two letrec groups" (parity "12") "12 is even")
   (expect "and its own failure value" (parity "xx") "unparseable")

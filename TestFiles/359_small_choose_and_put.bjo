@@ -7,7 +7,10 @@
 (import (std prelude))
 (import (std simpletest))
 
-(type (: Got (Union (: FromA int) (: FromB int) (: FromC int) Late)))
+(type (: Got (Union (: FromA int)
+                    (: FromB int)
+                    (: FromC int)
+                    Late)))
 
 (: (-> (Chan int) int void))
 (defbjo (give ch v) (sync (chan-send ch v)))
@@ -30,9 +33,7 @@
   (expect "two branches, the second ready" (sync (choose (never) (always 2))) 2)
   (expect "three branches, the third ready" (sync (choose (never) (never) (always 3))) 3)
   (expect "four branches still work" (sync (choose (never) (never) (never) (always 4))) 4)
-  (expect "a pair inside a triple"
-          (sync (choose (never) (choose (never) (always 5)) (never)))
-          5)
+  (expect "a pair inside a triple" (sync (choose (never) (choose (never) (always 5)) (never))) 5)
 
   ;; Branches whose events are of different classes: a channel, a promise's
   ;; join, a timeout.
@@ -40,8 +41,10 @@
   (def done (bjo (+ 20 1)))
   (expect "a join among three"
           (label (sync (choose (wrap (chan-recv a) (fun (v) (FromA v)))
-                               (wrap (promise-join done)
-                                     (fun (r) (match r ((Ok v) (FromB v)) ((Err e) Late))))
+                               (wrap (promise-join done) (fun (r)
+                                                           (match r
+                                                             ((Ok v) (FromB v))
+                                                             ((Err e) Late))))
                                (wrap (timeout (seconds 30)) (fun (u) Late)))))
           "b21")
 
@@ -59,20 +62,26 @@
   (def plain (bjo (sync (chan-recv c))))
   (sync (chan-send c 11))
   (expect "a direct send meets a parked receive"
-          (match (sync (promise-join plain)) ((Ok v) v) ((Err e) -1))
+          (match (sync (promise-join plain))
+            ((Ok v) v)
+            ((Err e) -1))
           11)
 
   (def chosen (bjo (take-in-choose c (make-chan))))
   (sync (chan-send c 12))
   (expect "a direct send meets a receive in a choose"
-          (match (sync (promise-join chosen)) ((Ok v) v) ((Err e) -1))
+          (match (sync (promise-join chosen))
+            ((Ok v) v)
+            ((Err e) -1))
           12)
 
   (def later (bjo (sync (chan-recv c))))
   (def ev (chan-send c 13))
   (sync ev)
   (expect "a send event in a variable is still an event"
-          (match (sync (promise-join later)) ((Ok v) v) ((Err e) -1))
+          (match (sync (promise-join later))
+            ((Ok v) v)
+            ((Err e) -1))
           13)
 
   (def last (bjo (sync (chan-recv c))))
@@ -81,6 +90,8 @@
                         (wrap (timeout (seconds 30)) (fun (u) "timed out"))))
           "sent")
   (expect "and it was received"
-          (match (sync (promise-join last)) ((Ok v) v) ((Err e) -1))
+          (match (sync (promise-join last))
+            ((Ok v) v)
+            ((Err e) -1))
           14)
   0)

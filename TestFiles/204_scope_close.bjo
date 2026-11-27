@@ -64,9 +64,10 @@
   (box-set! bjod
             (match (sync (promise-join p))
               ((Ok v) "ran")
-              ((Err e) (if (string-contains? (.-Message e) "cancelled")
-                           "cancelled"
-                           (.-Message e))))))
+              ((Err e)
+               (if (string-contains? (.-Message e) "cancelled")
+                   "cancelled"
+                   (.-Message e))))))
 
 ;; An inner scope with a child of its own, both of which only the *outer*
 ;; token can reach.
@@ -95,7 +96,8 @@
     (spawn (mark slow "ran" 60)))
 
   (expect "a scope waits for a child started after an earlier one landed"
-          (str (box-ref quick) " " (box-ref slow)) "ran ran")
+          (str (box-ref quick) " " (box-ref slow))
+          "ran ran")
 
   ;; ---- A failure during the drain stops the siblings ------------------------
   ;;
@@ -111,11 +113,12 @@
       #:catch (System.DivideByZeroException)))
 
   (expect "a failure during the drain leaves the scope unwrapped"
-          (match drained ((Ok u) "not reached") ((Err e) "divide by zero"))
+          (match drained
+            ((Ok u) "not reached")
+            ((Err e) "divide by zero"))
           "divide by zero")
 
-  (expect "and the sibling was cancelled rather than left running"
-          (box-ref never) "still parked")
+  (expect "and the sibling was cancelled rather than left running" (box-ref never) "still parked")
 
   ;; The child's own exception, so the child's own stack. An aggregate, or a
   ;; rethrow that reset the trace, would lose the line that actually divided.
@@ -142,13 +145,13 @@
         (box-set! body-finished "ran to the end"))
       #:catch (System.DivideByZeroException)))
 
-  (expect "a child failing does not interrupt the body"
-          (box-ref body-finished) "ran to the end")
+  (expect "a child failing does not interrupt the body" (box-ref body-finished) "ran to the end")
   (expect "and the failure is raised once the body is done"
-          (match late ((Ok u) "not reached") ((Err e) "divide by zero"))
+          (match late
+            ((Ok u) "not reached")
+            ((Err e) "divide by zero"))
           "divide by zero")
-  (expect "and closing cancels the sibling it left behind"
-          (box-ref sibling) "still parked")
+  (expect "and closing cancels the sibling it left behind" (box-ref sibling) "still parked")
 
   ;; ---- Two failures --------------------------------------------------------
   ;;
@@ -165,9 +168,10 @@
   (expect "several failures travel together"
           (match both
             ((Ok u) "not reached")
-            ((Err (:is System.AggregateException a)) (if (string-contains? (.-Message a) "2 failures")
-                                                         "two"
-                                                         (.-Message a)))
+            ((Err (:is System.AggregateException a))
+             (if (string-contains? (.-Message a) "2 failures")
+                 "two"
+                 (.-Message a)))
             ((Err e) (.-Message e)))
           "two")
 
@@ -185,7 +189,9 @@
       #:catch (System.DivideByZeroException)))
 
   (expect "a body that throws takes its children down with it"
-          (match thrown ((Ok v) v) ((Err e) "divide by zero"))
+          (match thrown
+            ((Ok v) v)
+            ((Err e) "divide by zero"))
           "divide by zero")
   (expect "and the children were cancelled" (box-ref by-body) "still parked")
 
@@ -209,13 +215,17 @@
       #:catch (System.Exception)))
 
   (expect "a bjo failure is not the scope's to raise"
-          (match quiet ((Ok v) v) ((Err e) (.-Message e))) "returned")
+          (match quiet
+            ((Ok v) v)
+            ((Err e) (.-Message e)))
+          "returned")
   (expect "and the scope still waited for everything" (box-ref waited) "waited")
   (expect "and the failure was on the promise the whole time"
           (match (box-ref kept)
-            ((Some p) (match (sync (promise-join p))
-                        ((Ok u) "not reached")
-                        ((Err e) "divide by zero")))
+            ((Some p)
+             (match (sync (promise-join p))
+               ((Ok u) "not reached")
+               ((Err e) "divide by zero")))
             (None "no promise"))
           "divide by zero")
 
@@ -235,7 +245,10 @@
       #:catch (System.Exception)))
 
   (expect "a child that was cancelled is not reported as a failure"
-          (match clean ((Ok v) v) ((Err e) (.-Message e))) "returned")
+          (match clean
+            ((Ok v) v)
+            ((Err e) (.-Message e)))
+          "returned")
 
   ;; ---- Spawning into a scope that is closing -------------------------------
   ;;
@@ -250,8 +263,7 @@
     (spawn (mark (make-box "x") "x" 150)))
 
   (expect "a spawn into a closing scope starts nothing" (box-ref spawned) "not run")
-  (expect "and a bjo hands back a promise that has already failed"
-          (box-ref bjod) "cancelled")
+  (expect "and a bjo hands back a promise that has already failed" (box-ref bjod) "cancelled")
 
   ;; ---- A deadline ----------------------------------------------------------
   ;;
@@ -270,11 +282,14 @@
       #:catch (System.Exception)))
 
   (expect "a deadline ends the scope"
-          (match timed ((Ok v) v) ((Err e) "cancelled")) "cancelled")
+          (match timed
+            ((Ok v) v)
+            ((Err e) "cancelled"))
+          "cancelled")
   (expect "and the reason is the deadline, not a child"
-          (reason-name (cancel-reason (box-ref seen))) "deadline")
-  (expect "and the children it stopped are not reported"
-          (box-ref by-deadline) "still parked")
+          (reason-name (cancel-reason (box-ref seen)))
+          "deadline")
+  (expect "and the children it stopped are not reported" (box-ref by-deadline) "still parked")
 
   ;; ---- The last child to land is the one that failed -----------------------
   ;;
@@ -291,10 +306,11 @@
       #:catch (System.DivideByZeroException)))
 
   (expect "the last child to land can still be the one that failed"
-          (match lastly ((Ok u) "not reached") ((Err e) "divide by zero"))
+          (match lastly
+            ((Ok u) "not reached")
+            ((Err e) "divide by zero"))
           "divide by zero")
-  (expect "and the token says so"
-          (reason-name (cancel-reason (box-ref last-seen))) "failed")
+  (expect "and the token says so" (reason-name (cancel-reason (box-ref last-seen))) "failed")
 
   ;; ---- Cancellation reaches through a nested scope --------------------------
   ;;
@@ -311,7 +327,9 @@
       #:catch (System.DivideByZeroException)))
 
   (expect "an outer failure reaches the children of an inner scope"
-          (match outer ((Ok u) "not reached") ((Err e) "divide by zero"))
+          (match outer
+            ((Ok u) "not reached")
+            ((Err e) "divide by zero"))
           "divide by zero")
   (expect "and the inner child was cancelled" (box-ref deep) "still parked")
 

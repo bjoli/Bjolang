@@ -46,23 +46,29 @@
   (writeln s "")
   (expect "the text" (get-output-string s) "hé😀!\n")
   (expect "its UTF-8, with no byte order mark"
-          (shown (get-output-bytes s)) "104.195.169.240.159.152.128.33.10.")
+          (shown (get-output-bytes s))
+          "104.195.169.240.159.152.128.33.10.")
 
   ;; Bytes that are not UTF-8 read back as U+FFFD, and as themselves.
   (def b (open-output-string))
   (write-bytes! b #[97 255 98])
-  (expect "get-output-string is lenient" (get-output-string b) (str "a" (char->string (int->char 65533)) "b"))
+  (expect "get-output-string is lenient"
+          (get-output-string b)
+          (str "a" (char->string (int->char 65533)) "b"))
   (expect "get-output-bytes is exact" (shown (get-output-bytes b)) "97.255.98.")
 
   ;; --- A file port takes both -------------------------------------------------
   (def path "322_output_port.tmp")
   (match (open-output-file path)
-    ((Ok p) (with-open ((o p))
-              (write-string o "line one\n")
-              (write-bytes! o #[0 1 2])
-              (write-char o #\å)))
+    ((Ok p)
+     (with-open ((o p))
+       (write-string o "line one\n")
+       (write-bytes! o #[0 1 2])
+       (write-char o #\å)))
     ((Err e) (fail "could not open the file")))
-  (expect "what the file holds" (shown (raise-err (file-read-bytes path))) "108.105.110.101.32.111.110.101.10.0.1.2.195.165.")
+  (expect "what the file holds"
+          (shown (raise-err (file-read-bytes path)))
+          "108.105.110.101.32.111.110.101.10.0.1.2.195.165.")
   (raise-err (file-delete path))
 
   ;; --- Another encoding ---------------------------------------------------------
@@ -71,7 +77,8 @@
   (write-string wide "hi")
   (close-output-port wide)
   (expect "a re-encoded port writes its encoding into the port under it"
-          (shown (get-output-bytes under)) "0.104.0.105.")
+          (shown (get-output-bytes under))
+          "0.104.0.105.")
   (write-string under "!")
   (expect "and leaves that port open" (shown (get-output-bytes under)) "0.104.0.105.33.")
 
@@ -80,13 +87,18 @@
     ((Tuple in out)
      (def closing (bjo (say-bye out)))
      (expect "a close on a fiber writes what was buffered"
-             (match (sync/blocking (promise-join closing)) ((Ok n) (drained in)) ((Err e) "raised"))
+             (match (sync/blocking (promise-join closing))
+               ((Ok n) (drained in))
+               ((Err e) "raised"))
              "98.121.101.")))
 
   ;; --- Many fibers, one port ------------------------------------------------------
   (def shared (open-output-string))
-  (def fibers (loop (:for who (range 0 8)) (:acc v (vecing (bjo (write-lines shared who 500))))))
-  (loop (:for f fibers) (:do (ignore (sync/blocking (promise-join f)))))
+  (def fibers
+    (loop (:for who (range 0 8))
+          (:acc v (vecing (bjo (write-lines shared who 500))))))
+  (loop (:for f fibers)
+        (:do (ignore (sync/blocking (promise-join f)))))
   (def lines (string-split (get-output-string shared) "\n"))
   (expect "every line arrived" (vec-length lines) 4001)
   (expect "and none was torn"

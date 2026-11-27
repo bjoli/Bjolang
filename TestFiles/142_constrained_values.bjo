@@ -11,7 +11,9 @@
 (import (std prelude))
 (import (std simpletest))
 
-(type/derive (Eq Ord) (: Ver (Record (: major int) (: minor int))))
+(type/derive (Eq Ord)
+  (: Ver (Record (: major int)
+                 (: minor int))))
 
 (: (-> int int Ver))
 (defun (v major minor) (Ver (major major) (minor minor)))
@@ -23,16 +25,19 @@
 
 ;; A constrained function of this program's own, to be passed by name.
 (: (-> %a %a %a) (where (Ord %a)))
-(defun (pick a b) (if (less? a b) a b))
+(defun (pick a b)
+  (if (less? a b) a b))
 
 ;; Two constraints, so the dictionaries have an order to get wrong.
 (: (-> %a %a %a) (where (Eq %a) (Ord %a)))
-(defun (pick-unless-equal a b) (if (= a b) a (pick a b)))
+(defun (pick-unless-equal a b)
+  (if (= a b) a (pick a b)))
 
 ;; Returned rather than passed: the dictionary comes from this function's own
 ;; parameter, and the lambda that carries it outlives the call that made it.
 (: (-> bool (-> %a %a %a)) (where (Ord %a)))
-(defun (chooser smallest?) (if smallest? least greatest))
+(defun (chooser smallest?)
+  (if smallest? least greatest))
 
 ;; A higher-order function that is itself constrained, so the value handed in
 ;; and the evidence used inside come from two different places.
@@ -58,9 +63,7 @@
   ;; ---- a library function as a fold's operator ----------------------------
   (expect "least at int" (list-foldl least 7 (list 5 3 9)) 3)
   (expect "greatest at string" (list-foldl greatest "a" (list "pear" "fig")) "pear")
-  (expect "least at a type of our own"
-          (show (list-foldl least (v 9 9) (list (v 2 1) (v 1 9))))
-          "1.9")
+  (expect "least at a type of our own" (show (list-foldl least (v 9 9) (list (v 2 1) (v 1 9)))) "1.9")
 
   ;; ---- one of our own -----------------------------------------------------
   (expect "our own, at int" (list-foldl pick 7 (list 5 3 9)) 3)
@@ -84,9 +87,7 @@
   ;; and `least` alone says nothing about which type it was taken at.
   (def (: f (-> int int int)) least)
   (expect "bound to a name" (f 3 9) 3)
-  (expect "held in a list"
-          (list-foldl (fun (g acc) (+ acc (g 3 9))) 0 (list least greatest))
-          12)
+  (expect "held in a list" (list-foldl (fun (g acc) (+ acc (g 3 9))) 0 (list least greatest)) 12)
 
   ;; ---- still a call when it is a call -------------------------------------
   ;;
@@ -98,5 +99,7 @@
   ;; ---- a CLR constraint carries no dictionary -----------------------------
   (expect "left alone at int" (list-foldl (fun (n acc) (+ acc (twice n))) 0 (list 1 2)) 6)
   (expect "passed by name" (list-map twice (list 1 2)) (list 2 4))
-  (expect "and at a double" (double->string (list-foldl (fun (b a) (+ a (twice b))) 0.0 (list 1.5))) "3")
+  (expect "and at a double"
+          (double->string (list-foldl (fun (b a) (+ a (twice b))) 0.0 (list 1.5)))
+          "3")
   0)

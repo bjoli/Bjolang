@@ -9,7 +9,8 @@
 (import (text json-codec))
 
 (def/json-type
-  (: Item (Record (: id int) (: tags (List string)))))
+  (: Item (Record (: id int)
+                  (: tags (List string)))))
 
 (def/json-type
   (: Order (Record (: items (Vec Item))
@@ -55,7 +56,9 @@
 
   ;; --- tuples -----------------------------------------------------------------
   (expect "a pair" (text-of (Tuple 1 "a")) "[1,\"a\"]")
-  (expect "a pair reads back" (: (json-> (->json (Tuple 1 "a"))) (Result string (Tuple int string))) (Ok (Tuple 1 "a")))
+  (expect "a pair reads back"
+          (: (json-> (->json (Tuple 1 "a"))) (Result string (Tuple int string)))
+          (Ok (Tuple 1 "a")))
   (expect "a triple reads back"
           (: (json-> (->json (Tuple 1 "a" #t))) (Result string (Tuple int string bool)))
           (Ok (Tuple 1 "a" #t)))
@@ -67,8 +70,12 @@
           (Err "[1]: expected a string"))
 
   ;; --- float ------------------------------------------------------------------
-  (expect "a float reads a number" (: (json-> (JsonFloat 1.5)) (Result string float)) (Ok (cast float 1.5)))
-  (expect "a float reads an integer" (: (json-> (JsonInt 2L)) (Result string float)) (Ok (cast float 2.0)))
+  (expect "a float reads a number"
+          (: (json-> (JsonFloat 1.5)) (Result string float))
+          (Ok (cast float 1.5)))
+  (expect "a float reads an integer"
+          (: (json-> (JsonInt 2L)) (Result string float))
+          (Ok (cast float 2.0)))
 
   ;; --- dates, times and UUIDs -------------------------------------------------
   (def (Some d) (date 2024 2 29) :panic)
@@ -97,20 +104,28 @@
           (Err "expected an ISO 8601 date, as a string"))
   (expect "a uuid" (text-of uuid-nil) "\"00000000-0000-0000-0000-000000000000\"")
   (expect "a uuid reads back" (: (json-> (->json uuid-max)) (Result string Uuid)) (Ok uuid-max))
-  (expect "not a uuid" (: (json-> (JsonStr "nil")) (Result string Uuid)) (Err "expected a UUID, and \"nil\" is not one"))
+  (expect "not a uuid"
+          (: (json-> (JsonStr "nil")) (Result string Uuid))
+          (Err "expected a UUID, and \"nil\" is not one"))
 
   ;; --- the path of an error ---------------------------------------------------
-  (def good "{\"items\":[{\"id\":1,\"tags\":[\"a\"]}],\"placed\":\"2024-02-29\",\"sizes\":[1,2],\"corner\":[3,0.5]}")
+  (def good
+    "{\"items\":[{\"id\":1,\"tags\":[\"a\"]}],\"placed\":\"2024-02-29\",\"sizes\":[1,2],\"corner\":[3,0.5]}")
   (expect "an order" (order-error good) "ok")
-  (expect "an element of a Vec has its index"
-          (order-error "{\"items\":[{\"id\":1,\"tags\":[]},{\"id\":\"x\",\"tags\":[]}],\"placed\":\"2024-02-29\",\"sizes\":[],\"corner\":[3,0.5]}")
-          "Order.items: [1]: Item.id: expected an integer")
-  (expect "an element of a List in an element of a Vec"
-          (order-error "{\"items\":[{\"id\":1,\"tags\":[\"a\",2]}],\"placed\":\"2024-02-29\",\"sizes\":[],\"corner\":[3,0.5]}")
-          "Order.items: [0]: Item.tags: [1]: expected a string")
-  (expect "an element of an Array"
-          (order-error "{\"items\":[],\"placed\":\"2024-02-29\",\"sizes\":[1,2,true],\"corner\":[3,0.5]}")
-          "Order.sizes: [2]: expected an integer")
+  (expect
+   "an element of a Vec has its index"
+   (order-error
+    "{\"items\":[{\"id\":1,\"tags\":[]},{\"id\":\"x\",\"tags\":[]}],\"placed\":\"2024-02-29\",\"sizes\":[],\"corner\":[3,0.5]}")
+   "Order.items: [1]: Item.id: expected an integer")
+  (expect
+   "an element of a List in an element of a Vec"
+   (order-error
+    "{\"items\":[{\"id\":1,\"tags\":[\"a\",2]}],\"placed\":\"2024-02-29\",\"sizes\":[],\"corner\":[3,0.5]}")
+   "Order.items: [0]: Item.tags: [1]: expected a string")
+  (expect
+   "an element of an Array"
+   (order-error "{\"items\":[],\"placed\":\"2024-02-29\",\"sizes\":[1,2,true],\"corner\":[3,0.5]}")
+   "Order.sizes: [2]: expected an integer")
   (expect "a date in a record"
           (order-error "{\"items\":[],\"placed\":\"soon\",\"sizes\":[],\"corner\":[3,0.5]}")
           "Order.placed: expected an ISO 8601 date, and \"soon\" is not one")

@@ -15,15 +15,22 @@
   (def xs [3 5 8 9 10])
 
   ;; --- finding ----------------------------------------------------------
-  (expect "the first value a :when lets through" {finding x (:for x xs) (:when (= (% x 2) 0))} (Some 8))
-  (expect "with a loose :when, of an expression" {finding (* x x) :when (> x 5) (:for x xs)} (Some 64))
+  (expect "the first value a :when lets through"
+          {finding x (:for x xs) (:when (= (% x 2) 0))}
+          (Some 8))
+  (expect "with a loose :when, of an expression"
+          {finding (* x x) :when (> x 5) (:for x xs)}
+          (Some 64))
   (expect "None when no round reaches it" {finding x (:for x xs) (:when (> x 100))} None)
   (expect "None for nothing at all" {finding x (:for x [])} (: None (Option int)))
   (expect "in a loop, with #:when"
-          (loop (:for (Tuple i x) (enumerate xs)) (:acc at (finding i) #:when (= x 9)) => at)
+          (loop (:for (Tuple i x) (enumerate xs))
+                (:acc at (finding i) #:when (= x 9))
+            => at)
           (Some 3))
   (expect "an unnamed one is the loop's value"
-          (loop (:for x xs) (:acc (finding x) #:when (> x 8)))
+          (loop (:for x xs)
+                (:acc (finding x) #:when (> x 8)))
           (Some 9))
   (expect "it ends the whole loop, not the level"
           {finding (Tuple a b) (:for a [1 2 3]) (:for b [10 20]) (:when (= (+ a b) 22))}
@@ -38,20 +45,32 @@
           (:do (set! before (+ before 1)))
           (:acc f (finding x) #:when (= x 8))
           (:do (set! after (+ after 1)))
-          => f))
+      => f))
   (expect "the round that finds ends the loop" (Tuple found before after) (Tuple (Some 8) 3 2))
   (expect "beside another accumulator"
-          (loop (:for x xs) (:acc n (counting x)) (:acc f (finding x) #:when (> x 4)) => (Tuple n f))
+          (loop (:for x xs)
+                (:acc n (counting x))
+                (:acc f (finding x) #:when (> x 4))
+            => (Tuple n f))
           (Tuple 2 (Some 5)))
 
   ;; The condition of #:when is evaluated once a round.
   (def/mutable tests 0)
-  (ignore (loop (:for x xs) (:acc f (finding x) #:when (begin (set! tests (+ tests 1)) (= x 9))) => f))
+  (ignore (loop (:for x xs)
+                (:acc f (finding x)
+                      #:when (begin
+                               (set! tests (+ tests 1))
+                               (= x 9)))
+            => f))
   (expect "#:when is evaluated once a round" tests 4)
 
   ;; --- macros of the user's -----------------------------------------------
   (expect "a macro that rewrites the collector" {summing-squares x (:for x [1 2 3])} 14)
-  (expect "in a loop, with a name" (loop (:for x [1 2 3]) (:acc s (summing-squares x)) => s) 14)
+  (expect "in a loop, with a name"
+          (loop (:for x [1 2 3])
+                (:acc s (summing-squares x))
+            => s)
+          14)
   (expect "a template's helper is the macro module's" {summing-thrice x (:for x [1 2])} 9)
   (expect "a macro that answers another" {finding-even x (:for x xs)} (Some 8))
   (def v 1000)
@@ -59,7 +78,10 @@
   ;; x = 9 is the first with both. Read as the macro's, the #:when would
   ;; give None.
   (expect "the macro's own names do not meet the loop's"
-          (loop (:for x xs) (:let v (* x 2)) (:acc f (finding-even (+ x 1)) #:when (> v 10)) => f)
+          (loop (:for x xs)
+                (:let v (* x 2))
+                (:acc f (finding-even (+ x 1)) #:when (> v 10))
+            => f)
           (Some 10))
   (expect "and the def outside the loop is untouched" v 1000)
   0)

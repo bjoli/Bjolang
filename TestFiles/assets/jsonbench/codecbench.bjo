@@ -60,12 +60,15 @@
     (stringbuilder-add! sb #\[)
     (let loop ((i 0))
       (when (< i n)
-        (when (> i 0) (stringbuilder-add! sb #\,))
+        (when (> i 0)
+          (stringbuilder-add! sb #\,))
         (stringbuilder-add-string! sb "{\"name\":\"dep")
         (stringbuilder-add-string! sb (int->string i))
         (stringbuilder-add-string! sb "\",\"git\":\"https://github.com/linus/bjo-")
         (stringbuilder-add-string! sb (int->string i))
-        (stringbuilder-add-string! sb "\",\"version\":\"1.2.3\",\"commit\":\"abcdeffffff00112233\",\"optional\":false}")
+        (stringbuilder-add-string!
+         sb
+         "\",\"version\":\"1.2.3\",\"commit\":\"abcdeffffff00112233\",\"optional\":false}")
         (loop (+ i 1))))
     (stringbuilder-add! sb #\])
     (stringbuilder->string sb)))
@@ -80,7 +83,8 @@
     (stringbuilder-add! sb #\[)
     (let loop ((i 0))
       (when (< i n)
-        (when (> i 0) (stringbuilder-add! sb #\,))
+        (when (> i 0)
+          (stringbuilder-add! sb #\,))
         (stringbuilder-add-string! sb "[\"dep")
         (stringbuilder-add-string! sb (int->string i))
         (stringbuilder-add-string! sb "\",\"https://github.com/linus/bjo-")
@@ -98,10 +102,13 @@
     (stringbuilder-add! sb #\[)
     (let loop ((i 0))
       (when (< i n)
-        (when (> i 0) (stringbuilder-add! sb #\,))
+        (when (> i 0)
+          (stringbuilder-add! sb #\,))
         (stringbuilder-add-string! sb "{\"name\":\"dep")
         (stringbuilder-add-string! sb (int->string i))
-        (stringbuilder-add-string! sb "\",\"tags\":[\"alpha\",\"beta\",\"gamma\"],\"note\":\"a note\",\"version\":\"1.2.3\"}")
+        (stringbuilder-add-string!
+         sb
+         "\",\"tags\":[\"alpha\",\"beta\",\"gamma\"],\"note\":\"a note\",\"version\":\"1.2.3\"}")
         (loop (+ i 1))))
     (stringbuilder-add! sb #\])
     (stringbuilder->string sb)))
@@ -157,33 +164,39 @@
         best
         (let ((sw (Stopwatch.)))
           (.Start sw)
-          (let ((got (match (parse-json text) ((Ok _) 1) ((Err _) 0))))
+          (let ((got (match (parse-json text)
+                       ((Ok _) 1)
+                       ((Err _) 0))))
             (.Stop sw)
-            (when (= got 0) (println "the corpus did not parse"))
+            (when (= got 0)
+              (println "the corpus did not parse"))
             (let ((t (elapsed-ticks sw)))
               (go (+ i 1) (if (< t best) t best))))))))
 
 (: (-> (IArray Json) int))
 (defun (generated-sum items)
   (fold (fun (j acc)
-              (+ acc (match (json->Dep j)
-                       ((Ok d) (string-length (record-ref d version)))
-                       ((Err _) 0))))
-            0 items))
+          (+ acc
+             (match (json->Dep j)
+               ((Ok d) (string-length (record-ref d version)))
+               ((Err _) 0))))
+        0
+        items))
 
 (: (-> (IArray Json) int))
 (defun (hand-sum items)
-  (fold (fun (j acc) (+ acc (string-length (record-ref (hand->Dep j) version))))
-            0 items))
+  (fold (fun (j acc) (+ acc (string-length (record-ref (hand->Dep j) version)))) 0 items))
 
 ;; Forced on the vec field, so the element decoder really ran.
 (: (-> (IArray Json) int))
 (defun (rich-sum items)
   (fold (fun (j acc)
-              (+ acc (match (json->Rich j)
-                       ((Ok d) (vec-length (record-ref d tags)))
-                       ((Err _) 0))))
-            0 items))
+          (+ acc
+             (match (json->Rich j)
+               ((Ok d) (vec-length (record-ref d tags)))
+               ((Err _) 0))))
+        0
+        items))
 
 (: (-> (-> (IArray Json) int) (IArray Json) int))
 (defun (decode-ticks decode items)
@@ -194,7 +207,8 @@
           (.Start sw)
           (let ((got (decode items)))
             (.Stop sw)
-            (when (= got 0) (println "a decoder answered nothing"))
+            (when (= got 0)
+              (println "a decoder answered nothing"))
             (let ((t (elapsed-ticks sw)))
               (go (+ i 1) (if (< t best) t best))))))))
 
@@ -236,7 +250,10 @@
         (atext (make-array-text records)))
     (let ((items (match (parse-json text)
                    ((Ok (JsonArr v)) v)
-                   (_ (let () (println "the corpus is not an array") (iarray-empty))))))
+                   (_
+                    (let ()
+                      (println "the corpus is not an array")
+                      (iarray-empty))))))
       (println (str "records " (int->string records)
                     ", as objects " (int->string (/ (string-length text) 1000)) " kB"
                     ", as arrays " (int->string (/ (string-length atext) 1000)) " kB"
@@ -245,14 +262,19 @@
 
       ;; Warm, so that the first timed rep is not also the first JIT.
       (let ((warm (+ (generated-sum items) (hand-sum items))))
-        (when (= warm 0) (println "warmup decoded nothing")))
+        (when (= warm 0)
+          (println "warmup decoded nothing")))
 
       (let ((rtext (make-rich-text records)))
         (let ((ritems (match (parse-json rtext)
                         ((Ok (JsonArr v)) v)
-                        (_ (let () (println "the rich corpus is not an array") (iarray-empty))))))
+                        (_
+                         (let ()
+                           (println "the rich corpus is not an array")
+                           (iarray-empty))))))
           (let ((rwarm (rich-sum ritems)))
-            (when (= rwarm 0) (println "rich warmup decoded nothing")))
+            (when (= rwarm 0)
+              (println "rich warmup decoded nothing")))
 
           (let ((p (parse-ticks text))
                 (pa (parse-ticks atext))

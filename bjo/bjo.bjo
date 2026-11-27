@@ -1097,8 +1097,8 @@
       ((Ok (Some rec))
        (def out (record-ref rec output))
        (if (string-ends-with? out ".dll")
-           (fail
-            (str "bjo run: " (project-entry project) " has no main, so it builds a library: " out))
+           (fail (str "bjo run: " (project-entry project) " has no main, so it builds a library: "
+                      out))
            (run-built rec arguments))))))
 
 ;; `bjo check` with no file, inside a project: everything the project holds.
@@ -1427,12 +1427,14 @@
 (: cmd-fmt (-> (List string) bool bool bool int) #:sync)
 (defun (cmd-fmt files rewrite? check? diff?)
   (def project (find-project-dir (current-directory)))
-  (def stamp (formatter-stamp (list (path-combine clr-base-dir "format.dll")
-                                    (path-combine root "lib" "std" "read.dll"))))
+  (def stamp
+    (formatter-stamp (list (path-combine clr-base-dir "format.dll")
+                           (path-combine root "lib" "std" "read.dll"))))
   (def store (option-map (fun (dir) (record-path dir rewrite?)) project))
-  (def known (match store
-               ((Some path) (load-record path stamp))
-               (None (map-empty))))
+  (def known
+    (match store
+      ((Some path) (load-record path stamp))
+      (None (map-empty))))
   (def jobs (list->vec (list-map (fun (file) (Tuple file (record-key project file))) files)))
   (def results
     (par-map (fun (job)
@@ -1448,7 +1450,8 @@
           (:acc out (folding (Tuple 0 known)
                              (let (((Tuple n rec) out)
                                    ((Tuple file key) (vec-ref jobs i)))
-                               (def (Tuple failed mark) (fmt-report file check? diff? (some? key) (vec-ref results i)))
+                               (def (Tuple failed mark)
+                                 (fmt-report file check? diff? (some? key) (vec-ref results i)))
                                (Tuple (+ n failed)
                                       (match (Tuple key mark)
                                         ((Tuple (Some k) (Some m)) (map-set rec k m))
@@ -1458,10 +1461,11 @@
   (match (Tuple project store)
     ((Tuple (Some dir) (Some path))
      ;; Entries of files that are gone are dropped.
-     (def kept (loop (:for (Tuple k m) (map->list record))
-                     (:acc out (folding (map-empty)
-                                        (if (file-exists? (path-combine dir k)) (map-set out k m) out)))
-                 => out))
+     (def kept
+       (loop (:for (Tuple k m) (map->list record))
+             (:acc out (folding (map-empty)
+                                (if (file-exists? (path-combine dir k)) (map-set out k m) out)))
+         => out))
      (ignore (save-record! path stamp kept)))
     (_ unit))
   (if (> failures 0)
@@ -1504,8 +1508,10 @@
   (def info (file-info file))
   (defun (mark hash)
     (if recordable?
-        (option-map (fun (i) (Mark (size (record-ref i size)) (modified-ms (record-ref i modified-ms)) (hash hash)))
-                    info)
+        (option-map
+         (fun (i)
+           (Mark (size (record-ref i size)) (modified-ms (record-ref i modified-ms)) (hash hash)))
+         info)
         None))
   (match (Tuple recorded info)
     ((Tuple (Some m) (Some i)) #:when (and (= (record-ref m size) (record-ref i size))

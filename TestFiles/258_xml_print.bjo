@@ -10,14 +10,16 @@
 
 (defun (main)
   (expect "an element"
-          (displayed (xml-element (xml-name "p") (list (Tuple (xml-name "class") "x"))
-                              (list (xml-text "hi") (el "b" (list (xml-text "!"))))))
+          (displayed (xml-element (xml-name "p")
+                                  (list (Tuple (xml-name "class") "x"))
+                                  (list (xml-text "hi") (el "b" (list (xml-text "!"))))))
           "(p (@ (class \"x\")) \"hi\" (b \"!\"))")
   (expect "an empty one" (displayed (el "br" Nil)) "(br)")
   (expect "a name in a namespace, in Clark notation"
           (displayed (xml-element (xml-name "entry" #:ns "http://www.w3.org/2005/Atom")
-                              (list (Tuple (xml-name "href" #:ns "http://www.w3.org/1999/xlink") "#a"))
-                              Nil))
+                                  (list (Tuple (xml-name "href" #:ns "http://www.w3.org/1999/xlink")
+                                               "#a"))
+                                  Nil))
           "({http://www.w3.org/2005/Atom}entry (@ ({http://www.w3.org/1999/xlink}href \"#a\")))")
   (expect "a name alone" (displayed (xml-name "p" #:ns "u")) "{u}p")
   (expect "a comment and a PI"
@@ -27,16 +29,21 @@
           (displayed (xml-text "say \"hi\" \\ \n\t\r"))
           "\"say \\\"hi\\\" \\\\ \\n\\t\\r\"")
   (expect "a document"
-          (match (parse-xml "<!DOCTYPE a [<!ENTITY e 'x'>]><?style a?><a>&e;</a><!--end-->" #:dtd 'parse #:comments? #t)
+          (match (parse-xml "<!DOCTYPE a [<!ENTITY e 'x'>]><?style a?><a>&e;</a><!--end-->"
+                            #:dtd 'parse
+                            #:comments? #t)
             ((Ok d) (displayed d))
             ((Err e) (displayed e)))
           "(*TOP* (*DOCTYPE* a) (*PI* style \"a\") (a \"x\") (*COMMENT* \"end\"))")
   (expect "a doctype with ids"
           (displayed (xml-document (el "html" Nil)
-                               #:doctype (Some (Doctype (name "html") (public-id (Some "-//P//EN")) (system-id (Some "h.dtd"))))))
+                                   #:doctype (Some (Doctype (name "html")
+                                                            (public-id (Some "-//P//EN"))
+                                                            (system-id (Some "h.dtd"))))))
           "(*TOP* (*DOCTYPE* html PUBLIC \"-//P//EN\" \"h.dtd\") (html))")
-  (def deep (let loop ((i 0) (acc (xml-text "x")))
-              (if (= i 100000) acc (loop (+ i 1) (el "d" (list acc))))))
+  (def deep
+    (let loop ((i 0) (acc (xml-text "x")))
+      (if (= i 100000) acc (loop (+ i 1) (el "d" (list acc))))))
   ;; "(d " and ")" a level, and "x" in quotes at the bottom.
   (expect "100 000 levels" (string-length (displayed deep)) (+ (* 100000 4) 3))
   0)

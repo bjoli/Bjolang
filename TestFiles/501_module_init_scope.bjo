@@ -15,7 +15,10 @@
   ;; as its body took too long; but the deadline is not the initialiser's.
   ;; Before, it cancelled the initialiser, and .NET then refused each later
   ;; use of the module.
-  (ignore (try (with-deadline (milliseconds 10) slow-answer) #:catch (System.Exception)))
+  (ignore (try
+            (with-deadline (milliseconds 10)
+              slow-answer)
+            #:catch (System.Exception)))
   (expect "a scope of the initialiser's own is not cancelled by the first user's deadline"
           (match (try slow-answer #:catch (System.Exception))
             ((Ok v) v)
@@ -28,8 +31,10 @@
             ((Ok _) "no error")
             ;; .NET wraps it in a TypeInitializationException, whose text
             ;; holds the message of the exception it wraps.
-            ((Err e) (if (string-contains? (.ToString e) "the initialiser of a module-level value has no scope")
-                         "raised"
-                         (.-Message e))))
+            ((Err e)
+             (if (string-contains? (.ToString e)
+                                   "the initialiser of a module-level value has no scope")
+                 "raised"
+                 (.-Message e))))
           "raised")
   0)

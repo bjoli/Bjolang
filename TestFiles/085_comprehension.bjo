@@ -39,9 +39,7 @@
   (expect-int "counting" {counting a (:for a (range 0 7))} 7)
   (expect-int "vecing" (vec-length {vecing a (:for a (range 0 20))}) 20)
   (expect "stringing" {stringing (char-upcase c) (:for c "hello")} "HELLO")
-  (expect-int "mapping"
-              (map-length {mapping (Tuple a (* a a)) (:for a (range 0 5))})
-              5)
+  (expect-int "mapping" (map-length {mapping (Tuple a (* a a)) (:for a (range 0 5))}) 5)
 
   ;; Everything before the first clause is the accumulator form verbatim, so a
   ;; collector's construction arguments are simply written before the
@@ -78,18 +76,10 @@
               5)
 
   ;; ---- Clauses pass straight through --------------------------------------
-  (expect-int "with :when"
-              (vec-length {vecing a (:for a (range 0 20)) (:when (= 0 (% a 2)))})
-              10)
-  (expect-int "with :finish"
-              {summing a (:for a (range 0 100)) (:finish (> a 5))}
-              15)
-  (expect-int "with :let"
-              {summing b (:for a (range 0 5)) (:let b (* a 10))}
-              100)
-  (expect-int "with :final"
-              {counting a (:for a (range 0 100)) (:final (>= a 3))}
-              4)
+  (expect-int "with :when" (vec-length {vecing a (:for a (range 0 20)) (:when (= 0 (% a 2)))}) 10)
+  (expect-int "with :finish" {summing a (:for a (range 0 100)) (:finish (> a 5))} 15)
+  (expect-int "with :let" {summing b (:for a (range 0 5)) (:let b (* a 10))} 100)
+  (expect-int "with :final" {counting a (:for a (range 0 100)) (:final (>= a 3))} 4)
 
   ;; `:with` carries state across iterations, so a comprehension can express a
   ;; recurrence — this is the Fibonacci loop with its accumulator implied.
@@ -112,9 +102,7 @@
   (expect-int "subloop nests"
               {counting (Tuple a b) (:for a (range 0 5)) (:subloop) (:for b (range 0 3))}
               15)
-  (expect-int "nested sum"
-              {summing (* a b) (:for a (range 1 4)) (:subloop) (:for b (range 1 4))}
-              36)
+  (expect-int "nested sum" {summing (* a b) (:for a (range 1 4)) (:subloop) (:for b (range 1 4))} 36)
 
   ;; ---- seqing -------------------------------------------------------------
   ;;
@@ -124,12 +112,11 @@
   (expect-int "seqing with a loose :when"
               (count {seqing a :when (= 0 (% a 2)) (:for a (range 0 10))})
               5)
-  (expect-int "seqing is lazy"
-              (count (take 4 {seqing (* a a) (:for a (range 0 1000000))}))
-              4)
+  (expect-int "seqing is lazy" (count (take 4 {seqing (* a a) (:for a (range 0 1000000))})) 4)
   (expect "seqing agrees with seql"
           (show-list (->list {seqing (* a a) (:for a (range 0 5))}))
-          (show-list (->list (seql (:for a (range 0 5)) (:yield (* a a))))))
+          (show-list (->list (seql (:for a (range 0 5))
+                                   (:yield (* a a))))))
 
   ;; ---- Over other collections --------------------------------------------
   ;;
@@ -137,9 +124,7 @@
   ;; string, whose elements are characters.
   (expect-int "over a list" {summing a (:for a (list 1 2 3 4))} 10)
   (expect-int "over a string" {counting c (:for c "a😀b")} 3)
-  (expect "string in, string out"
-          {stringing c (:for c "a😀b") (:when (char-alphabetic? c))}
-          "ab")
+  (expect "string in, string out" {stringing c (:for c "a😀b") (:when (char-alphabetic? c))} "ab")
 
   ;; ---- Nesting comprehensions --------------------------------------------
   ;;

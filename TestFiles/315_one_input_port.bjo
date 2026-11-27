@@ -15,15 +15,18 @@
 (: (-> (Option (Array byte)) string))
 (defun (shown o)
   (match o
-    ((Some bs) (let loop ((i 0) (acc ""))
-                 (if (= i (array-length bs))
-                     acc
-                     (loop (+ i 1) (str acc (byte->string (array-ref bs i)) ".")))))
+    ((Some bs)
+     (let loop ((i 0) (acc ""))
+       (if (= i (array-length bs))
+           acc
+           (loop (+ i 1) (str acc (byte->string (array-ref bs i)) ".")))))
     (None "none")))
 
 (: (-> InputPort string))
 (defun (line-or p)
-  (match (read-line/opt p) ((Some l) l) (None "eof")))
+  (match (read-line/opt p)
+    ((Some l) l)
+    (None "eof")))
 
 ;; A read of four bytes against a stop signal that is already there, so the
 ;; read loses. Answers which branch won.
@@ -76,8 +79,7 @@
     ((Tuple in out)
      (write-bytes! out #[103 114 252 223 101 10 120])
      (close-output-port out)
-     (expect "read as UTF-8 it is not text"
-             (shown (peek-bytes in 2 2)) "252.223.")
+     (expect "read as UTF-8 it is not text" (shown (peek-bytes in 2 2)) "252.223.")
      (def text (reencode-input-port in latin1))
      (expect "re-encoded it is" (read-line text) "grüße")
      (expect "and its bytes are UTF-8" (shown (read-some text)) "120.")))

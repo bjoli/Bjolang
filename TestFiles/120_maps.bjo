@@ -81,14 +81,17 @@
   (def m #map(("a" 1) ("b" 2) ("c" 3)))
 
   (def/mutable total 0)
-  (loop (:for kv m) (:do (set! total (+ total (entry-value kv)))))
+  (loop (:for kv m)
+        (:do (set! total (+ total (entry-value kv)))))
   (expect-true "loop sums the values" (= total 6))
 
   ;; Each loop starts its own cursor, so a second loop over the same map sees
   ;; all entries again.
   (def/mutable twice 0)
-  (loop (:for kv m) (:do (set! twice (+ twice (entry-value kv)))))
-  (loop (:for kv m) (:do (set! twice (+ twice (entry-value kv)))))
+  (loop (:for kv m)
+        (:do (set! twice (+ twice (entry-value kv)))))
+  (loop (:for kv m)
+        (:do (set! twice (+ twice (entry-value kv)))))
   (expect-true "a loop starts a fresh cursor" (= twice 12))
 
   ;; A cursor is a value: `done?` and `current` do not move it, and `next`
@@ -96,7 +99,8 @@
   (def c (map-cursor m))
   (def c2 (map-cursor-next c))
   (expect-true "done? does not move a cursor"
-               (and (not (map-cursor-done? c)) (not (map-cursor-done? c))
+               (and (not (map-cursor-done? c))
+                    (not (map-cursor-done? c))
                     (= (map-cursor-current c) (map-cursor-current c))))
   (expect-true "next answers a cursor on another entry"
                (not (= (entry-key (map-cursor-current c)) (entry-key (map-cursor-current c2)))))
@@ -104,12 +108,14 @@
                (map-cursor-done? (map-cursor (map-remove (map-set (map-empty) "x" 1) "x"))))
 
   ;; A map this big has internal nodes, which the cursor walks out of line.
-  (def big (loop (:for i (range 0 5000)) (:acc b (mapping (Tuple i (* 2 i))))))
+  (def big
+    (loop (:for i (range 0 5000))
+          (:acc b (mapping (Tuple i (* 2 i))))))
   (expect-true "a walk of a big map sees every entry once"
-               (= (loop (:for (Tuple k v) big) (:acc s (summing (+ k v))))
+               (= (loop (:for (Tuple k v) big)
+                        (:acc s (summing (+ k v))))
                   (* 3 (/ (* 5000 4999) 2))))
-  (expect-true "map-fold sees every entry once"
-               (= (map-fold (fun (k v acc) (+ acc 1)) 0 big) 5000)))
+  (expect-true "map-fold sees every entry once" (= (map-fold (fun (k v acc) (+ acc 1)) 0 big) 5000)))
 
 ;; ---------------------------------------------------------------------------
 ;; 3. The comprehension — Collector (Mapping %k %v), through MapBuilder
@@ -161,9 +167,7 @@
 
   ;; A boolean inside the map is printed as the language writes it.
   (expect-str "constrained generic over int keys" (describe n) "<1: #map((1 #t))>")
-  (expect-str "constrained generic over string keys"
-              (describe #map(("a" 1)))
-              "<1: #map((a 1))>")
+  (expect-str "constrained generic over string keys" (describe #map(("a" 1))) "<1: #map((a 1))>")
   ;; Two entries, so the trie's order decides which way round it comes out.
   (expect-true "the same at two entries" (= (string-length (describe m)) 22))
 
@@ -196,7 +200,7 @@
   (def m #map(("a" 1) ("b" 2)))
   (def shown (displayed m))
   (expect-true "two entries print as a literal"
-          (or (= shown "#map((a 1) (b 2))") (= shown "#map((b 2) (a 1))")))
+               (or (= shown "#map((a 1) (b 2))") (= shown "#map((b 2) (a 1))")))
 
   ;; Each entry is in parentheses, as the literal writes it, so a map of
   ;; numbers prints as the literal that makes it.
@@ -211,18 +215,25 @@
   (def m #map(("a" 1) ("b" 2) ("c" 3)))
 
   (expect-true "map: set-all" (= (map-length (map-set-all m (list->seq (Cons (Tuple "d" 4) Nil)))) 4))
-  (expect-true "map: remove-all" (= (map-length (map-remove-all m (list->seq (Cons "a" (Cons "b" Nil))))) 1))
+  (expect-true "map: remove-all"
+               (= (map-length (map-remove-all m (list->seq (Cons "a" (Cons "b" Nil))))) 1))
   (expect-true "any? hit" (map-any? (fun (_ v) (= v 3)) m))
   (expect-true "any? miss" (not (map-any? (fun (k _) (= k "z")) m)))
   (expect-true "add-new" (= (map-length (map-add-new m "d" 4)) 4))
   (expect "add-new refuses a key that is there"
-          (match (try (map-add-new m "a" 9) #:catch (System.ArgumentException)) ((Ok _) "added") ((Err _) "raised"))
+          (match (try (map-add-new m "a" 9) #:catch (System.ArgumentException))
+            ((Ok _) "added")
+            ((Err _) "raised"))
           "raised")
   (expect "try-add-new of a new key"
-          (match (map-try-add-new m "d" 4) ((Ok m2) (map-ref m2 "d")) ((Err _) -1))
+          (match (map-try-add-new m "d" 4)
+            ((Ok m2) (map-ref m2 "d"))
+            ((Err _) -1))
           4)
   (expect "try-add-new answers the value already there"
-          (match (map-try-add-new m "a" 9) ((Ok _) -1) ((Err old) old))
+          (match (map-try-add-new m "a" 9)
+            ((Ok _) -1)
+            ((Err old) old))
           (map-ref m "a"))
   (expect-true "add, the trait's, replaces" (= (map-ref (add m (Tuple "a" 9)) "a") 9))
   (expect-true "clear" (map-empty? (map-clear m)))
@@ -299,17 +310,27 @@
   (expect "remove" (orderedmap-length (orderedmap-remove m "fig")) 2)
   (expect "remove of a stranger" (orderedmap-length (orderedmap-remove m "plum")) 3)
 
-  (expect "ordered: set-all" (orderedmap-length (orderedmap-set-all m (list->seq (list (Tuple "plum" 4) (Tuple "date" 5))))) 5)
-  (expect "ordered: remove-all" (orderedmap-length (orderedmap-remove-all m (list->seq (list "fig" "pear")))) 1)
+  (expect
+   "ordered: set-all"
+   (orderedmap-length (orderedmap-set-all m (list->seq (list (Tuple "plum" 4) (Tuple "date" 5)))))
+   5)
+  (expect "ordered: remove-all"
+          (orderedmap-length (orderedmap-remove-all m (list->seq (list "fig" "pear"))))
+          1)
 
   (expect "ordered: keys" (count (orderedmap-keys m)) 3)
   (expect "ordered: values" (seq-fold + 0 (orderedmap-values m)) 6)
 
   ;; A map this big has many leaves, which the cursor finds out of line. The
   ;; walk is in key order, so each key is one more than the one before.
-  (def big (loop (:for i (range 0 5000)) (:acc b (ordered-mapping (Tuple (- 4999 i) i)))))
+  (def big
+    (loop (:for i (range 0 5000))
+          (:acc b (ordered-mapping (Tuple (- 4999 i) i)))))
   (expect-bool "a big ordered map walks in key order"
-               (loop (:for (Tuple k v) big) (:with prev -1 k) (:finish (not (= k (+ prev 1))) #f) => #t)
+               (loop (:for (Tuple k v) big)
+                     (:with prev -1 k)
+                     (:finish (not (= k (+ prev 1))) #f)
+                 => #t)
                #t)
   (expect "ordered: fold over a big map" (orderedmap-fold (fun (k v n) (+ n 1)) 0 big) 5000))
 
@@ -399,7 +420,8 @@
 
   ;; Iterable: an entry at a time, in key order.
   (expect "loop over an ordered map"
-          (loop (:for entry m) (:acc total (summing (entry-value entry))))
+          (loop (:for entry m)
+                (:acc total (summing (entry-value entry))))
           6)
 
   (def doubled

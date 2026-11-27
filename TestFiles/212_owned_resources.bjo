@@ -100,10 +100,11 @@
   ;; are visited, and the failure comes out of the scope.
   (def survived (make-box ""))
   (def outcome
-    (try (with-scope
-           (ignore (own! (note! survived "a")))
-           (ignore (own! (fun () (raise (cast Exception (Refusal. "this release refuses"))))))
-           (ignore (own! (note! survived "c"))))
+    (try
+      (with-scope
+        (ignore (own! (note! survived "a")))
+        (ignore (own! (fun () (raise (cast Exception (Refusal. "this release refuses"))))))
+        (ignore (own! (note! survived "c"))))
       #:catch (System.InvalidOperationException System.AggregateException)))
 
   (expect "a throwing release does not stop the walk" (box-ref survived) "ca")
@@ -130,8 +131,7 @@
     (None (fail "the scope did not escape"))
     ((Some closed)
      (expect "own! on a closed scope raises"
-             (match (try (in-scope closed (own! (fun () unit)))
-                      #:catch (Bjolang.Runtime.ScopeEnded))
+             (match (try (in-scope closed (own! (fun () unit))) #:catch (Bjolang.Runtime.ScopeEnded))
                ((Ok _) "allowed")
                ((Err _) "refused"))
              "refused")
@@ -139,8 +139,7 @@
      (def never (make-box "not run"))
      (in-scope closed (spawn (mark-it never)))
      (sync (timeout (milliseconds 30)))
-     (expect "spawn on a closed scope starts nothing, and says nothing"
-             (box-ref never) "not run")))
+     (expect "spawn on a closed scope starts nothing, and says nothing" (box-ref never) "not run")))
 
   ;; --- in-scope puts ownership somewhere else ------------------------------
   ;;
@@ -150,8 +149,7 @@
   (with-scope
     (let ((outer (current-scope)))
       (with-scope
-        (in-scope outer
-          (ignore (own! (note! where "outer")))))
+        (in-scope outer (ignore (own! (note! where "outer")))))
       (box-set! where (str (box-ref where) "|inner closed|"))))
   (expect "in-scope registers on the scope it names" (box-ref where) "|inner closed|outer")
 

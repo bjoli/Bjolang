@@ -53,8 +53,7 @@
 ;; The next signal, or None when none comes in `d`.
 (: (-> Signals Duration (Option Signal)))
 (defun (recv-within s d)
-  (sync/blocking (choose (wrap (signal-recv s) Some)
-                         (wrap (timeout d) (fun (_) None)))))
+  (sync/blocking (choose (wrap (signal-recv s) Some) (wrap (timeout d) (fun (_) None)))))
 
 (: (-> (Option Signal) string))
 (defun (shown o)
@@ -86,10 +85,12 @@
 
 (: (-bjo-> (Box string) void))
 (defbjo (worker seen)
-  (try (sync (timeout (seconds 5)))
-    #:finally (box-set! seen (match (cancel-reason (parameter-ref current-cancel))
-                               ((Some (Requested who)) who)
-                               (_ "other")))))
+  (try
+    (sync (timeout (seconds 5)))
+    #:finally (box-set! seen
+                        (match (cancel-reason (parameter-ref current-cancel))
+                          ((Some (Requested who)) who)
+                          (_ "other")))))
 
 (: (-bjo-> string))
 (defbjo (stopped-in-a-fiber)
@@ -100,8 +101,7 @@
 
 (: (-bjo-> void))
 (defbjo (failing-worker)
-  (try (sync (timeout (seconds 5)))
-    #:finally (raise (cast Exception (Refusal. "cleanup failed")))))
+  (try (sync (timeout (seconds 5))) #:finally (raise (cast Exception (Refusal. "cleanup failed")))))
 
 ;; ---------------------------------------------------------------------------
 ;; The child
@@ -114,7 +114,11 @@
     ;; and ends the process.
     ((= mode "second")
      (say (outcome (with-signal-cancel [Terminate]
-                     (ignore (own! (fun () (say "cleaning") (clr-sleep 4000) (say "cleaned") unit)))
+                     (ignore (own! (fun ()
+                                     (say "cleaning")
+                                     (clr-sleep 4000)
+                                     (say "cleaned")
+                                     unit)))
                      (say "ready")
                      (sync/blocking (timeout (seconds 5)))
                      "finished"))))
@@ -136,7 +140,9 @@
     ((= mode "handler-scope")
      (def handled (make-box #f))
      (with-scope
-       (on-signal [Terminate] (fun (s) (say "handled") (box-set! handled #t)))
+       (on-signal [Terminate] (fun (s)
+                                (say "handled")
+                                (box-set! handled #t)))
        (say "ready")
        (ignore (wait-until (fun () (box-ref handled)) 3000)))
      (say "scope ended")
@@ -151,7 +157,9 @@
     ;; One SIGTERM: the program cleans up and goes on.
     (else
      (say (outcome (with-signal-cancel [Interrupt Terminate]
-                     (ignore (own! (fun () (say "released") unit)))
+                     (ignore (own! (fun ()
+                                     (say "released")
+                                     unit)))
                      (say "ready")
                      (sync/blocking (timeout (seconds 5)))
                      "finished")))
@@ -160,14 +168,18 @@
 
 ;; Where the parent waits before it sends a signal: a line of the child's
 ;; output, or a line of its error output that contains a text.
-(type (: Cue (Union (: OutLine string) (: ErrLine string))))
+(type (: Cue (Union (: OutLine string)
+                    (: ErrLine string))))
 
 ;; Starts the child in `mode`. For each step `(Tuple cue name)`, reads the
 ;; child's lines up to `cue` and sends it the signal `name`. Returns the exit
 ;; code, all that the child wrote, and all that it wrote to its error output.
 (: (-> string (List (Tuple Cue string)) (Tuple int string string)))
 (defun (run-child mode steps)
-  (def host (match (process-path) ((Some p) p) (None "dotnet")))
+  (def host
+    (match (process-path)
+      ((Some p) p)
+      (None "dotnet")))
   (def info (StartInfo. host (str (array-ref (clr-args) 0) " " mode)))
   (clr-redirect! info #t)
   (clr-redirect-err! info #t)
@@ -202,7 +214,9 @@
   (cond
     ((ready?) #t)
     ((<= ms 0) #f)
-    (else (clr-sleep 20) (wait-until ready? (- ms 20)))))
+    (else
+     (clr-sleep 20)
+     (wait-until ready? (- ms 20)))))
 
 ;; ---------------------------------------------------------------------------
 ;; The parent
@@ -211,10 +225,22 @@
 (: (-> void))
 (defun (parent)
   (expect "the names are POSIX's"
-          (->list (map signal-name [Hangup Interrupt Quit Terminate Child Continue WindowChanged
-                                    TerminalInput TerminalOutput TerminalStop User1 User2 (OtherSignal 34)]))
-          '("SIGHUP" "SIGINT" "SIGQUIT" "SIGTERM" "SIGCHLD" "SIGCONT" "SIGWINCH"
-            "SIGTTIN" "SIGTTOU" "SIGTSTP" "SIGUSR1" "SIGUSR2" "signal 34"))
+          (->list (map signal-name
+                       [Hangup
+                        Interrupt
+                        Quit
+                        Terminate
+                        Child
+                        Continue
+                        WindowChanged
+                        TerminalInput
+                        TerminalOutput
+                        TerminalStop
+                        User1
+                        User2
+                        (OtherSignal 34)]))
+          '("SIGHUP" "SIGINT" "SIGQUIT" "SIGTERM" "SIGCHLD" "SIGCONT" "SIGWINCH" "SIGTTIN" "SIGTTOU"
+                     "SIGTSTP" "SIGUSR1" "SIGUSR2" "signal 34"))
 
   (with-scope
     ;; Each signal once, though Terminate is given twice.
@@ -230,7 +256,8 @@
     (clr-sleep 300)
     (expect "a signal comes as a value" (shown (recv-within s (seconds 2))) "SIGTERM")
     (expect "signals of one kind that wait are merged"
-            (shown (recv-within s (milliseconds 300))) "none")
+            (shown (recv-within s (milliseconds 300)))
+            "none")
 
     ;; Two kinds wait apart.
     (send-self "USR1")
@@ -259,15 +286,19 @@
     (clr-sleep 300)
     (signal-unsubscribe! u)
     (signal-unsubscribe! u)
-    (expect "an ended subscription receives nothing" (shown (recv-within u (milliseconds 200))) "none"))
+    (expect "an ended subscription receives nothing"
+            (shown (recv-within u (milliseconds 200)))
+            "none"))
 
   ;; on-signal: an ordinary handler, with the dynamic environment of the
   ;; call, once for each signal.
   (with-scope
     (def calls (make-box ""))
     (parameterize ((place "inside"))
-      (on-signal [User2] (fun (s) (box-set! calls (str (box-ref calls) (signal-name s) " "
-                                                       (parameter-ref place) ";")))))
+      (on-signal [User2] (fun (s)
+                           (box-set! calls
+                                     (str (box-ref calls) (signal-name s) " "
+                                          (parameter-ref place) ";")))))
     (send-self "USR2")
     (ignore (wait-until (fun () (= (box-ref calls) "SIGUSR2 inside;")) 2000))
     (send-self "USR2")
@@ -285,11 +316,13 @@
 
   ;; Raises.
   (expect-true "OtherSignal takes a number above 0"
-               (string-contains? (raised (try (with-scope (signal-subscribe [(OtherSignal 0)]))
+               (string-contains? (raised (try
+                                           (with-scope (signal-subscribe [(OtherSignal 0)]))
                                            #:catch (System.Exception)))
                                  "above 0"))
   (expect-true "a signal that the system cannot handle raises"
-               (string-contains? (raised (try (with-scope (signal-subscribe [(OtherSignal 9)]))
+               (string-contains? (raised (try
+                                           (with-scope (signal-subscribe [(OtherSignal 9)]))
                                            #:catch (System.Exception)))
                                  "cannot handle signal 9"))
 
@@ -319,24 +352,27 @@
           "Err SIGTERM")
 
   (expect "a failure of the body is raised"
-          (raised (try (with-signal-cancel [Interrupt]
-                         (raise (cast Exception (Refusal. "the body failed"))))
-                       #:catch (System.Exception)))
+          (raised (try
+                    (with-signal-cancel [Interrupt]
+                      (raise (cast Exception (Refusal. "the body failed"))))
+                    #:catch (System.Exception)))
           "the body failed")
   (expect-true "a failure after the signal is raised"
-               (string-contains? (raised (try (with-signal-cancel [Terminate]
-                                                (spawn (failing-worker))
-                                                (send-self "TERM")
-                                                (sync/blocking (timeout (seconds 5)))
-                                                "finished")
-                                              #:catch (System.Exception)))
+               (string-contains? (raised (try
+                                           (with-signal-cancel [Terminate]
+                                             (spawn (failing-worker))
+                                             (send-self "TERM")
+                                             (sync/blocking (timeout (seconds 5)))
+                                             "finished")
+                                           #:catch (System.Exception)))
                                  "failures inside one cancellation scope"))
   (expect-true "a cancellation from outside is raised"
-               (string-contains? (raised (try (with-deadline (milliseconds 50)
-                                                (with-signal-cancel [Interrupt]
-                                                  (sync/blocking (timeout (seconds 5)))
-                                                  "finished"))
-                                              #:catch (System.Exception)))
+               (string-contains? (raised (try
+                                           (with-deadline (milliseconds 50)
+                                             (with-signal-cancel [Interrupt]
+                                               (sync/blocking (timeout (seconds 5)))
+                                               "finished"))
+                                           #:catch (System.Exception)))
                                  "(Deadline)"))
 
   ;; The default action, in a child.
@@ -357,21 +393,24 @@
           (Tuple after-code after-out)
           (Tuple 143 "Ok done\nready\n"))
 
-  (def (Tuple partial-code partial-out _) (run-child "partial" (list (Tuple (OutLine "ready") "TERM"))))
+  (def (Tuple partial-code partial-out _)
+    (run-child "partial" (list (Tuple (OutLine "ready") "TERM"))))
   (expect "a subscription that raised leaves SIGTERM to the system"
           (Tuple partial-code (string-contains? partial-out "cannot handle signal 9"))
           (Tuple 143 #t))
 
   ;; on-signal, in a child.
   (def (Tuple scope-code scope-out _)
-    (run-child "handler-scope" (list (Tuple (OutLine "ready") "TERM") (Tuple (OutLine "scope ended") "TERM"))))
+    (run-child "handler-scope"
+               (list (Tuple (OutLine "ready") "TERM") (Tuple (OutLine "scope ended") "TERM"))))
   (expect "on-signal handles SIGTERM until its scope ends"
           (Tuple scope-code scope-out)
           (Tuple 143 "ready\nhandled\nscope ended\n"))
 
   (def (Tuple failing-code failing-out failing-err)
-    (run-child "failing-handler" (list (Tuple (OutLine "ready") "TERM")
-                                       (Tuple (ErrLine "do their default action again") "TERM"))))
+    (run-child "failing-handler"
+               (list (Tuple (OutLine "ready") "TERM")
+                     (Tuple (ErrLine "do their default action again") "TERM"))))
   (expect "a handler that raises gives SIGTERM back to the system"
           (Tuple failing-code failing-out)
           (Tuple 143 "ready\n"))

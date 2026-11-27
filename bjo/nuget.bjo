@@ -673,10 +673,10 @@
 
 (: (-> string Package (Option string)))
 (defun (duplicate-in manifest package)
-  (option-map
-   (fun (id)
-     (str "bjo: " manifest ": the NuGet package " id " is listed twice under (packages ...)."))
-   (duplicate-id (record-ref package packages))))
+  (option-map (fun (id)
+                (str "bjo: " manifest ": the NuGet package " id
+                     " is listed twice under (packages ...)."))
+              (duplicate-id (record-ref package packages))))
 
 ;; Restores the NuGet packages of the build, and answers the directory to hand
 ;; the compiler with `--nuget` — or `None` when no manifest names any.
@@ -729,17 +729,16 @@
     (def generated
       (string-join
        (list->vec (Cons csproj
-                        (list-sort
-                         (list-append
-                          (loop (:for file dep-files)
-                                (:for text dep-texts)
-                                (:acc out (listing (str file "\n" text)))
-                            => out)
-                          (loop (:for g glues)
-                                (:for file glue-files)
-                                (:for text glue-texts)
-                                (:acc out (listing (str file "\n" text "\n" (glue-fingerprint g))))
-                            => out)))))
+                        (list-sort (list-append (loop (:for file dep-files)
+                                                      (:for text dep-texts)
+                                                      (:acc out (listing (str file "\n" text)))
+                                                  => out)
+                                                (loop (:for g glues)
+                                                      (:for file glue-files)
+                                                      (:for text glue-texts)
+                                                      (:acc out (listing (str file "\n" text "\n"
+                                                                              (glue-fingerprint g))))
+                                                  => out)))))
        "\n"))
 
     (when (restore-current? dir (stamp-of generated lock-file))

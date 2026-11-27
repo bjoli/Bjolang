@@ -100,9 +100,7 @@
   ;; A single write far longer than the buffer: one call, many drains, all of
   ;; them inside the suspending body.
   (def long (repeat-string "0123456789" 300))
-  (expect "a single write spanning many drains"
-          (collect-bjo long 64)
-          (collect-sync long 64))
+  (expect "a single write spanning many drains" (collect-bjo long 64) (collect-sync long 64))
 
   ;; --- The text is actually right ------------------------------------------
   ;;
@@ -110,12 +108,9 @@
   ;; astral character would agree. So the short case is spelled out.
   (def one (collect-bjo "ab" 4))
   (def grin (char->string (int->char 128512)))
-  (expect-true "the suspending write starts with the text"
-               (string-starts-with? one "ab"))
-  (expect-true "and carries the astral character whole"
-               (string-contains? one grin))
-  (expect-true "and ends with the line that followed it"
-               (string-contains? one "|end"))
+  (expect-true "the suspending write starts with the text" (string-starts-with? one "ab"))
+  (expect-true "and carries the astral character whole" (string-contains? one grin))
+  (expect-true "and ends with the line that followed it" (string-contains? one "|end"))
 
   ;; --- Order across a drain -------------------------------------------------
   ;;
@@ -142,10 +137,11 @@
     ((Err e) (println "FAILURE: could not open the file for writing")))
 
   (match (open-input-file path)
-    ((Ok r) (with-open ((in r))
-              (expect "a suspending write reached the file"
-                      (read-line in)
-                      (str "to a file" (char->string (int->char 128512)) "|end"))))
+    ((Ok r)
+     (with-open ((in r))
+       (expect "a suspending write reached the file"
+               (read-line in)
+               (str "to a file" (char->string (int->char 128512)) "|end"))))
     ((Err e) (println "FAILURE: could not reopen the file")))
 
   (raise-err (file-delete path))

@@ -23,14 +23,24 @@
       ((Ok (JsonArr xs)) (iarray->vec xs))
       (_ (panic! "588: commonmark-spec.json is not an array"))))
   (def failed
-    {counting #t
-              (:for e examples)
-              (:let m (match e ((JsonObj m) m) (_ (panic! "588: an example is not an object"))))
-              (:let markdown (field m "markdown"))
-              (:let wanted (field m "html"))
-              (:let got (markdown->html (markdown-parse markdown #:tables #f #:task-lists #f
-                                                        #:strikethrough #f #:autolinks #f
-                                                        #:footnotes #f #:front-matter #f)))
-              (:when (not (= got wanted)))
-              (:do (println #"FAILURE: example ${(field m "example")} (${(field m "section")}): ${(written markdown)} gave ${(written got)} but wanted ${(written wanted)}"))})
-  (println #"commonmark spec: ${(- (vec-length examples) failed)} of ${(vec-length examples)} examples"))
+    {counting
+     #t
+     (:for e examples)
+     (:let m (match e
+               ((JsonObj m) m)
+               (_ (panic! "588: an example is not an object"))))
+     (:let markdown (field m "markdown"))
+     (:let wanted (field m "html"))
+     (:let got (markdown->html (markdown-parse markdown
+                                               #:tables #f
+                                               #:task-lists #f
+                                               #:strikethrough #f
+                                               #:autolinks #f
+                                               #:footnotes #f
+                                               #:front-matter #f)))
+     (:when (not (= got wanted)))
+     (:do
+      (println
+       #"FAILURE: example ${(field m "example")} (${(field m "section")}): ${(written markdown)} gave ${(written got)} but wanted ${(written wanted)}"))})
+  (println
+   #"commonmark spec: ${(- (vec-length examples) failed)} of ${(vec-length examples)} examples"))

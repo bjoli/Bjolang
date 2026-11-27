@@ -20,11 +20,15 @@
 
 (: (-> (Promise int) int))
 (defun (run-int p)
-  (match (sync/blocking (promise-join p)) ((Ok n) n) ((Err e) -1)))
+  (match (sync/blocking (promise-join p))
+    ((Ok n) n)
+    ((Err e) -1)))
 
 (: (-> (Promise string) string))
 (defun (run-str p)
-  (match (sync/blocking (promise-join p)) ((Ok s) s) ((Err e) "raised")))
+  (match (sync/blocking (promise-join p))
+    ((Ok s) s)
+    ((Err e) "raised")))
 
 ;; The yield point: `read-line` from a bjoroutine.
 (: (-bjo-> int int))
@@ -74,8 +78,7 @@
 
 (: (-bjo-> (List InputPort) int))
 (defbjo (non-empty-first ps)
-  (list-length
-    (list-filter (bjoroutine (p) (not (string-empty? (read-line p)))) ps)))
+  (list-length (list-filter (bjoroutine (p) (not (string-empty? (read-line p)))) ps)))
 
 ;; --- the folds ---------------------------------------------------------------
 
@@ -121,15 +124,9 @@
   (expect "list-map with a suspending callback"
           (run-list (bjo (list-first-lines (two-ports))))
           (list "one" "three"))
-  (expect "list-filter with a suspending predicate"
-          (run-int (bjo (non-empty-first (two-ports))))
-          2)
-  (expect "foldl with a suspending step"
-          (run-int (bjo (list-total-length (two-ports))))
-          8)
-  (expect "foldr with a suspending step"
-          (joined-check)
-          "onethree")
+  (expect "list-filter with a suspending predicate" (run-int (bjo (non-empty-first (two-ports)))) 2)
+  (expect "foldl with a suspending step" (run-int (bjo (list-total-length (two-ports)))) 8)
+  (expect "foldr with a suspending step" (joined-check) "onethree")
 
   ;; --- ordinary callbacks ----------------------------------------------------
   (expect "list-map, ordinarily" (lengths (list "ab" "cde")) (list 2 3))
@@ -163,8 +160,7 @@
 
 (: (-> (Vec InputPort)))
 (defun (ports)
-  (vec-add (vec-add (vec-empty) (open-input-string "one\n"))
-           (open-input-string "three\n")))
+  (vec-add (vec-add (vec-empty) (open-input-string "one\n")) (open-input-string "three\n")))
 
 ;; --- suspending callbacks -----------------------------------------------------
 
@@ -201,13 +197,16 @@
 ;; These reach the C# bodies, which is what the arrangement is for.
 
 (: (-> (Vec int) (Vec int)))
-(defun (doubled v) (vec-map (fun (x) (* x 2)) v))
+(defun (doubled v)
+  (vec-map (fun (x) (* x 2)) v))
 
 (: (-> (Vec int) (Vec int)))
-(defun (evens v) (vec-filter (fun (x) (> x 1)) v))
+(defun (evens v)
+  (vec-filter (fun (x) (> x 1)) v))
 
 (: (-> (Vec int) int))
-(defun (summed v) (vec-fold (fun (x a) (+ a x)) 0 v))
+(defun (summed v)
+  (vec-fold (fun (x a) (+ a x)) 0 v))
 
 (: (-> (Vec int)))
 (defun (nums)
@@ -216,13 +215,11 @@
 (: (-> void))
 (defun (test-vec)
   (expect "vec-map with a suspending callback"
-          (run-str (bjo (vec-first-lines (ports)))) "[one three]")
-  (expect "vec-filter with a suspending predicate"
-          (run-int (bjo (loud-count (ports)))) 2)
-  (expect "fold with a suspending step"
-          (run-int (bjo (vec-total-length (ports)))) 8)
-  (expect "iter stops early, suspending"
-          (run-int (bjo (read-until-short (ports)))) 1)
+          (run-str (bjo (vec-first-lines (ports))))
+          "[one three]")
+  (expect "vec-filter with a suspending predicate" (run-int (bjo (loud-count (ports)))) 2)
+  (expect "fold with a suspending step" (run-int (bjo (vec-total-length (ports)))) 8)
+  (expect "iter stops early, suspending" (run-int (bjo (read-until-short (ports)))) 1)
 
   (expect "vec-map, ordinarily" (displayed (doubled (nums))) "[2 4 6]")
   (expect "vec-filter, ordinarily" (displayed (evens (nums))) "[2 3]")
@@ -323,10 +320,10 @@
 (defbjo (set-stopped)
   (set! steps 0)
   (ignore (hashset-iter (bjoroutine (x)
-                      (set! steps (+ steps 1))
-                      (ignore (slow-double x))
-                      #f)
-                    (numbers)))
+                          (set! steps (+ steps 1))
+                          (ignore (slow-double x))
+                          #f)
+                        (numbers)))
   steps)
 
 (: (-bjo-> int))
@@ -371,9 +368,7 @@
 
 (: (-bjo-> string))
 (defbjo (orderedmap-folded)
-  (orderedmap-fold (bjoroutine (k v acc) (str acc (int->string (slow-double v))))
-                   ""
-                   (ordered-pairs)))
+  (orderedmap-fold (bjoroutine (k v acc) (str acc (int->string (slow-double v)))) "" (ordered-pairs)))
 
 (: (-bjo-> int))
 (defbjo (orderedmap-stopped)
@@ -403,9 +398,7 @@
 
 (: (-bjo-> string))
 (defbjo (orderedset-folded)
-  (orderedset-fold (bjoroutine (x acc) (str acc (int->string (slow-double x))))
-                   ""
-                   (ordered-numbers)))
+  (orderedset-fold (bjoroutine (x acc) (str acc (int->string (slow-double x)))) "" (ordered-numbers)))
 
 (: (-bjo-> int))
 (defbjo (orderedset-stopped)
@@ -457,7 +450,8 @@
   (expect "set-filter, ordinarily" (hashset-length (hashset-filter (fun (x) (> x 2)) (numbers))) 1)
   (expect "orderedmap-fold, ordinarily" (joined-map (ordered-pairs)) "123")
   (expect "orderedset-map, ordinarily"
-          (joined-set (orderedset-map (fun (x) (* x 2)) (ordered-numbers))) "246"))
+          (joined-set (orderedset-map (fun (x) (* x 2)) (ordered-numbers)))
+          "246"))
 
 ;; =============================================================================
 ;; Seq and deque

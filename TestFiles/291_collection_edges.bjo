@@ -42,7 +42,9 @@
   (expect-true "= on two equal million-element lists" (= (count-up big) (count-up big)))
   (expect-true "and on two that differ at the end"
                (not (= (count-up big) (list-append (count-up (- big 1)) (list 0)))))
-  (expect-true "a list equals itself" (let ((xs (count-up big))) (= xs xs)))
+  (expect-true "a list equals itself"
+               (let ((xs (count-up big)))
+                 (= xs xs)))
   (expect-true "lists of different lengths differ" (not (= (count-up 3) (count-up 4))))
 
   (def sorted (list-sort (count-down big)))
@@ -65,7 +67,8 @@
 
   ;; --- A large deque -------------------------------------------------------
   (def d (deque))
-  (loop (:for i (range 0 big)) (:do (deque-push-back! d i)))
+  (loop (:for i (range 0 big))
+        (:do (deque-push-back! d i)))
   (expect "a million-element deque pops from the front" (deque-try-pop-first! d) (Some 0))
   (expect "and from the back" (deque-try-pop-last! d) (Some (- big 1)))
   (expect "deque->list of it" (list-length (deque->list d)) (- big 2))
@@ -76,7 +79,8 @@
   (def seen (make-box 0))
   (loop (:for x mv)
         (:do (box-set! seen (+ (box-ref seen) 1))
-             (when (= x 10) (mutablevec-clear! mv))))
+             (when (= x 10)
+               (mutablevec-clear! mv))))
   (expect "clearing a mutable vec inside its walk ends the walk" (box-ref seen) 11)
 
   ;; --- Vec edges -----------------------------------------------------------
@@ -103,17 +107,21 @@
   ;; Forty keys in three classes, so equal keys span the insertion-sort runs
   ;; and the merges after them.
   (def mkeys (mutablevec))
-  (loop (:for i (range 0 40)) (:do (mutablevec-add! mkeys (Keyed (% i 3) (displayed i)))))
+  (loop (:for i (range 0 40))
+        (:do (mutablevec-add! mkeys (Keyed (% i 3) (displayed i)))))
   (mutablevec-sort! mkeys)
   (expect "mutablevec-sort! keeps equal elements in order"
           (list-map (fun (k) (match k ((Keyed _ s) s))) (mutablevec->list mkeys))
-          (list-map displayed (list-append (list-filter (fun (i) (= (% i 3) 0)) (count-up 40))
-                                       (list-append (list-filter (fun (i) (= (% i 3) 1)) (count-up 40))
-                                                    (list-filter (fun (i) (= (% i 3) 2)) (count-up 40))))))
+          (list-map displayed
+                    (list-append (list-filter (fun (i) (= (% i 3) 0)) (count-up 40))
+                                 (list-append (list-filter (fun (i) (= (% i 3) 1)) (count-up 40))
+                                              (list-filter (fun (i) (= (% i 3) 2)) (count-up 40))))))
   (def mbig (list->mutablevec (count-down 100000)))
   (mutablevec-sort! mbig)
   (expect-true "and sorts a large vec" (sorted? (mutablevec->list mbig)))
 
   ;; --- Lists print without quotes --------------------------------------------
-  (expect "a nested list prints as one literal" (displayed (list (list 1 2) (count-up 0))) "((1 2) ())")
+  (expect "a nested list prints as one literal"
+          (displayed (list (list 1 2) (count-up 0)))
+          "((1 2) ())")
   0)

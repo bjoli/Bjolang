@@ -11,14 +11,21 @@
 ;; a function, and a union from another module.
 
 ;; `I`, `F` and `C` share one 8-byte slot; `B` has a slot of its own.
-(type/derive (Eq Ord) (: Val (Union (: I long) (: F double) (: B bool) (: C long) Missing)))
+(type/derive (Eq Ord)
+  (: Val (Union (: I long)
+                (: F double)
+                (: B bool)
+                (: C long)
+                Missing)))
 
 ;; Every case carries nothing: a struct of one byte.
 (type/derive (Eq Ord) (: Dir (Union North East South West)))
 
 ;; A reference slot that holds an object of a class union, which can be `null`.
 (type-rec (: Tree (Union Empty (: Node Tree Tree))))
-(type (: Holder (Union (: Holds Tree) (: Named Symbol) Nothing)))
+(type (: Holder (Union (: Holds Tree)
+                       (: Named Symbol)
+                       Nothing)))
 
 (: (-> Val double))
 (defun (num v)
@@ -55,13 +62,13 @@
   (expect-true "two cases with the same bits differ" (not (= (I 7) (C 7))))
   (expect-true "zero and negative zero are equal, as doubles are" (= (F 0.0) (F -0.0)))
   (expect "equal values hash the same" (eq-hash (F 0.0)) (eq-hash (F -0.0)))
-  (expect "printing" (displayed (list (I 1) (B #f) Missing))
-          "((I 1L) (B #f) Missing)")
+  (expect "printing" (displayed (list (I 1) (B #f) Missing)) "((I 1L) (B #f) Missing)")
   (expect "the derived order is the declared order"
           (list-sort (list Missing (C 1) (F 2.0) (I 5) (I 2)))
           (list (I 2) (I 5) (F 2.0) (C 1) Missing))
   (expect "a hash set" (hashset-length (list->hashset (list (I 1) (C 1) (I 1) Missing Missing))) 3)
-  (expect "an ordered set" (orderedset->list (list->orderedset (list West North West)))
+  (expect "an ordered set"
+          (orderedset->list (list->orderedset (list West North West)))
           (list North West))
 
   (def m (mutablemap))
@@ -70,8 +77,7 @@
   (expect "a mutable map key" (mutablemap-ref m North) 2)
   (expect "a mutable map length" (mutablemap-length m) 1)
 
-  (expect "a constructor as a function" (list-map num (list-map I (list 1 2)))
-          (list 1.0 2.0))
+  (expect "a constructor as a function" (list-map num (list-map I (list 1 2))) (list 1.0 2.0))
   (expect "a nested pattern on a null case" (depth (Holds Empty)) 0)
   (expect "a nested pattern on a data case" (depth (Holds (Node Empty Empty))) 1)
   (expect "a class in the reference slot" (depth (Named 'x)) -1)

@@ -11,8 +11,9 @@
 
 (type (: Pending (Union (: PendingInt (-> int int)))))
 
-(type (: Holder #:opaque (Record (: items (Vec Pending) #:mutable)
-                        (: field string #:mutable))))
+(type (: Holder #:opaque
+         (Record (: items (Vec Pending) #:mutable)
+                 (: field string #:mutable))))
 
 (: (-> Holder))
 (defun (make-holder) (Holder (items (vec-empty)) (field "start")))
@@ -45,7 +46,6 @@
 (defun (field-during h value)
   (in-field h value (fun () (holder-field h))))
 
-
 ;; Builds a value of a type this module does not export. An importer cannot
 ;; name `Cell`, so the body is not published, and a call of `lazily` is a call.
 (type (: (Cell %a) (Record (: value (Option %a) #:mutable))))
@@ -56,6 +56,7 @@
   (fun ()
     (match (record-ref cell value)
       ((Some v) v)
-      (None (def v (make))
-            (record-set! cell (value (Some v)))
-            v))))
+      (None
+       (def v (make))
+       (record-set! cell (value (Some v)))
+       v))))

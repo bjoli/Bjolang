@@ -80,7 +80,9 @@
   (expect "the one line" (read-line p5) "only")
   (expect "eof after last line" (if (port-eof? p5) "eof" "more") "eof")
   (expect "read/opt past eof is None"
-          (match (read-line/opt p5) ((Some _) "some") (None "none"))
+          (match (read-line/opt p5)
+            ((Some _) "some")
+            (None "none"))
           "none")
 
   ;; The base `read-line` fails at end of input rather than inventing a value.
@@ -105,21 +107,24 @@
 
   ;; --- File output, then file input ---------------------------------------
   (match (open-output-file path)
-    ((Ok w) (with-open ((out w))
-              (writeln out "first")
-              (writeln out "second")
-              (write-string out "third")))
+    ((Ok w)
+     (with-open ((out w))
+       (writeln out "first")
+       (writeln out "second")
+       (write-string out "third")))
     ((Err e) (println "FAILURE: could not open the file for writing")))
 
   (match (open-input-file path)
-    ((Ok r) (with-open ((in r))
-              (expect "round trip through a file" (join-lines in) "first|second|third|")))
+    ((Ok r)
+     (with-open ((in r))
+       (expect "round trip through a file" (join-lines in) "first|second|third|")))
     ((Err e) (println "FAILURE: could not reopen the file")))
 
   ;; The same function over a file port as over a string port.
   (match (open-input-file path)
-    ((Ok r) (with-open ((in r))
-              (expect "file port lines" (count-lines in) 3)))
+    ((Ok r)
+     (with-open ((in r))
+       (expect "file port lines" (count-lines in) 3)))
     ((Err e) (println "FAILURE: could not reopen the file")))
 
   ;; --- String output ports ------------------------------------------------
@@ -161,7 +166,9 @@
   (expect "a writer over a string port" (get-output-string out4) "hello world")
 
   (match (open-output-file out-path)
-    ((Ok w) (with-open ((out w)) (write-greeting out)))
+    ((Ok w)
+     (with-open ((out w))
+       (write-greeting out)))
     ((Err e) (println "FAILURE: could not open the output file")))
   (expect "the same writer over a file port" (raise-err (file-read-text out-path)) "hello world")
   (expect "the same file, read on a fiber" (slurp-on-a-fiber out-path) "hello world")
@@ -171,12 +178,13 @@
   ;; can rule this out — and .NET would answer "System.IO.StreamWriter" rather
   ;; than fail, so the check is made at the boundary instead.
   (match (open-output-file out-path)
-    ((Ok w) (with-open ((out w))
-              (expect "get-output-string on a file port throws"
-                      (match (try (get-output-string out) #:catch (System.InvalidOperationException))
-                        ((Ok _) "returned")
-                        ((Err e) "threw"))
-                      "threw")))
+    ((Ok w)
+     (with-open ((out w))
+       (expect "get-output-string on a file port throws"
+               (match (try (get-output-string out) #:catch (System.InvalidOperationException))
+                 ((Ok _) "returned")
+                 ((Err e) "threw"))
+               "threw")))
     ((Err e) (println "FAILURE: could not open the output file")))
 
   (raise-err (file-delete out-path))
@@ -184,7 +192,8 @@
   ;; --- Opening failures are values ----------------------------------------
   (expect "missing file is Err"
           (match (open-input-file "no_such_file_here.txt")
-            ((Ok _) "opened") ((Err e) "missing"))
+            ((Ok _) "opened")
+            ((Err e) "missing"))
           "missing")
 
   ;; And the exception is the real one, so an arm can tell them apart.
@@ -197,20 +206,23 @@
 
   ;; --- Draining -----------------------------------------------------------
   (expect "port->list"
-          (int->string (list-length (port->list (fun (q) (read-line q)) (open-input-string "a\nb\nc"))))
+          (int->string (list-length (port->list (fun (q) (read-line q))
+                                                (open-input-string "a\nb\nc"))))
           "3")
   (expect "port->vec"
-          (int->string (vec-length (port->vec (fun (q) (read-line q)) (open-input-string "a\nb\nc\nd"))))
+          (int->string (vec-length (port->vec (fun (q) (read-line q))
+                                              (open-input-string "a\nb\nc\nd"))))
           "4")
-
 
   ;; Order is preserved, and the newline is not part of a line.
   (expect "port->list order"
-          (list-foldl (fun (l acc) (string-append acc l)) ""
+          (list-foldl (fun (l acc) (string-append acc l))
+                      ""
                       (port->list (fun (q) (read-line q)) (open-input-string "x\ny\nz")))
           "xyz")
   (expect "port->vec order"
-          (vec-fold (fun (l acc) (string-append acc l)) ""
+          (vec-fold (fun (l acc) (string-append acc l))
+                    ""
                     (port->vec (fun (q) (read-line q)) (open-input-string "x\ny\nz")))
           "xyz")
 
@@ -225,13 +237,15 @@
 
   ;; A drain works the same over a file port.
   (match (open-input-file path)
-    ((Ok r) (with-open ((in r))
-              (expect "drain a file port" (vec-length (port->vec (fun (q) (read-line q)) in)) 3)))
+    ((Ok r)
+     (with-open ((in r))
+       (expect "drain a file port" (vec-length (port->vec (fun (q) (read-line q)) in)) 3)))
     ((Err e) (println "FAILURE: could not reopen the file")))
 
   ;; --- Streaming ----------------------------------------------------------
   (expect "port->seq"
-          (seq-fold (fun (l acc) (string-append acc l)) ""
+          (seq-fold (fun (l acc) (string-append acc l))
+                    ""
                     (port->seq (fun (q) (read-line q)) (open-input-string "x\ny\nz")))
           "xyz")
 
@@ -242,14 +256,16 @@
   ;; Laziness is the point: taking two from a port never reads the third line.
   ;; The port is shared, so what is left in it afterwards is the evidence.
   (def p10 (open-input-string "1\n2\n3\n4"))
-  (expect "take pulls only what it needs"
-          (seq-fold (fun (l acc) (string-append acc l)) "" (take 2 (port->seq (fun (q) (read-line q)) p10)))
-          "12")
+  (expect
+   "take pulls only what it needs"
+   (seq-fold (fun (l acc) (string-append acc l)) "" (take 2 (port->seq (fun (q) (read-line q)) p10)))
+   "12")
   (expect "and the rest is still in the port" (read-line p10) "3")
 
   ;; The sequence composes with the rest of the seq library.
   (expect "port->seq through map"
-          (seq-fold (fun (l acc) (string-append acc l)) ""
+          (seq-fold (fun (l acc) (string-append acc l))
+                    ""
                     (map (fun (l) (string-append l "!"))
                          (port->seq (fun (q) (read-line q)) (open-input-string "a\nb"))))
           "a!b!")
@@ -287,11 +303,11 @@
   (expect "re-enumerable after stopping early"
           (match (file->seq (fun (q) (read-line q)) path)
             ((Ok lines)
-              (let ()
-                ;; Walked for its effect — the count is beside the point, which
-                ;; is that the enumerator was disposed part-way through.
-                (ignore (count (take 2 lines)))
-                (seq-fold (fun (l acc) (string-append acc l)) "" lines)))
+             (let ()
+               ;; Walked for its effect — the count is beside the point, which
+               ;; is that the enumerator was disposed part-way through.
+               (ignore (count (take 2 lines)))
+               (seq-fold (fun (l acc) (string-append acc l)) "" lines)))
             ((Err e) "FAILURE"))
           "firstsecondthird")
 
@@ -325,18 +341,21 @@
   (def pc (open-input-string "abc"))
   (expect "read-char takes one character at a time"
           (string-append (char->string (read-char pc))
-                         (string-append (char->string (read-char pc))
-                                        (char->string (read-char pc))))
+                         (string-append (char->string (read-char pc)) (char->string (read-char pc))))
           "abc")
   (expect "and leaves the port at end of input" (if (port-eof? pc) "yes" "no") "yes")
 
   ;; The `/opt` variant, for when the guard and the read want to be one step.
   (def pc2 (open-input-string "x"))
   (expect "read-char/opt gives the character"
-          (match (read-char/opt pc2) ((Some c) (char->string c)) (None "none"))
+          (match (read-char/opt pc2)
+            ((Some c) (char->string c))
+            (None "none"))
           "x")
   (expect "and None once there is none left"
-          (match (read-char/opt pc2) ((Some c) (char->string c)) (None "none"))
+          (match (read-char/opt pc2)
+            ((Some c) (char->string c))
+            (None "none"))
           "none")
 
   ;; Char and line reads are both just positions in the same port, so they
@@ -361,8 +380,7 @@
   (expect "...which is four bytes of UTF-8" (string-length written) 4)
 
   (def pg (open-input-string written))
-  (expect "read-char puts the halves back together"
-          (char->int (read-char pg)) 128512)
+  (expect "read-char puts the halves back together" (char->int (read-char pg)) 128512)
   (expect "...having consumed both of them" (if (port-eof? pg) "yes" "no") "yes")
 
   ;; --- Characters through the drains --------------------------------------
@@ -371,12 +389,14 @@
   ;; `std/ports` that takes a reader takes it, and a port becomes a `(Seq char)`
   ;; with nothing new written.
   (expect "port->seq over read-char"
-          (seq-fold (fun (c acc) (string-append acc (char->string c))) ""
+          (seq-fold (fun (c acc) (string-append acc (char->string c)))
+                    ""
                     (port->seq read-char (open-input-string "hey")))
           "hey")
 
   (expect "and an astral character counts as one element"
-          (count (port->seq read-char (open-input-string written))) 1)
+          (count (port->seq read-char (open-input-string written)))
+          1)
 
   (expect "port->list over read-char"
           (int->string (list-length (port->list read-char (open-input-string "four"))))

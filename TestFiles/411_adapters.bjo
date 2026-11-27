@@ -15,7 +15,8 @@
   (Boom (: System.InvalidOperationException (-> string Boom))))
 
 ;; Counts to `n`, and logs each end and cleanup with its label.
-(type (: Counter (Struct (: label string) (: n int))))
+(type (: Counter (Struct (: label string)
+                         (: n int))))
 
 (def/mutable events '())
 
@@ -55,15 +56,20 @@
   (expect "enumerate a string, by character"
           {listing i (:for (Tuple i c) (enumerate "héj!")) (:when (char=? c #\!))}
           (list 3))
-  (expect "enumerate a range" {listing (Tuple i x) (:for (Tuple i x) (enumerate (range 5 7)))}
+  (expect "enumerate a range"
+          {listing (Tuple i x) (:for (Tuple i x) (enumerate (range 5 7)))}
           (list (Tuple 0 5) (Tuple 1 6)))
   (expect "enumerate a map" {summing i (:for (Tuple i kv) (enumerate #map(("a" 1) ("b" 2))))} 1)
-  (expect "enumerate a seq" {listing i (:for (Tuple i x) (enumerate (map (fun (y) (* y y)) (list 1 2 3))))}
+  (expect "enumerate a seq"
+          {listing i (:for (Tuple i x) (enumerate (map (fun (y) (* y y)) (list 1 2 3))))}
           (list 0 1 2))
   (expect "enumerate nothing" {listing p (:for p (enumerate (list)))} (list))
-  (expect "enumerate is an iterable: its Seq" (->list (->seq (enumerate "ab")))
+  (expect "enumerate is an iterable: its Seq"
+          (->list (->seq (enumerate "ab")))
           (list (Tuple 0 #\a) (Tuple 1 #\b)))
-  (expect "enumerate is an iterable: fold" (fold (fun (p acc) (+ acc (fst p))) 0 (enumerate [1 1 1])) 3)
+  (expect "enumerate is an iterable: fold"
+          (fold (fun (p acc) (+ acc (fst p))) 0 (enumerate [1 1 1]))
+          3)
   (expect "seq-enumerate, the sequence version"
           {listing (Tuple i x) (:for (Tuple i x) (seq-enumerate (filter even? #[1 2 3 4])))}
           (list (Tuple 0 2) (Tuple 1 4)))
@@ -72,9 +78,11 @@
   (expect "zip of different types"
           {listing (str s (displayed n)) (:for (Tuple s n) (zip (list "a" "b" "c") #[1 2 3]))}
           (list "a1" "b2" "c3"))
-  (expect "zip ends at the shorter, left" {listing p (:for p (zip #[1 2] [7 8 9]))}
+  (expect "zip ends at the shorter, left"
+          {listing p (:for p (zip #[1 2] [7 8 9]))}
           (list (Tuple 1 7) (Tuple 2 8)))
-  (expect "zip ends at the shorter, right" {listing p (:for p (zip "abc" (range 0 1)))}
+  (expect "zip ends at the shorter, right"
+          {listing p (:for p (zip "abc" (range 0 1)))}
           (list (Tuple #\a 0)))
   (expect "zip with an empty side" {listing p (:for p (zip (list) #[1 2]))} (list))
   (expect "each element and the next"
@@ -83,7 +91,8 @@
   (expect "zip and enumerate"
           {listing (Tuple i (fst p)) (:for (Tuple i p) (enumerate (zip "xy" [1.5 2.5])))}
           (list (Tuple 0 #\x) (Tuple 1 #\y)))
-  (expect "zip three, nested" {listing (Tuple a (fst bc)) (:for (Tuple a bc) (zip #[1 2] (zip "pq" [#t #f])))}
+  (expect "zip three, nested"
+          {listing (Tuple a (fst bc)) (:for (Tuple a bc) (zip #[1 2] (zip "pq" [#t #f])))}
           (list (Tuple 1 #\p) (Tuple 2 #\q)))
 
   ;; --- through dictionaries ------------------------------------------------------
@@ -95,25 +104,33 @@
   ;; --- what is passed on ---------------------------------------------------------
   ;; zip ends the longer side when the shorter one ends, and nothing else.
   (set! events '())
-  (expect "zip: the pairs" {summing (+ a b) (:for (Tuple a b) (zip (counter "short" 2) (counter "long" 5)))} 2)
+  (expect "zip: the pairs"
+          {summing (+ a b) (:for (Tuple a b) (zip (counter "short" 2) (counter "long" 5)))}
+          2)
   (expect "zip: the longer side is ended where the shorter ended"
-          (events-in-order) (list "end long at 2"))
+          (events-in-order)
+          (list "end long at 2"))
   (set! events '())
   (ignore {summing 1 (:for p (zip (counter "long" 5) (counter "short" 1)))})
   (expect "zip: the left side ended when the right is the shorter"
-          (events-in-order) (list "end long at 1"))
+          (events-in-order)
+          (list "end long at 1"))
   ;; An early exit ends the cursors the adapter wraps.
   (set! events '())
-  (loop (:for (Tuple i x) (enumerate (counter "e" 9))) (:finish (= i 2)))
+  (loop (:for (Tuple i x) (enumerate (counter "e" 9)))
+        (:finish (= i 2)))
   (expect "enumerate passes on the end at a :finish" (events-in-order) (list "end e at 2"))
   (set! events '())
-  (loop (:for p (zip (counter "a" 9) (counter "b" 9))) (:finish (= (fst p) 1)))
+  (loop (:for p (zip (counter "a" 9) (counter "b" 9)))
+        (:finish (= (fst p) 1)))
   (expect "zip passes on the end to both" (events-in-order) (list "end a at 1" "end b at 1"))
   ;; An exception cleans them up.
   (set! events '())
-  (match (try (loop (:for (Tuple i x) (enumerate (counter "t" 9)))
-                    (:do (when (= i 3) (raise (cast Exception (Boom. "stop"))))))
-              #:catch (System.InvalidOperationException))
+  (match (try
+           (loop (:for (Tuple i x) (enumerate (counter "t" 9)))
+                 (:do (when (= i 3)
+                        (raise (cast Exception (Boom. "stop"))))))
+           #:catch (System.InvalidOperationException))
     ((Ok _) (println "FAILURE: the loop did not throw"))
     ((Err e) (println "ok: the loop threw")))
   (expect "enumerate passes on the cleanup" (events-in-order) (list "cleanup t at 3"))

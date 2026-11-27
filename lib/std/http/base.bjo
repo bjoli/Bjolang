@@ -120,8 +120,7 @@
 ;; Returns every value of `name`, in order.
 (: (-> Headers string (Vec string)))
 (defun (headers-ref-all h name)
-  (vec-map pair-value
-           (vec-filter (fun (p) (same-name? (pair-name p) name)) (record-ref h entries))))
+  (vec-map pair-value (vec-filter (fun (p) (same-name? (pair-name p) name)) (record-ref h entries))))
 
 ;; Returns the first value of `name`.
 (: (-> Headers string (Option string)))
@@ -173,12 +172,17 @@
 ;; Builds a response. A transport calls this, and so does a test double.
 (: (-> int ClrStream (#:reason string) (#:url string) (#:headers Headers) (#:release (-> void))
        Response))
-(defun (make-response status stream
+(defun (make-response status
+                      stream
                       #:reason ""
                       #:url ""
                       #:headers headers-empty
                       #:release (fun () unit))
-  (Response (status status) (reason reason) (url url) (headers headers) (stream stream)
+  (Response (status status)
+            (reason reason)
+            (url url)
+            (headers headers)
+            (stream stream)
             (release release)))
 
 (: (-> Response int))
@@ -219,15 +223,14 @@
 (: (-> string (Option string)))
 (defun (charset-name content-type)
   (loop (:for part (string-split content-type ";"))
-        (:acc found
-              (folding None
-                       (let ((trimmed (string-trim part)))
-                         (if (string-starts-with? (string-downcase trimmed) "charset=")
-                             (match (string-split-once trimmed "=")
-                               ((Some (Tuple key value))
-                                (Some (string-replace (string-trim value) "\"" "")))
-                               (None found))
-                             found))))))
+        (:acc found (folding None
+                             (let ((trimmed (string-trim part)))
+                               (if (string-starts-with? (string-downcase trimmed) "charset=")
+                                   (match (string-split-once trimmed "=")
+                                     ((Some (Tuple key value))
+                                      (Some (string-replace (string-trim value) "\"" "")))
+                                     (None found))
+                                   found))))))
 
 ;; Returns the charset the response declares, or UTF-8 when it declares none.
 ;; An unknown charset is an `Err` with a message that names it.
@@ -331,5 +334,4 @@
 (: (-> Handler #:rest Middleware Handler))
 (defun (layered handler #:rest middlewares)
   (loop (:for i (range 0 (array-length middlewares)))
-        (:acc h (folding handler
-                         ((array-ref middlewares (- (array-length middlewares) i 1)) h)))))
+        (:acc h (folding handler ((array-ref middlewares (- (array-length middlewares) i 1)) h)))))

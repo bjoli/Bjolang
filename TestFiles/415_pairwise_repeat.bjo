@@ -49,15 +49,23 @@
   (expect "a vec" (->list (pairwise [1 2 3])) (list (Tuple 1 2) (Tuple 2 3)))
   (expect "a string" (->list (pairwise "abc")) (list (Tuple #\a #\b) (Tuple #\b #\c)))
   (expect "a range" (->list (pairwise (range 0 3))) (list (Tuple 0 1) (Tuple 1 2)))
-  (expect "a sequence" (->list (pairwise (map (fun (x) (* 2 x)) '(1 2 3)))) (list (Tuple 2 4) (Tuple 4 6)))
+  (expect "a sequence"
+          (->list (pairwise (map (fun (x) (* 2 x)) '(1 2 3))))
+          (list (Tuple 2 4) (Tuple 4 6)))
   (expect "one element" (->list (pairwise '(1))) '())
   (expect "none" (->list (pairwise #[])) '())
   (expect "count" (count (pairwise (range 0 10))) 9)
-  (expect "with enumerate" (->list (pairwise (enumerate "ab")))
+  (expect "with enumerate"
+          (->list (pairwise (enumerate "ab")))
           (list (Tuple (Tuple 0 #\a) (Tuple 1 #\b))))
   ;; One walk: a sequence's body runs once.
   (def/mutable runs 0)
-  (def counted (seq (set! runs (+ runs 1)) (yield 1) (yield 2) (yield 3)))
+  (def counted
+    (seq
+      (set! runs (+ runs 1))
+      (yield 1)
+      (yield 2)
+      (yield 3)))
   (expect "a sequence walked once" (->list (pairwise counted)) (list (Tuple 1 2) (Tuple 2 3)))
   (expect "its body ran once" runs 1)
   (def at-vec rises)
@@ -70,14 +78,17 @@
           (->list (filter (fun (e) (string-starts-with? e "done?")) (events-in-order)))
           (list "done? 0" "done? 1" "done? 2" "done? 3"))
   (set! events '())
-  (loop (:for (Tuple a b) (pairwise (counter 9))) (:finish (= a 2)))
+  (loop (:for (Tuple a b) (pairwise (counter 9)))
+        (:finish (= a 2)))
   (expect "a :finish ends the inner cursor"
           (->list (filter (fun (e) (string-starts-with? e "end")) (events-in-order)))
           (list "end 3"))
   (set! events '())
-  (match (try (loop (:for (Tuple a b) (pairwise (counter 9)))
-                    (:do (when (= b 4) (raise (cast Exception (Boom. "stop"))))))
-              #:catch (System.InvalidOperationException))
+  (match (try
+           (loop (:for (Tuple a b) (pairwise (counter 9)))
+                 (:do (when (= b 4)
+                        (raise (cast Exception (Boom. "stop"))))))
+           #:catch (System.InvalidOperationException))
     ((Ok _) (println "FAILURE: the loop did not throw"))
     ((Err e) (println "ok: the loop threw")))
   (expect "an exception cleans the inner cursor up"
@@ -89,7 +100,8 @@
   (expect "zero times" (->list (in-repeat 'a #:times 0)) '())
   (expect "fewer than zero" (->list (in-repeat 'a #:times -2)) '())
   (expect "without end, taken" (->list (take 4 (in-repeat 7))) '(7 7 7 7))
-  (expect "a side of a zip" {listing (Tuple k v) (:for (Tuple k v) (zip '(x y) (in-repeat 0)))}
+  (expect "a side of a zip"
+          {listing (Tuple k v) (:for (Tuple k v) (zip '(x y) (in-repeat 0)))}
           (list (Tuple 'x 0) (Tuple 'y 0)))
   (expect "count" (count (in-repeat "s" #:times 5)) 5)
   (expect "first" (first (in-repeat #\z)) (Some #\z))

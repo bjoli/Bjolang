@@ -23,8 +23,9 @@
 (: (-> string string))
 (defun (first-word path)
   (match (read-it path)
-    ((Ok text) (let ((words (string-split text " ")))
-                 (if (empty? words) "" (vec-ref words 0))))
+    ((Ok text)
+     (let ((words (string-split text " ")))
+       (if (empty? words) "" (vec-ref words 0))))
     ((Err e) "unreadable")))
 
 (: (-> (Option string) string))
@@ -40,8 +41,7 @@
   ;; assertion that the body left nothing open. `call-with-input-file` closes
   ;; each port it opens, so the count is back at zero by the end.
   (with-test "a fake filesystem reads"
-    (with-fake-fs (("notes.txt" "alpha beta gamma")
-                   ("empty.txt" ""))
+    (with-fake-fs (("notes.txt" "alpha beta gamma") ("empty.txt" ""))
       (expect "a fake file reads back" (read-it "notes.txt") (Ok "alpha beta gamma"))
       (expect "an empty fake file is empty" (read-it "empty.txt") (Ok ""))
       (expect "a library function sees the fake" (first-word "notes.txt") "alpha")))
@@ -72,9 +72,13 @@
   (with-test "the whole-file functions use the fake"
     (with-fake-fs (("log.txt" "one\n"))
       (raise-err (file-append-text "log.txt" "two\n"))
-      (expect "file-append-text appends to a seed" (raise-err (file-read-text "log.txt")) "one\ntwo\n")
+      (expect "file-append-text appends to a seed"
+              (raise-err (file-read-text "log.txt"))
+              "one\ntwo\n")
       (raise-err (file-append-text "log.txt" "three\n"))
-      (expect "and to its own earlier write" (raise-err (file-read-text "log.txt")) "one\ntwo\nthree\n")
+      (expect "and to its own earlier write"
+              (raise-err (file-read-text "log.txt"))
+              "one\ntwo\nthree\n")
       (raise-err (file-write-text "log.txt" "fresh"))
       (expect "file-write-text truncates" (raise-err (file-read-text "log.txt")) "fresh")
       (raise-err (file-append-text "new.txt" "made"))
@@ -102,7 +106,10 @@
   (expect "a real truncate" (raise-err (file-read-text real)) "c")
   (expect-true "a real CreateNew on an existing file is AlreadyExists"
                (match (open-output-file real #:mode CreateNew)
-                 ((Ok p) (let () (close-output-port p) #f))
+                 ((Ok p)
+                  (let ()
+                    (close-output-port p)
+                    #f))
                  ((Err (AlreadyExists _ (:is System.IO.IOException _))) #t)
                  ((Err e) #f)))
   (raise-err (file-delete real))
@@ -113,7 +120,8 @@
   (raise-err (file-move real (path-combine "214_probe_dir" "moved.txt")))
   (expect-true "a real move takes the old name away" (not (file-exists? real)))
   (expect "and the new one has the contents"
-          (raise-err (file-read-text (path-combine "214_probe_dir" "moved.txt"))) "d")
+          (raise-err (file-read-text (path-combine "214_probe_dir" "moved.txt")))
+          "d")
   (raise-err (directory-create (path-combine "214_probe_dir" "a" "b")))
   (raise-err (file-write-text (path-combine "214_probe_dir" "a" "b" "deep.txt") "deep"))
   (expect "a real listing"
@@ -130,23 +138,27 @@
   (with-test "the byte openers use the fake"
     (with-fake-fs (("hi.txt" "hi"))
       (match (open-input-file "hi.txt")
-        ((Ok p) (with-open ((i p))
-                  (expect "a seed reads as bytes"
-                          (match (read-bytes i 2)
-                            ((Some bs) (str (byte->string (array-ref bs 0)) "." (byte->string (array-ref bs 1))))
-                            (None "none"))
-                          "104.105")))
+        ((Ok p)
+         (with-open ((i p))
+           (expect "a seed reads as bytes"
+                   (match (read-bytes i 2)
+                     ((Some bs)
+                      (str (byte->string (array-ref bs 0)) "." (byte->string (array-ref bs 1))))
+                     (None "none"))
+                   "104.105")))
         ((Err e) (fail "the fake byte opener failed")))
       (match (open-output-file "out.bin")
-        ((Ok p) (with-open ((o p))
-                  (write-bytes! o (fake-text-bytes "ok"))
-                  (flush-port o)))
+        ((Ok p)
+         (with-open ((o p))
+           (write-bytes! o (fake-text-bytes "ok"))
+           (flush-port o)))
         ((Err e) (fail "the fake byte writer failed")))
       (expect "bytes written read back as text" (raise-err (file-read-text "out.bin")) "ok")
       (match (open-output-file "out.bin" #:mode Append)
-        ((Ok p) (with-open ((o p))
-                  (write-bytes! o (fake-text-bytes "!"))
-                  (flush-port o)))
+        ((Ok p)
+         (with-open ((o p))
+           (write-bytes! o (fake-text-bytes "!"))
+           (flush-port o)))
         ((Err e) (fail "the fake byte appender failed")))
       (expect "and Append appends" (raise-err (file-read-text "out.bin")) "ok!")
       (expect-true "a missing path is the real error type"
@@ -162,7 +174,8 @@
   (with-test "the lazy readers use the fake"
     (with-fake-fs (("lines.txt" "one\ntwo\nthree\n"))
       (expect "file-read-lines/seq reads the fake"
-              (->list (file-read-lines/seq "lines.txt")) (list "one" "two" "three"))
+              (->list (file-read-lines/seq "lines.txt"))
+              (list "one" "two" "three"))
       (expect "file->seq checks the fake at the call"
               (match (file->seq (fun (q) (read-line q)) "lines.txt")
                 ((Ok lines) (->list lines))
@@ -182,30 +195,39 @@
       (let ((here (current-scope))
             (start (scope-owned-count (current-scope))))
         (expect "two lines of three"
-                (->list (take 2 (file-read-lines/seq "lines.txt"))) (list "one" "two"))
+                (->list (take 2 (file-read-lines/seq "lines.txt")))
+                (list "one" "two"))
         (box-set! early (- (scope-owned-count here) start)))))
   (expect "a walk that stops early releases its port" (box-ref early) 0)
 
   ;; --- Directories through the fake -----------------------------------------
   (with-test "the directory functions use the fake"
-    (with-fake-fs (("src/main.bjo" "(main)")
-                   ("src/lib/util.bjo" "(util)")
-                   ("readme.txt" "hello"))
+    (with-fake-fs (("src/main.bjo" "(main)") ("src/lib/util.bjo" "(util)") ("readme.txt" "hello"))
       (expect-true "a seed's directory exists" (directory-exists? "src"))
       (expect-true "and its parents'" (directory-exists? "src/lib"))
       (expect-true "a file is not a directory" (not (directory-exists? "readme.txt")))
       (expect-true "a directory is not a file" (not (file-exists? "src")))
-      (expect "the root lists its files" (vec->list (raise-err (directory-files "."))) (list (path "readme.txt")))
-      (expect "and its directories" (vec->list (raise-err (directory-subdirectories ""))) (list (path "src")))
-      (expect "a directory lists whole paths" (vec->list (raise-err (directory-files "src"))) (list (path "src/main.bjo")))
-      (expect "a trailing slash is the same directory" (vec->list (raise-err (directory-subdirectories "src/"))) (list (path "src/lib")))
+      (expect "the root lists its files"
+              (vec->list (raise-err (directory-files ".")))
+              (list (path "readme.txt")))
+      (expect "and its directories"
+              (vec->list (raise-err (directory-subdirectories "")))
+              (list (path "src")))
+      (expect "a directory lists whole paths"
+              (vec->list (raise-err (directory-files "src")))
+              (list (path "src/main.bjo")))
+      (expect "a trailing slash is the same directory"
+              (vec->list (raise-err (directory-subdirectories "src/")))
+              (list (path "src/lib")))
 
       (raise-err (directory-create "build/out"))
       (expect-true "create makes the parents" (directory-exists? "build"))
       (expect-true "and the directory" (directory-exists? "build/out"))
       (expect-true "none of it on the disk" (none? (fs-info/raw (path "build"))))
       (raise-err (file-write-text "build/out/a.txt" "a"))
-      (expect "a write lands in a created directory" (raise-err (file-read-text "build/out/a.txt")) "a")
+      (expect "a write lands in a created directory"
+              (raise-err (file-read-text "build/out/a.txt"))
+              "a")
       (expect-true "a write into a missing directory is the real error type"
                    (match (open-output-file "nowhere/a.txt")
                      ((Ok _) #f)
@@ -232,7 +254,8 @@
                      ((Err _) #t)))
       (raise-err (file-move "src" "moved"))
       (expect "a moved directory takes everything below it"
-              (raise-err (file-read-text "moved/lib/util.bjo")) "(util)")
+              (raise-err (file-read-text "moved/lib/util.bjo"))
+              "(util)")
       (expect-true "and leaves nothing behind" (not (directory-exists? "src")))
 
       (raise-err (directory-delete-tree "moved"))
@@ -248,7 +271,10 @@
     (with-scope
       (let ((here (current-scope))
             (start (scope-owned-count (current-scope))))
-        (def p (match (open-input-file "notes.txt") ((Ok p) p) ((Err e) (panic! "no fake port"))))
+        (def p
+          (match (open-input-file "notes.txt")
+            ((Ok p) p)
+            ((Err e) (panic! "no fake port"))))
         (box-set! counts (str (box-ref counts) (int->string (- (scope-owned-count here) start))))
         (ignore (read-all p))
         ;; Closed by the scope, not here.
@@ -259,9 +285,10 @@
   (def escaped (make-box None))
   (with-fake-fs (("notes.txt" "some text"))
     (with-scope
-      (box-set! escaped (Some (match (open-input-file "notes.txt")
-                                ((Ok p) p)
-                                ((Err e) (panic! "no fake port")))))))
+      (box-set! escaped
+                (Some (match (open-input-file "notes.txt")
+                        ((Ok p) p)
+                        ((Err e) (panic! "no fake port")))))))
   (match (box-ref escaped)
     (None (fail "the fake port did not escape"))
     ((Some p)
@@ -276,7 +303,9 @@
     (with-scope
       (let ((here (current-scope))
             (start (scope-owned-count (current-scope))))
-        (with-open ((p (match (open-input-file "notes.txt") ((Ok p) p) ((Err e) (panic! "no fake port")))))
+        (with-open ((p (match (open-input-file "notes.txt")
+                         ((Ok p) p)
+                         ((Err e) (panic! "no fake port")))))
           (ignore (read-all p)))
         (box-set! counts2 (int->string (- (scope-owned-count here) start))))))
   (expect "with-open takes a fake port off the list too" (box-ref counts2) "0")
@@ -301,9 +330,11 @@
   (def off (make-box "not run"))
   (with-fake-fs (("notes.txt" "from off the fiber"))
     (with-scope
-      (ignore (sync (blocking (fun () (box-set! off (match (read-it "notes.txt")
-                                                      ((Ok s) s)
-                                                      ((Err e) "unreadable")))))))))
+      (ignore (sync (blocking (fun ()
+                                (box-set! off
+                                          (match (read-it "notes.txt")
+                                            ((Ok s) s)
+                                            ((Err e) "unreadable")))))))))
   (expect "a perform inside blocking sees the fake" (box-ref off) "from off the fiber")
 
   ;; --- The raw opener bypasses the handler ---------------------------------
@@ -314,7 +345,10 @@
   (with-fake-fs (("notes.txt" "only in the fake"))
     (expect-true "open-input-file/raw goes past the handler"
                  (match (open-input-file/raw "notes.txt")
-                   ((Ok p) (let () (close-input-port p) #f))
+                   ((Ok p)
+                    (let ()
+                      (close-input-port p)
+                      #f))
                    ((Err e) #t)))
     (expect "while the effect answers from the fake" (read-it "notes.txt") (Ok "only in the fake")))
 
@@ -328,6 +362,7 @@
 
 (: (-bjo-> (Box string) string void))
 (defbjo (read-into b path)
-  (box-set! b (match (read-it path)
-                ((Ok s) s)
-                ((Err e) "unreadable"))))
+  (box-set! b
+            (match (read-it path)
+              ((Ok s) s)
+              ((Err e) "unreadable"))))

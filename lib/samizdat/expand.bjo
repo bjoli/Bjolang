@@ -928,8 +928,10 @@
 
 (: read-document-file (-> string (Map string Command) (#:typography bool) (Result string Document)))
 (defun (read-document-file path commands #:typography #t)
-  (match (result-and-then (fun (text) (read-document text commands #:name path #:typography typography))
-                          (result-map-err (fun (e) (str path ": " (.-Message (as-exception e)))) (file-read-text path)))
+  (match (result-and-then (fun (text)
+                            (read-document text commands #:name path #:typography typography))
+                          (result-map-err (fun (e) (str path ": " (.-Message (as-exception e))))
+                                          (file-read-text path)))
     ((Err e) (Err e))
     ((Ok doc)
      (def others (vec-filter (fun (p) (not (= p path))) (record-ref doc sources)))

@@ -26,11 +26,10 @@
 
 (: (-> (Vec (Loc int)) int int int void))
 (defun (move! accounts from to amount)
-  (ignore (atomically
-   (fun (tx)
-     (ignore (tx-update! tx (vec-ref accounts from) (fun (x) (- x amount))))
-     (ignore (tx-update! tx (vec-ref accounts to) (fun (x) (+ x amount))))
-     0))))
+  (ignore (atomically (fun (tx)
+                        (ignore (tx-update! tx (vec-ref accounts from) (fun (x) (- x amount))))
+                        (ignore (tx-update! tx (vec-ref accounts to) (fun (x) (+ x amount))))
+                        0))))
 
 (: (-> Tx (Vec (Loc int)) int))
 (defun (total tx accounts)
@@ -61,8 +60,7 @@
 (defbjo (reader-fiber accounts done bad-reads)
   (let lp ()
     (when (< (loc-ref done) 8)
-      (when (not (= (atomically (fun (tx) (total tx accounts)))
-                    (* account-count initial)))
+      (when (not (= (atomically (fun (tx) (total tx accounts))) (* account-count initial)))
         (ignore (atomically (fun (tx) (tx-update! tx bad-reads #(+ & 1))))))
       (lp))))
 
@@ -81,34 +79,34 @@
 
 (: (-> (Loc int) (Result Exception int)))
 (defun (plain-fail l)
-  (try (atomically (fun (tx) (tx-set! tx l 99) (boom "plain")))
-       #:catch (System.InvalidOperationException)))
+  (try
+    (atomically (fun (tx)
+                  (tx-set! tx l 99)
+                  (boom "plain")))
+    #:catch (System.InvalidOperationException)))
 
 (defbjo (main args)
   ;; --- the operations ----------------------------------------------------
   (def a (make-loc 1))
   (expect "loc-ref" (loc-ref a) 1)
-  (expect "a transaction returns its value"
-          (atomically (fun (tx) (+ (tx-ref tx a) 1)))
-          2)
+  (expect "a transaction returns its value" (atomically (fun (tx) (+ (tx-ref tx a) 1))) 2)
   (expect "tx-update! returns the new value"
           (atomically (fun (tx) (tx-update! tx a (fun (x) (* x 10)))))
           10)
-  (expect "tx-swap! returns the value from before"
-          (atomically (fun (tx) (tx-swap! tx a 7)))
-          10)
+  (expect "tx-swap! returns the value from before" (atomically (fun (tx) (tx-swap! tx a 7))) 10)
   (expect "a read after a write in the same transaction sees the write"
-          (atomically (fun (tx) (tx-set! tx a 3) (tx-ref tx a)))
+          (atomically (fun (tx)
+                        (tx-set! tx a 3)
+                        (tx-ref tx a)))
           3)
   (expect "the commit is visible" (loc-ref a) 3)
 
   ;; --- or-else -----------------------------------------------------------
   (expect "or-else: the second branch runs, and sees no write of the first"
-          (atomically
-           (fun (tx)
-             (tx-or-else tx
-                         (fun (tx) (tx-set! tx a 100) (tx-retry tx))
-                         (fun (tx) (tx-ref tx a)))))
+          (atomically (fun (tx)
+                        (tx-or-else tx (fun (tx)
+                                         (tx-set! tx a 100)
+                                         (tx-retry tx)) (fun (tx) (tx-ref tx a)))))
           3)
   (expect "and the write of the first is not committed" (loc-ref a) 3)
   (expect "or-else: a first branch that does not retry wins"
@@ -134,25 +132,26 @@
   (def never (make-loc #f))
   (def side (make-loc 0))
   (expect "a timeout wins over a transaction that retries"
-          (sync (choose (atomically-evt
-                         (fun (tx)
-                           (tx-set! tx side 1)
-                           (if (tx-ref tx never) "tx" (tx-retry tx))))
+          (sync (choose (atomically-evt (fun (tx)
+                                          (tx-set! tx side 1)
+                                          (if (tx-ref tx never) "tx" (tx-retry tx))))
                         (wrap (timeout (milliseconds 30)) (fun (_) "timeout"))))
           "timeout")
   (atomically (fun (tx) (tx-set! tx never #t)))
   (sync (timeout (milliseconds 50)))
   (expect "the transaction that lost wrote nothing, also after the write" (loc-ref side) 0)
   (expect "a transaction that commits wins over a later branch"
-          (sync (choose (atomically-evt (fun (tx) "tx"))
-                        (always "always")))
+          (sync (choose (atomically-evt (fun (tx) "tx")) (always "always")))
           "tx")
 
   ;; --- exceptions --------------------------------------------------------
   (def e (make-loc 0))
   (expect-true "an exception from the transaction is raised by atomically"
-               (match (try (atomically (fun (tx) (tx-set! tx e 5) (boom "fiber")))
-                           #:catch (System.InvalidOperationException))
+               (match (try
+                        (atomically (fun (tx)
+                                      (tx-set! tx e 5)
+                                      (boom "fiber")))
+                        #:catch (System.InvalidOperationException))
                  ((Ok _) #f)
                  ((Err _) #t)))
   (expect "and the transaction wrote nothing" (loc-ref e) 0)
@@ -160,12 +159,16 @@
   ;; --- the colour of an ordinary function --------------------------------
   (def p (make-loc 21))
   (expect "atomically in an ordinary function" (plain-double! p) 42)
-  (expect-true "and its exception" (match (plain-fail p) ((Ok _) #f) ((Err _) #t)))
+  (expect-true "and its exception"
+               (match (plain-fail p)
+                 ((Ok _) #f)
+                 ((Err _) #t)))
   (expect "which wrote nothing" (loc-ref p) 42)
 
   ;; --- eight fibers at once ----------------------------------------------
-  (def accounts (loop (:for i (range 0 account-count))
-                      (:acc v (vecing (make-loc initial)))))
+  (def accounts
+    (loop (:for i (range 0 account-count))
+          (:acc v (vecing (make-loc initial)))))
   (def done (make-loc 0))
   (def bad-reads (make-loc 0))
   (with-scope

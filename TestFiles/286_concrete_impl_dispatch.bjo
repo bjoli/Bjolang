@@ -13,12 +13,17 @@
   (defun (over xs) (string-append "ints:" (displayed (list-length xs)))))
 
 (impl (Over (Option %a)) (where (Over %a))
-  (defun (over o) (match o ((Some x) (string-append "some " (over x))) (None "none"))))
+  (defun (over o)
+    (match o
+      ((Some x) (string-append "some " (over x)))
+      (None "none"))))
 
 (: ping (-> int %a string) (where (Over %a)))
 (: pong (-> int %a string) (where (Over %a)))
-(defun (ping n x) (if (= n 0) (over x) (pong (- n 1) x)))
-(defun (pong n x) (if (= n 0) (over x) (ping (- n 1) x)))
+(defun (ping n x)
+  (if (= n 0) (over x) (pong (- n 1) x)))
+(defun (pong n x)
+  (if (= n 0) (over x) (ping (- n 1) x)))
 
 (defun (main)
   (expect "a concrete impl, through a dictionary" (ping 3 (list 1 2 3)) "ints:3")

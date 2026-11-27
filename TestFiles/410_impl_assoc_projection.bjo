@@ -17,7 +17,8 @@
 (import "inc/enumerated.bjo")
 
 ;; The elements of `left` and `right` side by side, until either ends.
-(type (: (Zipped %a %b) (Struct (: left %a) (: right %b))))
+(type (: (Zipped %a %b) (Struct (: left %a)
+                                (: right %b))))
 
 (impl (Iterable (Zipped %a %b)) (where (Iterable %a) (Iterable %b))
   (type %elem (Tuple (assoc Iterable elem %a) (assoc Iterable elem %b)))
@@ -27,7 +28,8 @@
   (defun (iterable-done? z c)
     (or (iterable-done? (record-ref z left) (fst c)) (iterable-done? (record-ref z right) (snd c))))
   (defun (iterable-current z c)
-    (Tuple (iterable-current (record-ref z left) (fst c)) (iterable-current (record-ref z right) (snd c))))
+    (Tuple (iterable-current (record-ref z left) (fst c))
+           (iterable-current (record-ref z right) (snd c))))
   (defun (iterable-next z c)
     (Tuple (iterable-next (record-ref z left) (fst c)) (iterable-next (record-ref z right) (snd c)))))
 
@@ -53,7 +55,9 @@
           {listing (Tuple i x) (:for (Tuple i x) (enumerated #[10 20 30]))}
           (list (Tuple 0 10) (Tuple 1 20) (Tuple 2 30)))
   (expect "enumerated list" {summing (* i x) (:for (Tuple i x) (enumerated (list 5 6 7)))} 20)
-  (expect "enumerated string" {listing i (:for (Tuple i c) (enumerated "héj")) (:when (char=? c #\j))} (list 2))
+  (expect "enumerated string"
+          {listing i (:for (Tuple i c) (enumerated "héj")) (:when (char=? c #\j))}
+          (list 2))
   (expect "enumerated twice"
           {listing (Tuple i (fst p)) (:for (Tuple i p) (enumerated (enumerated #["a" "b"])))}
           (list (Tuple 0 0) (Tuple 1 1)))
@@ -66,12 +70,15 @@
 
   ;; Through dictionaries: the functions as values are not specialised.
   (def counts (list count-all))
-  (expect "count, through a dictionary" (list-map (fun (f) (f (zipped #[1 2 3] (list "p" "q")))) counts) (list 2))
+  (expect "count, through a dictionary"
+          (list-map (fun (f) (f (zipped #[1 2 3] (list "p" "q")))) counts)
+          (list 2))
   (def via-enumerated count-enumerated)
   (expect "enumerated built in a generic body" (via-enumerated (list 1 2 3)) 3)
   (def sum-indexes index-sum)
   (expect "index sum, through a dictionary" (sum-indexes "abcd") 6)
   (def nested count-all)
   (expect "nested adapters, through a dictionary"
-          (nested (enumerated (zipped (enumerated #[7 8 9]) (list #\a #\b)))) 2)
+          (nested (enumerated (zipped (enumerated #[7 8 9]) (list #\a #\b))))
+          2)
   0)

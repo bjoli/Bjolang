@@ -8,7 +8,8 @@
 
 (: (-> string (List char)))
 (defun (chars s)
-  (loop (:for ch s) (:acc (listing ch))))
+  (loop (:for ch s)
+        (:acc (listing ch))))
 
 (defun (main)
   (def text "aé€😀 z")
@@ -17,14 +18,19 @@
   (expect "every width of UTF-8" (chars text) (string->list text))
 
   ;; A slice's walk stops at its end, not the end of its array.
-  (def middle (substring/slice text (string-cursor-next text (string-cursor-start text))
-                               (string-cursor-prev text (string-cursor-prev text (string-cursor-end text)))))
+  (def middle
+    (substring/slice text
+                     (string-cursor-next text (string-cursor-start text))
+                     (string-cursor-prev text (string-cursor-prev text (string-cursor-end text)))))
   (expect "a slice" (chars middle) (list #\é #\€ #\😀))
   (expect "a field of a split" (chars (vec-ref (string-split/slice "ab,cd,ef" ",") 1)) (list #\c #\d))
 
   (expect "what Iterable builds" (->list (->seq "añb")) (list #\a #\ñ #\b))
   (expect "a loop that stops early"
-          (loop (:for ch text) (:finish (char=? ch #\😀)) (:acc n (counting ch)) => n)
+          (loop (:for ch text)
+                (:finish (char=? ch #\😀))
+                (:acc n (counting ch))
+            => n)
           3)
 
   ;; The walk itself, as an inlined impl reaches it.

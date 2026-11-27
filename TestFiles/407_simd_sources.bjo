@@ -39,7 +39,7 @@
   (expect "a short array" (commas (string->bytes "a,b")) '(1))
 
   ;; Byte lanes from an array.
-  (def text (string->bytes "0123456789abcdefghijklmnopqrstuvwxyz,,"))   ; 38 bytes
+  (def text (string->bytes "0123456789abcdefghijklmnopqrstuvwxyz,,")) ; 38 bytes
   (: UInt8x32)
   (def v (simd256-load text 1))
   (expect "a byte lane" (simd-ref v 0) 49uy)
@@ -53,12 +53,16 @@
   ;; Mask bits.
   (def x (simd128-load #[4 5 6 7] 0))
   (expect "mask bits" (simd-mask-bits (simd-lt x (simd128-splat 6))) 3)
-  (expect "mask bits, lanes 1 and 3" (simd-mask-bits (simd-eq (simd-and x (simd128-splat 1)) (simd128-splat 1))) 10)
+  (expect "mask bits, lanes 1 and 3"
+          (simd-mask-bits (simd-eq (simd-and x (simd128-splat 1)) (simd128-splat 1)))
+          10)
   (expect "an empty mask" (simd-mask-bits (simd-gt x (simd128-splat 99))) 0)
   (expect "a 32-lane mask with lane 31 set is negative"
-          (simd-mask-bits (simd-eq (simd256-load text 0) (simd256-splat 118uy)))   ; v, lane 31
+          (simd-mask-bits (simd-eq (simd256-load text 0) (simd256-splat 118uy))) ; v, lane 31
           -2147483648)
-  (expect "a double mask" (simd-mask-bits (simd-gt (simd256-load #[1.0 5.0 2.0 9.0] 0) (simd256-splat 3.0))) 10)
+  (expect "a double mask"
+          (simd-mask-bits (simd-gt (simd256-load #[1.0 5.0 2.0 9.0] 0) (simd256-splat 3.0)))
+          10)
 
   ;; Shifts.
   (def n (simd128-load #[-16 16 1 -1] 0))
@@ -66,12 +70,14 @@
   (expect "shift-right keeps the sign" (simd-ref (simd-shift-right n 2) 0) -4)
   (expect "shift-right-logical brings in zeros" (simd-ref (simd-shift-right-logical n 28) 0) 15)
   (expect "shift-right of an unsigned lane is logical"
-          (simd-ref (simd-shift-right (simd256-splat 128uy) 7) 5) 1uy)
+          (simd-ref (simd-shift-right (simd256-splat 128uy) 7) 5)
+          1uy)
   (expect "a 256-bit shift" (simd-sum (simd-shift-left (simd256-load #[1L 2L 3L 4L] 0) 1)) 20L)
 
   ;; Loads from a MutableVec.
   (def mv (mutablevec))
-  (loop (:for i (range 0 10)) (:do (mutablevec-add! mv (* (cast System.Double i) 1.5))))
+  (loop (:for i (range 0 10))
+        (:do (mutablevec-add! mv (* (cast System.Double i) 1.5))))
   (expect "MutableVec lanes" (simd256-lanes mv) 4)
   (expect "MutableVec whole" (simd256-whole mv) 8)
   (expect "MutableVec length" (simd-source-length mv) 10)

@@ -8,12 +8,11 @@
 
 ;; Keywords, a list without one, symbols, repeats and splices.
 (def/grammar Form
-  (Form (:or (: FPipe   (pipe Form ...))
-             (: FInto   (into-file string Form))
-             (: FSym    symbol)
-             (: FStr    string)
-             (: FFn     ,(-> string string))
-             (: FCmd    (Word ...+))))
+  (Form (:or (: FPipe (pipe Form ...)) (: FInto (into-file string Form))
+             (: FSym symbol)
+             (: FStr string)
+             (: FFn ,(-> string string))
+             (: FCmd (Word ...+))))
   (Word (:or (: WSym symbol) (: WStr string) (: WInt int) (: WSub (Word ...)))))
 
 (: (-> Word string))
@@ -38,9 +37,7 @@
 ;; bool for a keyword that may be there.
 (def/grammar Select
   (Select (select (: columns Col ...+) (: rest Clauses)))
-  (Clauses (:each (: where    (:? (where Test)))
-                  (: limit    (:? (limit int)))
-                  (: distinct (:? 'distinct))))
+  (Clauses (:each (: where (:? (where Test))) (: limit (:? (limit int))) (: distinct (:? 'distinct))))
   (Col (:or (: ColName symbol) (: ColAs (as symbol string))))
   (Test (:or (: TEq (= symbol int)) (: TRaw ,string))))
 
@@ -62,18 +59,19 @@
   (str "SELECT "
        (if (record-ref clauses distinct) "DISTINCT " "")
        (string-join (list->vec (list-map show-col (record-ref s columns))) ", ")
-       (match (record-ref clauses where) ((Some t) (str " WHERE " (show-test t))) (None ""))
-       (match (record-ref clauses limit) ((Some n) (str " LIMIT " (int->string n))) (None ""))))
+       (match (record-ref clauses where)
+         ((Some t) (str " WHERE " (show-test t)))
+         (None ""))
+       (match (record-ref clauses limit)
+         ((Some n) (str " LIMIT " (int->string n)))
+         (None ""))))
 
 ;; A generic grammar: the leaves are another grammar.
 (def/grammar (Cond %leaf)
-  (:or (: And (and (Cond %leaf) ...))
-       (: Not (not (Cond %leaf)))
-       (: Leaf %leaf)))
+  (:or (: And (and (Cond %leaf) ...)) (: Not (not (Cond %leaf))) (: Leaf %leaf)))
 
 (def/grammar UserTest
-  (:or (: TId (id int))
-       (: TName (name string))))
+  (:or (: TId (id int)) (: TName (name string))))
 
 (: (-> UserTest string))
 (defun (show-user t)
@@ -91,8 +89,7 @@
 ;; A sequence read in place, and a vec.
 (def/grammar Path
   (Path (path (: segments string ...) (: tail Tail)))
-  (Tail (:each (: query    (:? (query Pair ...)))
-               (: fragment (:? (fragment string)))))
+  (Tail (:each (: query (:? (query Pair ...))) (: fragment (:? (fragment string)))))
   (Pair [(: key symbol) (: value string)]))
 
 (: (-> Path string))
@@ -101,16 +98,23 @@
   (str (string-join (list->vec (list-map #(str "/" &1) (record-ref p segments))) "")
        (match (record-ref tail query)
          ((Some pairs)
-          (str "?" (string-join (list->vec (list-map (fun (pair) (str (symbol->string (record-ref pair key)) "=" (record-ref pair value))) pairs)) "&")))
+          (str "?" (string-join (list->vec (list-map (fun (pair)
+                                                       (str (symbol->string (record-ref pair key)) "="
+                                                            (record-ref pair value)))
+                                                     pairs))
+                                "&")))
          (None ""))
-       (match (record-ref tail fragment) ((Some f) (str "#" f)) (None ""))))
+       (match (record-ref tail fragment)
+         ((Some f) (str "#" f))
+         (None ""))))
 
 (: (-> string string string bool))
 (defun (check what got want)
   (if (= got want)
       #t
-      (begin (println (str what ": got '" got "', want '" want "'"))
-          #f)))
+      (begin
+        (println (str what ": got '" got "', want '" want "'"))
+        #f)))
 
 (defun (main args)
   (def shout (fun (s) (string-upcase s)))

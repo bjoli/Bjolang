@@ -14,7 +14,8 @@
   (Boom (: System.InvalidOperationException (-> string Boom))))
 
 ;; Counts to `n`, and logs each `done?`, end and cleanup with its label.
-(type (: Counter (Struct (: label string) (: n int))))
+(type (: Counter (Struct (: label string)
+                         (: n int))))
 
 (def/mutable events '())
 
@@ -56,7 +57,8 @@
   ;; --- the elements --------------------------------------------------------------
   (expect "an array and a list" (->list (chain #[1 2] '(3 4))) '(1 2 3 4))
   (expect "a range and a vec" {summing x (:for x (chain (range 0 3) [10 20]))} 33)
-  (expect "a string and a sequence" (->list (chain "ab" (map (fun (c) c) "cd")))
+  (expect "a string and a sequence"
+          (->list (chain "ab" (map (fun (c) c) "cd")))
           (list #\a #\b #\c #\d))
   (expect "the first empty" (->list (chain '() [5])) '(5))
   (expect "the second empty" (->list (chain [5] '())) '(5))
@@ -78,9 +80,9 @@
           (events-starting "done?")
           (list "done? a 0" "done? a 1" "done? a 2" "done? b 0" "done? b 1" "done? b 2"))
   (set! events '())
-  (loop (:for x (chain (counter "a" 5) (counter "b" 5))) (:finish (= x 1)))
-  (expect "a :finish on the first side ends both"
-          (events-starting "end") (list "end a 1" "end b 0"))
+  (loop (:for x (chain (counter "a" 5) (counter "b" 5)))
+        (:finish (= x 1)))
+  (expect "a :finish on the first side ends both" (events-starting "end") (list "end a 1" "end b 0"))
   (set! events '())
   (def/mutable seen 0)
   (loop (:for x (chain (counter "a" 1) (counter "b" 5)))
@@ -88,19 +90,22 @@
         (:finish (= seen 3)))
   ;; The first side's cursor is ended too, after its `done?` answered true,
   ;; which the protocol allows: an end there does nothing but log here.
-  (expect "a :finish on the second side ends both"
-          (events-starting "end") (list "end a 1" "end b 1"))
+  (expect "a :finish on the second side ends both" (events-starting "end") (list "end a 1" "end b 1"))
   (set! events '())
-  (match (try (loop (:for x (chain (counter "a" 3) (counter "b" 3)))
-                    (:do (when (= x 2) (raise (cast Exception (Boom. "stop"))))))
-              #:catch (System.InvalidOperationException))
+  (match (try
+           (loop (:for x (chain (counter "a" 3) (counter "b" 3)))
+                 (:do (when (= x 2)
+                        (raise (cast Exception (Boom. "stop"))))))
+           #:catch (System.InvalidOperationException))
     ((Ok _) (println "FAILURE: the loop did not throw"))
     ((Err e) (println "ok: the loop threw")))
   (expect "an exception cleans both up"
-          (events-starting "cleanup") (list "cleanup a 2" "cleanup b 0"))
+          (events-starting "cleanup")
+          (list "cleanup a 2" "cleanup b 0"))
 
   ;; --- an implementation's pin across a module -------------------------------------
   (expect "an imported pinned impl" (->list (both #[1] '(2 3))) '(1 2 3))
-  (expect "an imported pinned impl, built by hand" (->list (Both (left "a") (right "b")))
+  (expect "an imported pinned impl, built by hand"
+          (->list (Both (left "a") (right "b")))
           (list #\a #\b))
   0)

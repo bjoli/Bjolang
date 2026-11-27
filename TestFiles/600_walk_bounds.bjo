@@ -57,25 +57,34 @@
 
   ;; --- a #:to that the walk could step past -------------------------------------
   (expect-true "up-from raises"
-               (string-contains? (raised (fun () (list-length (some-of (up-from 0 #:to (- int-max 1) #:by 4) 3))))
-                                 "up-from: #:to is 2147483646 and #:by is 4"))
+               (string-contains?
+                (raised (fun () (list-length (some-of (up-from 0 #:to (- int-max 1) #:by 4) 3))))
+                "up-from: #:to is 2147483646 and #:by is 4"))
   (expect-true "down-from raises"
-               (string-contains? (raised (fun () (list-length (some-of (down-from 10 #:to (+ int-min 1) #:by 4) 3))))
-                                 "down-from: #:to is -2147483647 and #:by is 4"))
+               (string-contains?
+                (raised (fun () (list-length (some-of (down-from 10 #:to (+ int-min 1) #:by 4) 3))))
+                "down-from: #:to is -2147483647 and #:by is 4"))
   (expect-true "a #:to that is the end of the type raises too"
-               (string-contains? (raised (fun () (list-length (some-of (up-from (- int-max 5) #:to int-max #:by 2) 3))))
-                                 "up-from: #:to is 2147483647 and #:by is 2"))
+               (string-contains?
+                (raised (fun ()
+                          (list-length (some-of (up-from (- int-max 5) #:to int-max #:by 2) 3))))
+                "up-from: #:to is 2147483647 and #:by is 2"))
   (expect-true "down-from to int-min raises"
-               (string-contains? (raised (fun () (list-length (some-of (down-from 0 #:to int-min) 3))))
+               (string-contains? (raised (fun ()
+                                           (list-length (some-of (down-from 0 #:to int-min) 3))))
                                  "down-from: #:to is -2147483648 and #:by is 1"))
   (expect-true "an unsigned count down to zero raises"
-               (string-contains? (raised (fun () (loop (:for x (down-from 3u #:to 0u)) (:acc n (counting x)))))
+               (string-contains? (raised (fun ()
+                                           (loop (:for x (down-from 3u #:to 0u))
+                                                 (:acc n (counting x)))))
                                  "down-from: #:to is 0 and #:by is 1"))
   (expect "an unsigned count down to one"
-          (loop (:for x (down-from 3u #:to 1u)) (:acc n (counting x)))
+          (loop (:for x (down-from 3u #:to 1u))
+                (:acc n (counting x)))
           3)
   (expect "a #:to one step from the end is safe"
-          (raised (fun () (list-length (some-of (up-from (- int-max 9) #:to (- int-max 3) #:by 4) 100))))
+          (raised (fun ()
+                    (list-length (some-of (up-from (- int-max 9) #:to (- int-max 3) #:by 4) 100))))
           "no error")
   (expect "and gives its values"
           (some-of (up-from (- int-max 9) #:to (- int-max 3) #:by 4) 100)

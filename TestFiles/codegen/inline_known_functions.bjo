@@ -9,20 +9,23 @@
 ;; EXPECT-CS: , \(elem__[0-9]+ \* 2\)\);
 ;; EXPECT-NO-CS: listsubmap\(
 (: (-> (List int) (List int)))
-(defun (doubled xs) (list-map (fun (x) (* x 2)) xs))
+(defun (doubled xs)
+  (list-map (fun (x) (* x 2)) xs))
 
 ;; A `defbjouble` that takes a `-?->` is inlined with its Bjolang body, which
 ;; walks with a cursor, and not with the one that calls .NET with a delegate.
 ;; EXPECT-CS: vecsubcursorsubnext\(
 ;; EXPECT-NO-CS: clrsubvecsubfilter\(
 (: (-> (Vec int) (Vec int)))
-(defun (filtered-vec v) (vec-filter (fun (x) (> x 3)) v))
+(defun (filtered-vec v)
+  (vec-filter (fun (x) (> x 3)) v))
 
 ;; `vec-map` is written `#:no-inline`: its .NET version, which copies the
 ;; vec's arrays at their exact size, stays the call.
 ;; EXPECT-CS: return core_Module\.vecsubmap\(
 (: (-> (Vec int) (Vec int)))
-(defun (tripled-vec v) (vec-map (fun (x) (* x 3)) v))
+(defun (tripled-vec v)
+  (vec-map (fun (x) (* x 3)) v))
 
 ;; So does a function of this module written `#:no-inline`.
 (: (-> (-> int int) int int) #:no-inline)
@@ -30,12 +33,14 @@
 
 ;; EXPECT-CS: Module\.applysubonce\(
 (: (-> int int))
-(defun (not-inlined n) (apply-once (fun (x) (+ x 1)) n))
+(defun (not-inlined n)
+  (apply-once (fun (x) (+ x 1)) n))
 
 ;; EXPECT-CS: mapsubcursorsubnext\(
 ;; EXPECT-NO-CS: mapsubany_QMARK\(
 (: (-> (Map int int) bool))
-(defun (big-entry? m) (map-any? (fun (k x) (> (+ k x) 100)) m))
+(defun (big-entry? m)
+  (map-any? (fun (k x) (> (+ k x) 100)) m))
 
 ;; A body that calls its function twice keeps the call: the lambda would only
 ;; be bound to a local, and the call through it would remain.
@@ -44,9 +49,11 @@
 
 ;; EXPECT-CS: Module\.applysubtwice\(
 (: (-> int int))
-(defun (twice-used n) (apply-twice (fun (x) (+ x 1)) n))
+(defun (twice-used n)
+  (apply-twice (fun (x) (+ x 1)) n))
 
 ;; A parameter named like a published function is the parameter.
 ;; EXPECT-CS: return listsubmap__[0-9]+\(
 (: (-> (-> (-> int int) (List int) (List int)) (List int) (List int)))
-(defun (shadow list-map xs) (list-map (fun (x) (+ x 100)) xs))
+(defun (shadow list-map xs)
+  (list-map (fun (x) (+ x 100)) xs))

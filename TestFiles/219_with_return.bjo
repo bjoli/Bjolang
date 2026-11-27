@@ -20,7 +20,8 @@
 (import (std prelude))
 (import (std simpletest))
 
-(type (: Cfg (Record (: port int) (: hosts (List string)))))
+(type (: Cfg (Record (: port int)
+                     (: hosts (List string)))))
 
 (: (-> string bool))
 (defun (blocked? h) (= h "bad"))
@@ -33,10 +34,12 @@
 (: (-> (Option Cfg) (Option string) (Result string string)))
 (defun (configure cfg-opt host-opt)
   (with-return ret
-    (def (Some cfg) cfg-opt :leave-with (Err "no config"))
+    (def (Some cfg) cfg-opt
+      :leave-with (Err "no config"))
     (def (Cons first-host _) (record-ref cfg hosts)
       :leave-with (Err (str "no hosts, and the port was " (int->string (record-ref cfg port)))))
-    (def (Some host) host-opt :leave-with (Err "no host"))
+    (def (Some host) host-opt
+      :leave-with (Err "no host"))
     (Ok (str host "/" first-host ":" (int->string (record-ref cfg port))))))
 
 ;; --- three scrutinees, one message -----------------------------------------
@@ -46,9 +49,12 @@
 (: (-> (Option int) (Option int) (Option int) string))
 (defun (triple a b c)
   (with-return ret
-    (def (Some x) a :leave-with (ret "something was missing"))
-    (def (Some y) b :leave-with (ret "something was missing"))
-    (def (Some z) c :leave-with (ret "something was missing"))
+    (def (Some x) a
+      :leave-with (ret "something was missing"))
+    (def (Some y) b
+      :leave-with (ret "something was missing"))
+    (def (Some z) c
+      :leave-with (ret "something was missing"))
     (str (int->string (+ x (+ y z))))))
 
 ;; --- ret from inside a loop ------------------------------------------------
@@ -60,7 +66,8 @@
 (defun (first-blocked hosts)
   (with-return ret
     (loop (:for h hosts)
-          (:do (when (blocked? h) (ret (Some h)))))
+          (:do (when (blocked? h)
+                 (ret (Some h)))))
     None))
 
 ;; --- ret from a try body whose #:finally must still run --------------------
@@ -73,10 +80,10 @@
   (def result
     (with-return ret
       (try
-        (when early (ret "early"))
+        (when early
+          (ret "early"))
         (set! log (str log "body "))
-        #:finally
-        (set! log (str log "cleanup ")))
+        #:finally (set! log (str log "cleanup ")))
       "fell-through"))
   (str log "-> " result))
 
@@ -85,17 +92,21 @@
 (defun (sub-expression n)
   (+ 1
      (with-return ret
-       (when (< n 0) (ret 0))
+       (when (< n 0)
+         (ret 0))
        (* n 10))))
 
 ;; --- nested blocks, the inner body naming the outer escape -----------------
 (: (-> int string))
 (defun (nested n)
   (with-return outer
-    (when (= n 0) (outer "outer-from-outer"))
+    (when (= n 0)
+      (outer "outer-from-outer"))
     (with-return inner
-      (when (= n 1) (outer "outer-from-inner"))
-      (when (= n 2) (inner "inner"))
+      (when (= n 1)
+        (outer "outer-from-inner"))
+      (when (= n 2)
+        (inner "inner"))
       "inner-fell-through")))
 
 ;; --- shadowing needs no rule of its own ------------------------------------
@@ -115,7 +126,8 @@
   (def/mutable trace "")
   (with-return ret
     (set! trace (str trace "a"))
-    (when stop (ret))
+    (when stop
+      (ret))
     (set! trace (str trace "b")))
   trace)
 
@@ -125,7 +137,9 @@
   (with-return ret
     (match o
       (None (ret "none"))
-      ((Some n) (when (< n 0) (ret "negative"))))
+      ((Some n)
+       (when (< n 0)
+         (ret "negative"))))
     "positive"))
 
 ;; --- both colour copies of one body ----------------------------------------
@@ -137,8 +151,10 @@
 (: (-> (Option int) string))
 (defun (classify o)
   (with-return ret
-    (def (Some n) o :leave-with "none")
-    (when (< n 0) (ret "negative"))
+    (def (Some n) o
+      :leave-with "none")
+    (when (< n 0)
+      (ret "negative"))
     "positive"))
 
 ;; This is what asks for the second copy. A bjoroutine's call reaches the
@@ -159,7 +175,8 @@
   (with-return ret
     (let go ((i 0))
       (when (< i (vec-length xs))
-        (when (> (vec-ref xs i) limit) (ret (vec-ref xs i)))
+        (when (> (vec-ref xs i) limit)
+          (ret (vec-ref xs i)))
         (go (+ i 1))))
     -1))
 
@@ -168,7 +185,8 @@
   (with-return ret
     (loop (:for a xs)
           (:subloop (:for b xs)
-                    (:do (when (= (+ a b) target) (ret (Some (Tuple a b)))))))
+                    (:do (when (= (+ a b) target)
+                           (ret (Some (Tuple a b)))))))
     None))
 
 (: (-> int int))
@@ -176,7 +194,10 @@
   (let go ((i 0))
     (if (< i n)
         (+ 1 (go (+ i 1)))
-        (with-return r (when (= i 3) (r 100)) 0))))
+        (with-return r
+          (when (= i 3)
+            (r 100))
+          0))))
 
 (defun (main)
   (expect "a def at the head of a body, three times over"
@@ -203,9 +224,7 @@
             ((Err e) (str "err:" e)))
           "err:no host")
 
-  (expect "three chained defs, all matching"
-          (triple (Some 1) (Some 2) (Some 3))
-          "6")
+  (expect "three chained defs, all matching" (triple (Some 1) (Some 2) (Some 3)) "6")
   (expect "the first failing" (triple None (Some 2) (Some 3)) "something was missing")
   (expect "the middle failing" (triple (Some 1) None (Some 3)) "something was missing")
   (expect "the last failing" (triple (Some 1) (Some 2) None) "something was missing")
@@ -222,12 +241,8 @@
           "none")
 
   ;; The cleanup runs on the way out, before the block's value is produced.
-  (expect "a #:finally runs when ret leaves the try body"
-          (cleanup-order #t)
-          "cleanup -> early")
-  (expect "and when the body runs to its end"
-          (cleanup-order #f)
-          "body cleanup -> fell-through")
+  (expect "a #:finally runs when ret leaves the try body" (cleanup-order #t) "cleanup -> early")
+  (expect "and when the body runs to its end" (cleanup-order #f) "body cleanup -> fell-through")
 
   (expect "a block used as a subexpression, escaping" (sub-expression -5) 1)
   (expect "a block used as a subexpression, falling through" (sub-expression 4) 41)
@@ -253,7 +268,9 @@
   (expect "an escape out of a tail-recursive named let" (first-over [1 5 9 12] 6) 9)
   (expect "and the named let running to its end" (first-over [1 5] 6) -1)
   (expect "an escape out of a loop's inner level"
-          (match (pair-sum [1 2 3 4] 7) ((Some (Tuple a b)) (str (displayed a) "+" (displayed b))) (None "none"))
+          (match (pair-sum [1 2 3 4] 7)
+            ((Some (Tuple a b)) (str (displayed a) "+" (displayed b)))
+            (None "none"))
           "3+4")
   (expect "a block inside a recursive named let" (depth 3) 103)
 

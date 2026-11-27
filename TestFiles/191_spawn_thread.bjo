@@ -64,7 +64,9 @@
   ;; The value comes back to the syncing fiber, not to the thread that computed
   ;; it, which is what makes the result usable at all.
   (expect "and the answer comes back here"
-          (match (sync (spawn/thread #(* 6 7))) ((Ok v) v) ((Err e) 0))
+          (match (sync (spawn/thread #(* 6 7)))
+            ((Ok v) v)
+            ((Err e) 0))
           42)
 
   ;; ---- Failure is a value --------------------------------------------------
@@ -73,7 +75,9 @@
   ;; continuation lands in a channel's matching loop rather than anywhere
   ;; useful, so the exception is carried rather than thrown.
   (expect "a thunk that throws is an Err"
-          (match (sync (spawn/thread boom)) ((Ok v) "computed") ((Err e) "failed"))
+          (match (sync (spawn/thread boom))
+            ((Ok v) "computed")
+            ((Err e) "failed"))
           "failed")
 
   ;; ---- Guarded: a fresh thread per sync ------------------------------------
@@ -82,7 +86,10 @@
   ;; would replay the first run's answer, which is the trap a completed promise
   ;; sets and the reason `timeout` is guarded too.
   (def counter (make-box 0))
-  (def bump (spawn/thread #(let () (box-set! counter (+ 1 (box-ref counter))) (box-ref counter))))
+  (def bump
+    (spawn/thread #(let ()
+                     (box-set! counter (+ 1 (box-ref counter)))
+                     (box-ref counter))))
   (ignore (sync bump))
   (ignore (sync bump))
   (expect "each sync starts a fresh run" (box-ref counter) 2)
@@ -97,7 +104,8 @@
     (spawn/detached (crunching out)))
 
   (expect "detached ownership and a dedicated thread are independent"
-          (sync (chan-recv out)) "own thread")
+          (sync (chan-recv out))
+          "own thread")
 
   (println "191 ok")
   0)
@@ -107,5 +115,8 @@
 ;; code that could not suspend if it wanted to.
 (: (-bjo-> (Chan string) void))
 (defbjo (crunching out)
-  (def w (match (sync (spawn/thread where-am-i)) ((Ok w) w) ((Err e) "raised")))
+  (def w
+    (match (sync (spawn/thread where-am-i))
+      ((Ok w) w)
+      ((Err e) "raised")))
   (sync (chan-send out w)))

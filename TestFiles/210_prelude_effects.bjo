@@ -36,7 +36,8 @@
         8080)))
 
 (: (-> (Box string) (-> string void)))
-(defun (collect-into b) (fun (s) (box-set! b (str (box-ref b) "[" s "]"))))
+(defun (collect-into b)
+  (fun (s) (box-set! b (str (box-ref b) "[" s "]"))))
 
 ;; A clock that answers from a list of readings, one per call. Exact, so an
 ;; elapsed time can be asserted rather than bounded.
@@ -45,7 +46,9 @@
   (fun ()
     (match (box-ref readings)
       (Nil 0L)
-      ((Cons t rest) (box-set! readings rest) t))))
+      ((Cons t rest)
+       (box-set! readings rest)
+       t))))
 
 (: (-> (Result Exception int) string))
 (defun (caught r)
@@ -59,8 +62,7 @@
   ;; The default writes a line to the error port and returns, so the library
   ;; call still answers. The harness reads stdout, so nothing is asserted about
   ;; where the line went — only that the call came back with its fallback.
-  (expect "the default warn returns, so the caller carries on"
-          (parse-port "not-a-number") 8080)
+  (expect "the default warn returns, so the caller carries on" (parse-port "not-a-number") 8080)
 
   ;; Collected. This is the shape a test wants: the warning is a value now.
   (def warnings (make-box ""))
@@ -73,8 +75,10 @@
   ;; Escalated. The handler throws, so the performer unwinds — which is the case
   ;; `raise` inside `parse-port` could not have left open to the caller.
   (expect "a handler can escalate a warning to a failure"
-          (caught (try (with-handler ((warn (fun (s) (raise (cast Exception (Escalated. (str "fatal: " s)))))))
-                         (parse-port "nope"))
+          (caught (try
+                    (with-handler ((warn (fun (s)
+                                           (raise (cast Exception (Escalated. (str "fatal: " s)))))))
+                      (parse-port "nope"))
                     #:catch (System.InvalidOperationException)))
           "fatal: not a port number: nope")
 
@@ -137,8 +141,7 @@
   (def clock4 (make-box (list 5L 12L)))
   (def given (make-clock #:monotonic-ms (ticking clock4)))
   (def start (monotonic-ms #:clock given))
-  (expect "monotonic-ms reads the clock it is given"
-          (- (monotonic-ms #:clock given) start) 7L)
+  (expect "monotonic-ms reads the clock it is given" (- (monotonic-ms #:clock given) start) 7L)
 
   ;; `(ref sw 'ms)` reads the same number.
   (def clock3 (make-box (list 0L 7000L)))
@@ -156,7 +159,8 @@
   (def derived (make-clock #:monotonic-ms (ticking clock5)))
   (def ns-start (monotonic-ns #:clock derived))
   (expect "a clock given only milliseconds reads nanoseconds from them"
-          (- (monotonic-ns #:clock derived) ns-start) 2000000L)
+          (- (monotonic-ns #:clock derived) ns-start)
+          2000000L)
 
   ;; A clock given nanoseconds reads them as they are.
   (def clock6 (make-box (list 100L 1350L)))
@@ -166,7 +170,8 @@
         (stopwatch-start! sw)
         (stopwatch-stop! sw)
         (str (displayed (stopwatch-ns sw)) "/" (displayed (stopwatch-us sw)) "/"
-             (displayed (ref sw 'ns)) "/" (displayed (ref sw 'us)) "/" (displayed (stopwatch-ms sw))))))
+             (displayed (ref sw 'ns)) "/" (displayed (ref sw 'us)) "/" (displayed (stopwatch-ms
+                                                                                   sw))))))
   (expect "a stopwatch keeps nanoseconds" fine "1250/1/1250/1/0")
 
   (expect "ns->string picks the unit"
@@ -183,18 +188,24 @@
   ;; --- getenv --------------------------------------------------------------
   (expect "a handler answers for the environment"
           (with-handler ((getenv (fun (name) (if (= name "HOME") (Some "/fake") None))))
-            (match (getenv "HOME") ((Some v) v) (None "unset")))
+            (match (getenv "HOME")
+              ((Some v) v)
+              (None "unset")))
           "/fake")
 
   (expect "and an unknown name is None under the same handler"
           (with-handler ((getenv (fun (name) (if (= name "HOME") (Some "/fake") None))))
-            (match (getenv "NOT_SET_ANYWHERE") ((Some v) v) (None "unset")))
+            (match (getenv "NOT_SET_ANYWHERE")
+              ((Some v) v)
+              (None "unset")))
           "unset")
 
   ;; The default reaches the real process environment.
   (set-environment-variable! "BJOLANG_EFFECT_TEST" "real")
   (expect "the default getenv reads the process environment"
-          (match (getenv "BJOLANG_EFFECT_TEST") ((Some v) v) (None "unset"))
+          (match (getenv "BJOLANG_EFFECT_TEST")
+            ((Some v) v)
+            (None "unset"))
           "real")
 
   0)

@@ -13,8 +13,8 @@
 
 ;; A named let over a string from outside the loop.
 ;; EXPECT-CS: var _bounds__\d+ = BjoString\.StringBounds\.Of\(outer\);
-;; EXPECT-CS: BjolangRuntime\.StringBoundsAtEnd\(_bounds__\d+, 
-;; EXPECT-CS: BjolangRuntime\.StringBoundsRefNext\(_bounds__\d+, 
+;; EXPECT-CS: BjolangRuntime\.StringBoundsAtEnd\(_bounds__\d+,
+;; EXPECT-CS: BjolangRuntime\.StringBoundsRefNext\(_bounds__\d+,
 (: (-> string int))
 (defun (sum-outer outer)
   (let loop ((c (string-cursor-start outer)) (acc 0))
@@ -32,21 +32,25 @@
 ;; The test for the end takes the string's bounds.
 ;; EXPECT-CS: var _bounds__\d+ = BjoString\.StringBounds\.Of\(passed\);
 ;; EXPECT-CS: var _forward__\d+ = BjolangRuntime\.StringForwardOf\(_bounds__\d+, c\);
-;; EXPECT-CS: BjolangRuntime\.StringBoundsAtEnd\(_bounds__\d+, 
-;; EXPECT-CS: BjolangRuntime\.StringForwardRef\(_forward__\d+, 
-;; EXPECT-CS: BjolangRuntime\.StringForwardNext\(_forward__\d+, 
+;; EXPECT-CS: BjolangRuntime\.StringBoundsAtEnd\(_bounds__\d+,
+;; EXPECT-CS: BjolangRuntime\.StringForwardRef\(_forward__\d+,
+;; EXPECT-CS: BjolangRuntime\.StringForwardNext\(_forward__\d+,
 (: (-> string StringCursor int int))
 (defun (count-digits passed c n)
   (cond
     ((string-cursor-end? passed c) n)
-    ((char-numeric? (string-cursor-ref passed c)) (count-digits passed (string-cursor-next passed c) (+ n 1)))
+    ((char-numeric? (string-cursor-ref passed c))
+     (count-digits passed (string-cursor-next passed c) (+ n 1)))
     (else (count-digits passed (string-cursor-next passed c) n))))
 
 ;; A slot that one jump changes: no bounds.
 ;; EXPECT-NO-CS: StringBounds\.Of\(changing
 (: (-> string string int))
 (defun (count-two changing other)
-  (let loop ((changing changing) (c (string-cursor-start changing)) (n 0) (swapped #f))
+  (let loop ((changing changing)
+             (c (string-cursor-start changing))
+             (n 0)
+             (swapped #f))
     (cond
       ((and (string-cursor-end? changing c) swapped) n)
       ((string-cursor-end? changing c) (loop other (string-cursor-start other) n #t))
@@ -61,7 +65,8 @@
     (if (string-cursor-end? written c)
         n
         (begin
-          (when (= n 0) (set! written s))
+          (when (= n 0)
+            (set! written s))
           (loop (string-cursor-next written c) (+ n 1))))))
 
 ;; A module-level string, which a call in the loop could change: no bounds.
@@ -81,7 +86,9 @@
 ;; EXPECT-NO-CS: StringForwardOf\(_bounds__\d+, again
 (: (-> string int int))
 (defun (count-restarted restarted rounds)
-  (let loop ((again (string-cursor-start restarted)) (left rounds) (n 0))
+  (let loop ((again (string-cursor-start restarted))
+             (left rounds)
+             (n 0))
     (cond
       ((and (string-cursor-end? restarted again) (= left 0)) n)
       ((string-cursor-end? restarted again) (loop (string-cursor-start restarted) (- left 1) n))

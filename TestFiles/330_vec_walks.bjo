@@ -13,13 +13,15 @@
 ;; What a walk from `from` up to `to` should read, by `vec-ref`.
 (: (-> (Vec int) int int (List int)))
 (defun (by-index v from to)
-  (loop (:for i (range from to)) (:acc out (listing (vec-ref v i))) => out))
+  (loop (:for i (range from to))
+        (:acc out (listing (vec-ref v i)))
+    => out))
 
 (: (-> (Vec int) int int (List int)))
 (defun (by-index-reversed v from to)
   (loop (:for i (down-from (- to 1) #:to from))
         (:acc out (listing (vec-ref v i)))
-        => out))
+    => out))
 
 (: (-> (List (Tuple string (Vec int)))))
 (defun (vecs)
@@ -27,17 +29,17 @@
   (def inserted
     (loop (:for k (range 0 40))
           (:acc v (folding (numbers 1500) (vec-insert v (+ 7 (* k 29)) (- 0 k))))
-          => v))
+      => v))
   (def all (numbers 40000))
   (def joined
     (loop (:for k (range 0 40))
           (:acc v (folding (numbers 0) (vec-append v (vec-slice all (* k 997) 997))))
-          => v))
+      => v))
   ;; A head and a gap: elements added in front of a dense tree.
   (def prepended
     (loop (:for k (range 0 70))
           (:acc v (folding (numbers 2000) (vec-add-first v (- -1 k))))
-          => v))
+      => v))
   (list (Tuple "empty" (numbers 0))
         (Tuple "prepended" prepended)
         (Tuple "1" (numbers 1))
@@ -59,34 +61,34 @@
         (:for b points)
         (:when (<= a b))
         (:acc out (listing (Tuple a b)))
-        => out))
+    => out))
 
 (defun (main)
   (def/mutable failures 0)
   (list-for-each
-    (fun (named)
-      (match named
-        ((Tuple name v)
-         (def n (vec-length v))
-         (when (not (= {listing x (:for x v)} (by-index v 0 n)))
-           (println #"whole walk of ${name}")
-           (set! failures (+ failures 1)))
-         (when (not (= (fold + 0 v) (fold + 0 (by-index v 0 n))))
-           (println #"fold over ${name}")
-           (set! failures (+ failures 1)))
-         (list-for-each
-           (fun (ab)
-             (match ab
-               ((Tuple a b)
-                (when (not (= {listing x (:for x (in-vec v #:from a #:to b))} (by-index v a b)))
-                  (println #"in-vec ${name} ${a} ${b}")
-                  (set! failures (+ failures 1)))
-                (when (not (= {listing x (:for x (in-reverse-vec v #:from a #:to b))}
-                              (by-index-reversed v a b)))
-                  (println #"in-reverse-vec ${name} ${a} ${b}")
-                  (set! failures (+ failures 1))))))
-           (bounds n)))))
-    (vecs))
+   (fun (named)
+     (match named
+       ((Tuple name v)
+        (def n (vec-length v))
+        (when (not (= {listing x (:for x v)} (by-index v 0 n)))
+          (println #"whole walk of ${name}")
+          (set! failures (+ failures 1)))
+        (when (not (= (fold + 0 v) (fold + 0 (by-index v 0 n))))
+          (println #"fold over ${name}")
+          (set! failures (+ failures 1)))
+        (list-for-each (fun (ab)
+                         (match ab
+                           ((Tuple a b)
+                            (when (not (= {listing x (:for x (in-vec v #:from a #:to b))}
+                                          (by-index v a b)))
+                              (println #"in-vec ${name} ${a} ${b}")
+                              (set! failures (+ failures 1)))
+                            (when (not (= {listing x (:for x (in-reverse-vec v #:from a #:to b))}
+                                          (by-index-reversed v a b)))
+                              (println #"in-reverse-vec ${name} ${a} ${b}")
+                              (set! failures (+ failures 1))))))
+                       (bounds n)))))
+   (vecs))
   (expect "every walk reads what vec-ref reads" failures 0)
 
   ;; A cursor is a value: moving on gives a new cursor, and the old one stays.
@@ -102,16 +104,25 @@
   ;; elements.
   (def joined (vec-append (numbers 37) (vec-append (numbers 1000) (numbers 1000))))
   (def two-copies
-    (let go ((a (vec-cursor joined)) (b (vec-cursor-next (vec-cursor joined))) (i 0) (bad 0))
+    (let go ((a (vec-cursor joined))
+             (b (vec-cursor-next (vec-cursor joined)))
+             (i 0)
+             (bad 0))
       (if (vec-cursor-done? b)
           bad
-          (go (vec-cursor-next a) (vec-cursor-next b) (+ i 1)
-              (+ bad (if (and (= (vec-cursor-current a) (vec-ref joined i))
-                              (= (vec-cursor-current b) (vec-ref joined (+ i 1))))
-                         0 1))))))
+          (go (vec-cursor-next a)
+              (vec-cursor-next b)
+              (+ i 1)
+              (+ bad
+                 (if (and (= (vec-cursor-current a) (vec-ref joined i))
+                          (= (vec-cursor-current b) (vec-ref joined (+ i 1))))
+                     0
+                     1))))))
   (expect "copies of a cursor of a relaxed tree read their own elements" two-copies 0)
 
   ;; `=` on vecs walks two cursors in step.
-  (expect "equal vecs" (= (numbers 1000) (vec-append (numbers 37) (vec-slice (numbers 1000) 37 963))) #t)
+  (expect "equal vecs"
+          (= (numbers 1000) (vec-append (numbers 37) (vec-slice (numbers 1000) 37 963)))
+          #t)
   (expect "a difference in the last leaf" (= (numbers 1000) (vec-set (numbers 1000) 999 0)) #f)
   0)

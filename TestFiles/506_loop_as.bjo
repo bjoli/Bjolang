@@ -30,20 +30,27 @@
           {listing (+ a b) (:for x [1 2 3]) (:as (Tuple a b) (Tuple x (* 2 x)))}
           (list 3 6 9))
 
-  (expect "an inner level reads it"
-          {listing (* n x) (:for row [[1 2] [3 4 5]]) (:as n (vec-length row)) (:subloop) (:for x row)}
-          (list 2 4 9 12 15))
+  (expect
+   "an inner level reads it"
+   {listing (* n x) (:for row [[1 2] [3 4 5]]) (:as n (vec-length row)) (:subloop) (:for x row)}
+   (list 2 4 9 12 15))
 
   (expect "a :subloop form reads it"
           (loop (:for row [[1 2] [3 4 5]])
                 (:as n (vec-length row))
-                (:subloop (:for x row) (:acc s (summing (* n x))))
+                (:subloop (:for x row)
+                          (:acc s (summing (* n x))))
                 (:acc out (listing s))
-                => out)
+            => out)
           (list 6 36))
 
   (expect "a named loop"
-          (loop lp (:for x [1 2 3]) (:as y (* 3 x)) (:acc out (listing y)) (:do (lp)) => out)
+          (loop lp
+                (:for x [1 2 3])
+                (:as y (* 3 x))
+                (:acc out (listing y))
+                (:do (lp))
+            => out)
           (list 3 6 9))
 
   ;; A clause macro binds the pattern with :as among its drivers, so a test

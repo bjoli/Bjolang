@@ -50,10 +50,11 @@
     (hire jobs answers crew-size)
     (spawn (feeder jobs jobs-count))
 
-    (def kept (loop (:for seen (range 0 jobs-count))
-                    (:let a (sync (chan-recv answers)))
-                    (:acc got (vecing a))
-                    (:finish (= (vecbuilder-length got) wanted))))
+    (def kept
+      (loop (:for seen (range 0 jobs-count))
+            (:let a (sync (chan-recv answers)))
+            (:acc got (vecing a))
+            (:finish (= (vecbuilder-length got) wanted))))
 
     (def stopped (cancel (Requested "got what we came for")))
     kept))
@@ -71,9 +72,10 @@
     (hire jobs answers crew-size)
     (spawn (feeder jobs jobs-count))
 
-    (def kept (loop (:for seen (range 0 jobs-count))
-                    (:let a (sync (chan-recv answers)))
-                    (:acc got (vecing a))))
+    (def kept
+      (loop (:for seen (range 0 jobs-count))
+            (:let a (sync (chan-recv answers)))
+            (:acc got (vecing a))))
 
     (def stopped (cancel (Requested "every job answered")))
     kept))
@@ -85,14 +87,13 @@
   ;; Every answer is a doubled job, and the jobs were 0..199, so this is a check
   ;; that the crew really did the work rather than that the shape compiled.
   (expect "and every answer came from a worker"
-          (if (all? #(= 0 (% &1 2)) some) "doubled" "wrong") "doubled")
+          (if (all? #(= 0 (% &1 2)) some) "doubled" "wrong")
+          "doubled")
 
   (def every (all-of-them 40 4))
   (expect "a crew answers every job it is given" (vec-length every) 40)
 
-  (expect "and the answers add up"
-          (fold #(+ &1 &2) 0 every)
-          (* 2 (fold #(+ &1 &2) 0 (range 0 40))))
+  (expect "and the answers add up" (fold #(+ &1 &2) 0 every) (* 2 (fold #(+ &1 &2) 0 (range 0 40))))
 
   (println "190 ok")
   0)

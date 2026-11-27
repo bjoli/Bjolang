@@ -159,7 +159,8 @@
 (defun (attach-body! message body)
   (match body
     (Empty None)
-    ((Text text content-type) (attach! message (cast Content (StringContent. text utf-8)) content-type))
+    ((Text text content-type)
+     (attach! message (cast Content (StringContent. text utf-8)) content-type))
     ((Bytes bytes content-type)
      (attach! message (cast Content (BytesContent. (bytestring->bytes bytes))) content-type))))
 
@@ -175,7 +176,8 @@
        (else
         (match content
           (None
-           (Err (InvalidRequest (str "'" name "' is a header about a body, and this request has none"))))
+           (Err (InvalidRequest (str "'" name
+                                     "' is a header about a body, and this request has none"))))
           ((Some body)
            (if (header-add! (cast HeaderStore (content-headers body)) name value)
                (Ok unit)
@@ -192,9 +194,10 @@
            (:acc outcome (folding (Ok message)
                                   (match outcome
                                     ((Err e) (Err e))
-                                    ((Ok m) (match (add-header! message content pair)
-                                              ((Err e) (Err e))
-                                              ((Ok added) (Ok m)))))))))))
+                                    ((Ok m)
+                                     (match (add-header! message content pair)
+                                       ((Err e) (Err e))
+                                       ((Ok added) (Ok m)))))))))))
 
 ;; Adds every value of every field in `store` to `into`, one field per value.
 (: (-> (Seq (Pairing System.String (Seq System.String))) Headers Headers))
@@ -211,10 +214,10 @@
 (defun (response-of raw)
   (def content (reply-content raw))
   (def fields
-    (collect-headers (cast (Seq (Pairing System.String (Seq System.String))) (content-headers content))
-                     (collect-headers (cast (Seq (Pairing System.String (Seq System.String)))
-                                            (reply-headers raw))
-                                      headers-empty)))
+    (collect-headers
+     (cast (Seq (Pairing System.String (Seq System.String))) (content-headers content))
+     (collect-headers (cast (Seq (Pairing System.String (Seq System.String))) (reply-headers raw))
+                      headers-empty)))
   (make-response (cast int (reply-status raw))
                  (content-stream content)
                  #:reason (reply-reason raw)
@@ -230,7 +233,7 @@
     (("ConnectionError" "ProxyTunnelError") (Connection message))
     ("SecureConnectionError" (Tls message))
     (("HttpProtocolError" "InvalidResponse" "ResponseEnded" "VersionNegotiationError"
-      "ExtendedConnectNotSupported" "ConfigurationLimitExceeded")
+                          "ExtendedConnectNotSupported" "ConfigurationLimitExceeded")
      (Protocol message))
     (else (Failed message))))
 
@@ -253,12 +256,8 @@
 ;; The handler keeps no cookies; see `cookies`. It sets no request timeout:
 ;; use `with-deadline`, or race the event with `(timeout d)`.
 (: (-> (#:connection-seconds double) (#:redirects bool) (#:max-redirects int)
-       (#:proxy (Option string)) (#:connect-timeout (Option Duration))
-       Handler))
-(defun (make-transport #:connection-seconds 120.0
-                       #:redirects #t
-                       #:max-redirects 10
-                       #:proxy None
+       (#:proxy (Option string)) (#:connect-timeout (Option Duration)) Handler))
+(defun (make-transport #:connection-seconds 120.0 #:redirects #t #:max-redirects 10 #:proxy None
                        #:connect-timeout None)
   (def sockets (SocketsHandler.))
   (handler-lifetime! sockets (span-seconds connection-seconds))
@@ -361,7 +360,8 @@
 (defun (form-body fields)
   (Text (string-join (vec-map (fun (pair)
                                 (match pair
-                                  ((Tuple name value) (str (encode-form name) "=" (encode-form value)))))
+                                  ((Tuple name value)
+                                   (str (encode-form name) "=" (encode-form value)))))
                               fields)
                      "&")
         "application/x-www-form-urlencoded"))
@@ -440,7 +440,9 @@
       (def url (record-ref req url))
       (inner (if (or (string-starts-with? url "http://") (string-starts-with? url "https://"))
                  req
-                 (record-set req (url (str trimmed "/" (if (string-starts-with? url "/") (string-drop url 1) url)))))))))
+                 (record-set req (url (str trimmed "/" (if (string-starts-with? url "/")
+                                                           (string-drop url 1)
+                                                           url)))))))))
 
 ;; Adds each field to requests that do not have a field of that name.
 (: (-> (Vec Pair) Middleware))
@@ -482,7 +484,11 @@
 (defbjo (retry-loop inner req attempts wait retry-status?)
   (defun (again)
     (sync (timeout wait))
-    (retry-loop inner req (- attempts 1) (ticks->duration (* 2L (duration-ticks wait))) retry-status?))
+    (retry-loop inner
+                req
+                (- attempts 1)
+                (ticks->duration (* 2L (duration-ticks wait)))
+                retry-status?))
   (match (sync (inner req))
     ((Ok r)
      (if (and (> attempts 1) (retry-status? (response-status r)))
@@ -541,14 +547,18 @@
         ((Err e) (inner req))
         ((Ok uri)
          (def header (jar-header store uri))
-         (def sent (if (= header "") req (with-default-header req "Cookie" header)))
+         (def sent
+           (if (= header "")
+               req
+               (with-default-header req "Cookie" header)))
          (wrap (inner sent)
                (fun (outcome)
                  (match outcome
                    ((Ok r)
-                    (def from (match (Uri. (if (= (response-url r) "") (record-ref req url) (response-url r)))
-                                ((Ok u) u)
-                                ((Err e) uri)))
+                    (def from
+                      (match (Uri. (if (= (response-url r) "") (record-ref req url) (response-url r)))
+                        ((Ok u) u)
+                        ((Err e) uri)))
                     (loop (:for value (response-header-all r "Set-Cookie"))
                           (:do (ignore (jar-store! store from value))))
                     (Ok r))
@@ -561,14 +571,11 @@
 ;; Returns a handler that calls `respond` when the event is synced.
 (: (-> (-> Request (Result HttpError Response)) Handler))
 (defun (handler-of respond)
-  (fun (req)
-    (guard (fun () (always (respond req))))))
+  (fun (req) (guard (fun () (always (respond req))))))
 
 ;; Returns a response with `text` as its UTF-8 body.
 (: (-> int string (#:headers (Vec Pair)) (#:content-type string) Response))
-(defun (text-response status text
-                      #:headers (vec-empty)
-                      #:content-type "text/plain; charset=utf-8")
+(defun (text-response status text #:headers (vec-empty) #:content-type "text/plain; charset=utf-8")
   (make-response status
                  (cast ClrStream (MemoryStream. (string->bytes text)))
                  #:headers (headers-set (pairs->headers headers) "Content-Type" content-type)))

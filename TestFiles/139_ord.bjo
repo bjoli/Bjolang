@@ -40,7 +40,9 @@
 
 ;; --- A type of this program's own -------------------------------------------
 
-(type/derive (Eq) (: Version (Record (: major int) (: minor int))))
+(type/derive (Eq)
+  (: Version (Record (: major int)
+                     (: minor int))))
 
 ;; Lexicographic by hand: major first, minor only where majors agree. Negative,
 ;; zero or positive is the contract — not -1, 0 and 1 — so the outer test asks
@@ -106,12 +108,8 @@
   (expect "sort strings"
           (join (list-sort (list "pear" "apple" "quince" "fig")))
           "apple,fig,pear,quince")
-  (expect "sort ints"
-          (join (list-map int->string (list-sort (list 5 3 9 1 7))))
-          "1,3,5,7,9")
-  (expect "sort is stable on equals"
-          (join (list-sort (list "b" "a" "b" "a")))
-          "a,a,b,b")
+  (expect "sort ints" (join (list-map int->string (list-sort (list 5 3 9 1 7)))) "1,3,5,7,9")
+  (expect "sort is stable on equals" (join (list-sort (list "b" "a" "b" "a"))) "a,a,b,b")
   (expect "sort of one" (join (list-sort (list "only"))) "only")
   ;; Annotated, and it has to be: `(list-empty)` says nothing about its element
   ;; type, and a constraint must be discharged at a type. Unannotated this is a
@@ -120,10 +118,20 @@
   (expect "sort of none" (list-empty? (list-sort no-strings)) #t)
 
   ;; An empty list has no smallest element, so it says so.
-  (expect "min of a list" (match (list-min (list 5 3 9)) ((Some m) m) (None -1)) 3)
-  (expect "max of a list" (match (list-max (list 5 3 9)) ((Some m) m) (None -1)) 9)
+  (expect "min of a list"
+          (match (list-min (list 5 3 9))
+            ((Some m) m)
+            (None -1))
+          3)
+  (expect "max of a list"
+          (match (list-max (list 5 3 9))
+            ((Some m) m)
+            (None -1))
+          9)
   (expect "min of strings"
-          (match (list-min (list "pear" "apple")) ((Some m) m) (None "?"))
+          (match (list-min (list "pear" "apple"))
+            ((Some m) m)
+            (None "?"))
           "apple")
   (expect "min of an empty list" (none? (list-min no-strings)) #t)
 
@@ -131,9 +139,7 @@
   (expect "middle of ints" (middle-of 7 3 5) 5)
   (expect "middle of strings" (middle-of "pear" "apple" "fig") "fig")
 
-  (expect "reverse sort"
-          (join (longest-first (list "b" "c" "a")))
-          "c,b,a")
+  (expect "reverse sort" (join (longest-first (list "b" "c" "a"))) "c,b,a")
 
   ;; A type this program declared, ordered by one method — and then reused by
   ;; every function above, none of which knows it exists.
@@ -141,14 +147,14 @@
   (expect "sorting a type of our own" (join-versions (list-sort vs)) " 1.9 2.0 2.1")
   (expect "least of our own" (show-version (least (v 3 0) (v 1 0))) "1.0")
   (expect "min of our own"
-          (match (list-min vs) ((Some m) (show-version m)) (None "?"))
+          (match (list-min vs)
+            ((Some m) (show-version m))
+            (None "?"))
           "1.9")
   (expect "the predicates too" (less? (v 1 0) (v 1 1)) #t)
   (expect "recursive and constrained" (smallest (list 5 3 9) 7) 3)
   (expect "recursive at a string" (smallest (list "pear" "apple") "zebra") "apple")
-  (expect "recursive at our own type"
-          (show-version (smallest vs (v 9 9)))
-          "1.9")
+  (expect "recursive at our own type" (show-version (smallest vs (v 9 9))) "1.9")
   (expect "and a constrained generic of ours"
           (show-version (middle-of (v 3 0) (v 1 0) (v 2 0)))
           "2.0")

@@ -22,14 +22,12 @@
 
 (: (-> Clock))
 (defun (driven-clock)
-  (make-clock #:monotonic-ms (fun () (/ calls 1000L))
-              #:monotonic-ns (Some (fun () (* calls 1000L)))))
+  (make-clock #:monotonic-ms (fun () (/ calls 1000L)) #:monotonic-ns (Some (fun () (* calls 1000L)))))
 
 (def/bench "ticks" (tick))
 
 (def/bench "grid"
-  #:params ((n [1 2 3])
-            (kind ['a 'b]))
+  #:params ((n [1 2 3]) (kind ['a 'b]))
   (+ n 1))
 
 (def/bench "with setup"
@@ -39,8 +37,7 @@
 (def/mutable seen 0)
 (def/bench "params and setup"
   #:params ((n [4 5]))
-  #:setup ((x (* n 10))
-           (y (+ x 1)))
+  #:setup ((x (* n 10)) (y (+ x 1)))
   (set! seen (+ x y))
   (tick))
 
@@ -48,7 +45,9 @@
 ;; that counts: only the body's tick does.
 (def/mutable setups 0)
 (def/bench "every"
-  #:setup-every ((a (let () (set! setups (+ setups 1)) (make-array 1000 #:fill 0))))
+  #:setup-every ((a (let ()
+                      (set! setups (+ setups 1))
+                      (make-array 1000 #:fill 0))))
   (tick))
 
 (def/bench "skipped" #:skip "why not" (tick))
@@ -57,14 +56,17 @@
 (def/bench "grouped too" #:group "g" (ignore (tick)) (tick))
 ;; `n` ticks a call: time in proportion to the parameter, for --scaling.
 (def/bench "linear" #:params ((n [1 2 4]))
-  (loop (:for i (up-from 0 #:to n)) (:do (ignore (tick)))))
+  (loop (:for i (up-from 0 #:to n))
+        (:do (ignore (tick)))))
 
 ;; The once-made setup and the every-call setup together: each call gets a
 ;; copy of what was made once.
 (def/mutable made-once 0)
 (def/mutable seen-length 0)
 (def/bench "once and every"
-  #:setup ((base (let () (set! made-once (+ made-once 1)) (list 1 2 3))))
+  #:setup ((base (let ()
+                   (set! made-once (+ made-once 1))
+                   (list 1 2 3))))
   #:setup-every ((xs (cons 0 base)))
   (set! seen-length (list-length xs))
   (tick))
@@ -80,13 +82,16 @@
 
 (: (-> BenchOptions))
 (defun (defaults)
-  (match (parse-bench-args (vec-empty)) ((Ok o) o) ((Err e) (panic! e))))
+  (match (parse-bench-args (vec-empty))
+    ((Ok o) o)
+    ((Err e) (panic! e))))
 
 (deftest "a calibrated benchmark, measured exactly"
   (def b (bench-named "ticks"))
   (def c (list-head ((record-ref b cases))))
-  (def m (parameterize ((current-clock (driven-clock)))
-           (measure-case c 0 (bench-settings (defaults)))))
+  (def m
+    (parameterize ((current-clock (driven-clock)))
+      (measure-case c 0 (bench-settings (defaults)))))
   (check (= (record-ref m k) 10000L))
   (check (= (vec-length (record-ref m samples)) 100))
   (check (vec-iter (fun (x) (= x 1000.0)) (record-ref m samples)))
@@ -99,18 +104,22 @@
   (def c (list-head ((record-ref b cases))))
   ;; 1 s at 10 ms is 100 samples; with --min-samples 30 and --max-time 0.3,
   ;; the time limit ends it at 30.
-  (def o (match (parse-bench-args ["--quick" "--min-samples" "30" "--max-time" "0.3"])
-           ((Ok o) o) ((Err e) (panic! e))))
-  (def m (parameterize ((current-clock (driven-clock)))
-           (measure-case c 0 (bench-settings o))))
+  (def o
+    (match (parse-bench-args ["--quick" "--min-samples" "30" "--max-time" "0.3"])
+      ((Ok o) o)
+      ((Err e) (panic! e))))
+  (def m
+    (parameterize ((current-clock (driven-clock)))
+      (measure-case c 0 (bench-settings o))))
   (check (= (vec-length (record-ref m samples)) 30)))
 
 (deftest "a #:once benchmark is single cold calls"
   (def b (bench-named "grouped"))
   (check (= (record-ref b once) 3))
   (check (= (record-ref b group) "g"))
-  (def m (parameterize ((current-clock (driven-clock)))
-           (measure-case (list-head ((record-ref b cases))) 3 (bench-settings (defaults)))))
+  (def m
+    (parameterize ((current-clock (driven-clock)))
+      (measure-case (list-head ((record-ref b cases))) 3 (bench-settings (defaults)))))
   (check (= (vec-length (record-ref m samples)) 3))
   (check (= (record-ref m calls) 3L))
   (check (record-ref m once)))
@@ -134,8 +143,9 @@
 
 (deftest "#:setup-every leaves the setup out"
   (def b (bench-named "every"))
-  (def m (parameterize ((current-clock (driven-clock)))
-           (measure-case (list-head ((record-ref b cases))) 0 (bench-settings (defaults)))))
+  (def m
+    (parameterize ((current-clock (driven-clock)))
+      (measure-case (list-head ((record-ref b cases))) 0 (bench-settings (defaults)))))
   ;; Each call is timed on its own: 1 µs, the setup's time not in it.
   (check (vec-iter (fun (x) (= x 1000.0)) (record-ref m samples)))
   ;; The setup's array is not the body's allocation.
@@ -155,8 +165,9 @@
 (deftest "#:setup once, #:setup-every before every call, outside the time"
   (def b (bench-named "once and every"))
   (set! made-once 0)
-  (def m (parameterize ((current-clock (driven-clock)))
-           (measure-case (list-head ((record-ref b cases))) 0 (bench-settings (options ["--quick"])))))
+  (def m
+    (parameterize ((current-clock (driven-clock)))
+      (measure-case (list-head ((record-ref b cases))) 0 (bench-settings (options ["--quick"])))))
   (check (= made-once 1))
   (check (= seen-length 4))
   (check (record-ref m per-call))
@@ -173,8 +184,8 @@
      (check (= (record-ref o filters) ["sort"]))
      (check (= (map-try-ref (record-ref o params) "n") (Some ["1" "2"]))))
     ((Err e) (test-failed! e)))
-  (match (parse-bench-args ["--save" "a.bjodat" "--compare" "b.bjodat" "--alpha" "0.01"
-                            "--threshold" "5%" "--p-raw" "--fail-slower" "1.5"])
+  (match (parse-bench-args ["--save" "a.bjodat" "--compare" "b.bjodat" "--alpha" "0.01" "--threshold"
+                            "5%" "--p-raw" "--fail-slower" "1.5"])
     ((Ok o)
      (check (= (record-ref o save) (Some "a.bjodat")))
      (check (= (record-ref o compare) (Some "b.bjodat")))
@@ -250,7 +261,9 @@
   (defun (read)
     (set! reads (+ reads 1))
     (match lines
-      ((Cons l more) (set! lines more) (Some l))
+      ((Cons l more)
+       (set! lines more)
+       (Some l))
       (Nil None)))
   (def out (open-output-string))
   (parameterize ((current-output-port out))
@@ -272,19 +285,23 @@
   (parameterize ((current-output-port out))
     (ignore (run-selection (choose "skipped") (defaults))))
   (def lines (vec->list (string-split (get-output-string out) "\n")))
-  (check (any? (fun (l) (= l "name         median        ±         min    alloc/op   gc/1k 0/1/2")) lines))
+  (check (any? (fun (l) (= l "name         median        ±         min    alloc/op   gc/1k 0/1/2"))
+               lines))
   (check (any? (fun (l) (= l "skipped   skipped: why not")) lines))
   (check (not (any? (fun (l) (string-ends-with? l " ")) lines))))
 
 (: (-> (Vec string) BenchOptions))
 (defun (options args)
-  (match (parse-bench-args args) ((Ok o) o) ((Err e) (panic! e))))
+  (match (parse-bench-args args)
+    ((Ok o) o)
+    ((Err e) (panic! e))))
 
 (deftest "--save writes the run, and --compare reads it back"
   (def path "378_bench_runner.tmp.bjodat")
   (def out (open-output-string))
   (def code
-    (parameterize ((current-output-port out) (current-clock (driven-clock)))
+    (parameterize ((current-output-port out)
+                   (current-clock (driven-clock)))
       (run-and-report (choose "0") (options ["--quick" "--save" path]))))
   (check (= code 0))
   (check (string-contains? (get-output-string out) #"saved to ${path}"))
@@ -296,7 +313,8 @@
   ;; The same clock again: the same samples, so no change.
   (def out2 (open-output-string))
   (def code2
-    (parameterize ((current-output-port out2) (current-clock (driven-clock)))
+    (parameterize ((current-output-port out2)
+                   (current-clock (driven-clock)))
       (run-and-report (choose "0") (options ["--quick" "--compare" path "--fail-slower" "1"]))))
   (raise-err (file-delete path))
   (check (= code2 0))
@@ -320,12 +338,16 @@
   (: (-> (Option string)))
   (defun (read)
     (match left
-      ((Cons l more) (set! left more) (Some l))
+      ((Cons l more)
+       (set! left more)
+       (Some l))
       (Nil None)))
   (def out (open-output-string))
-  (parameterize ((current-output-port out) (current-clock (driven-clock)))
+  (parameterize ((current-output-port out)
+                 (current-clock (driven-clock)))
     (bench-serve (module-benches (current-module)) read))
-  (list-filter (fun (l) (not (string-empty? l))) (vec->list (string-split (get-output-string out) "\n"))))
+  (list-filter (fun (l) (not (string-empty? l)))
+               (vec->list (string-split (get-output-string out) "\n"))))
 
 (deftest "--serve: list, prepare and sample, exactly"
   (def replies
@@ -337,23 +359,22 @@
                          "(list)")))
   ;; Nothing after (quit) is read.
   (check (= (list-length replies) 4))
-  (check (string-starts-with? (list-head replies)
-                              "(cases (case 0 (name \"ticks\") (labels) (group \"\") (once 0) (skip \"\")) (case 1 (name \"grid\") (labels (\"n\" \"1\") (\"kind\" \"a\"))"))
+  (check
+   (string-starts-with?
+    (list-head replies)
+    "(cases (case 0 (name \"ticks\") (labels) (group \"\") (once 0) (skip \"\")) (case 1 (name \"grid\") (labels (\"n\" \"1\") (\"kind\" \"a\"))"))
   ;; 1 µs a call: k goes 1, 10, ..., 10000 to fill 10 ms.
   (check (= (list-ref replies 1) "(prepared 0 :k 10000 :steady #t)"))
   (check (= (list-ref replies 2) "(sample 0 :ns 10000000 :bytes 0 :gc (0 0 0))"))
   (check (= (list-ref replies 3) "(sample 0 :ns 5000 :bytes 0 :gc (0 0 0))")))
 
 (deftest "--serve: what is wrong is an error, and the session goes on"
-  (def skipped (match (find (fun (b) (= (name-of b) "skipped")) (module-benches (current-module)))
-                 ((Some b) b) (None (panic! "no skipped"))))
+  (def skipped
+    (match (find (fun (b) (= (name-of b) "skipped")) (module-benches (current-module)))
+      ((Some b) b)
+      (None (panic! "no skipped"))))
   (def replies
-    (serve-session (list "(sample 0 :k 1)"
-                         "(prepare 999)"
-                         "(frob)"
-                         "(prepare)"
-                         "not ("
-                         "42")))
+    (serve-session (list "(sample 0 :k 1)" "(prepare 999)" "(frob)" "(prepare)" "not (" "42")))
   (check (= (list-length replies) 6))
   (check (vec-iter (fun (r) (string-starts-with? r "(error ")) (list->vec replies)))
   (check (string-contains? (list-ref replies 0) "not prepared"))
@@ -380,12 +401,14 @@
 
 (deftest "the listing gives each case's group"
   (def replies (serve-session (list "(list)")))
-  (check (string-contains? (list-head replies)
-                           "(case 12 (name \"grouped\") (labels) (group \"g\") (once 3) (skip \"\"))")))
+  (check (string-contains?
+          (list-head replies)
+          "(case 12 (name \"grouped\") (labels) (group \"g\") (once 3) (skip \"\"))")))
 
 (deftest "--scaling: the time against the parameter, row by row"
   (def out (open-output-string))
-  (parameterize ((current-output-port out) (current-clock (driven-clock)))
+  (parameterize ((current-output-port out)
+                 (current-clock (driven-clock)))
     (ignore (run-selection (choose "linear") (options ["--quick" "--scaling"]))))
   (def text (get-output-string out))
   (check (string-contains? text "scaling"))
@@ -396,7 +419,8 @@
 
 (deftest "--detail: the samples in order, and their histogram"
   (def out (open-output-string))
-  (parameterize ((current-output-port out) (current-clock (driven-clock)))
+  (parameterize ((current-output-port out)
+                 (current-clock (driven-clock)))
     (ignore (run-selection (choose "ticks") (options ["--quick" "--detail"]))))
   (def text (get-output-string out))
   ;; Every sample 1 µs: one level all along, and one bar.
@@ -406,8 +430,10 @@
 
 (deftest "--compare-within: a group's cases against its first, in rounds"
   (def out (open-output-string))
-  (parameterize ((current-output-port out) (current-clock (driven-clock)))
-    (ignore (run-and-report (choose "grouped") (options ["--quick" "--compare-within" "-N" "12" "--seed" "4"]))))
+  (parameterize ((current-output-port out)
+                 (current-clock (driven-clock)))
+    (ignore (run-and-report (choose "grouped")
+                            (options ["--quick" "--compare-within" "-N" "12" "--seed" "4"]))))
   (def text (get-output-string out))
   (check (string-contains? text "bench: within g, against grouped: 12 rounds in this process"))
   (check (string-contains? text "seed 4"))

@@ -12,7 +12,8 @@
 (: (-> int string string))
 (defun (repeated n s)
   (def sb (stringbuilder-empty))
-  (loop (:for _ (range 0 n)) (:do (stringbuilder-add-string! sb s)))
+  (loop (:for _ (range 0 n))
+        (:do (stringbuilder-add-string! sb s)))
   (stringbuilder->string sb))
 
 ;; The rows, as vecs to compare with vec literals, or the error as displayed.
@@ -45,7 +46,9 @@
 ;; the places where csv-cut-rows may cut.
 (: (-> (Array byte) (Vec int)))
 (defun (row-ends-by-bytes b)
-  (let go ((i 0) (inside #f) (ends (: [] (Vec int))))
+  (let go ((i 0)
+           (inside #f)
+           (ends (: [] (Vec int))))
     (cond
       ((= i (array-length b)) ends)
       ((= (array-ref b i) 34uy) (go (+ i 1) (not inside) ends))
@@ -69,7 +72,10 @@
           (all? (fun (i) (any? (fun (e) (= e (array-ref cuts i))) ends)) (range 1 (- k 1)))))))
 
 (: (-> (Option (Array int)) (Option (Vec int))))
-(defun (cut-vec o) (match o ((Some a) (Some (array->vec a))) (None None)))
+(defun (cut-vec o)
+  (match o
+    ((Some a) (Some (array->vec a)))
+    (None None)))
 
 (defun (main)
   ;; ---- What is read -------------------------------------------------------
@@ -86,9 +92,7 @@
   (expect "a doubled quote" (rows "\"say \"\"hi\"\"\"\n") (Ok [["say \"hi\""]]))
   (expect "only a doubled quote" (rows "\"\"\"\"") (Ok [["\""]]))
   (expect "an empty quoted field" (rows "\"\"\n\"\",x\n") (Ok [[""] ["" "x"]]))
-  (expect "line ends inside quotes"
-          (rows "\"a\nb\",\"c\r\nd\"\ne\n")
-          (Ok [["a\nb" "c\r\nd"] ["e"]]))
+  (expect "line ends inside quotes" (rows "\"a\nb\",\"c\r\nd\"\ne\n") (Ok [["a\nb" "c\r\nd"] ["e"]]))
   (expect "a byte order mark is skipped"
           (rows (str (list->string (list (int->char 65279))) "a,b\n"))
           (Ok [["a" "b"]]))
@@ -114,23 +118,26 @@
                        (= (rows (str "\"" x "\"\"" x "\"," "\"" x "\n" x "\"\n"))
                           (Ok [[(str x "\"" x) (str x "\n" x)]])))
                      (range 0 100)))
-  (expect-true "no quoting, and a byte the quote would be"
-               (all? (fun (n)
-                       (def x (repeated n "x"))
-                       (= (shown (parse-csv (str x "\t\"" x "\n") #:separator #\tab #:quote-char None))
-                          (Ok [[x (str "\"" x)]])))
-                     (range 0 70)))
+  (expect-true
+   "no quoting, and a byte the quote would be"
+   (all? (fun (n)
+           (def x (repeated n "x"))
+           (= (shown (parse-csv (str x "\t\"" x "\n") #:separator #\tab #:quote-char None))
+              (Ok [[x (str "\"" x)]])))
+         (range 0 70)))
 
   ;; ---- Errors -------------------------------------------------------------
   (expect "a quote inside a field"
           (rows "a,b\nc,d\"e\n")
           (Err "line 2, row 2, field 2: a quote inside a field that does not start with one"))
-  (expect "something after the closing quote"
-          (rows "\"a\"b,c\n")
-          (Err "line 1, row 1, field 1: a quoted field ends at its closing quote, and then there is 'b'"))
-  (expect "not closed: where it starts"
-          (rows "x\n\n\"a\nb\nc")
-          (Err "line 3, row 2, field 1: the input ends inside a quoted field that starts on this line"))
+  (expect
+   "something after the closing quote"
+   (rows "\"a\"b,c\n")
+   (Err "line 1, row 1, field 1: a quoted field ends at its closing quote, and then there is 'b'"))
+  (expect
+   "not closed: where it starts"
+   (rows "x\n\n\"a\nb\nc")
+   (Err "line 3, row 2, field 1: the input ends inside a quoted field that starts on this line"))
   (expect "a line counted inside quotes"
           (rows "\"a\nb\",c\nd\"\n")
           (Err "line 3, row 2, field 1: a quote inside a field that does not start with one"))
@@ -148,10 +155,12 @@
   (expect "not closed: to the end" (lenient "a,\"b\nc") (Ok [["a" "b\nc"]]))
 
   ;; ---- Options that are not allowed ---------------------------------------
-  (expect-true "a separator that ends a line"
-               (refused? (try (parse-csv "a" #:separator #\newline) #:catch (System.ArgumentException))))
-  (expect-true "a quote that is the separator"
-               (refused? (try (parse-csv "a" #:quote-char (Some #\,)) #:catch (System.ArgumentException))))
+  (expect-true
+   "a separator that ends a line"
+   (refused? (try (parse-csv "a" #:separator #\newline) #:catch (System.ArgumentException))))
+  (expect-true
+   "a quote that is the separator"
+   (refused? (try (parse-csv "a" #:quote-char (Some #\,)) #:catch (System.ArgumentException))))
   (expect-true "a separator that is not ASCII"
                (refused? (try (parse-csv "a" #:separator #\å) #:catch (System.ArgumentException))))
 
@@ -187,29 +196,27 @@
   (expect "a port and a string agree" (via-port many) (rows many))
 
   ;; ---- Streaming ----------------------------------------------------------
-  (expect "fold: the rows"
-          (csv-fold (open-input-string many) 0 (fun (row n) (+ n 1)))
-          (Ok 100001))
+  (expect "fold: the rows" (csv-fold (open-input-string many) 0 (fun (row n) (+ n 1))) (Ok 100001))
   (def seen (make-box 0))
   (def result (csv-for-each "a\nb\n\"c\nd" (fun (row) (box-set! seen (+ (box-ref seen) 1)))))
   (expect-true "for-each: an error" (err? result))
   (expect "for-each: after the rows before it" (box-ref seen) 2)
   (expect "the reader: one row at a time"
-          (call-with-csv-reader "a,b\nc\n"
-            (fun (r)
-              (def first (csv-next! r))
-              (def second (csv-next! r))
-              (def third (csv-next! r))
-              (list first second third)))
+          (call-with-csv-reader "a,b\nc\n" (fun (r)
+                                             (def first (csv-next! r))
+                                             (def second (csv-next! r))
+                                             (def third (csv-next! r))
+                                             (list first second third)))
           (list (Ok (Some (row ["a" "b"]))) (Ok (Some (row ["c"]))) (Ok None)))
   (expect "the reader: the same error again"
-          (call-with-csv-reader "a\"\nb\n"
-            (fun (r)
-              (def first (csv-next! r))
-              (= first (csv-next! r))))
+          (call-with-csv-reader "a\"\nb\n" (fun (r)
+                                             (def first (csv-next! r))
+                                             (= first (csv-next! r))))
           #t)
   (expect "an exception from f passes through"
-          (match (try (csv-for-each "a\n" (fun (row) (raise (cast Exception (ArgumentException. "mine")))))
+          (match (try
+                   (csv-for-each "a\n" (fun (row)
+                                         (raise (cast Exception (ArgumentException. "mine")))))
                    #:catch (System.ArgumentException))
             ((Err e) (.-Message e))
             ((Ok _) "none"))
@@ -230,7 +237,9 @@
           "\"a,b\",\"say \"\"hi\"\"\",\"x\ny\",\"c\rd\",e")
   (expect "an empty field among others" (csv-row->string ["" "a" ""]) ",a,")
   (expect "an empty field on its own" (csv-row->string [""]) "\"\"")
-  (expect "an empty field on its own, every field quoted" (csv-row->string [""] #:quote-all? #t) "\"\"")
+  (expect "an empty field on its own, every field quoted"
+          (csv-row->string [""] #:quote-all? #t)
+          "\"\"")
   (expect "an empty field on its own, no quote" (csv-row->string [""] #:quote-char None) "")
   (expect "a row as a list" (csv-row->string (list "a" "b,c")) "a,\"b,c\"")
   (expect "a row as an IArray" (csv-row->string (row ["a" ""])) "a,")
@@ -239,14 +248,13 @@
   (expect "rows" (csv->string [["a" "b"] ["c"]]) "a,b\nc\n")
   (expect "rows, CR LF" (csv->string (list ["a"] ["b"]) #:crlf? #t) "a\r\nb\r\n")
   (expect "no rows" (csv->string no-rows) "")
-  (expect-true "a field that needs quotes, and no quote"
-               (refused? (try (csv-row->string ["a,b"] #:quote-char None) #:catch (System.ArgumentException))))
+  (expect-true
+   "a field that needs quotes, and no quote"
+   (refused? (try (csv-row->string ["a,b"] #:quote-char None) #:catch (System.ArgumentException))))
   (expect "no quote, and no need" (csv-row->string ["a\"b" "c"] #:quote-char None) "a\"b,c")
 
-  (def tricky [["plain" "" "with,comma"]
-               [""]
-               ["\"quoted\"" "line\nend" "cr\r\nlf"]
-               ["åäö" " spaced "]])
+  (def tricky
+    [["plain" "" "with,comma"] [""] ["\"quoted\"" "line\nend" "cr\r\nlf"] ["åäö" " spaced "]])
   (expect "written and read back" (rows (csv->string tricky)) (Ok tricky))
   (expect "read, written and read again"
           (match (parse-csv (csv->string tricky))
@@ -272,37 +280,58 @@
   ;; Rows of bytes, cut into pieces
   (expect "the end of a row" (csv-row-end (string->bytes "a,b\n1,2\n") 0) (Some 4))
   (expect "a line feed inside quotes is in the row"
-          (csv-row-end (string->bytes "\"x\ny\",1\n2,3\n") 0) (Some 8))
+          (csv-row-end (string->bytes "\"x\ny\",1\n2,3\n") 0)
+          (Some 8))
   (expect "no line feed ends the last row" (csv-row-end (string->bytes "a,b") 0) None)
   (expect "without quoting, a quote is a byte"
-          (csv-row-end (string->bytes "\"x\ny\",1\n") 0 #:quote-char None) (Some 3))
+          (csv-row-end (string->bytes "\"x\ny\",1\n") 0 #:quote-char None)
+          (Some 3))
   (def numbered (string->bytes "h\n1\n2\n3\n4\n"))
   (expect "two pieces of two rows" (cut-vec (csv-cut-rows numbered 2 #:from 2)) (Some [2 6 10]))
   (expect "one piece" (cut-vec (csv-cut-rows numbered 1 #:from 2)) (Some [2 10]))
   (expect "no more pieces than rows" (cut-vec (csv-cut-rows numbered 9 #:from 2)) (Some [2 4 6 8 10]))
   (expect "no rows, no piece" (cut-vec (csv-cut-rows (string->bytes "h\n") 3 #:from 2)) (Some [2]))
-  (expect "a quote that is not closed" (cut-vec (csv-cut-rows (string->bytes "h\n\"a\n") 2 #:from 2)) None)
+  (expect "a quote that is not closed"
+          (cut-vec (csv-cut-rows (string->bytes "h\n\"a\n") 2 #:from 2))
+          None)
   (expect "the last row without a line feed"
-          (cut-vec (csv-cut-rows (string->bytes "1\n2\n3") 2)) (Some [0 2 5]))
-  (def quoted (string->bytes (csv->string (map (fun (i) [(int->string i)
-                                                        (if (even? i) "x\ny,\"z\"\r\n" "w")
-                                                        (if (= (% i 7) 0) (string-join {vecing "ab\n" (:for _ (range 0 40))} "") "")])
-                                               (range 0 300)))))
-  (def header-end (match (csv-row-end quoted 0) ((Some e) e) (None -1)))
+          (cut-vec (csv-cut-rows (string->bytes "1\n2\n3") 2))
+          (Some [0 2 5]))
+  (def quoted
+    (string->bytes (csv->string (map (fun (i)
+                                       [(int->string i)
+                                        (if (even? i) "x\ny,\"z\"\r\n" "w")
+                                        (if (= (% i 7) 0)
+                                            (string-join {vecing "ab\n" (:for _ (range 0 40))} "")
+                                            "")])
+                                     (range 0 300)))))
+  (def header-end
+    (match (csv-row-end quoted 0)
+      ((Some e) e)
+      (None -1)))
   (expect-true "pieces of whole rows, of 1 to 40 pieces, from the start and after a row"
-               (all? (fun (parts) (and (cuts-good? quoted parts 0) (cuts-good? quoted parts header-end)))
+               (all? (fun (parts)
+                       (and (cuts-good? quoted parts 0) (cuts-good? quoted parts header-end)))
                      (range 1 41)))
   (expect-true "the cuts are at the rows parse-csv reads"
                (match (csv-cut-rows quoted 7)
                  ((Some cuts)
-                  (= (vec-length (match (parse-csv (bytes->string/lossy quoted)) ((Ok rs) rs) ((Err _) [])))
+                  (= (vec-length (match (parse-csv (bytes->string/lossy quoted))
+                                   ((Ok rs) rs)
+                                   ((Err _) [])))
                      (loop (:for i (range 0 (- (array-length cuts) 1)))
-                           (:acc n (folding 0 (+ n (match (parse-csv (bytes->string/lossy quoted #:start (array-ref cuts i)
-                                                                                  #:end (array-ref cuts (+ i 1))))
-                                                     ((Ok rs) (vec-length rs))
-                                                     ((Err _) -1000))))))))
+                           (:acc n (folding 0
+                                            (+ n
+                                               (match (parse-csv (bytes->string/lossy
+                                                                  quoted
+                                                                  #:start (array-ref cuts i)
+                                                                  #:end (array-ref cuts (+ i 1))))
+                                                 ((Ok rs) (vec-length rs))
+                                                 ((Err _) -1000))))))))
                  (None #f)))
-  (expect-true "no pieces is refused" (refused? (try (csv-cut-rows numbered 0) #:catch (System.ArgumentException))))
-  (expect-true "a start past the end is refused"
-               (refused? (try (csv-cut-rows numbered 1 #:from 11) #:catch (System.ArgumentException))))
+  (expect-true "no pieces is refused"
+               (refused? (try (csv-cut-rows numbered 0) #:catch (System.ArgumentException))))
+  (expect-true
+   "a start past the end is refused"
+   (refused? (try (csv-cut-rows numbered 1 #:from 11) #:catch (System.ArgumentException))))
   0)

@@ -10,7 +10,9 @@
 (type (: (Sorted %a) (Newtype (List %a))))
 
 (: (-> Banana int))
-(defun (peel b) (def (Banana n) b) n)
+(defun (peel b)
+  (def (Banana n) b)
+  n)
 
 ;; Its own equality, which ignores the sign. A HashSet has to use this one,
 ;; and not int's, which is what .NET would ask.
@@ -20,7 +22,8 @@
 
 (impl (Ord Banana) #:via int)
 
-(def/trait (Describe %a) (: describe (-> %a string)))
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
 (impl (Describe int) (defun (describe x) (str "the number " (displayed x))))
 (impl (Describe (List %a)) (where (Describe %a))
   (defun (describe xs) (str "a list of " (displayed (list-length xs)))))
@@ -33,8 +36,7 @@
 (impl (Describe Plantain) #:via Banana)
 
 ;; type/derive on a newtype writes #:via implementations, whatever the trait.
-(type/derive (Eq Ord Num Ordered Describe)
-  (: Score (Newtype int)))
+(type/derive (Eq Ord Num Ordered Describe) (: Score (Newtype int)))
 
 (: (-> %a string) (where (Describe %a)))
 (defun (describe-via-dict x) (describe x))
@@ -44,7 +46,8 @@
 
 ;; Num requires Ordered, so a number may be compared with <.
 (: (-> %a %a %a) (where (Num %a)))
-(defun (larger a b) (if (< a b) b a))
+(defun (larger a b)
+  (if (< a b) b a))
 
 (defun (main args)
   ;; Construction and patterns
@@ -63,7 +66,9 @@
           2)
 
   ;; Via int
-  (expect "Ord via int" (list-map peel (list-sort (list (Banana 3) (Banana 1) (Banana 2)))) (list 1 2 3))
+  (expect "Ord via int"
+          (list-map peel (list-sort (list (Banana 3) (Banana 1) (Banana 2))))
+          (list 1 2 3))
   (expect "a trait via int" (describe (Banana 7)) "the number 7")
   (expect "through a dictionary" (describe-via-dict (Banana 8)) "the number 8")
   (expect "a generic newtype via its list" (describe (Sorted (list 1 2))) "a list of 2")
@@ -74,7 +79,11 @@
   (expect "derived Num" total 42)
   (def (Score doubled) (double-sum (Score 1) (Score 2)))
   (expect "Num through a dictionary, with a literal" doubled 6)
-  (expect "a literal pattern" (match (Score 3) (3 "three") (_ "other")) "three")
+  (expect "a literal pattern"
+          (match (Score 3)
+            (3 "three")
+            (_ "other"))
+          "three")
   (expect "derived Describe" (describe (Score 5)) "the number 5")
   (def (Score high) (larger (Score 3) (Score 8)))
   (expect "Ordered from Num, through a dictionary" high 8)
@@ -84,6 +93,8 @@
   (expect "a library's derived Num" (< (Meters 1.0) m) #t)
   (expect "a library's via for its own trait" (label (Meters 2.0)) "a double, 2")
   (expect "an opaque newtype through its module's functions"
-          (match (parse-email "x@example.org") ((Some e) (email-domain e)) ((None) "none"))
+          (match (parse-email "x@example.org")
+            ((Some e) (email-domain e))
+            ((None) "none"))
           "example.org")
   0)

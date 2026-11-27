@@ -20,7 +20,9 @@
 ;; The code points of `s`, as the cases write them.
 (: (-> string string))
 (defun (codes s)
-  (string-join (loop (:for c s) (:acc (vecing (int->string (char->int c))))) ","))
+  (string-join (loop (:for c s)
+                     (:acc (vecing (int->string (char->int c)))))
+               ","))
 
 (: (-> Bjodat (Vec Bjodat)))
 (defun (bjodat-cases v)
@@ -42,7 +44,9 @@
 
 (defun (main args)
   (loop (:for c escape-cases)
-        (:do (expect (str (vec-ref c 0) ", as the compiler reads it") (codes (vec-ref c 1)) (vec-ref c 2))))
+        (:do (expect (str (vec-ref c 0) ", as the compiler reads it")
+                     (codes (vec-ref c 1))
+                     (vec-ref c 2))))
 
   (match (read-bjodat (parameter-ref current-input-port))
     ((Err e) (expect "bjodat reads the fixture" e ""))
@@ -50,8 +54,9 @@
      (def cases (bjodat-cases v))
      (expect "bjodat finds every case" (vec-length cases) (vec-length escape-cases))
      (loop (:for i (range 0 (vec-length cases)))
-           (:do (let ((label (case-text (vec-ref cases i) 0))
-                      (read (case-text (vec-ref cases i) 1)))
-                  (expect (str label ", as bjodat reads it") (codes read) (case-text (vec-ref cases i) 2))
-                  (expect (str label ", the same in both") read (vec-ref (vec-ref escape-cases i) 1)))))))
+           (:do
+            (let ((label (case-text (vec-ref cases i) 0))
+                  (read (case-text (vec-ref cases i) 1)))
+              (expect (str label ", as bjodat reads it") (codes read) (case-text (vec-ref cases i) 2))
+              (expect (str label ", the same in both") read (vec-ref (vec-ref escape-cases i) 1)))))))
   0)

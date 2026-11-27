@@ -18,7 +18,8 @@
 (: (-> string int string))
 (defun (repeated s n)
   (def sb (stringbuilder-empty))
-  (loop (:for _ (range 0 n)) (:do (stringbuilder-add-string! sb s)))
+  (loop (:for _ (range 0 n))
+        (:do (stringbuilder-add-string! sb s)))
   (stringbuilder->string sb))
 
 ;; The bytes of `s`, and then `tail`.
@@ -49,7 +50,7 @@
                 (:when (not (= (shown (parse-bjodat (str "\"" text "\\t\"")))
                                (str "\"" text "\\t\""))))
                 (:acc wrong (listing n))
-                => wrong)
+            => wrong)
           '())
   (expect "a quote in every lane of the second block"
           (loop (:for n (range 32 64))
@@ -57,7 +58,7 @@
                 (:when (not (= (shown (parse-bjodat (str "[\"" text "\" 1]")))
                                (str "[\"" text "\" 1]"))))
                 (:acc wrong (listing n))
-                => wrong)
+            => wrong)
           '())
   (expect "a newline in a long string moves the line"
           (shown (parse-bjodat (str "[\"" (repeated "x" 40) "\n" (repeated "y" 40) "\" )")))
@@ -72,7 +73,8 @@
           (from-bytes (bytes-then (str "\"" (repeated "å" 40)) #[255 34]))
           "err: line 1, column 42: text has to be UTF-8, and this byte is not")
   (expect "a control character in a long run is text"
-          (shown (parse-bjodat (str "\"" (repeated "x" 40) (list->string (list (int->char 1))) "y\"")))
+          (shown (parse-bjodat (str "\"" (repeated "x" 40) (list->string (list (int->char 1)))
+                                    "y\"")))
           (str "\"" (repeated "x" 40) (list->string (list (int->char 1))) "y\""))
 
   ;; --- White space -----------------------------------------------------------
@@ -81,18 +83,19 @@
                 (:when (not (= (shown (parse-bjodat (str "[1 " (repeated " " n) ")")))
                                (str "err: line 1, column " (int->string (+ 4 n)) closes-nothing))))
                 (:acc wrong (listing n))
-                => wrong)
+            => wrong)
           '())
-  (expect "the line and column after newlines and an indent, in every lane"
-          (loop (:for k '(1 2 31 32 33 64))
-                (:subloop)
-                (:for m (range 0 70))
-                (:when (not (= (shown (parse-bjodat (str "[1" (repeated "\n" k) (repeated " " m) ")")))
-                               (str "err: line " (int->string (+ 1 k)) ", column " (int->string (+ 1 m))
-                                    closes-nothing))))
-                (:acc wrong (listing (Tuple k m)))
-                => wrong)
-          '())
+  (expect
+   "the line and column after newlines and an indent, in every lane"
+   (loop (:for k '(1 2 31 32 33 64))
+         (:subloop)
+         (:for m (range 0 70))
+         (:when (not (= (shown (parse-bjodat (str "[1" (repeated "\n" k) (repeated " " m) ")")))
+                        (str "err: line " (int->string (+ 1 k)) ", column " (int->string (+ 1 m))
+                             closes-nothing))))
+         (:acc wrong (listing (Tuple k m)))
+     => wrong)
+   '())
   (expect "a comment between long white space"
           (shown (parse-bjodat (str "[1" (repeated " " 40) "; a comment ) \n" (repeated " " 40) ")")))
           (str "err: line 2, column 41" closes-nothing))
@@ -100,17 +103,18 @@
           (shown (parse-bjodat (str "[1" (repeated " \t\r" 20) "\n" (repeated "\t" 40) ")")))
           (str "err: line 2, column 41" closes-nothing))
   (expect "values after long white space"
-          (shown (parse-bjodat (str "[" (repeated "\n    " 20) "1" (repeated " " 50) "2" (repeated "\n" 40) "]")))
+          (shown (parse-bjodat (str "[" (repeated "\n    " 20) "1" (repeated " " 50) "2"
+                                    (repeated "\n" 40) "]")))
           "[1 2]")
 
   ;; --- Keywords --------------------------------------------------------------
   ;; Two hundred names in sixty-four slots: names that share a slot take turns
   ;; in it, and each is still its own keyword.
-  (def many (loop (:for i (range 0 200)) (:acc out (vecing (str ":k" (int->string i) " " (int->string i))))))
+  (def many
+    (loop (:for i (range 0 200))
+          (:acc out (vecing (str ":k" (int->string i) " " (int->string i))))))
   (def many-text (str "{" (string-join many " ") "}"))
-  (expect "more keywords than slots, each kept"
-          (shown (parse-bjodat many-text))
-          many-text)
+  (expect "more keywords than slots, each kept" (shown (parse-bjodat many-text)) many-text)
   (expect "a repeated keyword is the interned one, found by reference"
           (match (parse-bjodat "[{:a 1 :b 2} {:a 3 :b 4} {:b 5 :a 6}]")
             ((Ok (BjoVec v))

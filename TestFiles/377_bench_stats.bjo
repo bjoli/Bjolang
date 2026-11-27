@@ -21,8 +21,11 @@
 
 (def a [10.2 11.5 9.8 12.1 10.9 11.0 10.4 13.2 9.5 10.8 11.7 10.1])
 (def b [10.9 12.3 10.1 12.8 11.6 11.2 10.9 14.0 9.9 11.5 12.2 10.6])
-(def ties-x [1.0 2.0 2.0 3.0 3.0 3.0 4.0 5.0 5.0 6.0 7.0 7.0 8.0 9.0 10.0 10.0 11.0 12.0 12.0 13.0 14.0])
-(def ties-y [3.0 4.0 4.0 5.0 6.0 6.0 7.0 8.0 8.0 9.0 9.0 10.0 11.0 12.0 13.0 13.0 14.0 15.0 16.0 16.0 17.0 18.0])
+(def ties-x
+  [1.0 2.0 2.0 3.0 3.0 3.0 4.0 5.0 5.0 6.0 7.0 7.0 8.0 9.0 10.0 10.0 11.0 12.0 12.0 13.0 14.0])
+(def ties-y
+  [3.0 4.0 4.0 5.0 6.0 6.0 7.0 8.0 8.0 9.0 9.0 10.0 11.0 12.0 13.0 13.0 14.0 15.0 16.0 16.0 17.0
+   18.0])
 
 (deftest "order statistics"
   (check-approx (median a) 10.85 #:eps 1e-12)
@@ -50,7 +53,8 @@
   (check (close? (wilcoxon-p d) 0.0021572604979440573 1e-6)))
 
 (deftest "Wilcoxon, normal approximation"
-  (def big {vecing (+ (/ (cast System.Double (- (% (* i 37) 101) 50)) 10.0) 0.8) (:for i (range 0 60))})
+  (def big
+    {vecing (+ (/ (cast System.Double (- (% (* i 37) 101) 50)) 10.0) 0.8) (:for i (range 0 60))})
   (check (close? (wilcoxon-p big) 0.06226697048836304 1e-6))
   ;; Zeros are dropped; what is left is 8 untied, so this one is exact.
   (check (close? (wilcoxon-p (vec-map (fun (x) (- x 3.0)) ties-x)) 0.000850069482605579 1e-6)))
@@ -98,7 +102,9 @@
 (deftest "the one-sample t-test and its critical values, against SciPy"
   (check-approx (t-test-p [0.01 0.02 -0.005 0.015 0.03 0.0]) 0.07775208077043505 #:eps 1e-10)
   (check-approx (t-test-p [0.1 0.12 0.09]) 0.007205446408459768 #:eps 1e-10)
-  (check-approx (t-test-p [-0.02 0.01 0.0 0.005 -0.01 0.02 0.003 -0.004]) 0.9112310388839276 #:eps 1e-10)
+  (check-approx (t-test-p [-0.02 0.01 0.0 0.005 -0.01 0.02 0.003 -0.004])
+                0.9112310388839276
+                #:eps 1e-10)
   (check-approx (t-critical 0.05 5) 2.5705818356363146 #:eps 1e-9)
   (check-approx (t-critical 0.05 1) 12.706204736174694 #:eps 1e-8)
   (check-approx (t-critical 0.05 30) 2.0422724563012378 #:eps 1e-9)

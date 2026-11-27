@@ -19,8 +19,7 @@
 ;; type, so it is an alias of `(List ProcItem)`.
 (def/grammar ProcList
   (ProcList (List ProcItem))
-  (ProcItem (:or (: ProcSym symbol)
-                 (: ProcStr string)
+  (ProcItem (:or (: ProcSym symbol) (: ProcStr string)
                  (: ProcFn ,(-> string string))
                  (: ProcArgv (Vec string))
                  (: ProcSub (ProcItem ...)))))
@@ -31,7 +30,8 @@
     ((ProcSym s) (symbol->string s))
     ((ProcStr s) (string-append "\"" (string-append s "\"")))
     ((ProcFn f) (f "@"))
-    ((ProcArgv v) (string-append "[" (string-append (vec-fold (fun (s acc) (string-append acc s)) "" v) "]")))
+    ((ProcArgv v)
+     (string-append "[" (string-append (vec-fold (fun (s acc) (string-append acc s)) "" v) "]")))
     ((ProcSub items) (string-append "(" (string-append (render-all items) ")")))))
 
 ;; The alias of the grammar in the signature.
@@ -86,10 +86,7 @@
 ;; Two cases carry a list. A written list is a `Sub`. `Args` takes only a
 ;; spliced `(List string)`, so a literal never selects it.
 (def/grammar Item
-  (:or (: Sym symbol)
-       (: Str string)
-       (: Sub (Item ...))
-       (: Args ,(List string))))
+  (:or (: Sym symbol) (: Str string) (: Sub (Item ...)) (: Args ,(List string))))
 
 (: (-> Item string))
 (defun (show-item i)
@@ -111,7 +108,8 @@
 ;; `Wrap` holds the tree itself. `(list (Just 7) (Just 8))` must compile, and
 ;; `(list a b)` of two leaves must not put `b` in a `Wrap`.
 (type (: (Opt %a) (Union Nothing (: Just %a))))
-(type (: Tree (Union (: Leaf int) (: Wrap Tree))))
+(type (: Tree (Union (: Leaf int)
+                     (: Wrap Tree))))
 
 (: (-> Tree int))
 (defun (depth t)
@@ -121,27 +119,19 @@
 
 (defun (main args)
   ;; As an argument, with nothing annotated anywhere.
-  (expect "argument position"
-          (run/lines '(pipe (ls "-l") (wc "-l")))
-          "pipe (ls \"-l\") (wc \"-l\")")
+  (expect "argument position" (run/lines '(pipe (ls "-l") (wc "-l"))) "pipe (ls \"-l\") (wc \"-l\")")
 
   ;; Depth is not a special case. Each level reads its part of the literal by
   ;; the item of the case that the level above selected.
-  (expect "deep nesting"
-          (run/lines '(pipe (a (b (c "x")))))
-          "pipe (a (b (c \"x\")))")
+  (expect "deep nesting" (run/lines '(pipe (a (b (c "x"))))) "pipe (a (b (c \"x\")))")
 
   ;; A spliced value has no literal shape, so its type selects the case. A
   ;; `(-> string string)` can only be a `ProcFn`.
-  (expect "unquote selected by type"
-          (run/lines '(pipe (ls) ,my-rot-13))
-          "pipe (ls) rot13@")
+  (expect "unquote selected by type" (run/lines '(pipe (ls) ,my-rot-13)) "pipe (ls) rot13@")
 
   ;; `[...]` in a quote is a vec. It is not a list that starts with the
   ;; symbol `vec-literal`.
-  (expect "vec literal in a quote"
-          (run/lines '(pipe (ls ["-l" "-a"])))
-          "pipe (ls [-l-a])")
+  (expect "vec literal in a quote" (run/lines '(pipe (ls ["-l" "-a"]))) "pipe (ls [-l-a])")
 
   ;; An annotated binding.
   (def (: xs ProcList) '(pipe (ls "-l")))
@@ -152,25 +142,20 @@
   ;; this: with one type, the grammar reads each element of the outer list as
   ;; a `ProcList`.
   (def (: many (List ProcList)) (list '(pipe (ls "-l")) '(wc)))
-  (expect "list of literals"
-          (list-foldl (fun (s acc) (string-append acc (string-append "|" s)))
-                      ""
-                      (list-map run/lines many))
-          "|pipe (ls \"-l\")|wc")
+  (expect
+   "list of literals"
+   (list-foldl (fun (s acc) (string-append acc (string-append "|" s))) "" (list-map run/lines many))
+   "|pipe (ls \"-l\")|wc")
 
   ;; An empty literal, and one with no nesting at all.
   (expect "flat literal" (run/lines '(ls "-l")) "ls \"-l\"")
   (expect "empty literal" (run/lines '()) "")
 
   ;; Mutual recursion: each level of the list uses the other production.
-  (expect "mutually recursive productions"
-          (show-evens '("a" (b ("c"))))
-          "a {b <c>}")
+  (expect "mutually recursive productions" (show-evens '("a" (b ("c")))) "a {b <c>}")
 
   ;; A written list is a `Sub`, not an `Args`.
-  (expect "a written list selects Sub"
-          (show-items '(a (b "c")))
-          "a (b c)")
+  (expect "a written list selects Sub" (show-items '(a (b "c"))) "a (b c)")
 
   ;; You can write the `Args` constructor. Its parameter type is the expected
   ;; type of the literal inside it, as for a function.

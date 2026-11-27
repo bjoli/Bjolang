@@ -23,10 +23,11 @@
 ;; than the whole suite.
 (: (-> (-> (Result RunError string)) string))
 (defun (bounded f)
-  (sync/blocking
-    (choose (wrap (blocking f)
-                  (fun (r) (match r ((Ok v) (shown v)) ((Err e) "raised"))))
-            (wrap (timeout (seconds 20)) (fun (u) "hung")))))
+  (sync/blocking (choose (wrap (blocking f) (fun (r)
+                                              (match r
+                                                ((Ok v) (shown v))
+                                                ((Err e) "raised"))))
+                         (wrap (timeout (seconds 20)) (fun (u) "hung")))))
 
 ;; The shell's parent is this program, so `$PPID` names its descriptors.
 (: (-> string int))
@@ -50,8 +51,6 @@
   (raise-err (file-write-text input "one\ntwo\n"))
   (loop (:for i (range 0 20))
         (:do (ignore (run/status '(from-file ,input (wc "-l"))))))
-  (expect "a from-file redirect closes its file"
-          (open-descriptors-on name)
-          0)
+  (expect "a from-file redirect closes its file" (open-descriptors-on name) 0)
   (raise-err (file-delete input))
   0)

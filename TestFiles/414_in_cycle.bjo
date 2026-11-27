@@ -52,7 +52,8 @@
   (expect "a string" (->list (take 5 (in-cycle "ab"))) (list #\a #\b #\a #\b #\a))
   (expect "a range" (->list (take 5 (in-cycle (range 3 5)))) '(3 4 3 4 3))
   (expect "a sequence" (->list (take 4 (in-cycle (map (fun (x) (* 10 x)) '(1 2))))) '(10 20 10 20))
-  (expect "an adapter" (->list (take 3 (in-cycle (enumerate "ab"))))
+  (expect "an adapter"
+          (->list (take 3 (in-cycle (enumerate "ab"))))
           (list (Tuple 0 #\a) (Tuple 1 #\b) (Tuple 0 #\a)))
   (expect "zip with a cycle ends with the other side"
           {summing (* x w) (:for (Tuple x w) (zip #[5 6 7 8] (in-cycle '(1 -1))))}
@@ -70,7 +71,10 @@
           '("a" "b"))
   ;; Each walk of a sequence runs its body again.
   (def/mutable runs 0)
-  (def counted (seq (set! runs (+ runs 1)) (yield 1)))
+  (def counted
+    (seq
+      (set! runs (+ runs 1))
+      (yield 1)))
   (ignore (->list (take 3 (in-cycle counted))))
   (expect "a sequence is walked again" runs 3)
 
@@ -86,14 +90,17 @@
           (->list (filter (fun (e) (string-starts-with? e "done?")) (events-in-order)))
           (list "done? 0" "done? 1" "done? 2" "done? 0" "done? 1" "done? 2" "done? 0" "done? 1"))
   (set! events '())
-  (loop (:for x (in-cycle (counter 3))) (:finish (= x 1)))
+  (loop (:for x (in-cycle (counter 3)))
+        (:finish (= x 1)))
   (expect "a :finish ends the inner cursor"
           (->list (filter (fun (e) (string-starts-with? e "end")) (events-in-order)))
           (list "end 1"))
   (set! events '())
-  (match (try (loop (:for x (in-cycle (counter 3)))
-                    (:do (when (= x 2) (raise (cast Exception (Boom. "stop"))))))
-              #:catch (System.InvalidOperationException))
+  (match (try
+           (loop (:for x (in-cycle (counter 3)))
+                 (:do (when (= x 2)
+                        (raise (cast Exception (Boom. "stop"))))))
+           #:catch (System.InvalidOperationException))
     ((Ok _) (println "FAILURE: the loop did not throw"))
     ((Err e) (println "ok: the loop threw")))
   (expect "an exception cleans the inner cursor up"

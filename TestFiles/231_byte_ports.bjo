@@ -171,7 +171,9 @@
      (ignore (sync (promise-join writer)))
      (shutdown! out)
 
-     (Tuple (match first ((Some answer) #t) (None #f))
+     (Tuple (match first
+              ((Some answer) #t)
+              (None #f))
             (str (match first
                    ((Some answer) (shown answer))
                    (None ""))
@@ -180,14 +182,14 @@
 ;; How many rounds came out wrong, and how many of them the read branch won.
 (: (-bjo-> Setup int (Tuple int int)))
 (defbjo (race-rounds setup rounds)
-  (let loop ((i 0) (bad 0) (wins 0))
+  (let loop ((i 0)
+             (bad 0)
+             (wins 0))
     (if (= i rounds)
         (Tuple bad wins)
         (match (race-once setup)
           ((Tuple read-won text)
-           (loop (+ i 1)
-                 (+ bad (if (= text "11.22.33.44.") 0 1))
-                 (+ wins (if read-won 1 0))))))))
+           (loop (+ i 1) (+ bad (if (= text "11.22.33.44.") 0 1)) (+ wins (if read-won 1 0))))))))
 
 ;; `race-rounds` on a fiber of its own, joined. A failed join counts as -1.
 (: (-> Setup int (Tuple int int)))
@@ -232,7 +234,9 @@
 (defbjo (write-in-tens out chunks)
   (let loop ((i 0))
     (if (= i chunks)
-        (let () (shutdown! out) 0)
+        (let ()
+          (shutdown! out)
+          0)
         (let ()
           (write-bytes! out (byte-run (+ (* i 10) 1) 10))
           (flush-port out)
@@ -266,9 +270,9 @@
     (if (= i rounds)
         wins
         (loop (+ i 1)
-              (+ wins (sync/blocking
-                        (choose (wrap ev (fun (r) 0))
-                                (wrap (timeout (milliseconds 20)) (fun (u) 1)))))))))
+              (+ wins
+                 (sync/blocking (choose (wrap ev (fun (r) 0))
+                                        (wrap (timeout (milliseconds 20)) (fun (u) 1)))))))))
 
 (defun (main)
   ;; =========================================================================
@@ -280,7 +284,8 @@
      (flush-port out)
      (shutdown! out)
      (expect "a pipe carries bytes through unchanged"
-             (shown (read-bytes in 6)) "104.105.255.128.0.200.")
+             (shown (read-bytes in 6))
+             "104.105.255.128.0.200.")
      (expect "and then it is finished" (shown (read-some in)) "none")))
 
   ;; =========================================================================
@@ -346,8 +351,7 @@
      (expect "a losing read consumes nothing" bad 0)
      (expect "the stop wins when the pipe is empty" wins 0)))
   (match (run-rounds Race 300)
-    ((Tuple bad wins)
-     (expect "an open race consumes nothing, over 300 rounds" bad 0)))
+    ((Tuple bad wins) (expect "an open race consumes nothing, over 300 rounds" bad 0)))
 
   ;; =========================================================================
   ;; Ephemeral, not persistent
@@ -378,8 +382,14 @@
      (def writer (bjo (write-in-tens out 6)))
      (def a (bjo (tally-reader in seen)))
      (def b (bjo (tally-reader in seen)))
-     (def na (match (sync/blocking (promise-join a)) ((Ok k) k) ((Err e) -1)))
-     (def nb (match (sync/blocking (promise-join b)) ((Ok k) k) ((Err e) -1)))
+     (def na
+       (match (sync/blocking (promise-join a))
+         ((Ok k) k)
+         ((Err e) -1)))
+     (def nb
+       (match (sync/blocking (promise-join b))
+         ((Ok k) k)
+         ((Err e) -1)))
      (ignore (sync/blocking (promise-join writer)))
      (expect "two fibers between them see every byte" (+ na nb) n)
      (expect-true "and none of them twice" (every-mark-once? seen n))))
@@ -419,8 +429,11 @@
      (expect "and then reports end of input" (shown (read-some in)) "none")
      ;; A write after it is refused rather than silently dropped.
      (expect "a write after shutdown! is refused"
-             (match (try (let () (write-bytes! out #[1]) "written")
-                         #:catch (System.InvalidOperationException))
+             (match (try
+                      (let ()
+                        (write-bytes! out #[1])
+                        "written")
+                      #:catch (System.InvalidOperationException))
                ((Ok what) what)
                ((Err e) "refused"))
              "refused")
@@ -452,8 +465,7 @@
                ((Ok k) k)
                ((Err e) -1))
              0)
-     (expect "writes what the port held, then ends the read half"
-             (drain-bytes in) "11.22.33.44.")))
+     (expect "writes what the port held, then ends the read half" (drain-bytes in) "11.22.33.44.")))
 
   (def fiber-path "231_bytes_fiber.tmp")
   (def owned-before (scope-owned-count (current-scope)))
@@ -464,14 +476,13 @@
                ((Ok k) k)
                ((Err e) -1))
              0)
-     (expect "releases its registration"
-             (- (scope-owned-count (current-scope)) owned-before) 0))
+     (expect "releases its registration" (- (scope-owned-count (current-scope)) owned-before) 0))
     ((Err e) (println "FAILURE: could not open the byte file for writing")))
 
   (match (open-input-file fiber-path)
-    ((Ok r) (with-open ((i r))
-              (expect "and the file has everything"
-                      (shown (read-bytes i 6)) "104.105.255.128.0.200.")))
+    ((Ok r)
+     (with-open ((i r))
+       (expect "and the file has everything" (shown (read-bytes i 6)) "104.105.255.128.0.200.")))
     ((Err e) (println "FAILURE: could not reopen the byte file")))
 
   ;; =========================================================================
@@ -480,13 +491,17 @@
   (def path "231_bytes.tmp")
 
   (match (open-output-file path)
-    ((Ok w) (with-open ((o w)) (write-bytes! o raw)))
+    ((Ok w)
+     (with-open ((o w))
+       (write-bytes! o raw)))
     ((Err e) (println "FAILURE: could not open the byte file for writing")))
 
   (match (open-input-file path)
-    ((Ok r) (with-open ((i r))
-              (expect "a file round trip, bytes that are not UTF-8 included"
-                      (shown (read-bytes i 6)) "104.105.255.128.0.200.")))
+    ((Ok r)
+     (with-open ((i r))
+       (expect "a file round trip, bytes that are not UTF-8 included"
+               (shown (read-bytes i 6))
+               "104.105.255.128.0.200.")))
     ((Err e) (println "FAILURE: could not reopen the byte file")))
 
   ;; The failure is a value, exactly as `open-input-file`'s is.
@@ -502,15 +517,18 @@
 
   (def the-old-way
     (match (open-input-file text-path)
-      ((Ok r) (with-open ((i r)) (vec-fold (fun (l acc) (str acc l "|")) "" (port->lines i))))
+      ((Ok r)
+       (with-open ((i r))
+         (vec-fold (fun (l acc) (str acc l "|")) "" (port->lines i))))
       ((Err e) "FAILURE")))
 
   ;; Bytes first, then lines, from the same port: one port, two kinds of read.
   (def after-bytes
     (match (open-input-file text-path)
-      ((Ok r) (with-open ((i r))
-                (def two (shown (read-bytes i 2)))
-                (str two " " (vec-fold (fun (l acc) (str acc l "|")) "" (port->lines i)))))
+      ((Ok r)
+       (with-open ((i r))
+         (def two (shown (read-bytes i 2)))
+         (str two " " (vec-fold (fun (l acc) (str acc l "|")) "" (port->lines i)))))
       ((Err e) "FAILURE")))
 
   (expect "lines off a file port" the-old-way "alpha|beta|gamma|")
@@ -524,19 +542,21 @@
   ;; The sniffed bytes are still in the buffer, and a line is read from the
   ;; buffer first.
   (match (open-input-file text-path)
-    ((Ok r) (with-open ((i r))
-              (expect "sniff the first bytes" (shown (peek-bytes i 0 2)) "97.108.")
-              (expect "the line still includes them" (read-line i) "alpha")
-              (expect "and the reader carries on" (read-line i) "beta")))
+    ((Ok r)
+     (with-open ((i r))
+       (expect "sniff the first bytes" (shown (peek-bytes i 0 2)) "97.108.")
+       (expect "the line still includes them" (read-line i) "alpha")
+       (expect "and the reader carries on" (read-line i) "beta")))
     ((Err e) (println "FAILURE: could not reopen the text file")))
 
   ;; The other direction: text and bytes into one output port.
   (def out-path "231_bytes_out.tmp")
   (match (open-output-file out-path)
-    ((Ok w) (with-open ((o w))
-              (write-string o "hello")
-              (write-bytes! o #[32])
-              (write-string o "world")))
+    ((Ok w)
+     (with-open ((o w))
+       (write-string o "hello")
+       (write-bytes! o #[32])
+       (write-string o "world")))
     ((Err e) (println "FAILURE: could not open the file for writing")))
   (expect "text and bytes on one output port" (raise-err (file-read-text out-path)) "hello world")
 
@@ -564,7 +584,8 @@
   ;; handle in every case that matters.
   (with-open ((borrowed (stream->input-port (cast ClrStream (MemStream. raw)))))
     (expect "a port over a borrowed stream reads it"
-            (shown (read-bytes borrowed 6)) "104.105.255.128.0.200."))
+            (shown (read-bytes borrowed 6))
+            "104.105.255.128.0.200."))
 
   (def sink (stream->output-port (cast ClrStream (MemStream. scratch))))
   (write-bytes! sink four)
@@ -579,23 +600,28 @@
     ((Tuple in out)
      (expect "read-bytes-evt of zero is refused"
              (match (try (read-bytes-evt in 0) #:catch (System.ArgumentOutOfRangeException))
-               ((Ok _) "built") ((Err e) "refused"))
+               ((Ok _) "built")
+               ((Err e) "refused"))
              "refused")
      (expect "read-bytes-evt of a negative count is refused"
              (match (try (read-bytes-evt in -1) #:catch (System.ArgumentOutOfRangeException))
-               ((Ok _) "built") ((Err e) "refused"))
+               ((Ok _) "built")
+               ((Err e) "refused"))
              "refused")
      (expect "peek-bytes with a negative skip is refused"
              (match (try (peek-bytes in -1 1) #:catch (System.ArgumentOutOfRangeException))
-               ((Ok _) "peeked") ((Err e) "refused"))
+               ((Ok _) "peeked")
+               ((Err e) "refused"))
              "refused")
      (expect "peek-bytes with a negative count is refused"
              (match (try (peek-bytes in 0 -1) #:catch (System.ArgumentOutOfRangeException))
-               ((Ok _) "peeked") ((Err e) "refused"))
+               ((Ok _) "peeked")
+               ((Err e) "refused"))
              "refused")
      (expect "limited with a negative bound is refused"
              (match (try (limited in -1) #:catch (System.ArgumentOutOfRangeException))
-               ((Ok _) "built") ((Err e) "refused"))
+               ((Ok _) "built")
+               ((Err e) "refused"))
              "refused")
      (shutdown! out)))
 
@@ -604,13 +630,18 @@
      (close-input-port in)
      (expect "reading a closed port is refused"
              (match (try (read-some in) #:catch (System.ObjectDisposedException))
-               ((Ok _) "read") ((Err e) "refused"))
+               ((Ok _) "read")
+               ((Err e) "refused"))
              "refused")
      (close-output-port out)
      (expect "writing to a closed port is refused"
-             (match (try (let () (write-bytes! out #[1]) "written")
-                         #:catch (System.ObjectDisposedException))
-               ((Ok what) what) ((Err e) "refused"))
+             (match (try
+                      (let ()
+                        (write-bytes! out #[1])
+                        "written")
+                      #:catch (System.ObjectDisposedException))
+               ((Ok what) what)
+               ((Err e) "refused"))
              "refused")))
 
   ;; =========================================================================
@@ -627,11 +658,11 @@
      (expect "the byte is there" (shown (read-bytes in 1)) "9.")
      (shutdown! out)
      (expect "eof-evt fires once the writer is done"
-             (match (sync/blocking (promise-join watcher)) ((Ok k) k) ((Err e) -1))
+             (match (sync/blocking (promise-join watcher))
+               ((Ok k) k)
+               ((Err e) -1))
              1)
-     (expect "and is available from then on"
-             (sync/blocking (wrap (eof-evt in) (fun (u) 1)))
-             1)))
+     (expect "and is available from then on" (sync/blocking (wrap (eof-evt in) (fun (u) 1))) 1)))
 
   (raise-err (file-delete path))
   (raise-err (file-delete text-path))

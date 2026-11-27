@@ -11,7 +11,8 @@
     ((Err _) #t)))
 
 (: (-> (Vec int) ByteString))
-(defun (bs-of xs) (bytes->bytestring (vec->array (vec-map (fun (x) (cast byte x)) xs))))
+(defun (bs-of xs)
+  (bytes->bytestring (vec->array (vec-map (fun (x) (cast byte x)) xs))))
 
 ;; The parts of a byte string as (offset, char or None).
 (: (-> ByteString (List (Tuple int (Option char)))))
@@ -21,19 +22,26 @@
 (: (-> ByteString (List int)))
 (defun (back-offsets b)
   (let go ((i (bytestring-length b)) (acc Nil))
-    (if (= i 0) acc (let ((p (bytestring-utf-8-prev b i))) (go p (Cons p acc))))))
+    (if (= i 0)
+        acc
+        (let ((p (bytestring-utf-8-prev b i)))
+          (go p (Cons p acc))))))
 
 (defun (main)
   ;; Making and converting
   (def hello (string->bytestring "hello world"))
   (expect "length" (bytestring-length hello) 11)
   (expect "round trip through a string" (bytestring->string hello) (Ok "hello world"))
-  (expect "round trip through an array" (array->vec (bytestring->bytes (bytestring 1uy 2uy 3uy))) [1uy 2uy 3uy])
+  (expect "round trip through an array"
+          (array->vec (bytestring->bytes (bytestring 1uy 2uy 3uy)))
+          [1uy 2uy 3uy])
   (def src (vec->array [1uy 2uy 3uy]))
   (def copied (bytes->bytestring src))
   (array-set! src 0 9uy)
   (expect "the array is copied" (bytestring-ref copied 0) 1uy)
-  (expect "a range of an array" (bytes->bytestring (vec->array [1uy 2uy 3uy 4uy]) #:start 1 #:end 3) (bytestring 2uy 3uy))
+  (expect "a range of an array"
+          (bytes->bytestring (vec->array [1uy 2uy 3uy 4uy]) #:start 1 #:end 3)
+          (bytestring 2uy 3uy))
   (expect "empty" (bytestring-empty? bytestring-empty) #t)
   (expect "empty to a string" (bytestring->string bytestring-empty) (Ok ""))
 
@@ -66,7 +74,10 @@
   (expect "a prefix comes first" (compare (string->bytestring "ab") (string->bytestring "abc")) -1)
   (expect "order is unsigned" (compare (bytestring 127uy) (bytestring 128uy)) -1)
   (expect "equal compare" (compare first-abc second-abc) 0)
-  (expect "a map with byte string keys" (map-length (->map [(Tuple first-abc 1) (Tuple second-abc 2) (Tuple (string->bytestring "x") 3)])) 2)
+  (expect
+   "a map with byte string keys"
+   (map-length (->map [(Tuple first-abc 1) (Tuple second-abc 2) (Tuple (string->bytestring "x") 3)]))
+   2)
 
   ;; Bytes as an iterable
   (expect "iterates bytes" (->list (bytestring-slice hello 0 3)) (list 104uy 101uy 108uy))
@@ -78,9 +89,11 @@
   (expect "not UTF-8" (bytestring-utf-8? cafe) #f)
   (expect "valid end" (bytestring-utf-8-valid-end cafe) 3)
   (expect "valid end of UTF-8" (bytestring-utf-8-valid-end hello) 11)
-  (expect "strict returns the error" (bytestring->string cafe)
+  (expect "strict returns the error"
+          (bytestring->string cafe)
           (Err (DecodeError (offset 3) (bytes [233uy]) (encoding "utf-8"))))
-  (expect "the offset counts from the slice" (bytestring->string (bytestring-slice cafe 1 8))
+  (expect "the offset counts from the slice"
+          (bytestring->string (bytestring-slice cafe 1 8))
           (Err (DecodeError (offset 2) (bytes [233uy]) (encoding "utf-8"))))
   (expect "lossy with a replacement" (bytestring->string/lossy cafe #:replace #\?) "caf?.txt")
   (expect "written" (written cafe) "#b\"caf\\xE9.txt\"")
@@ -92,37 +105,54 @@
   ;; Maximal subparts (Unicode chapter 3, table 3-8 and around)
   (expect "a cut 4-byte sequence is one part" (parts (bs-of [0xF0 0x9F 0x98])) (list (Tuple 0 None)))
   (expect "overlong is two parts" (parts (bs-of [0xC0 0xAF])) (list (Tuple 0 None) (Tuple 1 None)))
-  (expect "a surrogate is three parts" (parts (bs-of [0xED 0xA0 0x80])) (list (Tuple 0 None) (Tuple 1 None) (Tuple 2 None)))
-  (expect "past U+10FFFF is four parts" (parts (bs-of [0xF4 0x90 0x80 0x80]))
+  (expect "a surrogate is three parts"
+          (parts (bs-of [0xED 0xA0 0x80]))
+          (list (Tuple 0 None) (Tuple 1 None) (Tuple 2 None)))
+  (expect "past U+10FFFF is four parts"
+          (parts (bs-of [0xF4 0x90 0x80 0x80]))
           (list (Tuple 0 None) (Tuple 1 None) (Tuple 2 None) (Tuple 3 None)))
-  (expect "a cut sequence before ASCII" (parts (bs-of [0xE2 0x82 0x41])) (list (Tuple 0 None) (Tuple 2 (Some #\A))))
-  (expect "a whole emoji" (parts (string->bytestring "a😀")) (list (Tuple 0 (Some #\a)) (Tuple 1 (Some #\😀))))
+  (expect "a cut sequence before ASCII"
+          (parts (bs-of [0xE2 0x82 0x41]))
+          (list (Tuple 0 None) (Tuple 2 (Some #\A))))
+  (expect "a whole emoji"
+          (parts (string->bytestring "a😀"))
+          (list (Tuple 0 (Some #\a)) (Tuple 1 (Some #\😀))))
   (expect "ref of a character" (bytestring-utf-8-ref (string->bytestring "é") 0) (Some #\é))
   (expect "ref of a bad part" (bytestring-utf-8-ref cafe 3) None)
   (expect "ref inside a character" (bytestring-utf-8-ref (string->bytestring "é") 1) None)
   (expect "next over a character" (bytestring-utf-8-next (string->bytestring "é!") 0) 2)
   (expect "next at the end raises" (out-of-range? (fun () (bytestring-utf-8-next world 5))) #t)
   (expect "prev at 0 raises" (out-of-range? (fun () (bytestring-utf-8-prev world 0))) #t)
-  (expect "prev over continuation bytes alone" (back-offsets (bs-of [0x80 0x80 0x80 0x80 0x80])) (list 0 1 2 3 4))
-  (expect "prev over a slice" (back-offsets (bytestring-slice (string->bytestring "xé😀") 1 7)) (list 0 2))
+  (expect "prev over continuation bytes alone"
+          (back-offsets (bs-of [0x80 0x80 0x80 0x80 0x80]))
+          (list 0 1 2 3 4))
+  (expect "prev over a slice"
+          (back-offsets (bytestring-slice (string->bytestring "xé😀") 1 7))
+          (list 0 2))
 
   ;; The stepper against .NET's lossy decoding and prev against next, on
   ;; random bytes. Most bytes are drawn from the lead and continuation
   ;; ranges, so most strings have whole characters and bad parts mixed.
   (def rng (make-random/seed64 7UL))
-  (def pool (vec->array [0x41 0x80 0x8F 0x90 0x9F 0xA0 0xBF 0xC0 0xC2 0xDF 0xE0 0xE1 0xED 0xEF 0xF0 0xF1 0xF4 0xF5 0xFF]))
+  (def pool
+    (vec->array [0x41 0x80 0x8F 0x90 0x9F 0xA0 0xBF 0xC0 0xC2 0xDF 0xE0 0xE1 0xED 0xEF 0xF0 0xF1 0xF4
+                 0xF5 0xFF]))
   (def mismatches
     (loop (:for _ (range 0 2000))
           (:acc bad (summing
-                      (let* ((n (random-int 0 8 #:rng rng))
-                             (b (bs-of (loop (:for _ (range 0 n))
-                                             (:acc xs (vecing (array-ref pool (random-int 0 (- (array-length pool) 1) #:rng rng)))))))
-                             (forward (loop (:for (Tuple at _) (in-bytestring-utf-8 b)) (:acc l (listing at))))
-                             (lossy (list->string (->list (in-bytestring-chars b)))))
-                        (if (and (= lossy (bytestring->string/lossy b))
-                                 (= forward (back-offsets b)))
-                            0
-                            1))))))
+                     (let* ((n (random-int 0 8 #:rng rng))
+                            (b (bs-of (loop (:for _ (range 0 n))
+                                            (:acc xs (vecing (array-ref pool
+                                                                        (random-int
+                                                                         0
+                                                                         (- (array-length pool) 1)
+                                                                         #:rng rng)))))))
+                            (forward (loop (:for (Tuple at _) (in-bytestring-utf-8 b))
+                                           (:acc l (listing at))))
+                            (lossy (list->string (->list (in-bytestring-chars b)))))
+                       (if (and (= lossy (bytestring->string/lossy b)) (= forward (back-offsets b)))
+                           0
+                           1))))))
   (expect "stepper agrees with .NET and with prev" mismatches 0)
 
   ;; Search
@@ -131,22 +161,34 @@
   (expect "search not found" (bytestring-search hello (string->bytestring "z")) None)
   (expect "search in a slice" (bytestring-search world (string->bytestring "o")) (Some 1))
   (expect "search backward" (bytestring-search-backward hello (string->bytestring "o")) (Some 7))
-  (expect "search backward before" (bytestring-search-backward hello (string->bytestring "o") #:before 7) (Some 4))
+  (expect "search backward before"
+          (bytestring-search-backward hello (string->bytestring "o") #:before 7)
+          (Some 4))
   (expect "search a byte" (bytestring-search-byte hello 32uy) (Some 5))
   (expect "search a byte backward" (bytestring-search-byte-backward hello 108uy) (Some 9))
   (expect "contains" (bytestring-contains? hello (string->bytestring "lo w")) #t)
   (expect "starts with" (bytestring-starts-with? hello (string->bytestring "hell")) #t)
   (expect "ends with" (bytestring-ends-with? world (string->bytestring "ld")) #t)
   (expect "does not end with" (bytestring-ends-with? world (string->bytestring "lo")) #f)
-  (expect "search from out of range" (out-of-range? (fun () (bytestring-search hello hello #:from 12))) #t)
+  (expect "search from out of range"
+          (out-of-range? (fun () (bytestring-search hello hello #:from 12)))
+          #t)
 
   ;; Joining and splitting
   (def path (string->bytestring "/usr//lib/"))
-  (expect "split" (vec-map bytestring->string/lossy (bytestring-split path 47uy)) ["" "usr" "" "lib" ""])
-  (expect "split with no separator" (vec-map bytestring->string/lossy (bytestring-split world 47uy)) ["world"])
+  (expect "split"
+          (vec-map bytestring->string/lossy (bytestring-split path 47uy))
+          ["" "usr" "" "lib" ""])
+  (expect "split with no separator"
+          (vec-map bytestring->string/lossy (bytestring-split world 47uy))
+          ["world"])
   (expect "split empty" (vec-length (bytestring-split bytestring-empty 47uy)) 1)
   (expect "join" (bytestring-join (bytestring-split path 47uy) (string->bytestring "/")) path)
   (expect "join none" (bytestring-join [] (string->bytestring "/")) bytestring-empty)
-  (expect "append" (bytestring-append world (bytestring-slice hello 5 6)) (string->bytestring "world "))
+  (expect "append"
+          (bytestring-append world (bytestring-slice hello 5 6))
+          (string->bytestring "world "))
   (expect "concat with a default" (bytestring-concat [d world d]) world)
-  (expect "concat keeps bad bytes" (bytestring-concat [cafe cafe]) (bs-of [99 97 102 0xE9 46 116 120 116 99 97 102 0xE9 46 116 120 116])))
+  (expect "concat keeps bad bytes"
+          (bytestring-concat [cafe cafe])
+          (bs-of [99 97 102 0xE9 46 116 120 116 99 97 102 0xE9 46 116 120 116])))

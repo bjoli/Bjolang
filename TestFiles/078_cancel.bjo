@@ -38,7 +38,8 @@
 (import (std simpletest))
 
 (: (-> bool string))
-(defun (yes-no b) (if b "yes" "no"))
+(defun (yes-no b)
+  (if b "yes" "no"))
 
 ;; A reason rendered flat, so that every assertion below is a string compare.
 ;;
@@ -123,13 +124,15 @@
 (: (-> (Chan string) void))
 (defbjo (leaf report)
   (def fired (sync (cancelled (parameter-ref current-cancel))))
-  (with-shield #:within (seconds 5)
+  (with-shield
+    #:within (seconds 5)
     (sync (chan-send report "leaf"))))
 
 (: (-> (Chan string) void))
 (defbjo (branch report)
   (def kid (bjo (leaf report)))
-  (with-shield #:within (seconds 5)
+  (with-shield
+    #:within (seconds 5)
     (def joined (sync (promise-join kid)))
     (sync (chan-send report "branch"))))
 
@@ -145,8 +148,7 @@
 ;; finishes.
 (: (-> (Event CancelReason) long string))
 (defbjo (within ev ms)
-  (match (sync (choose (wrap ev (fun (u) (Job 0)))
-                       (wrap (timeout (milliseconds ms)) (fun (u) Quit))))
+  (match (sync (choose (wrap ev (fun (u) (Job 0))) (wrap (timeout (milliseconds ms)) (fun (u) Quit))))
     ((Job n) "fired")
     (Quit "timed out")))
 
@@ -169,16 +171,15 @@
   (def c2 (cancel! Deadline))
   (expect "cancelling twice is a no-op" (yes-no (cancelled? tok)) "yes")
   (expect "and the first reason is the one that stuck"
-          (reason-name (cancel-reason tok)) "requested the test")
+          (reason-name (cancel-reason tok))
+          "requested the test")
 
   ;; Persistent, which is the design: cancellation is a *fact*, so every
   ;; listener sees it and a listener that arrives late still sees it. The price
   ;; is limitation 10 — this scope is finished, and carrying on needs a fresh
   ;; token rather than a reset.
-  (expect "an already-cancelled token is available at once"
-          (within (cancelled tok) 5000) "fired")
-  (expect "and again, to every later listener"
-          (within (cancelled tok) 5000) "fired")
+  (expect "an already-cancelled token is available at once" (within (cancelled tok) 5000) "fired")
+  (expect "and again, to every later listener" (within (cancelled tok) 5000) "fired")
 
   ;; ---- A worker taken down while parked ------------------------------------
   ;;
@@ -198,12 +199,10 @@
 
   ;; ---- Polling, for the loop with no yield point ---------------------------
   (def (nope quiet-tok) (make-cancel))
-  (expect "an uncancelled poll runs to the limit"
-          (count-until-cancelled quiet-tok 1000) 1000)
+  (expect "an uncancelled poll runs to the limit" (count-until-cancelled quiet-tok 1000) 1000)
   (def (stop-now! fired-tok) (make-cancel))
   (def n (stop-now! Deadline))
-  (expect "a cancelled poll stops at once"
-          (count-until-cancelled fired-tok 1000) 0)
+  (expect "a cancelled poll stops at once" (count-until-cancelled fired-tok 1000) 0)
 
   ;; ---- Linking ------------------------------------------------------------
   ;;
@@ -219,15 +218,15 @@
   (def (cancel-child! child-tok) (make-cancel))
   (def linked (link-cancel parent-tok child-tok))
   (def cp (cancel-parent! (Requested "the parent")))
-  (expect "cancelling a parent cancels the linked child"
-          (within (cancelled child-tok) 5000) "fired")
+  (expect "cancelling a parent cancels the linked child" (within (cancelled child-tok) 5000) "fired")
 
   ;; `Forward` forwards the *value*, so a child inherits its parent's reason
   ;; unaltered. That is the right answer rather than a coincidence: a linked
   ;; child was cancelled because its parent was, so the parent's reason is its
   ;; own, and `link-cancel` needed no change for the payload at all.
   (expect "and the child inherits the parent's reason"
-          (reason-name (cancel-reason child-tok)) "requested the parent")
+          (reason-name (cancel-reason child-tok))
+          "requested the parent")
 
   ;; And not the other way round.
   (def (cancel-p2! p2) (make-cancel))
@@ -238,16 +237,21 @@
 
   ;; ---- The ambient token --------------------------------------------------
   (expect "the default ambient token never fires"
-          (yes-no (cancelled? (parameter-ref current-cancel))) "no")
+          (yes-no (cancelled? (parameter-ref current-cancel)))
+          "no")
 
   (def (cancel-scope! scope-tok) (make-cancel))
   (def report (make-chan))
-  (def root (parameterize ((current-cancel scope-tok)) (bjo (branch report))))
+  (def root
+    (parameterize ((current-cancel scope-tok))
+      (bjo (branch report))))
   (def cs (cancel-scope! (Requested "the scope")))
   (expect "a grandchild sees the ambient token" (sync (chan-recv report)) "leaf")
   (expect "and its parent finishes after it" (sync (chan-recv report)) "branch")
   (expect "the whole subtree came home"
-          (match (sync (promise-join root)) ((Ok u) "done") ((Err e) "failed"))
+          (match (sync (promise-join root))
+            ((Ok u) "done")
+            ((Err e) "failed"))
           "done")
 
   ;; Spawned outside the `parameterize`, a fiber gets the root token instead —
@@ -256,6 +260,5 @@
   ;; fired by now and this fiber is entirely unaffected, which is what makes a
   ;; scope a scope.
   (def out (bjo (outsider report)))
-  (expect "a fiber spawned outside the scope is not in it"
-          (sync (chan-recv report)) "no")
+  (expect "a fiber spawned outside the scope is not in it" (sync (chan-recv report)) "no")
   0)

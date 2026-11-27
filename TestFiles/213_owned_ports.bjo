@@ -53,8 +53,7 @@
   (match (box-ref escaped)
     (None (fail "the port did not escape"))
     ((Some p)
-     (expect-true "a port nobody closed is released when its scope returns"
-                  (not (still-open? p)))))
+     (expect-true "a port nobody closed is released when its scope returns" (not (still-open? p)))))
 
   ;; --- The count goes back to where it started -----------------------------
   ;;
@@ -87,8 +86,7 @@
   ;; --- A string port is not owned ------------------------------------------
   (def before (scope-owned-count (current-scope)))
   (def s (open-input-string "still memory"))
-  (expect "a string port does not register"
-          (- (scope-owned-count (current-scope)) before) 0)
+  (expect "a string port does not register" (- (scope-owned-count (current-scope)) before) 0)
   (expect "and it still reads" (read-all s) "still memory")
 
   ;; --- An output file is owned the same way --------------------------------
@@ -102,7 +100,8 @@
   ;; The scope released it, which is what flushed and closed it - so the file
   ;; has the text even though nothing called close-output-port.
   (expect "an output port nobody closed is flushed and closed by its scope"
-          (raise-err (file-read-text out-path)) "from an owned port")
+          (raise-err (file-read-text out-path))
+          "from an owned port")
 
   ;; --- The standard ports are never owned ----------------------------------
   ;;
@@ -114,7 +113,9 @@
   (expect "a scope that wrote to stdout did not close it" "still here" "still here")
 
   (expect "closing stdout flushes and does nothing else"
-          (let () (close-output-port (parameter-ref current-output-port)) "still here")
+          (let ()
+            (close-output-port (parameter-ref current-output-port))
+            "still here")
           "still here")
 
   (raise-err (directory-delete-tree (probe-dir)))

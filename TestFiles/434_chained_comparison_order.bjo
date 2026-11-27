@@ -15,11 +15,15 @@
   (expect "in order" (box-ref log) "abc")
 
   (box-set! log "")
-  (expect "four operands hold" (<= (logged log "a" 1) (logged log "b" 1) (logged log "c" 2) (logged log "d" 2)) #t)
+  (expect "four operands hold"
+          (<= (logged log "a" 1) (logged log "b" 1) (logged log "c" 2) (logged log "d" 2))
+          #t)
   (expect "in order, each once" (box-ref log) "abcd")
 
   (box-set! log "")
-  (expect "a failing test stops the chain" (< (logged log "a" 2) (logged log "b" 1) (logged log "c" 3)) #f)
+  (expect "a failing test stops the chain"
+          (< (logged log "a" 2) (logged log "b" 1) (logged log "c" 3))
+          #f)
   (expect "the rest is not evaluated" (box-ref log) "ab")
 
   (box-set! log "")
@@ -30,15 +34,35 @@
   ;; A name is read where it is written, before an operand after it that sets
   ;; it is evaluated.
   (def/mutable y 1)
-  (expect "a name first, set by the operand after it" (< y (begin (set! y 10) 5) 7) #t)
+  (expect "a name first, set by the operand after it"
+          (< y
+             (begin
+               (set! y 10)
+               5)
+             7)
+          #t)
   (set! y 1)
   (expect "a name in the middle, set by the operand after it"
-          (< 0 y (begin (set! y 10) 5) 7) #t)
+          (< 0
+             y
+             (begin
+               (set! y 10)
+               5)
+             7)
+          #t)
   (set! y 1)
-  (expect "a name before the last operand, which sets it" (< 0 y (begin (set! y 10) 5)) #t)
+  (expect "a name before the last operand, which sets it"
+          (< 0
+             y
+             (begin
+               (set! y 10)
+               5))
+          #t)
 
   (def p (open-input-string "1\n2\n"))
-  (expect "two readings that increase" (< (string->int (read-line p)) (string->int (read-line p)) 100) #t)
+  (expect "two readings that increase"
+          (< (string->int (read-line p)) (string->int (read-line p)) 100)
+          #t)
 
   (box-set! log "")
   (expect "#ch the same" #ch(> (logged log "a" 3) (logged log "b" 2) (logged log "c" 1)) #t)

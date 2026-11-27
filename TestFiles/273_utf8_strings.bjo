@@ -28,11 +28,15 @@
 (: (-> string string))
 (defun (kinds s)
   ;; In argument position, so a switch expression with an or-pattern.
-  (string-append (case s (("x" "y") "xy") (else "rest")) "!"))
+  (string-append (case s
+                   (("x" "y") "xy")
+                   (else "rest"))
+                 "!"))
 
 (: (-> (Tuple string int) string))
 (defun (first-word pair)
-  (def (Tuple "key" n) pair :leave-with "no key")
+  (def (Tuple "key" n) pair
+    :leave-with "no key")
   (int->string n))
 
 (: (-> System.Object string))
@@ -45,7 +49,8 @@
 (: (-> (List int) string))
 (defun (from-units codes)
   (def sb (stringbuilder-empty))
-  (loop (:for c codes) (:do (stringbuilder-add-unit! sb c)))
+  (loop (:for c codes)
+        (:do (stringbuilder-add-unit! sb c)))
   (match (try (stringbuilder->string sb) #:catch (System.Exception))
     ((Ok s) s)
     ((Err _) "invalid")))
@@ -71,8 +76,7 @@
   (expect "BjoString's own member" (.ToUpperInvariant "abc") "ABC")
   (expect "a member only .NET's string has" (.Substring "hello" 1) "ello")
   (expect "...which counts UTF-16 units" (.-Length "😀") 2)
-  (expect "the explicit conversions round trip"
-          (clr-string->string (string->clr-string "a😀")) "a😀")
+  (expect "the explicit conversions round trip" (clr-string->string (string->clr-string "a😀")) "a😀")
   (expect "a boxed string tests as string" (describe (cast System.Object "a😀")) "string of 2")
 
   ;; ---- patterns ----------------------------------------------------------------
@@ -94,6 +98,7 @@
     ((Some m)
      (expect "the match text" (rx-text m) "b")
      (expect "a cursor past three non-ASCII characters"
-             (substring (rx-input m) (rx-start m) (string-cursor-end (rx-input m))) "b"))
+             (substring (rx-input m) (rx-start m) (string-cursor-end (rx-input m)))
+             "b"))
     (None (fail "the regex found nothing")))
   0)

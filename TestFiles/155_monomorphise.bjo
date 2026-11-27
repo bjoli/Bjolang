@@ -57,16 +57,12 @@
 ;; async in name only.
 (: (-bjo-> InputPort int))
 (defbjo (read-lengths p)
-  (port-fold (bjoroutine (port acc) (+ acc (string-length (read-line port))))
-             0
-             p))
+  (port-fold (bjoroutine (port acc) (+ acc (string-length (read-line port)))) 0 p))
 
 ;; The same fold, ordinarily. One source, one name, two emitted bodies.
 (: (-> InputPort int))
 (defun (read-lengths-sync p)
-  (port-fold (fun (port acc) (+ acc (string-length (read-line port))))
-             0
-             p))
+  (port-fold (fun (port acc) (+ acc (string-length (read-line port)))) 0 p))
 
 ;; --- A defbjo may declare -?-> as well ---------------------------------------
 ;;
@@ -147,27 +143,19 @@
   ;; Inside a bjoroutine, passing an ordinary lambda. If selection were by the
   ;; enclosing member's colour this would pick the suspending copy and hand it
   ;; the wrong delegate type.
-  (expect "an ordinary lambda inside a bjoroutine"
-          (run-bjo (bjo (sync-inside-bjoroutine 3)))
-          12)
+  (expect "an ordinary lambda inside a bjoroutine" (run-bjo (bjo (sync-inside-bjoroutine 3))) 12)
 
   ;; --- Both copies in one program -------------------------------------------
-  (expect "the two copies agree"
-          (+ (doubled-twice 5) (run-bjo (bjo (bumped-twice 5))))
-          27)
+  (expect "the two copies agree" (+ (doubled-twice 5) (run-bjo (bjo (bumped-twice 5)))) 27)
 
   ;; --- The prelude's own -?-> -----------------------------------------------
   ;;
   ;; `port-fold` is the reason `-?->` exists: a fold over a port whose reader
   ;; may suspend. The suspending copy awaits `ReadLineOrThrowAsync` through
   ;; `read-line`, which is a `defbjouble`, so both mechanisms are in one call.
-  (expect "port-fold, ordinarily"
-          (read-lengths-sync (open-input-string "ab\ncde\nf"))
-          6)
+  (expect "port-fold, ordinarily" (read-lengths-sync (open-input-string "ab\ncde\nf")) 6)
 
-  (expect "port-fold, suspending"
-          (run-bjo (bjo (read-lengths (open-input-string "ab\ncde\nf"))))
-          6)
+  (expect "port-fold, suspending" (run-bjo (bjo (read-lengths (open-input-string "ab\ncde\nf")))) 6)
 
   ;; --- Draining a port at the suspending colour -----------------------------
   (expect "port->list with a suspending reader"
@@ -178,9 +166,7 @@
           (run-bjo (bjo (drain-count-named (open-input-string "a\nb\nc"))))
           3)
 
-  (expect "the same source, ordinarily"
-          (drain-count-sync (open-input-string "a\nb\nc"))
-          3)
+  (expect "the same source, ordinarily" (drain-count-sync (open-input-string "a\nb\nc")) 3)
 
   ;; --- A suspending definition with a polymorphic parameter -----------------
   ;;
@@ -199,8 +185,6 @@
   ;; `sum-with` is imported, so its twin was generated in the *other* module and
   ;; found here through the published `-?->` in its signature.
   (expect "an imported -?->, ordinarily" (sum-doubled (list 1 2 3)) 12)
-  (expect "an imported -?->, suspending"
-          (run-bjo (bjo (sum-bumped (list 1 2 3))))
-          9)
+  (expect "an imported -?->, suspending" (run-bjo (bjo (sum-bumped (list 1 2 3)))) 9)
 
   0)

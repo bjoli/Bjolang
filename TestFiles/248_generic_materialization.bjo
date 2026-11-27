@@ -15,7 +15,9 @@
 
 (: (-> (Result System.Exception %a) bool))
 (defun (threw? r)
-  (match r ((Ok _) #f) ((Err _) #t)))
+  (match r
+    ((Ok _) #f)
+    ((Err _) #t)))
 
 ;; ---------------------------------------------------------------------------
 ;; Eq
@@ -23,7 +25,8 @@
 
 ;; An undirected edge: (1 2) and (2 1) are one edge, which the fields alone
 ;; would not say.
-(type (: (Edge %a) (Record (: from %a) (: to %a))))
+(type (: (Edge %a) (Record (: from %a)
+                           (: to %a))))
 
 (impl (Eq (Edge %a))
   (where (Eq %a))
@@ -34,7 +37,8 @@
     (bitwise-xor (eq-hash (record-ref e from)) (eq-hash (record-ref e to)))))
 
 ;; The same edge as a record struct.
-(type (: (Link %a) (Struct (: from %a) (: to %a))))
+(type (: (Link %a) (Struct (: from %a)
+                           (: to %a))))
 
 (impl (Eq (Link %a))
   (where (Eq %a))
@@ -46,21 +50,29 @@
 
 ;; A union whose equality ignores the name: two values of the same case reach
 ;; the implementation.
-(type (: (Label %a) (Union (: Named string %a) (: Unnamed %a))))
+(type (: (Label %a) (Union (: Named string %a)
+                           (: Unnamed %a))))
 
 (impl (Eq (Label %a))
   (where (Eq %a))
   (defun (= x y)
     (match x
-      ((Named _ a) (match y ((Named _ b) (= a b)) (_ #f)))
-      ((Unnamed a) (match y ((Unnamed b) (= a b)) (_ #f)))))
+      ((Named _ a)
+       (match y
+         ((Named _ b) (= a b))
+         (_ #f)))
+      ((Unnamed a)
+       (match y
+         ((Unnamed b) (= a b))
+         (_ #f)))))
   (defun (eq-hash x)
     (match x
       ((Named _ a) (hash-combine 1 (eq-hash a)))
       ((Unnamed a) (hash-combine 2 (eq-hash a))))))
 
 (type/derive (Eq Ord)
-  (: (Pair %a) (Record (: first %a) (: second %a))))
+  (: (Pair %a) (Record (: first %a)
+                       (: second %a))))
 
 (: (-> int int (Pair int)))
 (defun (pair a b) (Pair (first a) (second b)))
@@ -86,7 +98,8 @@
   (expect "a union's same-case values in a Set" (hashset-length (list->hashset (list n1 n2))) 1)
   (expect-true "and in a Map" (some? (map-try-ref (map-set (map-empty) n1 1) n2)))
   (expect "and different payloads stay apart"
-          (hashset-length (list->hashset (list n1 (Named "first" 8) (Unnamed 7)))) 3))
+          (hashset-length (list->hashset (list n1 (Named "first" 8) (Unnamed 7))))
+          3))
 
 ;; The element's own `Eq` is what the edge's is built from: here that is a
 ;; derived `Pair`'s, itself compiled into `Pair<int>`.
@@ -103,7 +116,9 @@
 (: (-> void))
 (defun (eq-derived)
   (expect "equal pairs are one" (hashset-length (list->hashset (list (pair 1 2) (pair 1 2)))) 1)
-  (expect "pairs differing in order are two" (hashset-length (list->hashset (list (pair 1 2) (pair 2 1)))) 2)
+  (expect "pairs differing in order are two"
+          (hashset-length (list->hashset (list (pair 1 2) (pair 2 1))))
+          2)
   (expect-true "a Map finds a fresh equal pair"
                (some? (map-try-ref (map-set (map-empty) (pair 5 6) 1) (pair 5 6))))
   (def ps (list->hashset (list (Pair (first "x") (second "y")) (Pair (first "x") (second "y")))))
@@ -111,7 +126,8 @@
 
 ;; A generic record with a mutable field. Written by hand, reading only the
 ;; field that does not move, it is a key, and stays found across a write.
-(type (: (Slot %a) (Record (: key %a) (: hits int #:mutable))))
+(type (: (Slot %a) (Record (: key %a)
+                           (: hits int #:mutable))))
 
 (impl (Eq (Slot %a))
   (where (Eq %a))
@@ -120,13 +136,16 @@
 
 ;; Derived, its `eq-hash` refuses, and so does a `HashSet`.
 (type/derive (Eq)
-  (: (Tally %a) (Record (: key %a) (: hits int #:mutable))))
+  (: (Tally %a) (Record (: key %a)
+                        (: hits int #:mutable))))
 
 (: (-> void))
 (defun (eq-mutable)
   (def a (Slot (key "k") (hits 1)))
   (def b (Slot (key "k") (hits 2)))
-  (expect "the implementation's Equals, not the fields'" (hashset-length (list->hashset (list a b))) 1)
+  (expect "the implementation's Equals, not the fields'"
+          (hashset-length (list->hashset (list a b)))
+          1)
   (def m (map-set (map-empty) a "found"))
   (record-set! a (hits 9))
   (expect-true "and found after a write" (some? (map-try-ref m a)))
@@ -170,15 +189,18 @@
 
 (: (-> void))
 (defun (ord-derived)
-  (def om (orderedmap-set (orderedmap-set (orderedmap-set (orderedmap-empty)
-                                                          (pair 2 0) "c")
-                                          (pair 1 9) "b")
-                          (pair 1 2) "a"))
+  (def om
+    (orderedmap-set (orderedmap-set (orderedmap-set (orderedmap-empty) (pair 2 0) "c") (pair 1 9) "b")
+                    (pair 1 2)
+                    "a"))
   (expect "a derived generic key in an OrderedMap, in order"
-          (->list (orderedmap-values om)) (list "a" "b" "c"))
+          (->list (orderedmap-values om))
+          (list "a" "b" "c"))
   (expect-true "and found by an equal key" (some? (orderedmap-try-ref om (pair 1 9))))
 
-  (def os (orderedset-add-all (orderedset-empty) (list->seq (list (pair 3 1) (pair 1 1) (pair 2 5) (pair 1 1)))))
+  (def os
+    (orderedset-add-all (orderedset-empty)
+                        (list->seq (list (pair 3 1) (pair 1 1) (pair 2 5) (pair 1 1)))))
   (expect "and in an OrderedSet" (orderedset-length os) 3)
   (expect-true "in order" (= (orderedset->list os) (list (pair 1 1) (pair 2 5) (pair 3 1)))))
 
@@ -194,30 +216,36 @@
 
 ;; Written by hand: highest priority first, and the label does not order, so
 ;; two jobs of one priority are one key to an ordered collection.
-(type (: (Job %a) (Record (: priority int) (: label %a))))
+(type (: (Job %a) (Record (: priority int)
+                          (: label %a))))
 
 (impl (Ord (Job %a))
   (where (Ord %a))
   (defun (compare x y) (compare (record-ref y priority) (record-ref x priority))))
 
 (: (-> (List (Job %a)) (List int)))
-(defun (priorities js) (list-map (fun (j) (record-ref j priority)) js))
+(defun (priorities js)
+  (list-map (fun (j) (record-ref j priority)) js))
 
 (: (-> void))
 (defun (ord-by-hand)
-  (def jobs (list (Job (priority 1) (label "low"))
-                  (Job (priority 3) (label "high"))
-                  (Job (priority 2) (label "mid"))))
+  (def jobs
+    (list (Job (priority 1) (label "low"))
+          (Job (priority 3) (label "high"))
+          (Job (priority 2) (label "mid"))))
   (def os (orderedset-add-all (orderedset-empty) (list->seq jobs)))
-  (expect "an OrderedSet in the implementation's order" (priorities (orderedset->list os)) (list 3 2 1))
+  (expect "an OrderedSet in the implementation's order"
+          (priorities (orderedset->list os))
+          (list 3 2 1))
   (expect "list-sort agrees" (priorities (list-sort jobs)) (list 3 2 1))
-  (def om (orderedmap-set (orderedmap-set (orderedmap-empty) (Job (priority 2) (label "one")) 1)
-                          (Job (priority 2) (label "other")) 2))
+  (def om
+    (orderedmap-set (orderedmap-set (orderedmap-empty) (Job (priority 2) (label "one")) 1)
+                    (Job (priority 2) (label "other"))
+                    2))
   (expect "one priority, one key" (orderedmap-length om) 1))
 
 ;; A generic union orders by case, then payload.
-(type/derive (Eq Ord)
-  (: (Opt %a) (Union Nothing (: Just %a))))
+(type/derive (Eq Ord) (: (Opt %a) (Union Nothing (: Just %a))))
 
 (: (-> void))
 (defun (ord-union)
@@ -234,7 +262,8 @@
 ;; is a C# record whose `Equals` C# writes itself, and it answers false for a
 ;; value of another case before any implementation runs. So a `HashSet` of
 ;; such a union is handed the implementation as its comparer, and keeps one.
-(type (: Money (Union (: Cents int) (: Dollars int))))
+(type (: Money (Union (: Cents int)
+                      (: Dollars int))))
 
 (: (-> Money int))
 (defun (money->cents m)
@@ -252,7 +281,7 @@
   (expect "and so does a Set" (hashset-length (list->hashset (list (Cents 100) (Dollars 1)))) 1)
   (expect "normalized, it does"
           (hashset-length (list->hashset (list (Cents (money->cents (Cents 100)))
-                                       (Cents (money->cents (Dollars 1))))))
+                                               (Cents (money->cents (Dollars 1))))))
           1))
 
 (defun (main)

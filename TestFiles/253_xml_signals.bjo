@@ -26,7 +26,11 @@
   (match s
     ((XmlStart name attrs pos)
      (str "<" (name->string name)
-          (string-join (list->vec (list-map (fun (a) (def (Tuple n v) a) (str " " (name->string n) "=" v)) attrs)) "")
+          (string-join (list->vec (list-map (fun (a)
+                                              (def (Tuple n v) a)
+                                              (str " " (name->string n) "=" v))
+                                            attrs))
+                       "")
           ">"))
     (XmlEnd "</>")
     ((XmlData d) (str "'" d "'"))
@@ -47,36 +51,47 @@
        (listbuilder-add! out (signal->string s))
        (loop)))))
 
-(: (-> string (#:dtd DtdMode) (#:whitespace WhitespaceMode) (#:comments? bool)
-       (#:max-depth int) (#:max-characters long)
-       (Result XmlError (List string))))
+(: (-> string (#:dtd DtdMode) (#:whitespace WhitespaceMode) (#:comments? bool) (#:max-depth int)
+       (#:max-characters long) (Result XmlError (List string))))
 (defun (signals-of text #:dtd 'prohibit #:whitespace 'keep #:comments? #f #:max-depth 512
                    #:max-characters 0L)
-  (call-with-xml-signals text drain #:dtd dtd #:whitespace whitespace #:comments? comments?
-                         #:max-depth max-depth #:max-characters max-characters))
+  (call-with-xml-signals text
+                         drain
+                         #:dtd dtd
+                         #:whitespace whitespace
+                         #:comments? comments?
+                         #:max-depth max-depth
+                         #:max-characters max-characters))
 
 (: (-> (Result XmlError %a) string))
 (defun (kind-of r)
   (match r
     ((Ok _) "ok")
-    ((Err e) (match (record-ref e kind)
-               (Malformed "malformed")
-               (DtdProhibited "dtd-prohibited")
-               (TooDeep "too-deep")
-               (LimitExceeded "limit-exceeded")))))
+    ((Err e)
+     (match (record-ref e kind)
+       (Malformed "malformed")
+       (DtdProhibited "dtd-prohibited")
+       (TooDeep "too-deep")
+       (LimitExceeded "limit-exceeded")))))
 
 (: (-> int string))
 (defun (nested n)
   (def sb (stringbuilder-empty))
-  (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb "<a>")))
-  (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb "</a>")))
+  (loop (:for i (range 0 n))
+        (:do (stringbuilder-add-string! sb "<a>")))
+  (loop (:for i (range 0 n))
+        (:do (stringbuilder-add-string! sb "</a>")))
   (stringbuilder->string sb))
 
 (: (-> void))
 (defun (basics)
   (expect "an empty element is a start and an end" (signals-of "<br/>") (Ok (list "<br>" "</>")))
-  (expect "text and CDATA are one piece" (signals-of "<a>a<![CDATA[b]]>c</a>") (Ok (list "<a>" "'abc'" "</>")))
-  (expect "references are expanded" (signals-of "<a>&amp;&#233;&lt;</a>") (Ok (list "<a>" "'&é<'" "</>")))
+  (expect "text and CDATA are one piece"
+          (signals-of "<a>a<![CDATA[b]]>c</a>")
+          (Ok (list "<a>" "'abc'" "</>")))
+  (expect "references are expanded"
+          (signals-of "<a>&amp;&#233;&lt;</a>")
+          (Ok (list "<a>" "'&é<'" "</>")))
   (expect "namespace declarations are not attributes"
           (signals-of "<a xmlns='u' xmlns:p='v' p:x='1' y='2'><p:b/><c/></a>")
           (Ok (list "<{u}a {v}x=1 y=2>" "<{v}b>" "</>" "<{u}c>" "</>" "</>")))
@@ -100,13 +115,12 @@
           (signals-of "<p> x </p>" #:whitespace 'drop)
           (Ok (list "<p>" "' x '" "</>")))
   (expect "a start carries its position"
-          (call-with-xml-signals "<a>\n  <b/></a>"
-                                 (fun (sig)
-                                   (ignore (xml-next! sig))
-                                   (ignore (xml-next! sig))
-                                   (match (xml-next! sig)
-                                     ((Ok (Some (XmlStart _ _ pos))) pos)
-                                     (_ None))))
+          (call-with-xml-signals "<a>\n  <b/></a>" (fun (sig)
+                                                     (ignore (xml-next! sig))
+                                                     (ignore (xml-next! sig))
+                                                     (match (xml-next! sig)
+                                                       ((Ok (Some (XmlStart _ _ pos))) pos)
+                                                       (_ None))))
           (Some (XmlPos (line 2) (column 4)))))
 
 (: (-> void))
@@ -120,7 +134,10 @@
         ((Ok None) (Ok (listbuilder->list out)))
         ((Ok (Some s))
          (listbuilder-add! out (signal->string s))
-         (def skip? (match s ((XmlStart name _ _) (= (xml-name-local name) "skip")) (_ #f)))
+         (def skip?
+           (match s
+             ((XmlStart name _ _) (= (xml-name-local name) "skip"))
+             (_ #f)))
          (if skip?
              (match (xml-skip-element! sig)
                ((Ok _) (loop))
@@ -133,11 +150,11 @@
           (call-with-xml-signals "<skip><a/></skip><!--c-->" skipped #:comments? #t)
           (Ok (list "<skip>" "#c")))
   (expect-true "anywhere but after a start raises"
-               (err? (try (call-with-xml-signals "<a>t</a>"
-                                                 (fun (sig)
-                                                   (ignore (xml-next! sig))
-                                                   (ignore (xml-next! sig))
-                                                   (xml-skip-element! sig)))
+               (err? (try
+                       (call-with-xml-signals "<a>t</a>" (fun (sig)
+                                                           (ignore (xml-next! sig))
+                                                           (ignore (xml-next! sig))
+                                                           (xml-skip-element! sig)))
                        #:catch (System.InvalidOperationException)))))
 
 (: (-> void))
@@ -146,10 +163,13 @@
   (expect "a DOCTYPE is refused by default" (kind-of (signals-of doc)) "dtd-prohibited")
   ;; .NET gives none, and has reset the reader's own by then.
   (expect "and has no position"
-          (match (signals-of doc) ((Err e) (Tuple (record-ref e line) (record-ref e column))) (_ (Tuple -1 -1)))
+          (match (signals-of doc)
+            ((Err e) (Tuple (record-ref e line) (record-ref e column)))
+            (_ (Tuple -1 -1)))
           (Tuple 0 0))
   (expect "an external DTD is refused under 'parse"
-          (kind-of (signals-of "<!DOCTYPE a SYSTEM 'a.dtd' [<!ENTITY e 'x'>]><a>&e;</a>" #:dtd 'parse))
+          (kind-of (signals-of "<!DOCTYPE a SYSTEM 'a.dtd' [<!ENTITY e 'x'>]><a>&e;</a>"
+                               #:dtd 'parse))
           "dtd-prohibited")
   (expect "with no external subset it reads"
           (signals-of "<!DOCTYPE a [<!ENTITY e 'x'>]><a>&e;</a>" #:dtd 'parse)
@@ -161,7 +181,8 @@
           (kind-of (signals-of "<!DOCTYPE a [<!ENTITY e 'x'>]><a>&e;</a>" #:dtd 'ignore))
           "malformed")
   (expect "an external entity is refused under 'parse"
-          (kind-of (signals-of "<!DOCTYPE a [<!ENTITY e SYSTEM 'file:///etc/passwd'>]><a>&e;</a>" #:dtd 'parse))
+          (kind-of (signals-of "<!DOCTYPE a [<!ENTITY e SYSTEM 'file:///etc/passwd'>]><a>&e;</a>"
+                               #:dtd 'parse))
           "dtd-prohibited"))
 
 (: string)
@@ -183,10 +204,14 @@
   (expect "512 levels are fine by default" (kind-of (signals-of (nested 512))) "ok")
   (expect "513 are too deep" (kind-of (signals-of (nested 513))) "too-deep")
   (expect "where the 513th starts"
-          (match (signals-of (nested 513)) ((Err e) (record-ref e column)) (_ 0))
+          (match (signals-of (nested 513))
+            ((Err e) (record-ref e column))
+            (_ 0))
           (+ (* 512 3) 2))
   (expect "#:max-depth" (kind-of (signals-of (nested 3) #:max-depth 2)) "too-deep")
-  (expect "#:max-characters" (kind-of (signals-of "<a>0123456789</a>" #:max-characters 5L)) "limit-exceeded")
+  (expect "#:max-characters"
+          (kind-of (signals-of "<a>0123456789</a>" #:max-characters 5L))
+          "limit-exceeded")
   (expect "billion laughs under 'parse" (kind-of (signals-of laughs #:dtd 'parse)) "limit-exceeded")
   (expect-true "a #:max-depth below 1 raises"
                (err? (try (signals-of "<a/>" #:max-depth 0) #:catch (System.ArgumentException)))))
@@ -195,32 +220,44 @@
 (defun (errors)
   (def bad (signals-of "<a>\n  <b>\n</a>"))
   (expect "malformed" (kind-of bad) "malformed")
-  (expect "its line" (match bad ((Err e) (record-ref e line)) (_ 0)) 3)
-  (expect "its column" (match bad ((Err e) (record-ref e column)) (_ 0)) 3)
+  (expect "its line"
+          (match bad
+            ((Err e) (record-ref e line))
+            (_ 0))
+          3)
+  (expect "its column"
+          (match bad
+            ((Err e) (record-ref e column))
+            (_ 0))
+          3)
   (expect "the same error again"
-          (call-with-xml-signals "<a><b></a>"
-                                 (fun (sig)
-                                   (def first (drain sig))
-                                   (def again (xml-next! sig))
-                                   (match (Tuple first again)
-                                     ((Tuple (Err e1) (Err e2)) (= e1 e2))
-                                     (_ #f))))
+          (call-with-xml-signals "<a><b></a>" (fun (sig)
+                                                (def first (drain sig))
+                                                (def again (xml-next! sig))
+                                                (match (Tuple first again)
+                                                  ((Tuple (Err e1) (Err e2)) (= e1 e2))
+                                                  (_ #f))))
           #t)
   (expect "nothing at all" (kind-of (signals-of "")) "malformed")
   (expect "two roots" (kind-of (signals-of "<a/><b/>")) "malformed")
   (expect "a handler's own exception is not caught"
-          (match (try (call-with-xml-signals "<a/>" (fun (sig) (raise (cast Exception (XmlException. "mine")))))
+          (match (try
+                   (call-with-xml-signals "<a/>" (fun (sig)
+                                                   (raise (cast Exception (XmlException. "mine")))))
                    #:catch (System.Xml.XmlException))
             ((Err e) (.-Message e))
             ((Ok _) "none"))
           "mine")
   (expect "->str"
-          (match bad ((Err e) (string-starts-with? (displayed e) "malformed at line 3, column 3: ")) (_ #f))
+          (match bad
+            ((Err e) (string-starts-with? (displayed e) "malformed at line 3, column 3: "))
+            (_ #f))
           #t))
 
 (: (-> void))
 (defun (sources)
-  (expect "a port" (call-with-xml-signals (open-input-string "<a>p</a>") drain)
+  (expect "a port"
+          (call-with-xml-signals (open-input-string "<a>p</a>") drain)
           (Ok (list "<a>" "'p'" "</>")))
   (def bytes (encode latin1 "<?xml version='1.0' encoding='ISO-8859-1'?><a>café</a>"))
   (def stream (cast Stream (MemoryStream. bytes)))

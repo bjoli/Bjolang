@@ -12,7 +12,8 @@
 (: (-> (Array byte)))
 (defun (all-bytes)
   (def a (make-array 256 #:fill 0uy))
-  (loop (:for i (range 0 256)) (:do (array-set! a i (cast byte i))))
+  (loop (:for i (range 0 256))
+        (:do (array-set! a i (cast byte i))))
   a)
 
 ;; The two tables of the digit classifier in the docs of `simd-lookup`.
@@ -47,7 +48,7 @@
         (:let set? (not (= (bitwise-and (shift-right-logical bits k) 1) 0)))
         (:when (not (eq? set? (digit? (+ i k)))))
         (:acc n (summing 1))
-        => n))
+    => n))
 
 (: (-> int))
 (defun (disagreements128)
@@ -59,20 +60,35 @@
         (:let set? (not (= (bitwise-and (shift-right-logical bits k) 1) 0)))
         (:when (not (eq? set? (digit? (+ i k)))))
         (:acc n (summing 1))
-        => n))
+    => n))
 
 ;; The lane `simd-lookup` gives for each of 32 indices, against .NET's rule.
 (: (-> UInt8x32 int))
 (defun (lookup-rule-breaks idx)
-  (def table (simd128-of 100uy 101uy 102uy 103uy 104uy 105uy 106uy 107uy
-                         108uy 109uy 110uy 111uy 112uy 113uy 114uy 115uy))
+  (def table
+    (simd128-of 100uy
+                101uy
+                102uy
+                103uy
+                104uy
+                105uy
+                106uy
+                107uy
+                108uy
+                109uy
+                110uy
+                111uy
+                112uy
+                113uy
+                114uy
+                115uy))
   (def got (simd-lookup table idx))
   (loop (:for k (range 0 32))
         (:let i (cast int (simd-ref idx k)))
         (:let want (if (< i 16) (cast byte (+ 100 i)) 0uy))
         (:when (not (= (simd-ref got k) want)))
         (:acc n (summing 1))
-        => n))
+    => n))
 
 (defun (main)
   ;; Shuffles.
@@ -94,14 +110,18 @@
   (: UInt8x32)
   (def bytes32 (simd256-load a 0))
   (def from-other-half (simd-with (simd256-zero) 0 31uy))
-  (expect "a 256-bit shuffle across the halves" (simd-ref (simd-shuffle bytes32 from-other-half) 0) 31uy)
+  (expect "a 256-bit shuffle across the halves"
+          (simd-ref (simd-shuffle bytes32 from-other-half) 0)
+          31uy)
   (expect "and lane 31 from lane 0" (simd-ref (simd-shuffle bytes32 from-other-half) 31) 0uy)
   (expect "ushort lanes"
-          (simd-ref (simd-shuffle (simd128-splat (cast ushort 7)) (simd128-splat (cast ushort 1))) 5) (cast ushort 7))
+          (simd-ref (simd-shuffle (simd128-splat (cast ushort 7)) (simd128-splat (cast ushort 1))) 5)
+          (cast ushort 7))
   ;; Float lanes, through their bits.
   (def d (simd128-of 1.5 2.5))
   (expect "a float vector, through its bits"
-          (simd-ref (simd-bits->float64 (simd-shuffle (simd-bits->int64 d) (simd128-of 1L 0L))) 0) 2.5)
+          (simd-ref (simd-bits->float64 (simd-shuffle (simd-bits->int64 d) (simd128-of 1L 0L))) 0)
+          2.5)
 
   ;; Lookups.
   (expect "digits, 32 bytes at a time, at every byte value" (disagreements256) 0)
@@ -113,14 +133,43 @@
           102uy)
   ;; Indices below 16, from 16 up, at the 0x70 and 0x80 edges of the x86 trick.
   (expect "the rule at the edges, 256 bits"
-          (lookup-rule-breaks (simd256-of 0uy 15uy 16uy 17uy 31uy 32uy 100uy 111uy 112uy 127uy 128uy 129uy
-                                          143uy 144uy 200uy 239uy 240uy 254uy 255uy 1uy 2uy 3uy 4uy 5uy
-                                          6uy 7uy 8uy 9uy 10uy 11uy 12uy 13uy))
+          (lookup-rule-breaks (simd256-of 0uy
+                                          15uy
+                                          16uy
+                                          17uy
+                                          31uy
+                                          32uy
+                                          100uy
+                                          111uy
+                                          112uy
+                                          127uy
+                                          128uy
+                                          129uy
+                                          143uy
+                                          144uy
+                                          200uy
+                                          239uy
+                                          240uy
+                                          254uy
+                                          255uy
+                                          1uy
+                                          2uy
+                                          3uy
+                                          4uy
+                                          5uy
+                                          6uy
+                                          7uy
+                                          8uy
+                                          9uy
+                                          10uy
+                                          11uy
+                                          12uy
+                                          13uy))
           0)
   (expect "the rule at every byte value, 256 bits"
           (loop (:for i (up-from 0 #:to 256 #:by 32))
                 (:acc n (summing (lookup-rule-breaks (simd256-load a i))))
-                => n)
+            => n)
           0)
   (expect "the rule at the edges, 128 bits"
           (simd-ref (simd-lookup b (simd128-of 16uy 112uy 128uy 255uy 15uy)) 4)
@@ -128,6 +177,7 @@
   ;; The four indices given are all past the table; the twelve not given are 0,
   ;; which picks entry 0, 15.
   (expect "an index from 16 up gives 0, 128 bits"
-          (simd-count-true (simd-eq (simd-lookup rev (simd128-of 16uy 112uy 128uy 255uy)) (simd128-zero)))
+          (simd-count-true (simd-eq (simd-lookup rev (simd128-of 16uy 112uy 128uy 255uy))
+                                    (simd128-zero)))
           4)
   0)

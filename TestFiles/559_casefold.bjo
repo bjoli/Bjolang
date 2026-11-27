@@ -12,7 +12,10 @@
 (: (-> string int))
 (defun (hex->int s)
   (loop (:for ch s)
-        (:acc n (folding 0 (+ (* 16 n) (let ((d (char->int ch))) (if (<= d 57) (- d 48) (- d 55))))))))
+        (:acc n (folding 0
+                         (+ (* 16 n)
+                            (let ((d (char->int ch)))
+                              (if (<= d 57) (- d 48) (- d 55))))))))
 
 ;; The string of the code points written in hex in `s`, separated by spaces.
 (: (-> string string))
@@ -27,7 +30,9 @@
   (expect "the table is of the cases' version" casefold-unicode-version casefold-cases-version)
 
   ;; --- every mapping ----------------------------------------------------------
-  (def lines (vec-filter (fun (l) (not (string-empty? l))) (vec-map string-trim (string-split casefold-cases "\n"))))
+  (def lines
+    (vec-filter (fun (l) (not (string-empty? l)))
+                (vec-map string-trim (string-split casefold-cases "\n"))))
   (def wrong
     (loop (:for line lines)
           (:acc (vecing (let* ((parts (string-split line ";"))
@@ -51,8 +56,7 @@
   (expect "Ångström sign" (string-foldcase "Å") "å")
   (expect "Cherokee folds to upper case" (string-foldcase "ꭰ") "Ꭰ")
   (expect "outside the BMP" (string-foldcase "𐐀𞤀") "𐐨𞤢")
-  (expect "case-insensitive equality"
-          (= (string-foldcase "ΣΊΣΥΦΟΣ") (string-foldcase "σίσυφος")) #t)
+  (expect "case-insensitive equality" (= (string-foldcase "ΣΊΣΥΦΟΣ") (string-foldcase "σίσυφος")) #t)
 
   ;; --- not Turkic -------------------------------------------------------------
   (expect "I folds to i" (string-foldcase "I") "i")

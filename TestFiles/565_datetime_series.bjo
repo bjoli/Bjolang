@@ -40,11 +40,14 @@
           (first-of 3 (date-period-series (the (date 2026 1 1)) (date-period #:months 1 #:days 1)))
           "2026-01-01 2026-02-02 2026-03-03")
   (expect "ends at 9999-12-31"
-          (count-of (date-period-series (the (date 9999 12 1)) (date-period #:days 1))) 31)
+          (count-of (date-period-series (the (date 9999 12 1)) (date-period #:days 1)))
+          31)
   (expect "and backwards at 0001-01-01"
-          (count-of (date-period-series (the (date 1 1 3)) (date-period #:days -1))) 3)
+          (count-of (date-period-series (the (date 1 1 3)) (date-period #:days -1)))
+          3)
   (expect "a step past the end at once leaves the start alone"
-          (count-of (date-period-series (the (date 9999 1 1)) (date-period #:years 1))) 1)
+          (count-of (date-period-series (the (date 9999 1 1)) (date-period #:years 1)))
+          1)
   (expect-true "a zero step raises"
                (refused? (fun () (date-period-series (the (date 2026 1 1)) (date-period))))))
 
@@ -60,7 +63,8 @@
           (first-of 3 (duration-series (duration #:hours 1) (duration #:minutes -30)))
           "PT1H PT30M PT0S")
   (expect "an instant ends at the calendar's end"
-          (count-of (duration-series (the (iso8601->instant "9999-12-31T21:00:00Z")) (duration #:hours 1)))
+          (count-of (duration-series (the (iso8601->instant "9999-12-31T21:00:00Z"))
+                                     (duration #:hours 1)))
           3)
   (expect-true "a zero step raises"
                (refused? (fun () (duration-series (the (time 1 0)) (duration))))))
@@ -68,17 +72,22 @@
 (: (-> TimeZone void))
 (defun (moments z)
   (def noon (datetime->moment (the (datetime 2026 10 24 #:hours 12)) z compatible-resolver))
-  (expect "daily keeps the local time across a change"
-          (first-of 3 (date-period-series noon (date-period #:days 1)))
-          "2026-10-24T12:00:00+02:00[Europe/Stockholm] 2026-10-25T12:00:00+01:00[Europe/Stockholm] 2026-10-26T12:00:00+01:00[Europe/Stockholm]")
-  (def before-gap (datetime->moment (the (datetime 2026 3 28 #:hours 2 #:minutes 30)) z compatible-resolver))
-  (expect "a day in the gap is pushed, and the next is back at 02:30"
-          (first-of 3 (date-period-series before-gap (date-period #:days 1)))
-          "2026-03-28T02:30:00+01:00[Europe/Stockholm] 2026-03-29T03:30:00+02:00[Europe/Stockholm] 2026-03-30T02:30:00+02:00[Europe/Stockholm]")
-  (def before-overlap (datetime->moment (the (datetime 2026 10 25 #:hours 1 #:minutes 30)) z compatible-resolver))
-  (expect "hourly passes 02:30 twice"
-          (first-of 4 (duration-series before-overlap (duration #:hours 1)))
-          "2026-10-25T01:30:00+02:00[Europe/Stockholm] 2026-10-25T02:30:00+02:00[Europe/Stockholm] 2026-10-25T02:30:00+01:00[Europe/Stockholm] 2026-10-25T03:30:00+01:00[Europe/Stockholm]"))
+  (expect
+   "daily keeps the local time across a change"
+   (first-of 3 (date-period-series noon (date-period #:days 1)))
+   "2026-10-24T12:00:00+02:00[Europe/Stockholm] 2026-10-25T12:00:00+01:00[Europe/Stockholm] 2026-10-26T12:00:00+01:00[Europe/Stockholm]")
+  (def before-gap
+    (datetime->moment (the (datetime 2026 3 28 #:hours 2 #:minutes 30)) z compatible-resolver))
+  (expect
+   "a day in the gap is pushed, and the next is back at 02:30"
+   (first-of 3 (date-period-series before-gap (date-period #:days 1)))
+   "2026-03-28T02:30:00+01:00[Europe/Stockholm] 2026-03-29T03:30:00+02:00[Europe/Stockholm] 2026-03-30T02:30:00+02:00[Europe/Stockholm]")
+  (def before-overlap
+    (datetime->moment (the (datetime 2026 10 25 #:hours 1 #:minutes 30)) z compatible-resolver))
+  (expect
+   "hourly passes 02:30 twice"
+   (first-of 4 (duration-series before-overlap (duration #:hours 1)))
+   "2026-10-25T01:30:00+02:00[Europe/Stockholm] 2026-10-25T02:30:00+02:00[Europe/Stockholm] 2026-10-25T02:30:00+01:00[Europe/Stockholm] 2026-10-25T03:30:00+01:00[Europe/Stockholm]"))
 
 (defun (main)
   (dates)

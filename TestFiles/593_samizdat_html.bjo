@@ -22,8 +22,11 @@
 (defun (doc-of text)
   (match (read-document text standard-commands #:typography #f)
     ((Ok d) d)
-    ((Err e) (Document (meta None) (blocks [(Para [(Str (str "error: " e))])]) (notes (vec-empty))
-                       (sources (vec-empty))))))
+    ((Err e)
+     (Document (meta None)
+               (blocks [(Para [(Str (str "error: " e))])])
+               (notes (vec-empty))
+               (sources (vec-empty))))))
 
 (: html-with (-> Html string string))
 (defun (html-with h text) (document->html (doc-of text) #:with h))
@@ -52,21 +55,19 @@
   (expect "a paragraph, emphasis, and what must be escaped"
           (html-of "Hi @em{there} & <you>, @strong{bold}.")
           "<p>Hi <em>there</em> &amp; &lt;you&gt;, <strong>bold</strong>.</p>")
-  (expect "code, escaped"
-          (html-of "Use @code{(< a b)}.")
-          "<p>Use <code>(&lt; a b)</code>.</p>")
-  (expect "a link and an image, their attributes escaped"
-          (html-of "@link[\"/a?b=1&c=\\\"d\\\"\"]{x} @image[\"cat.png\" #:alt \"A \\\"cat\\\"\"]")
-          "<p><a href=\"/a?b=1&amp;c=&quot;d&quot;\">x</a> <img src=\"cat.png\" alt=\"A &quot;cat&quot;\"></p>")
-  (expect "an image with a body is a figure block with a figcaption"
-          (html-of "@image[\"cat.png\" #:alt \"A cat\"]{A @em{very} nice cat.}")
-          "<figure><img src=\"cat.png\" alt=\"A cat\"><figcaption>A <em>very</em> nice cat.</figcaption></figure>")
+  (expect "code, escaped" (html-of "Use @code{(< a b)}.") "<p>Use <code>(&lt; a b)</code>.</p>")
+  (expect
+   "a link and an image, their attributes escaped"
+   (html-of "@link[\"/a?b=1&c=\\\"d\\\"\"]{x} @image[\"cat.png\" #:alt \"A \\\"cat\\\"\"]")
+   "<p><a href=\"/a?b=1&amp;c=&quot;d&quot;\">x</a> <img src=\"cat.png\" alt=\"A &quot;cat&quot;\"></p>")
+  (expect
+   "an image with a body is a figure block with a figcaption"
+   (html-of "@image[\"cat.png\" #:alt \"A cat\"]{A @em{very} nice cat.}")
+   "<figure><img src=\"cat.png\" alt=\"A cat\"><figcaption>A <em>very</em> nice cat.</figcaption></figure>")
   (expect "a figure with no #:alt has an empty alt"
           (html-of "@image[\"cat.png\"]{Caption.}")
           "<figure><img src=\"cat.png\" alt=\"\"><figcaption>Caption.</figcaption></figure>")
-  (expect "a line break"
-          (html-of "one@|br|two")
-          "<p>one<br>two</p>")
+  (expect "a line break" (html-of "one@|br|two") "<p>one<br>two</p>")
 
   ;; --- blocks -----------------------------------------------------------------
   (expect "a section is an h2 under the page's h1"
@@ -100,9 +101,7 @@
   (expect "a code block, with the class highlighters look for"
           (html-of "@codeblock[#:lang \"scheme\"]|{\n  (if (< a b)\n      a)\n}|")
           "<pre><code class=\"language-scheme\">(if (&lt; a b)\n    a)</code></pre>")
-  (expect "and without a language"
-          (html-of "@codeblock|{x}|")
-          "<pre><code>x</code></pre>")
+  (expect "and without a language" (html-of "@codeblock|{x}|") "<pre><code>x</code></pre>")
   (expect "an empty one is closed, as HTML reads it"
           (nodes->html (blocks->nodes default-html [(CodeBlock "" "")]))
           "<pre><code></code></pre>")
@@ -112,7 +111,9 @@
   ;; the others.
   (let* ((hl (fun (lang code)
                (if (= lang "bjolang")
-                   (Some (html-element "pre" (list (Tuple "class" "hl")) (list (xml-text (str lang ": " code)))))
+                   (Some (html-element "pre"
+                                       (list (Tuple "class" "hl"))
+                                       (list (xml-text (str lang ": " code)))))
                    None)))
          (with-hl (html-options #:highlighter (Some hl))))
     (expect "with a highlighter, the <pre> it returns"
@@ -127,21 +128,26 @@
           (displayed (document->nodes (doc-of "Hi @em{there}.")))
           "((p \"Hi \" (em \"there\") \".\"))")
   (expect "an empty element is closed, a void one has no end, and a block after text gets a line"
-          (nodes->html (list (html-element "td" Nil Nil) (html-element "br" Nil Nil) (html-element "p" Nil Nil)))
+          (nodes->html
+           (list (html-element "td" Nil Nil) (html-element "br" Nil Nil) (html-element "p" Nil Nil)))
           "<td></td><br>\n<p></p>")
-  (expect "a boolean attribute is written bare; another with its own name as value is not"
-          (nodes->html (list (html-element "details" (list (Tuple "open" "open"))
-                                           (list (html-element "summary" Nil (list (xml-text "More")))))
-                             (html-element "img" (list (Tuple "alt" "alt")) Nil)))
-          "<details open>\n<summary>More</summary>\n</details>\n<img alt=\"alt\">")
-  (expect "raw html, among text and among blocks"
-          (nodes->html (list (html-element "p" Nil (list (xml-text "a ") (raw-html "<wbr>") (xml-text " b")))
-                             (raw-html-block "<hr class=\"x\">")
-                             (raw-html-block "")))
-          "<p>a <wbr> b</p>\n<hr class=\"x\">")
+  (expect
+   "a boolean attribute is written bare; another with its own name as value is not"
+   (nodes->html (list (html-element "details"
+                                    (list (Tuple "open" "open"))
+                                    (list (html-element "summary" Nil (list (xml-text "More")))))
+                      (html-element "img" (list (Tuple "alt" "alt")) Nil)))
+   "<details open>\n<summary>More</summary>\n</details>\n<img alt=\"alt\">")
+  (expect
+   "raw html, among text and among blocks"
+   (nodes->html (list (html-element "p" Nil (list (xml-text "a ") (raw-html "<wbr>") (xml-text " b")))
+                      (raw-html-block "<hr class=\"x\">")
+                      (raw-html-block "")))
+   "<p>a <wbr> b</p>\n<hr class=\"x\">")
   (expect "nothing inside a pre is moved, and a stylesheet is not escaped"
-          (nodes->html (list (html-element "pre" Nil (list (html-element "div" Nil (list (xml-text "x < y")))))
-                             (html-element "style" Nil (list (xml-text "a > b { color: red }")))))
+          (nodes->html
+           (list (html-element "pre" Nil (list (html-element "div" Nil (list (xml-text "x < y")))))
+                 (html-element "style" Nil (list (xml-text "a > b { color: red }")))))
           "<pre><div>x &lt; y</div></pre>\n<style>a > b { color: red }</style>")
   (expect "a list of short items has no <p> in it"
           (html-of "@itemlist{@item{a} @item{b}}")
@@ -167,29 +173,31 @@
   (expect "a div and a span have their class"
           (html-of "@div[aside]{Press @span[kbd]{C-x}.}")
           "<div class=\"aside\">\n<p>Press <span class=\"kbd\">C-x</span>.</p>\n</div>")
-  (expect "a rule"
-          (html-of "a\n@hr\nb")
-          "<p>a</p>\n<hr>\n<p>b</p>")
-  (expect "raw html passes through, and raw anything else is left out"
-          (html-of "a @raw[html]{<wbr>}@raw[latex]{\\\\} b\n@raw-block[latex]{\\\\newpage}\n@raw-block[html]{<hr class=\"x\">}")
-          "<p>a <wbr> b</p>\n<hr class=\"x\">")
+  (expect "a rule" (html-of "a\n@hr\nb") "<p>a</p>\n<hr>\n<p>b</p>")
+  (expect
+   "raw html passes through, and raw anything else is left out"
+   (html-of
+    "a @raw[html]{<wbr>}@raw[latex]{\\\\} b\n@raw-block[latex]{\\\\newpage}\n@raw-block[html]{<hr class=\"x\">}")
+   "<p>a <wbr> b</p>\n<hr class=\"x\">")
 
   ;; --- notes ----------------------------------------------------------------
-  (expect "footnotes: a reference, and the note with a way back"
-          (html-of "Text.@note{A note.} More.@note{@codeblock|{x}|}")
-          (str "<p>Text.<sup class=\"note-ref\"><a id=\"note-ref-1\" href=\"#note-1\">1</a></sup>"
-               " More.<sup class=\"note-ref\"><a id=\"note-ref-2\" href=\"#note-2\">2</a></sup></p>\n"
-               "<section class=\"notes\">\n<ol>\n"
-               "<li id=\"note-1\">\n<p>A note. <a class=\"note-back\" href=\"#note-ref-1\">↩</a></p>\n</li>\n"
-               "<li id=\"note-2\">\n<pre><code>x</code></pre>\n<a class=\"note-back\" href=\"#note-ref-2\">↩</a>\n</li>\n"
-               "</ol>\n</section>"))
-  (expect "#:id-prefix, for two documents on one page"
-          (html-with (html-options #:id-prefix "p7-") "@section{A}\nx@note{n}")
-          (str "<h2 id=\"p7-a\">A</h2>\n"
-               "<p>x<sup class=\"note-ref\"><a id=\"p7-note-ref-1\" href=\"#p7-note-1\">1</a></sup></p>\n"
-               "<section class=\"notes\">\n<ol>\n"
-               "<li id=\"p7-note-1\">\n<p>n <a class=\"note-back\" href=\"#p7-note-ref-1\">↩</a></p>\n</li>\n"
-               "</ol>\n</section>"))
+  (expect
+   "footnotes: a reference, and the note with a way back"
+   (html-of "Text.@note{A note.} More.@note{@codeblock|{x}|}")
+   (str "<p>Text.<sup class=\"note-ref\"><a id=\"note-ref-1\" href=\"#note-1\">1</a></sup>"
+        " More.<sup class=\"note-ref\"><a id=\"note-ref-2\" href=\"#note-2\">2</a></sup></p>\n"
+        "<section class=\"notes\">\n<ol>\n"
+        "<li id=\"note-1\">\n<p>A note. <a class=\"note-back\" href=\"#note-ref-1\">↩</a></p>\n</li>\n"
+        "<li id=\"note-2\">\n<pre><code>x</code></pre>\n<a class=\"note-back\" href=\"#note-ref-2\">↩</a>\n</li>\n"
+        "</ol>\n</section>"))
+  (expect
+   "#:id-prefix, for two documents on one page"
+   (html-with (html-options #:id-prefix "p7-") "@section{A}\nx@note{n}")
+   (str "<h2 id=\"p7-a\">A</h2>\n"
+        "<p>x<sup class=\"note-ref\"><a id=\"p7-note-ref-1\" href=\"#p7-note-1\">1</a></sup></p>\n"
+        "<section class=\"notes\">\n<ol>\n"
+        "<li id=\"p7-note-1\">\n<p>n <a class=\"note-back\" href=\"#p7-note-ref-1\">↩</a></p>\n</li>\n"
+        "</ol>\n</section>"))
 
   ;; --- hooks ------------------------------------------------------------------
   (expect "hooks take over a block and an inline, and hand the rest back"
@@ -199,45 +207,58 @@
                "<div class=\"other\">\n<p>x</p>\n</div>"))
 
   ;; --- the whole document ----------------------------------------------------
-  (expect "a table of contents: links, a nested list inside an item, no <p>"
-          (html-of "@toc\n@section{A}\n@subsection{B}")
-          (str "<div class=\"toc\">\n<ul>\n<li><a href=\"#a\">A</a>\n<ul>\n<li><a href=\"#b\">B</a></li>\n</ul>\n</li>\n</ul>\n</div>\n"
-               "<h2 id=\"a\">A</h2>\n<h3 id=\"b\">B</h3>"))
-  (expect "numbered headings: the number in a span, in the heading and the table of contents"
-          (html-of "@numbered-headings\n@toc\n@section{A}")
-          (str "<div class=\"toc numbered\">\n<ul>\n<li><a href=\"#a\"><span class=\"heading-number\">1</span> A</a></li>\n</ul>\n</div>\n"
-               "<h2 id=\"a\"><span class=\"heading-number\">1</span> A</h2>"))
-  (expect "a link to an id in the document has the prefix, as the id does"
-          (html-with (html-options #:id-prefix "p-") "@ref[\"a\"] @link[\"#top\"]{up} @link[\"/x#y\"]{there}\n@section{A}")
-          "<p><a href=\"#p-a\">A</a> <a href=\"#p-top\">up</a> <a href=\"/x#y\">there</a></p>\n<h2 id=\"p-a\">A</h2>")
+  (expect
+   "a table of contents: links, a nested list inside an item, no <p>"
+   (html-of "@toc\n@section{A}\n@subsection{B}")
+   (str "<div class=\"toc\">\n<ul>\n<li><a href=\"#a\">A</a>\n<ul>\n<li><a href=\"#b\">B</a></li>\n</ul>\n</li>\n</ul>\n</div>\n"
+        "<h2 id=\"a\">A</h2>\n<h3 id=\"b\">B</h3>"))
+  (expect
+   "numbered headings: the number in a span, in the heading and the table of contents"
+   (html-of "@numbered-headings\n@toc\n@section{A}")
+   (str "<div class=\"toc numbered\">\n<ul>\n<li><a href=\"#a\"><span class=\"heading-number\">1</span> A</a></li>\n</ul>\n</div>\n"
+        "<h2 id=\"a\"><span class=\"heading-number\">1</span> A</h2>"))
+  (expect
+   "a link to an id in the document has the prefix, as the id does"
+   (html-with (html-options #:id-prefix "p-")
+              "@ref[\"a\"] @link[\"#top\"]{up} @link[\"/x#y\"]{there}\n@section{A}")
+   "<p><a href=\"#p-a\">A</a> <a href=\"#p-top\">up</a> <a href=\"/x#y\">there</a></p>\n<h2 id=\"p-a\">A</h2>")
   (expect "an anchor is an empty <a> with the id, prefixed as the links to it are"
           (document->html (Document (meta None)
-                                    (blocks [(Para [(Anchor "here") (Str "Text, and ")
+                                    (blocks [(Para [(Anchor "here")
+                                                    (Str "Text, and ")
                                                     (Link "#here" [(Str "back")])])])
-                                    (notes (vec-empty)) (sources (vec-empty)))
+                                    (notes (vec-empty))
+                                    (sources (vec-empty)))
                           #:with (html-options #:id-prefix "p-"))
           "<p><a id=\"p-here\"></a>Text, and <a href=\"#p-here\">back</a></p>")
   (expect "a list read as Markdown writes one"
           (html-of "@read-list{\n- a\n  - b\n- c\n}")
           "<ul>\n<li>a\n<ul>\n<li>b</li>\n</ul>\n</li>\n<li>c</li>\n</ul>")
 
-  (expect "a table: caption, head, a tbody for each group, aligned cells"
-          (html-of "@read-table{\n#+CAPTION: Cups\n| Name | Cups |\n|------+------|\n| Bob | 12 |\n|------+------|\n| Eve | 3 |\n}")
-          (str "<table>\n<caption>Cups</caption>\n"
-               "<thead>\n<tr><th>Name</th><th style=\"text-align: right\">Cups</th></tr>\n</thead>\n"
-               "<tbody>\n<tr><td>Bob</td><td style=\"text-align: right\">12</td></tr>\n</tbody>\n"
-               "<tbody>\n<tr><td>Eve</td><td style=\"text-align: right\">3</td></tr>\n</tbody>\n"
-               "</table>"))
+  (expect
+   "a table: caption, head, a tbody for each group, aligned cells"
+   (html-of
+    "@read-table{\n#+CAPTION: Cups\n| Name | Cups |\n|------+------|\n| Bob | 12 |\n|------+------|\n| Eve | 3 |\n}")
+   (str "<table>\n<caption>Cups</caption>\n"
+        "<thead>\n<tr><th>Name</th><th style=\"text-align: right\">Cups</th></tr>\n</thead>\n"
+        "<tbody>\n<tr><td>Bob</td><td style=\"text-align: right\">12</td></tr>\n</tbody>\n"
+        "<tbody>\n<tr><td>Eve</td><td style=\"text-align: right\">3</td></tr>\n</tbody>\n"
+        "</table>"))
 
   ;; --- a page -------------------------------------------------------------------
   (let ((page (html-page (doc-of "(meta (title \"Fish & chips\"))\nText.")
                          #:head "<link rel=\"stylesheet\" href=\"/site.css\">")))
-    (expect-true "a page begins with its doctype" (string-starts-with? page "<!DOCTYPE html>\n<html lang=\"en\">"))
-    (expect-true "its title from the meta form, escaped" (string-contains? page "<title>Fish &amp; chips</title>"))
-    (expect-true "what #:head says, in the head" (string-contains? page "<link rel=\"stylesheet\" href=\"/site.css\">\n</head>"))
-    (expect-true "and the document in its body" (string-contains? page "<body>\n<p>Text.</p>\n</body>")))
+    (expect-true "a page begins with its doctype"
+                 (string-starts-with? page "<!DOCTYPE html>\n<html lang=\"en\">"))
+    (expect-true "its title from the meta form, escaped"
+                 (string-contains? page "<title>Fish &amp; chips</title>"))
+    (expect-true "what #:head says, in the head"
+                 (string-contains? page "<link rel=\"stylesheet\" href=\"/site.css\">\n</head>"))
+    (expect-true "and the document in its body"
+                 (string-contains? page "<body>\n<p>Text.</p>\n</body>")))
   (expect-true "#:title wins over the meta form"
-               (string-contains? (html-page (doc-of "(meta (title \"No\"))") #:title "Yes") "<title>Yes</title>"))
+               (string-contains? (html-page (doc-of "(meta (title \"No\"))") #:title "Yes")
+                                 "<title>Yes</title>"))
 
   (println "html ok")
   0)

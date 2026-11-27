@@ -47,14 +47,12 @@
 
 (defbjo (main args)
   ;; ---- main has a scope, and it is a real one ------------------------------
-  (expect "main's ambient token has not fired"
-          (cancelled? (parameter-ref current-cancel)) #f)
+  (expect "main's ambient token has not fired" (cancelled? (parameter-ref current-cancel)) #f)
 
   ;; The reverse of what this file used to assert. A live scope means a live
   ;; token, and a live token bridges to a real `CancellationToken` rather than
   ;; to `None`. This is the 40 bytes per parked sync the baseline records.
-  (expect "at top level the .NET bridge is a real token"
-          (ambient-can-be-cancelled?) #t)
+  (expect "at top level the .NET bridge is a real token" (ambient-can-be-cancelled?) #t)
 
   ;; ---- A top-level spawn is owned ------------------------------------------
   ;;
@@ -63,9 +61,7 @@
   ;; nothing else was watching.
   (def landed (make-box "still running"))
   (spawn (mark-after landed 40))
-  (ignore (own! (fun ()
-                  (expect "main waited for its top-level spawn"
-                          (box-ref landed) "landed"))))
+  (ignore (own! (fun () (expect "main waited for its top-level spawn" (box-ref landed) "landed"))))
 
   ;; ---- Releases run newest first -------------------------------------------
   ;;
@@ -79,8 +75,16 @@
   ;; ---- release! runs the thunk once, now -----------------------------------
   (def early (make-box 0))
   (def handle (own! (fun () (box-set! early (+ (box-ref early) 1)))))
-  (expect "release! runs the thunk" (let () (release! handle) (box-ref early)) 1)
-  (expect "a second release! does nothing" (let () (release! handle) (box-ref early)) 1)
+  (expect "release! runs the thunk"
+          (let ()
+            (release! handle)
+            (box-ref early))
+          1)
+  (expect "a second release! does nothing"
+          (let ()
+            (release! handle)
+            (box-ref early))
+          1)
 
   ;; ---- A scope inside main's scope is linked to it -------------------------
   ;;

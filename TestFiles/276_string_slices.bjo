@@ -39,25 +39,26 @@
   (expect "the slice starts where it was taken"
           (substring text (string-cursor-start word) (string-cursor-end word))
           "café")
-  (expect "a slice of a slice"
-          (substring/slice word (string-cursor-start word) at-e)
-          "caf")
+  (expect "a slice of a slice" (substring/slice word (string-cursor-start word) at-e) "caf")
   (expect "string-find answers the same cursors"
           (string-cursor=? (option-ref (string-find #(char=? &1 #\é) word)) at-e)
           #t)
 
   ;; ---- regex on a slice -------------------------------------------------------
-  (def line (substring/slice "id=7 x=42 y=9" (option-ref (string-search "id=7 x=42 y=9" "x")) (string-cursor-end "id=7 x=42 y=9")))
+  (def line
+    (substring/slice "id=7 x=42 y=9"
+                     (option-ref (string-search "id=7 x=42 y=9" "x"))
+                     (string-cursor-end "id=7 x=42 y=9")))
   (match (rx-search #rx((+ :digit)) line)
     ((Some m)
      (expect "the match's text" (rx-text m) "42")
-     (expect "its cursors are the slice's"
-             (substring line (rx-start m) (rx-end m))
-             "42"))
+     (expect "its cursors are the slice's" (substring line (rx-start m) (rx-end m)) "42"))
     (None (fail "a match in a slice")))
-  (expect "split" (rx-split #rx(" ") line) [ "x=42" "y=9" ])
+  (expect "split" (rx-split #rx(" ") line) ["x=42" "y=9"])
   (expect "replace" (rx-replace #rx((+ :digit)) line "N") "x=N y=N")
-  (expect "replace-with" (rx-replace-with #rx((+ :digit)) line #(str "<" (rx-text &1) ">")) "x=<42> y=<9>")
+  (expect "replace-with"
+          (rx-replace-with #rx((+ :digit)) line #(str "<" (rx-text &1) ">"))
+          "x=<42> y=<9>")
   (expect "every match" (vec-length (rx-matches #rx((+ :digit)) line)) 2)
 
   (println "276 ok")

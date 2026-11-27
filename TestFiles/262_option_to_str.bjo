@@ -7,10 +7,14 @@
 (import (std simpletest))
 
 (type (: Suit (Union Clubs Hearts)))
-(type (: Card (Struct (: rank int) (: suit Suit))))
+(type (: Card (Struct (: rank int)
+                      (: suit Suit))))
 
 (impl (Displayed Suit)
-  (defun (displayed s) (match s (Clubs "C") (Hearts "H")))
+  (defun (displayed s)
+    (match s
+      (Clubs "C")
+      (Hearts "H")))
   (defun (display-into s b) (stringbuilder-add-string! b (displayed s))))
 
 (impl (Displayed Card)
@@ -22,7 +26,9 @@
   (if (= s "7H") (Ok (Card (rank 7) (suit Hearts))) (Err #"cannot read ${s}")))
 
 (defun (main args)
-  (expect "Some of a type with its own displayed" (displayed (Some (Card (rank 7) (suit Hearts)))) "(Some 7H)")
+  (expect "Some of a type with its own displayed"
+          (displayed (Some (Card (rank 7) (suit Hearts))))
+          "(Some 7H)")
   (expect "None" (displayed (list-head (list None (Some Clubs)))) "None")
   (expect "Ok" (displayed (parsed "7H")) "(Ok 7H)")
   (expect "Err" (displayed (parsed "x")) "(Err cannot read x)")

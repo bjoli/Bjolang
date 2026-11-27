@@ -12,8 +12,7 @@
   (: put! (-> %c %added void))
   (: total (-> %c int))
   ;; The member: any Iterable whose element is this sink's element.
-  (: fill! (-> %c %s void)
-     (where (Iterable %s #:elem %added #:cursor %k)))
+  (: fill! (-> %c %s void) (where (Iterable %s #:elem %added #:cursor %k)))
   (defun (fill! c xs)
     (let go ((cur (iterable-start xs)))
       (unless (iterable-done? xs cur)
@@ -30,7 +29,8 @@
 
 ;; Writes the member by hand — the clause beside it, as required — and
 ;; deliberately differently: it also counts what it added.
-(type (: Counter (Record (: cell (VecBuilder int)) (: seen (VecBuilder int)))))
+(type (: Counter (Record (: cell (VecBuilder int))
+                         (: seen (VecBuilder int)))))
 
 (impl (Sink Counter)
   (type %added int)
@@ -57,6 +57,5 @@
   (def c (Counter (cell (vecbuilder-empty)) (seen (vecbuilder-empty))))
   (fill! c (list 7 8))
   (expect "hand-written fill" (total c) 2)
-  (expect "and it saw what it added"
-          (length (vecbuilder->vec (record-ref c seen))) 2)
+  (expect "and it saw what it added" (length (vecbuilder->vec (record-ref c seen))) 2)
   0)

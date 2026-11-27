@@ -21,12 +21,14 @@
   (defun (size-of x) (string-length x)))
 
 (impl (Sized bool)
-  (defun (size-of x) (if x 1 0)))
+  (defun (size-of x)
+    (if x 1 0)))
 
 ;; A conditional impl, so a copy has to build evidence rather than name a
 ;; singleton: `(List int)` needs `Sized_List::Make(Sized_Int::Instance)`.
 (impl (Sized (List %a)) (where (Sized %a))
-  (defun (size-of xs) (list-foldl (fun (x acc) (+ acc (size-of x))) 0 xs)))
+  (defun (size-of xs)
+    (list-foldl (fun (x acc) (+ acc (size-of x))) 0 xs)))
 
 ;; --- The plain case ---------------------------------------------------------
 
@@ -94,16 +96,12 @@
   (expect "at bool" (total #t #f) 1)
   ;; (1 + 2) + (3): the conditional impl's body is spliced into the copy, and
   ;; the `size-of` inside it resolves to `int`'s.
-  (expect "through a conditional impl"
-          (total (list 1 2) (list 3))
-          6)
+  (expect "through a conditional impl" (total (list 1 2) (list 3)) 6)
 
   ;; --- the recursive one, at three types ------------------------------------
   (expect "recursing at int" (sum-sizes (list 1 2 3) 0) 6)
   (expect "recursing at string" (sum-sizes (list "a" "bcd") 0) 4)
-  (expect "recursing at a nested list"
-          (sum-sizes (list (list 1 2) (list 3)) 0)
-          6)
+  (expect "recursing at a nested list" (sum-sizes (list (list 1 2) (list 3)) 0) 6)
 
   ;; --- two constraints, and the two halves at different types ---------------
   (expect "two constraints, same type" (same-size? 3 3) #t)

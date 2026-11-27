@@ -4,16 +4,12 @@
 ;; reads as calls to them all come from here.
 (import (std monad))
 
-
-
 ;; `bind`'s own `%b` is method-level, not the trait's target: it is exactly the
 ;; restriction inline traits lift, and it reaches C# as a generic *method*
 ;; parameter.
 (: (-> (List int)))
 (defun (pairs)
-  (do (:bind x (Cons 1 (Cons 2 Nil)))
-      (:bind y (Cons 10 (Cons 20 Nil)))
-      (:return (+ x y))))
+  (do (:bind x (Cons 1 (Cons 2 Nil))) (:bind y (Cons 10 (Cons 20 Nil))) (:return (+ x y))))
 
 ;; The same block, at a different instance. Two `Monad` implementations coexist
 ;; in one program, which is what keying the template registry on the constructor
@@ -25,7 +21,7 @@
 (: (-> int (Option int)))
 (defun (calc n)
   (do (:bind half (safe-div n 2))
-      (:let  doubled (* half 2))
+      (:let doubled (* half 2))
       (:bind third (safe-div doubled 3))
       (:return (+ doubled third))))
 
@@ -35,8 +31,7 @@
 (defun (countdown n)
   (if (= n 0)
       (pure 0)
-      (do (:bind x (Cons n Nil))
-          (countdown (- x 1)))))
+      (do (:bind x (Cons n Nil)) (countdown (- x 1)))))
 
 ;; `Result`, where the whole block is the happy path: `%e` is fixed by the
 ;; implementation, so an `Err` short-circuits the rest without being mentioned
@@ -85,8 +80,7 @@
   (expect "the Option instance: 6*2 + 12/3" (show-option (calc 12)) "16")
   (expect "the Option instance at zero" (show-option (calc 0)) "0")
   (expect "the Option instance with truncating division" (show-option (calc 3)) "2")
-  (expect "a block whose last form is its own recursive call"
-          (show-list (countdown 4)) " 0")
+  (expect "a block whose last form is its own recursive call" (show-list (countdown 4)) " 0")
   ;; `pure` mentions its constructor only in its result, so nothing about the
   ;; call itself says which instance it is. The annotation on `one` does.
   (def (: one (List int)) (pure 1))

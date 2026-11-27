@@ -14,7 +14,8 @@
 
 ;; A parameter named like a function the prelude publishes.
 (: (-> (-> (-> int int) (List int) (List int)) (List int) (List int)))
-(defun (shadow list-map xs) (list-map (fun (x) (+ x 100)) xs))
+(defun (shadow list-map xs)
+  (list-map (fun (x) (+ x 100)) xs))
 
 ;; A `let` named like it. In a function of its own: a name that the
 ;; declaration binds anywhere is not taken for the top-level function anywhere
@@ -27,11 +28,15 @@
 ;; A record built in an inlined body, with a field label that is also the
 ;; name of a local. Inlining renames the local, and the label must keep
 ;; naming the field.
-(type (: Named (Record (: name string) (: n int))))
+(type (: Named (Record (: name string)
+                       (: n int))))
 
 (: (-> (-> int string) (List int) (List Named)))
 (defun (name-all f ns)
-  (list-map (fun (n) (let ((name (f n))) (Named (name name) (n n)))) ns))
+  (list-map (fun (n)
+              (let ((name (f n)))
+                (Named (name name) (n n))))
+            ns))
 
 (defun (main args)
   (def xs (list 1 2 3))
@@ -48,12 +53,18 @@
   ;; A lambda that captures and changes a local, called once per element, in
   ;; order.
   (def/mutable seen Nil)
-  (ignore (list-map (fun (x) (set! seen (Cons x seen)) x) xs))
+  (ignore (list-map (fun (x)
+                      (set! seen (Cons x seen))
+                      x)
+                    xs))
   (expect "called in order" seen (list 3 2 1))
 
   ;; The list argument is evaluated once.
   (def/mutable evaluated 0)
-  (ignore (list-map (fun (x) x) (let () (set! evaluated (+ evaluated 1)) xs)))
+  (ignore (list-map (fun (x) x)
+                    (let ()
+                      (set! evaluated (+ evaluated 1))
+                      xs)))
   (expect "the argument is evaluated once" evaluated 1)
 
   (expect "a body that calls its function twice" (apply-twice (fun (x) (+ x 1)) 5) 7)
@@ -64,12 +75,13 @@
 
   ;; `vecing/small` gives what `vecing` gives, below, at and past each size
   ;; its tail grows through.
-  (for-each
-    (fun (n)
-      (expect #"vecing/small of ${n}"
-              (loop (:for i (range 0 n)) (:acc v (vecing/small i)))
-              (loop (:for i (range 0 n)) (:acc v (vecing i)))))
-    (list 0 1 3 4 5 8 9 16 17 31 32 33 100))
+  (for-each (fun (n)
+              (expect #"vecing/small of ${n}"
+                      (loop (:for i (range 0 n))
+                            (:acc v (vecing/small i)))
+                      (loop (:for i (range 0 n))
+                            (:acc v (vecing i)))))
+            (list 0 1 3 4 5 8 9 16 17 31 32 33 100))
 
   (expect "a record label inside an inlined body"
           (list-map (fun (r) (record-ref r name)) (name-all (fun (n) (int->string n)) xs))

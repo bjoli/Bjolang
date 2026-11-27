@@ -58,23 +58,30 @@
 ;; unchanged. Passing this explicitly is what dynamic binding buys you out of.
 (: (-> string))
 (defun (describe)
-  (string-append (int->string (parameter-ref indent))
-                 (if (parameter-ref verbose?) "/loud" "/quiet")))
+  (string-append (int->string (parameter-ref indent)) (if (parameter-ref verbose?) "/loud" "/quiet")))
 
 ;; Many cold parameters at once, so that ids sharing low bits push each other
 ;; into deeper nodes of the environment's trie.
 (: (Array (Param int)))
-(def crowd (loop (:for i (range 0 300)) (:acc (arraying (make-cold-parameter (- 0 i))))))
+(def crowd
+  (loop (:for i (range 0 300))
+        (:acc (arraying (make-cold-parameter (- 0 i))))))
 
 ;; Binds `crowd[i]` to `i` for each `i` in `order`, then rebinds every
 ;; seventh to `i + 1000`, and calls `body` inside all of it.
 (: (-> (List int) (-> bool) bool))
 (defun (with-crowd order body)
   (match order
-    ((Cons i rest) (parameterize (((array-ref crowd i) i)) (with-crowd rest body)))
-    (Nil (let go ((i 0))
-           (cond ((>= i 300) (body))
-                 (else (parameterize (((array-ref crowd i) (+ i 1000))) (go (+ i 7)))))))))
+    ((Cons i rest)
+     (parameterize (((array-ref crowd i) i))
+       (with-crowd rest body)))
+    (Nil
+     (let go ((i 0))
+       (cond
+         ((>= i 300) (body))
+         (else
+          (parameterize (((array-ref crowd i) (+ i 1000)))
+            (go (+ i 7)))))))))
 
 ;; Whether every parameter of `crowd` reads what `with-crowd` bound, with the
 ;; ones below `bound` bound and the rest at their initial value.
@@ -82,11 +89,13 @@
 (defun (crowd-reads? bound)
   (loop (:for i (range 0 300))
         (:acc ok (folding #t
-                          (and ok (= (parameter-ref (array-ref crowd i))
-                                     (cond ((>= i bound) (- 0 i))
-                                           ((= (% i 7) 0) (+ i 1000))
-                                           (else i))))))
-        => ok))
+                          (and ok
+                               (= (parameter-ref (array-ref crowd i))
+                                  (cond
+                                    ((>= i bound) (- 0 i))
+                                    ((= (% i 7) 0) (+ i 1000))
+                                    (else i))))))
+    => ok))
 
 ;; A named let in tail position *inside* the body, which lowers to a jump inside
 ;; a try/finally. Worth pinning: `parameterize` desugars to the same try/finally
@@ -112,7 +121,8 @@
   (expect "restored after" (describe) "0/quiet")
 
   ;; Two bindings at once, at two different types.
-  (parameterize ((indent 3) (verbose? #t))
+  (parameterize ((indent 3)
+                 (verbose? #t))
     (expect "two parameters" (describe) "3/loud"))
   (expect "both restored" (describe) "0/quiet")
 
@@ -130,12 +140,14 @@
   ;; outside the form, and only then is any of them installed. So the second
   ;; value here reads `indent` as it was *before* — 0, not 5 — and the body runs
   ;; quiet.
-  (parameterize ((indent 5) (verbose? (= (parameter-ref indent) 5)))
+  (parameterize ((indent 5)
+                 (verbose? (= (parameter-ref indent) 5)))
     (expect "bindings are simultaneous" (describe) "5/quiet"))
 
   ;; `parameterize*` is the sequential one, for when a later value really is
   ;; meant to see an earlier binding installed.
-  (parameterize* ((indent 5) (verbose? (= (parameter-ref indent) 5)))
+  (parameterize* ((indent 5)
+                  (verbose? (= (parameter-ref indent) 5)))
     (expect "parameterize* is sequential" (describe) "5/loud"))
 
   ;; Both restore, and in the reverse of the order they were installed.
@@ -207,21 +219,23 @@
   ;; Two at once. Cold parameters share a place that hot ones each have to
   ;; themselves, so this is the case where one could be found under the other's
   ;; binding — neither may see the other's value, and both must come back.
-  (parameterize ((cold-a 1) (cold-b 2))
+  (parameterize ((cold-a 1)
+                 (cold-b 2))
     (expect "two cold, first" (parameter-ref cold-a) 1)
     (expect "two cold, second" (parameter-ref cold-b) 2)
     (parameterize ((cold-a 3))
       (expect "cold shadowed" (parameter-ref cold-a) 3)
       (expect "its neighbour untouched" (parameter-ref cold-b) 2)))
-  (expect "both cold restored" (string-append (int->string (parameter-ref cold-a))
-                                              (int->string (parameter-ref cold-b)))
+  (expect "both cold restored"
+          (string-append (int->string (parameter-ref cold-a)) (int->string (parameter-ref cold-b)))
           "1020")
 
   ;; Hot and cold in one form, which is the mixed environment the runtime
   ;; actually sees.
-  (parameterize ((indent 4) (cold-a 5))
-    (expect "hot beside cold" (string-append (int->string (parameter-ref indent))
-                                             (int->string (parameter-ref cold-a)))
+  (parameterize ((indent 4)
+                 (cold-a 5))
+    (expect "hot beside cold"
+            (string-append (int->string (parameter-ref indent)) (int->string (parameter-ref cold-a)))
             "45"))
   (expect "hot beside cold restored" (describe) "0/quiet")
 
@@ -239,8 +253,10 @@
   ;; `display` writing into a dead string port.
   (def w2 (open-output-string))
   (def outcome
-    (try (parameterize ((indent 9) (current-output-port w2))
-           (.Substring "ab" 99))
+    (try
+      (parameterize ((indent 9)
+                     (current-output-port w2))
+        (.Substring "ab" 99))
       #:catch (System.ArgumentOutOfRangeException)))
 
   (match outcome
@@ -256,11 +272,20 @@
   ;; --- Many parameters at once -------------------------------------------
   (expect "crowd unbound" (crowd-reads? 0) #t)
   (expect "crowd bound in order"
-          (with-crowd (loop (:for i (range 0 300)) (:acc (listing i))) (fun () (crowd-reads? 300))) #t)
+          (with-crowd (loop (:for i (range 0 300))
+                            (:acc (listing i)))
+            (fun () (crowd-reads? 300)))
+          #t)
   (expect "crowd bound in reverse"
-          (with-crowd (loop (:for i (down-from 299 #:to 0)) (:acc (listing i))) (fun () (crowd-reads? 300))) #t)
+          (with-crowd (loop (:for i (down-from 299 #:to 0))
+                            (:acc (listing i)))
+            (fun () (crowd-reads? 300)))
+          #t)
   (expect "crowd bound scattered"
-          (with-crowd (loop (:for i (range 0 300)) (:acc (listing (% (* i 37) 300)))) (fun () (crowd-reads? 300))) #t)
+          (with-crowd (loop (:for i (range 0 300))
+                            (:acc (listing (% (* i 37) 300))))
+            (fun () (crowd-reads? 300)))
+          #t)
   (expect "crowd restored" (crowd-reads? 0) #t)
 
   0)

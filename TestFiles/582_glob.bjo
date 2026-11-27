@@ -26,10 +26,14 @@
   (expect "an empty range" (reason (glob-parse "[z-a]")) "the range z-a is empty")
   (expect "a \\ at the end" (reason (glob-parse "a\\")) "the pattern ends in \\")
   (expect "the message"
-          (match (glob-parse "a[b") ((Err e) (glob-error-message e)) ((Ok _) ""))
+          (match (glob-parse "a[b")
+            ((Err e) (glob-error-message e))
+            ((Ok _) ""))
           "the glob pattern \"a[b\" is not valid: a [ has no ]")
   (expect "a string pattern that is not valid raises"
-          (match (try (glob-match? "a[" "a") #:catch (System.ArgumentException)) ((Ok _) #f) ((Err _) #t))
+          (match (try (glob-match? "a[" "a") #:catch (System.ArgumentException))
+            ((Ok _) #f)
+            ((Err _) #t))
           #t)
   (expect "the text is kept" (glob->string (glob-pattern "*.c")) "*.c")
 
@@ -88,17 +92,26 @@
   (expect "a class does not" (glob-match? "a[!x]b" raw) #f)
 
   ;; On a fake file system
-  (def fs (fake-fs (list-map (fun (p) (Tuple p ""))
-                             (list "src/a.bjo" "src/b.txt" "src/sub/c.bjo" "src/.hidden/d.bjo"
-                                   "lib/e.bjo" "readme.md"))))
+  (def fs
+    (fake-fs
+     (list-map
+      (fun (p) (Tuple p ""))
+      (list "src/a.bjo" "src/b.txt" "src/sub/c.bjo" "src/.hidden/d.bjo" "lib/e.bjo" "readme.md"))))
   (with-fake-fs-of fs
     (expect "one directory" (shown (glob "src/*.bjo")) (list "src/a.bjo"))
     (expect "files and directories" (shown (glob "src/*")) (list "src/a.bjo" "src/b.txt" "src/sub"))
-    (expect "recursive, in order" (shown (glob "**/*.bjo")) (list "lib/e.bjo" "src/a.bjo" "src/sub/c.bjo"))
-    (expect "with dot names" (shown (glob (glob-pattern "**/*.bjo" #:dot? #t)))
+    (expect "recursive, in order"
+            (shown (glob "**/*.bjo"))
+            (list "lib/e.bjo" "src/a.bjo" "src/sub/c.bjo"))
+    (expect "with dot names"
+            (shown (glob (glob-pattern "**/*.bjo" #:dot? #t)))
             (list "lib/e.bjo" "src/.hidden/d.bjo" "src/a.bjo" "src/sub/c.bjo"))
-    (expect "braces, each path once" (shown (glob "{src,src/sub}/*.bjo")) (list "src/a.bjo" "src/sub/c.bjo"))
-    (expect "the same path from two alternatives, once" (shown (glob "{src/a.bjo,src/*.bjo}")) (list "src/a.bjo"))
+    (expect "braces, each path once"
+            (shown (glob "{src,src/sub}/*.bjo"))
+            (list "src/a.bjo" "src/sub/c.bjo"))
+    (expect "the same path from two alternatives, once"
+            (shown (glob "{src/a.bjo,src/*.bjo}"))
+            (list "src/a.bjo"))
     (expect "a trailing **" (shown (glob "src/sub/**")) (list "src/sub" "src/sub/c.bjo"))
     (expect "a literal path" (shown (glob "src/sub/c.bjo")) (list "src/sub/c.bjo"))
     (expect "a literal path that is not there" (shown (glob "src/nothing.bjo")) Nil)
@@ -119,15 +132,21 @@
 
   ;; On the real file system
   (def dir "582_probe_dir")
-  (when (directory-exists? dir) (raise-err (directory-delete-tree dir)))
+  (when (directory-exists? dir)
+    (raise-err (directory-delete-tree dir)))
   (raise-err (directory-create (path-join dir "a/b")))
   (raise-err (file-write-text (path-join dir "a/x.c") ""))
   (raise-err (file-write-text (path-join dir "a/b/y.c") ""))
   (raise-err (file-write-text (path-join dir "z.h") ""))
-  (expect "a real directory" (shown (glob "582_probe_dir/**/*.c"))
+  (expect "a real directory"
+          (shown (glob "582_probe_dir/**/*.c"))
           (list "582_probe_dir/a/b/y.c" "582_probe_dir/a/x.c"))
-  (expect "..: looked up, not listed" (shown (glob "582_probe_dir/a/../*.h")) (list "582_probe_dir/a/../z.h"))
+  (expect "..: looked up, not listed"
+          (shown (glob "582_probe_dir/a/../*.h"))
+          (list "582_probe_dir/a/../z.h"))
   (expect "an absolute pattern"
-          (shown (glob (str (path->string/lossy (path-normalize (path-join (current-directory) dir))) "/*.h")))
-          (list (str (path->string/lossy (path-normalize (path-join (current-directory) dir))) "/z.h")))
+          (shown (glob (str (path->string/lossy (path-normalize (path-join (current-directory) dir)))
+                            "/*.h")))
+          (list (str (path->string/lossy (path-normalize (path-join (current-directory) dir)))
+                     "/z.h")))
   (raise-err (directory-delete-tree dir)))

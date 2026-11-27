@@ -87,7 +87,8 @@
              ;; The method, the Content-Type and the body, as a JSON object.
              ((string-starts-with? path "/echo-json")
               (def body (read-all (cast InputPort (StreamPort. (request-stream req)))))
-              (reply! 201 "application/json"
+              (reply! 201
+                      "application/json"
                       (string->bytes (str "{\"verb\": \"" verb "\", "
                                           "\"type\": \"" (.-ContentType req) "\", "
                                           "\"got\": " body "}"))))
@@ -97,7 +98,8 @@
              ((string-starts-with? path "/json")
               (reply! 200 "application/json" (string->bytes "{\"accept\": \"x\"}")))
              ((string-starts-with? path "/accept")
-              (reply! 200 "application/json"
+              (reply! 200
+                      "application/json"
                       (string->bytes (str "\"" (.Get (.-Headers req) "Accept") "\""))))
              ((string-starts-with? path "/notjson")
               (reply! 200 "application/json" (string->bytes "{")))
@@ -193,7 +195,8 @@
 
 ;; What `/fruit` returns.
 (def/json-type
-  (: Fruit (Record (: name string) (: count int))))
+  (: Fruit (Record (: name string)
+                   (: count int))))
 
 (: (-> (Result EasyError Fruit) string))
 (defun (shown-fruit r)
@@ -222,19 +225,24 @@
   ;; --- get-text ---------------------------------------------------------
   (expect (named "get-text returns the body") (shown (get-text (at "/hello"))) "hello, bjolang")
   (expect (named "a 404 is an error with the start of the body")
-          (shown (get-text (at "/missing"))) "Status 404 no such fruit")
-  (expect (named "the declared charset decodes the text")
-          (shown (get-text (at "/latin1"))) "grüße")
+          (shown (get-text (at "/missing")))
+          "Status 404 no such fruit")
+  (expect (named "the declared charset decodes the text") (shown (get-text (at "/latin1"))) "grüße")
   (expect (named "an unknown charset is Decode") (shown (get-text (at "/klingon"))) "Decode")
   (expect (named "no server is Http")
-          (shown (get-text "http://127.0.0.1:1/" #:timeout (seconds 5))) "Http")
+          (shown (get-text "http://127.0.0.1:1/" #:timeout (seconds 5)))
+          "Http")
 
   ;; --- get-json ---------------------------------------------------------
   (expect (named "get-json reads JSON")
-          (match (get-json (at "/json")) ((Ok j) (json->string j)) ((Err e) (easy-error-message e)))
+          (match (get-json (at "/json"))
+            ((Ok j) (json->string j))
+            ((Err e) (easy-error-message e)))
           "{\"accept\":\"x\"}")
   (expect (named "get-json sends Accept: application/json")
-          (match (get-json (at "/accept")) ((Ok j) (json->string j)) ((Err e) (easy-error-message e)))
+          (match (get-json (at "/accept"))
+            ((Ok j) (json->string j))
+            ((Err e) (easy-error-message e)))
           "\"application/json\"")
   (expect (named "an Accept of the caller's stays")
           (match (get-json (at "/accept") #:headers [(Tuple "accept" "text/x-json")])
@@ -242,41 +250,56 @@
             ((Err e) (easy-error-message e)))
           "\"text/x-json\"")
   (expect (named "a body that is not JSON is Decode")
-          (match (get-json (at "/notjson")) ((Ok j) "read") ((Err (Decode m)) "Decode") ((Err e) "other"))
+          (match (get-json (at "/notjson"))
+            ((Ok j) "read")
+            ((Err (Decode m)) "Decode")
+            ((Err e) "other"))
           "Decode")
 
   ;; --- get-json-as and post-json ---------------------------------------
   (expect (named "get-json-as decodes into the type the caller expects")
-          (shown-fruit (get-json-as (at "/fruit"))) "banana x3")
+          (shown-fruit (get-json-as (at "/fruit")))
+          "banana x3")
   (expect (named "a body of the wrong shape is Decode")
-          (shown-fruit (get-json-as (at "/not-a-fruit"))) "Decode")
+          (shown-fruit (get-json-as (at "/not-a-fruit")))
+          "Decode")
   (expect (named "and a status is still a Status")
-          (shown-fruit (get-json-as (at "/missing"))) "status 404: no such fruit")
-  (expect (named "post-json sends the value as JSON, and reads the JSON back")
-          (shown-json (post-json (at "/echo-json") (Fruit (name "pear") (count 2))))
-          "{\"got\":{\"count\":2,\"name\":\"pear\"},\"type\":\"application/json; charset=utf-8\",\"verb\":\"POST\"}")
+          (shown-fruit (get-json-as (at "/missing")))
+          "status 404: no such fruit")
+  (expect
+   (named "post-json sends the value as JSON, and reads the JSON back")
+   (shown-json (post-json (at "/echo-json") (Fruit (name "pear") (count 2))))
+   "{\"got\":{\"count\":2,\"name\":\"pear\"},\"type\":\"application/json; charset=utf-8\",\"verb\":\"POST\"}")
   (expect (named "post-json of a Json")
           (shown-json (post-json (at "/echo-json/x") (JsonArr (vec->iarray [(JsonInt 1) JsonNull]))))
           "{\"got\":[1,null],\"type\":\"application/json; charset=utf-8\",\"verb\":\"POST\"}")
-  (expect (named "an empty answer is null") (shown-json (post-json (at "/no-content") (JsonInt 1))) "null")
+  (expect (named "an empty answer is null")
+          (shown-json (post-json (at "/no-content") (JsonInt 1)))
+          "null")
   (expect (named "post-json of a 404 is a Status")
-          (match (post-json (at "/missing") (JsonInt 1)) ((Err (Status code body)) code) (_ 0))
+          (match (post-json (at "/missing") (JsonInt 1))
+            ((Err (Status code body)) code)
+            (_ 0))
           404)
 
   ;; --- Limits -----------------------------------------------------------
   (expect (named "a Content-Length over the limit is TooLarge")
-          (shown (get-text (at "/big-declared") #:max-bytes 1000L)) "TooLarge 1000")
+          (shown (get-text (at "/big-declared") #:max-bytes 1000L))
+          "TooLarge 1000")
   (expect (named "a chunked body over the limit is TooLarge")
-          (shown (get-text (at "/big-chunked") #:max-bytes 1000L)) "TooLarge 1000")
+          (shown (get-text (at "/big-chunked") #:max-bytes 1000L))
+          "TooLarge 1000")
   (expect (named "a body at the limit is read")
           (match (get-bytes (at "/big-chunked") #:max-bytes 2000L)
             ((Ok bytes) (int->string (bytestring-length bytes)))
             ((Err e) (easy-error-message e)))
           "2000")
   (expect (named "slow headers are TimedOut")
-          (shown (get-text (at "/slow-headers") #:timeout (milliseconds 300))) "TimedOut")
+          (shown (get-text (at "/slow-headers") #:timeout (milliseconds 300)))
+          "TimedOut")
   (expect (named "a slow body is TimedOut")
-          (shown (get-text (at "/slow-body") #:timeout (milliseconds 300))) "TimedOut")
+          (shown (get-text (at "/slow-body") #:timeout (milliseconds 300)))
+          "TimedOut")
   (def own (bjo (under-own-deadline (at "/slow-headers"))))
   (expect (named "the caller's own deadline cancels the call, and is not TimedOut")
           (match (by-colour (#:sync (sync/blocking (promise-join own)))
@@ -287,8 +310,7 @@
 
   ;; --- download ---------------------------------------------------------
   (def target (path-combine dir (str run "-file.bin")))
-  (expect (named "download writes the body")
-          (shown-count (download (at "/file") target)) "Ok 100000")
+  (expect (named "download writes the body") (shown-count (download (at "/file") target)) "Ok 100000")
   (expect (named "and the file holds the bytes")
           (let ((got (raise-err (file-read-bytes target))))
             (and (= (array-length got) 100000)
@@ -297,24 +319,29 @@
           #t)
   (expect (named "and leaves no .part") (part-left? target) "no .part")
   (expect (named "a file that exists is not replaced")
-          (shown-count (download (at "/file") target)) "File")
+          (shown-count (download (at "/file") target))
+          "File")
   (expect (named "unless #:overwrite says so")
-          (shown-count (download (at "/file") target #:overwrite #t)) "Ok 100000")
+          (shown-count (download (at "/file") target #:overwrite #t))
+          "Ok 100000")
 
   (def missing (path-combine dir (str run "-missing.bin")))
   (expect (named "a 404 writes nothing")
-          (shown-count (download (at "/missing") missing)) "Status 404 no such fruit")
+          (shown-count (download (at "/missing") missing))
+          "Status 404 no such fruit")
   (expect (named "no file") (file-exists? missing) #f)
 
   (def big (path-combine dir (str run "-big.bin")))
   (expect (named "a body over #:max-bytes is TooLarge")
-          (shown-count (download (at "/big-chunked") big #:max-bytes 1000L)) "TooLarge 1000")
+          (shown-count (download (at "/big-chunked") big #:max-bytes 1000L))
+          "TooLarge 1000")
   (expect (named "and leaves no file") (file-exists? big) #f)
   (expect (named "and no .part") (part-left? big) "no .part")
 
   (def slow (path-combine dir (str run "-slow.bin")))
   (expect (named "a download that times out midway is TimedOut")
-          (shown-count (download (at "/slow-body") slow #:timeout (milliseconds 300))) "TimedOut")
+          (shown-count (download (at "/slow-body") slow #:timeout (milliseconds 300)))
+          "TimedOut")
   (expect (named "and leaves no file") (file-exists? slow) #f)
   (expect (named "and no .part") (part-left? slow) "no .part")
 
@@ -324,15 +351,18 @@
   (expect (named "url-ok? asks with GET when HEAD is rejected") (url-ok? (at "/no-head")) #t)
   (expect (named "url-ok? with no server") (url-ok? "http://127.0.0.1:1/") #f)
   (expect (named "url-ok? that times out")
-          (url-ok? (at "/slow-headers") #:timeout (milliseconds 300)) #f)
+          (url-ok? (at "/slow-headers") #:timeout (milliseconds 300))
+          #f)
 
   ;; --- fetch-many -------------------------------------------------------
   (expect (named "fetch-many keeps the order of the URLs")
-          (string-join (vec-map shown (fetch-many [(at "/hello") (at "/missing") (at "/latin1")
-                                                   (at "/hello") (at "/big-declared")]
-                                                  #:parallel 2
-                                                  #:max-bytes 1000L))
-                       "|")
+          (string-join
+           (vec-map shown
+                    (fetch-many
+                     [(at "/hello") (at "/missing") (at "/latin1") (at "/hello") (at "/big-declared")]
+                     #:parallel 2
+                     #:max-bytes 1000L))
+           "|")
           "hello, bjolang|Status 404 no such fruit|grüße|hello, bjolang|TooLarge 1000")
   (expect (named "fetch-many of nothing") (vec-length (fetch-many (vec-empty))) 0)
 
@@ -340,12 +370,13 @@
   ;; after another.
   (def sw (stopwatch))
   (stopwatch-start! sw)
-  (def four (fetch-many [(at "/half-second") (at "/half-second") (at "/half-second")
-                         (at "/half-second")]
-                        #:parallel 4))
+  (def four
+    (fetch-many [(at "/half-second") (at "/half-second") (at "/half-second") (at "/half-second")]
+                #:parallel 4))
   (stopwatch-stop! sw)
   (expect (named "fetch-many runs the requests at the same time")
-          (string-join (vec-map shown four) "|") "done|done|done|done")
+          (string-join (vec-map shown four) "|")
+          "done|done|done|done")
   (expect-true (named "in less time than one after another") (< (stopwatch-ms sw) 1500L))
 
   (expect (named "#:parallel 0 raises")
@@ -361,7 +392,9 @@
 
 (defun (main args)
   (match (listen-on 8697 20)
-    (None (fail "no free port to listen on") 1)
+    (None
+     (fail "no free port to listen on")
+     1)
     ((Some (Tuple listener port))
      (ignore (bjo (serve listener)))
      (def base (str "http://127.0.0.1:" (int->string port)))

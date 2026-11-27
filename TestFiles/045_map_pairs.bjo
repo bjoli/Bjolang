@@ -25,7 +25,8 @@
   (fold (fun (kv acc)
           (def (_ . v) kv)
           (+ acc v))
-        0 m))
+        0
+        m))
 
 (: (-> (Map string int) int))
 (defun (key-lengths m)
@@ -64,13 +65,13 @@
   ;; map-find answers an Option over the whole entry: a value being handed
   ;; back, so a pair.
   (expect-true "find hit"
-          (match (map-find (fun (_ v) (= v 2)) m)
-            ((Some entry) (= (tuple-key entry) "b"))
-            (None #f)))
+               (match (map-find (fun (_ v) (= v 2)) m)
+                 ((Some entry) (= (tuple-key entry) "b"))
+                 (None #f)))
   (expect-true "find miss"
-          (match (map-find (fun (_ v) (> v 99)) m)
-            ((Some _) #f)
-            (None #t)))
+               (match (map-find (fun (_ v) (> v 99)) m)
+                 ((Some _) #f)
+                 (None #t)))
 
   ;; map-for-each is the same shape, for effect.
   (def/mutable seen 0)
@@ -88,11 +89,12 @@
 
   ;; `filter` reads the same one element.
   (expect-true "Iterable filter takes the entry"
-          (= (count (filter (fun (kv) (> (tuple-value kv) 1)) m)) 2))
+               (= (count (filter (fun (kv) (> (tuple-value kv) 1)) m)) 2))
 
   ;; A loop over a Map walks its entries, so `kv` is a pair here too.
   (def/mutable looped 0)
-  (loop (:for kv m) (:do (set! looped (+ looped (tuple-value kv)))))
+  (loop (:for kv m)
+        (:do (set! looped (+ looped (tuple-value kv)))))
   (expect-true "loop over entries" (= looped 6))
   0)
 

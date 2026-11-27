@@ -13,10 +13,13 @@
 ;; Compiled once, not per evaluation: a `#rx(...)` in a loop body builds its
 ;; value on every pass, the same as any other constructor call.
 (def digits #rx(+ :ascii-digit))
-(def phone #rx(seq :bos (=> :area (** 3 3 :ascii-digit))
-                   (lit "-")
-                   (=> :line (** 4 4 :ascii-digit))
-                   :eos))
+(def phone
+  #rx(seq
+       :bos
+       (=> :area (** 3 3 :ascii-digit))
+       (lit "-")
+       (=> :line (** 4 4 :ascii-digit))
+       :eos))
 
 (defun (main)
   ;; ---- Literals ------------------------------------------------------------
@@ -36,7 +39,12 @@
   (expect-true "a backslash is a backslash" (rx-match? #rx("\\") "\\"))
 
   ;; ---- Sequence and alternation -------------------------------------------
-  (expect-true "seq" (rx-match? #rx(seq "a" "b" "c") "abc"))
+  (expect-true "seq"
+               (rx-match? #rx(seq
+                               "a"
+                               "b"
+                               "c")
+                          "abc"))
   (expect-true "or takes the first that fits" (rx-match? #rx(or "cat" "dog") "dog"))
   (expect-true "or rejects what fits neither" (not (rx-match? #rx(or "cat" "dog") "cow")))
 
@@ -54,10 +62,18 @@
   (expect-true ">= has no ceiling" (rx-match? #rx((>= 2 "a")) "aaaaaa"))
 
   ;; A lazy quantifier changes what a search settles on, not what matches.
-  (match (rx-search #rx(seq "<" (*? :any) ">") "<a><b>")
+  (match (rx-search #rx(seq
+                         "<"
+                         (*? :any)
+                         ">")
+                    "<a><b>")
     ((Some m) (expect "lazy stops early" (rx-text m) "<a>"))
     (None (fail "lazy stops early")))
-  (match (rx-search #rx(seq "<" (* :any) ">") "<a><b>")
+  (match (rx-search #rx(seq
+                         "<"
+                         (* :any)
+                         ">")
+                    "<a><b>")
     ((Some m) (expect "greedy runs on" (rx-text m) "<a><b>"))
     (None (fail "greedy runs on")))
 
@@ -102,7 +118,11 @@
   ;; The alphabet is the scalar, not the byte. An emoji is one `:any`, not two,
   ;; a complemented set holds it, and a set can name it.
   (expect-true "one astral scalar is one :any" (rx-match? #rx(:any) "😀"))
-  (expect-true "and not two" (not (rx-match? #rx(seq :any :any) "😀")))
+  (expect-true "and not two"
+               (not (rx-match? #rx(seq
+                                    :any
+                                    :any)
+                               "😀")))
   (expect-true "a complemented set holds it" (rx-match? #rx((~ (/ #\a #\z))) "😀"))
   (expect-true "an astral literal matches" (rx-match? #rx("😀") "😀"))
   (expect-true "a set can hold an astral scalar" (rx-match? #rx((in #\😀)) "😀"))
@@ -124,17 +144,35 @@
   ;; `:bos`/`:eos` are only ever needed to anchor part of a search.
   (expect-true "search finds it anywhere" (rx-search? #rx("cat") "the cat sat"))
   (expect-true "match does not" (not (rx-match? #rx("cat") "the cat sat")))
-  (expect-true "bos anchors a search" (not (rx-search? #rx(seq :bos "cat") "the cat")))
-  (expect-true "and admits it at the front" (rx-search? #rx(seq :bos "the") "the cat"))
-  (expect-true "eos anchors the other end" (rx-search? #rx(seq "sat" :eos) "the cat sat"))
+  (expect-true "bos anchors a search"
+               (not (rx-search? #rx(seq
+                                     :bos
+                                     "cat")
+                                "the cat")))
+  (expect-true "and admits it at the front"
+               (rx-search? #rx(seq
+                                :bos
+                                "the")
+                           "the cat"))
+  (expect-true "eos anchors the other end"
+               (rx-search? #rx(seq
+                                "sat"
+                                :eos)
+                           "the cat sat"))
   ;; `\z` and not `\Z`: a trailing newline is not the end of the string.
   (expect-true "eos is not before a trailing newline"
-               (not (rx-search? #rx(seq "sat" :eos) "the cat sat\n")))
+               (not (rx-search? #rx(seq
+                                     "sat"
+                                     :eos)
+                                "the cat sat\n")))
 
   ;; ---- Captures ------------------------------------------------------------
   ;; One unnamed group writes its name list as "", which is also the list of a
   ;; pattern with no groups: the count comes from the pattern.
-  (match (rx-search #rx(seq "=" ($ (+ :ascii-digit))) "x=42")
+  (match (rx-search #rx(seq
+                         "="
+                         ($ (+ :ascii-digit)))
+                    "x=42")
     ((Some m)
      (expect "a lone unnamed group" (option-ref-or (rx-group/n m 0) "?") "42")
      (expect "counted" (rx-group-count m) 1))
@@ -148,25 +186,32 @@
     ((Some m)
      (expect "a named group" (option-ref-or (rx-group m :area) "?") "555")
      (expect "the second named group" (option-ref-or (rx-group m :line) "?") "1234")
-     (expect "groups are numbered in the order they open"
-             (option-ref-or (rx-group/n m 0) "?") "555")
+     (expect "groups are numbered in the order they open" (option-ref-or (rx-group/n m 0) "?") "555")
      (expect "the group count" (rx-group-count m) 2)
      (expect-true "an unknown name is None" (none? (rx-group m :nope)))
-     (expect "a group's span" (substring (rx-input m)
-                                         (option-ref (rx-group-start m :line))
-                                         (option-ref (rx-group-end m :line)))
+     (expect "a group's span"
+             (substring (rx-input m)
+                        (option-ref (rx-group-start m :line))
+                        (option-ref (rx-group-end m :line)))
              "1234"))
     (None (fail "a named group")))
 
   ;; `($ ...)` captures without naming.
-  (match (rx-match #rx(seq ($ (+ :ascii-alpha)) "=" ($ (+ :ascii-digit))) "width=42")
+  (match (rx-match #rx(seq
+                        ($ (+ :ascii-alpha))
+                        "="
+                        ($ (+ :ascii-digit)))
+                   "width=42")
     ((Some m)
      (expect "an unnamed group" (option-ref-or (rx-group/n m 0) "?") "width")
      (expect "the next unnamed group" (option-ref-or (rx-group/n m 1) "?") "42"))
     (None (fail "an unnamed group")))
 
   ;; A group that took no part in the match is `None`, not "".
-  (match (rx-match #rx(seq "a" (? (=> :maybe "b"))) "a")
+  (match (rx-match #rx(seq
+                        "a"
+                        (? (=> :maybe "b")))
+                   "a")
     ((Some m) (expect-true "an unused group is None" (none? (rx-group m :maybe))))
     (None (fail "an unused group is None")))
 
@@ -214,18 +259,17 @@
   ;; The pattern is asserted literally: BjoRx's tree as text, scalars in hex.
   (expect "a literal is its scalars" (rx-pattern #rx("ab")) "(l 61 62)")
   (expect "a range is a class" (rx-pattern #rx((/ #\a #\z))) "(c 61-7A)")
-  (expect "a quantifier wraps its body"
-          (rx-pattern #rx((+ (/ #\a #\z)))) "(r 1 - g (c 61-7A))")
+  (expect "a quantifier wraps its body" (rx-pattern #rx((+ (/ #\a #\z)))) "(r 1 - g (c 61-7A))")
   (expect "a lazy one says so" (rx-pattern #rx((*? "a"))) "(r 0 - l (l 61))")
-  (expect "a group is numbered from 1"
-          (rx-pattern #rx(($ "a"))) "(g 1 (l 61))")
+  (expect "a group is numbered from 1" (rx-pattern #rx(($ "a"))) "(g 1 (l 61))")
   (expect "anchors are A and z"
-          (rx-pattern #rx(seq :bos "a" :eos)) "(s (A) (l 61) (z))")
-  (expect "any is every scalar but the surrogates"
-          (rx-pattern #rx(:any)) "(c 0-D7FF E000-10FFFF)")
+          (rx-pattern #rx(seq
+                           :bos
+                           "a"
+                           :eos))
+          "(s (A) (l 61) (z))")
+  (expect "any is every scalar but the surrogates" (rx-pattern #rx(:any)) "(c 0-D7FF E000-10FFFF)")
   ;; Adjacent ranges are merged, so two spellings of one set compile alike.
-  (expect "adjacent ranges merge"
-          (rx-pattern #rx((in (/ #\a #\m) (/ #\n #\z)))) "(c 61-7A)")
-  (expect "difference is computed here"
-          (rx-pattern #rx((- (/ #\a #\e) (in #\c)))) "(c 61-62 64-65)")
+  (expect "adjacent ranges merge" (rx-pattern #rx((in (/ #\a #\m) (/ #\n #\z)))) "(c 61-7A)")
+  (expect "difference is computed here" (rx-pattern #rx((- (/ #\a #\e) (in #\c)))) "(c 61-62 64-65)")
   0)

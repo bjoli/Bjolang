@@ -64,7 +64,9 @@
 ;; start again, so the cursor does not only go forward.
 (: (-> string int int))
 (defun (count-rounds s rounds)
-  (let loop ((c (string-cursor-start s)) (left rounds) (n 0))
+  (let loop ((c (string-cursor-start s))
+             (left rounds)
+             (n 0))
     (cond
       ((and (string-cursor-end? s c) (= left 0)) n)
       ((string-cursor-end? s c) (loop (string-cursor-start s) (- left 1) n))
@@ -75,7 +77,9 @@
 ;; A jump that gives the cursor itself: the count of `ch` and of the steps.
 (: (-> string char int))
 (defun (count-twice s ch)
-  (let loop ((c (string-cursor-start s)) (seen #f) (n 0))
+  (let loop ((c (string-cursor-start s))
+             (seen #f)
+             (n 0))
     (cond
       ((string-cursor-end? s c) n)
       ((and (char=? (string-cursor-ref s c) ch) (not seen)) (loop c #t (+ n 1)))
@@ -96,13 +100,17 @@
     (if (string-cursor-end? text c)
         n
         (begin
-          (when (= n 0) (set! text second))
+          (when (= n 0)
+            (set! text second))
           (loop (string-cursor-next text c) (+ n 1))))))
 
 ;; A slot that one jump changes: counts both strings.
 (: (-> string string int))
 (defun (count-two a b)
-  (let loop ((s a) (c (string-cursor-start a)) (n 0) (swapped #f))
+  (let loop ((s a)
+             (c (string-cursor-start a))
+             (n 0)
+             (swapped #f))
     (cond
       ((and (string-cursor-end? s c) swapped) n)
       ((string-cursor-end? s c) (loop b (string-cursor-start b) n #t))
@@ -140,8 +148,10 @@
 
 (defbjo (main args)
   (def text "ab,cé,😀€z")
-  (def middle (substring/slice text (string-cursor-next text (string-cursor-start text))
-                               (string-cursor-prev text (string-cursor-end text))))
+  (def middle
+    (substring/slice text
+                     (string-cursor-next text (string-cursor-start text))
+                     (string-cursor-prev text (string-cursor-end text))))
   (def empty "")
 
   (expect "named let, whole" (sum-outer text) (sum-list text))
@@ -156,7 +166,9 @@
   (expect "a cursor outside the slice"
           (raised (fun () (count-from middle before)))
           (raised (fun () (char->int (string-cursor-ref middle before)))))
-  (expect "says so" (string-contains? (raised (fun () (count-from middle before))) "outside the slice") #t)
+  (expect "says so"
+          (string-contains? (raised (fun () (count-from middle before))) "outside the slice")
+          #t)
   ;; A cursor from another string, which is inside the é here: also the lone
   ;; step's error.
   (def accented "éa")
@@ -165,9 +177,14 @@
   (expect "a cursor that is not on a boundary"
           (raised (fun () (count-from accented inside)))
           (raised (fun () (char->int (string-cursor-ref accented inside)))))
-  (expect "says so too" (string-contains? (raised (fun () (count-from accented inside))) "boundary") #t)
+  (expect "says so too"
+          (string-contains? (raised (fun () (count-from accented inside))) "boundary")
+          #t)
   ;; From the é: é , 😀 € z.
-  (def at-e (string-cursor-next text (string-cursor-next text (string-cursor-next text (string-cursor-next text before)))))
+  (def at-e
+    (string-cursor-next
+     text
+     (string-cursor-next text (string-cursor-next text (string-cursor-next text before)))))
   (expect "a cursor on a boundary" (count-from text at-e) 5)
 
   ;; A forward cursor (`hoistStringBounds`, "Forward cursors"): the test of

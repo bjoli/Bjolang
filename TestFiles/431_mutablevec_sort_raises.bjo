@@ -13,13 +13,15 @@
   (def calls (make-box 0))
   (def r
     (try
-      (mutablevec-sort-by! xs
-        (fun (a b)
-          (box-set! calls (+ (box-ref calls) 1))
-          (when (= (box-ref calls) n) (raise (cast Exception (InvalidOp. "comparator failed"))))
-          (compare a b)))
+      (mutablevec-sort-by! xs (fun (a b)
+                                (box-set! calls (+ (box-ref calls) 1))
+                                (when (= (box-ref calls) n)
+                                  (raise (cast Exception (InvalidOp. "comparator failed"))))
+                                (compare a b)))
       #:catch (System.InvalidOperationException)))
-  (match r ((Ok _) #f) ((Err _) #t)))
+  (match r
+    ((Ok _) #f)
+    ((Err _) #t)))
 
 (defun (main)
   ;; The insertion phase: five elements, one run.

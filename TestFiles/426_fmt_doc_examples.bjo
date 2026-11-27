@@ -5,7 +5,9 @@
 (import (std fmt))
 (import (std simpletest))
 
-(type (: Item (Record (: name string) (: price double) (: stock int))))
+(type (: Item (Record (: name string)
+                      (: price double)
+                      (: stock int))))
 
 (: stock (Vec Item))
 (def stock
@@ -30,7 +32,8 @@
    (match title
      ((Some t) [t " "])
      (None nothing))
-   name "!"])
+   name
+   "!"])
 
 (: bullets (-> (Vec string) Block))
 (defun (bullets xs)
@@ -42,9 +45,10 @@
 
 (: medal (-> int Block))
 (defun (medal place)
-  (cond ((= place 1) "gold")
-        ((= place 2) "silver")
-        (else nothing)))
+  (cond
+    ((= place 1) "gold")
+    ((= place 2) "silver")
+    (else nothing)))
 
 (: score-row (-> (Tuple string int) (Vec Block)))
 (defun (score-row s)
@@ -74,9 +78,7 @@
   (expect "variables in a vec literal"
           (render->string ["Hello, " name "! You have " n " new messages" #\. nl])
           "Hello, Ada! You have 3 new messages.\n")
-  (expect "a combinator is one block"
-          (render->string [(padded/left 8 ["x = " n]) "|"])
-          "   x = 3|")
+  (expect "a combinator is one block" (render->string [(padded/left 8 ["x = " n]) "|"]) "   x = 3|")
   (expect "a block per record"
           (render->string (vec-map item-line stock))
           (lines ["Green tea      3.50" "Gaiwan     1,240.00" "Kettle        89.90  sold out"]))
@@ -85,12 +87,9 @@
                                         #:titles ["Item" "Price" "Stock"]
                                         #:align [AlignLeft (AlignOn #\.) AlignRight]
                                         #:style StyleAscii))
-          (lines ["+-----------+---------+-------+"
-                  "| Item      |   Price | Stock |"
-                  "+-----------+---------+-------+"
-                  "| Green tea |    3.50 |    12 |"
-                  "| Gaiwan    | 1240.00 |     2 |"
-                  "| Kettle    |   89.90 |     0 |"
+          (lines ["+-----------+---------+-------+" "| Item      |   Price | Stock |"
+                  "+-----------+---------+-------+" "| Green tea |    3.50 |    12 |"
+                  "| Gaiwan    | 1240.00 |     2 |" "| Kettle    |   89.90 |     0 |"
                   "+-----------+---------+-------+"]))
   (expect "a match whose arms are blocks"
           (render->string [(greeting "Ada" (Some "Dr")) nl (greeting "Bob" None)])
@@ -111,24 +110,31 @@
   (def parts ["a" 1 #\b])
   (expect "a block bound by def" (render->string ["<" parts ">"]) "<a1b>")
   (expect "each in a lambda"
-          (render->string (vec-map (fun (i) (each [(record-ref i name) ": " (record-ref i stock) nl])) stock))
+          (render->string (vec-map (fun (i) (each [(record-ref i name) ": " (record-ref i stock) nl]))
+                                   stock))
           "Green tea: 12\nGaiwan: 2\nKettle: 0\n")
 
   (expect "one thing is still content"
           (render->string (padded/left 9 (numeric 1240.0 #:precision 2 #:comma 3)))
           " 1,240.00")
   (expect "zero padding" (render->string (with-pad #\0 (padded/left 4 42))) "0042")
-  (expect "padded on the right"
-          (render->string [(padded/right 10 "Green tea") "3.50" nl (padded/right 10 "Gaiwan") "1240.00"])
-          "Green tea 3.50\nGaiwan    1240.00")
-  (expect "centred" (render->string (with-pad #\= (padded/both 20 " Receipt "))) "===== Receipt ======")
+  (expect
+   "padded on the right"
+   (render->string [(padded/right 10 "Green tea") "3.50" nl (padded/right 10 "Gaiwan") "1240.00"])
+   "Green tea 3.50\nGaiwan    1240.00")
+  (expect "centred"
+          (render->string (with-pad #\= (padded/both 20 " Receipt ")))
+          "===== Receipt ======")
   (expect "fitted and centred" (render->string ["[" (fitted/both 6 "ab") "]"]) "[  ab  ]")
   (expect "a dot leader"
-          (render->string [(with-pad #\. ["Tea" (space-to 12) "3.50"]) nl
+          (render->string [(with-pad #\. ["Tea" (space-to 12) "3.50"])
+                           nl
                            (with-pad #\. ["Gaiwan" (space-to 12) "1240.00"])])
           "Tea.........3.50\nGaiwan......1240.00")
 
-  (expect "joined with BStr" (render->string (joined BStr (list "tea" "milk" "honey") ", ")) "tea, milk, honey")
+  (expect "joined with BStr"
+          (render->string (joined BStr (list "tea" "milk" "honey") ", "))
+          "tea, milk, honey")
   (expect "joined, with a lambda that returns a vec"
           (render->string (joined (fun (s) ["* " s]) (list "tea" "milk") nl))
           "* tea\n* milk")
@@ -139,7 +145,9 @@
 
   (: total double)
   (def total 1333.4)
-  (expect "a double through numeric" (render->string ["Total: " (numeric total #:precision 2 #:comma 3)]) "Total: 1,333.40")
+  (expect "a double through numeric"
+          (render->string ["Total: " (numeric total #:precision 2 #:comma 3)])
+          "Total: 1,333.40")
   (expect "a precision for every numeric"
           (render->string (with-fmt current-precision 1 ["pi is about " (numeric 3.14159)]))
           "pi is about 3.1")
@@ -147,36 +155,39 @@
   (expect "a bool through if" (render->string ["Paid: " (if paid "yes" "no")]) "Paid: yes")
   (: size long)
   (def size 1258291L)
-  (expect "a long" (render->string [(bytes size) " (" (long->string size) " bytes)"]) "1.2 MiB (1258291 bytes)")
+  (expect "a long"
+          (render->string [(bytes size) " (" (long->string size) " bytes)"])
+          "1.2 MiB (1258291 bytes)")
 
-  (expect "settings nest"
-          (render->string (with-fmt current-width 24
-                            [(with-fmt current-ellipsis "…"
-                               [(trimmed/right 8 "A green tea from the hills") nl])
-                             (wrapped "A green tea from the hills, picked in spring and rolled by hand.")]))
-          "A green…\nA green tea from the\nhills, picked in spring\nand rolled by hand.")
+  (expect
+   "settings nest"
+   (render->string (with-fmt current-width 24
+                     [(with-fmt current-ellipsis "…"
+                        [(trimmed/right 8 "A green tea from the hills") nl])
+                      (wrapped "A green tea from the hills, picked in spring and rolled by hand.")]))
+   "A green…\nA green tea from the\nhills, picked in spring\nand rolled by hand.")
   (expect "wrapped after a label"
           (render->string (with-fmt current-width 30
-                            ["Note: " (wrapped ["picked on day " 3 " of spring, rolled by hand and dried in the sun."])]))
+                            ["Note: "
+                             (wrapped ["picked on day " 3
+                                       " of spring, rolled by hand and dried in the sun."])]))
           "Note: picked on day 3 of\nspring, rolled by hand and\ndried in the sun.")
 
   (expect "columns"
           (render->string (tabular [["tea" nl "gaiwan" nl "kettle"] [3 nl 1240 nl 90]]
-                                   #:sep "  " #:align [AlignLeft AlignRight]))
+                                   #:sep "  "
+                                   #:align [AlignLeft AlignRight]))
           (lines ["tea        3" "gaiwan  1240" "kettle    90"]))
   (expect "rows"
           (render->string (tabular/rows [["tea" 3] ["gaiwan" 1240] ["kettle" 90]]
-                                        #:sep "  " #:align [AlignLeft AlignRight]))
+                                        #:sep "  "
+                                        #:align [AlignLeft AlignRight]))
           (lines ["tea        3" "gaiwan  1240" "kettle    90"]))
   (expect "a cell of several pieces"
-          (render->string (tabular/rows [["tea" [3 " cups"]]
-                                         ["kettle" ["boils in" nl "4 minutes"]]]
+          (render->string (tabular/rows [["tea" [3 " cups"]] ["kettle" ["boils in" nl "4 minutes"]]]
                                         #:style StyleAscii))
-          (lines ["+--------+-----------+"
-                  "| tea    | 3 cups    |"
-                  "| kettle | boils in  |"
-                  "|        | 4 minutes |"
-                  "+--------+-----------+"]))
+          (lines ["+--------+-----------+" "| tea    | 3 cups    |" "| kettle | boils in  |"
+                  "|        | 4 minutes |" "+--------+-----------+"]))
 
   ;; The manual's guide, "Formatting text".
   (def who "ada")
@@ -185,55 +196,64 @@
   (expect "interpolation" #"${who} has ${points} points" "ada has 31 points")
   (expect "two padded blocks" (render->string [(padded/left 5 "x") (padded/left 5 "y")]) "    x    y")
   (expect "a label and a number" (render->string ["Total:" (padded/left 8 42)]) "Total:      42")
-  (expect "calls in a vec literal" (render->string [(string-upcase name) " " (vec-length [1 2 3])]) "ADA 3")
-  (expect "a block from a function, in a vec" (render->string [">> " (labelled "pots" 1)]) ">> pots: 1\n")
+  (expect "calls in a vec literal"
+          (render->string [(string-upcase name) " " (vec-length [1 2 3])])
+          "ADA 3")
+  (expect "a block from a function, in a vec"
+          (render->string [">> " (labelled "pots" 1)])
+          ">> pots: 1\n")
   (expect "show of content" (render->string parts) "a1b")
   (expect "a cond whose arms are blocks"
           (render->string [(medal 1) "/" (medal 2) "/" (medal 3)])
           "gold/silver/")
-  (expect "padded name and score" (render->string [(padded/right 8 who) (padded/left 4 points)]) "ada       31")
+  (expect "padded name and score"
+          (render->string [(padded/right 8 who) (padded/left 4 points)])
+          "ada       31")
   (expect "cut on the left" (render->string (trimmed/left 6 "/home/ada/scores.txt")) "es.txt")
   (expect "cut on the left, with an ellipsis"
           (render->string (with-fmt current-ellipsis "…" (trimmed/left 12 "/home/ada/scores.txt")))
           "…/scores.txt")
   (expect "numbers"
-          (render->string [(numeric 1234567.891 #:precision 2 #:comma 3) "  "
-                           (numeric 0.5 #:precision 3) "  "
-                           (numeric 42.0 #:signed #t) "  "
-                           (percent 0.125) "  "
+          (render->string [(numeric 1234567.891 #:precision 2 #:comma 3)
+                           "  "
+                           (numeric 0.5 #:precision 3)
+                           "  "
+                           (numeric 42.0 #:signed #t)
+                           "  "
+                           (percent 0.125)
+                           "  "
                            (bytes 1500L #:si #t)])
           "1,234,567.89  0.500  +42  12.5%  1.5 kB")
   (expect "justified"
-          (render->string (with-fmt current-width 20 (justified "Bjolang lays text out with blocks, and blocks nest.")))
+          (render->string (with-fmt current-width
+                            20
+                            (justified "Bjolang lays text out with blocks, and blocks nest.")))
           "Bjolang   lays  text\nout with blocks, and\nblocks nest.")
   (expect "the score ledger as a table"
           (render->string (tabular/rows (vec-map score-row scores)
                                         #:titles ["Player" "Score"]
                                         #:align [AlignLeft AlignRight]
                                         #:style StyleAscii))
-          (lines ["+--------+-------+"
-                  "| Player | Score |"
-                  "+--------+-------+"
-                  "| ada    |    31 |"
-                  "| bo     |    27 |"
-                  "+--------+-------+"]))
+          (lines ["+--------+-------+" "| Player | Score |" "+--------+-------+" "| ada    |    31 |"
+                  "| bo     |    27 |" "+--------+-------+"]))
   (def layout (table-layout [8 6] #:sep "  " #:align [AlignLeft AlignRight]))
   (expect "a row at a time"
-          (render->string [(table-row layout ["Player" "Score"])
-                           (each (vec-map (fun (s) (match s ((Tuple name pts) (table-row layout [name pts])))) scores))])
+          (render->string
+           [(table-row layout ["Player" "Score"])
+            (each (vec-map (fun (s) (match s ((Tuple name pts) (table-row layout [name pts]))))
+                           scores))])
           (lines ["Player     Score" "ada           31" "bo            27"]))
   (expect "a table literal"
-          (render->string (table-block '(table (style ascii) header
-                                               (column "Player")
-                                               (column "Score" (align right))
-                                               (column "Share" (percent (precision 0)))
-                                               (rows (row "ada" 31 0.46) (row "bo" 27 0.40) (row "cy" 9 0.13)))))
-          (lines ["+--------+-------+-------+"
-                  "| Player | Score | Share |"
-                  "+--------+-------+-------+"
-                  "| ada    |    31 |   46% |"
-                  "| bo     |    27 |   40% |"
-                  "| cy     |     9 |   13% |"
+          (render->string
+           (table-block '(table (style ascii)
+                                header
+                                (column "Player")
+                                (column "Score" (align right))
+                                (column "Share" (percent (precision 0)))
+                                (rows (row "ada" 31 0.46) (row "bo" 27 0.40) (row "cy" 9 0.13)))))
+          (lines ["+--------+-------+-------+" "| Player | Score | Share |"
+                  "+--------+-------+-------+" "| ada    |    31 |   46% |"
+                  "| bo     |    27 |   40% |" "| cy     |     9 |   13% |"
                   "+--------+-------+-------+"]))
   (expect "separators as settings"
           (render->string (with-fmt current-comma 3
@@ -245,18 +265,36 @@
   ;; What an if, a match, a cond or a let gives in a vec literal is read as
   ;; an element is: a string variable as well as a string literal.
   (def title (Some "Dr"))
-  (expect "a match in a vec literal" (render->string ["Title: " (match title ((Some t) t) (None "-"))]) "Title: Dr")
+  (expect "a match in a vec literal"
+          (render->string ["Title: "
+                           (match title
+                             ((Some t) t)
+                             (None "-"))])
+          "Title: Dr")
   (: untitled (Option string))
   (def untitled None)
-  (expect "a match with no value" (render->string (match untitled ((Some t) t) (None "-"))) "-")
+  (expect "a match with no value"
+          (render->string (match untitled
+                            ((Some t) t)
+                            (None "-")))
+          "-")
   (expect "an if with a variable arm" (render->string (if paid name "-")) "Ada")
   (def place 2)
   (expect "a cond in a vec literal"
-          (render->string (cond ((= place 1) "gold") ((= place 2) "silver") (else nothing)))
+          (render->string (cond
+                            ((= place 1) "gold")
+                            ((= place 2) "silver")
+                            (else nothing)))
           "silver")
-  (expect "a let in a vec literal" (render->string (let ((k (string-upcase name))) k)) "ADA")
+  (expect "a let in a vec literal"
+          (render->string (let ((k (string-upcase name)))
+                            k))
+          "ADA")
   (expect "a block from a match arm"
-          (render->string [(match title ((Some t) [t " "]) (None nothing)) name])
+          (render->string [(match title
+                             ((Some t) [t " "])
+                             (None nothing))
+                           name])
           "Dr Ada")
 
   ;; The framed examples of the reference, drawn with StyleAscii.
@@ -267,35 +305,40 @@
                                         #:align [AlignLeft AlignRight]))
           (lines ["+--------+---------+" "| Item   |   Price |" "+--------+---------+"
                   "| tea    |    3.50 |" "| gaiwan | 1240.00 |" "+--------+---------+"]))
-  (expect "a cell that wraps"
-          (render->string (with-fmt current-width 40
-                            (tabular/rows [["tea" "A green tea from the hills, picked in spring and rolled by hand."]]
-                                          #:titles ["Item" "Note"] #:style StyleAscii #:overflow OverflowWrap)))
-          (lines ["+------+-------------------------------+"
-                  "| Item | Note                          |"
-                  "+------+-------------------------------+"
-                  "| tea  | A green tea from the hills,   |"
-                  "|      | picked in spring and rolled   |"
-                  "|      | by hand.                      |"
-                  "+------+-------------------------------+"]))
+  (expect
+   "a cell that wraps"
+   (render->string
+    (with-fmt current-width 40
+      (tabular/rows [["tea" "A green tea from the hills, picked in spring and rolled by hand."]]
+                    #:titles ["Item" "Note"]
+                    #:style StyleAscii
+                    #:overflow OverflowWrap)))
+   (lines ["+------+-------------------------------+" "| Item | Note                          |"
+           "+------+-------------------------------+" "| tea  | A green tea from the hills,   |"
+           "|      | picked in spring and rolled   |" "|      | by hand.                      |"
+           "+------+-------------------------------+"]))
   (def boxed-layout (table-layout [6 5] #:style StyleAscii #:align [AlignLeft AlignRight]))
   (expect "a framed table a row at a time"
-          (render->string [(table-top boxed-layout) (table-row boxed-layout ["Item" "Price"]) (table-rule boxed-layout)
-                           (table-row boxed-layout ["tea" "3.50"]) (table-bottom boxed-layout)])
-          (lines ["+--------+-------+" "| Item   | Price |" "+--------+-------+" "| tea    |  3.50 |" "+--------+-------+"]))
-  (expect "a table literal with spliced rows"
-          (render->string (table-block '(table (style ascii) header
-                                               (column "Item")
-                                               (column "Price" (align (on #\.)) (number (precision 2) (comma 3)))
-                                               (column "Stock" (align right))
-                                               (column "Share" (percent (precision 0)))
-                                               (rows ,products))))
-          (lines ["+-----------+----------+-------+-------+"
-                  "| Item      |    Price | Stock | Share |"
-                  "+-----------+----------+-------+-------+"
-                  "| Green tea |     3.50 |    12 |   40% |"
-                  "| Gaiwan    | 1,240.00 |     2 |  100% |"
-                  "+-----------+----------+-------+-------+"]))
+          (render->string [(table-top boxed-layout)
+                           (table-row boxed-layout ["Item" "Price"])
+                           (table-rule boxed-layout)
+                           (table-row boxed-layout ["tea" "3.50"])
+                           (table-bottom boxed-layout)])
+          (lines ["+--------+-------+" "| Item   | Price |" "+--------+-------+" "| tea    |  3.50 |"
+                  "+--------+-------+"]))
+  (expect
+   "a table literal with spliced rows"
+   (render->string
+    (table-block '(table (style ascii)
+                         header
+                         (column "Item")
+                         (column "Price" (align (on #\.)) (number (precision 2) (comma 3)))
+                         (column "Stock" (align right))
+                         (column "Share" (percent (precision 0)))
+                         (rows ,products))))
+   (lines ["+-----------+----------+-------+-------+" "| Item      |    Price | Stock | Share |"
+           "+-----------+----------+-------+-------+" "| Green tea |     3.50 |    12 |   40% |"
+           "| Gaiwan    | 1,240.00 |     2 |  100% |" "+-----------+----------+-------+-------+"]))
 
   ;; One thing needs no brackets: a string, a variable, a call.
   (expect "a string" (render->string "Hello") "Hello")
@@ -308,26 +351,35 @@
   ;; Settings: parameterize around show, with-fmt and with-fmt* in the layout.
   (def para "Bjolang lays text out with blocks, and blocks nest.")
   (def wrapped-20 "Bjolang lays text\nout with blocks, and\nblocks nest.")
-  (expect "parameterize around the run" (parameterize ((current-width 20)) (render->string (wrapped para))) wrapped-20)
+  (expect "parameterize around the run"
+          (parameterize ((current-width 20))
+            (render->string (wrapped para)))
+          wrapped-20)
   (expect "parameterize around the building does nothing"
-          (render->string (parameterize ((current-width 20)) (wrapped para)))
+          (render->string (parameterize ((current-width 20))
+                            (wrapped para)))
           para)
-  (expect "with-fmt in the layout" (render->string (with-fmt current-width 20 (wrapped para))) wrapped-20)
-  (expect "with-fmt*, several settings and blocks"
-          (render->string (with-fmt* ((current-width 24)
-                                      (current-ellipsis "…"))
-                            (trimmed/right 8 "A green tea from the hills") nl
-                            (wrapped "A green tea from the hills, picked in spring and rolled by hand.")))
-          "A green…\nA green tea from the\nhills, picked in spring\nand rolled by hand.")
+  (expect "with-fmt in the layout"
+          (render->string (with-fmt current-width 20 (wrapped para)))
+          wrapped-20)
+  (expect
+   "with-fmt*, several settings and blocks"
+   (render->string (with-fmt* ((current-width 24) (current-ellipsis "…"))
+                     (trimmed/right 8 "A green tea from the hills")
+                     nl
+                     (wrapped "A green tea from the hills, picked in spring and rolled by hand.")))
+   "A green…\nA green tea from the\nhills, picked in spring\nand rolled by hand.")
   (expect "with-fmt*, the separators"
-          (render->string (with-fmt* ((current-comma 3)
-                                      (current-comma-sep #\space)
-                                      (current-decimal-sep #\,))
-                            (numeric 1234567.5) nl))
+          (render->string (with-fmt* ((current-comma 3) (current-comma-sep #\space)
+                                                        (current-decimal-sep #\,))
+                            (numeric 1234567.5)
+                            nl))
           "1 234 567,5\n")
   (def m 3)
   (expect "a number bound by def, as a block" (render->string ["n = " m]) "n = 3")
   (def ys [1 2 3])
-  (expect "untyped numbers mapped to blocks" (render->string (vec-map (fun (y) (each [y nl])) ys)) "1\n2\n3\n")
+  (expect "untyped numbers mapped to blocks"
+          (render->string (vec-map (fun (y) (each [y nl])) ys))
+          "1\n2\n3\n")
   (expect "with-fmt* with no settings" (render->string (with-fmt* () "plain" nl)) "plain\n")
   0)

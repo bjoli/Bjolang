@@ -13,7 +13,8 @@
 
 (defun (main)
   ;; Parts
-  (expect "parts of an absolute path" (vec-map path->string/lossy (path-parts "/usr//lib/./x/"))
+  (expect "parts of an absolute path"
+          (vec-map path->string/lossy (path-parts "/usr//lib/./x/"))
           ["/" "usr" "lib" "x"])
   (expect ".. is a part" (vec-map path->string/lossy (path-parts "a/../b")) ["a" ".." "b"])
   (expect "the empty path has no parts" (vec-length (path-parts "")) 0)
@@ -31,7 +32,8 @@
   (expect ". and the empty path" (= (path ".") (path "")) #t)
   (expect "order by parts" (compare (path "a/b") (path "a-b")) -1)
   (expect "a prefix comes first" (compare (path "a") (path "a/b")) -1)
-  (expect "sorted" (vec-map path->string/lossy (vec-sort (vec-map path ["b" "a/b" "a-b" "a"])))
+  (expect "sorted"
+          (vec-map path->string/lossy (vec-sort (vec-map path ["b" "a/b" "a-b" "a"])))
           ["a" "a/b" "a-b" "b"])
 
   ;; Parent and name
@@ -62,16 +64,27 @@
   (expect "join a Path, a string and a ByteString"
           (path->string/lossy (path-join (path-join (path "/usr") "lib") (string->bytestring "x")))
           "/usr/lib/x")
-  (expect "join all" (path->string/lossy (path-join-all (vec-map path ["/srv" "www" "index.html"])))
+  (expect "join all"
+          (path->string/lossy (path-join-all (vec-map path ["/srv" "www" "index.html"])))
           "/srv/www/index.html")
 
   ;; With name and extension
-  (expect "with name" (path->string/lossy (path-with-name "/a/b.txt" (string->bytestring "c"))) "/a/c")
+  (expect "with name"
+          (path->string/lossy (path-with-name "/a/b.txt" (string->bytestring "c")))
+          "/a/c")
   (expect "with name of a top name" (path-with-name "a" (string->bytestring "c")) (path "c"))
-  (expect "with name of the root" (path->string/lossy (path-with-name "/" (string->bytestring "c"))) "/c")
-  (expect "with extension" (path->string/lossy (path-with-extension "a/b.txt" (string->bytestring "md"))) "a/b.md")
-  (expect "add an extension" (path->string/lossy (path-with-extension "a/b" (string->bytestring "md"))) "a/b.md")
-  (expect "remove an extension" (path->string/lossy (path-with-extension "a/b.txt" bytestring-empty)) "a/b")
+  (expect "with name of the root"
+          (path->string/lossy (path-with-name "/" (string->bytestring "c")))
+          "/c")
+  (expect "with extension"
+          (path->string/lossy (path-with-extension "a/b.txt" (string->bytestring "md")))
+          "a/b.md")
+  (expect "add an extension"
+          (path->string/lossy (path-with-extension "a/b" (string->bytestring "md")))
+          "a/b.md")
+  (expect "remove an extension"
+          (path->string/lossy (path-with-extension "a/b.txt" bytestring-empty))
+          "a/b")
 
   ;; Normalize
   (expect "normalize" (path->string/lossy (path-normalize "a/./b/../c")) "a/c")
@@ -91,12 +104,16 @@
 
   ;; Names that are not UTF-8
   (def raw (path (bytes->bytestring (vec->array [99uy 97uy 102uy 233uy 46uy 116uy 120uy 116uy]))))
-  (expect "not a string" (path->string raw) (Err (DecodeError (offset 3) (bytes [233uy]) (encoding "utf-8"))))
+  (expect "not a string"
+          (path->string raw)
+          (Err (DecodeError (offset 3) (bytes [233uy]) (encoding "utf-8"))))
   (expect "lossy" (path->string/lossy raw) "caf\u{FFFD}.txt")
   (expect "written" (written raw) "#p\"caf\\xE9.txt\"")
   (expect "displayed" (displayed raw) "caf\u{FFFD}.txt")
   (expect "its extension" (text (path-extension raw)) (Some "txt"))
-  (expect "the name keeps the byte" (option-map bytestring-length (path-name (path-join "/tmp" raw))) (Some 8))
+  (expect "the name keeps the byte"
+          (option-map bytestring-length (path-name (path-join "/tmp" raw)))
+          (Some 8))
 
   ;; A local helper used at one type
   (defun (in-tmp p) (path-join "/tmp" p))
@@ -104,27 +121,33 @@
 
   ;; The file functions take a string, a ByteString or a Path
   (def dir (path "581_probe_dir"))
-  (when (directory-exists? dir) (raise-err (directory-delete-tree dir)))
+  (when (directory-exists? dir)
+    (raise-err (directory-delete-tree dir)))
   (raise-err (directory-create dir))
   (def file (path-join dir "a.txt"))
   (raise-err (file-write-text file "one"))
   (expect "a Path to write and read" (raise-err (file-read-text file)) "one")
   (expect "the same file as a string" (raise-err (file-read-text "581_probe_dir/a.txt")) "one")
   (expect "the same file as a ByteString"
-          (raise-err (file-read-text (string->bytestring "581_probe_dir/a.txt"))) "one")
+          (raise-err (file-read-text (string->bytestring "581_probe_dir/a.txt")))
+          "one")
   (expect "exists" (file-exists? file) #t)
   (expect "a directory" (directory-exists? dir) #t)
   (raise-err (file-copy file (path-join dir "b.txt")))
   (raise-err (file-move (path-join dir "b.txt") (path-join dir "c.txt")))
-  (expect "copied and moved" (vec-sort (raise-err (directory-files dir)))
+  (expect "copied and moved"
+          (vec-sort (raise-err (directory-files dir)))
           (vec-map path ["581_probe_dir/a.txt" "581_probe_dir/c.txt"]))
-  (expect "a copy onto itself" (threw? (file-copy file (path "581_probe_dir/./a.txt") #:mode Truncate))
+  (expect "a copy onto itself"
+          (threw? (file-copy file (path "581_probe_dir/./a.txt") #:mode Truncate))
           #t)
 
   ;; .NET takes UTF-8 names only, and a name that is not is not changed
   (def bad (path-join dir raw))
   (expect "a name that is not UTF-8 is not written"
-          (match (file-write-text bad "x") ((Err (InvalidPath _ _)) #t) (_ #f))
+          (match (file-write-text bad "x")
+            ((Err (InvalidPath _ _)) #t)
+            (_ #f))
           #t)
   (expect "nor asked about" (threw? (try (file-exists? bad) #:catch (System.ArgumentException))) #t)
   (expect "the other file is still there" (vec-length (raise-err (directory-files dir))) 2)
@@ -133,8 +156,12 @@
 
   ;; A handler gets the Path, with the bytes it was given
   (with-fake-fs (("x/y.txt" "fake"))
-    (expect "the fake file system takes a Path" (raise-err (file-read-text (path-join "x" "y.txt"))) "fake")))
+    (expect "the fake file system takes a Path"
+            (raise-err (file-read-text (path-join "x" "y.txt")))
+            "fake")))
 
 (: (-> (Result %e %a) bool))
 (defun (threw? r)
-  (match r ((Ok _) #f) ((Err _) #t)))
+  (match r
+    ((Ok _) #f)
+    ((Err _) #t)))

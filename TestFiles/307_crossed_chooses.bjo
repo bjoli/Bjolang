@@ -15,16 +15,14 @@
 
 (: (-bjo-> (Chan int) (Chan int) int (Chan int) void))
 (defbjo (side mine theirs id done)
-  (def v (sync (choose (wrap (chan-send mine id) (fun (u) 0))
-                       (wrap (chan-recv theirs) (fun (x) 1)))))
+  (def v (sync (choose (wrap (chan-send mine id) (fun (u) 0)) (wrap (chan-recv theirs) (fun (x) 1)))))
   (sync (chan-send done v)))
 
 ;; 1 for the side that received, 0 for the one that sent, and -100 for a side
 ;; that never committed.
 (: (-bjo-> (Chan int) int))
 (defbjo (arrival done)
-  (sync (choose (chan-recv done)
-                (wrap (timeout (seconds 2)) (fun (u) -100)))))
+  (sync (choose (chan-recv done) (wrap (timeout (seconds 2)) (fun (u) -100)))))
 
 (: (-bjo-> bool))
 (defbjo (crossed-round)

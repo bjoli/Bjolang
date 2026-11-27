@@ -5,22 +5,20 @@
 (import (std prelude))
 
 (def/grammar (Cond %leaf)
-  (:or (: And (and (Cond %leaf) ...))
-       (: Or (or (Cond %leaf) ...))
+  (:or (: And (and (Cond %leaf) ...)) (: Or (or (Cond %leaf) ...))
        (: Not (not (Cond %leaf)))
        (: Raw ,string)
        (: Leaf %leaf)))
 
 (def/grammar Query
   (Query (from (: table symbol) (: clauses Clauses)))
-  (Clauses (:each (: columns (:? (columns Column ...+)))
-                  (: limit (:? (limit int)))
-                  (: all (:? '*))))
+  (Clauses (:each (: columns (:? (columns Column ...+))) (: limit (:? (limit int))) (: all (:? '*))))
   (Column (:or (: Plain symbol) (: Renamed (as symbol string)))))
 
 (: (-> (-> %leaf string) (Cond %leaf) string))
 (defun (cond->text leaf c)
-  (def join (fun (op cs) (str "(" (string-join (list->vec (list-map #(cond->text leaf &1) cs)) op) ")")))
+  (def join
+    (fun (op cs) (str "(" (string-join (list->vec (list-map #(cond->text leaf &1) cs)) op) ")")))
   (match c
     ((And cs) (join " AND " cs))
     ((Or cs) (join " OR " cs))
@@ -42,4 +40,6 @@
          ((Some cols) (string-join (list->vec (list-map column-text cols)) ", "))
          (None (if (record-ref clauses all) "*" "1")))
        " FROM " (symbol->string (record-ref q table))
-       (match (record-ref clauses limit) ((Some n) (str " LIMIT " (int->string n))) (None ""))))
+       (match (record-ref clauses limit)
+         ((Some n) (str " LIMIT " (int->string n)))
+         (None ""))))

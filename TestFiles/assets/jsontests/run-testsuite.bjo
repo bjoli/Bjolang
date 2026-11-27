@@ -30,19 +30,27 @@
 (: (-> string string))
 (defun (outcome path)
   (match (try
-          (match (open-input-file path)
-            ((Err e) (Err "the file would not open"))
-            ((Ok p) (let ((r (read-json p))) (close-input-port p) r)))
-          #:catch (System.Exception))
+           (match (open-input-file path)
+             ((Err e) (Err "the file would not open"))
+             ((Ok p)
+              (let ((r (read-json p)))
+                (close-input-port p)
+                r)))
+           #:catch (System.Exception))
     ((Err e) (str "crash " (.ToString e)))
-    ((Ok inner) (match inner ((Ok j) "ok") ((Err m) (str "err " m))))))
+    ((Ok inner)
+     (match inner
+       ((Ok j) "ok")
+       ((Err m) (str "err " m))))))
 
 (: (-> string bool))
 (defun (accepted? o) (= o "ok"))
 
 (: (-> string string))
 (defun (name-of path)
-  (match (path-filename path) ((Some n) n) (None path)))
+  (match (path-filename path)
+    ((Some n) n)
+    (None path)))
 
 (def/mutable y-pass 0)
 (def/mutable y-fail 0)
@@ -93,14 +101,15 @@
   (let go ((n n) (acc ""))
     (if (= n 0)
         (if (= (string-length acc) 0) "0" acc)
-        (go (/ n 16)
-            (str (list->string (list (vec-ref (string->vec hex-digits) (% n 16)))) acc)))))
+        (go (/ n 16) (str (list->string (list (vec-ref (string->vec hex-digits) (% n 16)))) acc)))))
 
 ;; Code points, since the point of several of these files is two keys that look
 ;; the same and are not.
 (: (-> string string))
 (defun (points s)
-  (string-join (loop (:for c s) (:acc v (vecing (str "U+" (hex (char->int c)))))) " "))
+  (string-join (loop (:for c s)
+                     (:acc v (vecing (str "U+" (hex (char->int c))))))
+               " "))
 
 ;; Every file in this corpus wraps the value of interest in a one-element array,
 ;; and that is unwrapped by the tail call below.
@@ -118,36 +127,39 @@
          (str "[" (string-join (iarray->vec (iarray-map render v)) ", ") "]")))
     ((JsonObj m)
      (str (int->string (map-length m)) " key(s): "
-          (string-join
-           (loop (:for (Tuple k v) m)
-                 (:acc out (vecing (str "[" (points k) "] = " (render v)))))
-           ", ")))
+          (string-join (loop (:for (Tuple k v) m)
+                             (:acc out (vecing (str "[" (points k) "] = " (render v)))))
+                       ", ")))
     ((JsonFields fs)
      (str (int->string (iarray-length fs)) " key(s): "
-          (string-join
-           (loop (:for (Tuple k v) fs)
-                 (:acc out (vecing (str "[" (points k) "] = " (render v)))))
-           ", ")))))
+          (string-join (loop (:for (Tuple k v) fs)
+                             (:acc out (vecing (str "[" (points k) "] = " (render v)))))
+                       ", ")))))
 
 (: (-> string void))
 (defun (transform path)
-  (println
-   (str (string-pad-right (name-of path) 44)
-        (match (try (read-json (open-input-string (raise-err (file-read-text path))))
-                    #:catch (System.Exception))
-          ((Err e) (str "crash " (.ToString e)))
-          ((Ok r) (match r ((Ok j) (render j)) ((Err m) (str "refused: " m))))))))
+  (println (str (string-pad-right (name-of path) 44)
+                (match (try
+                         (read-json (open-input-string (raise-err (file-read-text path))))
+                         #:catch (System.Exception))
+                  ((Err e) (str "crash " (.ToString e)))
+                  ((Ok r)
+                   (match r
+                     ((Ok j) (render j))
+                     ((Err m) (str "refused: " m))))))))
 
 (: (-> string (List string)))
 (defun (sorted-files d)
-  (list-sort (loop (:for p (raise-err (directory-files d))) (:acc l (listing (path->string/lossy p))))))
+  (list-sort (loop (:for p (raise-err (directory-files d)))
+                   (:acc l (listing (path->string/lossy p))))))
 
 (defun (main)
   (if (not (directory-exists? dir))
       (println (str "No corpus at " dir ", so there is nothing to run."))
       (let ()
         (loop (:for path (sorted-files dir))
-              (:do (when (string-ends-with? path ".json") (check path))))
+              (:do (when (string-ends-with? path ".json")
+                     (check path))))
         (println "")
         (println (str "y_ accepted  " (int->string y-pass) " / " (int->string (+ y-pass y-fail))))
         (println (str "n_ refused   " (int->string n-pass) " / " (int->string (+ n-pass n-fail))))
@@ -158,5 +170,6 @@
     (println "")
     (println "--- test_transform: the value each one reads to ---")
     (loop (:for path (sorted-files transform-dir))
-          (:do (when (string-ends-with? path ".json") (transform path)))))
+          (:do (when (string-ends-with? path ".json")
+                 (transform path)))))
   0)

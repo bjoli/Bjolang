@@ -69,10 +69,7 @@
 
 (def mine
   (map-merge standard-commands
-             #map(("bjo" (text-command "Bjolang"))
-                  ("em" shout)
-                  ("again" again)
-                  ("version" version))))
+             #map(("bjo" (text-command "Bjolang")) ("em" shout) ("again" again) ("version" version))))
 
 (defun (main args)
   ;; --- paragraphs ---------------------------------------------------------
@@ -88,9 +85,7 @@
   (expect "a blank line split by a comment is still one"
           (tree "a\n@; hidden\n\nb")
           "(para \"a\")\n(para \"b\")")
-  (expect "@comment is nothing"
-          (tree "a @comment{x @em{y}} b")
-          "(para \"a  b\")")
+  (expect "@comment is nothing" (tree "a @comment{x @em{y}} b") "(para \"a  b\")")
 
   ;; --- text ---------------------------------------------------------------
   (expect "emphasis, nested"
@@ -99,26 +94,27 @@
   (expect "code is taken as written"
           (tree "Call @code{f {x}} or @code|{g @x}|.")
           "(para \"Call \" (code \"f {x}\") \" or \" (code \"g @x\") \".\")")
-  (expect "a link, and one whose url is its text"
-          (tree "@link[\"https://a.example\"]{here} and @link[\"https://b.example\"]")
-          "(para (link \"https://a.example\" \"here\") \" and \" (link \"https://b.example\" \"https://b.example\"))")
+  (expect
+   "a link, and one whose url is its text"
+   (tree "@link[\"https://a.example\"]{here} and @link[\"https://b.example\"]")
+   "(para (link \"https://a.example\" \"here\") \" and \" (link \"https://b.example\" \"https://b.example\"))")
   (expect "an image"
           (tree "@image[\"cat.png\" #:alt \"A cat\"]")
           "(para (image \"cat.png\" \"A cat\"))")
-  (expect "a line break"
-          (tree "one @br two")
-          "(para \"one \" (br) \" two\")")
+  (expect "a line break" (tree "one @br two") "(para \"one \" (br) \" two\")")
   (expect "a span and a div have a class"
           (tree "@div[aside]{Press @span[\"kbd\"]{C-x}.}")
           "(div \"aside\" (para \"Press \" (span \"kbd\" \"C-x\") \".\"))")
-  (expect "raw text and a raw block are for one format"
-          (tree "a @raw[\"html\"]{<wbr>} b\n@raw-block[\"html\"]|{<hr class=\"x\">}|")
-          "(para \"a \" (raw \"html\" \"<wbr>\") \" b\")\n(raw-block \"html\" \"<hr class=\\\"x\\\">\")")
+  (expect
+   "raw text and a raw block are for one format"
+   (tree "a @raw[\"html\"]{<wbr>} b\n@raw-block[\"html\"]|{<hr class=\"x\">}|")
+   "(para \"a \" (raw \"html\" \"<wbr>\") \" b\")\n(raw-block \"html\" \"<hr class=\\\"x\\\">\")")
 
   ;; --- blocks -------------------------------------------------------------
-  (expect "headings at three levels, each id unique, or chosen"
-          (tree "@section{A}\n@section{A}\n@subsection[#:id \"mine\"]{B}\n@subsubsection{C, d!}")
-          "(heading 1 \"a\" \"A\")\n(heading 1 \"a-2\" \"A\")\n(heading 2 \"mine\" \"B\")\n(heading 3 \"c-d\" \"C, d!\")")
+  (expect
+   "headings at three levels, each id unique, or chosen"
+   (tree "@section{A}\n@section{A}\n@subsection[#:id \"mine\"]{B}\n@subsubsection{C, d!}")
+   "(heading 1 \"a\" \"A\")\n(heading 1 \"a-2\" \"A\")\n(heading 2 \"mine\" \"B\")\n(heading 3 \"c-d\" \"C, d!\")")
   (expect "a code block, indented with the markup"
           (tree "Look:\n\n  @codeblock[#:lang \"scheme\"]|{\n    (define (f x)\n      x)\n  }|")
           "(para \"Look:\")\n(codeblock \"scheme\" \"(define (f x)\\n  x)\")")
@@ -131,9 +127,7 @@
   (expect "a numbered list"
           (tree "@itemlist[#:style ordered]{@item{a} @item{b}}")
           "(numbered (item (para \"a\")) (item (para \"b\")))")
-  (expect "a rule"
-          (tree "a\n@hr\nb")
-          "(para \"a\")\n(rule)\n(para \"b\")")
+  (expect "a rule" (tree "a\n@hr\nb") "(para \"a\")\n(rule)\n(para \"b\")")
 
   ;; --- notes ----------------------------------------------------------------
   (expect "footnotes are numbered as they come, a note in a note after it"
@@ -198,9 +192,7 @@
   (expect "text in a list"
           (refusal "@itemlist{@item{a} b}")
           "post.sz:1:1: @itemlist: holds only @item{...}, and there is text in it")
-  (expect "a body where none is taken"
-          (refusal "@hr{x}")
-          "post.sz:1:1: @hr: takes no body")
+  (expect "a body where none is taken" (refusal "@hr{x}") "post.sz:1:1: @hr: takes no body")
   (expect-true "the reader's refusals come through as they are"
                (string-starts-with? (refusal "@em{x") "post.sz: Parse error at line 1"))
 
@@ -213,34 +205,38 @@
                "(heading 1 \"one\" \"One\")\n(heading 2 \"one-a\" \"One A\")\n"
                "(heading 3 \"deep\" \"Deep\")\n(heading 1 \"two\" \"Two\")"))
   (expect "#:depth 3 lists those too"
-          (vec-ref (string-split (tree "@toc[#:depth 3]\n@section{One}\n@subsection{One A}\n@subsubsection{Deep}") "\n") 0)
+          (vec-ref (string-split
+                    (tree "@toc[#:depth 3]\n@section{One}\n@subsection{One A}\n@subsubsection{Deep}")
+                    "\n")
+                   0)
           (str "(div \"toc\" (bullets (item (para (link \"#one\" \"One\"))"
                " (bullets (item (para (link \"#one-a\" \"One A\"))"
                " (bullets (item (para (link \"#deep\" \"Deep\")))))))))"))
-  (expect "a subsection before any section is an item of its own"
-          (vec-ref (string-split (tree "@toc\n@subsection{A}\n@section{B}") "\n") 0)
-          "(div \"toc\" (bullets (item (bullets (item (para (link \"#a\" \"A\"))))) (item (para (link \"#b\" \"B\")))))")
-  (expect "no headings, no table"
-          (tree "@toc\nText.")
-          "(para \"Text.\")")
-  (expect "the headings of an included file are in it"
-          (vec-ref (string-split (tree "@toc\n@include[\"TestFiles/assets/samizdat/chapter.sz\"]") "\n") 0)
-          "(div \"toc\" (bullets (item (para (link \"#included\" \"Included\")))))")
+  (expect
+   "a subsection before any section is an item of its own"
+   (vec-ref (string-split (tree "@toc\n@subsection{A}\n@section{B}") "\n") 0)
+   "(div \"toc\" (bullets (item (bullets (item (para (link \"#a\" \"A\"))))) (item (para (link \"#b\" \"B\")))))")
+  (expect "no headings, no table" (tree "@toc\nText.") "(para \"Text.\")")
+  (expect
+   "the headings of an included file are in it"
+   (vec-ref (string-split (tree "@toc\n@include[\"TestFiles/assets/samizdat/chapter.sz\"]") "\n") 0)
+   "(div \"toc\" (bullets (item (para (link \"#included\" \"Included\")))))")
 
   ;; --- numbered headings --------------------------------------------------------
-  (expect "@numbered-headings numbers the headings, and @toc says the numbers"
-          (tree (str "@numbered-headings\n@toc\n@section{One}\n@subsection{One A}\n@subsubsection{Deep}\n"
-                     "@section{Two}\n@subsection{Two A}"))
-          (str "(div \"toc numbered\" (bullets"
-               " (item (para (link \"#one\" (span \"heading-number\" \"1\") \" \" \"One\"))"
-               " (bullets (item (para (link \"#one-a\" (span \"heading-number\" \"1.1\") \" \" \"One A\")))))"
-               " (item (para (link \"#two\" (span \"heading-number\" \"2\") \" \" \"Two\"))"
-               " (bullets (item (para (link \"#two-a\" (span \"heading-number\" \"2.1\") \" \" \"Two A\")))))))\n"
-               "(heading 1 \"one\" (span \"heading-number\" \"1\") \" \" \"One\")\n"
-               "(heading 2 \"one-a\" (span \"heading-number\" \"1.1\") \" \" \"One A\")\n"
-               "(heading 3 \"deep\" (span \"heading-number\" \"1.1.1\") \" \" \"Deep\")\n"
-               "(heading 1 \"two\" (span \"heading-number\" \"2\") \" \" \"Two\")\n"
-               "(heading 2 \"two-a\" (span \"heading-number\" \"2.1\") \" \" \"Two A\")"))
+  (expect
+   "@numbered-headings numbers the headings, and @toc says the numbers"
+   (tree (str "@numbered-headings\n@toc\n@section{One}\n@subsection{One A}\n@subsubsection{Deep}\n"
+              "@section{Two}\n@subsection{Two A}"))
+   (str "(div \"toc numbered\" (bullets"
+        " (item (para (link \"#one\" (span \"heading-number\" \"1\") \" \" \"One\"))"
+        " (bullets (item (para (link \"#one-a\" (span \"heading-number\" \"1.1\") \" \" \"One A\")))))"
+        " (item (para (link \"#two\" (span \"heading-number\" \"2\") \" \" \"Two\"))"
+        " (bullets (item (para (link \"#two-a\" (span \"heading-number\" \"2.1\") \" \" \"Two A\")))))))\n"
+        "(heading 1 \"one\" (span \"heading-number\" \"1\") \" \" \"One\")\n"
+        "(heading 2 \"one-a\" (span \"heading-number\" \"1.1\") \" \" \"One A\")\n"
+        "(heading 3 \"deep\" (span \"heading-number\" \"1.1.1\") \" \" \"Deep\")\n"
+        "(heading 1 \"two\" (span \"heading-number\" \"2\") \" \" \"Two\")\n"
+        "(heading 2 \"two-a\" (span \"heading-number\" \"2.1\") \" \" \"Two A\")"))
   (expect "#:depth 1 numbers the sections only"
           (tree "@numbered-headings[#:depth 1]\n@section{A}\n@subsection{B}")
           "(heading 1 \"a\" (span \"heading-number\" \"1\") \" \" \"A\")\n(heading 2 \"b\" \"B\")")
@@ -254,35 +250,50 @@
           (str "(heading 2 \"a\" (span \"heading-number\" \"0.1\") \" \" \"A\")\n"
                "(heading 1 \"b\" (span \"heading-number\" \"1\") \" \" \"B\")\n"
                "(heading 3 \"c\" (span \"heading-number\" \"1.0.1\") \" \" \"C\")"))
-  (expect "@ref says the number, and may come before the command"
-          (vec-ref (string-split (tree "See @ref[\"later\"].\n@numbered-headings\n@section{First}\n@section[#:id \"later\"]{Later}") "\n") 0)
-          "(para \"See \" (link \"#later\" (span \"heading-number\" \"2\") \" \" \"Later\") \".\")")
-  (expect "an included file's headings are numbered with the rest"
-          (let ((lines (string-split (tree "@numbered-headings\n@section{Before}\n@include[\"TestFiles/assets/samizdat/chapter.sz\"]") "\n")))
-            (list (vec-ref lines 0) (vec-ref lines 1)))
-          (list "(heading 1 \"before\" (span \"heading-number\" \"1\") \" \" \"Before\")"
-                "(heading 1 \"included\" (span \"heading-number\" \"2\") \" \" \"Included\")"))
+  (expect
+   "@ref says the number, and may come before the command"
+   (vec-ref
+    (string-split
+     (tree
+      "See @ref[\"later\"].\n@numbered-headings\n@section{First}\n@section[#:id \"later\"]{Later}")
+     "\n")
+    0)
+   "(para \"See \" (link \"#later\" (span \"heading-number\" \"2\") \" \" \"Later\") \".\")")
+  (expect
+   "an included file's headings are numbered with the rest"
+   (let ((lines
+          (string-split
+           (tree
+            "@numbered-headings\n@section{Before}\n@include[\"TestFiles/assets/samizdat/chapter.sz\"]")
+           "\n")))
+     (list (vec-ref lines 0) (vec-ref lines 1)))
+   (list "(heading 1 \"before\" (span \"heading-number\" \"1\") \" \" \"Before\")"
+         "(heading 1 \"included\" (span \"heading-number\" \"2\") \" \" \"Included\")"))
   (expect "without it, a table of contents is of class toc alone"
           (vec-ref (string-split (tree "@toc\n@section{A}") "\n") 0)
           "(div \"toc\" (bullets (item (para (link \"#a\" \"A\")))))")
-  (expect "said twice" (refusal "@numbered-headings\n@numbered-headings")
+  (expect "said twice"
+          (refusal "@numbered-headings\n@numbered-headings")
           "post.sz:2:1: @numbered-headings: the headings are numbered already: say it once")
-  (expect "a depth of 0" (refusal "@numbered-headings[#:depth 0]")
+  (expect "a depth of 0"
+          (refusal "@numbered-headings[#:depth 0]")
           "post.sz:1:1: @numbered-headings: #:depth is 1 or more, not 0")
 
   ;; --- references -----------------------------------------------------------------
-  (expect "@ref says the heading's title, or its own, and may come first"
-          (tree "See @ref[\"later\"] and @ref[\"later\"]{this}.\n@section[#:id \"later\"]{The Later One}")
-          (str "(para \"See \" (link \"#later\" \"The Later One\") \" and \" (link \"#later\" \"this\") \".\")\n"
-               "(heading 1 \"later\" \"The Later One\")"))
-  (expect "@ref in a definition list, a caption, a line block and a superscript"
-          (tree (str "@deflist{@term{@ref[\"a\"]} @def{See @ref[\"a\"].}}"
-                     "@image[\"c.png\"]{@ref[\"a\"]}@lineblock{@ref[\"a\"]}x@sup{@ref[\"a\"]}\n@section{A}"))
-          (str "(deflist (entry (term (link \"#a\" \"A\")) (def (para \"See \" (link \"#a\" \"A\") \".\"))))\n"
-               "(figure \"c.png\" \"\" (link \"#a\" \"A\"))\n"
-               "(line-block (line (link \"#a\" \"A\")))\n"
-               "(para \"x\" (sup (link \"#a\" \"A\")))\n"
-               "(heading 1 \"a\" \"A\")"))
+  (expect
+   "@ref says the heading's title, or its own, and may come first"
+   (tree "See @ref[\"later\"] and @ref[\"later\"]{this}.\n@section[#:id \"later\"]{The Later One}")
+   (str "(para \"See \" (link \"#later\" \"The Later One\") \" and \" (link \"#later\" \"this\") \".\")\n"
+        "(heading 1 \"later\" \"The Later One\")"))
+  (expect
+   "@ref in a definition list, a caption, a line block and a superscript"
+   (tree (str "@deflist{@term{@ref[\"a\"]} @def{See @ref[\"a\"].}}"
+              "@image[\"c.png\"]{@ref[\"a\"]}@lineblock{@ref[\"a\"]}x@sup{@ref[\"a\"]}\n@section{A}"))
+   (str "(deflist (entry (term (link \"#a\" \"A\")) (def (para \"See \" (link \"#a\" \"A\") \".\"))))\n"
+        "(figure \"c.png\" \"\" (link \"#a\" \"A\"))\n"
+        "(line-block (line (link \"#a\" \"A\")))\n"
+        "(para \"x\" (sup (link \"#a\" \"A\")))\n"
+        "(heading 1 \"a\" \"A\")"))
   (expect "a reference to no heading"
           (refusal "@ref[\"nope\"]")
           "post.sz:1:1: @ref: there is no heading with the id nope")
@@ -302,31 +313,38 @@
   (expect "a file that is not there"
           (refusal "@include[\"TestFiles/assets/samizdat/nope.sz\"]")
           "post.sz:1:1: @include: there is no file TestFiles/assets/samizdat/nope.sz")
-  (expect "a file that includes itself, however far round"
-          (file-tree "TestFiles/assets/samizdat/loop-a.sz")
-          (str "error: TestFiles/assets/samizdat/loop-b.sz:1:1: @include: TestFiles/assets/samizdat/loop-a.sz is already being included:"
-               " TestFiles/assets/samizdat/loop-a.sz -> TestFiles/assets/samizdat/loop-b.sz -> TestFiles/assets/samizdat/loop-a.sz\n"
-               "  included from TestFiles/assets/samizdat/loop-a.sz:1:1"))
-  (expect "an included file may not have a meta form"
-          (refusal "@include[\"TestFiles/assets/samizdat/with-meta.sz\"]")
-          "post.sz:1:1: @include: TestFiles/assets/samizdat/with-meta.sz begins with (meta ...), which only the document itself may")
-  (expect "a refusal inside one says where it was included from"
-          (refusal "x\n@include[\"TestFiles/assets/samizdat/broken.sz\"]")
-          "TestFiles/assets/samizdat/broken.sz:2:1: @nope: there is no such command\n  included from post.sz:2:1")
-  (expect-true "and so does one that cannot be read"
-               (string-starts-with? (refusal "@include[\"TestFiles/assets/samizdat/unclosed.sz\"]")
-                                    "post.sz:1:1: @include: TestFiles/assets/samizdat/unclosed.sz: Parse error at line 2"))
+  (expect
+   "a file that includes itself, however far round"
+   (file-tree "TestFiles/assets/samizdat/loop-a.sz")
+   (str "error: TestFiles/assets/samizdat/loop-b.sz:1:1: @include: TestFiles/assets/samizdat/loop-a.sz is already being included:"
+        " TestFiles/assets/samizdat/loop-a.sz -> TestFiles/assets/samizdat/loop-b.sz -> TestFiles/assets/samizdat/loop-a.sz\n"
+        "  included from TestFiles/assets/samizdat/loop-a.sz:1:1"))
+  (expect
+   "an included file may not have a meta form"
+   (refusal "@include[\"TestFiles/assets/samizdat/with-meta.sz\"]")
+   "post.sz:1:1: @include: TestFiles/assets/samizdat/with-meta.sz begins with (meta ...), which only the document itself may")
+  (expect
+   "a refusal inside one says where it was included from"
+   (refusal "x\n@include[\"TestFiles/assets/samizdat/broken.sz\"]")
+   "TestFiles/assets/samizdat/broken.sz:2:1: @nope: there is no such command\n  included from post.sz:2:1")
+  (expect-true
+   "and so does one that cannot be read"
+   (string-starts-with?
+    (refusal "@include[\"TestFiles/assets/samizdat/unclosed.sz\"]")
+    "post.sz:1:1: @include: TestFiles/assets/samizdat/unclosed.sz: Parse error at line 2"))
   (expect "a document knows the files it was made from: its own, then what it included"
           (sources-of (read-document-file "TestFiles/assets/samizdat/main.sz" standard-commands))
           "TestFiles/assets/samizdat/main.sz TestFiles/assets/samizdat/chapter.sz")
-  (expect "however deep, each as the path it was read by"
-          (sources-of (read-document-file "TestFiles/assets/samizdat/nested.sz" standard-commands))
-          "TestFiles/assets/samizdat/nested.sz TestFiles/assets/samizdat/sub/inner.sz TestFiles/assets/samizdat/sub/../leaf.sz")
-  (expect "code read from a file is a source, once however often it is read"
-          (sources-of (read-document (str "@codeblock[#:file \"TestFiles/assets/samizdat/snippet.scm\"]\n"
-                                          "@codeblock[#:file \"TestFiles/assets/samizdat/snippet.scm\"]")
-                                     standard-commands))
-          "TestFiles/assets/samizdat/snippet.scm")
+  (expect
+   "however deep, each as the path it was read by"
+   (sources-of (read-document-file "TestFiles/assets/samizdat/nested.sz" standard-commands))
+   "TestFiles/assets/samizdat/nested.sz TestFiles/assets/samizdat/sub/inner.sz TestFiles/assets/samizdat/sub/../leaf.sz")
+  (expect
+   "code read from a file is a source, once however often it is read"
+   (sources-of (read-document (str "@codeblock[#:file \"TestFiles/assets/samizdat/snippet.scm\"]\n"
+                                   "@codeblock[#:file \"TestFiles/assets/samizdat/snippet.scm\"]")
+                              standard-commands))
+   "TestFiles/assets/samizdat/snippet.scm")
   (expect "code from a file"
           (tree "@codeblock[#:lang \"scheme\" #:file \"TestFiles/assets/samizdat/snippet.scm\"]")
           "(codeblock \"scheme\" \"(define (f x)\\n  x)\")")
@@ -335,63 +353,73 @@
           "post.sz:1:1: @codeblock: takes its code from #:file or from its body, not both")
 
   ;; --- lists as Markdown and Org write them ------------------------------------
-  (expect "the example: a nested list, and an item that goes on"
-          (tree "@read-list{\n- this parses things\n  - a list with nested lists\n- this is another post\n  and this continues the list item above.\n}")
-          (str "(bullets (item (para \"this parses things\") (bullets (item (para \"a list with nested lists\"))))"
-               " (item (para \"this is another post\\nand this continues the list item above.\")))"))
+  (expect
+   "the example: a nested list, and an item that goes on"
+   (tree
+    "@read-list{\n- this parses things\n  - a list with nested lists\n- this is another post\n  and this continues the list item above.\n}")
+   (str "(bullets (item (para \"this parses things\") (bullets (item (para \"a list with nested lists\"))))"
+        " (item (para \"this is another post\\nand this continues the list item above.\")))"))
   (expect "numbered, with . or )"
           (tree "@read-list{\n1. one\n2) two\n}")
           "(numbered (item (para \"one\")) (item (para \"two\")))")
-  (expect "+ and * are bullets too, and a numbered list may be inside"
-          (tree "@read-list{\n+ a\n  1. b\n  2. c\n* d\n}")
-          "(bullets (item (para \"a\") (numbered (item (para \"b\")) (item (para \"c\")))) (item (para \"d\")))")
-  (expect "a line of text goes on with its item, however it is indented"
-          (tree "@read-list{\n- one\ncontinues here\n-x is not a marker\n- two\n}")
-          "(bullets (item (para \"one\\ncontinues here\\n-x is not a marker\")) (item (para \"two\")))")
+  (expect
+   "+ and * are bullets too, and a numbered list may be inside"
+   (tree "@read-list{\n+ a\n  1. b\n  2. c\n* d\n}")
+   "(bullets (item (para \"a\") (numbered (item (para \"b\")) (item (para \"c\")))) (item (para \"d\")))")
+  (expect
+   "a line of text goes on with its item, however it is indented"
+   (tree "@read-list{\n- one\ncontinues here\n-x is not a marker\n- two\n}")
+   "(bullets (item (para \"one\\ncontinues here\\n-x is not a marker\")) (item (para \"two\")))")
   (expect "after a blank line, indented text is a paragraph of the item"
           (tree "@read-list{\n- one\n\n  second paragraph\n\n- two\n}")
           "(bullets (item (para \"one\") (para \"second paragraph\")) (item (para \"two\")))")
-  (expect "three deep, the whole list indented in its braces"
-          (tree "@read-list{\n  - a\n    - b\n      - c\n  - d\n}")
-          "(bullets (item (para \"a\") (bullets (item (para \"b\") (bullets (item (para \"c\")))))) (item (para \"d\")))")
-  (expect "commands in items"
-          (tree "@read-list{\n- @em{x} and @code{y}\n- see @link[\"u\"]{z}\n}")
-          "(bullets (item (para (em \"x\") \" and \" (code \"y\"))) (item (para \"see \" (link \"u\" \"z\"))))")
-  (expect "an empty one is nothing"
-          (tree "@read-list{}")
-          "")
+  (expect
+   "three deep, the whole list indented in its braces"
+   (tree "@read-list{\n  - a\n    - b\n      - c\n  - d\n}")
+   "(bullets (item (para \"a\") (bullets (item (para \"b\") (bullets (item (para \"c\")))))) (item (para \"d\")))")
+  (expect
+   "commands in items"
+   (tree "@read-list{\n- @em{x} and @code{y}\n- see @link[\"u\"]{z}\n}")
+   "(bullets (item (para (em \"x\") \" and \" (code \"y\"))) (item (para \"see \" (link \"u\" \"z\"))))")
+  (expect "an empty one is nothing" (tree "@read-list{}") "")
   (expect "a list begins with an item"
           (refusal "@read-list{\nIntro\n- a\n}")
           "post.sz:1:1: @read-list: begins with text, and a list begins with - or 1.: \"Intro\"")
   ;; --- tables as Org writes them -----------------------------------------------
-  (expect "an Org table: a caption, a head, commands in cells, numbers to the right"
-          (tree (str "@read-table{\n#+CAPTION: What they drink\n| Name  | Cups | Of       |\n"
-                     "|-------+------+----------|\n| Alice |    3 | @em{tea} |\n| Bob   |   12 | coffee   |\n}"))
-          (str "(table (aligns default right default) (caption \"What they drink\")"
-               " (head (row (cell \"Name\") (cell \"Cups\") (cell \"Of\")))"
-               " (body (row (cell \"Alice\") (cell \"3\") (cell (em \"tea\")))"
-               " (row (cell \"Bob\") (cell \"12\") (cell \"coffee\"))))"))
-  (expect "Markdown's delimiter row is a rule, and its colons align"
-          (tree "@read-table{\n| Left | Center | Right |\n|:-----|:------:|------:|\n| a | b | c |\n}")
-          (str "(table (aligns left center right) (head (row (cell \"Left\") (cell \"Center\") (cell \"Right\")))"
-               " (body (row (cell \"a\") (cell \"b\") (cell \"c\"))))"))
-  (expect "rules around and between, groups, and a row of cookies"
-          (tree "@read-table{\n|---+---|\n| <l> | <r5> |\n| a | b |\n|---+---|\n| 1 | x |\n|---+---|\n| 2 | y |\n|---+---|\n}")
-          (str "(table (aligns left right) (head (row (cell \"a\") (cell \"b\")))"
-               " (body (row (cell \"1\") (cell \"x\"))) (body (row (cell \"2\") (cell \"y\"))))"))
-  (expect "no rule, no head; \\| in a cell; a short row filled; #:caption; #+ lines passed over"
-          (tree "@read-table[#:caption \"Pipes\"]{\n#+NAME: pipes\n| a \\| b | c |\n| d |\n#+TBLFM: $2=1\n}")
-          (str "(table (aligns default default) (caption \"Pipes\")"
-               " (body (row (cell \"a | b\") (cell \"c\")) (row (cell \"d\") (cell))))"))
+  (expect
+   "an Org table: a caption, a head, commands in cells, numbers to the right"
+   (tree
+    (str "@read-table{\n#+CAPTION: What they drink\n| Name  | Cups | Of       |\n"
+         "|-------+------+----------|\n| Alice |    3 | @em{tea} |\n| Bob   |   12 | coffee   |\n}"))
+   (str "(table (aligns default right default) (caption \"What they drink\")"
+        " (head (row (cell \"Name\") (cell \"Cups\") (cell \"Of\")))"
+        " (body (row (cell \"Alice\") (cell \"3\") (cell (em \"tea\")))"
+        " (row (cell \"Bob\") (cell \"12\") (cell \"coffee\"))))"))
+  (expect
+   "Markdown's delimiter row is a rule, and its colons align"
+   (tree "@read-table{\n| Left | Center | Right |\n|:-----|:------:|------:|\n| a | b | c |\n}")
+   (str "(table (aligns left center right) (head (row (cell \"Left\") (cell \"Center\") (cell \"Right\")))"
+        " (body (row (cell \"a\") (cell \"b\") (cell \"c\"))))"))
+  (expect
+   "rules around and between, groups, and a row of cookies"
+   (tree
+    "@read-table{\n|---+---|\n| <l> | <r5> |\n| a | b |\n|---+---|\n| 1 | x |\n|---+---|\n| 2 | y |\n|---+---|\n}")
+   (str "(table (aligns left right) (head (row (cell \"a\") (cell \"b\")))"
+        " (body (row (cell \"1\") (cell \"x\"))) (body (row (cell \"2\") (cell \"y\"))))"))
+  (expect
+   "no rule, no head; \\| in a cell; a short row filled; #:caption; #+ lines passed over"
+   (tree "@read-table[#:caption \"Pipes\"]{\n#+NAME: pipes\n| a \\| b | c |\n| d |\n#+TBLFM: $2=1\n}")
+   (str "(table (aligns default default) (caption \"Pipes\")"
+        " (body (row (cell \"a | b\") (cell \"c\")) (row (cell \"d\") (cell))))"))
   (expect-true "a column that is more than half numbers, as Org counts them"
-               (string-starts-with? (tree "@read-table{\n| x | 1,234.5 |\n| y | -2% |\n| z | n/a |\n}")
-                                    "(table (aligns default right)"))
-  (expect "an empty table is nothing"
-          (tree "@read-table{}")
-          "")
-  (expect "a line that is not a row"
-          (refusal "@read-table{\n| a |\nnot a row\n}")
-          "post.sz:1:1: @read-table: has a line that is not a row, a rule or a #+ line: \"not a row\"")
+               (string-starts-with?
+                (tree "@read-table{\n| x | 1,234.5 |\n| y | -2% |\n| z | n/a |\n}")
+                "(table (aligns default right)"))
+  (expect "an empty table is nothing" (tree "@read-table{}") "")
+  (expect
+   "a line that is not a row"
+   (refusal "@read-table{\n| a |\nnot a row\n}")
+   "post.sz:1:1: @read-table: has a line that is not a row, a rule or a #+ line: \"not a row\"")
 
   (expect "text after a blank line, and not indented under an item"
           (refusal "@read-list{\n- a\n\nafter\n}")

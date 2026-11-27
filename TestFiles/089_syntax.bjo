@@ -98,7 +98,10 @@
   ;; A form. Nothing here is evaluated — `if` and `a` are identifiers in the
   ;; template, not references to anything in scope.
   (render "form" #'(if a b) "(if a b)")
-  (render "nested" #'(let ((x 1)) x) "(let ((x 1)) x)")
+  (render "nested"
+          #'(let ((x 1))
+              x)
+          "(let ((x 1)) x)")
 
   ;; Literals keep their kind.
   (render "literals" #'(1 "s" #\c #:k) "(1 \"s\" #\\c #:k)")
@@ -177,9 +180,9 @@
 (defun (binding-list s)
   (syntax-match s
     ((_ ((name value) ...) body ...)
-     (string-append (rendered name)
-                    (string-append "=" (string-append (rendered value)
-                                                      (string-append "/" (rendered body))))))
+     (string-append
+      (rendered name)
+      (string-append "=" (string-append (rendered value) (string-append "/" (rendered body))))))
     (_ "no")))
 
 ;; Two ellipses deep. `arg` is bound once per argument of each call, so it is a
@@ -189,7 +192,8 @@
   (syntax-match s
     ((_ (head arg ...) ...)
      (string-append (rendered head)
-                    (string-append ":" (int->string (fold (fun (args n) (+ n (length args))) 0 arg)))))
+                    (string-append ":"
+                                   (int->string (fold (fun (args n) (+ n (length args))) 0 arg)))))
     (_ "no")))
 
 ;; A clause body may be several forms, and the pattern's variables are in scope
@@ -221,11 +225,22 @@
   ;; identifier and a datum are the same name reached two ways.
   (expect "match-datum" (shape #'('else 2)) "else:2")
 
-  (expect "bindings" (binding-list #'(let ((a 1) (b 2)) (+ a b) a)) "ab=12/(+ a b)a")
-  (expect "no-bindings" (binding-list #'(let () x)) "=/x")
+  (expect "bindings"
+          (binding-list #'(let ((a 1)
+                                (b 2))
+                            (+ a b)
+                            a))
+          "ab=12/(+ a b)a")
+  (expect "no-bindings"
+          (binding-list #'(let ()
+                            x))
+          "=/x")
   ;; `(a)` is not `(name value)`, so the whole clause fails and the next one
   ;; answers — a check that fails falls through like a shape that does not fit.
-  (expect "not-bindings" (binding-list #'(let (a) x)) "no")
+  (expect "not-bindings"
+          (binding-list #'(let (a)
+                            x))
+          "no")
 
   (expect "nested-ellipsis" (calls #'(m (f 1 2) (g) (h 3))) "fgh:3")
   (expect "nested-empty" (calls #'(m)) ":0")

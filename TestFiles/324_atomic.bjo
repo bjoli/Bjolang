@@ -127,20 +127,28 @@
   (expect "int: a swap that fails returns the value in the atomic" (atomic-compare-and-swap! c 5 7) 6)
   (expect "and stores nothing" (atomic-ref c) 6)
   (def cu (make-atomic 1u))
-  (expect "uint: compare-and-swap" (list (atomic-compare-and-swap! cu 1u 2u) (atomic-compare-and-swap! cu 1u 3u) (atomic-ref cu))
-          (list 1u 2u 2u))
+  (expect
+   "uint: compare-and-swap"
+   (list (atomic-compare-and-swap! cu 1u 2u) (atomic-compare-and-swap! cu 1u 3u) (atomic-ref cu))
+   (list 1u 2u 2u))
   (def cl (make-atomic 1L))
-  (expect "long: compare-and-swap" (list (atomic-compare-and-swap! cl 1L 2L) (atomic-compare-and-swap! cl 1L 3L) (atomic-ref cl))
-          (list 1L 2L 2L))
+  (expect
+   "long: compare-and-swap"
+   (list (atomic-compare-and-swap! cl 1L 2L) (atomic-compare-and-swap! cl 1L 3L) (atomic-ref cl))
+   (list 1L 2L 2L))
   (def cul (make-atomic 1UL))
-  (expect "ulong: compare-and-swap" (list (atomic-compare-and-swap! cul 1UL 2UL) (atomic-compare-and-swap! cul 1UL 3UL) (atomic-ref cul))
+  (expect "ulong: compare-and-swap"
+          (list (atomic-compare-and-swap! cul 1UL 2UL)
+                (atomic-compare-and-swap! cul 1UL 3UL)
+                (atomic-ref cul))
           (list 1UL 2UL 2UL))
 
   ;; A record is a class: compare-and-swap compares by identity.
   (def first-cell (Cell (label "x")))
   (def cells (make-atomic first-cell))
   (expect-true "a record equal to the stored one, but another object, does not match"
-               (eq? (atomic-compare-and-swap! cells (Cell (label "x")) (Cell (label "y"))) first-cell))
+               (eq? (atomic-compare-and-swap! cells (Cell (label "x")) (Cell (label "y")))
+                    first-cell))
   (expect-true "and nothing is stored" (eq? (atomic-ref cells) first-cell))
   (expect-true "the stored object itself matches"
                (eq? (atomic-compare-and-swap! cells first-cell (Cell (label "y"))) first-cell))
@@ -172,29 +180,39 @@
   (expect "ulong: eight fibers of 100 000 increments" (atomic-ref cul2) 800000UL)
   (def cs (make-atomic (Score (points 0))))
   (eight (fun () (hammer cs 100000)))
-  (expect "Score, through atomic-update!: eight fibers of 100 000" (atomic-ref cs) (Score (points 800000)))
+  (expect "Score, through atomic-update!: eight fibers of 100 000"
+          (atomic-ref cs)
+          (Score (points 800000)))
   (def xs (make-atomic (list)))
   (eight (fun () (hammer-update xs 20000)))
-  (expect "a list, through atomic-update!: eight fibers of 20 000" (list-length (atomic-ref xs)) 160000)
+  (expect "a list, through atomic-update!: eight fibers of 20 000"
+          (list-length (atomic-ref xs))
+          160000)
 
   ;; --- elements of an array ------------------------------------------------------
   (def counts (: (make-array 3) (Array int)))
   (expect "an element: the new value" (atomic-array-increment! counts 1) 1)
   (expect "again" (atomic-array-increment! counts 1) 2)
   (expect "the others are left" (array->vec counts) [0 2 0])
-  (expect-true "an index outside the array raises"
-               (err? (try (atomic-array-increment! counts 3) #:catch (System.IndexOutOfRangeException))))
+  (expect-true
+   "an index outside the array raises"
+   (err? (try (atomic-array-increment! counts 3) #:catch (System.IndexOutOfRangeException))))
   ;; 48 parts on the compute threads, each adding 20 000 times to 7 elements.
   (def shared (: (make-array 7) (Array int)))
   (ignore (computing-each 48 (fun (p)
                                (loop (:for i (range 0 20000))
                                      (:do (ignore (atomic-array-increment! shared (% (+ i p) 7)))))
                                unit)))
-  (expect "48 parts of 20 000 increments lose none" (loop (:for c shared) (:acc s (summing c))) 960000)
+  (expect "48 parts of 20 000 increments lose none"
+          (loop (:for c shared)
+                (:acc s (summing c)))
+          960000)
   (expect "each element its share"
           (array->vec shared)
           {vecing (loop (:for p (range 0 48))
-                        (:acc s (folding 0 (+ s (loop (:for i (range 0 20000))
-                                                      (:acc k (summing (if (= (% (+ i p) 7) e) 1 0))))))))
+                        (:acc s (folding 0
+                                         (+ s
+                                            (loop (:for i (range 0 20000))
+                                                  (:acc k (summing (if (= (% (+ i p) 7) e) 1 0))))))))
                   (:for e (range 0 7))})
   0)

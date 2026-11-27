@@ -91,7 +91,9 @@
   (expect "CRLF across a boundary" (read-line p5) "ab")
   (expect "no phantom empty line" (read-line p5) "cd")
   (expect "and nothing after the final CRLF"
-          (match (read-line/opt p5) ((Some l) (string-append "line:" l)) (None "none"))
+          (match (read-line/opt p5)
+            ((Some l) (string-append "line:" l))
+            (None "none"))
           "none")
 
   ;; All three terminators end a line, and a bare \r is not a line of its own.
@@ -138,8 +140,16 @@
   (expect "char from the next line" (char->string (read-char p9)) "d")
   (expect "char again" (char->string (read-char p9)) "e")
   (expect "rest of that line" (read-line p9) "f")
-  (expect "opt line" (match (read-line/opt p9) ((Some l) l) (None "none")) "ghi")
-  (expect "opt char" (match (read-char/opt p9) ((Some c) (char->string c)) (None "none")) "j")
+  (expect "opt line"
+          (match (read-line/opt p9)
+            ((Some l) l)
+            (None "none"))
+          "ghi")
+  (expect "opt char"
+          (match (read-char/opt p9)
+            ((Some c) (char->string c))
+            (None "none"))
+          "j")
   (expect "not eof yet" (if (port-eof? p9) "eof" "more") "more")
   (expect "read-all takes the remainder" (read-all p9) "kl")
   (expect "eof at last" (if (port-eof? p9) "eof" "more") "eof")
@@ -163,17 +173,23 @@
   ;; from an ordinary function, because nothing here suspends yet.)
   (def p11 (sized "" 4))
   (expect "an empty port is at eof" (if (port-eof? p11) "eof" "more") "eof")
-  (expect "and reads nothing" (match (read-line/opt p11) ((Some _) "some") (None "none")) "none")
+  (expect "and reads nothing"
+          (match (read-line/opt p11)
+            ((Some _) "some")
+            (None "none"))
+          "none")
 
   (def p12 (sized "still here" 4))
   (close-input-port p12)
   (expect "a closed port throws rather than reporting eof"
           (match (try (port-eof? p12) #:catch (System.ObjectDisposedException))
-            ((Ok _) "returned") ((Err e) "threw"))
+            ((Ok _) "returned")
+            ((Err e) "threw"))
           "threw")
   (expect "and so does reading it"
           (match (try (read-line p12) #:catch (System.ObjectDisposedException))
-            ((Ok _) "returned") ((Err e) "threw"))
+            ((Ok _) "returned")
+            ((Err e) "threw"))
           "threw")
 
   ;; --- The wiring ----------------------------------------------------------
@@ -183,42 +199,47 @@
   ;; `InputPort` to everything above it.
   (def path "152_port_buffer.tmp")
   (match (open-output-file path)
-    ((Ok w) (with-open ((out w))
-              (writeln out "alpha")
-              (writeln out "beta")
-              (write-string out "gamma")))
+    ((Ok w)
+     (with-open ((out w))
+       (writeln out "alpha")
+       (writeln out "beta")
+       (write-string out "gamma")))
     ((Err e) (println "FAILURE: could not open the file for writing")))
 
   (match (open-input-file path)
-    ((Ok r) (with-open ((in r))
-              (expect "a char off a file port" (char->string (read-char in)) "a")
-              (expect "not eof" (if (port-eof? in) "eof" "more") "more")
-              (expect "the rest of the line" (read-line in) "lpha")
-              (expect "the next line" (read-line in) "beta")
-              (expect "and the remainder" (read-all in) "gamma")))
+    ((Ok r)
+     (with-open ((in r))
+       (expect "a char off a file port" (char->string (read-char in)) "a")
+       (expect "not eof" (if (port-eof? in) "eof" "more") "more")
+       (expect "the rest of the line" (read-line in) "lpha")
+       (expect "the next line" (read-line in) "beta")
+       (expect "and the remainder" (read-all in) "gamma")))
     ((Err e) (println "FAILURE: could not reopen the file")))
 
   ;; A buffered writer still has to put its text out in the order it was
   ;; written, whichever call wrote it.
   (match (open-output-file path)
-    ((Ok w) (with-open ((out w))
-              (write-string out "one")
-              (write-char out (int->char 45))
-              (writeln out "two")
-              (write-string out "three")))
+    ((Ok w)
+     (with-open ((out w))
+       (write-string out "one")
+       (write-char out (int->char 45))
+       (writeln out "two")
+       (write-string out "three")))
     ((Err e) (println "FAILURE: could not reopen for writing")))
   ;; Read back a line at a time rather than asserting the whole text, so the
   ;; newline `writeln` chose stays the platform's business.
   (match (open-input-file path)
-    ((Ok r) (with-open ((in r))
-              (expect "a buffered writer preserves order" (read-line in) "one-two")
-              (expect "and what was written after it" (read-all in) "three")))
+    ((Ok r)
+     (with-open ((in r))
+       (expect "a buffered writer preserves order" (read-line in) "one-two")
+       (expect "and what was written after it" (read-all in) "three")))
     ((Err e) (println "FAILURE: could not reopen the file")))
 
   ;; The port is still a plain `InputPort`, so a .NET method on it works.
   (match (open-input-file path)
-    ((Ok r) (with-open ((in r))
-              (expect "a .NET call on the port" (.Peek in) 111)))
+    ((Ok r)
+     (with-open ((in r))
+       (expect "a .NET call on the port" (.Peek in) 111)))
     ((Err e) (println "FAILURE: could not reopen the file")))
 
   (raise-err (file-delete path))

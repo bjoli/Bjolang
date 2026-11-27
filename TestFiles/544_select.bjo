@@ -33,9 +33,8 @@
 (: (-> (Chan int) (Chan bool) (Chan int) void))
 (defbjo (worker jobs quit results)
   (let go ((total 0))
-    (select
-      ((chan-recv jobs) j (go (+ total j)))
-      ((chan-recv quit) _ (sync (chan-send results total))))))
+    (select ((chan-recv jobs) j (go (+ total j)))
+            ((chan-recv quit) _ (sync (chan-send results total))))))
 
 ;; A bjoroutine that the bodies call, so that a body suspends.
 (: (-> int int))
@@ -46,16 +45,13 @@
 ;; The form in a `defun`. It parks the thread.
 (: (-> (Chan int) string))
 (defun (poll-blocking ch)
-  (select
-    ((chan-recv ch) n (int->string n))
-    (#:else "nothing")))
+  (select ((chan-recv ch) n (int->string n)) (#:else "nothing")))
 
 (: (-> (Chan int) (Chan string) string))
 (defbjo (pick ints strings)
-  (select
-    ((chan-recv ints) n (string-append "int " (int->string n)))
-    ((chan-recv strings) s (string-append "string " s))
-    (#:timeout (milliseconds 50) "timed out")))
+  (select ((chan-recv ints) n (string-append "int " (int->string n)))
+          ((chan-recv strings) s (string-append "string " s))
+          (#:timeout (milliseconds 50) "timed out")))
 
 (defbjo (main args)
   (def ints (make-chan))
@@ -70,31 +66,21 @@
   ;; A timeout that fires, and one that does not.
   (expect "the timeout fires" (pick ints strings) "timed out")
   (expect "the timeout does not fire when a branch is ready"
-          (select
-            ((always 3) n n)
-            (#:timeout (milliseconds 1) 0))
+          (select ((always 3) n n) (#:timeout (milliseconds 1) 0))
           3)
 
   ;; `#:else`.
-  (expect "else is taken when nothing is ready"
-          (select ((chan-recv ints) n n) (#:else -1))
-          -1)
-  (expect "else is not taken when a branch is ready"
-          (select ((always 5) n n) (#:else -1))
-          5)
+  (expect "else is taken when nothing is ready" (select ((chan-recv ints) n n) (#:else -1)) -1)
+  (expect "else is not taken when a branch is ready" (select ((always 5) n n) (#:else -1)) 5)
   (ignore (bjo (feed ints 9)))
   (sync (timeout (milliseconds 20)))
-  (expect "else is not taken when a sender is parked"
-          (select ((chan-recv ints) n n) (#:else -1))
-          9)
+  (expect "else is not taken when a sender is parked" (select ((chan-recv ints) n n) (#:else -1)) 9)
   (expect "an expired timeout beats else"
           (select (#:timeout (milliseconds 0) "timeout") (#:else "else"))
           "timeout")
 
   ;; Order: when several branches are ready, the first one wins.
-  (expect "the first ready branch wins"
-          (select ((always "a") a a) ((always "b") b b))
-          "a")
+  (expect "the first ready branch wins" (select ((always "a") a a) ((always "b") b b)) "a")
 
   ;; One branch only.
   (expect "one branch" (select ((always 4) n (+ n 1))) 5)
@@ -105,27 +91,23 @@
           "1x")
 
   ;; Bodies that suspend.
-  (expect "a body that calls a bjoroutine"
-          (select ((always 21) n (slow-double n)) (#:else 0))
-          42)
+  (expect "a body that calls a bjoroutine" (select ((always 21) n (slow-double n)) (#:else 0)) 42)
   (def out (make-chan))
   (ignore (bjo (feed ints 1)))
   (def echo
-    (bjo (select
-           ((chan-recv ints) n
-            (sync (chan-send out (+ n 1)))
-            "sent")
-           (#:timeout (seconds 5) "timed out"))))
+    (bjo
+      (select ((chan-recv ints) n (sync (chan-send out (+ n 1))) "sent")
+              (#:timeout (seconds 5) "timed out"))))
   (expect "a body that syncs" (sync (chan-recv out)) 2)
   (expect "and then returns"
-          (match (sync (promise-join echo)) ((Ok s) s) ((Err e) "failed"))
+          (match (sync (promise-join echo))
+            ((Ok s) s)
+            ((Err e) "failed"))
           "sent")
 
   ;; A branch that loses is nacked.
   (def report (make-chan))
-  (expect "the winner still wins"
-          (select ((always-loses report) n n) ((always 42) n n))
-          42)
+  (expect "the winner still wins" (select ((always-loses report) n n) ((always 42) n n)) 42)
   (expect "and the losing branch was told" (sync (chan-recv report)) "nacked")
 
   ;; A worker loop.
@@ -141,11 +123,14 @@
 
   ;; A cancelled scope ends a select that waits.
   (def stopped
-    (try (with-deadline (milliseconds 30)
-           (select ((chan-recv (make-chan)) n "received")))
-         #:catch (System.Exception)))
+    (try
+      (with-deadline (milliseconds 30)
+        (select ((chan-recv (make-chan)) n "received")))
+      #:catch (System.Exception)))
   (expect "a deadline ends the wait"
-          (match stopped ((Ok s) s) ((Err e) "cancelled"))
+          (match stopped
+            ((Ok s) s)
+            ((Err e) "cancelled"))
           "cancelled")
 
   ;; In a `defun`.

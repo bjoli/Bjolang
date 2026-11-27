@@ -24,7 +24,8 @@
                     #:async #:uncancellable)))
 
 (: (-bjo-> int string))
-(defbjo (shown n) (on-pool (fun () (int->string n))))
+(defbjo (shown n)
+  (on-pool (fun () (int->string n))))
 
 (defbjo (main)
   (expect "a generic async import" (on-pool (fun () (+ 40 2))) 42)
@@ -34,9 +35,10 @@
   (expect "an array of Tasks" (array->vec (await-all #[(answered "a") (answered "b")])) ["a" "b"])
   ;; Cancelled before it starts: the ambient token reaches Task.Run.
   (expect "the ambient token is passed"
-          (ok? (try (with-cancel (cancel)
-                      (cancel (Requested "now"))
-                      (on-pool (fun () 1)))
-                    #:catch (System.OperationCanceledException)))
+          (ok? (try
+                 (with-cancel (cancel)
+                   (cancel (Requested "now"))
+                   (on-pool (fun () 1)))
+                 #:catch (System.OperationCanceledException)))
           #f)
   0)

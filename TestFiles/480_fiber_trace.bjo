@@ -13,7 +13,7 @@
 (defbjo (philosopher left right)
   (def l (sync (chan-recv left)))
   (sync (timeout (milliseconds 50)))
-  (def r (sync (chan-recv right)))      ; both philosophers wait here
+  (def r (sync (chan-recv right))) ; both philosophers wait here
   (println #"ate with ${l} and ${r}"))
 
 (: (-bjo-> (Chan int) void))
@@ -25,16 +25,17 @@
   (def f1 (make-chan))
   (def f2 (make-chan))
   (def nobody (make-chan))
-  (match (try (with-deadline (milliseconds 3500)
-                (spawn (fork-keeper f1))
-                (spawn (fork-keeper f2))
-                (spawn (philosopher f1 f2))
-                (spawn (philosopher f2 f1))
-                (sync (timeout (milliseconds 300)))
-                (println (fiber-trace))
-                (ignore (sync (chan-recv nobody)))
-                "not reached")
-              #:catch (System.Exception))
+  (match (try
+           (with-deadline (milliseconds 3500)
+             (spawn (fork-keeper f1))
+             (spawn (fork-keeper f2))
+             (spawn (philosopher f1 f2))
+             (spawn (philosopher f2 f1))
+             (sync (timeout (milliseconds 300)))
+             (println (fiber-trace))
+             (ignore (sync (chan-recv nobody)))
+             "not reached")
+           #:catch (System.Exception))
     ((Ok v) (println v))
     ((Err e) (println "the deadline ended it"))))
 
@@ -56,17 +57,22 @@
         (expect-true "the report counts the fibers"
                      (string-contains? out "Bjolang fiber trace: 3 fibers waiting."))
         (expect-true "it names the scope and where it was opened"
-                     (string-contains? out "with-deadline, opened at TestFiles/480_fiber_trace.bjo:28"))
+                     (string-contains? out
+                                       "with-deadline, opened at TestFiles/480_fiber_trace.bjo:29"))
         (expect-true "it says what a fiber waits on, and where"
                      (string-contains? out "1 fiber waiting in chan-recv on channel #"))
         (expect-true "with the line of the sync"
-                     (string-contains? out "at   TestFiles/480_fiber_trace.bjo:16  (def r (sync (chan-recv right)))"))
+                     (string-contains?
+                      out
+                      "at   TestFiles/480_fiber_trace.bjo:16  (def r (sync (chan-recv right)))"))
         (expect-true "a fiber that runs is not waiting"
                      (string-contains? out "1 fiber running, or ready to run"))
         (expect-true "when everything waits on everything, the watcher says so"
                      (string-contains? out "This looks like a deadlock."))
         (expect-true "and then shows the body's wait too"
-                     (string-contains? out "at   TestFiles/480_fiber_trace.bjo:35  (ignore (sync (chan-recv nobody)))"))
+                     (string-contains?
+                      out
+                      "at   TestFiles/480_fiber_trace.bjo:36  (ignore (sync (chan-recv nobody)))"))
         (expect-true "and the deadline still ends the program"
                      (string-contains? out "the deadline ended it"))
         (when (not (string-contains? out "the deadline ended it"))

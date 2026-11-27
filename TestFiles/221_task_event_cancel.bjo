@@ -60,13 +60,15 @@
 (: (-> long string))
 (defbjo (trial settle)
   (def (stop! scope) (make-cancel))
-  (def waiting (parameterize ((current-cancel scope)) (bjo (probe))))
+  (def waiting
+    (parameterize ((current-cancel scope))
+      (bjo (probe))))
   (sync (timeout (milliseconds settle)))
   (def fired (stop! (Requested "the test")))
-  (match (sync (choose (wrap (promise-join waiting)
-                             (fun (r) (match r
-                                        ((Ok v) v)
-                                        ((Err e) "raised"))))
+  (match (sync (choose (wrap (promise-join waiting) (fun (r)
+                                                      (match r
+                                                        ((Ok v) v)
+                                                        ((Err e) "raised"))))
                        (wrap (timeout (seconds 10)) (fun (u) "hung"))))
     (v v)))
 
@@ -77,9 +79,10 @@
   (loop (:for i (range 0 n))
         (:do (match (trial settle)
                ("raised" unit)
-               (other (begin
-                        (println #"  trial ${i} at settle=${settle}: ${other}")
-                        (set! bad (+ bad 1)))))))
+               (other
+                (begin
+                  (println #"  trial ${i} at settle=${settle}: ${other}")
+                  (set! bad (+ bad 1)))))))
   bad)
 
 (defbjo (main args)

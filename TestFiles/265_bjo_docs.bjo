@@ -9,8 +9,7 @@
 
 (export twice Pair)
 
-(:doc #:module
-  (summary "Reads docs back.")
+(:doc #:module (summary "Reads docs back.")
   (see twice))
 
 (:doc twice
@@ -27,10 +26,10 @@
   (summary "Two ints.")
   (field a "The first.")
   (field b "The second."))
-(type (: Pair (Record (: a int) (: b int))))
+(type (: Pair (Record (: a int)
+                      (: b int))))
 
-(:doc twin #:reader
-  (summary "Two of the same.")
+(:doc twin #:reader (summary "Two of the same.")
   (form (twin x))
   (arg x "What to have two of."))
 (def/hash-extend (twin form inject compare)
@@ -94,12 +93,18 @@
                               ((DocArg n t) (str "arg " (symbol->string n) " " t))
                               ((DocKey n t) (str "key " (symbol->string n) " " t))
                               ((DocReturns t) (str "returns " t))
-                              ((DocSee ns) (str "see " (string-join (list->vec (list-map symbol->string ns)) " ")))
+                              ((DocSee ns)
+                               (str "see " (string-join (list->vec (list-map symbol->string ns))
+                                                        " ")))
                               ((DocExample t) (str "example " t))
                               (_ "?")))
                           (record-ref d clauses))
-                (list "summary Twice n." "arg n A number." "key by What to multiply by."
-                      "returns n times by." "see Pair" "example (twice 2) ; 4"))))
+                (list "summary Twice n."
+                      "arg n A number."
+                      "key by What to multiply by."
+                      "returns n times by."
+                      "see Pair"
+                      "example (twice 2) ; 4"))))
      (match (doc-named docs "Pair")
        (None (expect "Pair is documented" #f #t))
        ((Some d)
@@ -135,7 +140,13 @@
 
   ;; An assembly without docs has none, rather than failing. Every std module
   ;; is documented, so the runtime stands in for one that is not.
-  (def runtime-dll (path-combine (current-directory) "BjolangRuntime" "bin" "Release" "net10.0" "BjolangRuntime.dll"))
+  (def runtime-dll
+    (path-combine (current-directory)
+                  "BjolangRuntime"
+                  "bin"
+                  "Release"
+                  "net10.0"
+                  "BjolangRuntime.dll"))
   (match (assembly-docs runtime-dll)
     ((Err why) (expect "the runtime reads" why ""))
     ((Ok docs) (expect "the runtime has no docs" (vec-length docs) 0)))
@@ -151,7 +162,8 @@
           (err-text (module-docs standard (list (sym "nopackage") (sym "here"))))
           "no package provides (nopackage here)")
   (expect "no module"
-          (string-starts-with? (err-text (module-docs standard (list (sym "std") (sym "nothing-here"))))
+          (string-starts-with? (err-text (module-docs standard
+                                                      (list (sym "std") (sym "nothing-here"))))
                                "no module (std nothing-here): no ")
           #t)
 
@@ -188,16 +200,21 @@
     ((Err why) (expect "a roots file reads" why ""))
     ((Ok roots)
      (expect "its packages"
-             (list-map (fun (r) (str (module-name->string (record-ref r name)) " " (record-ref r directory)))
+             (list-map (fun (r)
+                         (str (module-name->string (record-ref r name)) " " (record-ref r directory)))
                        roots)
              (list (str "(my pkg) " (path-combine dir "src")) "(other) /abs"))
      (expect "a roots package owns its modules"
-             (find-module-source (list-append standard roots) (list (sym "my") (sym "pkg") (sym "a") (sym "b")))
+             (find-module-source (list-append standard roots)
+                                 (list (sym "my") (sym "pkg") (sym "a") (sym "b")))
              (Some (path-combine dir "src" "a" "b.bjo")))))
   (raise-err (file-write-text roots-file "(roots (root my \"src\"))"))
   (expect "a malformed roots file"
-          (string-contains? (err-text (read-roots-file roots-file)) "expected (root (name ...) \"directory\")")
+          (string-contains? (err-text (read-roots-file roots-file))
+                            "expected (root (name ...) \"directory\")")
           #t)
-  (expect "no roots file" (err-text (read-roots-file (path-combine dir "none"))) (str "no roots file at " (path-combine dir "none")))
+  (expect "no roots file"
+          (err-text (read-roots-file (path-combine dir "none")))
+          (str "no roots file at " (path-combine dir "none")))
   (raise-err (directory-delete-tree dir))
   0)

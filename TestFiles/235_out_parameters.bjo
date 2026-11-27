@@ -54,7 +54,8 @@
 (defun (parse-each f texts)
   (loop (:for t texts)
         (:acc out (listing (let ((text (f t)))
-                             (Tuple (parse-int text) (kv-parts (make-kv text (string-length text)))))))))
+                             (Tuple (parse-int text)
+                                    (kv-parts (make-kv text (string-length text)))))))))
 
 (: (-> string (Tuple (Option int) (Tuple string int) int)))
 (defbjo (parse-suspending text)
@@ -68,9 +69,11 @@
   (+ q r))
 
 (defbjo (main args)
-  (expect "ordinary copy" (parse-each (fun (s) s) (list "3" "x"))
+  (expect "ordinary copy"
+          (parse-each (fun (s) s) (list "3" "x"))
           (list (Tuple (Some 3) (Tuple "3" 1)) (Tuple None (Tuple "x" 1))))
-  (expect "suspending copy" (parse-each (bjoroutine (s) (string-append s "0")) (list "3"))
+  (expect "suspending copy"
+          (parse-each (bjoroutine (s) (string-append s "0")) (list "3"))
           (list (Tuple (Some 30) (Tuple "30" 2))))
   (expect "in a bjoroutine" (parse-suspending "1") (Tuple (Some 11) (Tuple "1" 3) 4))
 
@@ -78,9 +81,7 @@
   (expect "TryParse miss" (parse-int "forty-two") None)
 
   ;; Two out calls in one expression: each declares its own local.
-  (expect "two in one statement"
-          (Tuple (parse-int "1") (parse-int "x"))
-          (Tuple (Some 1) None))
+  (expect "two in one statement" (Tuple (parse-int "1") (parse-int "x")) (Tuple (Some 1) None))
 
   (def d (mutablemap))
   (mutablemap-set! d "a" "apple")
@@ -96,14 +97,16 @@
   (expect "void method, two outs" (kv-parts kv) (Tuple "k" 7))
   (def (key value) (kv-parts kv))
   (expect "void method, destructured" (string-append key (displayed value)) "k7")
-  (expect "void method as an operand" (list (kv-parts kv) (kv-parts (make-kv "j" 1)))
+  (expect "void method as an operand"
+          (list (kv-parts kv) (kv-parts (make-kv "j" 1)))
           (list (Tuple "k" 7) (Tuple "j" 1)))
 
   (expect "guarded hit" (parse-guarded "5") (Ok (Some 5)))
   (expect "guarded miss" (parse-guarded "no") (Ok None))
 
   (expect "imported: TryParse" (lib-parse-int "8") (Some 8))
-  (expect "imported: TryGetValue" (Tuple (lib-dict-try-get d "a") (lib-dict-try-get d "q"))
+  (expect "imported: TryGetValue"
+          (Tuple (lib-dict-try-get d "a") (lib-dict-try-get d "q"))
           (Tuple (Some "apple") None))
   (expect "imported: DivRem" (lib-div-rem 7 2) (Tuple 3 1))
   (expect "imported: Deconstruct" (lib-kv-parts kv) (Tuple "k" 7))

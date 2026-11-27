@@ -14,28 +14,34 @@
 ;; ---------------------------------------------------------------------------
 
 (type/derive (Eq)
-  (: Point (Record (: x int) (: y int))))
+  (: Point (Record (: x int)
+                   (: y int))))
 
 ;; A field whose type is itself derived: the comparison goes through `Point`'s
 ;; implementation rather than through .NET's idea of a `Point`.
 (type/derive (Eq)
-  (: Segment (Record (: head Point) (: tail Point))))
+  (: Segment (Record (: head Point)
+                     (: tail Point))))
 
 (type/derive (Eq)
-  (: Coord (Struct (: lat int) (: lon int))))
+  (: Coord (Struct (: lat int)
+                   (: lon int))))
 
 ;; Different cases are unequal; the same case compares its payload positionally.
 ;; `Square` and `Circle` carry the same payload type, so the case tag has to be
 ;; part of the hash as well as of the comparison.
 (type/derive (Eq)
-  (: Shape (Union Empty (: Circle int) (: Square int) (: Rect int int))))
+  (: Shape (Union Empty
+                  (: Circle int)
+                  (: Square int)
+                  (: Rect int int))))
 
 (type/derive (Eq)
-  (: (Box %a) (Record (: item %a) (: label string))))
+  (: (Box %a) (Record (: item %a)
+                      (: label string))))
 
 ;; Recursive, and derived: the payload is the type being declared.
-(type/derive (Eq)
-  (: Nest (Union Leaf (: Branch Nest Nest))))
+(type/derive (Eq) (: Nest (Union Leaf (: Branch Nest Nest))))
 
 ;; ---------------------------------------------------------------------------
 ;; The same declarations, read for order
@@ -47,24 +53,27 @@
 ;; three derivations agree about what a union's cases are without being told.
 
 (type/derive (Eq Ord)
-  (: Ver (Record (: major int) (: minor int))))
+  (: Ver (Record (: major int)
+                 (: minor int))))
 
 ;; One field, so there is nothing to fall through to: the derivation is that
 ;; field's comparison and no test around it.
-(type/derive (Ord)
-  (: Only (Record (: it string))))
+(type/derive (Ord) (: Only (Record (: it string))))
 
 (type/derive (Eq Ord)
-  (: Span (Struct (: from int) (: to int))))
+  (: Span (Struct (: from int)
+                  (: to int))))
 
 (type/derive (Eq Ord)
-  (: Step (Union Stop (: Wait int) (: Move int int))))
+  (: Step (Union Stop
+                 (: Wait int)
+                 (: Move int int))))
+
+(type/derive (Eq Ord) (: Tree (Union Tip (: Fork Tree Tree))))
 
 (type/derive (Eq Ord)
-  (: Tree (Union Tip (: Fork Tree Tree))))
-
-(type/derive (Eq Ord)
-  (: (Tagged %a) (Record (: value %a) (: tag string))))
+  (: (Tagged %a) (Record (: value %a)
+                         (: tag string))))
 
 ;; ---------------------------------------------------------------------------
 ;; A hand-written implementation that ignores a field
@@ -73,8 +82,8 @@
 ;; This is the invariant test. `cache` is not part of what a `Cached` *is*, so
 ;; `=` ignores it — and everything that can ask whether two of them are equal
 ;; has to give that same answer, including the ones written in C#.
-(type
-  (: Cached (Record (: key string) (: cache int))))
+(type (: Cached (Record (: key string)
+                        (: cache int))))
 
 (impl (Eq Cached)
   (defun (= a b) (= (record-ref a key) (record-ref b key)))
@@ -88,24 +97,24 @@
 ;; synthesized field-wise equality. The point of the checks below is that it
 ;; agrees with a derived implementation and reaches a *hand-written* one at
 ;; depth — because the hand-written one is what .NET is asking.
-(type
-  (: Plain (Record (: a int) (: b int))))
+(type (: Plain (Record (: a int)
+                       (: b int))))
 
 (type/derive (Eq)
-  (: Wrapper (Record (: plain Plain) (: cached Cached))))
+  (: Wrapper (Record (: plain Plain)
+                     (: cached Cached))))
 
 ;; No implementation either; its one field is a `Vec`, which is a C# tree
 ;; comparing elements through `EqualityComparer<T>.Default` — the other .NET
 ;; road to a hand-written implementation.
-(type
-  (: Pack (Record (: items (Vec Cached)))))
+(type (: Pack (Record (: items (Vec Cached)))))
 
 ;; A parameterized type with an *unconditional* implementation: identity is
 ;; `id` alone whatever the payload, so there is no `(where ...)` — and the
 ;; implementation materializes, its class instantiated at the type's own
 ;; parameters.
-(type
-  (: (Keyed %a) (Record (: id int) (: payload %a))))
+(type (: (Keyed %a) (Record (: id int)
+                            (: payload %a))))
 
 (impl (Eq (Keyed %a))
   (defun (= a b) (= (record-ref a id) (record-ref b id)))
@@ -122,7 +131,7 @@
 
   (expect-true "a derived field type" (= (Segment (head p) (tail q)) (Segment (head q) (tail p))))
   (expect-true "a derived field type, differing"
-          (not (= (Segment (head p) (tail q)) (Segment (head p) (tail r)))))
+               (not (= (Segment (head p) (tail q)) (Segment (head p) (tail r)))))
 
   (expect-true "derived struct" (= (Coord (lat 1) (lon 2)) (Coord (lat 1) (lon 2))))
   (expect-true "derived struct, differing" (not (= (Coord (lat 1) (lon 2)) (Coord (lat 1) (lon 3)))))
@@ -136,21 +145,21 @@
   (expect-true "two payloads" (= (Rect 1 2) (Rect 1 2)))
   (expect-true "two payloads, differing" (not (= (Rect 1 2) (Rect 2 1))))
   (expect-true "same payload, different case, hashes apart"
-          (not (= (eq-hash (Circle 3)) (eq-hash (Square 3)))))
+               (not (= (eq-hash (Circle 3)) (eq-hash (Square 3)))))
 
   ;; Recursion terminates: the payload comparison is the trait method again,
   ;; one level down, and the leaves are a case with nothing to compare.
   (expect-true "recursive union"
-          (= (Branch Leaf (Branch Leaf Leaf)) (Branch Leaf (Branch Leaf Leaf))))
+               (= (Branch Leaf (Branch Leaf Leaf)) (Branch Leaf (Branch Leaf Leaf))))
   (expect-true "recursive union, differing"
-          (not (= (Branch Leaf (Branch Leaf Leaf)) (Branch Leaf Leaf))))
+               (not (= (Branch Leaf (Branch Leaf Leaf)) (Branch Leaf Leaf))))
 
   ;; ---- a derived generic type ---------------------------------------------
   (expect-true "(Box int)" (= (Box (item 1) (label "a")) (Box (item 1) (label "a"))))
   (expect-true "(Box int), differing" (not (= (Box (item 1) (label "a")) (Box (item 2) (label "a")))))
   (expect-true "(Box Point)" (= (Box (item p) (label "a")) (Box (item q) (label "a"))))
-  (expect-true "(Box (List int))" (= (Box (item (list 1 2)) (label "a"))
-                                (Box (item (list 1 2)) (label "a"))))
+  (expect-true "(Box (List int))"
+               (= (Box (item (list 1 2)) (label "a")) (Box (item (list 1 2)) (label "a"))))
 
   ;; ---- the invariant ------------------------------------------------------
   ;;
@@ -162,10 +171,9 @@
   ;; `Map` is a CHAMP trie written in C#. It keys on `GetHashCode` and
   ;; `Equals`, knows nothing about the trait, and finds the entry anyway.
   (def m (map-set (map-empty) c1 "found"))
-  (expect-true "a Map keyed on one finds it with the other"
-          (= "found" (map-ref-or m c2 "MISSING")))
+  (expect-true "a Map keyed on one finds it with the other" (= "found" (map-ref-or m c2 "MISSING")))
   (expect-true "and still misses a key that is really different"
-          (= "MISSING" (map-ref-or m (Cached (key "other") (cache 1)) "MISSING")))
+               (= "MISSING" (map-ref-or m (Cached (key "other") (cache 1)) "MISSING")))
 
   ;; `HashSet` is the same story in a different C# collection.
   (expect-true "a Set agrees" (hashset-contains? (hashset-add (hashset-empty) c1) c2))
@@ -174,48 +182,48 @@
   (def pm (map-set (map-empty) p "point"))
   (expect-true "a derived type as a Map key" (= "point" (map-ref-or pm q "MISSING")))
   (expect-true "a derived union as a Map key"
-          (= "shape" (map-ref-or (map-set (map-empty) (Rect 1 2) "shape") (Rect 1 2) "MISSING")))
+               (= "shape" (map-ref-or (map-set (map-empty) (Rect 1 2) "shape") (Rect 1 2) "MISSING")))
 
   ;; ---- the blanket --------------------------------------------------------
   (expect-true "no implementation at all" (= (Plain (a 1) (b 2)) (Plain (a 1) (b 2))))
-  (expect-true "no implementation at all, differing" (not (= (Plain (a 1) (b 2)) (Plain (a 1) (b 3)))))
+  (expect-true "no implementation at all, differing"
+               (not (= (Plain (a 1) (b 2)) (Plain (a 1) (b 3)))))
 
   ;; The blanket is .NET's equality, and .NET's equality for `Cached` is
   ;; `Cached`'s own implementation — so a hand-written one is reached through a
   ;; field whose own type has none.
   (expect-true "the blanket reaches a hand-written implementation"
-          (= (Wrapper (plain (Plain (a 1) (b 2))) (cached c1))
-             (Wrapper (plain (Plain (a 1) (b 2))) (cached c2))))
+               (= (Wrapper (plain (Plain (a 1) (b 2))) (cached c1))
+                  (Wrapper (plain (Plain (a 1) (b 2))) (cached c2))))
   (expect-true "and still separates what really differs"
-          (not (= (Wrapper (plain (Plain (a 1) (b 2))) (cached c1))
-                  (Wrapper (plain (Plain (a 9) (b 2))) (cached c1)))))
+               (not (= (Wrapper (plain (Plain (a 1) (b 2))) (cached c1))
+                       (Wrapper (plain (Plain (a 9) (b 2))) (cached c1)))))
 
   ;; From inside a `Vec` too: the tree compares its elements through
   ;; `EqualityComparer<T>.Default`, which is the implementation.
   (expect-true "a Vec reaches a hand-written implementation"
-          (= (Pack (items (list->vec (list c1))))
-             (Pack (items (list->vec (list c2))))))
+               (= (Pack (items (list->vec (list c1)))) (Pack (items (list->vec (list c2))))))
 
   ;; A conditional (derived) generic as a Map key: `Box`'s implementation is
   ;; compiled into it, and compares `item` through `Cached`'s own `Equals`,
   ;; which is `Cached`'s implementation — composition, with the dictionary
   ;; built inside the type.
   (expect-true "a derived generic as a Map key"
-          (= "boxed" (map-ref-or (map-set (map-empty) (Box (item c1) (label "b")) "boxed")
-                                 (Box (item c2) (label "b"))
-                                 "MISSING")))
+               (= "boxed"
+                  (map-ref-or (map-set (map-empty) (Box (item c1) (label "b")) "boxed")
+                              (Box (item c2) (label "b"))
+                              "MISSING")))
 
   ;; The unconditional generic: materialized, so a Map keyed at one payload
   ;; type collides exactly where `=` says.
   (def k1 (Keyed (id 7) (payload "left")))
   (def k2 (Keyed (id 7) (payload "right")))
   (expect-true "an unconditional generic implementation" (= k1 k2))
-  (expect-true "and as a Map key"
-          (= "hit" (map-ref-or (map-set (map-empty) k1 "hit") k2 "MISSING")))
-  (expect-true "which still separates ids"
-          (= "MISSING" (map-ref-or (map-set (map-empty) k1 "hit")
-                                   (Keyed (id 8) (payload "left"))
-                                   "MISSING")))
+  (expect-true "and as a Map key" (= "hit" (map-ref-or (map-set (map-empty) k1 "hit") k2 "MISSING")))
+  (expect-true
+   "which still separates ids"
+   (= "MISSING"
+      (map-ref-or (map-set (map-empty) k1 "hit") (Keyed (id 8) (payload "left")) "MISSING")))
 
   ;; A tuple of an arity nothing implements has a head key of its own, so it
   ;; falls to the blanket rather than off the end.
@@ -247,27 +255,27 @@
   ;; Recursion terminates for the same reason the derived `=` does: the payload
   ;; comparison is the trait method again, and the leaf has nothing to compare.
   (expect-true "recursive union" (< (compare Tip (Fork Tip Tip)) 0))
-  (expect-true "recursive, at depth"
-          (< (compare (Fork Tip Tip) (Fork Tip (Fork Tip Tip))) 0))
+  (expect-true "recursive, at depth" (< (compare (Fork Tip Tip) (Fork Tip (Fork Tip Tip))) 0))
 
   ;; Conditional on its parameter, so the field's own implementation decides.
-  (expect-true "a derived generic" (< (compare (Tagged (value 1) (tag "a"))
-                                          (Tagged (value 2) (tag "a"))) 0))
-  (expect-true "over a derived field type" (< (compare (Tagged (value v19) (tag "a"))
-                                                  (Tagged (value v20) (tag "a"))) 0))
-  (expect-true "and the field after it" (< (compare (Tagged (value v20) (tag "a"))
-                                               (Tagged (value v20) (tag "b"))) 0))
+  (expect-true "a derived generic"
+               (< (compare (Tagged (value 1) (tag "a")) (Tagged (value 2) (tag "a"))) 0))
+  (expect-true "over a derived field type"
+               (< (compare (Tagged (value v19) (tag "a")) (Tagged (value v20) (tag "a"))) 0))
+  (expect-true "and the field after it"
+               (< (compare (Tagged (value v20) (tag "a")) (Tagged (value v20) (tag "b"))) 0))
 
   ;; What deriving it is for: everything written against `Ord` works, none of it
   ;; knowing these types exist.
-  (expect-true "sorting a derived record"
-          (= (list-sort (list v21 v19 v20)) (list v19 v20 v21)))
+  (expect-true "sorting a derived record" (= (list-sort (list v21 v19 v20)) (list v19 v20 v21)))
   (expect-true "sorting a derived union"
-          (= (list-sort (list (Move 1 2) Stop (Wait 5) (Move 1 1)))
-             (list Stop (Wait 5) (Move 1 1) (Move 1 2))))
+               (= (list-sort (list (Move 1 2) Stop (Wait 5) (Move 1 1)))
+                  (list Stop (Wait 5) (Move 1 1) (Move 1 2))))
   (expect-true "the predicates" (less? v19 v20))
   (expect-true "least" (= v19 (least v20 v19)))
   (expect-true "list-min"
-          (match (list-min (list v21 v19 v20)) ((Some m) (= m v19)) (None #f)))
+               (match (list-min (list v21 v19 v20))
+                 ((Some m) (= m v19))
+                 (None #f)))
 
   0)

@@ -43,7 +43,8 @@
       (TokSpace "space")
       (TokNewline "newline")))
   (match (read-tokens text)
-    ((Ok tokens) (list-map (fun (t) (str (kind-name (record-ref t kind)) " " (record-ref t text))) tokens))
+    ((Ok tokens)
+     (list-map (fun (t) (str (kind-name (record-ref t kind)) " " (record-ref t text))) tokens))
     ((Err e) (list (read-error-message e)))))
 
 (: string)
@@ -56,45 +57,28 @@
   ;; --- Forms and ranges ----------------------------------------------------
   (expect "a list and a vec literal, with their ranges"
           (dump "(+ 1 2) [x]")
-          (string-join ["list 1:0-1:7 @0-7"
-                        "  sym \"+\" 1:1-1:2 @1-2"
-                        "  num \"1\" 1:3-1:4 @3-4"
-                        "  num \"2\" 1:5-1:6 @5-6"
-                        "list 1:8-1:11 @8-11"
-                        "  sym \"vec-literal\" 1:8-1:9 @8-9"
-                        "  sym \"x\" 1:9-1:10 @9-10"
-                        ""]
+          (string-join ["list 1:0-1:7 @0-7" "  sym \"+\" 1:1-1:2 @1-2" "  num \"1\" 1:3-1:4 @3-4"
+                        "  num \"2\" 1:5-1:6 @5-6" "list 1:8-1:11 @8-11"
+                        "  sym \"vec-literal\" 1:8-1:9 @8-9" "  sym \"x\" 1:9-1:10 @9-10" ""]
                        "\n"))
   (expect "a character above U+FFFF is one column and four bytes"
           (dump "(a \"\u{1F600}\" b)")
-          (string-join ["list 1:0-1:9 @0-12"
-                        "  sym \"a\" 1:1-1:2 @1-2"
-                        "  str \"\u{1F600}\" 1:3-1:6 @3-9"
-                        "  sym \"b\" 1:7-1:8 @10-11"
-                        ""]
+          (string-join ["list 1:0-1:9 @0-12" "  sym \"a\" 1:1-1:2 @1-2"
+                        "  str \"\u{1F600}\" 1:3-1:6 @3-9" "  sym \"b\" 1:7-1:8 @10-11" ""]
                        "\n"))
   (expect "the str and displayed of an interpolated string are resolved"
           (dump "#\"n=${n}!\"")
-          (string-join ["list 1:0-1:10 @0-10"
-                        "  sym \"str\" 1:0-1:10 @0-10 resolved"
-                        "  str \"n=\" 1:0-1:10 @0-10"
-                        "  list 1:0-1:10 @0-10"
-                        "    sym \"displayed\" 1:0-1:10 @0-10 resolved"
-                        "    sym \"n\" 1:6-1:7 @6-7"
-                        "  str \"!\" 1:0-1:10 @0-10"
-                        ""]
+          (string-join ["list 1:0-1:10 @0-10" "  sym \"str\" 1:0-1:10 @0-10 resolved"
+                        "  str \"n=\" 1:0-1:10 @0-10" "  list 1:0-1:10 @0-10"
+                        "    sym \"displayed\" 1:0-1:10 @0-10 resolved" "    sym \"n\" 1:6-1:7 @6-7"
+                        "  str \"!\" 1:0-1:10 @0-10" ""]
                        "\n"))
   (expect "#(...) is a fun of fresh names"
           (dump "#(+ & 1)")
-          (string-join ["list 1:0-1:8 @0-8"
-                        "  sym \"fun\" 1:0-1:1 @0-1"
-                        "  list 1:0-1:1 @0-1"
-                        "    sym \"&1__g1\" 1:0-1:1 @0-1"
-                        "  list 1:0-1:8 @0-8"
-                        "    sym \"+\" 1:2-1:3 @2-3"
-                        "    sym \"&1__g1\" 1:4-1:5 @4-5"
-                        "    num \"1\" 1:6-1:7 @6-7"
-                        ""]
+          (string-join ["list 1:0-1:8 @0-8" "  sym \"fun\" 1:0-1:1 @0-1" "  list 1:0-1:1 @0-1"
+                        "    sym \"&1__g1\" 1:0-1:1 @0-1" "  list 1:0-1:8 @0-8"
+                        "    sym \"+\" 1:2-1:3 @2-3" "    sym \"&1__g1\" 1:4-1:5 @4-5"
+                        "    num \"1\" 1:6-1:7 @6-7" ""]
                        "\n"))
   (expect "a fresh name is not one the text writes"
           (match (read-source "&1__1 #(f &)")
@@ -102,26 +86,32 @@
              (symbol->string p))
             (_ "no lambda"))
           "&1__2")
-  (expect "a form's line is where it starts"
-          (lines-of (read-source "a\n\n(b\n c)"))
-          (list 1 3))
+  (expect "a form's line is where it starts" (lines-of (read-source "a\n\n(b\n c)")) (list 1 3))
   (expect "the byte offsets of a range cut the form out of the UTF-8 text"
           (match (read-source "x (é \"ü\")")
             ((Ok (Cons _ (Cons form Nil)))
              (def r (syntax-range form))
              (bytes->string/lossy (string->bytes "x (é \"ü\")")
-                                  #:start (record-ref r start-offset) #:end (record-ref r end-offset)))
+                                  #:start (record-ref r start-offset)
+                                  #:end (record-ref r end-offset)))
             (_ "no form"))
           "(é \"ü\")")
-  (expect "a comment is not read"
-          (lines-of (read-source "; one\nx ; two\n"))
-          (list 2))
+  (expect "a comment is not read" (lines-of (read-source "; one\nx ; two\n")) (list 2))
 
   ;; --- Tokens as written -------------------------------------------------------
   (expect "read-tokens keeps comments and spaces, and a prefix is a token"
           (tokens-of "(f ,x 'y) ; done\n")
-          (list "open (" "atom f" "space  " "atom ," "atom x" "space  " "atom 'y" "close )"
-                "space  " "comment ; done" "newline \n"))
+          (list "open ("
+                "atom f"
+                "space  "
+                "atom ,"
+                "atom x"
+                "space  "
+                "atom 'y"
+                "close )"
+                "space  "
+                "comment ; done"
+                "newline \n"))
   (expect "an interpolated string and a quantity are one token each"
           (tokens-of "#\"a${(g 1)}b\" <9.81 m/s>")
           (list "string #\"a${(g 1)}b\"" "space  " "atom <9.81 m/s>"))
@@ -137,7 +127,9 @@
           (match (read-tokens "é\n  (x)")
             ((Ok (Cons _ (Cons _ (Cons _ (Cons t _)))))
              (def r (record-ref t range))
-             (list (record-ref r start-line) (record-ref r start-column) (record-ref r start-offset)
+             (list (record-ref r start-line)
+                   (record-ref r start-column)
+                   (record-ref r start-offset)
                    (record-ref r end-offset)))
             (_ Nil))
           (list 2 2 5 6))
@@ -147,24 +139,24 @@
             ((Err (SyntaxError _ line col)) (str (int->string line) ":" (int->string col)))
             ((Err _) "file error"))
           "1:4")
-  (expect "a bracket with no partner is not a token error"
-          (tokens-of ")")
-          (list "close )"))
+  (expect "a bracket with no partner is not a token error" (tokens-of ")") (list "close )"))
 
   ;; --- Errors ----------------------------------------------------------------
   (expect "a bracket never closed is at the bracket"
           (error-of (read-source "\n  (a [b]" #:file "dir/f.bjo"))
           "2:3 Syntax error at f.bjo:2:3: the '(' opened here is never closed. The file ends first.")
-  (expect "without a file, a message names <unknown>"
-          (error-of (read-source ")"))
-          "1:1 Syntax error at <unknown>:1:1: this ')' closes nothing. Every bracket before it is already closed.")
+  (expect
+   "without a file, a message names <unknown>"
+   (error-of (read-source ")"))
+   "1:1 Syntax error at <unknown>:1:1: this ')' closes nothing. Every bracket before it is already closed.")
   (expect "a token error comes before a form error, wherever it is"
           (error-of (read-source "(a ] \"open"))
           "1:6 Unterminated string at <unknown>:1:6")
-  (expect "an error in a hole is at its line in the text"
-          (error-of (read-source "x\n#\"a ${ 1abc } b\""))
-          (str "2:8 Syntax error at <unknown>:2:8: '1abc' is not a number. A number is digits, with a fraction and an exponent if it is a real, as in 1.5 or 2e-3, "
-               "or 0x or 0b and hex or binary digits, and one of the type suffixes. Separate it from what follows with a space."))
+  (expect
+   "an error in a hole is at its line in the text"
+   (error-of (read-source "x\n#\"a ${ 1abc } b\""))
+   (str "2:8 Syntax error at <unknown>:2:8: '1abc' is not a number. A number is digits, with a fraction and an exponent if it is a real, as in 1.5 or 2e-3, "
+        "or 0x or 0b and hex or binary digits, and one of the type suffixes. Separate it from what follows with a space."))
 
   ;; --- Files -----------------------------------------------------------------
   (def scratch (path-combine (temp-directory) (str "bjo-read-" (random-file-name))))

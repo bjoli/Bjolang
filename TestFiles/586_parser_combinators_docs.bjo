@@ -22,9 +22,7 @@
 
 ;; The module's example.
 (: ints (Parser (List int)))
-(def ints
-  (between (pchar #\[) (pchar #\])
-           (sep-by (pleft pint spaces) (pleft (pchar #\,) spaces))))
+(def ints (between (pchar #\[) (pchar #\]) (sep-by (pleft pint spaces) (pleft (pchar #\,) spaces))))
 
 (: answer (Parser string))
 (def answer (por (pstring "yes") (pstring "no")))
@@ -35,7 +33,8 @@
 (: minus (Parser (-> int int int)))
 (def minus (pright (pchar #\-) (preturn -)))
 
-(type (: Nested (Union (: Num int) (: Nest (List Nested)))))
+(type (: Nested (Union (: Num int)
+                       (: Nest (List Nested)))))
 
 (: value-ref (ParserRef Nested))
 (def value-ref (pforward))
@@ -49,7 +48,11 @@
 (defun (depth n)
   (match n
     ((Num _) 0)
-    ((Nest xs) (+ 1 (loop (:for x xs) (:acc m (folding 0 (max m (depth x)))) => m)))))
+    ((Nest xs)
+     (+ 1
+        (loop (:for x xs)
+              (:acc m (folding 0 (max m (depth x))))
+          => m)))))
 
 (: expr (-> (Parser int)))
 (defun (expr)
@@ -65,8 +68,8 @@
 (: calc-ref (ParserRef double))
 (def calc-ref (pforward))
 
-(def factor (por (token pdouble)
-                 (between (token (pchar #\()) (token (pchar #\))) (pforwarded calc-ref))))
+(def factor
+  (por (token pdouble) (between (token (pchar #\()) (token (pchar #\))) (pforwarded calc-ref))))
 (def term (chainl1 factor (por (op #\* *) (op #\/ /))))
 (def sum (chainl1 term (por (op #\+ +) (op #\- -))))
 (def calculator (pright spaces (pleft sum eof)))
@@ -87,9 +90,10 @@
           (message (plabel (many-satisfy1 char-alphabetic? "a letter") "a name") "42")
           "Parse error at line 1, column 1:\n42\n^\nExpecting: a name\nUnexpected: '4'")
   (expect "the calculator" (value calculator "2 * (3 + 4)") 14.0)
-  (expect "the calculator refuses"
-          (message calculator "2 * (3 + 4")
-          "Parse error at line 1, column 11:\n2 * (3 + 4\n          ^\nExpecting: ')'\nUnexpected: end of input")
+  (expect
+   "the calculator refuses"
+   (message calculator "2 * (3 + 4")
+   "Parse error at line 1, column 11:\n2 * (3 + 4\n          ^\nExpecting: ')'\nUnexpected: end of input")
 
   ;; The module.
   (expect "ints" (value ints "[1, 2, 3]") (list 1 2 3))
@@ -113,7 +117,11 @@
      (expect "parse-error-position column" (struct-ref (parse-error-position e) column) 1))
     ((Ok _) (fail "parse-error-position")))
   (def st (make-state "12 34"))
-  (expect "a parser called by hand" (match (pint st) ((Ok n) n) ((Err _) -1)) 12)
+  (expect "a parser called by hand"
+          (match (pint st)
+            ((Ok n) n)
+            ((Err _) -1))
+          12)
   (expect "state-position" (struct-ref (state-position st) column) 3)
 
   ;; Building blocks.
@@ -128,8 +136,8 @@
   (expect "pboth" (value (pboth letter digit) "a1") (Tuple #\a #\1))
   (expect "ppipe2" (value (ppipe2 pint (pright (pchar #\x) pint) *) "6x7") 42)
   (expect "ppipe3"
-          (value (ppipe3 pint (pright (pchar #\-) pint) (pright (pchar #\-) pint)
-                         (fun (y m d) (Tuple y m d)))
+          (value (ppipe3 pint (pright (pchar #\-) pint) (pright (pchar #\-) pint) (fun (y m d)
+                                                                                    (Tuple y m d)))
                  "2026-10-05")
           (Tuple 2026 10 5))
   (expect "psequence" (value (psequence (list digit letter digit)) "1a2") (list #\1 #\a #\2))
@@ -138,7 +146,8 @@
   (expect "por" (value answer "no") "no")
   (expect-true "por merges" (says? answer "maybe" "Expecting: 'yes' or 'no'"))
   (expect-true "choice"
-               (says? (choice (list (pstring "red") (pstring "green") (pstring "blue"))) "pink"
+               (says? (choice (list (pstring "red") (pstring "green") (pstring "blue")))
+                      "pink"
                       "Expecting: 'red', 'green' or 'blue'"))
   (expect-true "without attempt" (says? (por a-then-b (pstring "ac")) "ac" "Expecting: 'b'"))
   (expect "with attempt" (value (por (attempt a-then-b) (pstring "ac")) "ac") "ac")
@@ -146,14 +155,18 @@
           (value (pboth (look-ahead letter) (many-satisfy char-alphabetic?)) "abc")
           (Tuple #\a "abc"))
   (expect "followed-by" (value (pleft pint (followed-by (pchar #\;) "';'")) "42;") 42)
-  (expect-true "followed-by refuses" (says? (pleft pint (followed-by (pchar #\;) "';'")) "42," "Expecting: ';'"))
+  (expect-true "followed-by refuses"
+               (says? (pleft pint (followed-by (pchar #\;) "';'")) "42," "Expecting: ';'"))
   (def keyword-if (pleft (pstring "if") (not-followed-by alphanumeric "a longer name")))
   (expect "not-followed-by" (value keyword-if "if (x)") "if")
   (expect-true "not-followed-by refuses" (says? keyword-if "iffy" "Unexpected: a longer name"))
-  (expect-true "plabel" (says? (plabel (many-satisfy1 char-alphabetic? "a letter") "a name") "42" "Expecting: a name"))
+  (expect-true
+   "plabel"
+   (says? (plabel (many-satisfy1 char-alphabetic? "a letter") "a name") "42" "Expecting: a name"))
   (expect "pposition"
           (list-map (fun (t) (match t ((Tuple p _) (struct-ref p column))))
-                    (value (many (pleft (pboth pposition (many-satisfy1 char-alphabetic? "a word")) spaces))
+                    (value (many (pleft (pboth pposition (many-satisfy1 char-alphabetic? "a word"))
+                                        spaces))
                            "ab cd"))
           (list 1 4))
 
@@ -162,7 +175,9 @@
   (expect "pchar" (value (pchar #\x) "xyz") #\x)
   (expect "pchar/ci" (value (pchar/ci #\x) "XYZ") #\X)
   (expect "any-of" (value (any-of "+-*/") "*2") #\*)
-  (expect "none-of" (value (between (pchar #\") (pchar #\") (many-chars (none-of "\""))) "\"hi\"") "hi")
+  (expect "none-of"
+          (value (between (pchar #\") (pchar #\") (many-chars (none-of "\""))) "\"hi\"")
+          "hi")
   (expect "pstring gives back" (value (por (pstring "foo") (pstring "far")) "far") "far")
   (expect "pstring/ci" (value (pstring/ci "select") "SELECT *") "SELECT")
   (expect "many-satisfy" (value (many-satisfy char-numeric?) "2026-10") "2026")
@@ -179,7 +194,10 @@
   ;; Repetition.
   (expect "many" (value (many (pleft pint spaces)) "1 2 3") (list 1 2 3))
   (expect "many-fold" (value (many-fold + 0 (pleft pint spaces)) "1 2 3") 6)
-  (expect "many-till" (value (pmap list->string (pright (pstring "/*") (many-till any-char (pstring "*/")))) "/* hi */") " hi ")
+  (expect "many-till"
+          (value (pmap list->string (pright (pstring "/*") (many-till any-char (pstring "*/"))))
+                 "/* hi */")
+          " hi ")
   (expect "prepeat" (value (prepeat 3 digit) "12345") (list #\1 #\2 #\3))
   (expect "sep-by" (value (sep-by pint (pchar #\,)) "1,2,3") (list 1 2 3))
   (expect "sep-by of nothing" (value (sep-by pint (pchar #\,)) "") Nil)
@@ -193,7 +211,9 @@
   ;; Numbers.
   (expect "pint" (value pint "-17 apples") -17)
   (expect "pdouble" (value pdouble "6.02e23") 6.02e23)
-  (expect "pdouble leaves the point" (value (pboth pdouble (many-satisfy #(not (char=? &1 #\space)))) "1.x") (Tuple 1.0 ".x"))
+  (expect "pdouble leaves the point"
+          (value (pboth pdouble (many-satisfy #(not (char=? &1 #\space)))) "1.x")
+          (Tuple 1.0 ".x"))
 
   ;; Recursion.
   (expect "pforward" (depth (value nested "[1, [2, 3]]")) 2)

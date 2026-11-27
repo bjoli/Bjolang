@@ -485,7 +485,8 @@
                 (exits [(bjo (awaiting-exit child))])
                 ;; Standard error is copied when a redirection wants it.
                 (waits (match errors
-                         ((Some w) [(bjo (pump-into-tail (output-port (process-stderr child)) w tail))])
+                         ((Some w)
+                          [(bjo (pump-into-tail (output-port (process-stderr child)) w tail))])
                          (None (vec-empty)))))))))
 
 ;; Two pipes, because a filter has no ends of its own: one for what is written
@@ -583,7 +584,9 @@
         (abandon joined)
         (Err e))
        ((Ok w)
-        (match (junction (record-ref joined source) (record-ref w sink) (record-ref joined source-link))
+        (match (junction (record-ref joined source)
+                         (record-ref w sink)
+                         (record-ref joined source-link))
           ((Err e)
            (abandon joined)
            (abandon w)
@@ -791,8 +794,7 @@
         (let ((code (process-code (vec-ref children i)))
               (command (vec-ref commands i)))
           (if (or (= code 0)
-                  (and (< i last)
-                       (or (= code 141) (reader-gone? (record-ref command command-link)))))
+                  (and (< i last) (or (= code 141) (reader-gone? (record-ref command command-link)))))
               (go (- i 1))
               (Err (Exited (Stage (stage-index i) (stage-argv (record-ref command command-argv)))
                            code

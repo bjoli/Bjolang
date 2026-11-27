@@ -18,18 +18,20 @@
 (: (-> int string string))
 (defun (repeated n s)
   (def sb (stringbuilder-empty))
-  (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb s)))
+  (loop (:for i (range 0 n))
+        (:do (stringbuilder-add-string! sb s)))
   (stringbuilder->string sb))
 
 (: (-> (Result XmlError %a) string))
 (defun (kind-of r)
   (match r
     ((Ok _) "ok")
-    ((Err e) (match (record-ref e kind)
-               (Malformed "malformed")
-               (DtdProhibited "dtd-prohibited")
-               (TooDeep "too-deep")
-               (LimitExceeded "limit-exceeded")))))
+    ((Err e)
+     (match (record-ref e kind)
+       (Malformed "malformed")
+       (DtdProhibited "dtd-prohibited")
+       (TooDeep "too-deep")
+       (LimitExceeded "limit-exceeded")))))
 
 ;; A tree of this test's own, for xml-tree-fold to build.
 (type-rec
@@ -40,7 +42,8 @@
 (defun (render t)
   (match t
     ((Leaf s) s)
-    ((Branch name kids) (str "(" name (string-join (list->vec (list-map (fun (k) (str " " (render k))) kids)) "") ")"))))
+    ((Branch name kids)
+     (str "(" name (string-join (list->vec (list-map (fun (k) (str " " (render k))) kids)) "") ")"))))
 
 (: (-> string (Result XmlError string)))
 (defun (tree-of text)
@@ -90,12 +93,18 @@
   (expect "the text" (text-content root) "one two three")
   (expect-true "a position" (some? (element-pos root)))
   (expect-true "the tree is the one built by hand"
-               (node=? root (xml-element (xml-name "a") (list (Tuple (xml-name "href") "x"))
-                                         (list (xml-text "one ")
-                                               (xml-element (xml-name "b") Nil (list (xml-text "two")))
-                                               (xml-text " three")))))
-  (expect "a text in pieces is one" (list-length (element-children (root-of (parse-xml "<a>a<![CDATA[b]]>c</a>")))) 1)
-  (expect "an empty CDATA leaves no text" (list-length (element-children (root-of (parse-xml "<a><![CDATA[]]></a>")))) 0)
+               (node=? root
+                       (xml-element (xml-name "a")
+                                    (list (Tuple (xml-name "href") "x"))
+                                    (list (xml-text "one ")
+                                          (xml-element (xml-name "b") Nil (list (xml-text "two")))
+                                          (xml-text " three")))))
+  (expect "a text in pieces is one"
+          (list-length (element-children (root-of (parse-xml "<a>a<![CDATA[b]]>c</a>"))))
+          1)
+  (expect "an empty CDATA leaves no text"
+          (list-length (element-children (root-of (parse-xml "<a><![CDATA[]]></a>"))))
+          0)
   (expect "comments are left out by default, and text around one is one"
           (element-children (root-of (parse-xml "<a>x<!--c-->y</a>")))
           (list (xml-text "xy")))
@@ -104,13 +113,19 @@
           (element-children (root-of commented))
           (list (xml-text "x") (xml-comment "c") (xml-text "y")))
   (expect "and in the prolog"
-          (match commented ((Ok doc) (document-prolog doc)) (_ Nil))
+          (match commented
+            ((Ok doc) (document-prolog doc))
+            (_ Nil))
           (list (xml-comment "one") (xml-pi "style" "a")))
   (expect "and in the epilog"
-          (match commented ((Ok doc) (document-epilog doc)) (_ Nil))
+          (match commented
+            ((Ok doc) (document-epilog doc))
+            (_ Nil))
           (list (xml-comment "two")))
   (expect "PIs are kept without it"
-          (match (parse-xml "<?style a?><a/>") ((Ok doc) (document-prolog doc)) (_ Nil))
+          (match (parse-xml "<?style a?><a/>")
+            ((Ok doc) (document-prolog doc))
+            (_ Nil))
           (list (xml-pi "style" "a")))
   (expect "'drop, and the space between inline elements"
           (text-content (root-of (parse-xml "<p>\n  <b>x</b> <i>y</i>\n</p>" #:whitespace 'drop)))
@@ -120,7 +135,10 @@
           "x y")
   (expect "a doctype under 'parse"
           (match (parse-xml "<!DOCTYPE a [<!ENTITY e 'x'>]><a>&e;</a>" #:dtd 'parse)
-            ((Ok doc) (match (document-doctype doc) ((Some dt) (record-ref dt name)) (None "none")))
+            ((Ok doc)
+             (match (document-doctype doc)
+               ((Some dt) (record-ref dt name))
+               (None "none")))
             ((Err e) (displayed e)))
           "a")
   (expect "none under 'ignore"
@@ -158,13 +176,20 @@
 (: (-> void))
 (defun (safety)
   (def started (monotonic-ms))
-  (expect "billion laughs under 'parse is a limit" (kind-of (parse-xml laughs #:dtd 'parse)) "limit-exceeded")
+  (expect "billion laughs under 'parse is a limit"
+          (kind-of (parse-xml laughs #:dtd 'parse))
+          "limit-exceeded")
   (expect-true "and a quick one" (< (- (monotonic-ms) started) 5000L))
-  (expect "513 levels by default" (kind-of (parse-xml (str (repeated 513 "<a>") (repeated 513 "</a>")))) "too-deep")
-  (def deep (parse-xml (str (repeated 100000 "<a>") "bottom" (repeated 100000 "</a>")) #:max-depth 200000))
+  (expect "513 levels by default"
+          (kind-of (parse-xml (str (repeated 513 "<a>") (repeated 513 "</a>"))))
+          "too-deep")
+  (def deep
+    (parse-xml (str (repeated 100000 "<a>") "bottom" (repeated 100000 "</a>")) #:max-depth 200000))
   (expect "100 000 levels under #:max-depth 200000" (kind-of deep) "ok")
   (expect "and walked" (text-content (root-of deep)) "bottom")
-  (expect "#:max-characters" (kind-of (parse-xml "<a>0123456789</a>" #:max-characters 4L)) "limit-exceeded"))
+  (expect "#:max-characters"
+          (kind-of (parse-xml "<a>0123456789</a>" #:max-characters 4L))
+          "limit-exceeded"))
 
 (: (-> void))
 (defun (sources)
@@ -178,7 +203,8 @@
   (close-output-port out)
   (expect-true "a byte port" (node=? (root-of (parse-xml in)) expected))
   (with-fake-fs (("doc.xml" "<a>café</a>"))
-    (expect-true "a file, through the FS effect" (node=? (root-of (parse-xml (xml-file "doc.xml"))) expected))
+    (expect-true "a file, through the FS effect"
+                 (node=? (root-of (parse-xml (xml-file "doc.xml"))) expected))
     (expect-true "a missing file raises"
                  (err? (try (parse-xml (xml-file "missing.xml")) #:catch (System.IO.IOException))))))
 

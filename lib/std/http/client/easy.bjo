@@ -61,8 +61,7 @@
          (str "status " (int->string code))
          (str "status " (int->string code) ": " body)))
     ((TooLarge limit) (str "the body is larger than " (long->string limit) " bytes"))
-    ((TimedOut d)
-     (str "timed out after " (long->string (/ (duration-ticks d) 10000L)) " ms"))
+    ((TimedOut d) (str "timed out after " (long->string (/ (duration-ticks d) 10000L)) " ms"))
     ((Decode m) (str "cannot decode the body: " m))
     ((File m) (str "file error: " m))))
 
@@ -91,15 +90,14 @@
 ;; - A cancellation of the caller raises as usual, and cancels the fiber.
 (: (-> Duration (Event (Result Exception (Result EasyError %a))) (Result EasyError %a)))
 (defun (within limit work)
-  (def race (choose (wrap work
-                          (fun (outcome)
-                            (match outcome
-                              ((Ok result) result)
-                              ((Err e) (raise e)))))
-                    (wrap (timeout limit) (fun (fired) (Err (TimedOut limit))))))
+  (def race
+    (choose (wrap work (fun (outcome)
+                         (match outcome
+                           ((Ok result) result)
+                           ((Err e) (raise e)))))
+            (wrap (timeout limit) (fun (fired) (Err (TimedOut limit))))))
   (with-scope
-    (by-colour (#:sync (sync/blocking race))
-               (#:bjo (sync race)))))
+    (by-colour (#:sync (sync/blocking race)) (#:bjo (sync race)))))
 
 ;; Returns #t when the response says its body is longer than `max`.
 (: (-> Response long bool))
@@ -141,9 +139,10 @@
            (bytestringbuilder-add-bytes! builder chunk)
            (more (+ count (array-length chunk)))))))
   (def bytes (bytestringbuilder->bytestring builder))
-  (def kept (if (> (bytestring-length bytes) snippet-bytes)
-                (bytestring-slice bytes 0 snippet-bytes)
-                bytes))
+  (def kept
+    (if (> (bytestring-length bytes) snippet-bytes)
+        (bytestring-slice bytes 0 snippet-bytes)
+        bytes))
   (string-trim (bytestring->string/lossy kept)))
 
 ;; Returns the response if its status is 2xx and its declared length fits.
@@ -181,8 +180,7 @@
 (defbjo (text-of req max)
   (match (body-of req max)
     ((Err e) (Err e))
-    ((Ok (Tuple bytes encoding))
-     (Ok (bytestring->string/lossy bytes #:encoding encoding)))))
+    ((Ok (Tuple bytes encoding)) (Ok (bytestring->string/lossy bytes #:encoding encoding)))))
 
 ;; The body of `req` as bytes.
 (: (-bjo-> Request long (Result EasyError ByteString)))
@@ -214,8 +212,7 @@
 ;; Returns `fields` with `Accept: application/json` unless they have an Accept.
 (: (-> (Vec Pair) (Vec Pair)))
 (defun (accepting-json fields)
-  (if (any? (fun (p) (match p ((Tuple name value) (= (string-downcase name) "accept"))))
-                fields)
+  (if (any? (fun (p) (match p ((Tuple name value) (= (string-downcase name) "accept")))) fields)
       fields
       (vec-add fields (Tuple "Accept" "application/json"))))
 
@@ -264,14 +261,14 @@
 (: (-> string %a (#:query (Vec Pair)) (#:headers (Vec Pair)) (#:timeout Duration) (#:max-bytes long)
        (Result EasyError Json))
    (where (->json %a)))
-(defun (post-json url value
+(defun (post-json url
+                  value
                   #:query (vec-empty)
                   #:headers (vec-empty)
                   #:timeout (seconds 30)
                   #:max-bytes memory-limit)
-  (def req (http-post url (json-body (->json value))
-                      #:query query
-                      #:headers (accepting-json headers)))
+  (def req
+    (http-post url (json-body (->json value)) #:query query #:headers (accepting-json headers)))
   (match (within timeout (spawn-evt (text-of req max-bytes)))
     ((Err e) (Err e))
     ((Ok text) (json-of text))))
@@ -306,12 +303,12 @@
     ((Err e) (Err (File (.-Message (as-exception e)))))
     ((Ok port)
      (def copied
-       (try (with-open ((out port))
-              (match (try (copy-capped (response-bytes-port r) out max)
-                          #:catch (System.IO.IOException))
-                ((Ok result) result)
-                ((Err e) (Err (File (.-Message e))))))
-            #:catch (System.Exception)))
+       (try
+         (with-open ((out port))
+           (match (try (copy-capped (response-bytes-port r) out max) #:catch (System.IO.IOException))
+             ((Ok result) result)
+             ((Err e) (Err (File (.-Message e))))))
+         #:catch (System.Exception)))
      (match copied
        ((Err e)
         (ignore (file-delete part))
@@ -338,9 +335,9 @@
          ((Ok got) (save-body got path part overwrite max)))))))
 
 (: (-> string string (#:query (Vec Pair)) (#:headers (Vec Pair)) (#:timeout Duration)
-       (#:max-bytes long) (#:overwrite bool)
-       (Result EasyError long)))
-(defun (download url path
+       (#:max-bytes long) (#:overwrite bool) (Result EasyError long)))
+(defun (download url
+                 path
                  #:query (vec-empty)
                  #:headers (vec-empty)
                  #:timeout (minutes 10)
@@ -369,10 +366,7 @@
 
 (: (-> (Vec string) (#:parallel int) (#:timeout Duration) (#:max-bytes long)
        (Vec (Result EasyError string))))
-(defun (fetch-many urls
-                   #:parallel 8
-                   #:timeout (seconds 30)
-                   #:max-bytes memory-limit)
+(defun (fetch-many urls #:parallel 8 #:timeout (seconds 30) #:max-bytes memory-limit)
   (when (< parallel 1)
     (raise (cast Exception (ArgumentException. "fetch-many: #:parallel must be 1 or more"))))
   (def results (: (make-array (vec-length urls)) (Array (Result EasyError string))))

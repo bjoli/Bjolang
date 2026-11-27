@@ -503,10 +503,10 @@
    "using BjoHost = Bjolang.Runtime.Host;\n"
    "\n"
    "[assembly: UsesPermission(\"android.permission.USE_BIOMETRIC\")]\n"
-   (string-join
-    (list->vec (list-map #(str "[assembly: UsesPermission(" (cs-string (permission-name &)) ")]\n")
-                         permissions))
-    "")
+   (string-join (list->vec (list-map #(str "[assembly: UsesPermission("
+                                           (cs-string (permission-name &)) ")]\n")
+                                     permissions))
+                "")
    "\n"
    "namespace BjoAndroid;\n"
    "\n"
@@ -712,9 +712,10 @@
                path
                ", and it is not there. Rebuild with -c and publish again.")))
     (None
-     (raise-err (file-copy program
-                (path-combine libs (str (assembly-simple-name (assembly-name-of program)) ".dll"))
-                #:mode Truncate))
+     (raise-err (file-copy
+                 program
+                 (path-combine libs (str (assembly-simple-name (assembly-name-of program)) ".dll"))
+                 #:mode Truncate))
      (loop (:for (Tuple name path) own)
            (:do (raise-err (file-copy path (path-combine libs (str name ".dll")) #:mode Truncate))))
      (Ok (+ 1 (length own))))))
@@ -833,8 +834,9 @@
       (None unit))
     (def apk (path-combine out (str (record-ref job id) ".apk")))
     (raise-err (file-copy built apk #:mode Truncate))
-    (raise-err (file-write-text (path-combine out published-marker)
-                     "Made by bjo publish --android. Publishing again replaces this directory.\n"))
+    (raise-err (file-write-text
+                (path-combine out published-marker)
+                "Made by bjo publish --android. Publishing again replaces this directory.\n"))
     (Ok apk)))
 
 ;; ---------------------------------------------------------------------------
@@ -870,8 +872,8 @@
     ((Ok "armeabi-v7a") (Ok "arm"))
     ((Ok "x86") (Ok "x86"))
     ((Ok other)
-     (Err
-      (str "bjo run --android: the device's ABI is \"" other "\", which .NET does not build for.")))
+     (Err (str "bjo run --android: the device's ABI is \"" other
+               "\", which .NET does not build for.")))
     ((Err why)
      ;; adb writes its reason to standard error, which is the terminal's.
      (Err (str "bjo run --android: no device to run on."

@@ -65,14 +65,19 @@
 ;; so the work cannot be dead.
 (: (-> string JsonObjects int))
 (defun (best-ticks text objects)
-  (let go ((i 0) (best 2000000000) (ok 0))
+  (let go ((i 0)
+           (best 2000000000)
+           (ok 0))
     (if (= i reps)
         (let ()
-          (when (< ok 0) (println "unreachable"))
+          (when (< ok 0)
+            (println "unreachable"))
           best)
         (let ((sw (stopwatch-of)))
           (.Start sw)
-          (let ((got (match (parse-json text #:objects objects) ((Ok _) 1) ((Err _) 0))))
+          (let ((got (match (parse-json text #:objects objects)
+                       ((Ok _) 1)
+                       ((Err _) 0))))
             (.Stop sw)
             (let ((t (elapsed-ticks sw)))
               (go (+ i 1) (if (< t best) t best) (+ ok got))))))))
@@ -86,9 +91,15 @@
     (.Start sw)
     (let ((r (match (open-input-file path)
                ((Err e) (Err "unopenable"))
-               ((Ok p) (let ((v (read-json p))) (close-input-port p) v)))))
+               ((Ok p)
+                (let ((v (read-json p)))
+                  (close-input-port p)
+                  v)))))
       (.Stop sw)
-      (when (match r ((Ok _) #f) ((Err _) #t)) (println "the file did not parse"))
+      (when (match r
+              ((Ok _) #f)
+              ((Err _) #t))
+        (println "the file did not parse"))
       (elapsed-ticks sw))))
 
 ;; Tenths of a MB/s. Ticks are 100ns, so bytes per second is bytes times 1e7
@@ -120,19 +131,21 @@
           ;; here rather than reading as a fast one.
           (let ((count (nodes (match (parse-json text)
                                 ((Ok j) j)
-                                ((Err e) (let () (println (str name ": " e)) JsonNull))))))
-          (let ((t (best-ticks text 'map))
-                (tf (best-ticks text 'fields))
-                (ft (file-ticks path)))
-            (println
-             (str (string-pad-right name 14)
-                  (string-pad-left (int->string (/ bytes 1000)) 6) " kB"
-                  (string-pad-left (as-ms t) 9) " ms"
-                  (string-pad-left (rate bytes t) 8) " MB/s"
-                  (string-pad-left (as-ms tf) 9) " ms"
-                  (string-pad-left (rate bytes tf) 8) " MB/s 'fields"
-                  (string-pad-left (as-ms ft) 10) " ms off a file"
-                  (string-pad-left (int->string count) 9) " nodes"))))))))
+                                ((Err e)
+                                 (let ()
+                                   (println (str name ": " e))
+                                   JsonNull))))))
+            (let ((t (best-ticks text 'map))
+                  (tf (best-ticks text 'fields))
+                  (ft (file-ticks path)))
+              (println (str (string-pad-right name 14)
+                            (string-pad-left (int->string (/ bytes 1000)) 6) " kB"
+                            (string-pad-left (as-ms t) 9) " ms"
+                            (string-pad-left (rate bytes t) 8) " MB/s"
+                            (string-pad-left (as-ms tf) 9) " ms"
+                            (string-pad-left (rate bytes tf) 8) " MB/s 'fields"
+                            (string-pad-left (as-ms ft) 10) " ms off a file"
+                            (string-pad-left (int->string count) 9) " nodes"))))))))
 
 (defun (main)
   (println (str "file             size   best of " (int->string reps) "        rate"))

@@ -22,7 +22,9 @@
   (if (= x 500) (raise (cast Exception (Boom. "at 500"))) x))
 
 (: (-> int (Vec int)))
-(defun (upto n) (loop (:for i (range 0 n)) (:acc v (vecing i))))
+(defun (upto n)
+  (loop (:for i (range 0 n))
+        (:acc v (vecing i))))
 
 ;; The same calls in ordinary code, where the calling thread runs parts too.
 (: (-> (Vec int) void))
@@ -32,7 +34,9 @@
           (array->vec (par-filter even? (vec->array v)))
           (vec-filter even? v))
   (expect "ordinary code: in-parallel of a loop"
-          (in-parallel v (fun (p) (loop (:for x (: p (Vec int))) (:acc out (vecing (square x))))))
+          (in-parallel v (fun (p)
+                           (loop (:for x (: p (Vec int)))
+                                 (:acc out (vecing (square x))))))
           (vec-map square v)))
 
 (defbjo (main)
@@ -73,41 +77,64 @@
           (vec->hashset (vec-filter even? v)))
   (expect "par-filter of an ordered map, in key order"
           (orderedmap->vec (par-filter (fun (x) (= 0 (% x 3))) om))
-          (vec-filter (fun (kv) (def (_ x) kv) (= 0 (% x 3))) pairs))
+          (vec-filter (fun (kv)
+                        (def (_ x) kv)
+                        (= 0 (% x 3)))
+                      pairs))
   (expect "par-filter of an ordered set, in order"
           (orderedset->vec (par-filter even? (vec->orderedset v)))
           (vec-filter even? v))
 
   ;; --- in-parallel of a loop: each result combines in the order of the parts ---
   (expect "vecing keeps the order"
-          (in-parallel v (fun (p) (loop (:for x (: p (Vec int))) (:acc out (vecing (square x))))))
+          (in-parallel v (fun (p)
+                           (loop (:for x (: p (Vec int)))
+                                 (:acc out (vecing (square x))))))
           (vec-map square v))
   (expect "vecing/small keeps the order"
-          (in-parallel v (fun (p) (loop (:for x (: p (Vec int))) (:acc out (vecing/small (square x))))))
+          (in-parallel v (fun (p)
+                           (loop (:for x (: p (Vec int)))
+                                 (:acc out (vecing/small (square x))))))
           (vec-map square v))
   (expect "listing keeps the order"
-          (in-parallel v (fun (p) (loop (:for x (: p (Vec int))) (:acc out (listing (square x))))))
+          (in-parallel v (fun (p)
+                           (loop (:for x (: p (Vec int)))
+                                 (:acc out (listing (square x))))))
           (vec->list (vec-map square v)))
   (expect "stringing keeps the order"
-          (in-parallel (range 0 1000) (fun (p) (loop (:for i (: p Range)) (:acc s (stringing (int->char (+ 97 (% i 10))))))))
-          (loop (:for i (range 0 1000)) (:acc s (stringing (int->char (+ 97 (% i 10)))))))
+          (in-parallel (range 0 1000) (fun (p)
+                                        (loop (:for i (: p Range))
+                                              (:acc s (stringing (int->char (+ 97 (% i 10))))))))
+          (loop (:for i (range 0 1000))
+                (:acc s (stringing (int->char (+ 97 (% i 10)))))))
   (expect "hash-setting is the union"
-          (in-parallel v (fun (p) (loop (:for x (: p (Vec int))) (:acc s (hash-setting (% x 7))))))
+          (in-parallel v (fun (p)
+                           (loop (:for x (: p (Vec int)))
+                                 (:acc s (hash-setting (% x 7))))))
           (vec->hashset (upto 7)))
   (expect "ordered-setting is the union, in order"
-          (orderedset->vec (in-parallel v (fun (p) (loop (:for x (: p (Vec int))) (:acc s (ordered-setting (- n x)))))))
+          (orderedset->vec (in-parallel v (fun (p)
+                                            (loop (:for x (: p (Vec int)))
+                                                  (:acc s (ordered-setting (- n x)))))))
           (vec-map (fun (i) (+ i 1)) v))
   (expect "the parts of an array, as immutable arrays"
-          (iarray->vec (in-parallel a (fun (p) (array->iarray (loop (:for x (: p (ArrayPart int))) (:acc out (arraying (square x))))))))
+          (iarray->vec (in-parallel a (fun (p)
+                                        (array->iarray (loop (:for x (: p (ArrayPart int)))
+                                                             (:acc out (arraying (square x))))))))
           (vec-map square v))
   (expect "the parts of a map's entries"
-          (vec-length (in-parallel m (fun (p) (loop (:for (Tuple k x) (: p (Map int int))) (:acc out (vecing (- x k)))))))
+          (vec-length (in-parallel m (fun (p)
+                                       (loop (:for (Tuple k x) (: p (Map int int)))
+                                             (:acc out (vecing (- x k)))))))
           n)
 
   ;; --- par-for-each ---
   (def total (make-atomic 0))
   (par-for-each (fun (x) (ignore (atomic-add! total x))) v)
-  (expect "par-for-each runs on each element" (atomic-ref total) (loop (:for i v) (:acc s (summing i))))
+  (expect "par-for-each runs on each element"
+          (atomic-ref total)
+          (loop (:for i v)
+                (:acc s (summing i))))
   (def seen (make-atomic 0))
   (par-for-each (fun (kv) (ignore (atomic-increment! seen))) om)
   (expect "par-for-each over an ordered map" (atomic-ref seen) n)
@@ -118,7 +145,9 @@
                  ((Ok _) #f)
                  ((Err _) #t)))
   (expect-true "par-filter raises what a part raises"
-               (match (try (par-filter (fun (x) (= 0 (fails-at-500 x))) a) #:catch (System.InvalidOperationException))
+               (match (try
+                        (par-filter (fun (x) (= 0 (fails-at-500 x))) a)
+                        #:catch (System.InvalidOperationException))
                  ((Ok _) #f)
                  ((Err _) #t)))
 

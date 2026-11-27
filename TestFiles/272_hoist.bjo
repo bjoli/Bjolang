@@ -35,7 +35,6 @@
   (set! attempts (+ attempts 1))
   (if (= attempts 1) (raise (Failure. "not yet")) 42))
 
-
 (: (-> int))
 (defun (flaky-value)
   (please-hoist-i-promise-i-am-not-naughty (flaky!)))
@@ -56,18 +55,18 @@
 (: (-> Keyword))
 (defun (nested)
   (please-hoist-i-promise-i-am-not-naughty
-    (let ((inner (please-hoist-i-promise-i-am-not-naughty :deep)))
-      inner)))
+   (let ((inner (please-hoist-i-promise-i-am-not-naughty :deep)))
+     inner)))
 
 (defun (main)
   (expect "the value" (shared) ["x" "x"])
-  (ignore (loop (:for i (range 0 100)) (:do (ignore (shared)))))
+  (ignore (loop (:for i (range 0 100))
+                (:do (ignore (shared)))))
   (expect "built once, however often it is reached" (built) 1)
   (expect "the same form elsewhere is the same value" (shared-again) ["x" "x"])
   (expect "and still built once" (built) 1)
 
-  (expect-true "a body that throws throws"
-               (err? (try (flaky-value) #:catch (System.Exception))))
+  (expect-true "a body that throws throws" (err? (try (flaky-value) #:catch (System.Exception))))
   (expect "and is tried again next time" (flaky-value) 42)
   (expect "then kept" (flaky-value) 42)
   (expect "two attempts in all" attempts 2)

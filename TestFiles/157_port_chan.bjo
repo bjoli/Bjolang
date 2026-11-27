@@ -23,7 +23,7 @@
     (loop (:for line (port->stream read-line p))
           (:until (string-empty? line))
           (:acc hs (listing line))
-          => hs))
+      => hs))
   (Tuple headers (read-all p)))
 
 (: (-> InputPort string))
@@ -53,9 +53,10 @@
   (expect "an empty port ends at once"
           (await-value (bjo (collect (open-input-string ""))))
           (: (list) (List string)))
-  (expect "a loop left early leaves the rest in the port"
-          (await-value (bjo (headers-then-body (open-input-string "Host: x\nAccept: y\n\nbody line\nmore"))))
-          (Tuple (list "Host: x" "Accept: y") "body line\nmore"))
+  (expect
+   "a loop left early leaves the rest in the port"
+   (await-value (bjo (headers-then-body (open-input-string "Host: x\nAccept: y\n\nbody line\nmore"))))
+   (Tuple (list "Host: x" "Accept: y") "body line\nmore"))
   (expect "a different reader"
           (await-value (bjo (collect-with read-all (open-input-string "all\nof\nit"))))
           (list "all\nof\nit"))

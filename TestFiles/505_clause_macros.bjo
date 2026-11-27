@@ -20,9 +20,7 @@
 (defun (main)
   (def v [10 11 12 13 14 15])
 
-  (expect "the elements at even positions"
-          {listing x (:for x (in-evens v))}
-          (list 10 12 14))
+  (expect "the elements at even positions" {listing x (:for x (in-evens v))} (list 10 12 14))
 
   ;; A driver after the macro clause steps once for each element of v, the
   ;; skipped ones too: the macro's :when is after both drivers.
@@ -46,7 +44,7 @@
                 (:with k 1000 (+ k 1))
                 (:let e (+ x k))
                 (:acc out (listing e))
-                => out)
+            => out)
           (list 1010 1014 1018))
 
   (expect "a macro that answers another"
@@ -63,9 +61,10 @@
           (list (Tuple 0 10) (Tuple 0 12) (Tuple 0 14) (Tuple 1 10) (Tuple 1 12) (Tuple 1 14)))
   (expect "in a :subloop form"
           (loop (:for row [[1 2 3] [4 5 6 7]])
-                (:subloop (:for x (in-evens row)) (:acc s (summing x)))
+                (:subloop (:for x (in-evens row))
+                          (:acc s (summing x)))
                 (:acc out (listing s))
-                => out)
+            => out)
           (list 4 10))
   (expect "with :abandon at its level"
           (loop (:for row [[1 2 3] [4 5 6 7]])
@@ -73,7 +72,7 @@
                 (:for x (in-evens row))
                 (:abandon (> x 4))
                 (:acc out (listing x))
-                => out)
+            => out)
           (list 1 3 4))
   (expect "the module's own twice" (twice 1) 100)
   (expect "the module's own thrice" (thrice 1) 1000)
@@ -85,23 +84,30 @@
           {listing p (:for p (in-countdown [7 8 9]))}
           (list (Tuple 3 7) (Tuple 2 8) (Tuple 1 9)))
   (expect "a prologue for each entry of a nested level"
-          {listing (Tuple r left) (:for row [[1 2] [3 4 5]]) (:let r (vec-length row)) (:for (Tuple left _) (in-countdown row))}
+          {listing (Tuple r left)
+                   (:for row [[1 2] [3 4 5]])
+                   (:let r (vec-length row))
+                   (:for (Tuple left _) (in-countdown row))}
           (list (Tuple 2 2) (Tuple 2 1) (Tuple 3 3) (Tuple 3 2) (Tuple 3 1)))
   (expect "a prologue before a :subloop form"
           (loop (:for row [[1 2] [3 4 5]])
-                (:subloop (:for (Tuple left x) (in-countdown row)) (:acc s (summing (* left x))))
+                (:subloop (:for (Tuple left x) (in-countdown row))
+                          (:acc s (summing (* left x))))
                 (:acc out (listing s))
-                => out)
+            => out)
           (list 4 22))
   (expect "two prologues in one group"
-          {listing (Tuple a b) (:for (Tuple a _) (in-countdown [1 2 3])) (:for (Tuple b _) (in-countdown [4 5 6 7]))}
+          {listing (Tuple a b)
+                   (:for (Tuple a _) (in-countdown [1 2 3]))
+                   (:for (Tuple b _) (in-countdown [4 5 6 7]))}
           (list (Tuple 3 4) (Tuple 2 3) (Tuple 1 2)))
   (expect "a named loop with a prologue"
-          (loop lp (:for (Tuple left x) (in-countdown [5 6])) (:acc out (listing (* left x))) => out)
+          (loop lp
+                (:for (Tuple left x) (in-countdown [5 6]))
+                (:acc out (listing (* left x)))
+            => out)
           (list 10 6))
-  (expect "a helper the macro's module imports"
-          {listing x (:for x (in-tripled [1 2]))}
-          (list 3 6))
+  (expect "a helper the macro's module imports" {listing x (:for x (in-tripled [1 2]))} (list 3 6))
   (expect "a template's => and Tuple"
           {listing p (:for p (in-running [1 2 3]))}
           (list (Tuple 0 0 6) (Tuple 1 1 5) (Tuple 2 3 3)))

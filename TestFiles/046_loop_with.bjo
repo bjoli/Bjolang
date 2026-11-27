@@ -23,7 +23,7 @@
         (:with b 1 (+ a b))
         (:for i (range 0 n))
         (:acc out (listing a))
-        => out))
+    => out))
 
 ;; The same thing with no `:for` at all: a `:with` with an `end` bounds the
 ;; level by itself.
@@ -32,7 +32,7 @@
   (loop (:with a 0 b (> a limit))
         (:with b 1 (+ a b))
         (:acc out (listing a))
-        => out))
+    => out))
 
 ;; One clause, one slot: a tuple pattern carries the whole state.
 (: (-> int (List int)))
@@ -40,7 +40,7 @@
   (loop (:with (Tuple a b) (Tuple 0 1) (Tuple b (+ a b)))
         (:for i (range 0 n))
         (:acc out (listing a))
-        => out))
+    => out))
 
 ;; ---------------------------------------------------------------------------
 ;; Updates are simultaneous
@@ -54,7 +54,7 @@
         (:with b 1 a)
         (:for i (range 0 4))
         (:acc out (listing a))
-        => out))
+    => out))
 
 ;; The sequential reading of the same recurrence, spelled out: a `:let` names
 ;; the new value of `a`, and both updates use it. `a` still advances to `b`, but
@@ -69,7 +69,7 @@
         (:for i (range 0 n))
         (:let a-next b)
         (:acc out (listing a))
-        => out))
+    => out))
 
 ;; ---------------------------------------------------------------------------
 ;; A `:with` iterates, so it does not break `:for` adjacency
@@ -83,7 +83,7 @@
         (:with a 0 (+ a 10))
         (:for y (range 0 3))
         (:acc out (listing (+ x (+ a y))))
-        => out))
+    => out))
 
 ;; `(:subloop)` is still how two iterating clauses are separated.
 (: (-> (Tuple int int)))
@@ -94,7 +94,7 @@
         (:for y (range 0 2))
         (:acc sum (summing a))
         (:acc runs (summing 1))
-        => (Tuple sum runs)))
+    => (Tuple sum runs)))
 
 ;; ---------------------------------------------------------------------------
 ;; Termination tests run in clause order
@@ -103,7 +103,8 @@
 ;; A sequence whose `done?` is effectful — an enumerator-backed cursor really
 ;; does advance in `done?`, so which test runs first is observable. The tally
 ;; rides along in a one-element array, which a struct can hold by reference.
-(type (: Probe (Struct (: limit int) (: tally (Array int)))))
+(type (: Probe (Struct (: limit int)
+                       (: tally (Array int)))))
 
 (: (-> int Probe))
 (defun (probe limit)
@@ -132,7 +133,7 @@
     (loop (:with a 0 (+ a 1) (>= a 2))
           (:for x p)
           (:acc c (counting x))
-          => c))
+      => c))
 
   (Tuple n (array-ref (record-ref p tally) 0)))
 
@@ -146,7 +147,7 @@
     (loop (:for x p)
           (:with a 0 (+ a 1) (>= a 2))
           (:acc c (counting x))
-          => c))
+      => c))
 
   (Tuple n (array-ref (record-ref p tally) 0)))
 
@@ -162,7 +163,7 @@
         (:for i (range 0 6))
         (:when (= 0 (% a 2)))
         (:acc out (listing a))
-        => out))
+    => out))
 
 ;; `:finish` leaves through the finish block and updates nothing, so the last
 ;; value accumulated is the one from the iteration before the break.
@@ -172,7 +173,7 @@
         (:for i (range 0 10))
         (:finish (= a 3))
         (:acc out (listing a))
-        => out))
+    => out))
 
 ;; ---------------------------------------------------------------------------
 ;; A named loop may override a `:with`
@@ -182,10 +183,11 @@
 ;; `:for` variable could never do.
 (: (-> (List int)))
 (defun (skipper)
-  (loop lp (:with a 0 (+ a 1) (> a 20))
-           (:acc out (listing a))
-           (:do (if (= a 3) (lp #:a 10) (lp)))
-           => out))
+  (loop lp
+        (:with a 0 (+ a 1) (> a 20))
+        (:acc out (listing a))
+        (:do (if (= a 3) (lp #:a 10) (lp)))
+    => out))
 
 ;; ---------------------------------------------------------------------------
 ;; Loop-invariant, and deep
@@ -198,7 +200,7 @@
   (loop (:with k 7)
         (:for i (range 0 3))
         (:acc total (summing k))
-        => total))
+    => total))
 
 ;; Deep enough that anything but a jump would exhaust the stack.
 (: (-> int int))
@@ -206,7 +208,7 @@
   (loop (:with a 0 (+ a 1))
         (:for i (range 0 n))
         (:acc last (folding 0 a))
-        => last))
+    => last))
 
 (defun (main args)
   (expect-true "fibonacci" (same? (fibs 10) '(0 1 1 2 3 5 8 13 21 34)))
@@ -238,7 +240,7 @@
   (expect-true ":finish updates nothing" (same? (breaking) '(0 1 2)))
 
   (expect-true "named loop overrides a :with"
-          (same? (skipper) '(0 1 2 3 10 11 12 13 14 15 16 17 18 19 20)))
+               (same? (skipper) '(0 1 2 3 10 11 12 13 14 15 16 17 18 19 20)))
 
   (expect-true "loop-invariant :with" (= 21 (invariant)))
   (expect-true "deep iteration" (= 199999 (deep 200000)))

@@ -38,22 +38,21 @@
 ;; counts as "missing", so that the stamp changes when it comes back.
 (: formatter-stamp (-> (List string) string) #:sync)
 (defun (formatter-stamp files)
-  (text-hash
-   (string-join (list->vec (list-map (fun (f)
-                                       (if (file-exists? f)
-                                           (bytes->hex (hash-file f))
-                                           "missing"))
-                                     files))
-                " ")))
+  (text-hash (string-join (list->vec (list-map (fun (f)
+                                                 (if (file-exists? f)
+                                                     (bytes->hex (hash-file f))
+                                                     "missing"))
+                                               files))
+                          " ")))
 
 ;; The mark of the file at `path`, whose text has the hash `hash`, or `None`
 ;; when it is not there.
 (: (-> string string (Option Mark)))
 (defun (mark-of path hash)
   (match (file-info path)
-    ((Some info) (Some (Mark (size (record-ref info size))
-                             (modified-ms (record-ref info modified-ms))
-                             (hash hash))))
+    ((Some info)
+     (Some
+      (Mark (size (record-ref info size)) (modified-ms (record-ref info modified-ms)) (hash hash))))
     (None None)))
 
 ;; The long that `s` writes, or `None` when it is not one: digits, perhaps
@@ -61,7 +60,8 @@
 (: (-> string (Option long)))
 (defun (long-of s)
   (def digits (if (string-starts-with? s "-") (string-drop s 1) s))
-  (if (and (not (string-empty? digits)) (not (any? (fun (c) (not (char-numeric? c))) (string->list digits))))
+  (if (and (not (string-empty? digits))
+           (not (any? (fun (c) (not (char-numeric? c))) (string->list digits))))
       (Some (string->long s))
       None))
 
@@ -75,7 +75,8 @@
         (match (string-split-once rest " ")
           ((Some (Tuple hash path))
            (match (Tuple (long-of size) (long-of ms))
-             ((Tuple (Some s) (Some m)) (Some (Tuple path (Mark (size s) (modified-ms m) (hash hash)))))
+             ((Tuple (Some s) (Some m))
+              (Some (Tuple path (Mark (size s) (modified-ms m) (hash hash)))))
              (_ None)))
           (None None)))
        (None None)))
@@ -112,23 +113,27 @@
 (defun (save-record! path stamp record)
   (def temp (str path ".tmp"))
   (def written
-    (match (directory-create (match (path-directory path) ((Some d) d) (None ".")))
+    (match (directory-create (match (path-directory path)
+                               ((Some d) d)
+                               (None ".")))
       ((Err _) #f)
       ((Ok _)
        (match (file-write-text temp "")
          ((Err _) #f)
          ((Ok _) #t)))))
   (when written
-    (def now (match (file-info temp)
-               ((Some info) (record-ref info modified-ms))
-               (None 0L)))
+    (def now
+      (match (file-info temp)
+        ((Some info) (record-ref info modified-ms))
+        (None 0L)))
     (def sb (stringbuilder-empty))
     (stringbuilder-add-string! sb (str "stamp " stamp "\n"))
     (loop (:for (Tuple k m) (map->list record))
-          (:do (def ms (if (> (record-ref m modified-ms) (- now 2000L)) -1L (record-ref m modified-ms)))
-               (stringbuilder-add-string!
-                sb
-                (str (long->string (record-ref m size)) " " (long->string ms) " " (record-ref m hash) " " k "\n"))))
+          (:do
+           (def ms (if (> (record-ref m modified-ms) (- now 2000L)) -1L (record-ref m modified-ms)))
+           (stringbuilder-add-string! sb
+                                      (str (long->string (record-ref m size)) " " (long->string ms)
+                                           " " (record-ref m hash) " " k "\n"))))
     (ignore (file-write-text temp (stringbuilder->string sb))))
   (and written
        (match (file-move temp path #:mode MoveReplace)

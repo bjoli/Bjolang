@@ -49,8 +49,9 @@
                 (go (+ i 1) (+ acc (sync (chan-recv ch))))))))
 
       ;; Parked on watches the short fibers retired, as far as threads allow.
-      (def ps (loop (:for i (range 0 parked-fibers))
-                    (:acc v (vecing (bjo (patient never))))))
+      (def ps
+        (loop (:for i (range 0 parked-fibers))
+              (:acc v (vecing (bjo (patient never))))))
       (sync (timeout (milliseconds 50)))
       (def stopped (cancel (Requested "stop")))
       (Tuple total ps)))
@@ -58,9 +59,9 @@
   (match results
     ((Tuple total ps)
      (expect "every short fiber handed its value over"
-             total (/ (* short-fibers (- short-fibers 1)) 2))
-     (expect "cancelling the scope reached every parked fiber"
-             (count-failed ps) parked-fibers)))
+             total
+             (/ (* short-fibers (- short-fibers 1)) 2))
+     (expect "cancelling the scope reached every parked fiber" (count-failed ps) parked-fibers)))
 
   (println "369 ok")
   0)

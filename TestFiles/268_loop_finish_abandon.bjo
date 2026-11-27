@@ -20,7 +20,9 @@
     (loop (:for x xs)
           (:finish (> x 2))
           (:acc s (summing x))
-          => (begin (set! ends (+ ends 1)) s)))
+      => (begin
+           (set! ends (+ ends 1))
+           s)))
 
   (Tuple got ends))
 
@@ -36,7 +38,9 @@
     (loop (:for x xs)
           (:finish (> x 2) -1)
           (:acc s (summing x))
-          => (begin (set! ends (+ ends 1)) s)))
+      => (begin
+           (set! ends (+ ends 1))
+           s)))
 
   (Tuple got ends))
 
@@ -47,9 +51,11 @@
 
   (def got
     (loop (:for x xs)
-          (:finish (> x 100) (begin (set! evaluated (+ evaluated 1)) x))
+          (:finish (> x 100) (begin
+                               (set! evaluated (+ evaluated 1))
+                               x))
           (:acc s (summing x))
-          => s))
+      => s))
 
   (Tuple got evaluated))
 
@@ -63,7 +69,7 @@
   (loop (:for x xs)
         (:acc s (summing x))
         (:finish (> x 2) (* s 100))
-        => s))
+    => s))
 
 ;; The same clauses the other way round: `s` does not include it yet.
 (: (-> (List int) int))
@@ -71,14 +77,14 @@
   (loop (:for x xs)
         (:finish (> x 2) (* s 100))
         (:acc s (summing x))
-        => s))
+    => s))
 
 ;; A loop variable in the value.
 (: (-> int (List int) (Option int)))
 (defun (first-over limit xs)
   (loop (:for x xs)
         (:finish (> x limit) (Some x))
-        => None))
+    => None))
 
 ;; From a nested level, the value ends the whole loop.
 (: (-> (List int) (List int) int))
@@ -88,14 +94,15 @@
         (:for y ys)
         (:acc n (counting y))
         (:finish (= (+ x y) 5) (+ (* 100 x) (* 10 y) n))
-        => -1))
+    => -1))
 
 ;; In a consumer of a `seql`, which `SeqFusion` splices into the producer.
 (: (-> int (Option int)))
 (defun (fused-first limit)
-  (loop (:for e (seql (:for i (range 0 10)) (:yield (* i i))))
+  (loop (:for e (seql (:for i (range 0 10))
+                      (:yield (* i i))))
         (:finish (> e limit) (Some e))
-        => None))
+    => None))
 
 ;; ---------------------------------------------------------------------------
 ;; :abandon

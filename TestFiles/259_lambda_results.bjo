@@ -29,13 +29,20 @@
   (:or (: ISym symbol) (: IStr string) (: ISub (Item ...))))
 
 (: (-> Mode string))
-(defun (mode-name m) (match m (Fast "fast") (Safe "safe")))
+(defun (mode-name m)
+  (match m
+    (Fast "fast")
+    (Safe "safe")))
 
 (: (-> (-> int void) void))
-(defun (twice f) (f 1) (f 2))
+(defun (twice f)
+  (f 1)
+  (f 2))
 
 (: (-> (#:each (-> int void)) void))
-(defun (twice/kw #:each (fun (n) unit)) (each 1) (each 2))
+(defun (twice/kw #:each (fun (n) unit))
+  (each 1)
+  (each 2))
 
 (: (-> bool (-> bool Mode) string))
 (defun (pick b choose) (mode-name (choose b)))
@@ -48,7 +55,9 @@
 
 (: (-> (-> Item) int))
 (defun (item-count make)
-  (match (make) ((ISub xs) (list-length xs)) (_ -1)))
+  (match (make)
+    ((ISub xs) (list-length xs))
+    (_ -1)))
 
 (: (-> void))
 (defun (void-calls)
@@ -58,7 +67,10 @@
   (expect "a setter ending a lambda" (clr-length sb) 2)
   (twice/kw #:each (fun (n) (clr-length! sb (+ n 10))))
   (expect "and one passed by keyword" (clr-length sb) 12)
-  (list-for-each (fun (s) (ignore (clr-append sb s)) (clr-sleep 0)) (list "a" "b"))
+  (list-for-each (fun (s)
+                   (ignore (clr-append sb s))
+                   (clr-sleep 0))
+                 (list "a" "b"))
   (expect "at a parameter of either colour" (clr-length sb) 14)
   (defun (shorten (: n int)) (clr-length! sb n))
   (twice shorten)
@@ -78,9 +90,7 @@
   (expect "a list literal" (item-count (fun () '(a "b" (c)))) 3)
   (def (: chosen (-> Mode)) (fun () 'fast))
   (expect "an annotated binding" (mode-name (chosen)) "fast")
-  (expect "a lambda returning a lambda"
-          (pick-later (fun () (fun (x) (if x 'fast 'safe))))
-          "safe"))
+  (expect "a lambda returning a lambda" (pick-later (fun () (fun (x) (if x 'fast 'safe)))) "safe"))
 
 (defun (main)
   (void-calls)

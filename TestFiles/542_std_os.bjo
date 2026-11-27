@@ -21,7 +21,11 @@
 ;; The name of the system the tests run on, as os-platform? takes it.
 (: (-> string))
 (defun (this-system)
-  (cond ((windows?) "windows") ((linux?) "linux") ((macos?) "macos") (else "freebsd")))
+  (cond
+    ((windows?) "windows")
+    ((linux?) "linux")
+    ((macos?) "macos")
+    (else "freebsd")))
 
 (def architectures
   (list "x86" "x64" "arm" "arm64" "wasm" "s390x" "loongarch64" "armv6" "ppc64le" "riscv64"))
@@ -31,9 +35,7 @@
 (defun (with-variable name value f)
   (def old (get-environment-variable name))
   (set-environment-variable! name value)
-  (try
-    (f)
-    #:finally (set-environment-variable! name (option-ref-or old ""))))
+  (try (f) #:finally (set-environment-variable! name (option-ref-or old ""))))
 
 (: (-> void))
 (defun (machine-and-process)
@@ -66,7 +68,9 @@
   (expect "a user name" (string-empty? (user-name)) #f)
   (expect "a process id" (> (process-id) 0) #t)
   (expect "the executable exists"
-          (match (process-path) ((Some p) (file-exists? p)) (None #f))
+          (match (process-path)
+            ((Some p) (file-exists? p))
+            (None #f))
           #t)
   (unless (windows?)
     (expect "privileged is root" (privileged?) (= (user-name) "root"))))
@@ -77,8 +81,13 @@
   (expect "the home directory exists" (directory-exists? home) #t)
   (expect "the folders are absolute paths"
           (all? rooted?
-                (list home (config-directory) (data-directory) (cache-directory)
-                      (documents-directory) (desktop-directory) (temp-directory)))
+                (list home
+                      (config-directory)
+                      (data-directory)
+                      (cache-directory)
+                      (documents-directory)
+                      (desktop-directory)
+                      (temp-directory)))
           #t)
 
   (expect "the temp folder exists" (directory-exists? (temp-directory)) #t)
@@ -152,9 +161,7 @@
   (expect "watchos at least 0" (watchos-version-at-least? 0) (watchos?))
   (expect "windows at least 99999" (windows-version-at-least? 99999) #f)
   (expect "macos at least 99999" (macos-version-at-least? 99999) #f)
-  (expect "the keywords"
-          (windows-version-at-least? 0 #:minor 0 #:build 0 #:revision 0)
-          (windows?))
+  (expect "the keywords" (windows-version-at-least? 0 #:minor 0 #:build 0 #:revision 0) (windows?))
   (expect "by name, at least 0" (os-platform-version-at-least? "linux" 0) (linux?))
   (expect "by name, at least 99999" (os-platform-version-at-least? "linux" 99999) #f)
   (expect "by name, the keywords"

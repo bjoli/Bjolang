@@ -29,7 +29,9 @@
   ;; Past the range of a duration, a unit raises rather than wrapping.
   (expect "too many hours" (overflows? (fun () (hours 9223372036854775807L))) #t)
   (expect "too few minutes" (overflows? (fun () (minutes -9223372036854775807L))) #t)
-  (expect "the tick count with no negation" (overflows? (fun () (ticks->duration -9223372036854775808L))) #t)
+  (expect "the tick count with no negation"
+          (overflows? (fun () (ticks->duration -9223372036854775808L)))
+          #t)
   (expect "the longest duration" (overflows? (fun () (ticks->duration 9223372036854775807L))) #f)
 
   ;; A timer waits whole milliseconds, and a part of one counts as a whole one.
@@ -51,26 +53,39 @@
   ;; A deadline of 50 days does not cancel a body of 100 ms, and nor does
   ;; the longest one.
   (expect "50 days do not cancel the body"
-          (with-deadline (minutes 71583) (sync (timeout (milliseconds 100))) "finished")
+          (with-deadline (minutes 71583)
+            (sync (timeout (milliseconds 100)))
+            "finished")
           "finished")
   (expect "the longest deadline does not either"
-          (with-deadline (ticks->duration 9223372036854775807L) (sync (timeout (milliseconds 20))) "finished")
+          (with-deadline (ticks->duration 9223372036854775807L)
+            (sync (timeout (milliseconds 20)))
+            "finished")
           "finished")
   (expect "a shield takes a long deadline"
-          (with-shield #:within (minutes 71583) (sync (timeout (milliseconds 20))) "finished")
+          (with-shield
+            #:within (minutes 71583)
+            (sync (timeout (milliseconds 20)))
+            "finished")
           "finished")
 
   ;; A deadline of zero or less has passed already: the scope is cancelled at
   ;; once, and the body's sync raises.
   (expect "a deadline of zero cancels at once"
-          (match (try (with-deadline (milliseconds 0) (sync (timeout (seconds 5))) "finished")
-                      #:catch (System.Exception))
+          (match (try
+                   (with-deadline (milliseconds 0)
+                     (sync (timeout (seconds 5)))
+                     "finished")
+                   #:catch (System.Exception))
             ((Ok v) v)
             ((Err _) "cancelled"))
           "cancelled")
   (expect "and so does one below zero"
-          (match (try (with-deadline (seconds -1) (sync (timeout (seconds 5))) "finished")
-                      #:catch (System.Exception))
+          (match (try
+                   (with-deadline (seconds -1)
+                     (sync (timeout (seconds 5)))
+                     "finished")
+                   #:catch (System.Exception))
             ((Ok v) v)
             ((Err _) "cancelled"))
           "cancelled")
@@ -82,9 +97,7 @@
   (expect "a step of int-max"
           {listing x (:for x (range-by 2147483646 int-max int-max))}
           (list 2147483646))
-  (expect "a step that lands on hi"
-          {listing x (:for x (range-by 0 9 3))}
-          (list 0 3 6))
+  (expect "a step that lands on hi" {listing x (:for x (range-by 0 9 3))} (list 0 3 6))
   (expect "empty: hi is lo" {listing x (:for x (range-by 5 5 3))} (list))
   (expect "empty: hi below lo" {listing x (:for x (range-by 5 3 2))} (list))
   (expect "from int-min"
@@ -108,6 +121,5 @@
   (expect "a range-by is empty?" (empty? (range-by 5 5 1)) #t)
 
   ;; A range walks as before.
-  (expect "a range" {listing x (:for x (range 2147483645 int-max))}
-          (list 2147483645 2147483646))
+  (expect "a range" {listing x (:for x (range 2147483645 int-max))} (list 2147483645 2147483646))
   0)

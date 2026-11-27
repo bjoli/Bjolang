@@ -9,7 +9,8 @@
 ;; is not sorted.
 (: (-> double int (Vec double)))
 (defun (around centre n)
-  {vecing (* centre (+ 1.0 (* 0.01 (- (/ (cast System.Double (% (* i 37) n)) (cast System.Double n)) 0.5))))
+  {vecing (* centre
+             (+ 1.0 (* 0.01 (- (/ (cast System.Double (% (* i 37) n)) (cast System.Double n)) 0.5))))
           (:for i (range 0 n))})
 
 (: (-> string (List (Tuple string string)) (Vec double) SavedCase))
@@ -18,16 +19,22 @@
 
 (: (-> string (List SavedCase) SavedRun))
 (defun (run-of machine cases)
-  (SavedRun (saved "2026-10-16T12:00:00Z") (machine machine)
-            (header (list (Tuple "build" "Release") (Tuple "dotnet" ".NET 10.0.4") (Tuple "cpu" "Some CPU")))
-            (cases cases)))
+  (SavedRun
+   (saved "2026-10-16T12:00:00Z")
+   (machine machine)
+   (header (list (Tuple "build" "Release") (Tuple "dotnet" ".NET 10.0.4") (Tuple "cpu" "Some CPU")))
+   (cases cases)))
 
 (: (-> SavedRun (List SavedCase)))
 (defun (saved-cases r) (record-ref r cases))
 
 (: (-> Verdict string))
 (defun (verdict-name v)
-  (match v (Faster "faster") (Slower "slower") (SmallChange "small") (NoChange "none")))
+  (match v
+    (Faster "faster")
+    (Slower "slower")
+    (SmallChange "small")
+    (NoChange "none")))
 
 (: (-> CompareResult (List string)))
 (defun (comparison-verdicts r)
@@ -77,18 +84,21 @@
   (check-match (parse-saved-run "[1 2 3]") (Err _))
   (check-match (parse-saved-run "(bench-run (version 99) (saved \"x\") (machine \"m\"))") (Err _))
   (check-match (parse-saved-run "(bench-run (version 1) (saved \"x\"))") (Err _))
-  (check-match (parse-saved-run "(bench-run (version 1) (saved \"x\") (machine \"m\") (case (name \"a\")))") (Err _))
+  (check-match
+   (parse-saved-run "(bench-run (version 1) (saved \"x\") (machine \"m\") (case (name \"a\")))")
+   (Err _))
   (check-match (parse-saved-run "(bench-run (version 1) (saved \"x\") (machine \"m\")") (Err _)))
 
 (deftest "case keys are the name and the parameters"
-  (check (= (case-key (case-of "sort" (list (Tuple "n" "10") (Tuple "kind" "a")) [1.0])) "sort n=10 kind=a"))
+  (check (= (case-key (case-of "sort" (list (Tuple "n" "10") (Tuple "kind" "a")) [1.0]))
+            "sort n=10 kind=a"))
   (check (= (case-key (case-of "parse" (list) [1.0])) "parse")))
 
 (def after
   (run-of "machine-a"
-          (list (case-of "sort" (list (Tuple "n" "10")) (around 1000.0 60))       ; the same
-                (case-of "sort" (list (Tuple "n" "1000")) (around 55000.0 60))    ; 10% slower
-                (case-of "parse" (list) (around 1980.0 60))                       ; 1% faster
+          (list (case-of "sort" (list (Tuple "n" "10")) (around 1000.0 60)) ; the same
+                (case-of "sort" (list (Tuple "n" "1000")) (around 55000.0 60)) ; 10% slower
+                (case-of "parse" (list) (around 1980.0 60)) ; 1% faster
                 (case-of "new" (list) (around 10.0 60)))))
 
 (deftest "the verdicts: same, slower, and real but below the threshold"
@@ -109,19 +119,23 @@
              (check (corrected-not-lower? c)))))
 
 (: (-> Comparison bool))
-(defun (interval-holds? c) (and (<= (record-ref c lo) (record-ref c change)) (<= (record-ref c change) (record-ref c hi))))
+(defun (interval-holds? c)
+  (and (<= (record-ref c lo) (record-ref c change)) (<= (record-ref c change) (record-ref c hi))))
 
 (: (-> Comparison bool))
 (defun (corrected-not-lower? c) (>= (record-ref c p) (record-ref c p-raw)))
 
 (deftest "a lower threshold makes the small change a verdict"
-  (check (= (comparison-verdicts (compare-runs before after 0.05 0.005)) (list "none" "slower" "faster"))))
+  (check (= (comparison-verdicts (compare-runs before after 0.05 0.005))
+            (list "none" "slower" "faster"))))
 
 (deftest "another machine, and facts that differ"
   (def elsewhere
-    (SavedRun (saved "2026-10-17T00:00:00Z") (machine "machine-b")
-              (header (list (Tuple "build" "Debug") (Tuple "dotnet" ".NET 10.0.4") (Tuple "cpu" "Other CPU")))
-              (cases (saved-cases after))))
+    (SavedRun
+     (saved "2026-10-17T00:00:00Z")
+     (machine "machine-b")
+     (header (list (Tuple "build" "Debug") (Tuple "dotnet" ".NET 10.0.4") (Tuple "cpu" "Other CPU")))
+     (cases (saved-cases after))))
   (def r (compare-runs before elsewhere 0.05 0.02))
   (check (record-ref r other-machine))
   ;; The CPU is in the machine key, and not said again; the build is not.
@@ -131,7 +145,8 @@
 ;; --- A/B in rounds -----------------------------------------------------------
 
 (: (-> (Vec double) double (Vec double)))
-(defun (scaled xs by) (vec-map (fun (x) (* x by)) xs))
+(defun (scaled xs by)
+  (vec-map (fun (x) (* x by)) xs))
 
 (: (-> string (Vec (Vec double)) (Vec (Vec double)) PairedCase))
 (defun (paired name a b) (PairedCase (name name) (labels (list)) (a a) (b b)))
@@ -145,9 +160,12 @@
 (deftest "one process pair: the rounds are the pairs"
   (def a (around 1000.0 40))
   ;; Each round 10% slower than its partner, and a case unchanged.
-  (def r (compare-paired (list (paired "slower" [a] [(scaled a 1.10)])
-                               (paired "same" [a] [a]))
-                         (list "only-a") (list "only-b") 0.05 0.02))
+  (def r
+    (compare-paired (list (paired "slower" [a] [(scaled a 1.10)]) (paired "same" [a] [a]))
+                    (list "only-a")
+                    (list "only-b")
+                    0.05
+                    0.02))
   (check (= (comparison-verdicts r) (list "slower" "none")))
   (def cs (record-ref r comparisons))
   (check-approx (comparison-change (list-head cs)) 0.10 #:eps 1e-9)
@@ -161,13 +179,20 @@
 (deftest "several process pairs: a t-test on their log ratios"
   (def a (around 1000.0 20))
   ;; Three pairs that agree on +10%, and three that disagree.
-  (def r (compare-paired (list (paired "agree" [a a a] [(scaled a 1.10) (scaled a 1.11) (scaled a 1.09)])
-                               (paired "disagree" [a a a] [(scaled a 1.10) (scaled a 0.95) (scaled a 1.02)]))
-                         (list) (list) 0.05 0.02))
+  (def r
+    (compare-paired
+     (list (paired "agree" [a a a] [(scaled a 1.10) (scaled a 1.11) (scaled a 1.09)])
+           (paired "disagree" [a a a] [(scaled a 1.10) (scaled a 0.95) (scaled a 1.02)]))
+     (list)
+     (list)
+     0.05
+     0.02))
   (check (= (comparison-verdicts r) (list "slower" "none")))
   (def cs (record-ref r comparisons))
   ;; The geometric mean of the three ratios.
-  (check-approx (comparison-change (list-head cs)) (- (exp (/ (+ (loge 1.10) (loge 1.11) (loge 1.09)) 3.0)) 1.0) #:eps 1e-9)
+  (check-approx (comparison-change (list-head cs))
+                (- (exp (/ (+ (loge 1.10) (loge 1.11) (loge 1.09)) 3.0)) 1.0)
+                #:eps 1e-9)
   (check (interval-holds? (list-head cs)))
   (check (> (comparison-spread (list-head cs)) 0.0))
   (check (> (comparison-spread (list-ref cs 1)) (comparison-spread (list-head cs)))))

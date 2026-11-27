@@ -81,7 +81,8 @@
     (spawn (mark b "b")))
 
   (expect "a scope waits for the fibers started inside it"
-          (string-append (box-ref a) (box-ref b)) "ab")
+          (string-append (box-ref a) (box-ref b))
+          "ab")
 
   ;; ---- Stopping early ------------------------------------------------------
   ;;
@@ -113,7 +114,8 @@
 
   (expect "a scope that returns normally runs its body" plain "returned")
   (expect "and fires its token on the way out"
-          (reason-name (cancel-reason (box-ref seen))) "scope-ended")
+          (reason-name (cancel-reason (box-ref seen)))
+          "scope-ended")
 
   ;; A fired token left installed would make every later scope look cancelled,
   ;; which is the failure the `finally` in the expansion exists to prevent.
@@ -131,7 +133,8 @@
       "returned"))
 
   (expect "an explicit cancel beats the scope's own exit"
-          (reason-name (cancel-reason (box-ref early-seen))) "requested early")
+          (reason-name (cancel-reason (box-ref early-seen)))
+          "requested early")
 
   ;; ---- A child that fails ---------------------------------------------------
   ;;
@@ -148,7 +151,9 @@
       #:catch (System.DivideByZeroException)))
 
   (expect "a child's failure leaves the scope"
-          (match failed ((Ok u) "not reached") ((Err e) "propagated"))
+          (match failed
+            ((Ok u) "not reached")
+            ((Err e) "propagated"))
           "propagated")
 
   ;; A `bjo` is different, and deliberately: it handed back the promise, so the
@@ -163,7 +168,9 @@
       #:catch (System.DivideByZeroException)))
 
   (expect "a bjo hands its failure to the caller, not to the scope"
-          (match kept ((Ok v) v) ((Err e) "propagated"))
+          (match kept
+            ((Ok v) v)
+            ((Err e) "propagated"))
           "handled")
 
   ;; ---- Cancellation is what a sync raises ----------------------------------
@@ -176,7 +183,9 @@
       #:catch (System.Exception)))
 
   (expect "a sync after the scope was cancelled raises"
-          (match raised ((Ok v) v) ((Err e) "cancelled"))
+          (match raised
+            ((Ok v) v)
+            ((Err e) "cancelled"))
           "cancelled")
 
   ;; ---- with-shield ---------------------------------------------------------
@@ -188,13 +197,16 @@
     (try
       (with-cancel (cancel)
         (def stopped (cancel (Requested "stop")))
-        (with-shield #:within (seconds 5)
+        (with-shield
+          #:within (seconds 5)
           (sync (timeout (milliseconds 10)))
           (if (cancelled? (parameter-ref current-cancel)) "still cancelled" "flushed")))
       #:catch (System.Exception)))
 
   (expect "a shield gets a sync past a cancellation"
-          (match shielded ((Ok v) v) ((Err e) "raised"))
+          (match shielded
+            ((Ok v) v)
+            ((Err e) "raised"))
           "flushed")
 
   ;; ---- spawn/daemon --------------------------------------------------------
@@ -222,7 +234,8 @@
     (spawn/detached (late out)))
 
   (expect "a detached fiber outlives its scope and is not cancelled"
-          (sync (chan-recv out)) "detached")
+          (sync (chan-recv out))
+          "detached")
 
   ;; ---- with-deadline -------------------------------------------------------
   ;;
@@ -246,9 +259,11 @@
       #:catch (System.Exception)))
 
   (expect "a deadline stops the body"
-          (match hit ((Ok v) v) ((Err e) "cancelled")) "cancelled")
-  (expect "and the reason names it"
-          (reason-name (cancel-reason (box-ref hit-seen))) "deadline")
+          (match hit
+            ((Ok v) v)
+            ((Err e) "cancelled"))
+          "cancelled")
+  (expect "and the reason names it" (reason-name (cancel-reason (box-ref hit-seen))) "deadline")
 
   ;; A scope that finishes before its deadline reports the exit, not the timer.
   (def beat-seen (make-box (parameter-ref current-cancel)))
@@ -258,7 +273,8 @@
       "returned"))
 
   (expect "a scope that beats its deadline reports the exit"
-          (reason-name (cancel-reason (box-ref beat-seen))) "scope-ended")
+          (reason-name (cancel-reason (box-ref beat-seen)))
+          "scope-ended")
 
   (println "114 ok")
   0)

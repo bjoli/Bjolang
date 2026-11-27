@@ -23,24 +23,30 @@
     ((JsonObj m) (str "{" (string-join (entries m) ",") "}"))
     ;; In their own order.
     ((JsonFields fs)
-     (str "{" (string-join (vec-map (fun (p) (str "\"" (fst p) "\":" (shape (snd p)))) (iarray->vec fs)) ",") "}"))))
+     (str "{"
+          (string-join (vec-map (fun (p) (str "\"" (fst p) "\":" (shape (snd p)))) (iarray->vec fs))
+                       ",") "}"))))
 
 ;; Sorted, so the assertion does not depend on a hash order.
 (: (-> (Map string Json) (Vec string)))
 (defun (entries m)
   (let ((pairs (loop (:for (Tuple k v) m)
                      (:acc out (listing (str "\"" k "\":" (shape v)))))))
-    (loop (:for e (list-sort pairs)) (:acc v (vecing e)))))
+    (loop (:for e (list-sort pairs))
+          (:acc v (vecing e)))))
 
 (: (-> string string))
 (defun (ok text)
-  (match (parse-json text) ((Ok j) (shape j)) ((Err e) (str "REFUSED " e))))
+  (match (parse-json text)
+    ((Ok j) (shape j))
+    ((Err e) (str "REFUSED " e))))
 
 ;; `s` written `n` times.
 (: (-> string int string))
 (defun (repeated s n)
   (def sb (stringbuilder-empty))
-  (loop (:for _ (range 0 n)) (:do (stringbuilder-add-string! sb s)))
+  (loop (:for _ (range 0 n))
+        (:do (stringbuilder-add-string! sb s)))
   (stringbuilder->string sb))
 
 ;; The bytes of `s`, and then `tail`.
@@ -54,11 +60,15 @@
 
 (: (-> string string))
 (defun (bad text)
-  (match (parse-json text) ((Ok j) (str "ACCEPTED " (shape j))) ((Err e) e)))
+  (match (parse-json text)
+    ((Ok j) (str "ACCEPTED " (shape j)))
+    ((Err e) e)))
 
 (: (-> string bool))
 (defun (accepted? text)
-  (match (parse-json text) ((Ok _) #t) ((Err _) #f)))
+  (match (parse-json text)
+    ((Ok _) #t)
+    ((Err _) #f)))
 
 ;; Bytes no string can hold, read off a port.
 (: (-> (Array byte) string))
@@ -67,7 +77,9 @@
     ((Tuple in out)
      (write-bytes! out bytes)
      (close-output-port out)
-     (match (read-json in) ((Ok j) (shape j)) ((Err e) e)))))
+     (match (read-json in)
+       ((Ok j) (shape j))
+       ((Err e) e)))))
 
 ;; The reader's first read from a port asks for this many bytes, and it gets
 ;; them all before it parses any (`read-first` in json.bjo). A document is
@@ -112,26 +124,34 @@
 (: (-> int string))
 (defun (nest n)
   (let ((sb (stringbuilder-empty)))
-    (loop (:for i (range 0 n)) (:do (stringbuilder-add! sb #\[)))
-    (loop (:for i (range 0 n)) (:do (stringbuilder-add! sb #\])))
+    (loop (:for i (range 0 n))
+          (:do (stringbuilder-add! sb #\[)))
+    (loop (:for i (range 0 n))
+          (:do (stringbuilder-add! sb #\])))
     (stringbuilder->string sb)))
 
 (: (-> int string))
 (defun (nest-objects n)
   (let ((sb (stringbuilder-empty)))
-    (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb "{\"a\":")))
+    (loop (:for i (range 0 n))
+          (:do (stringbuilder-add-string! sb "{\"a\":")))
     (stringbuilder-add-string! sb "1")
-    (loop (:for i (range 0 n)) (:do (stringbuilder-add! sb #\})))
+    (loop (:for i (range 0 n))
+          (:do (stringbuilder-add! sb #\})))
     (stringbuilder->string sb)))
 
 ;; Nothing here says a colour, and the reader is the same source either way.
 (: (-bjo-> InputPort string))
 (defbjo (read-in-a-fiber p)
-  (match (read-json p) ((Ok j) (shape j)) ((Err e) e)))
+  (match (read-json p)
+    ((Ok j) (shape j))
+    ((Err e) e)))
 
 (: (-> (Promise string) string))
 (defun (run-str p)
-  (match (sync/blocking (promise-join p)) ((Ok s) s) ((Err e) "raised")))
+  (match (sync/blocking (promise-join p))
+    ((Ok s) s)
+    ((Err e) "raised")))
 
 (defun (main)
   ;; --- Values --------------------------------------------------------------
@@ -184,35 +204,48 @@
           "\"x\"")
 
   ;; --- Refusals name the position ------------------------------------------
-  (expect "a bare word" (bad "nope")
+  (expect "a bare word"
+          (bad "nope")
           "line 1, column 2: 'null' is spelled out to here, and then there is 'o'")
   (expect "a trailing comma" (bad "[1,]") "line 1, column 4: ']' does not begin a value")
-  (expect "a missing colon" (bad "{\"a\" 1}")
+  (expect "a missing colon"
+          (bad "{\"a\" 1}")
           "line 1, column 6: an object wants ':' after a key, and this is '1'")
-  (expect "an unquoted key" (bad "{a: 1}")
+  (expect "an unquoted key"
+          (bad "{a: 1}")
           "line 1, column 2: an object's key has to be a string, and this is 'a'")
   (expect "a leading zero" (bad "01") "line 1, column 2: a number may not have a leading zero")
-  (expect "a lone decimal point" (bad "1.")
-          "line 1, column 3: a number needs a digit after its decimal point, and this is the document ended")
-  (expect "a lone minus" (bad "[-]")
-          "line 1, column 3: a number needs a digit here, and this is ']'")
-  (expect "a decimal point and no digit" (bad "[1.x]")
+  (expect
+   "a lone decimal point"
+   (bad "1.")
+   "line 1, column 3: a number needs a digit after its decimal point, and this is the document ended")
+  (expect "a lone minus" (bad "[-]") "line 1, column 3: a number needs a digit here, and this is ']'")
+  (expect "a decimal point and no digit"
+          (bad "[1.x]")
           "line 1, column 4: a number needs a digit after its decimal point, and this is 'x'")
-  (expect "an exponent and no digit" (bad "[1e+]")
+  (expect "an exponent and no digit"
+          (bad "[1e+]")
           "line 1, column 5: a number needs a digit after its exponent, and this is ']'")
-  (expect "a leading zero in an array" (bad "[0, 012]")
+  (expect "a leading zero in an array"
+          (bad "[0, 012]")
           "line 1, column 6: a number may not have a leading zero")
-  (expect "a number after a newline" (bad "[1,\n -]")
+  (expect "a number after a newline"
+          (bad "[1,\n -]")
           "line 2, column 3: a number needs a digit here, and this is ']'")
-  (expect "an unterminated string" (bad "\"abc")
+  (expect "an unterminated string"
+          (bad "\"abc")
           "line 1, column 5: the document ended inside a string")
-  (expect "a raw newline in a string" (bad "\"a\nb\"")
+  (expect "a raw newline in a string"
+          (bad "\"a\nb\"")
           "line 1, column 3: a control character in a string has to be written as an escape")
-  (expect "trailing content" (bad "1 2")
+  (expect "trailing content"
+          (bad "1 2")
           "line 1, column 3: the value ended here, and then there is '2'")
-  (expect "an empty document" (bad "")
+  (expect "an empty document"
+          (bad "")
           "line 1, column 1: the document ended where a value was expected")
-  (expect "a lone high surrogate" (bad "\"\\uD83D\"")
+  (expect "a lone high surrogate"
+          (bad "\"\\uD83D\"")
           "line 1, column 8: a high surrogate has to be followed by \\u and its low surrogate")
   (expect "a bad escape" (bad "\"\\q\"") "line 1, column 3: \\q is not an escape")
   (expect "a character outside the BMP is one column"
@@ -244,30 +277,21 @@
           (str "\"aå€" emoji "\""))
 
   ;; A character whose bytes arrive in two reads is one character.
-  (expect "a character split between two reads"
-          (split-bytes #[34 195] #[169 34])
-          "\"é\"")
+  (expect "a character split between two reads" (split-bytes #[34 195] #[169 34]) "\"é\"")
 
   ;; A number whose digits arrive in two reads is one number.
-  (expect "a number split between two reads"
-          (split-json "[12" "34.5e1, 6]")
-          "[f12345,i6]")
-  (expect "a number split after its minus"
-          (split-json "-" "7")
-          "i-7")
-  (expect "a number split after its exponent"
-          (split-json "[1e" "2]")
-          "[f100]")
+  (expect "a number split between two reads" (split-json "[12" "34.5e1, 6]") "[f12345,i6]")
+  (expect "a number split after its minus" (split-json "-" "7") "i-7")
+  (expect "a number split after its exponent" (split-json "[1e" "2]") "[f100]")
   (expect "a refusal split between two reads"
           (split-json "[1." "x]")
-          (str "line " (cut-line "[1." 1) ", column 4: a number needs a digit after its decimal point, and this is 'x'"))
+          (str "line " (cut-line "[1." 1)
+               ", column 4: a number needs a digit after its decimal point, and this is 'x'"))
 
   ;; A string is read in runs off the chunk, and white space is skipped a chunk
   ;; at a time. A run, a character, an escape and white space can each be cut
   ;; by the end of a read.
-  (expect "a string cut between two reads"
-          (split-json "[\"abc" "def\"]")
-          "[\"abcdef\"]")
+  (expect "a string cut between two reads" (split-json "[\"abc" "def\"]") "[\"abcdef\"]")
   (expect "a character of several bytes cut inside a run"
           (split-bytes #[91 34 97 226 130] #[172 98 34 93])
           "[\"a€b\"]")
@@ -283,17 +307,16 @@
   (expect "a string of every length up to three blocks, with an escape after it"
           (loop (:for n (range 0 100))
                 (:let text (repeated "a" n))
-                (:when (not (= (ok (str "\"" text "\\n\""))
-                              (str "\"" text "\n\""))))
+                (:when (not (= (ok (str "\"" text "\\n\"")) (str "\"" text "\n\""))))
                 (:acc bad (listing n))
-                => bad)
+            => bad)
           '())
   (expect "a quote in every lane of the second block"
           (loop (:for n (range 32 64))
                 (:let text (repeated "b" n))
                 (:when (not (= (ok (str "[\"" text "\",1]")) (str "[\"" text "\",i1]"))))
                 (:acc bad (listing n))
-                => bad)
+            => bad)
           '())
   (expect "the column after a long run of letters of several bytes"
           (bad (str "[\"" (repeated "blåbär" 10) "\", @]"))
@@ -312,9 +335,10 @@
   (expect "the column after every length of spaces up to three blocks"
           (loop (:for n (range 0 100))
                 (:when (not (= (bad (str "[1," (repeated " " n) "@]"))
-                               (str "line 1, column " (int->string (+ 4 n)) ": '@' does not begin a value"))))
+                               (str "line 1, column " (int->string (+ 4 n))
+                                    ": '@' does not begin a value"))))
                 (:acc wrong (listing n))
-                => wrong)
+            => wrong)
           '())
   (expect "the line and column after newlines and an indent, in every lane"
           (loop (:for k '(1 2 31 32 33 64))
@@ -324,7 +348,7 @@
                                (str "line " (int->string (+ 1 k)) ", column " (int->string (+ 1 m))
                                     ": '@' does not begin a value"))))
                 (:acc wrong (listing (Tuple k m)))
-                => wrong)
+            => wrong)
           '())
   (expect "tabs and returns are white space, and a return is not a newline"
           (bad (str "[1," (repeated " \t\r" 20) "\n" (repeated "\t" 40) "@]"))
@@ -349,16 +373,18 @@
   (expect "an empty key" (ok "{\"\":1}") "{\"\":i1}")
 
   ;; The row is the point of all this.
-  (expect "the third line" (bad "[\n  1,\n  @\n]")
-          "line 3, column 3: '@' does not begin a value")
-  (expect "the fourth line" (bad "{\n\"a\": 1,\n\"b\": 2\n@")
+  (expect "the third line" (bad "[\n  1,\n  @\n]") "line 3, column 3: '@' does not begin a value")
+  (expect "the fourth line"
+          (bad "{\n\"a\": 1,\n\"b\": 2\n@")
           "line 4, column 1: an object wants ',' or '}' here, and this is '@'")
 
   ;; --- Depth ---------------------------------------------------------------
   (expect "as deep as it goes" (accepted? (nest json-max-depth)) #t)
-  (expect "one array deeper" (bad (nest (+ json-max-depth 1)))
+  (expect "one array deeper"
+          (bad (nest (+ json-max-depth 1)))
           "line 1, column 1001: this array nests deeper than 1000, which is as far as reading goes")
-  (expect "one object deeper" (bad (nest-objects (+ json-max-depth 1)))
+  (expect "one object deeper"
+          (bad (nest-objects (+ json-max-depth 1)))
           "line 1, column 5001: this object nests deeper than 1000, which is as far as reading goes")
 
   ;; --- Off a file, and off a fiber -----------------------------------------
@@ -368,7 +394,9 @@
       ((Err e) (expect "the scratch file opens" "no" "yes"))
       ((Ok p)
        (expect "read off a file port"
-               (match (read-json p) ((Ok j) (shape j)) ((Err e) e))
+               (match (read-json p)
+                 ((Ok j) (shape j))
+                 ((Err e) e))
                "{\"a\":[i1,i2],\"b\":\"x\"}")
        (close-input-port p)))
     (raise-err (file-delete path)))

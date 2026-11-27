@@ -15,9 +15,7 @@
 
 (: (-> string int int void))
 (defun (expect-int label actual want)
-  (expect-true (string-append label
-                         (string-append " => " (int->string actual)))
-          (= actual want)))
+  (expect-true (string-append label (string-append " => " (int->string actual))) (= actual want)))
 
 ;; ---------------------------------------------------------------------------
 ;; The queue
@@ -27,10 +25,9 @@
 ;; three, so there is no half of this that stays still. The marker goes after
 ;; the field's type.
 
-(type
-  (: (Queue %a) (Record (: front (List %a) #:mutable)
-                        (: back (List %a) #:mutable)
-                        (: size int #:mutable))))
+(type (: (Queue %a) (Record (: front (List %a) #:mutable)
+                            (: back (List %a) #:mutable)
+                            (: size int #:mutable))))
 
 (: (-> (Queue %a)))
 (defun (queue)
@@ -45,9 +42,7 @@
 ;; Arriving items go on `back`, which costs a cons and nothing else.
 (: (-> (Queue %a) %a void))
 (defun (enqueue! q x)
-  (record-set! q
-               (back (Cons x (record-ref q back)))
-               (size (+ (record-ref q size) 1))))
+  (record-set! q (back (Cons x (record-ref q back))) (size (+ (record-ref q size) 1))))
 
 ;; The flip: `back` reversed becomes the new `front`, and `back` is emptied.
 ;;
@@ -56,11 +51,8 @@
 ;; item twice in between — briefly, but really.
 (: (-> (Queue %a) void))
 (defun (flip! q)
-  (when (and (list-empty? (record-ref q front))
-             (not (list-empty? (record-ref q back))))
-    (record-set! q
-                 (front (list-reverse (record-ref q back)))
-                 (back Nil))))
+  (when (and (list-empty? (record-ref q front)) (not (list-empty? (record-ref q back))))
+    (record-set! q (front (list-reverse (record-ref q back))) (back Nil))))
 
 (: (-> (Queue %a) (Option %a)))
 (defun (dequeue! q)
@@ -68,9 +60,7 @@
   (match (record-ref q front)
     (Nil None)
     ((Cons x rest)
-     (record-set! q
-                  (front rest)
-                  (size (- (record-ref q size) 1)))
+     (record-set! q (front rest) (size (- (record-ref q size) 1)))
      (Some x))))
 
 ;; A look that does not consume. It still flips — that is a change to how the
@@ -121,16 +111,31 @@
   (expect-int "three in" (queue-size q) 3)
 
   ;; The first dequeue is the one that pays for the flip; the rest are free.
-  (expect-true "1 comes out first" (match (dequeue! q) ((Some x) (= x 1)) (None #f)))
-  (expect-true "then 2" (match (dequeue! q) ((Some x) (= x 2)) (None #f)))
+  (expect-true "1 comes out first"
+               (match (dequeue! q)
+                 ((Some x) (= x 1))
+                 (None #f)))
+  (expect-true "then 2"
+               (match (dequeue! q)
+                 ((Some x) (= x 2))
+                 (None #f)))
   (expect-int "one left" (queue-size q) 1)
 
   ;; Interleaving is where the two lists earn their keep: 4 lands on `back`
   ;; while 3 is still on `front`.
   (enqueue! q 4)
-  (expect-true "3 before 4" (match (dequeue! q) ((Some x) (= x 3)) (None #f)))
-  (expect-true "then 4" (match (dequeue! q) ((Some x) (= x 4)) (None #f)))
-  (expect-true "and then nothing" (match (dequeue! q) ((Some _) #f) (None #t)))
+  (expect-true "3 before 4"
+               (match (dequeue! q)
+                 ((Some x) (= x 3))
+                 (None #f)))
+  (expect-true "then 4"
+               (match (dequeue! q)
+                 ((Some x) (= x 4))
+                 (None #f)))
+  (expect-true "and then nothing"
+               (match (dequeue! q)
+                 ((Some _) #f)
+                 (None #t)))
   (expect-true "empty" (queue-empty? q)))
 
 ;; A queue passed to a function is the caller's queue. Nothing is returned and
@@ -150,7 +155,10 @@
   (def same q)
   (enqueue! q 7)
   (expect-int "an alias sees the write" (queue-size same) 1)
-  (expect-true "and gives the same item" (match (dequeue! same) ((Some x) (= x 7)) (None #f)))
+  (expect-true "and gives the same item"
+               (match (dequeue! same)
+                 ((Some x) (= x 7))
+                 (None #f)))
   (expect-int "which the first name has lost too" (queue-size q) 0))
 
 ;; `peek!` flips but does not consume, so asking twice gives the same answer and
@@ -160,8 +168,14 @@
   (def q (queue))
   (enqueue! q 5)
   (enqueue! q 6)
-  (expect-true "peek gives the front" (match (peek! q) ((Some x) (= x 5)) (None #f)))
-  (expect-true "and again" (match (peek! q) ((Some x) (= x 5)) (None #f)))
+  (expect-true "peek gives the front"
+               (match (peek! q)
+                 ((Some x) (= x 5))
+                 (None #f)))
+  (expect-true "and again"
+               (match (peek! q)
+                 ((Some x) (= x 5))
+                 (None #f)))
   (expect-int "without consuming" (queue-size q) 2)
   (expect-true "and the order survived the flip" (= (show (queue->list q)) "5 6 ")))
 
@@ -172,11 +186,17 @@
   (def qs (queue))
   (enqueue! qs "a")
   (enqueue! qs "b")
-  (expect-true "a queue of strings" (match (dequeue! qs) ((Some s) (= s "a")) (None #f)))
+  (expect-true "a queue of strings"
+               (match (dequeue! qs)
+                 ((Some s) (= s "a"))
+                 (None #f)))
 
   (def qb (queue))
   (enqueue! qb #t)
-  (expect-true "and one of bools" (match (dequeue! qb) ((Some b) b) (None #f))))
+  (expect-true "and one of bools"
+               (match (dequeue! qb)
+                 ((Some b) b)
+                 (None #f))))
 
 ;; Every value is evaluated, left to right, before any of them is written. So
 ;; the `size` operand below reads the size as it was, not the one being written
@@ -185,9 +205,7 @@
 (defun (evaluation-order)
   (def q (queue))
   (enqueue! q 1)
-  (record-set! q
-               (size 100)
-               (front (Cons (record-ref q size) Nil)))
+  (record-set! q (size 100) (front (Cons (record-ref q size) Nil)))
   (expect-int "the write landed" (queue-size q) 100)
   (expect-true "the other operand read the old state" (= (show (record-ref q front)) "1 ")))
 
@@ -231,7 +249,9 @@
 
 (: (-> (Result System.Exception %a) bool))
 (defun (threw? r)
-  (match r ((Ok _) #f) ((Err _) #t)))
+  (match r
+    ((Ok _) #f)
+    ((Err _) #t)))
 
 (: (-> void))
 (defun (equality)
@@ -247,21 +267,21 @@
 
   ;; The derived `eq-hash` refuses.
   (expect-true "hashing a mutable record throws"
-          (threw? (try (eq-hash a) #:catch (System.InvalidOperationException))))
+               (threw? (try (eq-hash a) #:catch (System.InvalidOperationException))))
 
   ;; And so does .NET, which is the same refusal reached the other way round:
   ;; `Map` is a C# trie keying on `GetHashCode`, and materialization made that
   ;; the trait's. One refusal, both roads to it.
   (expect-true "and so does using one as a Map key"
-          (threw? (try (map-set (map-empty) a "x") #:catch (System.InvalidOperationException)))))
+               (threw? (try (map-set (map-empty) a "x") #:catch (System.InvalidOperationException)))))
 
 ;; The refusal is what `derive` writes, not a property of the type. An
 ;; implementation written by hand may hash only the fields that do not move —
 ;; and then it is a key again, and stays found across a write, which is the
 ;; whole reason the law is worth keeping rather than merely asserting.
 
-(type
-  (: Cached (Record (: key string) (: hits int #:mutable))))
+(type (: Cached (Record (: key string)
+                        (: hits int #:mutable))))
 
 (impl (Eq Cached)
   (defun (= a b) (= (record-ref a key) (record-ref b key)))

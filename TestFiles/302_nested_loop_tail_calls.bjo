@@ -31,7 +31,9 @@
 (defun (from-finish n)
   (let outer ((i 0) (acc 0))
     (if (< i n)
-        (loop (:for k [1 2]) (:acc s (summing k)) => (outer (+ i 1) (+ acc s)))
+        (loop (:for k [1 2])
+              (:acc s (summing k))
+          => (outer (+ i 1) (+ acc s)))
         acc)))
 
 ;; Two local functions calling each other, one of them from inside a named let.
@@ -40,8 +42,10 @@
   (defun (ev? (: k int))
     (if (= k 0)
         #t
-        (let inner ((m 0)) (if (< m 1) (inner (+ m 1)) (od? (- k 1))))))
-  (defun (od? (: k int)) (if (= k 0) #f (ev? (- k 1))))
+        (let inner ((m 0))
+          (if (< m 1) (inner (+ m 1)) (od? (- k 1))))))
+  (defun (od? (: k int))
+    (if (= k 0) #f (ev? (- k 1))))
   (if (ev? n) "even" "odd"))
 
 ;; In a bjoroutine, which is an async state machine, with a yield point in the
@@ -51,7 +55,8 @@
   (let outer ((i 0) (acc 0))
     (if (< i n)
         (let inner ((j 0) (a acc))
-          (when (= (% i 1000) 0) (sync (timeout (milliseconds 0))))
+          (when (= (% i 1000) 0)
+            (sync (timeout (milliseconds 0))))
           (if (< j 2) (inner (+ j 1) (+ a 1)) (outer (+ i 1) a)))
         acc)))
 
@@ -63,7 +68,9 @@
       (when (< i n)
         (let inner ((j 0))
           (if (< j 2)
-              (begin (yield (+ (* 10 i) j)) (inner (+ j 1)))
+              (begin
+                (yield (+ (* 10 i) j))
+                (inner (+ j 1)))
               (outer (+ i 1))))))))
 
 ;; Closures made in the inner loop keep the values of their own iteration.
@@ -85,7 +92,9 @@
   (expect "a loop's result clause calling the loop it is in" (from-finish big) 3000000)
   (expect "local functions calling each other from inside a named let" (parity big) "even")
   (expect "in a bjoroutine"
-          (match (sync/blocking (promise-join (bjo (suspending 100000)))) ((Ok v) v) ((Err e) -1))
+          (match (sync/blocking (promise-join (bjo (suspending 100000))))
+            ((Ok v) v)
+            ((Err e) -1))
           200000)
   (expect "in a seq" (->list (pairs 3)) (list 0 1 10 11 20 21))
   (expect "closures keep their own iteration's values" (closures) (list 0 1 10 11 20 21))

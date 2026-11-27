@@ -20,25 +20,21 @@
 
 (: (-> (List int) string))
 (defun (ints xs)
-  (list-foldl (fun (s acc) (string-append acc (string-append "|" s)))
-              ""
-              (list-map int->string xs)))
+  (list-foldl (fun (s acc) (string-append acc (string-append "|" s))) "" (list-map int->string xs)))
 
 ;; A grammar that reads a quoted literal. It shows that a splice does not
 ;; change how the grammar reads the written elements.
 (def/grammar Nodes
   (Nodes (List Node))
-  (Node (:or (: NSym symbol)
-             (: NText string)
-             (: NArgv (Vec string))
-             (: NSub (Node ...)))))
+  (Node (:or (: NSym symbol) (: NText string) (: NArgv (Vec string)) (: NSub (Node ...)))))
 
 (: (-> Node string))
 (defun (render n)
   (match n
     ((NSym s) (symbol->string s))
     ((NText s) (string-append "\"" (string-append s "\"")))
-    ((NArgv v) (string-append "[" (string-append (vec-fold (fun (s acc) (string-append acc s)) "" v) "]")))
+    ((NArgv v)
+     (string-append "[" (string-append (vec-fold (fun (s acc) (string-append acc s)) "" v) "]")))
     ((NSub inner) (string-append "(" (string-append (render-all inner) ")")))))
 
 (: (-> Nodes string))
@@ -57,12 +53,15 @@
 (: (-> string))
 (defun (trace-of-a-literal)
   (def/mutable trace "")
-  (defun (note tag n) (set! trace (string-append trace tag)) n)
-  (defun (touch tag xs) (set! trace (string-append trace tag)) xs)
+  (defun (note tag n)
+    (set! trace (string-append trace tag))
+    n)
+  (defun (touch tag xs)
+    (set! trace (string-append trace tag))
+    xs)
 
   (def (: ns (List int)) (list 7 8))
-  (def (: built (List int))
-    '(,(note "a" 1) ,@(touch "B" ns) ,(note "c" 2) ,@(touch "D" ns)))
+  (def (: built (List int)) '(,(note "a" 1) ,@(touch "B" ns) ,(note "c" 2) ,@(touch "D" ns)))
 
   (string-append trace (string-append "/" (ints built))))
 
@@ -93,22 +92,16 @@
   (expect "written elements on each side of a splice"
           (render-all '(pipe ,@rest (wc)))
           "pipe (ls) \"x\" (wc)")
-  (expect "splice with nothing written beside it"
-          (render-all '(,@rest))
-          "(ls) \"x\"")
+  (expect "splice with nothing written beside it" (render-all '(,@rest)) "(ls) \"x\"")
 
   ;; --- 4. Nested ------------------------------------------------------------
-  (expect "splice inside a nested literal"
-          (render-all '(a (b ,@rest) c))
-          "a (b (ls) \"x\") c")
+  (expect "splice inside a nested literal" (render-all '(a (b ,@rest) c)) "a (b (ls) \"x\") c")
 
   ;; A spliced list of nested nodes. Each element of `branches` is an `NSub`
   ;; already. They go one level down, and the grammar does not read them
   ;; again.
   (def (: branches Nodes) '((a "1") (b "2")))
-  (expect "a spliced list of nested nodes"
-          (render-all '(top ,@branches))
-          "top (a \"1\") (b \"2\")")
+  (expect "a spliced list of nested nodes" (render-all '(top ,@branches)) "top (a \"1\") (b \"2\")")
 
   ;; --- 6. Evaluation order and arity ----------------------------------------
   (expect "left to right, once each" (trace-of-a-literal) "aBcD/|1|7|8|2|7|8")
@@ -118,12 +111,8 @@
   ;; `[...]` inside a quote is a vec, and it splices through `vec->seq` and
   ;; `seq->vec` the way a list does through `list->seq` and `seq->list`.
   (def (: flags (Vec string)) ["-l" "-a"])
-  (expect "splice into a quoted vec"
-          (render-all '(ls [,@flags "-h"]))
-          "ls [-l-a-h]")
-  (expect "a quoted vec that is only a splice"
-          (render-all '(ls [,@flags]))
-          "ls [-l-a]")
+  (expect "splice into a quoted vec" (render-all '(ls [,@flags "-h"])) "ls [-l-a-h]")
+  (expect "a quoted vec that is only a splice" (render-all '(ls [,@flags])) "ls [-l-a]")
 
   ;; --- 11. Across a module boundary -----------------------------------------
   ;;

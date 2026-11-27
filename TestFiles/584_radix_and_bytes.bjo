@@ -9,7 +9,10 @@
 
 (: (-> (-> %a) bool))
 (defun (raises? f)
-  (match (try (f) #:catch (System.FormatException System.OverflowException System.ArgumentOutOfRangeException))
+  (match (try
+           (f)
+           #:catch (System.FormatException System.OverflowException
+                                           System.ArgumentOutOfRangeException))
     ((Ok _) #f)
     ((Err _) #t)))
 
@@ -24,12 +27,15 @@
   (expect "base 36" (int->string 35 #:radix 36) "z")
   (expect "the smallest int" (int->string -2147483648 #:radix 16) "-80000000")
   (expect "the smallest long" (long->string -9223372036854775808L #:radix 16) "-8000000000000000")
-  (expect "the largest long" (long->string 9223372036854775807L #:radix 2)
+  (expect "the largest long"
+          (long->string 9223372036854775807L #:radix 2)
           "111111111111111111111111111111111111111111111111111111111111111")
   (expect "padded" (string-pad-left (int->string 233 #:radix 16 #:upper #t) 4 #:with #\0) "00E9")
   (expect "a radix of 1 raises" (raises? (fun () (int->string 1 #:radix 1))) #t)
   (expect "a radix of 37 raises" (raises? (fun () (int->string 1 #:radix 37))) #t)
-  (expect "as a value, the keywords take their defaults" (list-map int->string (list 1 2)) (list "1" "2"))
+  (expect "as a value, the keywords take their defaults"
+          (list-map int->string (list 1 2))
+          (list "1" "2"))
 
   ;; Reading
   (expect "hex" (string->int "1F600" #:radix 16) 128512)
@@ -40,10 +46,13 @@
   (expect "the smallest int" (string->int "-80000000" #:radix 16) -2147483648)
   (expect "the largest int" (string->int "7fffffff" #:radix 16) 2147483647)
   (expect "one past the largest int raises" (raises? (fun () (string->int "80000000" #:radix 16))) #t)
-  (expect "one past the smallest int raises" (raises? (fun () (string->int "-80000001" #:radix 16))) #t)
+  (expect "one past the smallest int raises"
+          (raises? (fun () (string->int "-80000001" #:radix 16)))
+          #t)
   (expect "the smallest long" (string->long "-8000000000000000" #:radix 16) -9223372036854775808L)
   (expect "one past the largest long raises"
-          (raises? (fun () (string->long "8000000000000000" #:radix 16))) #t)
+          (raises? (fun () (string->long "8000000000000000" #:radix 16)))
+          #t)
   (expect "a long in base 36" (string->long "zzzzzz" #:radix 36) 2176782335L)
   (expect "a 0x prefix is not read" (raises? (fun () (string->int "0xff" #:radix 16))) #t)
   (expect "a digit too large raises" (raises? (fun () (string->int "12" #:radix 2))) #t)
@@ -51,7 +60,8 @@
   (expect "the empty string raises" (raises? (fun () (string->int "" #:radix 16))) #t)
   (expect "a bad radix raises" (raises? (fun () (string->int "1" #:radix 0))) #t)
   (expect "round trip"
-          (list-map (fun (n) (string->int (int->string n #:radix 7) #:radix 7)) (list 0 1 -1 48 -2147483648 2147483647))
+          (list-map (fun (n) (string->int (int->string n #:radix 7) #:radix 7))
+                    (list 0 1 -1 48 -2147483648 2147483647))
           (list 0 1 -1 48 -2147483648 2147483647))
   (expect "base 10 is as before" (string->int " -42 ") -42)
 
@@ -77,11 +87,11 @@
   (bytestringbuilder-add-ulong! w 18446744073709551615UL)
   (expect "short, uint, long and ulong"
           (bytes-of w)
-          (list 254 255  255 255 255 255  0 0 0 0 0 0 0 1  255 255 255 255 255 255 255 255))
+          (list 254 255 255 255 255 255 0 0 0 0 0 0 0 1 255 255 255 255 255 255 255 255))
   (def f (bytestringbuilder-empty))
   (bytestringbuilder-add-float! f 1.0)
   (bytestringbuilder-add-double-be! f 1.0)
-  (expect "float and double" (bytes-of f) (list 0 0 128 63  63 240 0 0 0 0 0 0))
+  (expect "float and double" (bytes-of f) (list 0 0 128 63 63 240 0 0 0 0 0 0))
 
   ;; Bytes, and what is made of the builder
   (def b (bytestringbuilder-empty))
@@ -100,8 +110,7 @@
 
   ;; Growing past the first buffer
   (def many (bytestringbuilder-empty))
-  (loop (:for i (range 0 1000)) (:do (bytestringbuilder-add-int! many i)))
+  (loop (:for i (range 0 1000))
+        (:do (bytestringbuilder-add-int! many i)))
   (expect "4000 bytes" (bytestringbuilder-length many) 4000)
-  (expect "the last int"
-          (vec->list (vec-drop (list->vec (bytes-of many)) 3996))
-          (list 231 3 0 0)))
+  (expect "the last int" (vec->list (vec-drop (list->vec (bytes-of many)) 3996)) (list 231 3 0 0)))

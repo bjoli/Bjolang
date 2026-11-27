@@ -24,7 +24,9 @@
   (type %cursor int)
   (defun (iterable-start c) 0)
   (defun (iterable-done? c i) (>= i (record-ref c n)))
-  (defun (iterable-current c i) (log! (str "yield " (displayed i))) i)
+  (defun (iterable-current c i)
+    (log! (str "yield " (displayed i)))
+    i)
   (defun (iterable-next c i) (+ i 1))
   (defun (iterable-end c i) (log! (str "end at " (displayed i)))))
 
@@ -64,7 +66,9 @@
   (expect "->map of a vec" (->map [(Tuple "x" 1)]) #map(("x" 1)))
   (expect "->map of a map" (->map #map(("k" #t))) #map(("k" #t)))
   (expect "->map of an adapter" (->map (enumerate "ab")) #map((0 #\a) (1 #\b)))
-  (expect "->map of a chain" (->map (map (fun (x) (Tuple x (* x x))) (range 1 4))) #map((1 1) (2 4) (3 9)))
+  (expect "->map of a chain"
+          (->map (map (fun (x) (Tuple x (* x x))) (range 1 4)))
+          #map((1 1) (2 4) (3 9)))
   (expect "->map of a seq" (->map (list->seq (list (Tuple 'a 1)))) #map(('a 1)))
   (expect "->map, a later key wins" (->map (list (Tuple "k" 1) (Tuple "k" 2))) #map(("k" 2)))
   (expect "->map of nothing" (map-length (->map (list))) 0)
@@ -99,14 +103,18 @@
   ;; --- what is pulled --------------------------------------------------------
   (set! events '())
   (expect "first of an iterable of our own" (first (counter 5)) (Some 0))
-  (expect "first pulls one and ends the cursor there"
-          (events-in-order) (list "yield 0" "end at 0"))
+  (expect "first pulls one and ends the cursor there" (events-in-order) (list "yield 0" "end at 0"))
   (set! events '())
   (expect "count of an iterable of our own" (count (counter 3)) 3)
   (expect "count walks to the end, and the end needs no call"
-          (events-in-order) (list "yield 0" "yield 1" "yield 2"))
+          (events-in-order)
+          (list "yield 0" "yield 1" "yield 2"))
   (def/mutable pulled 0)
-  (def s (map (fun (x) (set! pulled (+ pulled 1)) x) (list->seq (list 1 2 3))))
+  (def s
+    (map (fun (x)
+           (set! pulled (+ pulled 1))
+           x)
+         (list->seq (list 1 2 3))))
   (expect "count of a seq" (count s) 3)
   (expect "count of a seq walks it" pulled 3)
   0)

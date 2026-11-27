@@ -31,7 +31,9 @@
      (str "exited " (int->string (record-ref stage stage-index))
           " " (string-join (record-ref stage stage-argv) " ")
           " " (int->string code)
-          (match tail ((Some text) (str " tail " text)) (None ""))))))
+          (match tail
+            ((Some text) (str " tail " text))
+            (None ""))))))
 
 (defun (main)
   (def scratch (path-combine (temp-directory) (str "bjo-run-errors-" (random-file-name))))
@@ -53,15 +55,11 @@
           "filter failed")
 
   ;; --- Exit codes ---------------------------------------------------------------
-  (expect "run/string makes a failing exit an error"
-          (kind (run/string '(false)))
-          "exited 0 false 1")
+  (expect "run/string makes a failing exit an error" (kind (run/string '(false))) "exited 0 false 1")
   (expect "run/strings too"
           (kind (run/strings '(sh "-c" "echo a; exit 4")))
           "exited 0 sh -c echo a; exit 4 4")
-  (expect "run/status returns the code"
-          (run/status '(false))
-          (Ok 1))
+  (expect "run/status returns the code" (run/status '(false)) (Ok 1))
   (expect "run/output returns the code and the output"
           (run/output '(sh "-c" "echo a; exit 4"))
           (Ok (Tuple 4 "a\n")))
@@ -80,19 +78,22 @@
   (expect "wait/all returns every code"
           (match (run '(pipe (sh "-c" "exit 2") (cat)))
             ((Ok p)
-             (match (proc-input p) ((Some in) (close-output-port in)) (None unit))
-             (match (proc-output p) ((Some out) (ignore (read-all out))) (None unit))
+             (match (proc-input p)
+               ((Some in) (close-output-port in))
+               (None unit))
+             (match (proc-output p)
+               ((Some out) (ignore (read-all out)))
+               (None unit))
              (wait/all p))
             ((Err e) (Err e)))
           (Ok [2 0]))
 
   ;; --- Standard error -----------------------------------------------------------
   (expect "the end of standard error comes with Exited under errors-into-file"
-          (kind (run/string '(errors-into-file ,errors-file (sh "-c" "echo first >&2; echo oops >&2; exit 3"))))
+          (kind (run/string '(errors-into-file ,errors-file
+                                               (sh "-c" "echo first >&2; echo oops >&2; exit 3"))))
           "exited 0 sh -c echo first >&2; echo oops >&2; exit 3 3 tail first\noops")
-  (expect "and the file still gets it"
-          (raise-err (file-read-text errors-file))
-          "first\noops\n")
+  (expect "and the file still gets it" (raise-err (file-read-text errors-file)) "first\noops\n")
   (expect "an inherited standard error is not kept"
           (kind (run/string '(sh "-c" "exit 3")))
           "exited 0 sh -c exit 3 3")

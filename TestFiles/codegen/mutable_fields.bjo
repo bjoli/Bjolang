@@ -15,9 +15,8 @@
 ;; EXPECT-CS: public BjoString\.Utf8String label \{ get; init; \}
 ;; EXPECT-CS: public int count;
 ;; EXPECT-CS: public mutable_fields__Counter\(BjoString\.Utf8String label, int count\) \{ this\.label = label; this\.count = count; \}
-(type
-  (: Counter (Record (: label string)
-                     (: count int #:mutable))))
+(type (: Counter (Record (: label string)
+                         (: count int #:mutable))))
 
 ;; The hash a mutable record does not have.
 ;;
@@ -32,8 +31,8 @@
 
 ;; A record without one is untouched, and stays positional.
 ;; EXPECT-CS: public record mutable_fields__Point\(int x, int y\);
-(type
-  (: Point (Record (: x int) (: y int))))
+(type (: Point (Record (: x int)
+                       (: y int))))
 
 ;; A generic record's derived implementation is conditional and materializes
 ;; like any other, so its hash is the derived `eq-hash` — which refuses for a
@@ -43,8 +42,7 @@
 ;; EXPECT-CS: public record mutable_fields__Box<T_a> \{
 ;; EXPECT-CS: public override int GetHashCode\(\) => __Eq_impl\.eqsubhash\(this\);
 ;; EXPECT-NO-CS: mutable_fields/Box has a mutable field
-(type/derive (Eq)
-  (: (Box %a) (Record (: item %a #:mutable))))
+(type/derive (Eq) (: (Box %a) (Record (: item %a #:mutable))))
 
 ;; A derived `eq-hash` for a *non-generic* mutable record refuses in Bjolang, so
 ;; the materialized `GetHashCode` throws through the implementation rather than
@@ -54,7 +52,8 @@
 ;; EXPECT-CS: public override int GetHashCode\(\) => Eq_mutable_fields__Tally\.Instance\.eqsubhash\(this\);
 ;; EXPECT-CS: public virtual bool Equals\(mutable_fields__Tally\? other\) => other is not null && Eq_mutable_fields__Tally\.Instance\.eq\(this, other\);
 (type/derive (Eq)
-  (: Tally (Record (: name string) (: hits int #:mutable))))
+  (: Tally (Record (: name string)
+                   (: hits int #:mutable))))
 
 ;; A single-field write needs no temporary — there is nothing it could be
 ;; reordered against — so it is written where it is evaluated.
@@ -68,8 +67,8 @@
 ;; EXPECT-CS: int __field__[0-9]+ = p\.y;
 ;; EXPECT-CS: p\.x = __field__[0-9]+;
 ;; EXPECT-CS: p\.y = __field__[0-9]+;
-(type
-  (: Cursor (Record (: x int #:mutable) (: y int #:mutable))))
+(type (: Cursor (Record (: x int #:mutable)
+                        (: y int #:mutable))))
 
 (: (-> Cursor void))
 (defun (swap! p)

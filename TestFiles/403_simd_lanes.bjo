@@ -41,11 +41,11 @@
     (loop (:for i (up-from 0 #:to whole #:by w))
           (:let v (simd256-load a i))
           (:acc s (folding zero (simd-add s (simd-select (simd-lt v lim) v zero))))
-          => s))
+      => s))
   (+ (simd-sum acc)
      (loop (:for i (up-from whole #:to (array-length a)))
            (:acc s (folding 0 (if (< (array-ref a i) limit) (+ s (array-ref a i)) s)))
-           => s)))
+       => s)))
 
 (defun (main)
   ;; Lanes.
@@ -61,7 +61,7 @@
 
   ;; Arithmetic, at a float type.
   (: Float64x4)
-  (def a (simd256-load ds 2))          ; 2 3 4 5
+  (def a (simd256-load ds 2)) ; 2 3 4 5
   (def b (simd256-splat 0.5))
   (expect "ref" (double->string (simd-ref a 1)) "3")
   (expect "sum" (double->string (simd-sum a)) "14")
@@ -81,7 +81,7 @@
 
   ;; Arithmetic, at an integer type and 128 bits.
   (: Int32x4)
-  (def x (simd128-load is 4))          ; 4 5 6 7
+  (def x (simd128-load is 4)) ; 4 5 6 7
   (expect "int sum" (simd-sum x) 22)
   (expect "int mul" (simd-ref (simd-mul x x) 3) 49)
   (expect "int generic" (simd-sum (twice x)) 44)
@@ -89,10 +89,12 @@
   (expect "int or" (simd-ref (simd-or x (simd128-splat 8)) 0) 12)
   (expect "int xor" (simd-ref (simd-xor x x) 2) 0)
   (expect "int not" (simd-ref (simd-not (simd128-zero)) 0) -1)
-  (expect "int wraps" (simd-ref (simd-add (simd128-splat 2147483647) (simd128-splat 1)) 0) -2147483648)
+  (expect "int wraps"
+          (simd-ref (simd-add (simd128-splat 2147483647) (simd128-splat 1)) 0)
+          -2147483648)
 
   ;; Masks.
-  (def m (simd-lt x (simd128-splat 6)))   ; #t #t #f #f
+  (def m (simd-lt x (simd128-splat 6))) ; #t #t #f #f
   (expect "a mask's lane is all ones" (simd-ref (simd-mask->lanes m) 0) -1)
   (expect "and nothing where it does not hold" (simd-ref (simd-mask->lanes m) 2) 0)
   (expect "count-true" (simd-count-true m) 2)

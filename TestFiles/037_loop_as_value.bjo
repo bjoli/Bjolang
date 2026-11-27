@@ -18,18 +18,23 @@
 ;; A let-shaped exit value: the binding is not terminal, the body is.
 (: (-> int int))
 (defun (sum-to n)
-  (+ 1 (let loop ((i 0) (acc 0))
-         (if (= i n)
-             (let ((doubled (* acc 2))) doubled)
-             (loop (+ i 1) (+ acc i))))))
+  (+ 1
+     (let loop ((i 0) (acc 0))
+       (if (= i n)
+           (let ((doubled (* acc 2)))
+             doubled)
+           (loop (+ i 1) (+ acc i))))))
 
 ;; A match-shaped exit value, which reaches the same target by way of a hoist.
 (: (-> int int))
 (defun (unwrapped n)
-  (+ 1 (let loop ((i 0))
-         (if (= i n)
-             (match (Some n) ((Some v) v) (None 0))
-             (loop (+ i 1))))))
+  (+ 1
+     (let loop ((i 0))
+       (if (= i n)
+           (match (Some n)
+             ((Some v) v)
+             (None 0))
+           (loop (+ i 1))))))
 
 ;; A let-shaped value in the *middle* of the loop body, which is where a `bind`
 ;; that has been spliced puts one.
@@ -41,10 +46,8 @@
         (let ((bumped (+ acc 2)))
           (loop (+ i 1) bumped)))))
 
-(type
-  (: (Result %e %a) (Union
-    (: Ok %a)
-    (: Err %e))))
+(type (: (Result %e %a) (Union (: Ok %a)
+                               (: Err %e))))
 
 (impl (Monad (Result %e %a))
   (defun (pure x) (Ok x))
@@ -66,8 +69,8 @@
   (bind (let loop ((rest xs) (total 0))
           (if (list-empty? rest)
               (pure total)
-              (bind (let ((x (list-head rest))) (check x))
-                    (fun (v) (loop (list-tail rest) (+ total v))))))
+              (bind (let ((x (list-head rest)))
+                      (check x)) (fun (v) (loop (list-tail rest) (+ total v))))))
         (fun (total) (pure total))))
 
 ;; The same shape collecting its results, which is `mapM`.
@@ -76,8 +79,8 @@
   (bind (let loop ((rest xs) (acc Nil))
           (if (list-empty? rest)
               (pure (list-reverse acc))
-              (bind (let ((x (list-head rest))) (check x))
-                    (fun (y) (loop (list-tail rest) (Cons y acc))))))
+              (bind (let ((x (list-head rest)))
+                      (check x)) (fun (y) (loop (list-tail rest) (Cons y acc))))))
         (fun (ys) (pure (list-length ys)))))
 
 (: (-> int (List int)))
@@ -124,7 +127,7 @@
     ((Err e) (string-append "err " e))))
 
 (defun (main)
-  (expect "sum-to" (sum-to 5) 21)          ;; (0+1+2+3+4)*2 + 1
+  (expect "sum-to" (sum-to 5) 21) ;; (0+1+2+3+4)*2 + 1
   (expect "unwrapped" (unwrapped 5) 6)
   (expect "stepped" (stepped 5) 10)
   (expect-result "fold-m" (fold-m (build 5)) 20)

@@ -8,7 +8,9 @@
 (: (-> (Vec int) (-> int bool) int))
 (defun (rounds-until xs f)
   (def/mutable n 0)
-  (ignore (loop (:for x xs) (:do (set! n (+ n 1))) (:acc (oring (f x)))))
+  (ignore (loop (:for x xs)
+                (:do (set! n (+ n 1)))
+                (:acc (oring (f x)))))
   n)
 
 (defun (main)
@@ -17,26 +19,38 @@
 
   ;; --- someing ----------------------------------------------------------
   (def ages (->map (list (Tuple "bo" 7) (Tuple "li" 12))))
-  (expect "someing: the first Some, as it is" {someing (map-try-ref ages n) (:for n (list "ann" "li" "bo"))} (Some 12))
-  (expect "someing: None when every round is None" {someing (map-try-ref ages n) (:for n (list "ann" "eve"))} None)
+  (expect "someing: the first Some, as it is"
+          {someing (map-try-ref ages n) (:for n (list "ann" "li" "bo"))}
+          (Some 12))
+  (expect "someing: None when every round is None"
+          {someing (map-try-ref ages n) (:for n (list "ann" "eve"))}
+          None)
   (expect "someing: no rounds" {someing (map-try-ref ages n) (:for n (: (list) (List string)))} None)
   (expect "someing with a loose :when"
           {someing (map-try-ref ages n) :when (not (= n "li")) (:for n (list "ann" "li" "bo"))}
           (Some 7))
   (expect "someing in a loop, beside another accumulator"
-          (loop (:for n (list "ann" "eve" "bo" "li")) (:acc seen (counting n)) (:acc a (someing (map-try-ref ages n))) => (Tuple seen a))
+          (loop (:for n (list "ann" "eve" "bo" "li"))
+                (:acc seen (counting n))
+                (:acc a (someing (map-try-ref ages n)))
+            => (Tuple seen a))
           (Tuple 3 (Some 7)))
   (def/mutable looked 0)
   (expect "someing ends the loop in the round that gives Some"
           (loop (:for n (list "ann" "li" "bo"))
-                (:acc a (someing (begin (set! looked (+ looked 1)) (map-try-ref ages n))))
-                => a)
+                (:acc a (someing (begin
+                                   (set! looked (+ looked 1))
+                                   (map-try-ref ages n))))
+            => a)
           (Some 12))
   (expect "and evaluates its expression once a round" looked 2)
   (def/mutable gated 0)
   (ignore (loop (:for n (list "ann" "li" "bo"))
-                (:acc a (someing (begin (set! gated (+ gated 1)) (map-try-ref ages n))) #:when (= n "bo"))
-                => a))
+                (:acc a (someing (begin
+                                   (set! gated (+ gated 1))
+                                   (map-try-ref ages n)))
+                      #:when (= n "bo"))
+            => a))
   (expect "with #:when, only the rounds it holds for evaluate it" gated 1)
 
   ;; --- anding and oring ---------------------------------------------------
@@ -49,37 +63,56 @@
   (expect "oring ends the loop in the round that holds" (rounds-until xs (fun (x) (= x 8))) 3)
   (def/mutable tested 0)
   (expect "anding ends the loop in the round that fails"
-          (loop (:for x xs) (:do (set! tested (+ tested 1))) (:acc ok (anding (odd? x))) => (Tuple ok tested))
+          (loop (:for x xs)
+                (:do (set! tested (+ tested 1)))
+                (:acc ok (anding (odd? x)))
+            => (Tuple ok tested))
           (Tuple #f 3))
   (expect "anding with #:when tests only those rounds"
-          (loop (:for x xs) (:acc ok (anding (> x 7)) #:when (even? x)) => ok)
+          (loop (:for x xs)
+                (:acc ok (anding (> x 7)) #:when (even? x))
+            => ok)
           #t)
   (expect "oring with #:when tests only those rounds"
-          (loop (:for x xs) (:acc ok (oring (> x 7)) #:when (< x 8)) => ok)
+          (loop (:for x xs)
+                (:acc ok (oring (> x 7)) #:when (< x 8))
+            => ok)
           #f)
   (expect "a loose :when in a comprehension" {oring (= x 9) :when (odd? x) (:for x xs)} #t)
 
   ;; --- taking -------------------------------------------------------------
   (expect "taking: the first n" {taking 2 x (:for x xs)} (list 3 5))
-  (expect "taking: of the rounds a :when lets through" {taking 2 x (:for x xs) (:when (> x 4))} (list 5 8))
+  (expect "taking: of the rounds a :when lets through"
+          {taking 2 x (:for x xs) (:when (> x 4))}
+          (list 5 8))
   (expect "taking: fewer than n" {taking 9 x (:for x xs)} (list 3 5 8 9 10))
   (expect "taking: none" {taking 0 x (:for x xs)} (: (list) (List int)))
-  (expect "taking: unnamed, the loop's value" (loop (:for x xs) (:acc (taking 2 x))) (list 3 5))
+  (expect "taking: unnamed, the loop's value"
+          (loop (:for x xs)
+                (:acc (taking 2 x)))
+          (list 3 5))
   (def/mutable taken-rounds 0)
   (expect "taking ends the loop in the round that takes the nth"
-          (loop (:for x xs) (:do (set! taken-rounds (+ taken-rounds 1)))
+          (loop (:for x xs)
+                (:do (set! taken-rounds (+ taken-rounds 1)))
                 (:acc t (taking 3 (* x 10)) #:when (odd? x))
-                => (Tuple t taken-rounds))
+            => (Tuple t taken-rounds))
           (Tuple (list 30 50 90) 4))
   (def/mutable counts 0)
-  (ignore {taking (begin (set! counts (+ counts 1)) 2) x (:for x xs)})
+  (ignore {taking (begin
+                    (set! counts (+ counts 1))
+                    2)
+                  x
+                  (:for x xs)})
   (expect "the count is evaluated once a round" counts 2)
 
   ;; --- maximizing, minimizing and -by -------------------------------------
   (expect "maximizing" {maximizing x (:for x xs)} (Some 10))
   (expect "minimizing" {minimizing x (:for x xs)} (Some 3))
   (expect "maximizing: no rounds" {maximizing x (:for x none)} None)
-  (expect "maximizing of strings, by Ord" {maximizing s (:for s (list "pear" "apple" "plum"))} (Some "plum"))
+  (expect "maximizing of strings, by Ord"
+          {maximizing s (:for s (list "pear" "apple" "plum"))}
+          (Some "plum"))
   (expect "maximizing-by" {maximizing-by (% x 4) x (:for x xs)} (Some 3))
   (expect "minimizing-by" {minimizing-by (% x 4) x (:for x xs)} (Some 8))
   (expect "maximizing-by: of equal keys the first"
@@ -90,27 +123,40 @@
           (Some "ab"))
   (expect "minimizing-by: no rounds" {minimizing-by x x (:for x none)} None)
   (expect "maximizing-by with #:when, in a loop"
-          (loop (:for x xs) (:acc best (maximizing-by (- 0 x) x) #:when (> x 4)) => best)
+          (loop (:for x xs)
+                (:acc best (maximizing-by (- 0 x) x) #:when (> x 4))
+            => best)
           (Some 5))
   (def/mutable keys 0)
-  (ignore {maximizing-by (begin (set! keys (+ keys 1)) x) x (:for x xs)})
+  (ignore {maximizing-by (begin
+                           (set! keys (+ keys 1))
+                           x)
+                         x
+                         (:for x xs)})
   (expect "the key is evaluated once a round" keys 5)
   (expect "maximizing/pairs, the collector of -by"
-          (loop (:for (Tuple k v) (list (Tuple 1 "a") (Tuple 3 "b") (Tuple 2 "c"))) (:acc (maximizing/pairs (Tuple k v))))
+          (loop (:for (Tuple k v) (list (Tuple 1 "a") (Tuple 3 "b") (Tuple 2 "c")))
+                (:acc (maximizing/pairs (Tuple k v))))
           (Some "b"))
 
   ;; --- tallying and grouping ----------------------------------------------
   (def words (list "a" "bb" "c" "dd" "a"))
-  (expect "tallying" {tallying w (:for w words)} (->map (list (Tuple "a" 2) (Tuple "bb" 1) (Tuple "c" 1) (Tuple "dd" 1))))
+  (expect "tallying"
+          {tallying w (:for w words)}
+          (->map (list (Tuple "a" 2) (Tuple "bb" 1) (Tuple "c" 1) (Tuple "dd" 1))))
   (expect "tallying: no rounds" {tallying x (:for x none)} (: (map-empty) (Map int int)))
   (expect "grouping: in the order they came"
           {grouping (string-length w) w (:for w words)}
           (->map (list (Tuple 1 (list "a" "c" "a")) (Tuple 2 (list "bb" "dd")))))
   (expect "grouping with #:when, in a loop"
-          (loop (:for x xs) (:acc g (grouping (% x 2) x) #:when (> x 3)) => g)
+          (loop (:for x xs)
+                (:acc g (grouping (% x 2) x) #:when (> x 3))
+            => g)
           (->map (list (Tuple 0 (list 8 10)) (Tuple 1 (list 5 9)))))
   (expect "grouping/pairs, the collector of grouping"
-          (loop (:for x xs) (:acc g (grouping/pairs (Tuple (odd? x) x))) => g)
+          (loop (:for x xs)
+                (:acc g (grouping/pairs (Tuple (odd? x) x)))
+            => g)
           (->map (list (Tuple #t (list 3 5 9)) (Tuple #f (list 8 10)))))
 
   ;; --- hygiene ------------------------------------------------------------
@@ -118,14 +164,24 @@
   (def ok? 'outer)
   (def limit 100)
   (expect "anding's ok? is its own"
-          (loop (:for x [1 2]) (:let ok? 'mine) (:acc a (anding (> x 0))) (:acc seen (listing ok?)) => (Tuple a seen))
+          (loop (:for x [1 2])
+                (:let ok? 'mine)
+                (:acc a (anding (> x 0)))
+                (:acc seen (listing ok?))
+            => (Tuple a seen))
           (Tuple #t (list 'mine 'mine)))
   (expect "someing's got is its own"
-          (loop (:for x [1 2 3]) (:let got 'mine)
+          (loop (:for x [1 2 3])
+                (:let got 'mine)
                 (:acc a (someing (if (= x 2) (Some x) None)))
                 (:acc seen (listing got))
-                => (Tuple a seen))
+            => (Tuple a seen))
           (Tuple (Some 2) (list 'mine)))
-  (expect "taking's limit is its own" (loop (:for x xs) (:let limit 1) (:acc t (taking 2 (+ x limit))) => t) (list 4 6))
+  (expect "taking's limit is its own"
+          (loop (:for x xs)
+                (:let limit 1)
+                (:acc t (taking 2 (+ x limit)))
+            => t)
+          (list 4 6))
   (expect "and the defs outside are untouched" (Tuple ok? limit) (Tuple 'outer 100))
   0)

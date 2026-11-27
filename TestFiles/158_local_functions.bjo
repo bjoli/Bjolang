@@ -83,8 +83,10 @@
 ;; is the case a rule about recursion would have got wrong.
 (: (-> int int))
 (defbjo (parity n)
-  (defun (evens i) (if (<= i 0) 0 (odds (- i 1))))
-  (defun (odds i) (if (<= i 0) (fetch 21) (evens (- i 1))))
+  (defun (evens i)
+    (if (<= i 0) 0 (odds (- i 1))))
+  (defun (odds i)
+    (if (<= i 0) (fetch 21) (evens (- i 1))))
   (evens n))
 
 ;; Not tail-recursive, so the group stays C# local functions — and those are
@@ -102,8 +104,10 @@
 ;; C# method with a state discriminant, and entry wrappers that await it.
 (: (-> int int))
 (defbjo (alternating n)
-  (defun (evens i) (if (<= i 0) 0 (+ (fetch i) (odds (- i 1)))))
-  (defun (odds i) (if (<= i 0) 0 (evens (- i 1))))
+  (defun (evens i)
+    (if (<= i 0) 0 (+ (fetch i) (odds (- i 1)))))
+  (defun (odds i)
+    (if (<= i 0) 0 (evens (- i 1))))
   (evens n))
 
 ;; --- What is still refused ----------------------------------------------------
@@ -153,7 +157,9 @@
   (expect "a chain of local functions" (run-int (bjo (chained 5))) 22)
   (expect "a tail-recursive one, which is a while" (run-int (bjo (countdown 3))) 12)
   (expect "a non-tail-recursive one, which stays a local function" (run-int (bjo (sum-fetched 3))) 12)
-  (expect "a non-tail mutually recursive pair, which is a merged group" (run-int (bjo (alternating 4))) 12)
+  (expect "a non-tail mutually recursive pair, which is a merged group"
+          (run-int (bjo (alternating 4)))
+          12)
   ;; An odd argument is the one that lands on `odds`, which is where the yield
   ;; point is; an even one walks down to `(evens 0)` and answers 0 without ever
   ;; suspending. Both are the same `while`.

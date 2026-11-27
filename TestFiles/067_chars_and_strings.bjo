@@ -89,8 +89,7 @@
   ;; assumption: it must produce the four bytes UTF-8 gives it, not a broken half.
   (expect "char->string ascii" (char->string #\a) "a")
   (expect "char->string length" (string-length (char->string #\a)) 1)
-  (expect "char->string astral length"
-          (string-length (char->string #\😀)) 4)
+  (expect "char->string astral length" (string-length (char->string #\😀)) 4)
 
   ;; Pattern matching.
   (expect "vowel yes" (if (vowel? #\e) "yes" "no") "yes")
@@ -232,14 +231,15 @@
   (expect-bool "end? at end" (string-cursor-end? "hi" (string-cursor-end "hi")) #t)
   (expect-bool "end? at start" (string-cursor-end? "hi" (string-cursor-start "hi")) #f)
   ;; An empty string is where start and end coincide.
-  (expect-bool "empty string is immediately done"
-               (string-cursor-end? "" (string-cursor-start "")) #t)
+  (expect-bool "empty string is immediately done" (string-cursor-end? "" (string-cursor-start "")) #t)
 
   ;; Cursor comparison, which is what bounds a hand-written traversal.
   (expect-bool "cursor=? start end on empty"
-               (string-cursor=? (string-cursor-start "") (string-cursor-end "")) #t)
+               (string-cursor=? (string-cursor-start "") (string-cursor-end ""))
+               #t)
   (expect-bool "cursor<? start before end"
-               (string-cursor<? (string-cursor-start "hi") (string-cursor-end "hi")) #t)
+               (string-cursor<? (string-cursor-start "hi") (string-cursor-end "hi"))
+               #t)
 
   ;; ---- Storage units against characters -----------------------------------
   ;;
@@ -254,14 +254,13 @@
 
   ;; The emoji arrives whole from the middle of the string, not as a surrogate.
   (expect-char "astral char read whole"
-               (string-cursor-ref "a😀b"
-                 (string-cursor-next "a😀b" (string-cursor-start "a😀b")))
+               (string-cursor-ref "a😀b" (string-cursor-next "a😀b" (string-cursor-start "a😀b")))
                #\😀)
   ;; And one `next` steps over both of its storage units.
   (expect-char "next steps over the whole character"
-               (string-cursor-ref "a😀b"
-                 (string-cursor-next "a😀b"
-                   (string-cursor-next "a😀b" (string-cursor-start "a😀b"))))
+               (string-cursor-ref
+                "a😀b"
+                (string-cursor-next "a😀b" (string-cursor-next "a😀b" (string-cursor-start "a😀b"))))
                #\b)
 
   ;; ---- ref+next, the fused step -------------------------------------------
@@ -276,11 +275,11 @@
     (string-cursor-ref+next "a😀b" (string-cursor-next "a😀b" (string-cursor-start "a😀b"))))
   (expect-char "fused character is the astral one" fused-char #\😀)
   (expect-char "fused cursor stepped over the pair" (string-cursor-ref "a😀b" fused-next) #\b)
-  (expect-bool "fused cursor is the one next gives"
-               (string-cursor=? fused-next
-                                (string-cursor-next "a😀b"
-                                  (string-cursor-next "a😀b" (string-cursor-start "a😀b"))))
-               #t)
+  (expect-bool
+   "fused cursor is the one next gives"
+   (string-cursor=? fused-next
+                    (string-cursor-next "a😀b" (string-cursor-next "a😀b" (string-cursor-start "a😀b"))))
+   #t)
 
   ;; ---- substring ----------------------------------------------------------
   (expect "substring whole"
@@ -291,8 +290,8 @@
           "")
   (expect "substring drops first char"
           (substring "hello"
-            (string-cursor-next "hello" (string-cursor-start "hello"))
-            (string-cursor-end "hello"))
+                     (string-cursor-next "hello" (string-cursor-start "hello"))
+                     (string-cursor-end "hello"))
           "ello")
 
   ;; ---- Folds --------------------------------------------------------------
@@ -301,12 +300,8 @@
   ;; Left and right fold differ in the order they visit, which is the whole
   ;; point of having both: consing on the way left reverses, on the way right
   ;; does not.
-  (expect "string-fold builds reversed"
-          (list->string (string-fold #(cons &1 &2) Nil "abc"))
-          "cba")
-  (expect "string-fold-right preserves order"
-          (list->string (string-fold-right cons Nil "abc"))
-          "abc")
+  (expect "string-fold builds reversed" (list->string (string-fold #(cons &1 &2) Nil "abc")) "cba")
+  (expect "string-fold-right preserves order" (list->string (string-fold-right cons Nil "abc")) "abc")
 
   ;; ---- for-each -----------------------------------------------------------
   (let ((b (stringbuilder-empty)))
@@ -331,8 +326,8 @@
   ;; The result is a cursor, so it can be used to cut without converting back.
   (expect "index finds and slices"
           (substring "hello world"
-            (option-ref (string-find char-whitespace? "hello world"))
-            (string-cursor-end "hello world"))
+                     (option-ref (string-find char-whitespace? "hello world"))
+                     (string-cursor-end "hello world"))
           " world")
   (expect-bool "index missing" (none? (string-find char-numeric? "no digits here")) #t)
 
@@ -352,7 +347,8 @@
                (string-cursor=? (option-ref (string-search path "")) (string-cursor-start path))
                #t)
   (expect-bool "and searched backward, at the end"
-               (string-cursor=? (option-ref (string-search-backward path "")) (string-cursor-end path))
+               (string-cursor=? (option-ref (string-search-backward path ""))
+                                (string-cursor-end path))
                #t)
 
   ;; ---- stringbuilder=? ------------------------------------------------------
@@ -369,24 +365,24 @@
   (expect "loop over string"
           (loop (:for c "hello")
                 (:acc out (stringing (char-upcase c)))
-                => out)
+            => out)
           "HELLO")
   (expect "loop keeps astral whole"
           (loop (:for c "a😀b")
                 (:acc out (stringing c))
-                => out)
+            => out)
           "a😀b")
   (expect-int "loop counts characters"
               (loop (:for c "a😀b")
                     (:acc n (counting c))
-                    => n)
+                => n)
               3)
   ;; Filtering mid-loop, to show the character is an ordinary value.
   (expect "loop filters"
           (loop (:for c "h3ll0 w0rld")
                 (:when (char-alphabetic? c))
                 (:acc out (stringing c))
-                => out)
+            => out)
           "hllwrld")
 
   ;; ---- The Collection and Iterable traits ---------------------------------
@@ -420,12 +416,12 @@
 (: (-> void))
 (defun (test-strings)
   ;; --- Searching -----------------------------------------------------------
-  (expect-true  "contains" (string-contains? "hello world" "o w"))
+  (expect-true "contains" (string-contains? "hello world" "o w"))
   (expect-false "and does not" (string-contains? "hello world" "ow"))
-  (expect-true  "the empty needle is everywhere" (string-contains? "hello" ""))
-  (expect-true  "starts with" (string-starts-with? "hello" "hell"))
+  (expect-true "the empty needle is everywhere" (string-contains? "hello" ""))
+  (expect-true "starts with" (string-starts-with? "hello" "hell"))
   (expect-false "and does not" (string-starts-with? "hello" "Hell"))
-  (expect-true  "ends with" (string-ends-with? "hello" "llo"))
+  (expect-true "ends with" (string-ends-with? "hello" "llo"))
   (expect-false "and does not" (string-ends-with? "hello" "LLO"))
 
   ;; Ordinal, not cultural. The first literal below holds a bare "e" followed
@@ -437,8 +433,7 @@
   ;; --- Rewriting -----------------------------------------------------------
   (expect "replace" (string-replace "a-b-c" "-" "+") "a+b+c")
   (expect "replace with nothing deletes" (string-replace "a-b-c" "-" "") "abc")
-  (expect "and a needle that is not there changes nothing"
-          (string-replace "abc" "-" "+") "abc")
+  (expect "and a needle that is not there changes nothing" (string-replace "abc" "-" "+") "abc")
 
   ;; --- Case ----------------------------------------------------------------
   ;; ß upcases to itself rather than to SS: the invariant mapping is
@@ -459,10 +454,8 @@
 
   ;; Width is in characters, so a pad outside the BMP is one of them and a
   ;; string containing one is as wide as it looks.
-  (expect "an astral pad is one character"
-          (string-pad-left "a" 3 #:with #\😀) "😀😀a")
-  (expect "and an astral character is one character wide"
-          (string-pad-left "😀" 3) "  😀")
+  (expect "an astral pad is one character" (string-pad-left "a" 3 #:with #\😀) "😀😀a")
+  (expect "and an astral character is one character wide" (string-pad-left "😀" 3) "  😀")
 
   ;; --- Splitting and joining -----------------------------------------------
   (def fields (string-split "a,b,c" ","))
@@ -475,29 +468,32 @@
   (expect "join undoes split" (string-join sparse ",") "a,,b")
 
   (expect "a separator that is not there splits into one field"
-          (int->string (length (string-split "abc" ","))) "1")
-  (expect "a multi-character separator"
-          (string-join (string-split "a::b::c" "::") "/") "a/b/c")
-  (expect "joining nothing is nothing"
-          (string-join (vec-empty) ",") "")
+          (int->string (length (string-split "abc" ",")))
+          "1")
+  (expect "a multi-character separator" (string-join (string-split "a::b::c" "::") "/") "a/b/c")
+  (expect "joining nothing is nothing" (string-join (vec-empty) ",") "")
 
   ;; Splitting is by storage, joining by nothing at all, so text outside the
   ;; BMP survives both.
   (expect "and an astral character is not cut in half"
-          (int->string (length (string-split "a😀b" "😀"))) "2")
+          (int->string (length (string-split "a😀b" "😀")))
+          "2")
 
   ;; Every separator ends a field, so one at either end makes an empty field
   ;; there, and the empty string is one empty field.
   (expect "the empty string is one empty field"
-          (string-join (vec-map (fun (f) (str "<" f ">")) (string-split "" ",")) "") "<>")
+          (string-join (vec-map (fun (f) (str "<" f ">")) (string-split "" ",")) "")
+          "<>")
   (expect "a separator at each end makes an empty field at each"
-          (string-join (vec-map (fun (f) (str "<" f ">")) (string-split ",a," ",")) "") "<><a><>")
-  (expect "nothing but separators is nothing but empty fields"
-          (length (string-split ",,," ",")) 4)
+          (string-join (vec-map (fun (f) (str "<" f ">")) (string-split ",a," ",")) "")
+          "<><a><>")
+  (expect "nothing but separators is nothing but empty fields" (length (string-split ",,," ",")) 4)
 
   ;; Up to 32 fields and more than 32 are made into a vec differently, and
   ;; make the same vec.
-  (def thirty-two (loop (:for i (range 0 32)) (:acc (vecing (int->string i)))))
+  (def thirty-two
+    (loop (:for i (range 0 32))
+          (:acc (vecing (int->string i)))))
   (def thirty-three (vec-add thirty-two "32"))
   (expect-true "32 fields" (= (string-split (string-join thirty-two ",") ",") thirty-two))
   (expect-true "33 fields" (= (string-split (string-join thirty-three ",") ",") thirty-three))
