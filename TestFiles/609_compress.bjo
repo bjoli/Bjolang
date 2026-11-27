@@ -1,7 +1,9 @@
 ;; std/compress: each format round-trips through a file, gzip reads what
 ;; gzip(1) wrote and several members as one, a closed compressed port leaves
-;; the port under it open, a scope's end writes the trailer, bad data raises,
-;; and a fiber can write compressed data into a pipe that another reads.
+;; the port under it open, a scope's end writes the trailer, bad data, a bad
+;; checksum and data that ends early raise, input in chunks of one byte
+;; decodes, and a fiber can write compressed data into a pipe that another
+;; reads.
 (import (std prelude))
 (import (std ports))
 (import (std compress))
@@ -45,6 +47,24 @@
   (match (try (read-through name wrap) #:catch (System.IO.InvalidDataException))
     ((Ok _) #f)
     ((Err _) #t)))
+
+;; Whether reading `name` through `wrap` raises EndOfStreamException.
+(: (-> string (-> InputPort InputPort) bool))
+(defun (ends-early? name wrap)
+  (match (try (read-through name wrap) #:catch (System.IO.EndOfStreamException))
+    ((Ok _) #f)
+    ((Err _) #t)))
+
+;; The bytes of the file `name`, with `f` applied to them.
+(: (-> string (-> (Vec byte) (Vec byte)) string void))
+(defun (rewrite from f to)
+  (raise-err
+   (file-write-bytes (at to) (vec->array (f (array->vec (raise-err (file-read-bytes (at from)))))))))
+
+;; A port over `p` that returns its bytes one at a time.
+(: (-> InputPort InputPort))
+(defun (one-at-a-time p)
+  (make-input-port (bjoroutine () (read-bytes p 1))))
 
 ;; Whether reading `name` through `wrap` raises InvalidOperationException,
 ;; as .NET's Brotli decoder does on bad data.
@@ -152,15 +172,48 @@
   (expect "data that is not Brotli raises InvalidOperationException"
           (invalid-operation? "bad.br" #(brotli-input-port &))
           #t)
-  ;; The documented gap: data that ends early reads as what it could decode.
-  (def whole (raise-err (file-read-bytes (at "t.gz"))))
-  (raise-err (file-write-bytes
-              (at "cut.gz")
-              (vec->array (vec-slice (array->vec whole) 0 (/ (array-length whole) 2)))))
-  (def cut (read-through "cut.gz" #(gzip-input-port &)))
-  (expect "data that ends early is a prefix of the text, and no raise"
-          (and (string-starts-with? text cut) (< (string-length cut) (string-length text)))
+  ;; Data that ends early raises, wherever it ends.
+  (loop (:for (Tuple name wrap) [(Tuple "t.gz" #(gzip-input-port &))
+                                 (Tuple "t.zz" #(zlib-input-port &))
+                                 (Tuple "t.deflate" #(deflate-input-port &))])
+        (:do (def n (cast int (size-of name)))
+             (loop (:for cut [1 3 (/ n 2) (- n 4) (- n 1)])
+                   (:do (rewrite name #(vec-slice & 0 cut) "cut")
+                        (expect (str name " cut to " (int->string cut)
+                                     " bytes raises EndOfStreamException")
+                                (ends-early? "cut" wrap)
+                                #t)))))
+  ;; A checksum or a length that does not match raises.
+  (def gz-size (cast int (size-of "t.gz")))
+  (rewrite "t.gz"
+           #(vec-set & (- gz-size 8) (cast byte (+ 1 (cast int (vec-ref & (- gz-size 8))))))
+           "crc.gz")
+  (expect "a gzip CRC-32 that does not match raises" (invalid-data? "crc.gz" #(gzip-input-port &)) #t)
+  (rewrite "t.gz" #(vec-set & (- gz-size 1) (cast byte 7)) "len.gz")
+  (expect "a gzip length that does not match raises" (invalid-data? "len.gz" #(gzip-input-port &)) #t)
+  (def zz-size (cast int (size-of "t.zz")))
+  (rewrite "t.zz"
+           #(vec-set & (- zz-size 1) (cast byte (+ 1 (cast int (vec-ref & (- zz-size 1))))))
+           "adler.zz")
+  (expect "a zlib Adler-32 that does not match raises"
+          (invalid-data? "adler.zz" #(zlib-input-port &))
           #t)
+  (rewrite "sys.gz" #(vec-append & (array->vec (string->bytes "junk"))) "junk-after.gz")
+  (expect "bytes after the last member that are not a member raise"
+          (invalid-data? "junk-after.gz" #(gzip-input-port &))
+          #t)
+
+  ;; --- Input in small pieces ------------------------------------------------
+  (expect "gzip input one byte at a time decodes"
+          (with-scope
+            (def file (raise-err (open-input-file (at "t.gz"))))
+            (read-all (gzip-input-port (one-at-a-time file))))
+          text)
+  (expect "a stored gzip one byte at a time decodes"
+          (with-scope
+            (def file (raise-err (open-input-file (at "l-none.gz"))))
+            (read-all (gzip-input-port (one-at-a-time file))))
+          text)
 
   ;; --- Fibers ---------------------------------------------------------------
   (expect "a fiber compresses into a pipe while another reads it"

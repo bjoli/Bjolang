@@ -37,12 +37,23 @@
     @bold{Reads and writes suspend} a fiber where the port under them would:
     the compressor reads and writes through the port's own operations.
 
-    @bold{An error in the data} raises from the read that finds it:
-    @code{System.IO.InvalidDataException} for gzip, zlib and deflate, and
-    @code{System.InvalidOperationException} for Brotli, as .NET's decoders
-    raise them. @bold{Data that ends early is not an error:}
-    the port returns what it could decode, and then the end of input. To
-    know that a file is whole, keep its length or a hash with it.
+    @bold{An error in the data} raises from the read that finds it.
+    @itemize{
+      @item{@bold{Data that ends early} raises
+        @code{System.IO.EndOfStreamException}, for gzip, zlib and deflate: a
+        deflate stream has to reach its last block, and a gzip or zlib stream
+        its trailer.}
+      @item{@bold{Data that is not the format}, and a gzip CRC-32, a gzip
+        length or a zlib Adler-32 that does not match, raise
+        @code{System.IO.InvalidDataException}. The check is made at the
+        trailer, so the reads before it have returned the data already.}
+      @item{@bold{Brotli} raises @code{System.InvalidOperationException} on
+        bad data, as .NET's decoder does, and does not detect data that ends
+        early.}}
+
+    @bold{The gzip, zlib and deflate decoders are written in Bjolang},
+    over @code{make-input-port}; the compressors and the Brotli decoder are
+    .NET's. The decoders are about a third as fast as .NET's.
 
     @bold{An input port reads ahead} from the port under it, past the end
     of the compressed data. Give it a port that ends where the data ends:
@@ -69,7 +80,10 @@
   (reference """
     A file of several gzip members, as @code{cat a.gz b.gz} makes, is read
     as one: the members' data one after another. Raises
-    @code{InvalidDataException} on data that is not gzip.
+    @code{InvalidDataException} on data that is not gzip, on a CRC-32 or a
+    length that does not match the data, and on bytes after the last member
+    that are not another member. Raises @code{EndOfStreamException} on data
+    that ends before a member's trailer.
     """))
 
 (:doc gzip-output-port
@@ -109,8 +123,9 @@
   (see deflate-output-port zlib-input-port)
   (reference """
     Raw deflate has no header and no checksum: a damaged stream may read as
-    other data rather than raise. Prefer gzip or zlib where you choose the
-    format.
+    other data rather than raise. Data that ends before the last block does
+    raise @code{EndOfStreamException}. Prefer gzip or zlib where you choose
+    the format.
     """))
 
 (:doc deflate-output-port

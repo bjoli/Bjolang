@@ -1,0 +1,679 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/compress/inflate.bjo — a deflate decoder (RFC 1951) and the gzip
+;; (RFC 1952) and zlib (RFC 1950) formats around it, as input ports.
+;;
+;; - The ports are `make-input-port`s. Each read decodes up to 32 KiB of
+;;   output from the bytes in hand. When those run out it reads more from the
+;;   port under it, which is where a read suspends.
+;; - Data that ends before the format says it does raises
+;;   `System.IO.EndOfStreamException`: a deflate stream must reach its last
+;;   block, and a gzip or zlib stream its trailer.
+;; - Data that is not the format, or whose checksum or length does not match,
+;;   raises `System.IO.InvalidDataException`.
+;; - gzip: members one after another are read as one. Bytes after the last
+;;   member that are not another member raise.
+;; - The decoder reads ahead of the data it decodes, in the chunks the port
+;;   under it returns.
+
+(export gzip-decoding-port zlib-decoding-port deflate-decoding-port)
+
+(import (std prelude))
+(import (only (std ports) read-some make-input-port))
+
+(import/class
+  (BadData (: System.IO.InvalidDataException (-> string BadData)))
+  (EndsEarly (: System.IO.EndOfStreamException (-> string EndsEarly))))
+
+(: (-> string %a))
+(defun (bad-data message)
+  (raise (cast Exception (BadData. message))))
+
+(: (-> string %a))
+(defun (ends-early what)
+  (raise (cast Exception (EndsEarly. (str what " ends early")))))
+
+;; ---------------------------------------------------------------------------
+;; Huffman codes
+;; ---------------------------------------------------------------------------
+
+;; The number of low bits the fast table decodes in one lookup.
+(: int)
+(def fast-bits 10)
+
+;; A canonical Huffman code.
+;; - fast: for each value of the next `fast-bits` bits, the symbol shifted
+;;   left by 4 and the code's length, or 0 for a code longer than fast-bits.
+;; - count: the number of codes of each length, 0 to 15.
+;; - symbol: the symbols, ordered by code.
+(type (: Huffman (Record (: fast (Array int))
+                         (: count (Array int))
+                         (: symbol (Array int)))))
+
+;; The bits of `code`, `len` of them, in reverse order.
+(: (-> int int int))
+(defun (reversed code len)
+  (let go ((c code)
+           (i 0)
+           (r 0))
+    (if (= i len)
+        r
+        (go (shift-right c 1) (+ i 1) (bitwise-ior (shift-left r 1) (bitwise-and c 1))))))
+
+;; The code whose lengths are `lengths[0..n)`. A length of 0 is no code.
+;; - Raises InvalidDataException when the lengths are over-subscribed. An
+;;   incomplete code is allowed: a symbol with no code raises when it is read.
+(: (-> (Array int) int Huffman))
+(defun (make-huffman lengths n)
+  (def (: count (Array int)) (make-array 16 #:fill 0))
+  (loop (:for s (range 0 n))
+        (:do (def l (array-ref lengths s))
+             (array-set! count l (+ (array-ref count l) 1))))
+  (array-set! count 0 0)
+  ;; Over-subscribed: more codes of a length than the shorter ones leave.
+  (let check ((len 1) (left 1))
+    (when (<= len 15)
+      (def left2 (- (* left 2) (array-ref count len)))
+      (when (< left2 0)
+        (bad-data "deflate data has an over-subscribed code"))
+      (check (+ len 1) left2)))
+  ;; The first index of each length in `symbol`, and the first code of each
+  ;; length.
+  (def (: offs (Array int)) (make-array 16 #:fill 0))
+  (def (: next (Array int)) (make-array 16 #:fill 0))
+  (loop (:for len (range 1 15))
+        (:do
+         (array-set! offs (+ len 1) (+ (array-ref offs len) (array-ref count len)))
+         (array-set! next (+ len 1) (shift-left (+ (array-ref next len) (array-ref count len)) 1))))
+  (def (: symbol (Array int)) (make-array (max n 1) #:fill 0))
+  (def (: fast (Array int)) (make-array (shift-left 1 fast-bits) #:fill 0))
+  (loop (:for s (range 0 n))
+        (:do (def len (array-ref lengths s))
+             (when (> len 0)
+               (def at (array-ref offs len))
+               (array-set! offs len (+ at 1))
+               (array-set! symbol at s)
+               (def code (array-ref next len))
+               (array-set! next len (+ code 1))
+               (when (<= len fast-bits)
+                 (def entry (bitwise-ior (shift-left s 4) len))
+                 (let fill ((i (reversed code len)))
+                   (when (< i (shift-left 1 fast-bits))
+                     (array-set! fast i entry)
+                     (fill (+ i (shift-left 1 len)))))))))
+  (Huffman (fast fast) (count count) (symbol symbol)))
+
+;; The fixed codes of block type 1.
+(: Huffman)
+(def fixed-lit
+  (let ()
+    (def (: l (Array int)) (make-array 288 #:fill 8))
+    (loop (:for s (range 144 256))
+          (:do (array-set! l s 9)))
+    (loop (:for s (range 256 280))
+          (:do (array-set! l s 7)))
+    (make-huffman l 288)))
+
+(: Huffman)
+(def fixed-dist (make-huffman (make-array 30 #:fill 5) 30))
+
+;; Length symbols 257..285: the base length and the extra bits.
+(: (Array int))
+(def length-base
+  #[3 4 5 6 7 8 9 10 11 13 15 17 19 23 27 31 35 43 51 59 67 83 99 115 131 163 195 227 258])
+
+(: (Array int))
+(def length-extra #[0 0 0 0 0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3 4 4 4 4 5 5 5 5 0])
+
+;; Distance symbols 0..29.
+(: (Array int))
+(def dist-base
+  #[1 2 3 4 5 7 9 13 17 25 33 49 65 97 129 193 257 385 513 769 1025 1537 2049 3073 4097 6145 8193
+    12289 16385 24577])
+
+(: (Array int))
+(def dist-extra #[0 0 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13])
+
+;; The order the code-length code's lengths are written in.
+(: (Array int))
+(def length-order #[16 17 18 0 8 7 9 6 10 5 11 4 12 3 13 2 14 1 15])
+
+;; ---------------------------------------------------------------------------
+;; The decoder's state
+;; ---------------------------------------------------------------------------
+
+;; The window holds the last 32 KiB of output, which distances refer back
+;; into, and what is being decoded after it. A read decodes up to `chunk`
+;; bytes past where it started, and a copy can run 258 bytes past that.
+(: int)
+(def window 32768)
+
+(: int)
+(def chunk 32768)
+
+(: int)
+(def window-size (+ (* 2 window) chunk 512))
+
+;; What the decoder is doing.
+(type (: Mode (Union BlockHeader Stored Coded StreamEnd)))
+
+(type (: Inflater (Record (: src InputPort)
+                          ;; The input in hand: in[pos..end).
+                          (: in (Array byte) #:mutable)
+                          (: pos int #:mutable)
+                          (: end int #:mutable)
+                          ;; The port under it has ended.
+                          (: eof bool #:mutable)
+                          ;; Bits taken from the input and not yet used, the low bit first.
+                          (: bits long #:mutable)
+                          (: nbits int #:mutable)
+                          (: win (Array byte))
+                          (: wpos int #:mutable)
+                          (: mode Mode #:mutable)
+                          ;; The block being decoded is the last.
+                          (: last bool #:mutable)
+                          (: stored-left int #:mutable)
+                          (: lit Huffman #:mutable)
+                          (: dist Huffman #:mutable)
+                          ;; What the stream is called in a message: "gzip data".
+                          (: what string))))
+
+(: (-> InputPort string Inflater))
+(defun (make-inflater src what)
+  (Inflater (src src)
+            (in (make-array 0))
+            (pos 0)
+            (end 0)
+            (eof #f)
+            (bits 0L)
+            (nbits 0)
+            (win (make-array window-size))
+            (wpos 0)
+            (mode BlockHeader)
+            (last #f)
+            (stored-left 0)
+            (lit fixed-lit)
+            (dist fixed-dist)
+            (what what)))
+
+;; The bytes in hand, counting the whole bytes in the bit buffer.
+(: (-> Inflater int))
+(defun (available st)
+  (+ (- (record-ref st end) (record-ref st pos)) (shift-right (record-ref st nbits) 3)))
+
+;; Reads from the port under it until `n` bytes are in hand or it ends.
+(: (-bjo-> Inflater int void))
+(defbjo (fill! st n)
+  (let go ()
+    (when (and (< (available st) n) (not (record-ref st eof)))
+      (match (read-some (record-ref st src))
+        ((Some more)
+         (def left (- (record-ref st end) (record-ref st pos)))
+         (if (= left 0)
+             (record-set! st (in more) (pos 0) (end (array-length more)))
+             (let ()
+               (def (: joined (Array byte)) (make-array (+ left (array-length more))))
+               (array-copy! (record-ref st in) (record-ref st pos) joined 0 left)
+               (array-copy! more 0 joined left (array-length more))
+               (record-set! st (in joined) (pos 0) (end (array-length joined))))))
+        (None (record-set! st (eof #t))))
+      (go))))
+
+;; Moves bytes into the bit buffer until it holds `n` bits or the input in
+;; hand runs out. Whether it holds `n`.
+(: (-> Inflater int bool) #:inline)
+(defun (pull! st n)
+  (let go ()
+    (cond
+      ((>= (record-ref st nbits) n) #t)
+      ((< (record-ref st pos) (record-ref st end))
+       (def b (cast long (array-ref (record-ref st in) (record-ref st pos))))
+       (record-set! st (bits (bitwise-ior (record-ref st bits) (shift-left b (record-ref st nbits))))
+                       (nbits (+ (record-ref st nbits) 8))
+                       (pos (+ (record-ref st pos) 1)))
+       (go))
+      (else #f))))
+
+;; The next `n` bits, n at most 32. Raises EndOfStreamException when the
+;; input has fewer.
+(: (-> Inflater int int))
+(defun (take-bits! st n)
+  (unless (pull! st n)
+    (ends-early (record-ref st what)))
+  (def v (cast int (bitwise-and (record-ref st bits) (- (shift-left 1L n) 1L))))
+  (record-set! st (bits (shift-right (record-ref st bits) n)) (nbits (- (record-ref st nbits) n)))
+  v)
+
+;; Drops the bits up to the next byte boundary.
+(: (-> Inflater void))
+(defun (align! st)
+  (def r (bitwise-and (record-ref st nbits) 7))
+  (record-set! st (bits (shift-right (record-ref st bits) r)) (nbits (- (record-ref st nbits) r))))
+
+;; The next symbol of `h`.
+;; - The fast table decodes a code of up to fast-bits bits in one lookup.
+;;   A longer code, or a code near the end of the input, is decoded a bit at
+;;   a time.
+(: (-> Inflater Huffman int))
+(defun (decode! st h)
+  (ignore (pull! st 15))
+  (def entry (array-ref (record-ref h fast) (cast int (bitwise-and (record-ref st bits) 1023L))))
+  (def len (bitwise-and entry 15))
+  (if (and (> len 0) (<= len (record-ref st nbits)))
+      (let ()
+        (record-set! st (bits (shift-right (record-ref st bits) len))
+                        (nbits (- (record-ref st nbits) len)))
+        (shift-right entry 4))
+      (decode-slow! st h)))
+
+(: (-> Inflater Huffman int) #:no-inline)
+(defun (decode-slow! st h)
+  (def count (record-ref h count))
+  (let go ((len 1)
+           (code 0)
+           (first 0)
+           (index 0))
+    (when (> len 15)
+      (bad-data (str (record-ref st what) " has a code that is not in its table")))
+    (def c (bitwise-ior code (take-bits! st 1)))
+    (def n (array-ref count len))
+    (if (< (- c n) first)
+        (array-ref (record-ref h symbol) (+ index (- c first)))
+        (go (+ len 1) (shift-left c 1) (shift-left (+ first n) 1) (+ index n)))))
+
+;; ---------------------------------------------------------------------------
+;; Blocks
+;; ---------------------------------------------------------------------------
+
+;; The most bytes a block header can take: a dynamic header with every code
+;; length written in its longest form.
+(: int)
+(def header-room 600)
+
+;; The most bytes one length and distance can take.
+(: int)
+(def symbol-room 8)
+
+;; Reads a block header, from bytes in hand.
+(: (-> Inflater void))
+(defun (block-header! st)
+  (record-set! st (last (= (take-bits! st 1) 1)))
+  (case (take-bits! st 2)
+    (0
+     (align! st)
+     (def len (take-bits! st 16))
+     (def nlen (take-bits! st 16))
+     (unless (= len (bitwise-xor nlen 65535))
+       (bad-data (str (record-ref st what) " has a stored block whose length is damaged")))
+     (record-set! st (stored-left len) (mode Stored)))
+    (1 (record-set! st (lit fixed-lit) (dist fixed-dist) (mode Coded)))
+    (2
+     (dynamic-tables! st)
+     (record-set! st (mode Coded)))
+    (else (bad-data (str (record-ref st what) " has a block of type 3, which is not a type")))))
+
+;; Reads the code lengths of a dynamic block and makes its codes.
+(: (-> Inflater void))
+(defun (dynamic-tables! st)
+  (def nlen (+ (take-bits! st 5) 257))
+  (def ndist (+ (take-bits! st 5) 1))
+  (def ncode (+ (take-bits! st 4) 4))
+  (when (or (> nlen 286) (> ndist 30))
+    (bad-data (str (record-ref st what) " has a block with too many codes")))
+  (def (: code-lengths (Array int)) (make-array 19 #:fill 0))
+  (loop (:for i (range 0 ncode))
+        (:do (array-set! code-lengths (array-ref length-order i) (take-bits! st 3))))
+  (def code-code (make-huffman code-lengths 19))
+  (def total (+ nlen ndist))
+  (def (: lengths (Array int)) (make-array total #:fill 0))
+  (let go ((i 0))
+    (when (< i total)
+      (def sym (decode! st code-code))
+      (cond
+        ((< sym 16)
+         (array-set! lengths i sym)
+         (go (+ i 1)))
+        (else
+         (def (Tuple value times)
+           (case sym
+             (16
+              (when (= i 0)
+                (bad-data (str (record-ref st what) " repeats a length before the first")))
+              (Tuple (array-ref lengths (- i 1)) (+ 3 (take-bits! st 2))))
+             (17 (Tuple 0 (+ 3 (take-bits! st 3))))
+             (else (Tuple 0 (+ 11 (take-bits! st 7))))))
+         (when (> (+ i times) total)
+           (bad-data (str (record-ref st what) " repeats a length past the last")))
+         (loop (:for j (range i (+ i times)))
+               (:do (array-set! lengths j value)))
+         (go (+ i times))))))
+  (when (= (array-ref lengths 256) 0)
+    (bad-data (str (record-ref st what) " has a block with no end code")))
+  (def (: dist-lengths (Array int)) (make-array ndist #:fill 0))
+  (array-copy! lengths nlen dist-lengths 0 ndist)
+  (record-set! st (lit (make-huffman lengths nlen)) (dist (make-huffman dist-lengths ndist))))
+
+;; Copies a stored block's bytes, as many as are in hand and fit.
+(: (-> Inflater int void))
+(defun (stored! st limit)
+  ;; Whole bytes left in the bit buffer after the header come first.
+  (let drain ()
+    (when (and (>= (record-ref st nbits) 8)
+               (> (record-ref st stored-left) 0)
+               (< (record-ref st wpos) limit))
+      (array-set! (record-ref st win) (record-ref st wpos) (cast byte (take-bits! st 8)))
+      (record-set! st (wpos (+ (record-ref st wpos) 1))
+                      (stored-left (- (record-ref st stored-left) 1)))
+      (drain)))
+  (def n
+    (min (record-ref st stored-left)
+         (min (- (record-ref st end) (record-ref st pos)) (- limit (record-ref st wpos)))))
+  (when (> n 0)
+    (array-copy! (record-ref st in) (record-ref st pos) (record-ref st win) (record-ref st wpos) n)
+    (record-set! st (pos (+ (record-ref st pos) n))
+                    (wpos (+ (record-ref st wpos) n))
+                    (stored-left (- (record-ref st stored-left) n))))
+  (when (= (record-ref st stored-left) 0)
+    (record-set! st (mode (if (record-ref st last) StreamEnd BlockHeader)))))
+
+;; Decodes symbols of a coded block until the output reaches `limit`, the
+;; block ends, or the bytes in hand may not hold the next symbol.
+(: (-> Inflater int void))
+(defun (coded! st limit)
+  (def win (record-ref st win))
+  (let go ()
+    (when (and (< (record-ref st wpos) limit)
+               (or (record-ref st eof) (>= (available st) symbol-room)))
+      (def sym (decode! st (record-ref st lit)))
+      (cond
+        ((< sym 256)
+         (array-set! win (record-ref st wpos) (cast byte sym))
+         (record-set! st (wpos (+ (record-ref st wpos) 1)))
+         (go))
+        ((= sym 256) (record-set! st (mode (if (record-ref st last) StreamEnd BlockHeader))))
+        ((> sym 285) (bad-data (str (record-ref st what) " has a length code that is not one")))
+        (else
+         (def l (- sym 257))
+         (def len (+ (array-ref length-base l) (take-bits! st (array-ref length-extra l))))
+         (def d (decode! st (record-ref st dist)))
+         (when (> d 29)
+           (bad-data (str (record-ref st what) " has a distance code that is not one")))
+         (def dist (+ (array-ref dist-base d) (take-bits! st (array-ref dist-extra d))))
+         (def at (record-ref st wpos))
+         (when (> dist at)
+           (bad-data (str (record-ref st what) " refers back past its start")))
+         (if (>= dist len)
+             (array-copy! win (- at dist) win at len)
+             (loop (:for i (range 0 len))
+                   (:do (array-set! win (+ at i) (array-ref win (- (+ at i) dist))))))
+         (record-set! st (wpos (+ at len)))
+         (go))))))
+
+;; What a step of decoding needs next.
+(type (: Step (Union OutputFull StreamDone (: NeedBytes int))))
+
+;; Decodes from the bytes in hand until the output reaches `limit` or the
+;; deflate stream ends, or until it needs more bytes in hand.
+(: (-> Inflater int Step))
+(defun (step! st limit)
+  (let go ()
+    (cond
+      ((>= (record-ref st wpos) limit) OutputFull)
+      (else
+       (match (record-ref st mode)
+         (StreamEnd StreamDone)
+         (BlockHeader
+          (if (or (record-ref st eof) (>= (available st) header-room))
+              (let ()
+                (block-header! st)
+                (go))
+              (NeedBytes header-room)))
+         (Stored
+          (def before (record-ref st wpos))
+          (stored! st limit)
+          (cond
+            ((not (= (record-ref st mode) Stored)) (go))
+            ((> (record-ref st wpos) before) (go))
+            ((record-ref st eof) (ends-early (record-ref st what)))
+            (else (NeedBytes 1))))
+         (Coded
+          (coded! st limit)
+          (cond
+            ((not (= (record-ref st mode) Coded)) (go))
+            ((>= (record-ref st wpos) limit) OutputFull)
+            (else (NeedBytes symbol-room)))))))))
+
+;; The next output of the deflate stream: Some bytes, or None at its end.
+;; - Slides the window back before it decodes, so that the output fits.
+(: (-bjo-> Inflater (Option (Array byte))))
+(defbjo (inflate-chunk! st)
+  (when (> (record-ref st wpos) (* 2 window))
+    (def w (record-ref st win))
+    (array-copy! w (- (record-ref st wpos) window) w 0 window)
+    (record-set! st (wpos window)))
+  (def start (record-ref st wpos))
+  (def limit (+ start chunk))
+  (let go ()
+    (match (step! st limit)
+      ((NeedBytes n)
+       (fill! st n)
+       (go))
+      (_
+       (def n (- (record-ref st wpos) start))
+       (if (= n 0)
+           None
+           (let ()
+             (def (: out (Array byte)) (make-array n))
+             (array-copy! (record-ref st win) start out 0 n)
+             (Some out)))))))
+
+;; Starts a new deflate stream on the same input: after a gzip member.
+(: (-> Inflater void))
+(defun (restart! st)
+  (record-set! st (mode BlockHeader) (last #f) (wpos 0)))
+
+;; ---------------------------------------------------------------------------
+;; Bytes, for the headers and trailers
+;; ---------------------------------------------------------------------------
+
+;; The next byte. Raises EndOfStreamException at the end of the input.
+(: (-bjo-> Inflater int))
+(defbjo (next-byte! st)
+  (when (< (available st) 1)
+    (fill! st 1))
+  (take-bits! st 8))
+
+;; The next `n` bytes as a little-endian number, n at most 4.
+(: (-bjo-> Inflater int long))
+(defbjo (next-le! st n)
+  (let go ((i 0) (v 0L))
+    (if (= i n)
+        v
+        (go (+ i 1) (bitwise-ior v (shift-left (cast long (next-byte! st)) (* 8 i)))))))
+
+;; Whether any input is left: in hand, or in the port under it.
+(: (-bjo-> Inflater bool))
+(defbjo (more-input? st)
+  (when (< (available st) 1)
+    (fill! st 1))
+  (> (available st) 0))
+
+;; ---------------------------------------------------------------------------
+;; Checksums
+;; ---------------------------------------------------------------------------
+
+(: (Array long))
+(def crc-table
+  (let ()
+    (def (: t (Array long)) (make-array 256 #:fill 0L))
+    (loop (:for n (range 0 256))
+          (:do (array-set! t
+                           n
+                           (let go ((c (cast long n)) (k 0))
+                             (if (= k 8)
+                                 c
+                                 (go (if (= (bitwise-and c 1L) 1L)
+                                         (bitwise-xor 0xEDB88320L (shift-right c 1))
+                                         (shift-right c 1))
+                                     (+ k 1)))))))
+    t))
+
+;; The CRC-32 of gzip, of `bytes` after `crc`.
+(: (-> long (Array byte) long))
+(defun (crc32 crc bytes)
+  (def/mutable c (bitwise-xor crc 0xFFFFFFFFL))
+  (loop (:for i (range 0 (array-length bytes)))
+        (:do (def b (cast long (array-ref bytes i)))
+             (set! c
+                   (bitwise-xor (array-ref crc-table (cast int (bitwise-and (bitwise-xor c b) 255L)))
+                                (shift-right c 8)))))
+  (bitwise-xor c 0xFFFFFFFFL))
+
+;; The Adler-32 of zlib, of `bytes` after `adler`.
+(: (-> long (Array byte) long))
+(defun (adler32 adler bytes)
+  (def/mutable a (bitwise-and adler 65535L))
+  (def/mutable b (shift-right adler 16))
+  (def/mutable since 0)
+  (loop (:for i (range 0 (array-length bytes)))
+        (:do (set! a (+ a (cast long (array-ref bytes i))))
+             (set! b (+ b a))
+             (set! since (+ since 1))
+             ;; 5552 bytes is the most that cannot overflow before the modulo.
+             (when (= since 5552)
+               (set! a (% a 65521L))
+               (set! b (% b 65521L))
+               (set! since 0))))
+  (bitwise-ior (shift-left (% b 65521L) 16) (% a 65521L)))
+
+;; ---------------------------------------------------------------------------
+;; The formats
+;; ---------------------------------------------------------------------------
+
+;; Skips a zero-terminated field of a gzip header.
+(: (-bjo-> Inflater void))
+(defbjo (skip-zero-terminated! st)
+  (let go ()
+    (unless (= (next-byte! st) 0)
+      (go))))
+
+;; Reads a gzip member's header.
+(: (-bjo-> Inflater void))
+(defbjo (gzip-header! st)
+  (unless (and (= (next-byte! st) 31) (= (next-byte! st) 139))
+    (bad-data "the data is not gzip: it does not start with the gzip magic number"))
+  (unless (= (next-byte! st) 8)
+    (bad-data "gzip data uses a compression method that is not deflate"))
+  (def flags (next-byte! st))
+  (ignore (next-le! st 4))
+  (ignore (next-le! st 2))
+  (when (> (bitwise-and flags 4) 0)
+    (def xlen (cast int (next-le! st 2)))
+    (loop (:for _ (range 0 xlen))
+          (:do (ignore (next-byte! st)))))
+  (when (> (bitwise-and flags 8) 0)
+    (skip-zero-terminated! st))
+  (when (> (bitwise-and flags 16) 0)
+    (skip-zero-terminated! st))
+  (when (> (bitwise-and flags 2) 0)
+    (ignore (next-le! st 2))))
+
+;; Where a gzip port is in the data.
+(type (: GzipPhase (Union GzHeader GzBody GzTrailer GzDone)))
+
+;; A port that decompresses the gzip data `src` holds.
+(: (-> InputPort InputPort))
+(defun (gzip-decoding-port src)
+  (def st (make-inflater src "gzip data"))
+  (def/mutable phase GzHeader)
+  (def/mutable crc 0L)
+  (def/mutable size 0L)
+  (make-input-port (bjoroutine ()
+                     (let go ()
+                       (match phase
+                         (GzHeader
+                          (gzip-header! st)
+                          (restart! st)
+                          (set! crc 0L)
+                          (set! size 0L)
+                          (set! phase GzBody)
+                          (go))
+                         (GzBody
+                          (match (inflate-chunk! st)
+                            ((Some bytes)
+                             (set! crc (crc32 crc bytes))
+                             (set! size (+ size (cast long (array-length bytes))))
+                             (Some bytes))
+                            (None
+                             (set! phase GzTrailer)
+                             (go))))
+                         (GzTrailer
+                          (align! st)
+                          (def want-crc (next-le! st 4))
+                          (def want-size (next-le! st 4))
+                          (unless (= want-crc crc)
+                            (bad-data "gzip data does not match its CRC-32"))
+                          (unless (= want-size (bitwise-and size 0xFFFFFFFFL))
+                            (bad-data "gzip data does not match its length"))
+                          (set! phase (if (more-input? st) GzHeader GzDone))
+                          (go))
+                         (GzDone None))))))
+
+;; Where a zlib port is in the data.
+(type (: ZlibPhase (Union ZHeader ZBody ZDone)))
+
+;; A port that decompresses the zlib data `src` holds.
+(: (-> InputPort InputPort))
+(defun (zlib-decoding-port src)
+  (def st (make-inflater src "zlib data"))
+  (def/mutable phase ZHeader)
+  (def/mutable adler 1L)
+  (make-input-port
+   (bjoroutine ()
+     (let go ()
+       (match phase
+         (ZHeader
+          (def cmf (next-byte! st))
+          (def flg (next-byte! st))
+          (unless (and (= (bitwise-and cmf 15) 8)
+                       (<= (shift-right cmf 4) 7)
+                       (= (% (+ (* cmf 256) flg) 31) 0))
+            (bad-data "the data is not zlib: its header is not a zlib header"))
+          (when (> (bitwise-and flg 32) 0)
+            (bad-data "zlib data that needs a preset dictionary is not supported"))
+          (set! phase ZBody)
+          (go))
+         (ZBody
+          (match (inflate-chunk! st)
+            ((Some bytes)
+             (set! adler (adler32 adler bytes))
+             (Some bytes))
+            (None
+             (align! st)
+             (def want
+               (let read ((i 0) (v 0L))
+                 (if (= i 4)
+                     v
+                     (read (+ i 1) (bitwise-ior (shift-left v 8) (cast long (next-byte! st)))))))
+             (unless (= want adler)
+               (bad-data "zlib data does not match its Adler-32"))
+             (set! phase ZDone)
+             None)))
+         (ZDone None))))))
+
+;; A port that decompresses the raw deflate data `src` holds. There is no
+;; checksum; data that ends before the last block raises.
+(: (-> InputPort InputPort))
+(defun (deflate-decoding-port src)
+  (def st (make-inflater src "deflate data"))
+  (make-input-port (bjoroutine () (inflate-chunk! st))))

@@ -33,12 +33,17 @@ What each change guarantees, and what it leaves open.
   port under it is left open. Closing an output port, or its scope's end,
   writes the format's trailer into the port under it.
 - *Reads and writes suspend* a fiber where the port under them would.
-- *Bad data raises* ~InvalidDataException~, or ~InvalidOperationException~
-  for Brotli, as .NET's decoders do. *Data that ends early does not:* it
-  reads as what could be decoded. gzip files of several members read as
-  one.
-- The module is Bjolang alone: .NET's compression streams over the ports'
-  stream views, with no C# of its own.
+- *Data that ends early raises* ~EndOfStreamException~, for gzip, zlib
+  and deflate. *Bad data raises* ~InvalidDataException~, as does a gzip
+  CRC-32 or length, or a zlib Adler-32, that does not match. gzip files of
+  several members read as one; bytes after the last member that are not a
+  member raise.
+- Brotli raises ~InvalidOperationException~ on bad data, as .NET's decoder
+  does, and does not detect data that ends early.
+- The module is Bjolang alone. The gzip, zlib and deflate decoders are
+  ~(std compress inflate)~, written over ~make-input-port~, at about a third
+  of the speed of .NET's. The compressors and the Brotli decoder are .NET's,
+  over the ports' stream views.
 
 * Colour in test output, ~(std bench)~ and ~bjo dep list~
 

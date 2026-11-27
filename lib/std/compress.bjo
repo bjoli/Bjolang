@@ -14,7 +14,11 @@
 ;;
 ;; - Each format has an input port that decompresses what it reads from a
 ;;   port, and an output port that compresses what is written to it into a
-;;   port. The compressor is .NET's, over the port's stream view.
+;;   port.
+;; - The gzip, zlib and deflate decoders are (std compress inflate), in
+;;   Bjolang, so that data that ends early and a checksum that does not match
+;;   raise. The compressors and the Brotli decoder are .NET's, over the
+;;   port's stream view.
 ;; - The new port is owned by the ambient scope, as a file port is. Closing
 ;;   it, or the scope's end, ends the compressed data: an output port writes
 ;;   its last block and trailer into the port under it. The port under it is
@@ -30,6 +34,7 @@
 
 (import (std prelude))
 (import (only (std ports) ClrStream stream->input-port stream->output-port))
+(import (std compress inflate))
 
 ;; How hard an output port compresses.
 (type (: CompressLevel (Union CompressFastest CompressOptimal CompressSmallest CompressNone)))
@@ -37,13 +42,10 @@
 (import/class
   (CompressionMode (: System.IO.Compression.CompressionMode))
   (CompressionLevel (: System.IO.Compression.CompressionLevel))
-  ;; Each format's stream, once for each constructor: to decompress, and to
-  ;; compress at a level. The bool is leaveOpen.
-  (GZipIn (: System.IO.Compression.GZipStream (-> ClrStream CompressionMode bool GZipIn)))
+  ;; Each format's stream, once for each constructor: to decompress (Brotli
+  ;; only), and to compress at a level. The bool is leaveOpen.
   (GZipOut (: System.IO.Compression.GZipStream (-> ClrStream CompressionLevel bool GZipOut)))
-  (ZLibIn (: System.IO.Compression.ZLibStream (-> ClrStream CompressionMode bool ZLibIn)))
   (ZLibOut (: System.IO.Compression.ZLibStream (-> ClrStream CompressionLevel bool ZLibOut)))
-  (DeflateIn (: System.IO.Compression.DeflateStream (-> ClrStream CompressionMode bool DeflateIn)))
   (DeflateOut (: System.IO.Compression.DeflateStream (-> ClrStream CompressionLevel bool DeflateOut)))
   (BrotliIn (: System.IO.Compression.BrotliStream (-> ClrStream CompressionMode bool BrotliIn)))
   (BrotliOut (: System.IO.Compression.BrotliStream (-> ClrStream CompressionLevel bool BrotliOut))))
@@ -62,7 +64,7 @@
 
 (: (-> InputPort InputPort))
 (defun (gzip-input-port p)
-  (stream->input-port (cast ClrStream (GZipIn. (input-view p) CompressionMode.Decompress #t))))
+  (gzip-decoding-port p))
 
 (: (-> OutputPort (#:level CompressLevel) OutputPort))
 (defun (gzip-output-port p #:level CompressOptimal)
@@ -70,7 +72,7 @@
 
 (: (-> InputPort InputPort))
 (defun (zlib-input-port p)
-  (stream->input-port (cast ClrStream (ZLibIn. (input-view p) CompressionMode.Decompress #t))))
+  (zlib-decoding-port p))
 
 (: (-> OutputPort (#:level CompressLevel) OutputPort))
 (defun (zlib-output-port p #:level CompressOptimal)
@@ -78,7 +80,7 @@
 
 (: (-> InputPort InputPort))
 (defun (deflate-input-port p)
-  (stream->input-port (cast ClrStream (DeflateIn. (input-view p) CompressionMode.Decompress #t))))
+  (deflate-decoding-port p))
 
 (: (-> OutputPort (#:level CompressLevel) OutputPort))
 (defun (deflate-output-port p #:level CompressOptimal)
