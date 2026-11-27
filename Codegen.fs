@@ -95,8 +95,8 @@ type LineState = { mutable Pending: Lexer.Range option; mutable Mapped: bool }
 
 /// The constant literals lifted out of method bodies into static fields.
 ///
-/// A keyword is emitted as `Keyword.Intern("k")`, which is a string hash and a
-/// `ConcurrentDictionary` probe, for a value that was fully known when the file
+/// A keyword is emitted as `Keyword.Intern("k"u8)`, which is a hash of the bytes
+/// and a `ConcurrentDictionary` probe, for a value that was fully known when the file
 /// was compiled. Written in a loop it pays that per iteration. Interning is
 /// idempotent and the table is process-wide, so one call per literal per
 /// assembly answers every use with the same reference — which is all `eq?` and
@@ -1798,7 +1798,7 @@ let private liveClauses (clauses: TMatchClause list) =
 /// not only the node:
 ///
 ///   - A C# optional parameter's default must be a constant expression. `1.5`
-///     is; `new Bjolang.Runtime.BjoChar(32)`, `BjolangRuntime.Keyword.Intern("k")`
+///     is; `new Bjolang.Runtime.BjoChar(32)`, `BjolangRuntime.Keyword.Intern("k"u8)`
 ///     and a hoisted `Utf8String` field are how `char`, a keyword and a string
 ///     are emitted, and are not. Nor is `@true` — the runtime spells the boolean
 ///     literals as static fields — so `true` and `false` are emitted here
@@ -3475,11 +3475,12 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TBool b -> append ctx (if b then "true" else "false")
     // Both interned once per assembly rather than once per evaluation. See
     // `LiteralTable`: the name is a constant, `Intern` is idempotent, and what
-    // it costs at a use site is a string hash and a dictionary probe.
+    // it costs at a use site is a hash of the bytes and a dictionary probe. The
+    // name is a `u8` literal, so it is interned by its UTF-8 bytes.
     | TKeyword k ->
-        append ctx (hoistLiteral ctx "Kw" k "BjolangRuntime.Keyword" $"BjolangRuntime.Keyword.Intern(\"{escapeStringLiteral k}\")")
+        append ctx (hoistLiteral ctx "Kw" k "BjolangRuntime.Keyword" $"BjolangRuntime.Keyword.Intern(\"{escapeStringLiteral k}\"u8)")
     | TSymbol s ->
-        append ctx (hoistLiteral ctx "Sym" s "BjolangRuntime.Symbol" $"BjolangRuntime.Symbol.Intern(\"{escapeStringLiteral s}\")")
+        append ctx (hoistLiteral ctx "Sym" s "BjolangRuntime.Symbol" $"BjolangRuntime.Symbol.Intern(\"{escapeStringLiteral s}\"u8)")
     // A dictionary singleton: "Foldable_Vec::Instance" with the impl class's own
     // type arguments. `Lowering` produces these when it passes a dictionary to a
     // constrained function, and the class is generic whenever the implemented

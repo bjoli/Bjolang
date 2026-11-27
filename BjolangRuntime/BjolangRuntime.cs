@@ -1938,65 +1938,152 @@ public static partial class BjolangRuntime {
     public static Unit dynsubrestore_BANG(DynEnv saved) { Dyn.Current = saved; return unit; }
 
     /// <summary>
-    /// An interned keyword. All instances of a keyword with the same name share the same reference.
+    /// The table that interns symbols or keywords by their UTF-8 bytes.
     /// </summary>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item>A lookup by a span of bytes allocates nothing. Only a name seen
+    /// for the first time is copied into the table.</item>
+    /// <item>The bytes must be valid UTF-8. <see cref="Intern"/> rejects them
+    /// with an <see cref="ArgumentException"/> when they are not.</item>
+    /// <item>The table never removes an entry.</item>
+    /// </list>
+    /// </remarks>
     [NonUserCode]
-    public sealed class Keyword : IEquatable<Keyword>, IComparable<Keyword> {
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Keyword> _table = new();
+    internal sealed class Utf8InternTable<T> where T : class {
+        [NonUserCode]
+        private sealed class BytesComparer :
+            IEqualityComparer<byte[]>, IAlternateEqualityComparer<ReadOnlySpan<byte>, byte[]> {
+            public static readonly BytesComparer Instance = new();
+            public bool Equals(byte[]? a, byte[]? b) => a.AsSpan().SequenceEqual(b);
+            public int GetHashCode(byte[] b) => BjoString.Utf8Ops.Hash(b);
+            public bool Equals(ReadOnlySpan<byte> a, byte[] b) => a.SequenceEqual(b);
+            public int GetHashCode(ReadOnlySpan<byte> a) => BjoString.Utf8Ops.Hash(a);
+            public byte[] Create(ReadOnlySpan<byte> a) => a.ToArray();
+        }
 
-        public string Name { get; }
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<byte[], T> _table = new(BytesComparer.Instance);
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<byte[], T>.AlternateLookup<ReadOnlySpan<byte>> _bySpan;
+        private readonly Func<byte[], T> _make;
 
-        private Keyword(string name) {
-            Name = name;
+        public Utf8InternTable(Func<byte[], T> make) {
+            _make = make;
+            _bySpan = _table.GetAlternateLookup<ReadOnlySpan<byte>>();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static Keyword Intern(string name) =>
-            _table.GetOrAdd(name, [NonUserCode] static (n) => new Keyword(n));
+        public T Intern(ReadOnlySpan<byte> utf8) =>
+            _bySpan.TryGetValue(utf8, out var found) ? found : Add(utf8);
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private T Add(ReadOnlySpan<byte> utf8) {
+            if (!System.Text.Unicode.Utf8.IsValid(utf8))
+                throw new ArgumentException("A symbol or a keyword is valid UTF-8.", nameof(utf8));
+            return _table.GetOrAdd(utf8.ToArray(), _make);
+        }
+
+        /// The UTF-8 of `name`, interned. An unpaired surrogate becomes U+FFFD.
+        public T Intern(string name) {
+            int max = Encoding.UTF8.GetMaxByteCount(name.Length);
+            if (max <= 256) {
+                Span<byte> buffer = stackalloc byte[256];
+                return Intern(buffer[..Encoding.UTF8.GetBytes(name, buffer)]);
+            }
+            return Intern(Encoding.UTF8.GetBytes(name));
+        }
+    }
+
+    /// <summary>
+    /// An interned keyword. All instances of a keyword with the same name share the same reference.
+    /// </summary>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item>Interned by its UTF-8 bytes. <see cref="Name"/> is decoded from
+    /// them on first use.</item>
+    /// <item>Keywords compare by their bytes, which is the order of their
+    /// code points and the order of their strings.</item>
+    /// </list>
+    /// </remarks>
+    [NonUserCode]
+    public sealed class Keyword : IEquatable<Keyword>, IComparable<Keyword> {
+        private static readonly Utf8InternTable<Keyword> _table = new([NonUserCode] static (b) => new Keyword(b));
+
+        private readonly byte[] _utf8;
+        private string? _name;
+
+        /// The name's UTF-8 bytes. Nothing writes them.
+        public ReadOnlySpan<byte> Utf8 => _utf8;
+
+        /// The name as a string.
+        public Utf8String Text => new(_utf8);
+
+        public string Name => _name ??= Encoding.UTF8.GetString(_utf8);
+
+        private Keyword(byte[] utf8) {
+            _utf8 = utf8;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static Keyword Intern(ReadOnlySpan<byte> utf8) => _table.Intern(utf8);
+
+        public static Keyword Intern(string name) => _table.Intern(name);
 
         public bool Equals(Keyword? other) => ReferenceEquals(this, other);
         public override bool Equals(object? obj) => ReferenceEquals(this, obj);
         public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
-        public int CompareTo(Keyword? other) => string.CompareOrdinal(Name, other?.Name);
+        public int CompareTo(Keyword? other) => other is null ? 1 : _utf8.AsSpan().SequenceCompareTo(other._utf8);
         public override string ToString() => $":{Name}";
     }
 
     /// <summary>
     /// An interned symbol. All instances of a symbol with the same name share the same reference.
     /// </summary>
+    /// <remarks>
+    /// Interned and compared as <see cref="Keyword"/> is.
+    /// </remarks>
     [NonUserCode]
     public sealed class Symbol : IEquatable<Symbol>, IComparable<Symbol> {
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Symbol> _table = new();
+        private static readonly Utf8InternTable<Symbol> _table = new([NonUserCode] static (b) => new Symbol(b));
 
-        public string Name { get; }
+        private readonly byte[] _utf8;
+        private string? _name;
 
-        private Symbol(string name) {
-            Name = name;
+        /// The name's UTF-8 bytes. Nothing writes them.
+        public ReadOnlySpan<byte> Utf8 => _utf8;
+
+        /// The name as a string.
+        public Utf8String Text => new(_utf8);
+
+        public string Name => _name ??= Encoding.UTF8.GetString(_utf8);
+
+        private Symbol(byte[] utf8) {
+            _utf8 = utf8;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static Symbol Intern(string name) =>
-            _table.GetOrAdd(name, [NonUserCode] static (n) => new Symbol(n));
+        public static Symbol Intern(ReadOnlySpan<byte> utf8) => _table.Intern(utf8);
+
+        public static Symbol Intern(string name) => _table.Intern(name);
 
         public bool Equals(Symbol? other) => ReferenceEquals(this, other);
         public override bool Equals(object? obj) => ReferenceEquals(this, obj);
         public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
-        public int CompareTo(Symbol? other) => string.CompareOrdinal(Name, other?.Name);
+        public int CompareTo(Symbol? other) => other is null ? 1 : _utf8.AsSpan().SequenceCompareTo(other._utf8);
         public override string ToString() => Name;
     }
 
     // --- Keyword & Symbol helpers ---
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Utf8String keywordsubgtstring(Keyword k) => Utf8String.FromUtf16(k.Name);
+    public static Utf8String keywordsubgtstring(Keyword k) => k.Text;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Keyword stringsubgtkeyword(Utf8String s) => Keyword.Intern(s.ToString());
+    public static Keyword stringsubgtkeyword(Utf8String s) => Keyword.Intern(s.AsSpan());
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Utf8String symbolsubgtstring(Symbol s) => Utf8String.FromUtf16(s.Name);
+    public static Utf8String symbolsubgtstring(Symbol s) => s.Text;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Symbol stringsubgtsymbol(Utf8String s) => Symbol.Intern(s.ToString());
+    public static Symbol stringsubgtsymbol(Utf8String s) => Symbol.Intern(s.AsSpan());
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool keyword_QMARK(object? o) => o is Keyword;

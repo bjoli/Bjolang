@@ -3,6 +3,19 @@
 
 What each change guarantees, and what it leaves open.
 
+* Symbols and keywords are interned by their UTF-8 bytes
+
+- *~string->symbol~ and ~string->keyword~ do not convert to UTF-16.* They
+  look the bytes of the string up, and allocate only for a name not seen
+  before. ~symbol->string~ and ~keyword->string~ return the interned bytes
+  without a copy.
+- *A literal is emitted as ~Symbol.Intern("name"u8)~*, once per assembly
+  as before.
+- *Symbols and keywords order by their bytes*, which is the order of their
+  code points and the order of their strings. They ordered by UTF-16 code
+  units before, which differs for a name with a character above U+FFFF.
+- ~Name~ is still there, for .NET code. It is decoded on first use.
+
 * A column counts code points, and ~(std read)~ records byte offsets
 
 *Breaking.* A column in a message, a ~Range~ and a ~SrcRange~ counts code
