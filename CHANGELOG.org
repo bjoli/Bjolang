@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std compress)~: gzip, zlib, deflate and Brotli as ports
+
+- *~gzip-input-port p~* reads gzip data from the port ~p~ and returns it
+  decompressed; *~gzip-output-port p~* compresses what is written to it
+  into ~p~, at a ~#:level~ of ~CompressFastest~, ~CompressOptimal~ (the
+  default), ~CompressSmallest~ or ~CompressNone~. ~zlib-~, ~deflate-~ and
+  ~brotli-~ are the same for those formats.
+- *The new port is owned by the ambient scope*, as a file port is, and the
+  port under it is left open. Closing an output port, or its scope's end,
+  writes the format's trailer into the port under it.
+- *Reads and writes suspend* a fiber where the port under them would.
+- *Bad data raises* ~InvalidDataException~, or ~InvalidOperationException~
+  for Brotli, as .NET's decoders do. *Data that ends early does not:* it
+  reads as what could be decoded. gzip files of several members read as
+  one.
+- The module is Bjolang alone: .NET's compression streams over the ports'
+  stream views, with no C# of its own.
+
 * Colour in test output, ~(std bench)~ and ~bjo dep list~
 
 - *~(std test)~* writes ~FAIL~ in bold red, ~FIXED~ in bold yellow, and

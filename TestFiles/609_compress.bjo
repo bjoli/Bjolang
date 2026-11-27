@@ -1,0 +1,169 @@
+;; std/compress: each format round-trips through a file, gzip reads what
+;; gzip(1) wrote and several members as one, a closed compressed port leaves
+;; the port under it open, a scope's end writes the trailer, bad data raises,
+;; and a fiber can write compressed data into a pipe that another reads.
+(import (std prelude))
+(import (std ports))
+(import (std compress))
+(import (std simpletest))
+(import (only (std os) make-temp-directory))
+
+(: string)
+(def dir (make-temp-directory))
+
+(: (-> string string))
+(defun (at name)
+  (path-combine dir name))
+
+;; The size of the file `name`.
+(: (-> string long))
+(defun (size-of name)
+  (match (file-info (at name))
+    ((Some info) (record-ref info size))
+    (None -1L)))
+
+;; Writes `text` to the file `name` through the port `wrap` makes over it.
+(: (-> string (-> OutputPort OutputPort) string void))
+(defun (write-through name wrap text)
+  (with-scope
+    (def file (raise-err (open-output-file (at name))))
+    (def c (wrap file))
+    (write-string c text)
+    (close-output-port c)
+    (close-output-port file)))
+
+;; The text of the file `name`, read through the port `wrap` makes over it.
+(: (-> string (-> InputPort InputPort) string))
+(defun (read-through name wrap)
+  (with-scope
+    (def file (raise-err (open-input-file (at name))))
+    (read-all (wrap file))))
+
+;; Whether reading `name` through `wrap` raises InvalidDataException.
+(: (-> string (-> InputPort InputPort) bool))
+(defun (invalid-data? name wrap)
+  (match (try (read-through name wrap) #:catch (System.IO.InvalidDataException))
+    ((Ok _) #f)
+    ((Err _) #t)))
+
+;; Whether reading `name` through `wrap` raises InvalidOperationException,
+;; as .NET's Brotli decoder does on bad data.
+(: (-> string (-> InputPort InputPort) bool))
+(defun (invalid-operation? name wrap)
+  (match (try (read-through name wrap) #:catch (System.InvalidOperationException))
+    ((Ok _) #f)
+    ((Err _) #t)))
+
+(: string)
+(def text
+  (string-join (list->vec {listing (str "line " (int->string i) " of the text, and some more of it")
+                                   (:for i (range 0 5000))})
+               "\n"))
+
+(: (-bjo-> int (Tuple InputPort OutputPort) int))
+(defbjo (pipe-round-trip lines pipe)
+  (def (Tuple in out) pipe)
+  (def writer
+    (bjo
+      (with-scope
+        (def gz (gzip-output-port out))
+        (loop (:for i (range 0 lines))
+              (:do (write-string gz (str "line " (int->string i) "\n"))))
+        (close-output-port gz)
+        (close-output-port out)
+        0)))
+  (def n
+    (with-scope
+      (def plain (gzip-input-port in))
+      (let go ((n 0))
+        (match (read-line/opt plain)
+          ((Some _) (go (+ n 1)))
+          (None n)))))
+  (ignore (sync (promise-join writer)))
+  n)
+
+(defbjo (main args)
+  ;; --- Round trips ------------------------------------------------------------
+  (write-through "t.gz" #(gzip-output-port &) text)
+  (expect "gzip round-trips" (read-through "t.gz" #(gzip-input-port &)) text)
+  (expect "and compresses" (< (size-of "t.gz") (cast long (/ (string-length text) 4))) #t)
+  (write-through "t.zz" #(zlib-output-port &) text)
+  (expect "zlib round-trips" (read-through "t.zz" #(zlib-input-port &)) text)
+  (write-through "t.deflate" #(deflate-output-port &) text)
+  (expect "deflate round-trips" (read-through "t.deflate" #(deflate-input-port &)) text)
+  (write-through "t.br" #(brotli-output-port &) text)
+  (expect "Brotli round-trips" (read-through "t.br" #(brotli-input-port &)) text)
+
+  (loop (:for (Tuple name level) [(Tuple "fastest" CompressFastest)
+                                  (Tuple "smallest" CompressSmallest)
+                                  (Tuple "none" CompressNone)])
+        (:do (write-through #"l-${name}.gz" #(gzip-output-port & #:level level) text)
+             (expect #"gzip at level ${name} round-trips"
+                     (read-through #"l-${name}.gz" #(gzip-input-port &))
+                     text)))
+  (expect "CompressNone is larger than CompressSmallest"
+          (> (size-of "l-none.gz") (size-of "l-smallest.gz"))
+          #t)
+
+  (write-through "empty.gz" #(gzip-output-port &) "")
+  (expect "nothing round-trips" (read-through "empty.gz" #(gzip-input-port &)) "")
+
+  ;; --- Other gzip writers ---------------------------------------------------
+  ;; `printf 'hi there\n' | gzip -n`
+  (raise-err (file-write-bytes (at "sys.gz")
+                               #[31 139 8 0 0 0 0 0 0 3 203 200 84 40 201 72 45 74 229 2 0 182 11 136
+                                 155 9 0 0 0]))
+  (expect "what gzip(1) wrote is read" (read-through "sys.gz" #(gzip-input-port &)) "hi there\n")
+  (raise-err (file-write-bytes
+              (at "two.gz")
+              (vec->array (vec-append (array->vec (raise-err (file-read-bytes (at "sys.gz"))))
+                                      (array->vec (raise-err (file-read-bytes (at "sys.gz"))))))))
+  (expect "two members are read as one"
+          (read-through "two.gz" #(gzip-input-port &))
+          "hi there\nhi there\n")
+
+  ;; --- The port under it ----------------------------------------------------
+  (with-scope
+    (def file (raise-err (open-output-file (at "after.gz"))))
+    (def gz (gzip-output-port file))
+    (write-string gz "compressed")
+    (close-output-port gz)
+    (write-string file "and plain after it")
+    (close-output-port file))
+  (expect "closing the compressed port leaves the port under it open"
+          (string-ends-with? (raise-err (file-read-text (at "after.gz"))) "and plain after it")
+          #t)
+
+  ;; A port that is not closed is closed at its scope's end, before the file
+  ;; it was opened over, so its trailer is written.
+  (with-scope
+    (def file (raise-err (open-output-file (at "unclosed.gz"))))
+    (write-string (gzip-output-port file) "not closed by hand"))
+  (expect "a scope's end writes the trailer"
+          (read-through "unclosed.gz" #(gzip-input-port &))
+          "not closed by hand")
+
+  ;; --- Bad data -------------------------------------------------------------
+  (raise-err (file-write-text (at "bad.gz") "this is not gzip at all"))
+  (expect "data that is not gzip raises InvalidDataException"
+          (invalid-data? "bad.gz" #(gzip-input-port &))
+          #t)
+  (raise-err (file-write-text (at "bad.br") "this is not Brotli at all"))
+  (expect "data that is not Brotli raises InvalidOperationException"
+          (invalid-operation? "bad.br" #(brotli-input-port &))
+          #t)
+  ;; The documented gap: data that ends early reads as what it could decode.
+  (def whole (raise-err (file-read-bytes (at "t.gz"))))
+  (raise-err (file-write-bytes
+              (at "cut.gz")
+              (vec->array (vec-slice (array->vec whole) 0 (/ (array-length whole) 2)))))
+  (def cut (read-through "cut.gz" #(gzip-input-port &)))
+  (expect "data that ends early is a prefix of the text, and no raise"
+          (and (string-starts-with? text cut) (< (string-length cut) (string-length text)))
+          #t)
+
+  ;; --- Fibers ---------------------------------------------------------------
+  (expect "a fiber compresses into a pipe while another reads it"
+          (pipe-round-trip 20000 (byte-pipe))
+          20000)
+  0)
