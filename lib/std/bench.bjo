@@ -1217,6 +1217,21 @@
 (defun (blocks cells)
   (list->vec (list-map BStr cells)))
 
+;; Header cells, in bold.
+(: (-> (List string) (Vec Block)))
+(defun (head-blocks cells)
+  (list->vec (list-map #(as-bold (BStr &)) cells)))
+
+;; Prints a line of the report's prose: a warning in yellow, another line
+;; that starts with "bench:" dim, and any other as it is.
+(: (-> string void))
+(defun (say l)
+  (show [(cond
+           ((string-starts-with? l "bench: warning:") (as-yellow (BStr l)))
+           ((string-starts-with? l "bench:") (as-dim (BStr l)))
+           (else (BStr l)))
+         nl]))
+
 (: (-> (List Selection) bool Layout))
 (defun (layout-for chosen scaling)
   (def params (selection-params chosen))
@@ -1256,24 +1271,32 @@
 (defun (print-head l)
   (println "")
   (show [(table-row (record-ref l table)
-                    (blocks (list-append (cons "name" (record-ref l params))
-                                         (record-ref l heads))))]))
+                    (head-blocks (list-append (cons "name" (record-ref l params))
+                                              (record-ref l heads))))]))
 
 (: (-> Layout Row void))
+;; - The median, the first measured cell, is bold. The notes are yellow, or
+;;   dim for a skipped case, and the extra lines dim.
 (defun (print-row l r)
   (def notes (record-ref r notes))
+  (def noted (string-join (list->vec notes) ", "))
   (def cells
-    (list-append (cons (record-ref r name)
-                       (list-map (fun (p) (label-of (record-ref r labels) p)) (record-ref l params)))
-                 (list-append (record-ref r cells)
-                              (if (list-empty? notes)
-                                  (list)
-                                  (list (string-join (list->vec notes) ", "))))))
-  (show [(table-row (record-ref l table) (blocks cells))])
+    (list-append
+     (list-map BStr
+               (cons (record-ref r name)
+                     (list-map (fun (p) (label-of (record-ref r labels) p)) (record-ref l params))))
+     (list-append (match (record-ref r cells)
+                    ((Cons median rest) (Cons (as-bold (BStr median)) (list-map BStr rest)))
+                    (Nil Nil))
+                  (cond
+                    ((list-empty? notes) (list))
+                    ((string-starts-with? noted "skipped") (list (as-dim (BStr noted))))
+                    (else (list (as-yellow (BStr noted))))))))
+  (show [(table-row (record-ref l table) (list->vec cells))])
   ;; Extra lines start under the first column after the name.
   (def indent (+ (vec-ref (record-ref (record-ref l table) widths) 0) (string-count table-sep)))
   (loop (:for e (record-ref r extra))
-        (:do (println (str (string-pad-right "" indent) e)))))
+        (:do (show [(string-pad-right "" indent) (as-dim (BStr e)) nl]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Running
@@ -1327,9 +1350,9 @@
   (def s (bench-settings o))
   (def count (case-count chosen))
   (loop (:for l (header-lines count))
-        (:do (println l)))
+        (:do (say l)))
   (loop (:for l (alloc-lines chosen))
-        (:do (println l)))
+        (:do (say l)))
   (def layout (layout-for chosen (record-ref o scaling)))
   (print-head layout)
   (flush-port (parameter-ref current-output-port))
@@ -1486,6 +1509,23 @@
     (SmallChange #"no change (< ${(percent-text threshold)})")
     (NoChange "no change")))
 
+;; The cells of a comparison's row, the change and the verdict coloured by
+;; the verdict: green when faster, bold red when slower, dim when neither.
+;; `n` is the number of parameter columns.
+(: (-> Comparison int (List string) (Vec Block)))
+(defun (verdict-coloured c n cells)
+  (def paint
+    (match (record-ref c verdict)
+      (Faster as-green)
+      (Slower #(as-bold (as-red &)))
+      (_ as-dim)))
+  (def last (- (list-length cells) 1))
+  (def change (+ n 3))
+  (list->vec (list-map (fun (pair)
+                         (def (Tuple i cell) pair)
+                         (if (or (= i last) (= i change)) (paint (BStr cell)) (BStr cell)))
+                       (list-zip (index-list (list-length cells)) cells))))
+
 (: (-> Comparison (List string) BenchOptions bool bool bool (List string)))
 (defun (comparison-row c params o other spread? ratio?)
   (def labels (record-ref c labels))
@@ -1527,13 +1567,13 @@
       (None "")))
   (def n (list-length (record-ref result comparisons)))
   (println "")
-  (println (str "bench: compared with "
-                path
-                ", saved "
-                (record-ref saved saved)
-                "; unpaired (Mann-Whitney U); "
-                (comparisons-text n)))
-  (println "bench: one process each: a difference between processes is not in the p-values")
+  (say (str "bench: compared with "
+            path
+            ", saved "
+            (record-ref saved saved)
+            "; unpaired (Mann-Whitney U); "
+            (comparisons-text n)))
+  (say "bench: one process each: a difference between processes is not in the p-values")
   (print-comparison-table result o "was" "now" path #f))
 
 ;; `3 comparisons, Holm-corrected`.
@@ -1557,10 +1597,10 @@
   (def other (record-ref result other-machine))
   (def n (list-length comparisons))
   (when other
-    (println
+    (say
      "bench: warning: the saved run is from another machine: the numbers are shown, and no verdict is to be believed"))
   (loop (:for w (record-ref result warnings))
-        (:do (println (str "bench: warning: " w))))
+        (:do (say (str "bench: warning: " w))))
   (when (> n 0)
     (def params
       (fold (fun (c acc)
@@ -1596,10 +1636,13 @@
                                            (list AlignLeft)))))
     (println "")
     (show [(tabular/rows
-            (list->vec (cons (blocks heads)
-                             (list-map (fun (c)
-                                         (blocks (comparison-row c params o other spread? ratio?)))
-                                       comparisons)))
+            (list->vec
+             (cons (head-blocks heads)
+                   (list-map (fun (c)
+                               (verdict-coloured c
+                                                 (list-length params)
+                                                 (comparison-row c params o other spread? ratio?)))
+                             comparisons)))
             #:sep table-sep
             #:align aligns)]))
   (unless (list-empty? (record-ref result only-now))
@@ -1769,16 +1812,15 @@
         (:let result
               (compare-paired paired (list) (list) (record-ref o alpha) (record-ref o threshold)))
         (:do (println "")
-             (println (str "bench: within "
-                           name
-                           ", against "
-                           base
-                           ": "
-                           (int->string rounds)
-                           " rounds in this process, paired (Wilcoxon signed-rank); "
-                           (comparisons-text (list-length paired))))
-             (println (str "bench: seed " (displayed seed)
-                           " (--seed repeats the order of the cases)"))
+             (say (str "bench: within "
+                       name
+                       ", against "
+                       base
+                       ": "
+                       (int->string rounds)
+                       " rounds in this process, paired (Wilcoxon signed-rank); "
+                       (comparisons-text (list-length paired))))
+             (say (str "bench: seed " (displayed seed) " (--seed repeats the order of the cases)"))
              (print-comparison-table result o base "this" base #t))))
 
 ;; ---------------------------------------------------------------------------
