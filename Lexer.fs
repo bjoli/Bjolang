@@ -397,25 +397,6 @@ module Lexer =
         | InterpText of string
         | InterpHole of string * int * int
 
-    /// Moves a range produced by lexing a fragment on its own to where that
-    /// fragment actually sits.
-    ///
-    /// A fragment is lexed starting at line 1, column 0, so its first line is
-    /// offset by both, and every later line only by the line count: column 0 of
-    /// the fragment's second line really is column 0 of the file's.
-    let private shiftToken (baseLine: int) (baseCol: int) (t: LexedToken) : LexedToken =
-        let shift (p: Position) =
-            if p.Line = 1 then
-                { Line = baseLine; Column = baseCol + p.Column }
-            else
-                { Line = baseLine + p.Line - 1; Column = p.Column }
-
-        { t with
-            Range =
-                { t.Range with
-                    Start = shift t.Range.Start
-                    End = shift t.Range.End } }
-
     /// Whether a character may appear inside a symbol.
     ///
     /// At module level because an import prefix has to be checkable against the
@@ -425,33 +406,11 @@ module Lexer =
         not (Char.IsWhiteSpace c)
         && not (List.contains c [ '('; ')'; '['; ']'; '{'; '}'; ','; ':'; '"'; ';'; '\'' ])
 
-    /// The number at the start of a quantity literal: `9.81`, `-2`, `1e-3`,
-    /// `1|3`, `.5`.
-    let private quantityNumber =
-        System.Text.RegularExpressions.Regex(@"^-?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?(\|\d+)?")
-
-    /// What a number literal may be spelled as: the shapes and suffixes
-    /// `TypedAST.NumericLiteral` reads.
-    ///
-    /// Hexadecimal and binary digits take only the `u` and `l` suffixes, since
-    /// the others are hex digits. A real has a digit after its point, and an
-    /// exponent may have a sign, `1e-3` or `1e+3`. A real takes `d` for a
-    /// double and `M` for a decimal; an integer also takes `I` for a bigint.
-    let private numberSpelling =
-        System.Text.RegularExpressions.Regex(
-            "^-?(?:"
-            + "0[xX][0-9a-fA-F]+(?:[uU][lL]?|[lL])?"
-            + "|0[bB][01]+(?:[uU][lL]?|[lL])?"
-            + "|[0-9]+(?:uy|us|[uU][lL]?|s|[lL]|[dD]|[mM]|I)?"
-            + "|[0-9]+(?:\\.[0-9]+(?:[eE][-+]?[0-9]+)?|[eE][-+]?[0-9]+)[dDmM]?"
-            + ")$",
-            System.Text.RegularExpressions.RegexOptions.Compiled
-        )
-
-    /// The tokens of `input`, whose first character is at column `startCol` of
-    /// line 1. A `${...}` hole is read from the column it is at, so that a
-    /// string in it lines its continuations up with the right column.
-    let rec private tokenizeFrom (file: string) (input: string) (startCol: int) : LexedToken list =
+    /// The tokens of `input`, whose first character is at line `startLine` and
+    /// column `startCol`. A `${...}` hole is read from the line and column it
+    /// is at, so that its tokens and its errors have the positions of the file,
+    /// and a string in it lines its continuations up with the right column.
+    let rec private tokenizeFrom (file: string) (input: string) (startLine: int) (startCol: int) : LexedToken list =
         let length = input.Length
 
         let rec following charList pos =
@@ -552,10 +511,11 @@ module Lexer =
                         failwithf
                             $"Syntax error at %s{formatAt file line col}: a quantity literal starting with '<' has no '>' on its line. Write it as <9.81 m/s^2>; a comparison is (< a b), with a space."
 
+                    // `Bjolang.Runtime.ReaderSupport` holds the expression,
+                    // which (std read) uses too.
                     let body = input.Substring(pos + 1, close - pos - 1)
-                    let numberMatch = quantityNumber.Match body
-                    let number = numberMatch.Value
-                    let unitText = body.Substring(number.Length).Trim()
+                    let number = Bjolang.Runtime.ReaderSupport.QuantityNumber body
+                    let unitText = Bjolang.Runtime.ReaderSupport.QuantityUnit body
                     let len = close + 1 - pos
                     let text = input.Substring(pos, len)
                     let endLine, endCol = advance text line col
@@ -705,7 +665,7 @@ module Lexer =
                     // hex digits and an exponent's sign are part of it, which also
                     // lets in runs that are no number, such as `3-1` or `5abc`.
                     // Their digits are what C# is given.
-                    if not (numberSpelling.IsMatch text) then
+                    if not (Bjolang.Runtime.ReaderSupport.IsNumberSpelling text) then
                         failwithf
                             $"Syntax error at %s{formatAt file line col}: '%s{text}' is not a number. A number is digits, with a fraction and an exponent if it is a real, as in 1.5 or 2e-3, or 0x or 0b and hex or binary digits, and one of the type suffixes. Separate it from what follows with a space."
 
@@ -837,7 +797,7 @@ module Lexer =
                     let len = nextPos - pos
                     emit (Symbol(input.Substring(pos, len))) len
 
-        loop 0 1 startCol []
+        loop 0 startLine startCol []
 
     /// Reads `#"a ${x} b"` and returns the tokens it stands for, followed by
     /// the position just past its closing quote.
@@ -1003,8 +963,7 @@ module Lexer =
                 match segment with
                 | InterpText text -> [ mk (StringLit text) ]
                 | InterpHole(source, hl, hc) ->
-                    // Read from the hole's column, so only its lines are moved.
-                    let inner = tokenizeFrom file source hc |> List.map (shiftToken hl 0)
+                    let inner = tokenizeFrom file source hl hc
 
                     if inner.IsEmpty then
                         failwithf
@@ -1029,7 +988,7 @@ module Lexer =
         expansion, p, l, c
 
     /// The tokens of a file's text, or of any text read as one.
-    let tokenize (file: string) (input: string) : LexedToken list = tokenizeFrom file input 0
+    let tokenize (file: string) (input: string) : LexedToken list = tokenizeFrom file input 1 0
 
     /// Tokenizes the text of a real source file, and records every identifier
     /// in it as user-written for that file (`Gensym.isUserWritten`).

@@ -482,6 +482,9 @@ let private clrToNullary =
           // `System.Text.StringBuilder`.
           "BjoString.Utf8String", TypeConstants.StringName
           "BjoString.Utf8StringBuilder", "StringBuilder"
+          // A member that returns syntax, such as `Syntax.WithRange`. `Syntax`
+          // has no other spelling.
+          "Bjolang.Runtime.Syntax", "Syntax"
           // This entry earns its place the same way: a .NET method
           // *returning* a bare `Task` — which is what every middleware delegate
           // does — has to come back as the very type `(cast Task t)` names, or

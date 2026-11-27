@@ -251,6 +251,26 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "--solve-units" :: path :: _ ->
         Units.runSolverFile path
         exit 0
+    // Undocumented: the reader's forms of each file, in the text of
+    // `Bjolang.Runtime.SyntaxDump`, after a line `== path`. (std read) writes
+    // the same text, and tools/read_conformance.py compares the two.
+    | "--dump-read" :: paths ->
+        for path in paths do
+            let text =
+                try
+                    Lexer.tokenize path (System.IO.File.ReadAllText path)
+                    |> Pipeline.read
+                    |> fst
+                    |> List.map Macro.syntaxOfSExpr
+                    |> SchemeList.SchemeList.FromEnumerable
+                    |> Bjolang.Runtime.SyntaxDump.Dump
+                    |> string
+                with e ->
+                    $"error: %s{e.Message}\n"
+
+            stdout.Write $"== %s{path}\n%s{text}"
+
+        exit 0
     // Run by bjo after a NuGet restore. See `Build.precompilePackages`.
     | "--precompile-packages" :: dir :: inputs :: _ ->
         exit (Build.precompilePackages dir inputs)

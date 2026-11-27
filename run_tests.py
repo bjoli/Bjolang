@@ -1578,6 +1578,19 @@ def run_check_tests():
 
     return "check", c_total, c_failed, c_failures
 
+def run_read_conformance():
+    """(std read) against the compiler's reader, over the source tree. See
+    tools/read_conformance.py."""
+    res = subprocess.run([sys.executable, "tools/read_conformance.py"],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lines = res.stdout.splitlines()
+    summary = [l for l in lines if l.endswith("files read the same.")]
+    if not summary:
+        return "read", 1, 1, ["tools/read_conformance.py did not finish:"] + lines[-20:]
+    same, total = (int(w) for w in summary[-1].split()[0:3:2])
+    failures = [l.strip() for l in lines if l.startswith("DIFFERS: ")]
+    return "read", total, total - same, failures
+
 def run_signal_tests():
     # How a program ends when it is signalled, or fails while fibers still run.
     # `TestFiles/signals/exit.bjo` has a mode for each case. It writes "ready"
@@ -1853,6 +1866,10 @@ with ThreadPoolExecutor(max_workers=16) as executor:
     phases.append(executor.submit(run_signal_tests))
 
     print("-" * 50)
+    print_color(BLUE, "Checking (std read) against the compiler's reader...")
+    phases.append(executor.submit(run_read_conformance))
+
+    print("-" * 50)
     print_color(BLUE, "Checking packages and roots...")
     phases.append(packages_future)
 
@@ -1876,6 +1893,8 @@ with ThreadPoolExecutor(max_workers=16) as executor:
     pdb_failures = []
     signal_total = signal_failed = 0
     signal_failures = []
+    read_total = read_failed = 0
+    read_failures = []
     codegen_failures, repl_failures, repro_failures, stale_failures = [], [], [], []
     check_failures = []
     
@@ -1939,6 +1958,13 @@ with ThreadPoolExecutor(max_workers=16) as executor:
             else:
                 for f in signal_failures:
                     print(f"  [{RED}FAIL{NC}] {f}")
+        elif name == "read":
+            read_total, read_failed, read_failures = total, failed, failures
+            if failed == 0:
+                print(f"  [{GREEN}PASS{NC}] (std read) reads as the compiler does")
+            else:
+                for f in read_failures:
+                    print(f"  [{RED}FAIL{NC}] {f}")
         elif name == "packages":
             package_total, package_failed, package_failures = total, failed, failures
             if failed == 0:
@@ -1985,6 +2011,8 @@ if pdb_total > 0:
     print(f"Debug symbols:      {pdb_total - pdb_failed}/{pdb_total} as a debugger should see them")
 if signal_total > 0:
     print(f"Signals:            {signal_total - signal_failed}/{signal_total} ended as they should")
+if read_total > 0:
+    print(f"(std read):         {read_total - read_failed}/{read_total} files read as the compiler reads them")
 if package_total > 0:
     print(f"Packages:           {package_total - package_failed}/{package_total} package rules held")
 if graph_total > 0:
@@ -2009,10 +2037,11 @@ print_failures("Codegen Test Failures", codegen_failures)
 print_failures("--check Failures", check_failures)
 print_failures("Debug Symbol Failures", pdb_failures)
 print_failures("Signal Failures", signal_failures)
+print_failures("(std read) Failures", read_failures)
 print_failures("Package Failures", package_failures)
 print_failures("Graph Build Failures", graph_failures)
 
-if (error_failed or codegen_failed or repl_failed or units_failed or repro_failed or stale_failed or warning_failed or check_failed or pdb_failed or signal_failed or package_failed or graph_failed) and not compiled_failed and not run_failed:
+if (error_failed or codegen_failed or repl_failed or units_failed or repro_failed or stale_failed or warning_failed or check_failed or pdb_failed or signal_failed or read_failed or package_failed or graph_failed) and not compiled_failed and not run_failed:
     sys.exit(1)
     
 if compiled_failed or run_failed:

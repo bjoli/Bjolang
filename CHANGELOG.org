@@ -3,6 +3,37 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std read)~: the reader of Bjolang source, in Bjolang
+
+~read-source~ and ~read-source-file~ return the forms of a text as
+~Syntax~, the type a macro receives, with the range of each form. It is the
+first part of the compiler written in Bjolang.
+
+- *It reads as the compiler does.* It is a port of ~Lexer.fs~ and
+  ~Pipeline.read~, with the same reader syntax expanded and the same error
+  messages. A column counts UTF-16 code units, as the compiler's do.
+- *The test suite checks that.* ~bjolang --dump-read FILE...~ writes what
+  the compiler reads, and ~syntax-dump~ writes what ~(std read)~ reads, in
+  one text (~Bjolang.Runtime.SyntaxDump~). ~tools/read_conformance.py~
+  compares the two over every .bjo file git tracks, and ~run_tests.py~ runs
+  it. An error is part of the text, so a file both reject is rejected with
+  the same message.
+- *A ~ReadError~* is a ~SyntaxError~ (the message, the line and the column,
+  from 1) or a ~FileError~ (an ~FsError~).
+- The compiler is not changed to use it yet.
+
+* An error inside a ~${...}~ hole names the line it is on
+
+The compiler lexed a hole as a text of its own, from line 1, and moved its
+tokens to their lines afterwards. An error in a hole was not moved: it named
+line 1 of the file. The hole is now lexed from its own line and column.
+
+* A .NET member that returns ~Bjolang.Runtime.Syntax~ returns a ~Syntax~
+
+Before, it returned a type of that .NET name, which unified with nothing, so
+~(.WithRange s r)~ could not be passed on as syntax. ~Syntax~ has no other
+spelling, as ~string~ and ~char~ have none.
+
 * A foreign argument with no conversion is a Bjolang type error
 
 Before, some values of the wrong type reached a .NET member, and the C#

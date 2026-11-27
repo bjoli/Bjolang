@@ -1,0 +1,91 @@
+;; Docs for std/read.bjo, read through (:doc #:file "read.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "The reader of Bjolang source: the forms of a text as Syntax, with their ranges, as the compiler reads them.")
+  (see read-source read-source-file ReadError syntax-dump)
+  (example """
+    (import (std read))
+
+    (match (read-source-file "tasks.bjo")
+      ((Ok forms) (println (int->string (list-length forms))))
+      ((Err e) (println (read-error-message e))))
+    """)
+  (reference """
+    A form is a @code{Syntax}, the type a macro receives (see
+    @code{SList}). Each form has the range it was read from: see
+    @code{syntax-line} and @code{syntax-file}.
+
+    @strong{What the reader does.} The forms are what the compiler reads
+    before it parses them, with the same reader syntax expanded:
+
+    @read-table{
+    | @code{'(a b)}          | @code{(quoted-list a b)}                  |
+    | @code{[a b]}           | @code{(vec-literal a b)}                  |
+    | @code{#[a b]}          | @code{(array-literal a b)}                |
+    | @code{{f x clause}}    | @code{(comprehension f x clause)}         |
+    | @code{#(f & 1)}        | @code{(fun (&1__1) (f &1__1 1))}          |
+    | @code{#name(a)}        | @code{(#name a)}                          |
+    | @code{(a . b)}         | @code{(Tuple a b)}                        |
+    | @code{#'x}             | @code{(syntax-quote x)}                   |
+    | @code{#"a${x}"}        | @code{(str "a" (displayed x))}            |
+    | @code{<9.81 m/s^2>}    | @code{(quantity "9.81" "m/s^2")}          |
+    }
+
+    The @code{str} and @code{displayed} of an interpolated string have the
+    origin @code{Resolved}. @code{#t} and @code{#f} are the symbols of
+    those names. A comment is not read.
+
+    @strong{Ranges.} A line counts from 1 and a column from 0, in UTF-16
+    code units, as the compiler counts them. A character above U+FFFF is
+    two columns.
+    """))
+
+(:doc ReadError
+  (summary "Why a text could not be read.")
+  (case SyntaxError "The text is not Bjolang: the message, as the compiler writes it, and the line and the column, from 1.")
+  (case FileError "@code{read-source-file} could not read the file: the @code{FsError}.")
+  (see read-error-message read-source))
+
+(:doc read-error-message
+  (summary "The message of a read error.")
+  (arg e "The error.")
+  (returns "The compiler's message for a @code{SyntaxError}, and @code{fs-error-message} of a @code{FileError}."))
+
+(:doc read-source
+  (summary "The forms of a text, as the compiler reads them.")
+  (arg text "The source.")
+  (key file "The file the ranges name, and the file messages name. Without it, a message names @code{<unknown>}.")
+  (returns "The forms, or the first @code{SyntaxError}.")
+  (see read-source-file syntax-dump)
+  (example """
+    (read-source "(+ 1 2) [x]")
+    ;; => (Ok the forms (+ 1 2) and (vec-literal x))
+    """)
+  (reference """
+    The whole text is read into tokens before any form is made, as the
+    compiler does. An error in the tokens, such as a string with no end,
+    therefore comes before an error in the forms, such as a bracket with
+    no partner, wherever the two are.
+    """))
+
+(:doc read-source-file
+  (summary "The forms of a file, as the compiler reads them.")
+  (arg path "The file.")
+  (returns "The forms, a @code{SyntaxError}, or a @code{FileError}.")
+  (see read-source)
+  (reference """
+    A UTF-8 byte order mark at the start of the file is not read. Bytes
+    that are not UTF-8 are read as U+FFFD, as the compiler reads them.
+    """))
+
+(:doc syntax-dump
+  (summary "Forms in the text that the compiler writes for @code{--dump-read}.")
+  (arg forms "The forms.")
+  (returns "A line per form and per item of a form, with its kind, its text and its range.")
+  (reference """
+    For comparing this reader with the compiler's: tools/read_conformance.py
+    compares the two over the source tree. A fresh name that @code{#(...)}
+    makes is written by the order it first appears in, so two readers with
+    different counters write the same text.
+    """))

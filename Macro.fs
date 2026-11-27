@@ -308,6 +308,9 @@ let rec private ofSExpr (s: SExpr) : Syn =
 
     node.WithRange(toSrcRange (getRange s)).WithOrigin(origin)
 
+/// `s` as `Syntax`, as a macro receives it. For `--dump-read`.
+let syntaxOfSExpr (s: SExpr) : Syn = ofSExpr s
+
 /// Identifiers a template may write that must keep their spelling.
 ///
 /// Renaming exists for names that can be *bound*, and none of these can be. The

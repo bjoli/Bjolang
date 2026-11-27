@@ -1,0 +1,119 @@
+;; (std read): the forms and ranges of a text, read errors, and files.
+;; tools/read_conformance.py compares the reader with the compiler's over the
+;; whole source tree. This checks the interface.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std read))
+
+(import/extern
+  (temp-directory (: System.IO.Path.GetTempPath (-> string)))
+  (random-file-name (: System.IO.Path.GetRandomFileName (-> string))))
+
+;; The dump of the forms of `text`, or the message of its error.
+(: (-> string string))
+(defun (dump text)
+  (match (read-source text)
+    ((Ok forms) (syntax-dump forms))
+    ((Err e) (read-error-message e))))
+
+(: (-> (Result ReadError (List Syntax)) string))
+(defun (error-of r)
+  (match r
+    ((Ok _) "read")
+    ((Err (SyntaxError message line col)) (str (int->string line) ":" (int->string col) " " message))
+    ((Err (FileError _)) "file error")))
+
+(: (-> (Result ReadError (List Syntax)) (List int)))
+(defun (lines-of r)
+  (match r
+    ((Ok forms) (list-map syntax-line forms))
+    ((Err _) Nil)))
+
+(defun (main)
+  ;; --- Forms and ranges ----------------------------------------------------
+  (expect "a list and a vec literal, with their ranges"
+          (dump "(+ 1 2) [x]")
+          (string-join ["list 1:0-1:7"
+                        "  sym \"+\" 1:1-1:2"
+                        "  num \"1\" 1:3-1:4"
+                        "  num \"2\" 1:5-1:6"
+                        "list 1:8-1:11"
+                        "  sym \"vec-literal\" 1:8-1:9"
+                        "  sym \"x\" 1:9-1:10"
+                        ""]
+                       "\n"))
+  (expect "a character above U+FFFF is two columns"
+          (dump "(a \"\u{1F600}\" b)")
+          (string-join ["list 1:0-1:10"
+                        "  sym \"a\" 1:1-1:2"
+                        "  str \"\u{1F600}\" 1:3-1:7"
+                        "  sym \"b\" 1:8-1:9"
+                        ""]
+                       "\n"))
+  (expect "the str and displayed of an interpolated string are resolved"
+          (dump "#\"n=${n}!\"")
+          (string-join ["list 1:0-1:10"
+                        "  sym \"str\" 1:0-1:10 resolved"
+                        "  str \"n=\" 1:0-1:10"
+                        "  list 1:0-1:10"
+                        "    sym \"displayed\" 1:0-1:10 resolved"
+                        "    sym \"n\" 1:6-1:7"
+                        "  str \"!\" 1:0-1:10"
+                        ""]
+                       "\n"))
+  (expect "#(...) is a fun of fresh names"
+          (dump "#(+ & 1)")
+          (string-join ["list 1:0-1:8"
+                        "  sym \"fun\" 1:0-1:1"
+                        "  list 1:0-1:1"
+                        "    sym \"&1__g1\" 1:0-1:1"
+                        "  list 1:0-1:8"
+                        "    sym \"+\" 1:2-1:3"
+                        "    sym \"&1__g1\" 1:4-1:5"
+                        "    num \"1\" 1:6-1:7"
+                        ""]
+                       "\n"))
+  (expect "a fresh name is not one the text writes"
+          (match (read-source "&1__1 #(f &)")
+            ((Ok (Cons _ (Cons (SList (Cons _ (Cons (SList (Cons (SSym p) Nil)) _))) Nil)))
+             (symbol->string p))
+            (_ "no lambda"))
+          "&1__2")
+  (expect "a form's line is where it starts"
+          (lines-of (read-source "a\n\n(b\n c)"))
+          (list 1 3))
+  (expect "a comment is not read"
+          (lines-of (read-source "; one\nx ; two\n"))
+          (list 2))
+
+  ;; --- Errors ----------------------------------------------------------------
+  (expect "a bracket never closed is at the bracket"
+          (error-of (read-source "\n  (a [b]" #:file "dir/f.bjo"))
+          "2:3 Syntax error at f.bjo:2:3: the '(' opened here is never closed. The file ends first.")
+  (expect "without a file, a message names <unknown>"
+          (error-of (read-source ")"))
+          "1:1 Syntax error at <unknown>:1:1: this ')' closes nothing. Every bracket before it is already closed.")
+  (expect "a token error comes before a form error, wherever it is"
+          (error-of (read-source "(a ] \"open"))
+          "1:6 Unterminated string at <unknown>:1:6")
+  (expect "an error in a hole is at its line in the text"
+          (error-of (read-source "x\n#\"a ${ 1abc } b\""))
+          (str "2:8 Syntax error at <unknown>:2:8: '1abc' is not a number. A number is digits, with a fraction and an exponent if it is a real, as in 1.5 or 2e-3, "
+               "or 0x or 0b and hex or binary digits, and one of the type suffixes. Separate it from what follows with a space."))
+
+  ;; --- Files -----------------------------------------------------------------
+  (def scratch (path-combine (temp-directory) (str "bjo-read-" (random-file-name))))
+  (raise-err (directory-create scratch))
+  (def with-bom (path-combine scratch "bom.bjo"))
+  (raise-err (file-write-bytes with-bom (string->bytes "\u{FEFF}(a)")))
+  (expect "a byte order mark is not read"
+          (match (read-source-file with-bom)
+            ((Ok forms) (syntax-dump forms))
+            ((Err e) (read-error-message e)))
+          "list 1:0-1:3\n  sym \"a\" 1:1-1:2\n")
+  (expect "a file that is not there is a FileError"
+          (error-of (read-source-file (path-combine scratch "none.bjo")))
+          "file error")
+  (raise-err (directory-delete-tree scratch))
+  0)
