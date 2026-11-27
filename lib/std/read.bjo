@@ -21,6 +21,11 @@
 ;;
 ;; The text is read as its UTF-8 bytes. A column counts UTF-16 code units, as
 ;; the compiler's columns do: a character above U+FFFF moves it by 2.
+;;
+;; Everything is Bjolang: the character classes are (std unicode chars), the
+;; number spellings are (std rx) patterns, and a grapheme is (std unicode
+;; grapheme). The .NET types left are the ones the compiler shares: `Syntax`,
+;; `SrcRange` and the exception that `raise` needs.
 
 (export
   ReadError read-error-message
@@ -28,27 +33,16 @@
   syntax-dump)
 
 (import (std prelude))
+(import (std rx))
+(import (only (std unicode grapheme) string-cursor-next-grapheme))
 
 (:doc #:file "read.bjodoc")
 
 (import/class
-  (Rune (: System.Text.Rune (-> int Rune)))
   (SrcRange (: Bjolang.Runtime.SrcRange (-> string int int int int string SrcRange)))
   (SyntaxOrigin (: Bjolang.Runtime.SyntaxOrigin))
   ;; What a read error raises inside this module. `read-source` catches it.
   (ReadFailure (: System.FormatException (-> string ReadFailure))))
-
-(import/extern
-  (rune-space? (: System.Text.Rune.IsWhiteSpace (-> Rune bool)))
-  (rune-digit? (: System.Text.Rune.IsDigit (-> Rune bool)))
-  (rune-letter-or-digit? (: System.Text.Rune.IsLetterOrDigit (-> Rune bool)))
-  (clr-file-name (: System.IO.Path.GetFileName (-> string string)))
-  (clr-text-element (: System.Globalization.StringInfo.GetNextTextElement (-> string string)))
-  (clr-lower (: Bjolang.Runtime.ReaderSupport.LowerInvariant (-> string string)))
-  (clr-quantity-number (: Bjolang.Runtime.ReaderSupport.QuantityNumber (-> string string)))
-  (clr-quantity-unit (: Bjolang.Runtime.ReaderSupport.QuantityUnit (-> string string)))
-  (clr-number-spelling? (: Bjolang.Runtime.ReaderSupport.IsNumberSpelling (-> string bool)))
-  (dump-forms (: Bjolang.Runtime.SyntaxDump.Dump (-> (List Syntax) string))))
 
 ;; ---------------------------------------------------------------------------
 ;; The error
@@ -210,49 +204,66 @@
   (match (advance b (record-ref cur p) to (record-ref cur line) (record-ref cur col))
     ((Tuple l c) (record-set! cur (p to) (line l) (col c)))))
 
+;; The properties the lexer asks of a character, from (std unicode chars):
+;; - `Char.IsWhiteSpace` is the property White_Space.
+;; - `Char.IsDigit` is a decimal digit, category Nd.
+;; - `Char.IsLetterOrDigit` is a letter, category L, or a decimal digit.
+(: (-> int bool))
+(defun (unicode-space? cp)
+  (char-whitespace? (int->char cp)))
+
+(: (-> int bool))
+(defun (unicode-digit? cp)
+  (some? (digit-value (int->char cp))))
+
+(: (-> int bool))
+(defun (unicode-letter-or-digit? cp)
+  (case (symbol->string (char-general-category (int->char cp)))
+    (("Lu" "Ll" "Lt" "Lm" "Lo" "Nd") #t)
+    (else #f)))
+
 ;; The answers of `pred` for the code points below 128.
-(: (-> (-> Rune bool) (Array bool)))
+(: (-> (-> int bool) (Array bool)))
 (defun (ascii-table pred)
   (def a (make-array 128))
   (let go ((i 0))
     (when (< i 128)
-      (array-set! a i (pred (Rune. i)))
+      (array-set! a i (pred i))
       (go (+ i 1))))
   a)
 
 (: (Array bool))
-(def ascii-space (ascii-table rune-space?))
+(def ascii-space (ascii-table unicode-space?))
 
 (: (Array bool))
-(def ascii-digit (ascii-table rune-digit?))
+(def ascii-digit (ascii-table unicode-digit?))
 
 (: (Array bool))
-(def ascii-letter-or-digit (ascii-table rune-letter-or-digit?))
+(def ascii-letter-or-digit (ascii-table unicode-letter-or-digit?))
 
-;; `Char.IsWhiteSpace`, `Char.IsDigit` and `Char.IsLetterOrDigit` of the
-;; character `cp`. The compiler asks them of a UTF-16 code unit, so a
-;; character above U+FFFF is asked about as a surrogate, which is none of
-;; them.
+;; Whether `cp` is white space, a digit, and a letter or a digit, as the
+;; compiler asks. The compiler asks of a UTF-16 code unit, so a character
+;; above U+FFFF is asked about as a surrogate, which is none of them.
 (: (-> int bool))
 (defun (space? cp)
   (cond
     ((< cp 128) (array-ref ascii-space cp))
     ((>= cp 65536) #f)
-    (else (rune-space? (Rune. cp)))))
+    (else (unicode-space? cp))))
 
 (: (-> int bool))
 (defun (digit? cp)
   (cond
     ((< cp 128) (array-ref ascii-digit cp))
     ((>= cp 65536) #f)
-    (else (rune-digit? (Rune. cp)))))
+    (else (unicode-digit? cp))))
 
 (: (-> int bool))
 (defun (letter-or-digit? cp)
   (cond
     ((< cp 128) (array-ref ascii-letter-or-digit cp))
     ((>= cp 65536) #f)
-    (else (rune-letter-or-digit? (Rune. cp)))))
+    (else (unicode-letter-or-digit? cp))))
 
 ;; `Lexer.isSymbolChar`.
 (: (-> int bool))
@@ -337,6 +348,13 @@
     ((<= x 70) (- x 55))
     (else (- x 87))))
 
+;; The first grapheme cluster of `s`, which is not empty: what the escape
+;; error names after the backslash.
+(: (-> string string))
+(defun (first-grapheme s)
+  (def start (string-cursor-start s))
+  (substring s start (string-cursor-next-grapheme s start)))
+
 ;; Raises the error of an escape at `line` and `col`.
 (: (-> Lexer int int string %a))
 (defun (escape-error lx line col what)
@@ -382,7 +400,7 @@
     (else
      (if (space? (code-at b (+ i 1)))
          (escape-error lx line col "a backslash before a space is an escape only at the end of a line, where it continues the string on the next. For a backslash, write \\\\.")
-         (escape-error lx line col (str "\\" (clr-text-element (text-of b (+ i 1) end))
+         (escape-error lx line col (str "\\" (first-grapheme (text-of b (+ i 1) end))
                       " is not an escape. A string's escapes are \\n, \\t, \\r, \\\", \\\\ and \\u{...}, and \\$ in #\"...\". For a backslash, write \\\\, or write the text as a raw string, \"\"\"...\"\"\"."))))))
 
 ;; `continuationEnd`: when the backslash at `i` ends its line, perhaps with
@@ -712,6 +730,12 @@
          ((hex-digit? (byte-at b i)) (go (+ i 1) (+ (* v 16L) (cast long (hex-value (byte-at b i))))))
          (else -1))))))
 
+;; `s` in lower case, a character at a time: the simple case mapping, as
+;; `ToLowerInvariant` does.
+(: (-> string string))
+(defun (downcase s)
+  (list->string (list-map char-downcase (string->list s))))
+
 ;; The code point that the name of a character literal names, or -1.
 (: (-> string int))
 (defun (named-char lower)
@@ -742,7 +766,7 @@
      (emit! (TChar (code-at b s)) 6))
     ((and (< s limit) (> name-end (+ s (seq-len (byte-at b s)))))
      (def name (text-of b s name-end))
-     (def lower (clr-lower name))
+     (def lower (downcase name))
      (def named (named-char lower))
      (def code
        (cond
@@ -766,6 +790,57 @@
 (: (-> string bool))
 (defun (fresh-shaped? name)
   (and (string-starts-with? name "&") (string-contains? name "__")))
+
+;; `numberSpelling`: what a number literal may be spelled as, the shapes and
+;; suffixes `TypedAST.NumericLiteral` reads.
+;; - Hexadecimal and binary digits take only the `u` and `l` suffixes.
+;; - A real has a digit after its point, and an exponent may have a sign.
+;; - A real takes `d` and `M`. An integer also takes `I`, for a bigint.
+(: Rx)
+(def number-spelling
+  #rx(seq :bos
+          (? "-")
+          (or (seq "0" (in "xX") (+ :hex-digit)
+                   (? (or (seq (in "uU") (? (in "lL"))) (in "lL"))))
+              (seq "0" (in "bB") (+ (in "01"))
+                   (? (or (seq (in "uU") (? (in "lL"))) (in "lL"))))
+              (seq (+ :ascii-digit)
+                   (? (or "uy" "us" (seq (in "uU") (? (in "lL"))) "s" (in "lL") (in "dD") (in "mM") "I")))
+              (seq (+ :ascii-digit)
+                   (or (seq "." (+ :ascii-digit) (? (in "eE") (? (in "-+")) (+ :ascii-digit)))
+                       (seq (in "eE") (? (in "-+")) (+ :ascii-digit)))
+                   (? (in "dDmM"))))
+          :eos))
+
+;; `quantityNumber`: the number at the start of a quantity literal: `9.81`,
+;; `-2`, `1e-3`, `1|3`, `.5`. A digit is any decimal digit, as `\d` is.
+(: Rx)
+(def quantity-number
+  #rx(seq :bos
+          (? "-")
+          (or (seq (+ :digit) (? "." (* :digit)))
+              (seq "." (+ :digit)))
+          (? (in "eE") (? (in "-+")) (+ :digit))
+          (? "|" (+ :digit))))
+
+;; The number at the start of the body of a quantity literal, "" when there is
+;; none, and the rest of the body without the white space around it.
+(: (-> string (Tuple string string)))
+(defun (quantity-parts body)
+  (match (rx-search quantity-number body)
+    ((Some m) (Tuple (rx-text m) (trim (substring body (rx-end m) (string-cursor-end body)))))
+    (None (Tuple "" (trim body)))))
+
+;; `s` without the white space at its start and its end, as `String.Trim`
+;; removes it.
+(: (-> string string))
+(defun (trim s)
+  (def cs (string->list s))
+  (defun (drop-space cs)
+    (match cs
+      ((Cons c rest) (if (char-whitespace? c) (drop-space rest) cs))
+      (Nil Nil)))
+  (list->string (list-reverse (drop-space (list-reverse (drop-space cs))))))
 
 ;; `tokenizeFrom`: pushes the tokens of the text from `cur` to its limit.
 (: (-> Lexer Buf Cur void))
@@ -810,8 +885,10 @@
          (defun (mk t) (Token (tok t) (sl line) (sc col) (el (record-ref cur line)) (ec (record-ref cur col))))
          (push! out (mk TLParen))
          (push! out (mk (TSym "quantity")))
-         (push! out (mk (TStr (clr-quantity-number body))))
-         (push! out (mk (TStr (clr-quantity-unit body))))
+         (match (quantity-parts body)
+           ((Tuple number unit)
+            (push! out (mk (TStr number)))
+            (push! out (mk (TStr unit)))))
          (push! out (mk TRParen)))
         ((= x 40) (emit! TLParen 1))
         ((= x 41) (emit! TRParen 1))
@@ -865,7 +942,7 @@
                        (scan (+ k (seq-len y))))
                       (else k))))
          (def text (text-of b pos end))
-         (unless (clr-number-spelling? text)
+         (unless (rx-match? number-spelling text)
            (fail lx line col (str "Syntax error at " (at lx line col) ": '" text
                                   "' is not a number. A number is digits, with a fraction and an exponent if it is a real, as in 1.5 or 2e-3, or 0x or 0b and hex or binary digits, and one of the type suffixes. Separate it from what follows with a space.")))
          (emit! (TNum text) (- end pos)))
@@ -1210,10 +1287,18 @@
 ;; Reading
 ;; ---------------------------------------------------------------------------
 
-;; `Lexer.fileLabel`.
+;; `Lexer.fileLabel`: the name after the last `/` or `\`.
 (: (-> string string))
 (defun (file-label file)
-  (if (string-empty? file) "<unknown>" (clr-file-name file)))
+  (if (string-empty? file)
+      "<unknown>"
+      (let ((b (string->bytes file)))
+        (def after (let go ((i (- (array-length b) 1)))
+                     (cond
+                       ((< i 0) 0)
+                       ((or (= (byte-at b i) 47) (= (byte-at b i) 92)) (+ i 1))
+                       (else (go (- i 1))))))
+        (text-of b after (array-length b)))))
 
 ;; The forms of the text of `lx`. Raises `ReadFailure` at an error.
 (: (-> Lexer (List Syntax)))
@@ -1248,6 +1333,96 @@
            raw))
      (read-bytes (if (bytes-utf-8? bytes 0 (array-length bytes)) bytes (string->bytes (bytes->string/lossy bytes))) path))))
 
+;; ---------------------------------------------------------------------------
+;; The dump
+;; ---------------------------------------------------------------------------
+;; The text of `bjolang --dump-read`, which Program.fs writes:
+;; - A line per node, indented by two spaces a level: its kind, its payload,
+;;   its range as `line:column-line:column`, and `resolved` for the origin
+;;   Resolved.
+;; - A fresh name `&N__M` is written `&N__gK`, K by the order the fresh names
+;;   first appear in.
+
+(: Rx)
+(def fresh-name #rx(seq :bos "&" (+ :digit) "__" (+ :digit) :eos))
+
+;; - `renamed`: each fresh name written so far, and what it is written as.
+(type (: Dumper (Record (: out StringBuilder)
+                        (: renamed (List (Tuple string string)) #:mutable))))
+
+(: (-> int string))
+(defun (hex-text n)
+  (defun (digit d) (int->char (if (< d 10) (+ d 48) (+ d 55))))
+  (let go ((n n) (acc Nil))
+    (def acc2 (Cons (digit (bitwise-and n 15)) acc))
+    (if (< n 16)
+        (list->string acc2)
+        (go (shift-right n 4) acc2))))
+
+;; Adds `text` in double quotes, with `\`, `"` and each character below
+;; U+0020 written as an escape.
+(: (-> StringBuilder string void))
+(defun (add-quoted! sb text)
+  (stringbuilder-add! sb #\")
+  (string-for-each
+   (fun (c)
+     (cond
+       ((= c #\\) (stringbuilder-add-string! sb "\\\\"))
+       ((= c #\") (stringbuilder-add-string! sb "\\\""))
+       ((= c #\newline) (stringbuilder-add-string! sb "\\n"))
+       ((= c #\tab) (stringbuilder-add-string! sb "\\t"))
+       ((= c #\return) (stringbuilder-add-string! sb "\\r"))
+       ((< (char->int c) 32) (stringbuilder-add-string! sb (str "\\u{" (hex-text (char->int c)) "}")))
+       (else (stringbuilder-add! sb c))))
+   text)
+  (stringbuilder-add! sb #\"))
+
+;; `name`, or what the fresh name `name` is written as.
+(: (-> Dumper string string))
+(defun (rename-fresh d name)
+  (if (not (and (string-starts-with? name "&") (rx-match? fresh-name name)))
+      name
+      (match (find (fun (pair) (match pair ((Tuple from _) (= from name)))) (record-ref d renamed))
+        ((Some (Tuple _ to)) to)
+        (None
+         (def b (string->bytes name))
+         (def cut (let go ((i 0)) (if (= (byte-at b i) 95) i (go (+ i 1)))))
+         (def to (str (text-of b 0 cut) "__g" (int->string (+ (list-length (record-ref d renamed)) 1))))
+         (record-set! d (renamed (Cons (Tuple name to) (record-ref d renamed))))
+         to))))
+
+(: (-> Dumper Syntax int void))
+(defun (dump-node! d s depth)
+  (def sb (record-ref d out))
+  (let go ((k 0))
+    (when (< k depth)
+      (stringbuilder-add-string! sb "  ")
+      (go (+ k 1))))
+  (defun (payload! kind text)
+    (stringbuilder-add-string! sb kind)
+    (add-quoted! sb text))
+  (match s
+    ((SSym x) (payload! "sym " (rename-fresh d (symbol->string x))))
+    ((SDatum x) (payload! "datum " (symbol->string x)))
+    ((SInt t) (payload! "num " t))
+    ((SStr t) (payload! "str " t))
+    ((SChar c) (stringbuilder-add-string! sb (str "char " (int->string (char->int c)))))
+    ((SKey k) (payload! "key " (keyword->string k)))
+    ((SPunct t) (payload! "punct " t))
+    ((SList _) (stringbuilder-add-string! sb "list")))
+  (stringbuilder-add-string!
+   sb
+   (str " " (int->string (start-line s)) ":" (int->string (start-col s))
+        "-" (int->string (end-line s)) ":" (int->string (end-col s))))
+  (when (= (.-Origin s) SyntaxOrigin.Resolved)
+    (stringbuilder-add-string! sb " resolved"))
+  (stringbuilder-add! sb #\newline)
+  (match s
+    ((SList items) (list-for-each (fun (item) (dump-node! d item (+ depth 1))) items))
+    (_ unit)))
+
 (: (-> (List Syntax) string))
 (defun (syntax-dump forms)
-  (dump-forms forms))
+  (def d (Dumper (out (stringbuilder-empty)) (renamed Nil)))
+  (list-for-each (fun (form) (dump-node! d form 0)) forms)
+  (stringbuilder->string (record-ref d out)))

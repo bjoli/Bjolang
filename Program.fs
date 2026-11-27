@@ -241,6 +241,78 @@ let private readFileList (path: string) : string list =
     |> Array.filter (fun line -> line <> "" && not (line.StartsWith "#"))
     |> Array.toList
 
+/// The text of `--dump-read`: the reader's forms, a line per node.
+///
+/// - Each line has the node's kind, its payload, its range as
+///   `line:column-line:column`, and `resolved` for the origin `Resolved`. It
+///   is indented by two spaces a level.
+/// - A fresh name `&N__M`, which `#(...)` makes, is written `&N__gK`, K by the
+///   order the fresh names first appear in.
+/// - `syntax-dump` in lib/std/read.bjo writes the same text. Change the two
+///   together.
+let private dumpSyntax (forms: Bjolang.Runtime.Syntax list) : string =
+    let sb = System.Text.StringBuilder()
+    let fresh = System.Collections.Generic.Dictionary<string, string>()
+    let freshName = System.Text.RegularExpressions.Regex(@"^&\d+__\d+$")
+
+    let rename (name: string) =
+        if not (freshName.IsMatch name) then
+            name
+        else
+            match fresh.TryGetValue name with
+            | true, renamed -> renamed
+            | _ ->
+                let renamed = $"%s{name.Substring(0, name.IndexOf '_')}__g%d{fresh.Count + 1}"
+                fresh[name] <- renamed
+                renamed
+
+    let quote (text: string) =
+        sb.Append('"') |> ignore
+
+        for c in text do
+            match c with
+            | '\\' -> sb.Append("\\\\") |> ignore
+            | '"' -> sb.Append("\\\"") |> ignore
+            | '\n' -> sb.Append("\\n") |> ignore
+            | '\t' -> sb.Append("\\t") |> ignore
+            | '\r' -> sb.Append("\\r") |> ignore
+            | c when c < ' ' -> sb.Append($"\\u{{%X{int c}}}") |> ignore
+            | c -> sb.Append(c) |> ignore
+
+        sb.Append('"') |> ignore
+
+    let rec write (s: Bjolang.Runtime.Syntax) (depth: int) =
+        sb.Append(' ', depth * 2) |> ignore
+
+        match s with
+        | :? Bjolang.Runtime.Syntax.SSym as x -> sb.Append("sym ") |> ignore; quote (rename x.Item1.Name)
+        | :? Bjolang.Runtime.Syntax.SDatum as x -> sb.Append("datum ") |> ignore; quote x.Item1.Name
+        | :? Bjolang.Runtime.Syntax.SInt as x -> sb.Append("num ") |> ignore; quote (string x.Item1)
+        | :? Bjolang.Runtime.Syntax.SStr as x -> sb.Append("str ") |> ignore; quote (string x.Item1)
+        | :? Bjolang.Runtime.Syntax.SChar as x -> sb.Append($"char %d{x.Item1.Value}") |> ignore
+        | :? Bjolang.Runtime.Syntax.SKey as x -> sb.Append("key ") |> ignore; quote x.Item1.Name
+        | :? Bjolang.Runtime.Syntax.SPunct as x -> sb.Append("punct ") |> ignore; quote (string x.Item1)
+        | _ -> sb.Append("list") |> ignore
+
+        let r = s.Range
+        sb.Append($" %d{r.StartLine}:%d{r.StartColumn}-%d{r.EndLine}:%d{r.EndColumn}") |> ignore
+
+        if s.Origin = Bjolang.Runtime.SyntaxOrigin.Resolved then
+            sb.Append(" resolved") |> ignore
+
+        sb.Append('\n') |> ignore
+
+        match s with
+        | :? Bjolang.Runtime.Syntax.SList as list ->
+            for item in list.Item1 do
+                write item (depth + 1)
+        | _ -> ()
+
+    for form in forms do
+        write form 0
+
+    sb.ToString()
+
 let rec parseArgs (args: string list) (opts: CompilerOptions) =
     match args with
     | [] -> opts
@@ -252,8 +324,8 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
         Units.runSolverFile path
         exit 0
     // Undocumented: the reader's forms of each file, in the text of
-    // `Bjolang.Runtime.SyntaxDump`, after a line `== path`. (std read) writes
-    // the same text, and tools/read_conformance.py compares the two.
+    // `dumpSyntax`, after a line `== path`. (std read) writes the same text,
+    // and tools/read_conformance.py compares the two.
     | "--dump-read" :: paths ->
         for path in paths do
             let text =
@@ -262,9 +334,7 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
                     |> Pipeline.read
                     |> fst
                     |> List.map Macro.syntaxOfSExpr
-                    |> SchemeList.SchemeList.FromEnumerable
-                    |> Bjolang.Runtime.SyntaxDump.Dump
-                    |> string
+                    |> dumpSyntax
                 with e ->
                     $"error: %s{e.Message}\n"
 

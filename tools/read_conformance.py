@@ -17,7 +17,7 @@
 
 - Reads every .bjo file under the paths with both readers: the compiler's,
   through `bjolang --dump-read`, and (std read), through
-  tools/read/read_dump.bjo. Both write the text of `Bjolang.Runtime.SyntaxDump`.
+  tools/read/read_dump.bjo. Both write the text of `dumpSyntax` in Program.fs.
 - With no paths, reads the .bjo files that git tracks. The test suite writes
   files of its own while this runs, and those are not read.
 - A file whose two texts differ is a failure. The first lines that differ are

@@ -406,6 +406,30 @@ module Lexer =
         not (Char.IsWhiteSpace c)
         && not (List.contains c [ '('; ')'; '['; ']'; '{'; '}'; ','; ':'; '"'; ';'; '\'' ])
 
+    /// The number at the start of a quantity literal: `9.81`, `-2`, `1e-3`,
+    /// `1|3`, `.5`. `quantity-number` in lib/std/read.bjo is the same pattern.
+    let private quantityNumber =
+        System.Text.RegularExpressions.Regex(@"^-?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?(\|\d+)?")
+
+    /// What a number literal may be spelled as: the shapes and suffixes
+    /// `TypedAST.NumericLiteral` reads. `number-spelling` in lib/std/read.bjo
+    /// is the same pattern.
+    ///
+    /// Hexadecimal and binary digits take only the `u` and `l` suffixes, since
+    /// the others are hex digits. A real has a digit after its point, and an
+    /// exponent may have a sign, `1e-3` or `1e+3`. A real takes `d` for a
+    /// double and `M` for a decimal; an integer also takes `I` for a bigint.
+    let private numberSpelling =
+        System.Text.RegularExpressions.Regex(
+            "^-?(?:"
+            + "0[xX][0-9a-fA-F]+(?:[uU][lL]?|[lL])?"
+            + "|0[bB][01]+(?:[uU][lL]?|[lL])?"
+            + "|[0-9]+(?:uy|us|[uU][lL]?|s|[lL]|[dD]|[mM]|I)?"
+            + "|[0-9]+(?:\\.[0-9]+(?:[eE][-+]?[0-9]+)?|[eE][-+]?[0-9]+)[dDmM]?"
+            + ")$",
+            System.Text.RegularExpressions.RegexOptions.Compiled
+        )
+
     /// The tokens of `input`, whose first character is at line `startLine` and
     /// column `startCol`. A `${...}` hole is read from the line and column it
     /// is at, so that its tokens and its errors have the positions of the file,
@@ -511,11 +535,9 @@ module Lexer =
                         failwithf
                             $"Syntax error at %s{formatAt file line col}: a quantity literal starting with '<' has no '>' on its line. Write it as <9.81 m/s^2>; a comparison is (< a b), with a space."
 
-                    // `Bjolang.Runtime.ReaderSupport` holds the expression,
-                    // which (std read) uses too.
                     let body = input.Substring(pos + 1, close - pos - 1)
-                    let number = Bjolang.Runtime.ReaderSupport.QuantityNumber body
-                    let unitText = Bjolang.Runtime.ReaderSupport.QuantityUnit body
+                    let number = (quantityNumber.Match body).Value
+                    let unitText = body.Substring(number.Length).Trim()
                     let len = close + 1 - pos
                     let text = input.Substring(pos, len)
                     let endLine, endCol = advance text line col
@@ -665,7 +687,7 @@ module Lexer =
                     // hex digits and an exponent's sign are part of it, which also
                     // lets in runs that are no number, such as `3-1` or `5abc`.
                     // Their digits are what C# is given.
-                    if not (Bjolang.Runtime.ReaderSupport.IsNumberSpelling text) then
+                    if not (numberSpelling.IsMatch text) then
                         failwithf
                             $"Syntax error at %s{formatAt file line col}: '%s{text}' is not a number. A number is digits, with a fraction and an exponent if it is a real, as in 1.5 or 2e-3, or 0x or 0b and hex or binary digits, and one of the type suffixes. Separate it from what follows with a space."
 
