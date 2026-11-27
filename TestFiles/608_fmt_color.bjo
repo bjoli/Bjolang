@@ -1,0 +1,80 @@
+;; std/fmt's colours: as-* and on-* write SGR sequences only when
+;; current-color says so, nest, and take no columns where text is measured,
+;; cut or laid out in a table.
+(import (std prelude))
+(import (std fmt))
+(import (std simpletest))
+
+(def esc (char->string (int->char 27)))
+
+;; The escapes of `s` written as <...>, so that a failure can be read.
+(: (-> string string))
+(defun (shown s)
+  (string-replace s esc "<E>"))
+
+;; `b` rendered with colour on.
+(: (-> Block string))
+(defun (coloured b)
+  (shown (render->string (with-fmt current-color ColorAlways b))))
+
+(defun (main)
+  ;; --- When escapes are written --------------------------------------------
+  (expect "render->string is plain by default" (render->string (as-red "tea")) "tea")
+  (expect "ColorNever is plain"
+          (render->string (with-fmt current-color ColorNever (as-red "tea")))
+          "tea")
+  (expect "ColorAlways writes the style and restores the one around it"
+          (coloured (as-red "tea"))
+          "<E>[0;31mtea<E>[0m")
+  (expect "the mode is read where the styled block runs"
+          (shown (render->string [(as-red "a") (with-fmt current-color ColorAlways (as-red "b"))]))
+          "a<E>[0;31mb<E>[0m")
+
+  ;; --- Styles --------------------------------------------------------------
+  (expect "styles nest, and the outer one comes back"
+          (coloured (as-bold ["a" (as-red "b") "c"]))
+          "<E>[0;1ma<E>[0;1;31mb<E>[0;1mc<E>[0m")
+  (expect "an inner colour replaces the outer"
+          (coloured (as-red (as-green "g")))
+          "<E>[0;31m<E>[0;32mg<E>[0;31m<E>[0m")
+  (expect "a background and a foreground together"
+          (coloured (on-blue (as-yellow "x")))
+          "<E>[0;44m<E>[0;33;44mx<E>[0;44m<E>[0m")
+  (expect "the 256-colour cube" (coloured (as-color 5 0 0 "x")) "<E>[0;38;5;196mx<E>[0m")
+  (expect "a component past 5 is 5" (coloured (as-color 9 0 0 "x")) "<E>[0;38;5;196mx<E>[0m")
+  (expect "the gray ramp" (coloured (on-gray 3 "x")) "<E>[0;48;5;235mx<E>[0m")
+  (expect "true colour" (coloured (as-true-color 255 128 0 "x")) "<E>[0;38;2;255;128;0mx<E>[0m")
+  (expect "the attributes"
+          (coloured (as-dim (as-italic (as-underline (as-inverse "x")))))
+          "<E>[0;2m<E>[0;2;3m<E>[0;2;3;4m<E>[0;2;3;4;7mx<E>[0;2;3;4m<E>[0;2;3m<E>[0;2m<E>[0m")
+
+  ;; --- Measuring, cutting and layout ---------------------------------------
+  (expect "padding counts no escapes"
+          (coloured [(padded/right 5 (as-red "ab")) "|"])
+          "<E>[0;31mab<E>[0m   |")
+  (expect "a cut on the right keeps the reset"
+          (coloured (trimmed/right 3 (as-red "abcdef")))
+          "<E>[0;31mabc<E>[0m")
+  (expect "a cut on the left keeps the style it starts in"
+          (coloured (trimmed/left 3 (as-red "abcdef")))
+          "<E>[0;31mdef<E>[0m")
+  (expect "a cut in the middle keeps both"
+          (coloured (with-fmt current-ellipsis "." (trimmed/both 5 (as-red "abcdefgh"))))
+          ".<E>[0;31mcde<E>[0m.")
+  (expect "a cut does not split an escape"
+          (coloured (trimmed/right 1 [(as-red "a") (as-green "b")]))
+          "<E>[0;31ma<E>[0m<E>[0;32m<E>[0m")
+  (expect "a fresh line after coloured text is a newline"
+          (coloured [(as-red "a") fl "b"])
+          "<E>[0;31ma<E>[0m\nb")
+  (expect "a coloured table lines up"
+          (coloured (tabular/rows [[(as-green "ok") "1"] [(as-red "failed") "22"]]))
+          "<E>[0;32mok<E>[0m     1\n<E>[0;31mfailed<E>[0m 22\n")
+  (expect "a coloured cell of two lines is closed and opened on each"
+          (coloured (tabular/rows [[(as-red ["a" nl "bb"]) "x"]] #:sep "|"))
+          "<E>[0;31ma<E>[0m |x\n<E>[0;31mbb<E>[0m\n")
+  (expect
+   "a long coloured word is chopped by columns"
+   (coloured (with-fmt current-width 3 (tabular/rows [[(as-red "abcdef")]] #:overflow OverflowWrap)))
+   "<E>[0;31mabc<E>[0m\n<E>[0;31mdef<E>[0m\n")
+  0)

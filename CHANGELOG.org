@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std fmt)~ has terminal colours
+
+- *~as-red~, ~on-blue~ and the rest* style a block: the eight named
+  colours as ~as-*~ for the foreground and ~on-*~ for the background,
+  ~as-color~ and ~on-color~ for the 256-colour cube, ~as-gray~ and
+  ~on-gray~ for its grays, ~as-true-color~ and ~on-true-color~ for 24-bit
+  colour, and ~as-bold~, ~as-dim~, ~as-italic~, ~as-underline~ and
+  ~as-inverse~. The names are SRFI 166's.
+- *Styles nest.* A styled block writes its whole style before its content
+  and the style around it after, so ~(as-bold ["a" (as-red "b") "c"])~ is
+  bold throughout.
+- *~current-color~ says when escapes are written:* ~ColorAuto~, the
+  default, when ~render~ or ~show~ writes to standard output or standard
+  error that is not redirected, with ~NO_COLOR~ unset or empty and ~TERM~
+  not ~dumb~; ~ColorAlways~; or ~ColorNever~. ~render->string~ is never to
+  a terminal. It is read where each styled block runs.
+- *Escape sequences take no columns and are never split.* Padding, cutting,
+  wrapping and tables measure without them. A cut keeps the escapes of the
+  part it cuts away, so a style it closes is still closed. A table cell of
+  several lines, or one wrapped onto several, has its style closed at the
+  end of each line and opened again on the next, so the borders and the
+  other cells keep their own.
+- The column of a ~BRun~ and of ~fl~ counts no escapes.
+
 * ~(std fmt)~ measures in terminal columns by default
 
 - *~current-string-width~ is ~terminal-width~ unless set.* A wide

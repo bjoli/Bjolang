@@ -3,7 +3,7 @@
 
 (:doc #:module
   (summary "Formatting in two layers: interpolation of scalars, and a composable layout of blocks.")
-  (see println* show render->string with-fmt Block)
+  (see println* show render->string with-fmt Block as-red current-color)
   (example """
     (import (std prelude))
     (import (std fmt))
@@ -312,6 +312,9 @@
     @code{BRun}, and a stored function's colour is its type, so no
     suspending sink can go there. To render from a fiber, use
     @code{render->string} and write the string yourself.
+
+    With @code{current-color} ColorAuto, styled blocks are coloured when
+    @code{port} is a terminal: see @code{ColorMode}.
     """))
 
 (:doc show
@@ -334,6 +337,10 @@
   (see show render captured)
   (example """
     (render->string (padded/left 5 "7"))   ; "    7"
+    """)
+  (reference """
+    A string is not a terminal: with @code{current-color} ColorAuto, styled
+    blocks write no escapes. Set it to ColorAlways for them.
     """))
 
 (:doc run-block
@@ -467,6 +474,288 @@
     wrapping and tables. The column a @code{BRun} is handed is not: it
     counts characters.
     """))
+
+(:doc ColorMode
+  (summary "When styled blocks write escape sequences.")
+  (case ColorAuto "When the block is rendered to a terminal. The default.")
+  (case ColorAlways "Always, whatever the block is rendered to.")
+  (case ColorNever "Never: styled blocks write only their content.")
+  (see current-color as-red)
+  (reference """
+    A block is rendered to a terminal by @code{render} or @code{show} to
+    standard output or standard error, when that is not redirected,
+    @code{NO_COLOR} is unset or empty, and @code{TERM} is not
+    @code{dumb}. @code{render->string} is never to a terminal.
+    """))
+
+(:doc current-color
+  (summary "When styled blocks write escape sequences. ColorAuto unless set.")
+  (see ColorMode as-red)
+  (example """
+    ;; For a test, or for output to be read with less -R.
+    (render->string (with-fmt current-color ColorAlways (as-red "tea")))
+    ;; "\e[0;31mtea\e[0m"
+
+    ;; A command's --color=never.
+    (with-fmt current-color ColorNever (show report))
+    """)
+  (reference """
+    It is read where each styled block runs, so it can be set for a part of
+    a block.
+    """))
+
+(:doc as-black
+  (summary "A block in black, as the terminal shows black.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see on-black as-color as-true-color current-color)
+  (example """
+    (show [(as-black "tea") nl])
+    """)
+  (reference """
+    The style is written before the block and the style around it after,
+    so styles nest: @code{(as-bold ["a" (as-red "b") "c"])} is bold
+    throughout and red in the middle. Escape sequences take no columns
+    where text is padded, cut or laid out in a table.
+    """))
+
+(:doc on-black
+  (summary "A block on a black background.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-black on-color on-true-color current-color))
+
+(:doc as-red
+  (summary "A block in red, as the terminal shows red.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see on-red as-color as-true-color current-color)
+  (example """
+    (show [(as-red "tea") nl])
+    """)
+  (reference """
+    The style is written before the block and the style around it after,
+    so styles nest: @code{(as-bold ["a" (as-red "b") "c"])} is bold
+    throughout and red in the middle. Escape sequences take no columns
+    where text is padded, cut or laid out in a table.
+    """))
+
+(:doc on-red
+  (summary "A block on a red background.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-red on-color on-true-color current-color))
+
+(:doc as-green
+  (summary "A block in green, as the terminal shows green.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see on-green as-color as-true-color current-color)
+  (example """
+    (show [(as-green "tea") nl])
+    """)
+  (reference """
+    The style is written before the block and the style around it after,
+    so styles nest: @code{(as-bold ["a" (as-red "b") "c"])} is bold
+    throughout and red in the middle. Escape sequences take no columns
+    where text is padded, cut or laid out in a table.
+    """))
+
+(:doc on-green
+  (summary "A block on a green background.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-green on-color on-true-color current-color))
+
+(:doc as-yellow
+  (summary "A block in yellow, as the terminal shows yellow.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see on-yellow as-color as-true-color current-color)
+  (example """
+    (show [(as-yellow "tea") nl])
+    """)
+  (reference """
+    The style is written before the block and the style around it after,
+    so styles nest: @code{(as-bold ["a" (as-red "b") "c"])} is bold
+    throughout and red in the middle. Escape sequences take no columns
+    where text is padded, cut or laid out in a table.
+    """))
+
+(:doc on-yellow
+  (summary "A block on a yellow background.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-yellow on-color on-true-color current-color))
+
+(:doc as-blue
+  (summary "A block in blue, as the terminal shows blue.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see on-blue as-color as-true-color current-color)
+  (example """
+    (show [(as-blue "tea") nl])
+    """)
+  (reference """
+    The style is written before the block and the style around it after,
+    so styles nest: @code{(as-bold ["a" (as-red "b") "c"])} is bold
+    throughout and red in the middle. Escape sequences take no columns
+    where text is padded, cut or laid out in a table.
+    """))
+
+(:doc on-blue
+  (summary "A block on a blue background.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-blue on-color on-true-color current-color))
+
+(:doc as-magenta
+  (summary "A block in magenta, as the terminal shows magenta.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see on-magenta as-color as-true-color current-color)
+  (example """
+    (show [(as-magenta "tea") nl])
+    """)
+  (reference """
+    The style is written before the block and the style around it after,
+    so styles nest: @code{(as-bold ["a" (as-red "b") "c"])} is bold
+    throughout and red in the middle. Escape sequences take no columns
+    where text is padded, cut or laid out in a table.
+    """))
+
+(:doc on-magenta
+  (summary "A block on a magenta background.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-magenta on-color on-true-color current-color))
+
+(:doc as-cyan
+  (summary "A block in cyan, as the terminal shows cyan.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see on-cyan as-color as-true-color current-color)
+  (example """
+    (show [(as-cyan "tea") nl])
+    """)
+  (reference """
+    The style is written before the block and the style around it after,
+    so styles nest: @code{(as-bold ["a" (as-red "b") "c"])} is bold
+    throughout and red in the middle. Escape sequences take no columns
+    where text is padded, cut or laid out in a table.
+    """))
+
+(:doc on-cyan
+  (summary "A block on a cyan background.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-cyan on-color on-true-color current-color))
+
+(:doc as-white
+  (summary "A block in white, as the terminal shows white.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see on-white as-color as-true-color current-color)
+  (example """
+    (show [(as-white "tea") nl])
+    """)
+  (reference """
+    The style is written before the block and the style around it after,
+    so styles nest: @code{(as-bold ["a" (as-red "b") "c"])} is bold
+    throughout and red in the middle. Escape sequences take no columns
+    where text is padded, cut or laid out in a table.
+    """))
+
+(:doc on-white
+  (summary "A block on a white background.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-white on-color on-true-color current-color))
+
+(:doc as-color
+  (summary "A block in a colour of the 256-colour palette's cube.")
+  (arg r "Red, 0 to 5.")
+  (arg g "Green, 0 to 5.")
+  (arg b "Blue, 0 to 5.")
+  (arg blk "The block.")
+  (returns "A block.")
+  (see as-gray as-true-color on-color)
+  (example """
+    (show [(as-color 5 2 0 "orange") nl])
+    """)
+  (reference "A component outside 0 to 5 is taken as the nearer end."))
+
+(:doc as-gray
+  (summary "A block in a gray of the 256-colour palette.")
+  (arg level "From 0, nearly black, to 23, nearly white.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-color on-gray))
+
+(:doc as-true-color
+  (summary "A block in a 24-bit colour.")
+  (arg r "Red, 0 to 255.")
+  (arg g "Green, 0 to 255.")
+  (arg b "Blue, 0 to 255.")
+  (arg blk "The block.")
+  (returns "A block.")
+  (see as-color on-true-color)
+  (reference "Not every terminal shows 24-bit colour. A component outside 0 to 255 is taken as the nearer end."))
+
+(:doc on-color
+  (summary "A block on a background of the 256-colour palette's cube.")
+  (arg r "Red, 0 to 5.")
+  (arg g "Green, 0 to 5.")
+  (arg b "Blue, 0 to 5.")
+  (arg blk "The block.")
+  (returns "A block.")
+  (see as-color on-gray on-true-color))
+
+(:doc on-gray
+  (summary "A block on a gray background of the 256-colour palette.")
+  (arg level "From 0, nearly black, to 23, nearly white.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-gray on-color))
+
+(:doc on-true-color
+  (summary "A block on a 24-bit background colour.")
+  (arg r "Red, 0 to 255.")
+  (arg g "Green, 0 to 255.")
+  (arg b "Blue, 0 to 255.")
+  (arg blk "The block.")
+  (returns "A block.")
+  (see as-true-color on-color))
+
+(:doc as-bold
+  (summary "A block bold.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-red current-color))
+
+(:doc as-dim
+  (summary "A block dim, or faint.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-red current-color))
+
+(:doc as-italic
+  (summary "A block italic.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-red current-color))
+
+(:doc as-underline
+  (summary "A block underlined.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-red current-color))
+
+(:doc as-inverse
+  (summary "A block with its foreground and background swapped.")
+  (arg b "The block.")
+  (returns "A block.")
+  (see as-red current-color))
 
 (:doc terminal-width
   (summary "How many columns a string takes in a terminal, for current-string-width.")

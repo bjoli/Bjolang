@@ -15,7 +15,7 @@
 (import (std syntax-match))
 (export
   ;; Exported types.
-  Disp Sink Block Align TableLayout TableStyle TableRules BorderChars ColumnWidth Overflow
+  Disp Sink Block Align TableLayout TableStyle TableRules BorderChars ColumnWidth Overflow ColorMode
 
   ;; Layer 1 — interpolation
   println*
@@ -26,6 +26,11 @@
   current-pad current-width current-ellipsis current-string-width
   current-precision current-comma current-comma-sep current-decimal-sep
   current-signed terminal-width
+  ;; Colour
+  current-color as-black as-red as-green as-yellow as-blue as-magenta as-cyan as-white
+  as-color as-gray as-true-color on-black on-red on-green on-yellow on-blue on-magenta
+  on-cyan on-white on-color on-gray on-true-color as-bold as-dim as-italic as-underline
+  as-inverse
   ;; The block algebra
   nothing each captured width-of
   ;; Vertical and horizontal space
@@ -91,15 +96,206 @@
 (def/grammar Block
   (:or (: BStr string) (: BInt int) (: BChar char) (: BMany (Vec Block)) (: BRun ,(-> Sink int int))))
 
-;; Computes column position.
+;; --- Colour ----------------------------------------------------------------
+;;
+;; - A styled block writes an SGR sequence with the whole style before its
+;;   content, and one with the style around it after, so styles nest.
+;; - Whether anything is written is decided where the block runs, by
+;;   `current-color`. For ColorAuto, `render` binds `auto-color` to whether
+;;   its port is a terminal, and `render->string` binds it to #f.
+;; - The measuring and cutting below treat an escape sequence as no columns,
+;;   keep it whole, and keep the ones in text they cut away.
+
+;; When styled blocks write escape sequences. ColorAuto: when rendered to a
+;; terminal.
+(def/grammar ColorMode
+  (:or (: ColorAuto 'auto) (: ColorAlways 'always) (: ColorNever 'never)))
+
+(: (Param ColorMode))
+(def current-color (make-cold-parameter ColorAuto))
+
+;; Whether ColorAuto writes escapes where blocks run now.
+(: (Param bool))
+(def auto-color (make-cold-parameter #f))
+
+;; Whether styled blocks write escapes where they run now.
+(: (-> bool))
+(defun (color-on?)
+  (match (parameter-ref current-color)
+    (ColorAlways #t)
+    (ColorNever #f)
+    (ColorAuto (parameter-ref auto-color))))
+
+;; The style a block runs in. A colour is its SGR parameters, as "31" or
+;; "38;5;208", or "" for the terminal's own.
+(type (: Style (Record (: fg string)
+                       (: bg string)
+                       (: bold bool)
+                       (: dim bool)
+                       (: italic bool)
+                       (: underline bool)
+                       (: inverse bool))))
+
+(: Style)
+(def plain-style (Style (fg "") (bg "") (bold #f) (dim #f) (italic #f) (underline #f) (inverse #f)))
+
+(: (Param Style))
+(def current-style (make-cold-parameter plain-style))
+
+(: string)
+(def esc (char->string (int->char 27)))
+
+;; The SGR sequence that sets `st` from any style: a reset, then each part.
+(: (-> Style string))
+(defun (sgr st)
+  (str esc "[0"
+       (if (record-ref st bold) ";1" "")
+       (if (record-ref st dim) ";2" "")
+       (if (record-ref st italic) ";3" "")
+       (if (record-ref st underline) ";4" "")
+       (if (record-ref st inverse) ";7" "")
+       (if (string-empty? (record-ref st fg)) "" (str ";" (record-ref st fg)))
+       (if (string-empty? (record-ref st bg)) "" (str ";" (record-ref st bg)))
+       "m"))
+
+(import/extern
+  (standard-output (: BjolangRuntime.StdOut (-> OutputPort) #:get))
+  (standard-error (: BjolangRuntime.StdErr (-> OutputPort) #:get))
+  (output-redirected? (: System.Console.IsOutputRedirected (-> bool) #:get))
+  (error-redirected? (: System.Console.IsErrorRedirected (-> bool) #:get)))
+
+;; Whether `port` is standard output or standard error, and a terminal.
+(: (-> OutputPort bool))
+(defun (terminal-port? port)
+  (or (and (eq? port standard-output) (not output-redirected?))
+      (and (eq? port standard-error) (not error-redirected?))))
+
+;; Whether ColorAuto colours blocks rendered to `port`: it is a terminal,
+;; NO_COLOR is unset or empty, and TERM is not "dumb".
+(: (-> OutputPort bool))
+(defun (auto-color-for port)
+  (and (terminal-port? port)
+       (match (get-environment-variable "NO_COLOR")
+         ((Some v) (string-empty? v))
+         (None #t))
+       (not (= (get-environment-variable "TERM") (Some "dumb")))))
+
+;; `b` in the style `change` makes of the style around it.
+(: (-> (-> Style Style) Block Block))
+(defun (restyled change b)
+  (BRun (fun (out col)
+          (if (color-on?)
+              (let ()
+                (def outer (parameter-ref current-style))
+                (def inner (change outer))
+                (out (sgr inner))
+                (def after
+                  (parameterize ((current-style inner))
+                    (run-block out col b)))
+                (out (sgr outer))
+                after)
+              (run-block out col b)))))
+
+(: (-> string Block Block))
+(defun (in-fg code b)
+  (restyled #(record-set & (fg code)) b))
+
+(: (-> string Block Block))
+(defun (in-bg code b)
+  (restyled #(record-set & (bg code)) b))
+
+;; A component clamped to `lo`..`hi`.
+(: (-> int int int int))
+(defun (clamped lo hi n)
+  (max lo (min hi n)))
+
+;; The index in the 256-colour palette of `r`, `g`, `b` from 0 to 5.
+(: (-> int int int string))
+(defun (cube r g b)
+  (int->string (+ 16 (* 36 (clamped 0 5 r)) (* 6 (clamped 0 5 g)) (clamped 0 5 b))))
+
+(: (-> int int int string))
+(defun (true-rgb r g b)
+  (str (int->string (clamped 0 255 r)) ";" (int->string (clamped 0 255 g)) ";"
+       (int->string (clamped 0 255 b))))
+
+(: (-> Block Block))
+(defun (as-black b) (in-fg "30" b))
+(: (-> Block Block))
+(defun (as-red b) (in-fg "31" b))
+(: (-> Block Block))
+(defun (as-green b) (in-fg "32" b))
+(: (-> Block Block))
+(defun (as-yellow b) (in-fg "33" b))
+(: (-> Block Block))
+(defun (as-blue b) (in-fg "34" b))
+(: (-> Block Block))
+(defun (as-magenta b) (in-fg "35" b))
+(: (-> Block Block))
+(defun (as-cyan b) (in-fg "36" b))
+(: (-> Block Block))
+(defun (as-white b) (in-fg "37" b))
+
+(: (-> int int int Block Block))
+(defun (as-color r g b blk) (in-fg (str "38;5;" (cube r g b)) blk))
+(: (-> int Block Block))
+(defun (as-gray level b) (in-fg (str "38;5;" (int->string (+ 232 (clamped 0 23 level)))) b))
+(: (-> int int int Block Block))
+(defun (as-true-color r g b blk) (in-fg (str "38;2;" (true-rgb r g b)) blk))
+
+(: (-> Block Block))
+(defun (on-black b) (in-bg "40" b))
+(: (-> Block Block))
+(defun (on-red b) (in-bg "41" b))
+(: (-> Block Block))
+(defun (on-green b) (in-bg "42" b))
+(: (-> Block Block))
+(defun (on-yellow b) (in-bg "43" b))
+(: (-> Block Block))
+(defun (on-blue b) (in-bg "44" b))
+(: (-> Block Block))
+(defun (on-magenta b) (in-bg "45" b))
+(: (-> Block Block))
+(defun (on-cyan b) (in-bg "46" b))
+(: (-> Block Block))
+(defun (on-white b) (in-bg "47" b))
+
+(: (-> int int int Block Block))
+(defun (on-color r g b blk) (in-bg (str "48;5;" (cube r g b)) blk))
+(: (-> int Block Block))
+(defun (on-gray level b) (in-bg (str "48;5;" (int->string (+ 232 (clamped 0 23 level)))) b))
+(: (-> int int int Block Block))
+(defun (on-true-color r g b blk) (in-bg (str "48;2;" (true-rgb r g b)) blk))
+
+(: (-> Block Block))
+(defun (as-bold b) (restyled #(record-set & (bold #t)) b))
+(: (-> Block Block))
+(defun (as-dim b) (restyled #(record-set & (dim #t)) b))
+(: (-> Block Block))
+(defun (as-italic b) (restyled #(record-set & (italic #t)) b))
+(: (-> Block Block))
+(defun (as-underline b) (restyled #(record-set & (underline #t)) b))
+(: (-> Block Block))
+(defun (as-inverse b) (restyled #(record-set & (inverse #t)) b))
+
+;; The column after writing `s` from `col`: characters since the last
+;; newline. An escape sequence counts none.
 (: (-> int string int))
 (defun (column-after col s)
-  (string-fold (fun (ch c)
-                 (if (char=? ch #\newline)
-                     0
-                     (+ c 1)))
-               col
-               s))
+  (if (string-contains? s esc)
+      (let lp ((c (string-cursor-start s))
+               (n col))
+        (cond
+          ((string-cursor-end? s c) n)
+          ((escape-at? s c) (lp (after-escape s c) n))
+          ((char=? (string-cursor-ref s c) #\newline) (lp (string-cursor-next s c) 0))
+          (else (lp (string-cursor-next s c) (+ n 1)))))
+      (string-fold (fun (ch c)
+                     (if (char=? ch #\newline)
+                         0
+                         (+ c 1)))
+                   col
+                   s)))
 
 (: (-> Sink int Block int))
 (defun (run-block out col b)
@@ -120,12 +316,23 @@
 ;; `BRun` case, and a stored function's colour is its type — so no `-?->` can
 ;; go there and no suspending copy of this could ever await. Rendering from a
 ;; fiber is `render->string` plus a write you make yourself.
+;; - With ColorAuto, colour is on when `port` is a terminal (see
+;;   `auto-color-for`).
 (: render (-> OutputPort Block void) #:sync)
 (defun (render port b)
-  (ignore (run-block #(write-string port &1) 0 b)))
+  (parameterize ((auto-color (auto-color-for port)))
+    (ignore (run-block #(write-string port &1) 0 b))))
 
+;; - With ColorAuto, colour is off: a string is not a terminal.
 (: (-> Block string))
 (defun (render->string b)
+  (parameterize ((auto-color #f))
+    (string-of b)))
+
+;; `b` rendered to a string with colour as it is where this runs. For the
+;; blocks that lay out what their content wrote.
+(: (-> Block string))
+(defun (string-of b)
   (def sb (stringbuilder-empty))
   (ignore (run-block #(stringbuilder-add-string! sb &1) 0 b))
   (stringbuilder->string sb))
@@ -176,6 +383,65 @@
 (: (Param (-> string int)))
 (def current-string-width (make-cold-parameter #(terminal-width &1)))
 
+;; --- Escape sequences in text ----------------------------------------------
+
+(: (-> string StringCursor bool))
+(defun (escape-at? s c)
+  (= (char->int (string-cursor-ref s c)) 27))
+
+;; The escape sequences in `s` from `c` to its end, in order.
+(: (-> string StringCursor string))
+(defun (escapes-from s c)
+  (def b (stringbuilder-empty))
+  (let lp ((c c))
+    (cond
+      ((string-cursor-end? s c) (ignore 0))
+      ((escape-at? s c)
+       (let ((e (after-escape s c)))
+         (stringbuilder-add-string! b (substring s c e))
+         (lp e)))
+      (else (lp (string-cursor-next s c)))))
+  (stringbuilder->string b))
+
+;; The SGR sequences that are in effect after `line`, given `open`, those in
+;; effect before it. A reset empties them; a sequence that starts with a
+;; reset replaces them.
+(: (-> string string string))
+(defun (open-after open line)
+  (let lp ((c (string-cursor-start line))
+           (open open))
+    (cond
+      ((string-cursor-end? line c) open)
+      ((escape-at? line c)
+       (let* ((e (after-escape line c))
+              (seq (substring line c e))
+              (n (string-length seq)))
+         (cond
+           ((not (and (>= n 3) (string-starts-with? seq (str esc "[")) (string-ends-with? seq "m")))
+            (lp e open))
+           (:def params
+                 (substring seq
+                            (string-cursor-forward seq (string-cursor-start seq) 2)
+                            (string-cursor-prev seq (string-cursor-end seq))))
+           ((or (= params "") (= params "0")) (lp e ""))
+           ((string-starts-with? params "0;") (lp e seq))
+           (else (lp e (str open seq))))))
+      (else (lp (string-cursor-next line c) open)))))
+
+;; `lines` each with the style it starts in opened before it, and closed
+;; after it when a style is open at its end, so that a line can be laid out
+;; beside others.
+(: (-> (Vec string) (Vec string)))
+(defun (balanced lines)
+  (def out (vecbuilder-empty))
+  (ignore (fold (fun (line open)
+                  (def after (open-after open line))
+                  (vecbuilder-add! out (str open line (if (string-empty? after) "" (str esc "[0m"))))
+                  after)
+                ""
+                lines))
+  (vecbuilder->vec out))
+
 ;; --- Number settings -------------------------------------------------------
 
 ;; Digits after the decimal separator. Negative means as many as the number
@@ -220,32 +486,50 @@
 
 ;; Gets prefix/suffix fitting w columns.
 (: (-> string int string))
+;; - The width is summed a character at a time.
+;; - An escape sequence takes no columns and is never split. Those in the
+;;   part cut away are kept, after a prefix and before a suffix, so a style
+;;   closed in that part is still closed.
 (defun (prefix-of-width s w)
   (let loop ((c (string-cursor-start s))
              (room w))
     (cond
       ((string-cursor-end? s c) s)
+      ((escape-at? s c) (loop (after-escape s c) room))
       (:def cw (width-of (char->string (string-cursor-ref s c))))
       ((<= cw room) (loop (string-cursor-next s c) (- room cw)))
-      (else (substring s (string-cursor-start s) c)))))
+      (else (string-append (substring s (string-cursor-start s) c) (escapes-from s c))))))
+
+;; The sum of the widths of the characters of `s`, escapes taking none.
+(: (-> string int))
+(defun (characters-width s)
+  (let loop ((c (string-cursor-start s))
+             (total 0))
+    (cond
+      ((string-cursor-end? s c) total)
+      ((escape-at? s c) (loop (after-escape s c) total))
+      (else
+       (loop (string-cursor-next s c) (+ total (width-of (char->string (string-cursor-ref s c)))))))))
 
 (: (-> string int string))
 (defun (suffix-of-width s w)
-  (let loop ((c (string-cursor-end s))
-             (room w))
-    (cond
-      ((string-cursor=? c (string-cursor-start s)) s)
-      (:def p (string-cursor-prev s c))
-      (:def cw (width-of (char->string (string-cursor-ref s p))))
-      ((<= cw room) (loop p (- room cw)))
-      (else (substring s c (string-cursor-end s))))))
-;; (if (string-cursor=? c (string-cursor-start s))
-;;     s
-;;     (let* ((p (string-cursor-prev s c))
-;;            (cw (width-of (char->string (string-cursor-ref s p)))))
-;;           (if (<= cw room)
-;;               (loop p (- room cw))
-;;               (substring s c (string-cursor-end s)))))))
+  (def need (- (characters-width s) w))
+  (def kept (stringbuilder-empty))
+  (if (<= need 0)
+      s
+      (let loop ((c (string-cursor-start s))
+                 (dropped 0))
+        (cond
+          ((string-cursor-end? s c) (stringbuilder->string kept))
+          ((escape-at? s c)
+           (let ((e (after-escape s c)))
+             (stringbuilder-add-string! kept (substring s c e))
+             (loop e dropped)))
+          ((>= dropped need)
+           (string-append (stringbuilder->string kept) (substring s c (string-cursor-end s))))
+          (else
+           (loop (string-cursor-next s c)
+                 (+ dropped (width-of (char->string (string-cursor-ref s c))))))))))
 
 (: (-> int string string))
 (defun (pad/left w s)
@@ -303,7 +587,7 @@
 ;; Renders the content and applies f.
 (: (-> (-> string Block) Block Block))
 (defun (captured f b)
-  (BRun (fun (out col) (run-block out col (f (render->string b))))))
+  (BRun (fun (out col) (run-block out col (f (string-of b))))))
 
 ;; --- Vertical and horizontal space -----------------------------------------
 
@@ -735,10 +1019,13 @@
 (: (-> string (Vec string)))
 (defun (lines-of s)
   (def* (parts (string-split s "\n"))
-        (n (vec-length parts)))
-  (if (and (> n 1) (string-empty? (vec-ref parts (- n 1))))
-      (vec-slice parts 0 (- n 1))
-      parts))
+        (n (vec-length parts))
+        (lines (if (and (> n 1) (string-empty? (vec-ref parts (- n 1))))
+                   (vec-slice parts 0 (- n 1))
+                   parts)))
+  (if (string-contains? s esc)
+      (balanced lines)
+      lines))
 
 ;; Where a cell sits in its column. `(on #\.)` puts a character of every cell
 ;; in one column, as the decimal point is in a column of numbers.
@@ -819,12 +1106,12 @@
 ;; Each cell's lines.
 (: (-> (Vec (Vec Block)) (Vec (Vec string))))
 (defun (rendered-cells cells)
-  (vec-map (fun (c) (lines-of (render->string c))) cells))
+  (vec-map (fun (c) (lines-of (string-of c))) cells))
 
 ;; The lines of a row's cells, a block each.
 (: (-> (Vec Block) (Vec (Vec string))))
 (defun (rendered-row row)
-  (vec-map (fun (c) (lines-of (render->string [c]))) row))
+  (vec-map (fun (c) (lines-of (string-of [c]))) row))
 
 (: (-> (Vec string) int))
 (defun (widest ls)
@@ -1279,6 +1566,7 @@
        (list-reverse (if (string-cursor=? start c)
                          acc
                          (Cons (substring word start c) acc))))
+      ((escape-at? word c) (lp (after-escape word c) start used acc))
       (:def cw (width-of (char->string (string-cursor-ref word c))))
       ((and (> used 0) (> (+ used cw) w)) (lp c c 0 (Cons (substring word start c) acc)))
       (else (lp (string-cursor-next word c) start (+ used cw) acc)))))
@@ -1304,7 +1592,12 @@
     ((Tuple OverflowCut AlignLeft) (vec-map (fun (l) (trim/right w l)) lines))
     ((Tuple OverflowCut AlignCentre) (vec-map (fun (l) (trim/both w l)) lines))
     ((Tuple OverflowCut _) (vec-map (fun (l) (trim/left w l)) lines))
-    ((Tuple OverflowWrap _) (vec-fold (fun (l acc) (vec-append acc (wrapped-line w l))) [] lines))))
+    ((Tuple OverflowWrap _)
+     (vec-fold (fun (l acc)
+                 (def pieces (wrapped-line w l))
+                 (vec-append acc (if (string-contains? l esc) (balanced pieces) pieces)))
+               []
+               lines))))
 
 ;; A row's cells made to fit their columns.
 (: (-> Overflow (Vec Align) (Vec int) (Vec (Vec string)) (Vec (Vec string))))
