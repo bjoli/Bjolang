@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~bjo fmt~ keeps a record of laid-out files, and formats in parallel
+
+- *~bjo fmt~ records each file it finds laid out* in ~.bjo/fmt~ of the
+  project, or ~.bjo/fmt-rewrite~ with ~--rewrite~: its size, its
+  modification time and the SHA-256 of its text. A file whose size and time
+  are as recorded is not read. A file whose text has the recorded hash is
+  not laid out again.
+- *The record is only a cache.* A record written by another build of the
+  formatter, or one that cannot be read, is empty. A file outside the
+  project is not recorded. A file changed less than 2 seconds before the
+  record is written is recorded with the time -1, so it is read the next
+  time.
+- *Files are laid out on the compute threads of ~(std parallel)~.* The
+  messages and the exit code are the same as before, in the order of the
+  files.
+- *bjo runs with server GC*, with dynamic adaptation, and without background
+  GC. A program that bjo runs does not get these settings.
+- ~bjo fmt --check~ of the 1118 files of the tree takes 0.9 s, against
+  1.74 s, at about 240 MB of peak memory. In a project where all of them are
+  recorded it takes 0.17 s, of which 0.14 s is the start of bjo.
+
 * ~(std read)~ returns the tokens as written, and ~bjo fmt~ reads with them
 
 - *~read-tokens~ and ~fold-tokens~* return the tokens of a text as the

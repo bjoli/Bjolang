@@ -1,0 +1,136 @@
+;; bjo/fmtrecord.bjo — the record of the files `bjo fmt` found laid out.
+;;
+;; - It is `.bjo/fmt` in the project, or `.bjo/fmt-rewrite` for
+;;   `--rewrite`, which lays out to a different text.
+;; - A line per file: its size, its modification time, the hash of its text,
+;;   and its path in the project. The first line is the stamp of the
+;;   formatter that wrote it.
+;; - A record with another stamp is empty: a new formatter can lay out a file
+;;   differently. The stamp is the hash of the formatter's assemblies.
+;; - It is only a record. A file that is not in it, or that has changed, is
+;;   laid out as if there were no record. A record that cannot be read is
+;;   empty, and one that cannot be written is not written.
+
+(export Mark record-path formatter-stamp load-record save-record! text-hash mark-of)
+
+(import (std prelude))
+(import (std crypto hash))
+
+;; What the record knows of a file:
+;; - `size` and `modified-ms`: from the file system. When both are as
+;;   recorded, the file is not read. A time of -1 is never as recorded.
+;; - `hash`: the SHA-256 of the text, in hex. A file whose size or time
+;;   changed is laid out already if its text has this hash.
+(type (: Mark (Record (: size long)
+                      (: modified-ms long)
+                      (: hash string))))
+
+;; Where the record of the project at `dir` is.
+(: (-> string bool string))
+(defun (record-path dir rewrite?)
+  (path-combine dir ".bjo" (if rewrite? "fmt-rewrite" "fmt")))
+
+(: (-> string string))
+(defun (text-hash text)
+  (bytes->hex (hash-string text)))
+
+;; The stamp of the formatter whose assemblies are `files`. A missing file
+;; counts as "missing", so that the stamp changes when it comes back.
+(: formatter-stamp (-> (List string) string) #:sync)
+(defun (formatter-stamp files)
+  (text-hash
+   (string-join (list->vec (list-map (fun (f)
+                                       (if (file-exists? f)
+                                           (bytes->hex (hash-file f))
+                                           "missing"))
+                                     files))
+                " ")))
+
+;; The mark of the file at `path`, whose text has the hash `hash`, or `None`
+;; when it is not there.
+(: (-> string string (Option Mark)))
+(defun (mark-of path hash)
+  (match (file-info path)
+    ((Some info) (Some (Mark (size (record-ref info size))
+                             (modified-ms (record-ref info modified-ms))
+                             (hash hash))))
+    (None None)))
+
+;; The long that `s` writes, or `None` when it is not one: digits, perhaps
+;; after a `-`.
+(: (-> string (Option long)))
+(defun (long-of s)
+  (def digits (if (string-starts-with? s "-") (string-drop s 1) s))
+  (if (and (not (string-empty? digits)) (not (any? (fun (c) (not (char-numeric? c))) (string->list digits))))
+      (Some (string->long s))
+      None))
+
+;; A line of the record as an entry, or `None` for a line that is not one.
+(: (-> string (Option (Tuple string Mark))))
+(defun (entry-of line)
+  (match (string-split-once line " ")
+    ((Some (Tuple size rest))
+     (match (string-split-once rest " ")
+       ((Some (Tuple ms rest))
+        (match (string-split-once rest " ")
+          ((Some (Tuple hash path))
+           (match (Tuple (long-of size) (long-of ms))
+             ((Tuple (Some s) (Some m)) (Some (Tuple path (Mark (size s) (modified-ms m) (hash hash)))))
+             (_ None)))
+          (None None)))
+       (None None)))
+    (None None)))
+
+;; A record is the marks by the path of each file in the project.
+
+;; The record at `path` if the formatter `stamp` wrote it, or else an empty
+;; one.
+(: (-> string string (Map string Mark)))
+(defun (load-record path stamp)
+  (match (file-read-text path)
+    ((Ok text)
+     (match (vec->list (string-split text "\n"))
+       ((Cons first rest) #:when (= first (str "stamp " stamp))
+        (loop (:for line rest)
+              (:acc out (folding (map-empty)
+                                 (match (entry-of line)
+                                   ((Some (Tuple k m)) (map-set out k m))
+                                   (None out))))
+          => out))
+       (_ (map-empty))))
+    ((Err _) (map-empty))))
+
+;; Writes `record` to `path` for the formatter `stamp`, and returns whether it
+;; could.
+;; - It writes a file beside it and renames that over it, so a reader never
+;;   sees half a record. Of two runs at once, the last to finish is kept.
+;; - A file changed in the 2 seconds before the write is recorded with the
+;;   time -1, so that it is read the next time. A change in the same
+;;   millisecond as the time recorded would otherwise go unseen. The clock is
+;;   the file system's: the time of the file written.
+(: (-> string string (Map string Mark) bool))
+(defun (save-record! path stamp record)
+  (def temp (str path ".tmp"))
+  (def written
+    (match (directory-create (match (path-directory path) ((Some d) d) (None ".")))
+      ((Err _) #f)
+      ((Ok _)
+       (match (file-write-text temp "")
+         ((Err _) #f)
+         ((Ok _) #t)))))
+  (when written
+    (def now (match (file-info temp)
+               ((Some info) (record-ref info modified-ms))
+               (None 0L)))
+    (def sb (stringbuilder-empty))
+    (stringbuilder-add-string! sb (str "stamp " stamp "\n"))
+    (loop (:for (Tuple k m) (map->list record))
+          (:do (def ms (if (> (record-ref m modified-ms) (- now 2000L)) -1L (record-ref m modified-ms)))
+               (stringbuilder-add-string!
+                sb
+                (str (long->string (record-ref m size)) " " (long->string ms) " " (record-ref m hash) " " k "\n"))))
+    (ignore (file-write-text temp (stringbuilder->string sb))))
+  (and written
+       (match (file-move temp path #:mode MoveReplace)
+         ((Ok _) #t)
+         ((Err _) #f))))

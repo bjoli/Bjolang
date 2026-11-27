@@ -85,13 +85,17 @@ build_compiler() {
 # The compiler precompiles bjo with ReadyToRun (see `isToolOutput` in Build.fs).
 # Tiered PGO is off because it runs hot precompiled methods through an
 # instrumented tier first, and a bjo command is too short to profit from that.
-# Background GC is off: a bjo command is a batch job, and without it a gen0
-# collection runs less often. `bjo fmt` of large files takes 30% less time,
-# for about twice the peak memory. The setting is in bjo.runtimeconfig.json, so
-# a program that bjo runs does not get it.
+# GC settings, in bjo.runtimeconfig.json, so a program that bjo runs does not
+# get them:
+# - Background GC is off: a bjo command is a batch job, and without it a gen0
+#   collection runs less often. `bjo fmt` of large files takes 30% less time.
+# - Server GC, with dynamic adaptation: `bjo fmt` formats files on all cores,
+#   and with workstation GC the threads wait on the collector. Formatting the
+#   whole source tree takes half the time. Without dynamic adaptation it takes
+#   25% less again, for three times the peak memory.
 build_bjo() {
     [ "$QUIET" = 1 ] || echo "Building bjo..." >&2
-    building dotnet "$COMPILER_DLL" --runtime tiered-pgo=false --runtime gc-concurrent=false "$SOURCE"
+    building dotnet "$COMPILER_DLL" --runtime tiered-pgo=false --runtime gc-server=true --runtime gc-dynamic-adaptation=true --runtime gc-concurrent=false "$SOURCE"
 }
 
 if [ "$1" = "rebjo" ]; then

@@ -59,6 +59,8 @@
 (import "android.bjo")
 (import "bench.bjo")
 (import "format.bjo")
+(import "fmtrecord.bjo")
+(import (std parallel))
 (import "diff.bjo")
 (import "task.bjo")
 
@@ -1416,42 +1418,141 @@
               (Ok (done left)))))))))
 
 ;; `bjo fmt`: each file laid out (see `format.bjo`), and written back if that
-;; changed it, or with `check?` only named. Returns 1 when a file could not be laid out, or, with `check?`, when one is not.
-(: (-> (List string) bool bool bool int))
+;; changed it, or with `check?` only named. Returns 1 when a file could not be
+;; laid out, or, with `check?`, when one is not.
+;; - The files are laid out on the compute threads of (std parallel). What is
+;;   said and written is then done in the order of `files`.
+;; - In a project, the files found laid out are recorded in `.bjo/fmt` (see
+;;   `fmtrecord.bjo`), and a file that has not changed since is not read again.
+(: cmd-fmt (-> (List string) bool bool bool int) #:sync)
 (defun (cmd-fmt files rewrite? check? diff?)
-  (def failures (list-foldl (fun (file n) (+ n (fmt-file file rewrite? check? diff?))) 0 files))
+  (def project (find-project-dir (current-directory)))
+  (def stamp (formatter-stamp (list (path-combine clr-base-dir "format.dll")
+                                    (path-combine root "lib" "std" "read.dll"))))
+  (def store (option-map (fun (dir) (record-path dir rewrite?)) project))
+  (def known (match store
+               ((Some path) (load-record path stamp))
+               (None (map-empty))))
+  (def jobs (list->vec (list-map (fun (file) (Tuple file (record-key project file))) files)))
+  (def results
+    (par-map (fun (job)
+               (def (Tuple file key) job)
+               (def recorded
+                 (match key
+                   ((Some k) (map-try-ref known k))
+                   (None None)))
+               (fmt-result file rewrite? recorded (some? key)))
+             jobs))
+  (def (Tuple failures record)
+    (loop (:for i (range 0 (vec-length jobs)))
+          (:acc out (folding (Tuple 0 known)
+                             (let (((Tuple n rec) out)
+                                   ((Tuple file key) (vec-ref jobs i)))
+                               (def (Tuple failed mark) (fmt-report file check? diff? (some? key) (vec-ref results i)))
+                               (Tuple (+ n failed)
+                                      (match (Tuple key mark)
+                                        ((Tuple (Some k) (Some m)) (map-set rec k m))
+                                        ((Tuple (Some k) None) (map-remove rec k))
+                                        (_ rec))))))
+      => out))
+  (match (Tuple project store)
+    ((Tuple (Some dir) (Some path))
+     ;; Entries of files that are gone are dropped.
+     (def kept (loop (:for (Tuple k m) (map->list record))
+                     (:acc out (folding (map-empty)
+                                        (if (file-exists? (path-combine dir k)) (map-set out k m) out)))
+                 => out))
+     (ignore (save-record! path stamp kept)))
+    (_ unit))
   (if (> failures 0)
       1
       0))
 
-;; Lays out one file, and answers 1 when that fails the command: the file
-;; could not be laid out, or, with `check?`, it is not. A file that is laid out
-;; already is not mentioned. With `diff?` nothing is written: what would change
-;; is printed as a unified diff, which `patch -p0` takes, and so what is said
-;; about a line goes to standard error, out of the diff's way.
-(: (-> string bool bool bool int))
-(defun (fmt-file file rewrite? check? diff?)
-  (def source (raise-err (file-read-text file)))
+;; The key of `file` in the record of `project`: its path in the project, or
+;; `None` when it is outside it or there is no project.
+(: (-> (Option string) string (Option string)))
+(defun (record-key project file)
+  (match project
+    ((Some dir)
+     (def full (path-absolute file))
+     (def prefix (if (string-ends-with? dir "/") dir (str dir "/")))
+     (if (and (string-starts-with? full prefix) (not (string-contains? full "\n")))
+         (Some (string-drop full (string-length prefix)))
+         None))
+    (None None)))
+
+;; What laying out one file comes to, before anything is said or written:
+;; - `AsItIs`: it is laid out already. The mark is what to record of it, when
+;;   it can be recorded.
+;; - `Changes`: its text, and its text laid out, with what is said about its
+;;   lines.
+;; - `Fails`: why it cannot be laid out.
+(type (: FmtResult (Union (: AsItIs (Option Mark))
+                          (: Changes string string (List (Tuple int string)))
+                          (: Fails string))))
+
+;; Lays out `file` on a compute thread. It says and writes nothing.
+;; - `recorded` is the record's mark of it. When its size and time are as
+;;   recorded, it is not read. When its text has the recorded hash, it is not
+;;   laid out.
+;; - `recordable?` is whether it is in the project. Its text is hashed only
+;;   then.
+;; - The mark is made from the file's size and time before it is read, so a
+;;   change while it is read gives it a time that the record does not have.
+(: (-> string bool (Option Mark) bool FmtResult))
+(defun (fmt-result file rewrite? recorded recordable?)
+  (def info (file-info file))
+  (defun (mark hash)
+    (if recordable?
+        (option-map (fun (i) (Mark (size (record-ref i size)) (modified-ms (record-ref i modified-ms)) (hash hash)))
+                    info)
+        None))
+  (match (Tuple recorded info)
+    ((Tuple (Some m) (Some i)) #:when (and (= (record-ref m size) (record-ref i size))
+                                           (= (record-ref m modified-ms) (record-ref i modified-ms)))
+     (AsItIs recorded))
+    (_
+     (match (file-read-text file)
+       ((Err e) (Fails (fs-error-message e)))
+       ((Ok source)
+        (def hash (if recordable? (text-hash source) ""))
+        (match recorded
+          ((Some m) #:when (= (record-ref m hash) hash) (AsItIs (mark hash)))
+          (_
+           (match (format-source rewrite? source #:file (as-seen-from-here file))
+             ((Err why) (Fails why))
+             ((Ok (Tuple text _)) #:when (= text source) (AsItIs (mark hash)))
+             ((Ok (Tuple text long)) (Changes source text long))))))))))
+
+;; Says and writes what `result` is for `file`. Returns 1 when that fails the
+;; command, and the mark to record of the file.
+;; - A file that is laid out already is not mentioned.
+;; - With `diff?` nothing is written: what would change is printed as a
+;;   unified diff, which `patch -p0` takes, and so what is said about a line
+;;   goes to standard error, out of the diff's way.
+;; - A file written is recorded with its new size and time.
+(: (-> string bool bool bool FmtResult (Tuple int (Option Mark))))
+(defun (fmt-report file check? diff? recordable? result)
   (def shown (as-seen-from-here file))
-  (match (format-source rewrite? source #:file shown)
-    ((Err why)
+  (match result
+    ((AsItIs mark) (Tuple 0 mark))
+    ((Fails why)
      (println #"bjo fmt: ${shown}: ${why}")
-     1)
-    ((Ok (Tuple text _)) #:when (= text source) 0)
-    ((Ok (Tuple text long)) #:when diff?
+     (Tuple 1 None))
+    ((Changes source text long) #:when diff?
      (display (unified-diff shown shown source text))
      (loop (:for at long)
            (:do (writeln (parameter-ref current-error-port) (noted shown at))))
-     (if check? 1 0))
-    ((Ok (Tuple _ long)) #:when check?
+     (Tuple (if check? 1 0) None))
+    ((Changes _ _ long) #:when check?
      (println #"${shown}: not formatted")
      (list-for-each #(println (noted shown &)) long)
-     1)
-    ((Ok (Tuple text long))
+     (Tuple 1 None))
+    ((Changes _ text long)
      (raise-err (file-write-text file text))
      (println #"formatted ${shown}")
      (list-for-each #(println (noted shown &)) long)
-     0)))
+     (Tuple 0 (if recordable? (mark-of file (text-hash text)) None)))))
 
 ;; What `format-source` says about a line of `file`, as a line of output.
 (: (-> string (Tuple int string) string))

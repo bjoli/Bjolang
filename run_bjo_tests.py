@@ -2503,6 +2503,47 @@ def test_fmt(work, c):
     c.failed("fmt refuses a name that is not there", run_bjo(app, "fmt", "nosuch.bjo"))
     c.failed("fmt refuses a flag it does not know", run_bjo(app, "fmt", "--wat"))
 
+    # The record of laid-out files, in .bjo/fmt. A file changed in the 2
+    # seconds before the record is written is recorded with the time -1, so
+    # the files get a time in the past.
+    main = app / "src" / "main.bjo"
+    laid_text = main.read_text()
+    past = time.time() - 3600
+    for f in [*(app / "src").glob("*.bjo"), *(app / "tests").glob("*.bjo")]:
+        os.utime(f, (past, past))
+    c.worked("fmt --check records the laid-out files", run_bjo(app, "fmt", "--check", "src/main.bjo"))
+    record = app / ".bjo" / "fmt"
+    lines = record.read_text().splitlines() if record.exists() else []
+    c.that("the record starts with the formatter's stamp", lines and lines[0].startswith("stamp "), lines)
+    entry = [l.split(" ") for l in lines[1:] if l.endswith(" src/main.bjo")]
+    c.that("and has the size, time and hash of each file",
+           len(entry) == 1 and entry[0][0] == str(len(laid_text.encode())) and entry[0][1] != "-1"
+           and len(entry[0][2]) == 64, lines)
+    # Same size, same time: the file is not read again.
+    unlaid = laid_text.replace("  (println", "(println").replace("  0)", "0    )")
+    assert len(unlaid) == len(laid_text)
+    main.write_text(unlaid)
+    os.utime(main, (past, past))
+    c.worked("fmt skips a file whose size and time are as recorded", run_bjo(app, "fmt", "--check", "src/main.bjo"))
+    os.utime(main, (past + 60, past + 60))
+    changed = run_bjo(app, "fmt", "--check", "src/main.bjo")
+    c.failed("and reads it again when its time changes", changed)
+    c.says("and names it", changed, "src/main.bjo: not formatted")
+    c.that("and drops it from the record", not record.read_text().endswith(" src/main.bjo\n"),
+           record.read_text())
+    main.write_text(laid_text)
+    os.utime(main, (past + 120, past + 120))
+    c.worked("a file with the text of its hash passes", run_bjo(app, "fmt", "--check", "src/main.bjo"))
+    record.write_text("stamp old\n1 1 x src/main.bjo\n")
+    main.write_text(unlaid)
+    os.utime(main, (1, 1))
+    c.failed("a record of another formatter is not used", run_bjo(app, "fmt", "--check", "src/main.bjo"))
+    main.write_text("(f\n")
+    c.failed("fmt still refuses a file it cannot read", run_bjo(app, "fmt", "src/main.bjo"))
+    main.write_text(laid_text)
+    c.worked("fmt --rewrite works", run_bjo(app, "fmt", "--rewrite", "--check", "src/main.bjo"))
+    c.that("and has a record of its own", (app / ".bjo" / "fmt-rewrite").exists())
+
     if shutil.which("emacs") is None:
         print("    (no emacs: the comparison with bjo-mode is skipped)")
         return
