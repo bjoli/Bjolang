@@ -2782,8 +2782,17 @@
         (mutablemap-set! (record-ref memo laid) key found)
         found)))))
 
+;; The least overflow of the layouts `ms`, with `tail` brackets after each.
+(: least-overflow (-> (List Measure) int int))
+(defun (least-overflow ms tail)
+  (list-foldl (fun (m least)
+                (def over (+ (record-ref m over) (overflow (record-ref m last) tail)))
+                (if (< over least) over least))
+              1000000000
+              ms))
+
 ;; The layouts of `g` that its plans give. A `str` has its layout as written
-;; if that fits with the `tail` brackets after it, and is filled if not.
+;; unless filling it overflows less, with the `tail` brackets after it.
 (: lay-group (-> Memo Group Place int int (List Measure)))
 (defun (lay-group memo g place col tail)
   (def kind (kind-of g place))
@@ -2801,12 +2810,14 @@
                 ps))
   (cond
     ((= n 0) (list (closed g opening)))
-    ;; A `str` keeps the lines it is written in if they fit.
+    ;; A `str` keeps the lines it is written in unless filling it overflows
+    ;; less.
     ((= kind KStr)
      (def as-written (laid (list (table-plan g))))
-     (if (any? #(and (= (record-ref & over) 0) (<= (+ (record-ref & last) tail) wide)) as-written)
+     (def filled (laid (plans g kind)))
+     (if (<= (least-overflow as-written tail) (least-overflow filled tail))
          as-written
-         (laid (plans g kind))))
+         filled))
     (else (laid (plans g kind)))))
 
 ;; `m`, which is `g` up to its closing bracket, with the bracket. A comment
@@ -3112,7 +3123,8 @@
 ;; does not read, or, which would be a bug here, laying it out would change
 ;; its tokens. With `rewrite?` the forms are rewritten first (see "Rewriting").
 ;; A message names `file`.
-(: format-source (-> bool string (#:file string) (Result string (Tuple string (List (Tuple int string))))))
+(: format-source (-> bool string (#:file string)
+                     (Result string (Tuple string (List (Tuple int string))))))
 (defun (format-source rewrite? source #:file "")
   (def (Ok toks) (tokenize source file)
     :leave ((Err why) (Err why)))
@@ -3129,8 +3141,7 @@
   (cond
     ((not (= (kept-by-rewrite wanted) (kept-by-rewrite toks)))
      (Err "rewriting would change more than it may, which is a bug in bjo fmt"))
-    (same?
-     (Ok (Tuple result (list-sort (list-append notes (width-notes source result))))))
+    (same? (Ok (Tuple result (list-sort (list-append notes (width-notes source result))))))
     (else (Err "formatting would change its tokens, which is a bug in bjo fmt"))))
 
 ;; The tokens laid out, and what is to be said about their lines.
