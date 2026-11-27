@@ -2712,10 +2712,23 @@ def test_dep(work, c):
              run_bjo(app, "dep", "add", "bjolang http", "--path", "../http", "--dev"))
     c.that("with a name of two parts", "(package (name (bjolang http))\n" in
            (app / "manifest.bjodat").read_text(), (app / "manifest.bjodat").read_text())
+    listed = run_bjo(app, "dep", "list")
+    c.worked("dep list", listed)
+    rows = [l.split() for l in listed.stdout.splitlines()]
+    c.that("has a header", rows and rows[0] == ["package", "clause", "wants", "uses", "source"], listed.stdout)
+    c.that("a row for the git dependency, with what it wants and what the lock chose",
+           ["(lib)", "depends", ">=", "0.10.0", "0.10.0", "git", str(origin)] in rows, listed.stdout)
+    c.that("and one for the path dependency, which wants any version",
+           ["(bjolang", "http)", "dev-depends", "any", "path", "../http"] in rows, listed.stdout)
+    c.failed("dep list takes no arguments", run_bjo(app, "dep", "list", "x"))
     c.worked("dep remove removes from the clause that has it", run_bjo(app, "dep", "remove", "bjolang http"))
     c.worked("dep remove lib", run_bjo(app, "dep", "remove", "lib"))
     c.that("and the manifest is as bjo init made it", (app / "manifest.bjodat").read_text() == made,
            (app / "manifest.bjodat").read_text())
+    c.says("dep list shows a package bjo.lock still has as unused", run_bjo(app, "dep", "list"), "(unused)")
+    run_bjo(app, "fetch")
+    c.says("and after a fetch, that the manifest names none", run_bjo(app, "dep", "list"),
+           "names no dependencies")
     c.failed("dep remove refuses a name that is not there", run_bjo(app, "dep", "remove", "lib"))
 
     untagged = work / "untagged"
@@ -2774,6 +2787,8 @@ def test_dep(work, c):
     c.says("adds the newest, as the feed spells its id", newest, "NuGet package Bjo.TestGreeter 1.1.0")
     c.that("in a (packages ...) clause", '(packages\n    (nuget (id "Bjo.TestGreeter") (version "1.1.0")))'
            in (app / "manifest.bjodat").read_text(), (app / "manifest.bjodat").read_text())
+    c.that("dep list names it", ["Bjo.TestGreeter", "packages", "1.1.0", "nuget"]
+           in [l.split() for l in run_bjo(app, "dep", "list").stdout.splitlines()])
     c.says("a package no source has is refused",
            run_bjo(app, "dep", "add", "--nuget", "No.Such.Package", env=env), "no NuGet package No.Such.Package")
 

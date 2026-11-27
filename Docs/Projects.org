@@ -140,6 +140,25 @@ bjo dep remove --nuget Npgsql
   does not say what was asked, nothing is written.
 - ~bjo dep~ only edits. The next ~bjo fetch~ or ~bjo build~ fetches.
 
+~bjo dep list~ is a table of the dependencies, as ~(std fmt)~ lays one out:
+
+#+BEGIN_SRC
+package   clause       wants     uses   source
+────────  ───────────  ────────  ─────  ───────────────────────────────
+(mid)     depends      >= 0.4.0  0.4.0  git https://example.org/mid
+(tool)    dev-depends  any       0.1.0  path ../tool
+(base)    (indirect)             1.2.0  git https://example.org/base
+Some.Lib  packages     2.1.0            nuget
+#+END_SRC
+
+- ~wants~ is the constraint of the manifest. ~uses~ is the version that
+  ~bjo.lock~ chose, or for a path dependency the version its manifest has. A
+  git dependency that has not been fetched has none yet.
+- ~(indirect)~ is a package that ~bjo.lock~ has and the manifest does not
+  name: a dependency needs it. ~(unused)~ is one that nothing needs any more,
+  as after ~bjo dep remove~. The next ~bjo fetch~ or ~bjo build~ drops it from
+  the lock.
+
 ** Shared frameworks
 
 #+BEGIN_SRC scheme
@@ -980,7 +999,7 @@ logcat -s bjo~ shows them for any app, also one installed from
 |-------------------------+---------------------------------------------------------------|
 | ~bjo init [name] [--lib]~ | Makes a project here. The name defaults to the directory's  |
 | ~bjo fetch [--locked]~  | Resolves, fetches, restores NuGet packages, writes ~.bjo/roots~. Compiles nothing |
-| ~bjo dep add ...~, ~bjo dep remove ...~ | Add or remove a dependency or a NuGet package in the manifest. See [[*Editing the manifest with ~bjo dep~][Editing the manifest]] |
+| ~bjo dep add ...~, ~bjo dep remove ...~, ~bjo dep list~ | Add, remove or list the dependencies and NuGet packages of the manifest. See [[*Editing the manifest with ~bjo dep~][Editing the manifest]] |
 | ~bjo build [--locked]~  | ~fetch~, then compile the entry — or every module of a library; what the entry imports, and a library's modules, are built in parallel |
 | ~bjo run [. args...]~   | ~build~, then run the entry                                   |
 | ~bjo run --android~     | Build the app for the connected device, install it, start it, and show its log. See [[*Running on a device][Running on a device]] |

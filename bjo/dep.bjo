@@ -1,4 +1,5 @@
-;; bjo/dep.bjo — `bjo dep add` and `bjo dep remove`: edits to the manifest.
+;; bjo/dep.bjo — `bjo dep add` and `bjo dep remove`, edits to the manifest, and
+;; `bjo dep list`, a table of what it names.
 ;;
 ;; - An edit changes the text of one clause entry and nothing else. The
 ;;   manifest is read with `(std read)`, whose ranges have byte offsets, and
@@ -23,6 +24,8 @@
 (import "manifest.bjo")
 (import "project.bjo")
 (import "git.bjo")
+(import "lock.bjo")
+(import (only (std fmt) Block show tabular/rows TableStyle))
 
 ;; ---------------------------------------------------------------------------
 ;; The text
@@ -610,7 +613,142 @@
          (println #"bjo dep remove: ${shown} from ${clause}."))
        code))))
 
-;; `bjo dep add ...` and `bjo dep remove ...`, in the project at `project`.
+;; A constraint as a column of `bjo dep list` writes it.
+(: (-> (Option VersionReq) string))
+(defun (wanted-shown req)
+  (match req
+    (None "any")
+    ((Some (AtLeast v)) (str ">= " (version->string v)))
+    ((Some (AtMost v)) (str "<= " (version->string v)))
+    ((Some (Between a b)) (str (version->string a) " to " (version->string b)))))
+
+(: (-> (Option Source) string))
+(defun (source-shown source)
+  (match source
+    (None "")
+    ((Some (FromGit g)) (str "git " (record-ref g url)))
+    ((Some (FromPath p)) (str "path " (record-ref p dir)))
+    ((Some (FromRegistry r)) (str "registry " (record-ref r host)))))
+
+;; The version a build uses of the dependency `d`: the one `bjo.lock` chose, or
+;; for a path dependency the one its manifest has. "" when there is none yet.
+(: (-> Project (List Locked) Dep string))
+(defun (used-shown project locked d)
+  (match (list-filter #(= (locked-name &) (record-ref d name)) locked)
+    ((Cons l _) (version->string (locked-version l)))
+    (Nil
+     (match (record-ref d source)
+       ((Some (FromPath p))
+        (match (read-package (path-combine (project-dir project) (record-ref p dir) manifest-name))
+          ((Ok there) (version->string (record-ref there version)))
+          ((Err _) "")))
+       (_ "")))))
+
+;; The directory of the dependency `d` of the package at `base`: where
+;; `bjo.lock`'s version of it is unpacked, or its path. `None` for one that has
+;; not been fetched.
+(: (-> Project (List Locked) string Dep (Option string)))
+(defun (dep-directory project locked base d)
+  (match (list-filter #(= (locked-name &) (record-ref d name)) locked)
+    ((Cons l _)
+     (Some (package-directory (project-dot-bjo project) (locked-name l) (locked-version l))))
+    (Nil
+     (match (record-ref d source)
+       ((Some (FromPath p)) (Some (path-combine base (record-ref p dir))))
+       (_ None)))))
+
+;; The names of the packages that `deps` need, they too and what they depend
+;; on, as the manifests of the fetched packages say. A package that has not
+;; been fetched counts, but what it depends on is not known.
+(: (-> Project (List Locked) (List Dep) (List (List Symbol))))
+(defun (reachable project locked deps)
+  (: go (-> (List (Tuple string Dep)) (List (List Symbol)) (List (List Symbol))))
+  (defun (go todo seen)
+    (match todo
+      (Nil seen)
+      ((Cons (Tuple base d) rest)
+       (def name (record-ref d name))
+       (cond
+         ((list-contains? seen name) (go rest seen))
+         (else
+          (def more
+            (match (dep-directory project locked base d)
+              (None Nil)
+              ((Some dir)
+               (match (read-package (path-combine dir manifest-name))
+                 ((Ok there) (list-map #(Tuple dir &) (record-ref there depends)))
+                 ((Err _) Nil)))))
+          (go (list-append rest more) (Cons name seen)))))))
+  (go (list-map #(Tuple (project-dir project) &) deps) Nil))
+
+;; `bjo dep list`: a table of the dependencies and NuGet packages that the
+;; manifest names, and the packages that `bjo.lock` has besides, which the
+;; dependencies brought in.
+;; - `wants` is the constraint of the manifest. `uses` is the version that
+;;   `bjo.lock` chose, or for a path dependency the version its manifest has.
+;;   A git dependency that has not been fetched has none.
+;; - A package of `bjo.lock` that the manifest does not name is `(indirect)`
+;;   when a dependency needs it, and `(unused)` when none does, as after
+;;   `bjo dep remove`. The next resolve drops it from the lock.
+(: dep-list (-> Project (List string) int) #:sync)
+(defun (dep-list project args)
+  (def package (project-package project))
+  (with-return ret
+    (unless (empty? args)
+      (ret (fail "bjo dep list: takes no arguments.")))
+    (def (Ok locked) (read-lock (project-lock-file project))
+      :leave ((Err why) (fail why)))
+    (: row-of (-> string Dep (Vec Block)))
+    (defun (row-of clause d)
+      (def name (record-ref d name))
+      (vec-map BStr
+               [(module-name->string name)
+                clause
+                (wanted-shown (record-ref d version))
+                (used-shown project locked d)
+                (source-shown (record-ref d source))]))
+    (def direct
+      (list-foldl (fun (clause acc)
+                    (list-append acc (list-map #(row-of clause &) (deps-in package clause))))
+                  Nil
+                  dep-clauses))
+    (def named
+      (list-foldl (fun (clause acc)
+                    (list-append acc (list-map #(record-ref & name) (deps-in package clause))))
+                  Nil
+                  dep-clauses))
+    (def needed
+      (reachable project
+                 locked
+                 (list-append (record-ref package depends)
+                              (list-append (record-ref package dev-depends)
+                                           (record-ref package task-depends)))))
+    (def indirect
+      (loop (:for l locked)
+            (:when (not (list-contains? named (locked-name l))))
+            (:acc out (listing (vec-map BStr
+                                        [(module-name->string (locked-name l))
+                                         (if (list-contains? needed (locked-name l))
+                                             "(indirect)"
+                                             "(unused)")
+                                         ""
+                                         (version->string (locked-version l))
+                                         (source-shown (Some (locked-source l)))])))
+        => out))
+    (def nugets
+      (loop (:for p (record-ref package packages))
+            (:acc out (listing (vec-map BStr [(nuget-id p) "packages" (nuget-version p) "" "nuget"])))
+        => out))
+    (def rows (list->vec (list-append direct (list-append indirect nugets))))
+    (if (= (vec-length rows) 0)
+        (println "bjo dep list: the manifest names no dependencies.")
+        (show (tabular/rows rows
+                            #:titles (vec-map BStr ["package" "clause" "wants" "uses" "source"])
+                            #:style StyleSimple)))
+    0))
+
+;; `bjo dep add ...`, `bjo dep remove ...` and `bjo dep list`, in the project at
+;; `project`.
 (: cmd-dep (-> Project (List string) int) #:sync)
 (defun (cmd-dep project args)
   (def file (path-combine (project-dir project) manifest-name))
@@ -623,5 +761,6 @@
         (if (= verb "add")
             (dep-add project text o)
             (dep-remove project text o)))))
-    ((Cons verb _) (fail #"bjo dep: '${verb}' is not a dep command. There are add and remove."))
-    (Nil (fail "bjo dep: add or remove? See 'bjo help'."))))
+    ((Cons "list" rest) (dep-list project rest))
+    ((Cons verb _) (fail #"bjo dep: '${verb}' is not a dep command. There are add, remove and list."))
+    (Nil (fail "bjo dep: add, remove or list? See 'bjo help'."))))
