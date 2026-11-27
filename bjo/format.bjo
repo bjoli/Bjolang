@@ -2612,11 +2612,7 @@
        ((<= n 2) (call-plans g 1))
        ((> (type-index g) 2) (list (signature-plan g 0 Under)))
        (else (list (signature-plan g 0 Same) (signature-plan g 1 Under)))))
-    (KArrow
-     (list (plan g 0 (fun (k)
-                       (if (= k 1)
-                           Mark
-                           Fill)))))
+    (KArrow (list (arrow-plan g)))
     (KFields (call-plans g 1))
     (KEntries (data-plans g))
     (KImport (call-plans g 2))
@@ -2626,6 +2622,22 @@
                          ((= k 1) (In 2))
                          ((broke? k) Under)
                          (else Fill))))))))
+
+;; A function type over lines: the positional parameters on the line of the
+;; arrow, the keyword parameters from the next line, and the result on a line of
+;; its own. Each part is filled, under the first parameter. A part that comes
+;; first starts on the arrow's line. `#:rest` and its type are positional.
+(: arrow-plan (-> Group Plan))
+(defun (arrow-plan g)
+  (def n (vec-length (record-ref g items)))
+  (defun (keyword? k)
+    (and (< k (- n 1)) (string-starts-with? (head-atom (item-at g k)) "#:")))
+  (plan g 0 (fun (k)
+              (cond
+                ((= k 1) Mark)
+                ((= k (- n 1)) Under)
+                ((and (keyword? k) (not (keyword? (- k 1)))) Under)
+                (else Fill)))))
 
 ;; The lines the source has.
 (: table-plan (-> Group Plan))

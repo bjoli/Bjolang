@@ -2330,9 +2330,9 @@ def test_fmt(work, c):
         ("a signature's markers stay on one row, with no where",
          "(: lookup (-> (Map string (Vec (Tuple int string))) string (Option (Vec (Tuple int string)))) #:sync #:inline #:no-inline)\n",
          "(: lookup (-> (Map string (Vec (Tuple int string))) string (Option (Vec (Tuple int string))))\n   #:sync #:inline #:no-inline)\n"),
-        ("then an arrow too wide is filled",
+        ("then an arrow too wide is filled, with its result on a line of its own",
          "(: build (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) (Array int) (Array (Tuple %k %v)) int int int (Tuple (TrieNode (Tuple %k %v)) int)) #:no-inline)\n",
-         "(: build (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) (Array int) (Array (Tuple %k %v))\n             int int int (Tuple (TrieNode (Tuple %k %v)) int))\n   #:no-inline)\n"),
+         "(: build (-> (EqualityComparer %k) (Array int) (Array (Tuple %k %v)) (Array int) (Array (Tuple %k %v))\n             int int int\n             (Tuple (TrieNode (Tuple %k %v)) int))\n   #:no-inline)\n"),
         ("a signature with no name is broken the same way",
          "(: (-> %s (Map %k %v) (Map %k %v) (Map %k %v) (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v)) (Ord %k)) #:inline)\n",
          "(: (-> %s (Map %k %v) (Map %k %v) (Map %k %v) (Map %k %v))\n   (where (Eq %k) (Iterable %s #:elem (Tuple %k %v)) (Ord %k))\n   #:inline)\n"),
@@ -2414,6 +2414,19 @@ def test_fmt(work, c):
         ("a str whose overflow filling cannot help keeps its lines",
          '(def t (str "a\\n"\n"' + "b" * 110 + '\\n"\n"c\\n"))\n',
          '(def t\n  (str "a\\n"\n       "' + "b" * 110 + '\\n"\n       "c\\n"))\n'),
+        ("a broken function type has its keyword parameters on a line, and its result on one",
+         "(: (-> OutputPort %rows (#:separator char) (#:quote-char (Option char)) (#:quote-all? bool) "
+         "(#:crlf? bool) void))\n",
+         "(: (-> OutputPort %rows\n       (#:separator char) (#:quote-char (Option char)) (#:quote-all? bool) "
+         "(#:crlf? bool)\n       void))\n"),
+        ("keyword parameters that come first start on the arrow's line",
+         "(: f (-> (#:commands (Map string Command)) (#:typography bool) (#:title string) "
+         "(#:heading-offset int) (#:id-prefix string) Setup))\n",
+         "(: f (-> (#:commands (Map string Command)) (#:typography bool) (#:title string) (#:heading-offset int)\n"
+         "         (#:id-prefix string)\n         Setup))\n"),
+        ("the result of a broken function type is on a line of its own",
+         "(: g (-> " + "a" * 30 + " " + "b" * 30 + " " + "c" * 30 + " d e))\n",
+         "(: g (-> " + "a" * 30 + " " + "b" * 30 + " " + "c" * 30 + "\n         d\n         e))\n"),
         ("two bindings of a named let stay on one line",
          "(let go ((i 0) (acc Nil)) (go i acc))\n", "(let go ((i 0) (acc Nil))\n  (go i acc))\n"),
         ("but not three",
