@@ -31,6 +31,7 @@
   ReadError read-error-message
   read-source read-source-file
   SourceRange syntax-range
+  TokenKind SourceToken read-tokens fold-tokens
   syntax-dump)
 
 (import (std prelude))
@@ -44,6 +45,11 @@
   (SyntaxOrigin (: Bjolang.Runtime.SyntaxOrigin))
   ;; What a read error raises inside this module. `read-source` catches it.
   (ReadFailure (: System.FormatException (-> string ReadFailure))))
+
+(import/extern
+  ;; The bytes from an offset, of a length, as a string that shares the
+  ;; string's bytes. Both ends are on character boundaries.
+  (slice-bytes (: BjoString.Utf8String.SliceBytes (-> string int int string))))
 
 ;; ---------------------------------------------------------------------------
 ;; The error
@@ -1320,21 +1326,38 @@
 ;; at an error.
 (: (-> Lexer int (List Syntax)))
 (defun (read-all lx start)
-  (def out (new-buf))
-  (lex-range! lx out (Cur (p start) (line 1) (col 0) (limit (array-length (record-ref lx bytes)))))
+  (def out (lex-all lx start))
   (def rd (Rd (lx lx) (toks (record-ref out items)) (n (record-ref out n)) (i 0) (counter 0)))
   (read-level rd None))
+
+;; The tokens of the text of `lx` from the byte `start`. Raises `ReadFailure`
+;; at an error.
+(: (-> Lexer int Buf))
+(defun (lex-all lx start)
+  (def out (new-buf))
+  (lex-range! lx out (Cur (p start) (line 1) (col 0) (limit (array-length (record-ref lx bytes)))))
+  out)
+
+;; A lexer of the UTF-8 text `bytes`, read as from `file`.
+(: (-> (Array byte) string Lexer))
+(defun (new-lexer bytes file)
+  (Lexer (bytes bytes) (file file) (label (file-label file)) (written Nil)
+         (err-message "") (err-line 0) (err-col 0)))
+
+;; The error `fail` recorded in `lx`.
+(: (-> Lexer ReadError))
+(defun (error-of lx)
+  (SyntaxError (record-ref lx err-message) (record-ref lx err-line) (+ (record-ref lx err-col) 1)))
 
 ;; The forms of the UTF-8 text `bytes` from the byte `start`, read as from
 ;; `file`. The text starts at line 1, column 0, and offsets count from the
 ;; start of `bytes`.
 (: (-> (Array byte) int string (Result ReadError (List Syntax))))
 (defun (read-bytes bytes start file)
-  (def lx (Lexer (bytes bytes) (file file) (label (file-label file)) (written Nil)
-                 (err-message "") (err-line 0) (err-col 0)))
+  (def lx (new-lexer bytes file))
   (match (try (read-all lx start) #:catch (System.FormatException))
     ((Ok forms) (Ok forms))
-    ((Err _) (Err (SyntaxError (record-ref lx err-message) (record-ref lx err-line) (+ (record-ref lx err-col) 1))))))
+    ((Err _) (Err (error-of lx)))))
 
 (: (-> string (#:file string) (Result ReadError (List Syntax))))
 (defun (read-source text #:file "")
@@ -1361,7 +1384,7 @@
 ;; Where a piece of syntax is in its text. Columns count code points from 0.
 ;; An offset is a byte offset in the UTF-8 text, or -1 when the reader did not
 ;; record it.
-(type (: SourceRange (Record (: start-line int)
+(type (: SourceRange (Struct (: start-line int)
                              (: start-column int)
                              (: start-offset int)
                              (: end-line int)
@@ -1372,6 +1395,115 @@
 (defun (syntax-range s)
   (SourceRange (start-line (start-line s)) (start-column (start-col s)) (start-offset (start-offset s))
                (end-line (end-line s)) (end-column (end-col s)) (end-offset (end-offset s))))
+
+;; ---------------------------------------------------------------------------
+;; Tokens as written
+;; ---------------------------------------------------------------------------
+
+;; What a token as written is:
+;; - `TokOpen` and `TokClose`: a bracket.
+;; - `TokString`: a string, plain, raw or `#"..."`, holes and all.
+;; - `TokAtom`: any other token the compiler reads, such as a symbol, a
+;;   number, a character, a prefix such as `'` or `#'`, or a quantity.
+;; - `TokComment`: a `;` and the rest of its line, without the line break.
+;; - `TokSpace`: white space on one line.
+;; - `TokNewline`: a line break, `\n` or `\r\n`.
+(type (: TokenKind (Union TokOpen TokClose TokString TokAtom TokComment TokSpace TokNewline)))
+
+;; A token, its text as written, and where it is. A struct, so that
+;; `fold-tokens` allocates nothing for a token but its text.
+(type (: SourceToken (Struct (: kind TokenKind)
+                             (: text string)
+                             (: range SourceRange))))
+
+(: (-> string TokenKind int int int int int int SourceToken))
+(defun (source-token src k from to sl sc el ec)
+  (SourceToken (kind k)
+               (text (slice-bytes src from (- to from)))
+               (range (SourceRange (start-line sl) (start-column sc) (start-offset from)
+                                   (end-line el) (end-column ec) (end-offset to)))))
+
+;; Whether a line break, `\n` or `\r\n`, starts at `i`, before `to`.
+(: (-> (Array byte) int int bool))
+(defun (line-break-at? b i to)
+  (or (= (byte-at b i) 10)
+      (and (= (byte-at b i) 13) (< (+ i 1) to) (= (byte-at b (+ i 1)) 10))))
+
+;; The end of the comment at `i`: the line break after it, or `to`.
+(: (-> (Array byte) int int int))
+(defun (comment-end b i to)
+  (if (or (>= i to) (line-break-at? b i to)) i (comment-end b (+ i 1) to)))
+
+;; The end of the white space at `i`: a line break, a comment, or `to`.
+(: (-> (Array byte) int int int))
+(defun (space-end b i to)
+  (if (or (>= i to) (line-break-at? b i to) (= (byte-at b i) 59)) i (space-end b (+ i 1) to)))
+
+;; `f` of each comment, space and line break of `src`, whose bytes are `b`,
+;; from `from` to `to`, which start at `line` and `col`, and `acc`. The
+;; compiler's lexer reads nothing else between two tokens.
+(: (-> string (Array byte) int int int int (-> SourceToken %a %a) %a %a))
+(defun (trivia src b from to line col f acc)
+  (let go ((i from) (line line) (col col) (acc acc))
+    (cond
+      ((>= i to) acc)
+      (:def x (byte-at b i))
+      ((line-break-at? b i to)
+       (def e (if (= x 13) (+ i 2) (+ i 1)))
+       (go e (+ line 1) 0 (f (source-token src TokNewline i e line col (+ line 1) 0) acc)))
+      (else
+       (def k (if (= x 59) TokComment TokSpace))
+       (def e (if (= x 59) (comment-end b i to) (space-end b i to)))
+       (match (advance b i e line col)
+         ((Tuple l c) (go e l c (f (source-token src k i e line col l c) acc))))))))
+
+;; What the token from `from` to `to` is, from its text.
+(: (-> (Array byte) int int TokenKind))
+(defun (written-kind b from to)
+  (def x (byte-at b from))
+  (def one (= to (+ from 1)))
+  (cond
+    ((and one (or (= x 40) (= x 91) (= x 123))) TokOpen)
+    ((and one (or (= x 41) (= x 93) (= x 125))) TokClose)
+    ((or (= x 34) (and (= x 35) (> to (+ from 1)) (= (byte-at b (+ from 1)) 34))) TokString)
+    (else TokAtom)))
+
+;; `f` of each token of `buf` as it is written in `src`, whose bytes are `b`,
+;; from `start`, and of what is between them, in order, and `acc`.
+;; - The compiler expands `#"..."` and `<9.81 m>` to several tokens. The first
+;;   has the range of the whole, and the others a range inside it. The first
+;;   is kept as one token, and the others are left out.
+(: (-> string (Array byte) Buf int (-> SourceToken %a %a) %a %a))
+(defun (as-written src b buf start f init)
+  (def items (record-ref buf items))
+  (def n (record-ref buf n))
+  (let go ((k 0) (pos start) (line 1) (col 0) (acc init))
+    (cond
+      ((>= k n) (trivia src b pos (array-length b) line col f acc))
+      (:def t (array-ref items k))
+      (:def so (record-ref t so))
+      ((< so pos) (go (+ k 1) pos line col acc))
+      (else
+       (def eo (record-ref t eo))
+       (def before (trivia src b pos so line col f acc))
+       (go (+ k 1) eo (record-ref t el) (record-ref t ec)
+           (f (source-token src (written-kind b so eo) so eo (record-ref t sl) (record-ref t sc)
+                            (record-ref t el) (record-ref t ec))
+              before))))))
+
+(: (-> string (-> SourceToken %a %a) %a (#:file string) (Result ReadError %a)))
+(defun (fold-tokens text f init #:file "")
+  (def bytes (string->bytes text))
+  (def lx (new-lexer bytes file))
+  (match (try (lex-all lx 0) #:catch (System.FormatException))
+    ((Ok buf) (Ok (as-written text bytes buf 0 f init)))
+    ((Err _) (Err (error-of lx)))))
+
+(: (-> string (#:file string) (Result ReadError (List SourceToken))))
+(defun (read-tokens text #:file "")
+  (match (fold-tokens text Cons Nil #:file file)
+    ((Ok tokens) (Ok (list-reverse tokens)))
+    ((Err e) (Err e))))
 
 ;; ---------------------------------------------------------------------------
 ;; The dump

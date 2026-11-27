@@ -20,6 +20,10 @@
 ;; column `lisp-indent-region` keeps for the following lines at the same depth.
 ;; The comments below say which of them each part is.
 ;;
+;; The tokens are the compiler's lexer's, from `fold-tokens` in (std read). A
+;; text the compiler cannot lex is not laid out, and the message is the
+;; compiler's.
+;;
 ;; A string's lines are text, not code. Its continued lines move with it, but
 ;; its value is never changed. The result is checked against the source: it must
 ;; have the same tokens in the same order, with strings compared by value. If
@@ -29,6 +33,7 @@
 (export format-source wide)
 
 (import (std prelude) (std mutable map))
+(import (only (std read) fold-tokens read-error-message TokenKind SourceToken))
 
 ;; ---------------------------------------------------------------------------
 ;; Tokens
@@ -89,13 +94,6 @@
            (= c #\")
            (= c #\;)
            (= c #\'))))
-
-(: atom-end (-> (Vec char) int int))
-(defun (atom-end cs i)
-  (def c (char-at cs i))
-  (if (or (>= i (vec-length cs)) (char-whitespace? c) (opening? c) (closing? c) (= c #\") (= c #\;))
-      i
-      (atom-end cs (+ i 1))))
 
 (: blank-end (-> (Vec char) int int))
 (defun (blank-end cs i)
@@ -171,109 +169,67 @@
          ((= (vec-ref cs p) #\") (Ok (+ p 1)))
          (else (plain (+ p 1))))))))
 
-;; Past the end of the `#"..."` at `i`. A `${...}` hole is code, delimited by
-;; brace depth, with strings and `#\{` inside it skipped whole, as the lexer
-;; does.
-(: interpolated-end (-> (Vec char) int (Result string int)))
-(defun (interpolated-end cs i)
-  (def n (vec-length cs))
-  (let outside ((p (+ i 2)))
-    (cond
-      ((>= p n) (unterminated cs i "an interpolated string"))
-      ((= (vec-ref cs p) #\") (Ok (+ p 1)))
-      ((= (vec-ref cs p) #\\) (outside (+ p 2)))
-      ((and (= (vec-ref cs p) #\$) (= (char-at cs (+ p 1)) #\{))
-       (let hole ((q (+ p 2))
-                  (depth 1))
-         (def c (char-at cs q))
-         (cond
-           ((>= q n) (unterminated cs i "an interpolated string"))
-           ((= c #\")
-            (match (string-end cs q)
-              ((Ok e) (hole e depth))
-              ((Err why) (Err why))))
-           ((and (= c #\#) (= (char-at cs (+ q 1)) #\\)) (hole (+ q 3) depth))
-           ((= c #\{) (hole (+ q 1) (+ depth 1)))
-           ((and (= c #\}) (= depth 1)) (outside (+ q 1)))
-           ((= c #\}) (hole (+ q 1) (- depth 1)))
-           (else (hole (+ q 1) depth)))))
-      (else (outside (+ p 1))))))
+;; The token of fmt that `t`, of the kind `k`, is. An atom is not: `fold-toks`
+;; joins a run of them.
+(: tok-of (-> TokenKind SourceToken Tok))
+(defun (tok-of k t)
+  (def text (record-ref t text))
+  (match k
+    (TokOpen (TOpen text))
+    (TokClose (TClose text))
+    (TokString (TStr (without-continued-indent text (record-ref (record-ref t range) start-column))))
+    (TokComment (TComment (string-trim-right text)))
+    (TokSpace (TSpace text))
+    (TokNewline TNewline)
+    (TokAtom (TAtom text))))
 
-;; Past the end of the character literal at `i`: a name, `#\space`, or any one
-;; character, `#\(` and `#\;` included.
-(: char-literal-end (-> (Vec char) int int))
-(defun (char-literal-end cs i)
-  (def start (+ i 2))
-  (def name-end
-    (let go ((p start))
-      (if (and (< p (vec-length cs)) (symbol-char? (vec-ref cs p)))
-          (go (+ p 1))
-          p)))
-  (cond
-    ((> (- name-end start) 1) name-end)
-    ((< start (vec-length cs)) (+ start 1))
-    (else start)))
+;; `f` of each token of `source`, in order, and `init`. The tokens are the
+;; compiler's lexer's (see `fold-tokens` in (std read)), read as from `file`:
+;; - A run of atoms with nothing between them is one atom: a prefix and what
+;;   follows it, as in `,x` and `#'x`, are one word to the layout.
+;; - A string is read without the indentation its continuations drop.
+;; - A text that the compiler cannot lex is an error, with its message.
+(: fold-toks (-> string string (-> Tok %a %a) %a (Result string %a)))
+(defun (fold-toks source file f init)
+  (defun (flush pending acc)
+    (match pending
+      ((Some s) (f (TAtom s) acc))
+      (None acc)))
+  (defun (step (: t SourceToken) state)
+    (def (Tuple pending acc) state)
+    (match (record-ref t kind)
+      (TokAtom
+       (def text (record-ref t text))
+       (Tuple (Some (match pending
+                      ((Some before) (str before text))
+                      (None text)))
+              acc))
+      (k (Tuple None (f (tok-of k t) (flush pending acc))))))
+  (match (fold-tokens source step (Tuple None init) #:file file)
+    ((Err e) (Err (read-error-message e)))
+    ((Ok (Tuple pending acc)) (Ok (flush pending acc)))))
 
-;; The token at `i`, and where the next one starts.
-(: token-at (-> (Vec char) int (Result string (Tuple Tok int))))
-(defun (token-at cs i)
-  (def c (vec-ref cs i))
-  (defun (to e)
-    (Tuple (TAtom (text-between cs i e)) e))
-  (cond
-    ((line-break? cs i) (Ok (Tuple TNewline (after-break cs i))))
-    ((blank-char? cs i)
-     (def e (blank-end cs i))
-     (Ok (Tuple (TSpace (text-between cs i e)) e)))
-    ((= c #\;)
-     (def e (line-end cs i))
-     (Ok (Tuple (TComment (string-trim-right (text-between cs i e))) e)))
-    ((opening? c) (Ok (Tuple (TOpen (char->string c)) (+ i 1))))
-    ((closing? c) (Ok (Tuple (TClose (char->string c)) (+ i 1))))
-    ((= c #\")
-     (def (Ok e) (string-end cs i)
-       :leave ((Err why) (Err why)))
-     (Ok (Tuple (TStr (without-continued-indent (text-between cs i e) (column-at cs i))) e)))
-    ((and (= c #\#) (= (char-at cs (+ i 1)) #\"))
-     (def (Ok e) (interpolated-end cs i)
-       :leave ((Err why) (Err why)))
-     (Ok (Tuple (TStr (without-continued-indent (text-between cs i e) (column-at cs i))) e)))
-    ((and (= c #\#) (= (char-at cs (+ i 1)) #\\)) (Ok (to (char-literal-end cs i))))
-    (else
-     (Ok (to (match (quantity-end cs i)
-               ((Some e) e)
-               (None (atom-end cs i))))))))
+;; The tokens of `source`, read as from `file` (see `fold-toks`).
+(: tokenize (-> string string (Result string (List Tok))))
+(defun (tokenize source file)
+  (match (fold-toks source file Cons Nil)
+    ((Err why) (Err why))
+    ((Ok toks) (Ok (list-reverse toks)))))
 
-;; Past the end of the quantity literal at `i`, such as `<9.81 m/s^2>`, if there
-;; is one. It ends at the first `>` on its line, and is one token although it
-;; has spaces and perhaps brackets in it. A prefix, as in `,<1 m>`, is included.
-(: quantity-end (-> (Vec char) int (Option int)))
-(defun (quantity-end cs i)
-  (def start
-    (let go ((p i))
-      (if (prefix-char? (char-at cs p))
-          (go (+ p 1))
-          p)))
-  (def c (char-at cs (+ start 1)))
-  (def number?
-    (or (char-numeric? c) (and (or (= c #\.) (= c #\-)) (char-numeric? (char-at cs (+ start 2))))))
-  (if (and (= (char-at cs start) #\<) number?)
-      (let go ((p (+ start 1)))
-        (cond
-          ((or (>= p (vec-length cs)) (line-break? cs p)) None)
-          ((= (vec-ref cs p) #\>) (Some (+ p 1)))
-          (else (go (+ p 1)))))
-      None))
-
-(: tokenize (-> (Vec char) (Result string (List Tok))))
-(defun (tokenize cs)
-  (let go ((i 0)
-           (out Nil))
-    (if (>= i (vec-length cs))
-        (Ok (list-reverse out))
-        (match (token-at cs i)
-          ((Err why) (Err why))
-          ((Ok (Tuple tok next)) (go next (Cons tok out)))))))
+;; Whether the tokens of `source` are `wanted`, as `significant` writes them.
+;; It compares them as it reads them, and makes no list of them.
+(: tokens-are? (-> string string (List string) (Result string bool)))
+(defun (tokens-are? source file wanted)
+  (defun (step t left)
+    (if (meaningful? t)
+        (match left
+          ((Some (Cons w rest)) #:when (= w (significant-text t)) (Some rest))
+          (_ None))
+        left))
+  (match (fold-toks source file step (Some wanted))
+    ((Err why) (Err why))
+    ((Ok (Some Nil)) (Ok #t))
+    ((Ok _) (Ok #f))))
 
 ;; The tokens that make the program: everything but the spacing, and a string
 ;; with its tabs written `\t`, as the layout writes them, and its continued
@@ -282,12 +238,16 @@
 (: significant (-> (List Tok) (List string)))
 (defun (significant toks)
   (loop (:for t toks)
-        (:acc out (listing (match t
-                             ((TStr s) (escape-tabs (joined-continuations s)))
-                             ((TComment s) (string-replace (string-replace s "\t" "") " " ""))
-                             (_ (tok-text t))))
-              #:when (meaningful? t))
+        (:acc out (listing (significant-text t)) #:when (meaningful? t))
     => out))
+
+;; What `significant` writes for the token `t`.
+(: significant-text (-> Tok string))
+(defun (significant-text t)
+  (match t
+    ((TStr s) (escape-tabs (joined-continuations s)))
+    ((TComment s) (string-replace (string-replace s "\t" "") " " ""))
+    (_ (tok-text t))))
 
 (: meaningful? (-> Tok bool))
 (defun (meaningful? t)
@@ -309,8 +269,9 @@
 
 ;; A string's tabs written `\t`, as its value is unchanged by: outside the
 ;; holes of an interpolated string, and never in a raw one, which has no
-;; escapes. A tab after a backslash is kept: the continuations are joined
-;; already, so the lexer rejects it, and fmt does not make it mean something.
+;; escapes. A tab after a backslash is kept. The lexer rejects one in the
+;; source, but `significant` joins the continuations first, and fmt does not
+;; make the escape mean something.
 (: escape-tabs (-> string string))
 (defun (escape-tabs s)
   (cond
@@ -353,15 +314,6 @@
 ;;
 ;; A raw string has no escapes. In the holes of an interpolated string nothing
 ;; is changed: a string in a hole that continues lines is left as it is.
-
-;; The column of `i` as the compiler's lexer counts it: characters since the
-;; line began, a tab one.
-(: column-at (-> (Vec char) int int))
-(defun (column-at cs i)
-  (let go ((k i))
-    (if (or (= k 0) (= (vec-ref cs (- k 1)) #\newline))
-        (- i k)
-        (go (- k 1)))))
 
 ;; The column the text of the string `s` written at `col` starts at.
 (: text-column (-> string int int))
@@ -460,8 +412,9 @@
     ((TStr s) (with-continued-indent s col))
     (_ (tok-text t))))
 
-;; Past the `}` closing the hole whose code starts at `q`, as
-;; `interpolated-end` reads one.
+;; Past the `}` closing the hole whose code starts at `q`: brace depth, with a
+;; string and a `#\{` in the hole skipped whole, as the compiler's lexer reads
+;; a hole.
 (: hole-end (-> (Vec char) int int))
 (defun (hole-end cs q)
   (let hole ((q q)
@@ -1902,12 +1855,17 @@
                                 (_ #t)))
                             toks)))
 
+;; The comment of the note `n`.
+(: note-comment (-> Note Tok))
+(defun (note-comment n)
+  (TComment (record-ref n text)))
+
 ;; Every token of `items` and the comments after them, without the spacing and
 ;; before `out`, the last first.
 (: all-toks (-> (Vec Item) (List Note) (List Tok) (List Tok)))
 (defun (all-toks items tail out)
   (defun (notes ns (: out (List Tok)))
-    (list-foldl (fun (c out) (Cons (TComment (record-ref c text)) out)) out ns))
+    (list-foldl (fun (c out) (Cons (note-comment c) out)) out ns))
   (let go ((k 0)
            (out out))
     (cond
@@ -3006,21 +2964,21 @@
 ;; line number in what is laid out (see `notes-on`); or why it cannot be: it
 ;; does not read, or, which would be a bug here, laying it out would change
 ;; its tokens. With `rewrite?` the forms are rewritten first (see "Rewriting").
-(: format-source (-> bool string (Result string (Tuple string (List (Tuple int string))))))
-(defun (format-source rewrite? source)
-  (def cs (string->vec source))
-  (def (Ok toks) (tokenize cs)
+;; A message names `file`.
+(: format-source (-> bool string (#:file string) (Result string (Tuple string (List (Tuple int string))))))
+(defun (format-source rewrite? source #:file "")
+  (def (Ok toks) (tokenize source file)
     :leave ((Err why) (Err why)))
   (def (Ok _) (balanced toks)
     :leave ((Err why) (Err why)))
   (def (Tuple wanted broken) (rebroken rewrite? toks))
   (def (Tuple result notes) (layout broken))
-  (def (Ok again) (tokenize (string->vec result))
+  (def (Ok same?) (tokens-are? result file (significant wanted))
     :leave ((Err why) (Err #"formatting made it unreadable: ${why}")))
   (cond
     ((not (= (kept-by-rewrite wanted) (kept-by-rewrite toks)))
      (Err "rewriting would change more than it may, which is a bug in bjo fmt"))
-    ((= (significant again) (significant wanted))
+    (same?
      (Ok (Tuple result (list-sort (list-append notes (width-notes source result))))))
     (else (Err "formatting would change its tokens, which is a bug in bjo fmt"))))
 

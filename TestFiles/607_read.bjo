@@ -30,6 +30,28 @@
     ((Ok forms) (list-map syntax-line forms))
     ((Err _) Nil)))
 
+;; Each token of `text` as its kind and its text, or the message of its error.
+(: (-> string (List string)))
+(defun (tokens-of text)
+  (defun (kind-name k)
+    (match k
+      (TokOpen "open")
+      (TokClose "close")
+      (TokString "string")
+      (TokAtom "atom")
+      (TokComment "comment")
+      (TokSpace "space")
+      (TokNewline "newline")))
+  (match (read-tokens text)
+    ((Ok tokens) (list-map (fun (t) (str (kind-name (record-ref t kind)) " " (record-ref t text))) tokens))
+    ((Err e) (list (read-error-message e)))))
+
+(: string)
+(def text-with-everything
+  (str "; head\n(defun (f x) #\"x=${(g \"}\")}\" \"\"\"\n  raw\n  \"\"\"\n"
+       "  (a ,b ,@c) #'d #(+ & 1) #[1 2] {x y} #\\( #\\space <1|3 m> 0x1F)\r\n"
+       "(:doc f \"é\u{1F600}\") ; end"))
+
 (defun (main)
   ;; --- Forms and ranges ----------------------------------------------------
   (expect "a list and a vec literal, with their ranges"
@@ -94,6 +116,40 @@
   (expect "a comment is not read"
           (lines-of (read-source "; one\nx ; two\n"))
           (list 2))
+
+  ;; --- Tokens as written -------------------------------------------------------
+  (expect "read-tokens keeps comments and spaces, and a prefix is a token"
+          (tokens-of "(f ,x 'y) ; done\n")
+          (list "open (" "atom f" "space  " "atom ," "atom x" "space  " "atom 'y" "close )"
+                "space  " "comment ; done" "newline \n"))
+  (expect "an interpolated string and a quantity are one token each"
+          (tokens-of "#\"a${(g 1)}b\" <9.81 m/s>")
+          (list "string #\"a${(g 1)}b\"" "space  " "atom <9.81 m/s>"))
+  (expect "a \\r\\n is one line break, and a lone \\r is a space"
+          (tokens-of "a\r\nb \r c")
+          (list "atom a" "newline \r\n" "atom b" "space  \r " "atom c"))
+  (expect "the texts of the tokens are the text"
+          (match (read-tokens text-with-everything)
+            ((Ok tokens) (string-join (list->vec (list-map (fun (t) (record-ref t text)) tokens)) ""))
+            ((Err e) (read-error-message e)))
+          text-with-everything)
+  (expect "a token's range has its line, column and byte offsets"
+          (match (read-tokens "é\n  (x)")
+            ((Ok (Cons _ (Cons _ (Cons _ (Cons t _)))))
+             (def r (record-ref t range))
+             (list (record-ref r start-line) (record-ref r start-column) (record-ref r start-offset)
+                   (record-ref r end-offset)))
+            (_ Nil))
+          (list 2 2 5 6))
+  (expect "a text the compiler cannot lex is an error"
+          (match (read-tokens "(f 1abc)")
+            ((Ok _) "read")
+            ((Err (SyntaxError _ line col)) (str (int->string line) ":" (int->string col)))
+            ((Err _) "file error"))
+          "1:4")
+  (expect "a bracket with no partner is not a token error"
+          (tokens-of ")")
+          (list "close )"))
 
   ;; --- Errors ----------------------------------------------------------------
   (expect "a bracket never closed is at the bracket"

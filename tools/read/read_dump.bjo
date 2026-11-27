@@ -1,14 +1,34 @@
 ;; tools/read/read_dump.bjo — writes the forms of each file named on the
 ;; command line as (std read) reads them, after a line `== path`. The text is
 ;; the text of `bjolang --dump-read`. Run by tools/read_conformance.py.
+;;
+;; It also checks `read-tokens` on each file that the compiler lexes: the
+;; texts of the tokens make the file. When they do not, it writes a line that
+;; the compiler's dump does not have, so the comparison fails.
 
 (import (std prelude))
 (import (std read))
+
+;; A line about the tokens of the file at `path`, or "" when they are right.
+(: (-> string string))
+(defun (tokens-note path)
+  (match (file-read-text path)
+    ((Err _) "")
+    ((Ok text)
+     (match (read-tokens text)
+       ((Err _) "")
+       ((Ok tokens)
+        (def sb (stringbuilder-empty))
+        (list-for-each (fun (t) (stringbuilder-add-string! sb (record-ref t text))) tokens)
+        (if (= (stringbuilder->string sb) text)
+            ""
+            "tokens: the texts of read-tokens do not make the file\n"))))))
 
 (defun (main args)
   (loop (:for path args)
         (:do (print (str "== " path "\n"))
              (match (read-source-file path)
                ((Ok forms) (print (syntax-dump forms)))
-               ((Err e) (print (str "error: " (read-error-message e) "\n"))))))
+               ((Err e) (print (str "error: " (read-error-message e) "\n"))))
+             (print (tokens-note path))))
   0)

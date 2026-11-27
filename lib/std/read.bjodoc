@@ -3,7 +3,7 @@
 
 (:doc #:module
   (summary "The reader of Bjolang source: the forms of a text as Syntax, with their ranges, as the compiler reads them.")
-  (see read-source read-source-file ReadError syntax-range syntax-dump)
+  (see read-source read-source-file read-tokens ReadError syntax-range syntax-dump)
   (example """
     (import (std read))
 
@@ -104,6 +104,65 @@
        (record-ref (syntax-range form) start-offset))
       (_ -1))
     ;; => 2
+    """))
+
+(:doc TokenKind
+  (summary "What a token of @code{read-tokens} is.")
+  (case TokOpen "An opening bracket: @code{(}, @code{[} or @code{{}.")
+  (case TokClose "A closing bracket.")
+  (case TokString "A string: plain, raw, or @code{#\"...\"} with its holes.")
+  (case TokAtom "Any other token the compiler reads: a symbol, a number, a keyword, a character, a boolean, a prefix such as @code{'}, @code{,@} or @code{#'}, a @code{#} before a bracket, or a quantity such as @code{<9.81 m>}.")
+  (case TokComment "A @code{;} and the rest of its line, without the line break.")
+  (case TokSpace "White space on one line.")
+  (case TokNewline "A line break, @code{\\n} or @code{\\r\\n}.")
+  (see SourceToken read-tokens))
+
+(:doc SourceToken
+  (summary "A token of a text, as it is written.")
+  (field kind "What it is.")
+  (field text "Its text, as written.")
+  (field range "Where it is, with its byte offsets.")
+  (see TokenKind read-tokens))
+
+(:doc read-tokens
+  (summary "The tokens of a text as they are written, comments and spaces included.")
+  (arg text "The source.")
+  (key file "The file messages name. Without it, a message names @code{<unknown>}.")
+  (returns "The tokens in order, or the first @code{SyntaxError} the compiler's lexer finds.")
+  (see fold-tokens read-source TokenKind SourceToken)
+  (example """
+    (match (read-tokens "(f 'x) ; done")
+      ((Ok tokens) (list-map (fun (t) (record-ref t text)) tokens))
+      ((Err e) (list (read-error-message e))))
+    ;; => ("(" "f" " " "'x" ")" " " "; done")
+    """)
+  (reference """
+    For a tool that keeps the text as it is written, such as a formatter.
+
+    - The texts of the tokens, in order, are the whole text.
+    - A token's text shares the memory of @code{text}.
+    - The tokens are the compiler's. A text the compiler cannot lex is a
+      @code{SyntaxError}. A bracket with no partner is not an error here:
+      that is a form error, and @code{read-source} finds it.
+    - A @code{#\"...\"} is one @code{TokString}, and a quantity is one
+      @code{TokAtom}, although the compiler expands both.
+    - A prefix is a token of its own: @code{,x} is @code{,} and @code{x}, and
+      @code{#'x} is @code{#'} and @code{x}. A quoted symbol such as
+      @code{'x} is one token, as the compiler reads it.
+    """))
+
+(:doc fold-tokens
+  (summary "Folds a function over the tokens of a text as they are written.")
+  (arg text "The source.")
+  (arg f "Takes a token and what the tokens before it made, and returns what it makes with them.")
+  (arg init "What no token makes.")
+  (key file "The file messages name.")
+  (returns "What the last token makes, or the first @code{SyntaxError} the compiler's lexer finds. The text is lexed whole before @code{f} sees a token, so an error comes before any call of @code{f}.")
+  (see read-tokens)
+  (reference """
+    The tokens are those of @code{read-tokens}, in the same order. Use it
+    when what is made of the tokens is not a list of them: a list of every
+    token of a large file costs more than lexing it.
     """))
 
 (:doc syntax-dump

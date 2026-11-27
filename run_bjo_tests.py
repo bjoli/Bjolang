@@ -2236,10 +2236,6 @@ def test_fmt(work, c):
         ("bindings on one line too", "(let ((a 1) (b 2)) a)\n", "(let ((a 1)\n      (b 2))\n  a)\n"),
         ("a tab in a string is written \\t", '(f "a\tb")\n', '(f "a\\tb")\n'),
         ("but not in an interpolation's hole", '(f #"a\t${(g\t1)}")\n', '(f #"a\\t${(g\t1)}")\n'),
-        # The lexer rejects a tab after a backslash; fmt keeps it rather than
-        # make the escape mean something.
-        ("nor one after a backslash",
-         '(f "a\tb \\\tc")\n', '(f "a\\tb \\\tc")\n'),
         ("a tab in a comment becomes spaces", ";\tx\n", ";       x\n"),
         ("a call too long for its line has its arguments a line each, under the first",
          "(defun (f) (some-function-with-a-long-name (another-call (nested alpha) beta gamma) "
@@ -2380,7 +2376,7 @@ def test_fmt(work, c):
         ("a quantity literal is one token, whatever is in it",
          "(def gamma <0.351 mSv m^2/(GBq  h)>)\n(defun (f) <100 km/h>)\n(f #'(g ,<1 m>) <-.5 s> (< 1 2))\n",
          "(def gamma <0.351 mSv m^2/(GBq  h)>)\n(defun (f)\n  <100 km/h>)\n(f #'(g ,<1 m>) <-.5 s> (< 1 2))\n"),
-        ("strings with nothing between them stay so", '(f #"""a""")\n', '(f #"""a""")\n'),
+        ("strings with nothing between them stay so", '(f "a""b" #"c""d")\n', '(f "a""b" #"c""d")\n'),
         ("the value of a def* clause starts on the line of its name",
          "(def* (a 1) (first (if (p x) 1 2)))\n",
          "(def* (a 1)\n      (first (if (p x)\n                 1\n                 2)))\n"),
@@ -2458,7 +2454,12 @@ def test_fmt(work, c):
         ("an unclosed bracket", "(f\n", "a ( that is never closed"),
         ("a bracket closed by the wrong one", "(f]\n", "wants a )"),
         ("a stray closing bracket", "(f))\n", "closes nothing"),
-        ("a string that does not end", '(f "x\n', "a string that does not end"),
+        # fmt reads with the compiler's lexer, so it refuses what the compiler
+        # cannot read, with the compiler's message.
+        ("a string that does not end", '(f "x\n', "Unterminated string at -:1:4"),
+        ("a tab after a backslash", '(f "a \\\tc")\n', "a backslash before a space is an escape only"),
+        ("an interpolated raw string", '(f #"""a""")\n', "cannot be a raw one"),
+        ("a number the compiler does not read", "(f 1abc)\n", "'1abc' is not a number"),
     ]:
         refused = fmt_text(work, given)
         c.that(f"fmt refuses {label}", refused.returncode != 0 and refused.stdout == ""

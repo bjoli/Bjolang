@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std read)~ returns the tokens as written, and ~bjo fmt~ reads with them
+
+- *~read-tokens~ and ~fold-tokens~* return the tokens of a text as the
+  compiler's lexer reads them, with the comments, spaces and line breaks
+  between them. The texts of the tokens, in order, are the text. Each token
+  has its kind, its text and its ~SourceRange~.
+- *A ~#"..."~ is one token, and so is a quantity*, although the compiler
+  expands both. A prefix such as ~,~ or ~#'~ is a token of its own.
+- *~SourceToken~ and ~SourceRange~ are structs*, so ~fold-tokens~
+  allocates nothing for a token but its text, which shares the memory of
+  the source.
+- *Breaking: ~bjo fmt~ refuses a text that the compiler cannot lex*, such
+  as ~1abc~, a tab after a backslash in a string or ~#"""..."""~, with the
+  compiler's message. It laid such a text out before. Every file in the tree
+  that both versions lay out is laid out the same.
+- ~bjo fmt~ no longer has a tokenizer of its own, so its reading of
+  strings, characters and quantities cannot drift from the compiler's.
+- It is about 5% slower on large files: 485 ms for the 20 largest files in
+  the tree, against 460 ms. About a third of its time is the GC, in both
+  versions.
+
 * Symbols and keywords are interned by their UTF-8 bytes
 
 - *~string->symbol~ and ~string->keyword~ do not convert to UTF-16.* They
