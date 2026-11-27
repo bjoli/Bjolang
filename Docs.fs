@@ -839,8 +839,8 @@ let private checkEntry (env: Env) (moduleKey: string) (localNames: Set<string>) 
 ///
 /// Docs are published as they were written, raw strings and comments
 /// included, so that a reader sees what the author wrote and bjodat can read
-/// it back. Columns are 0-based and an end is exclusive, as the lexer records
-/// them.
+/// it back. Columns count code points from 0 and an end is exclusive, as the
+/// lexer records them.
 let private linesOf (text: string) = text.Replace("\r\n", "\n").Split('\n')
 
 /// The text between a range's two positions, in a text already split in lines.
@@ -849,18 +849,20 @@ let private slice (lines: string[]) (r: Range) : string option =
         None
     elif r.Start.Line = r.End.Line then
         let line = lines[r.Start.Line - 1]
-        let stop = min line.Length r.End.Column
-        if r.Start.Column > stop then None else Some(line.Substring(r.Start.Column, stop - r.Start.Column))
+        let start = Lexer.utf16Index line r.Start.Column
+        let stop = min line.Length (Lexer.utf16Index line r.End.Column)
+        if start > stop then None else Some(line.Substring(start, stop - start))
     else
         let first = lines[r.Start.Line - 1]
         let lastLine = lines[r.End.Line - 1]
+        let start = Lexer.utf16Index first r.Start.Column
 
-        if r.Start.Column > first.Length then
+        if start > first.Length then
             None
         else
             let middle = lines[r.Start.Line .. r.End.Line - 2] |> List.ofArray
-            let last = lastLine.Substring(0, min lastLine.Length r.End.Column)
-            Some(String.concat "\n" ([ first.Substring r.Start.Column ] @ middle @ [ last ]))
+            let last = lastLine.Substring(0, min lastLine.Length (Lexer.utf16Index lastLine r.End.Column))
+            Some(String.concat "\n" ([ first.Substring start ] @ middle @ [ last ]))
 
 /// A source file's text, lines and tokens, read once per text: every doc in a
 /// module asks for its file, and tokenizing the file for each would cost a

@@ -16,8 +16,25 @@ namespace Bjolang
 module Lexer =
     open System
 
-    // 1-based lines, 0-based columns (aligns with FSharp.Compiler.Text.Position)
+    /// A place in a source text.
+    ///
+    /// - `Line` counts from 1.
+    /// - `Column` counts code points from 0: a character above U+FFFF is one
+    ///   column, and so is `\r`. `utf16Index` converts it to an index into
+    ///   the line's .NET string.
     type Position = { Line: int; Column: int }
+
+    /// The UTF-16 index in `line` of the code point at column `col`. A column
+    /// past the end of `line` adds its distance to `line.Length`.
+    let utf16Index (line: string) (col: int) : int =
+        let mutable i = 0
+        let mutable c = 0
+
+        while c < col && i < line.Length do
+            i <- i + (if Char.IsHighSurrogate line[i] && i + 1 < line.Length && Char.IsLowSurrogate line[i + 1] then 2 else 1)
+            c <- c + 1
+
+        i + (col - c)
 
     /// `File` is the source the range came from. It matters because `include`
     /// splices one file's forms into another, so a line number on its own is
@@ -275,7 +292,7 @@ module Lexer =
                 if input[k] = '\n' then
                     l <- l + 1
                     c <- 0
-                else
+                elif not (Char.IsLowSurrogate input[k]) then
                     c <- c + 1
 
             formatAt file l c
@@ -454,7 +471,8 @@ module Lexer =
             else
                 p
 
-        // Calculates the new line and column after consuming a chunk of text
+        // The line and column after `text`, which starts at `startLine` and
+        // `startCol`. A low surrogate adds no column.
         let advance (text: string) startLine startCol =
             let mutable l = startLine
             let mutable c = startCol
@@ -463,7 +481,7 @@ module Lexer =
                 if text[i] = '\n' then
                     l <- l + 1
                     c <- 0
-                else
+                elif not (Char.IsLowSurrogate text[i]) then
                     c <- c + 1
 
             l, c
@@ -500,7 +518,6 @@ module Lexer =
                 match c with
                 // Whitespace tracking
                 | '\n' -> loop (pos + 1) (line + 1) 0 tokens
-                | '\r' -> loop (pos + 1) line col tokens
                 | _ when Char.IsWhiteSpace c -> loop (pos + 1) line (col + 1) tokens
 
                 // Comments
@@ -523,10 +540,10 @@ module Lexer =
                 // `.` or `-` and a digit; `(< 1 2)` and `<=` are untouched.
                 | '<' when
                     pos + 1 < length
-                    && (Char.IsDigit input[pos + 1]
+                    && (Char.IsDigit(input, pos + 1)
                         || ((input[pos + 1] = '.' || input[pos + 1] = '-')
                             && pos + 2 < length
-                            && Char.IsDigit input[pos + 2]))
+                            && Char.IsDigit(input, pos + 2)))
                     ->
                     let close = input.IndexOf('>', pos + 1)
                     let lineEnd = input.IndexOf('\n', pos + 1)
@@ -665,17 +682,18 @@ module Lexer =
                     else
                         emit Quote 1
                 // Numbers
-                | _ when Char.IsDigit c || (c = '-' && pos + 1 < length && Char.IsDigit input[pos + 1]) ->
+                | _ when Char.IsDigit(input, pos) || (c = '-' && pos + 1 < length && Char.IsDigit(input, pos + 1)) ->
                     let rec readNumber p =
                         if
                             p < length
-                            && (Char.IsLetterOrDigit input[p]
+                            && (Char.IsLetterOrDigit(input, p)
                                 || input[p] = '.'
                                 || input[p] = '-'
                                 // An exponent's sign, `1e+3`, and no other `+`.
                                 || (input[p] = '+' && (input[p - 1] = 'e' || input[p - 1] = 'E')))
                         then
-                            readNumber (p + 1)
+                            // A letter above U+FFFF is a surrogate pair.
+                            readNumber (if Char.IsHighSurrogate input[p] then p + 2 else p + 1)
                         else
                             p
 
@@ -864,7 +882,7 @@ module Lexer =
             if ch = '\n' then
                 l <- l + 1
                 c <- 0
-            else
+            elif not (Char.IsLowSurrogate ch) then
                 c <- c + 1
 
             p <- p + 1

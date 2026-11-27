@@ -19,8 +19,8 @@
 ;; - `syntax-dump` writes forms in the text that `bjolang --dump-read FILE`
 ;;   writes. tools/read_conformance.py compares the two over the source tree.
 ;;
-;; The text is read as its UTF-8 bytes. A column counts UTF-16 code units, as
-;; the compiler's columns do: a character above U+FFFF moves it by 2.
+;; The text is read as its UTF-8 bytes. A column counts code points, as the
+;; compiler's columns do, and a range also has its byte offsets in the text.
 ;;
 ;; Everything is Bjolang: the character classes are (std unicode chars), the
 ;; number spellings are (std rx) patterns, and a grapheme is (std unicode
@@ -30,6 +30,7 @@
 (export
   ReadError read-error-message
   read-source read-source-file
+  SourceRange syntax-range
   syntax-dump)
 
 (import (std prelude))
@@ -39,7 +40,7 @@
 (:doc #:file "read.bjodoc")
 
 (import/class
-  (SrcRange (: Bjolang.Runtime.SrcRange (-> string int int int int string SrcRange)))
+  (SrcRange (: Bjolang.Runtime.SrcRange (-> string int int int int string int int SrcRange)))
   (SyntaxOrigin (: Bjolang.Runtime.SyntaxOrigin))
   ;; What a read error raises inside this module. `read-source` catches it.
   (ReadFailure (: System.FormatException (-> string ReadFailure))))
@@ -77,12 +78,15 @@
                     (: TSym string)
                     (: TDatum string))))
 
-;; A token and its range. Lines count from 1 and columns from 0.
+;; A token and its range. Lines count from 1 and columns from 0. `so` and
+;; `eo` are the byte offsets of the start and of the end.
 (type (: Token (Record (: tok Tok)
                        (: sl int)
                        (: sc int)
+                       (: so int)
                        (: el int)
-                       (: ec int))))
+                       (: ec int)
+                       (: eo int))))
 
 ;; A growable array of tokens.
 (type (: Buf (Record (: items (Array Token) #:mutable)
@@ -186,7 +190,7 @@
 
 ;; The line and column after the bytes from `from` to `to`, starting at
 ;; `line` and `col`. A line break moves to column 0 of the next line. Each
-;; other character moves the column by its UTF-16 length, a `\r` too.
+;; other code point, a `\r` too, moves the column by 1.
 (: (-> (Array byte) int int int int (Tuple int int)))
 (defun (advance b from to line col)
   (let go ((i from) (l line) (c col))
@@ -195,7 +199,6 @@
       (:def x (byte-at b i))
       ((= x 10) (go (+ i 1) (+ l 1) 0))
       ((continuation? x) (go (+ i 1) l c))
-      ((>= x 240) (go (+ i 1) l (+ c 2)))
       (else (go (+ i 1) l (+ c 1))))))
 
 ;; Moves `cur` to `to`, counting lines and columns as `advance` does.
@@ -241,28 +244,23 @@
 (: (Array bool))
 (def ascii-letter-or-digit (ascii-table unicode-letter-or-digit?))
 
-;; Whether `cp` is white space, a digit, and a letter or a digit, as the
-;; compiler asks. The compiler asks of a UTF-16 code unit, so a character
-;; above U+FFFF is asked about as a surrogate, which is none of them.
+;; Whether `cp` is white space, a digit, and a letter or a digit.
 (: (-> int bool))
 (defun (space? cp)
   (cond
     ((< cp 128) (array-ref ascii-space cp))
-    ((>= cp 65536) #f)
     (else (unicode-space? cp))))
 
 (: (-> int bool))
 (defun (digit? cp)
   (cond
     ((< cp 128) (array-ref ascii-digit cp))
-    ((>= cp 65536) #f)
     (else (unicode-digit? cp))))
 
 (: (-> int bool))
 (defun (letter-or-digit? cp)
   (cond
     ((< cp 128) (array-ref ascii-letter-or-digit cp))
-    ((>= cp 65536) #f)
     (else (unicode-letter-or-digit? cp))))
 
 ;; `Lexer.isSymbolChar`.
@@ -332,6 +330,12 @@
 
 (: (-> Syntax int))
 (defun (end-col s) (.-EndColumn (.-Range s)))
+
+(: (-> Syntax int))
+(defun (start-offset s) (.-StartOffset (.-Range s)))
+
+(: (-> Syntax int))
+(defun (end-offset s) (.-EndOffset (.-Range s)))
 
 ;; ---------------------------------------------------------------------------
 ;; Escapes
@@ -631,9 +635,11 @@
   ;; The tokens all carry the whole form's range, but a hole's own tokens.
   (def sl line)
   (def sc col)
+  (def so (record-ref cur p))
   (def el (record-ref c line))
   (def ec (record-ref c col))
-  (defun (mk t) (Token (tok t) (sl sl) (sc sc) (el el) (ec ec)))
+  (def eo (pos))
+  (defun (mk t) (Token (tok t) (sl sl) (sc sc) (so so) (el el) (ec ec) (eo eo)))
   (def parts
     (list-map (fun (segment)
                 (match segment
@@ -850,8 +856,10 @@
   (defun (emit! t len)
     (def sl (record-ref cur line))
     (def sc (record-ref cur col))
-    (move-to! b cur (+ (record-ref cur p) len))
-    (push! out (Token (tok t) (sl sl) (sc sc) (el (record-ref cur line)) (ec (record-ref cur col)))))
+    (def so (record-ref cur p))
+    (move-to! b cur (+ so len))
+    (push! out (Token (tok t) (sl sl) (sc sc) (so so)
+                      (el (record-ref cur line)) (ec (record-ref cur col)) (eo (record-ref cur p)))))
   (let go ()
     (def pos (record-ref cur p))
     (when (< pos limit)
@@ -862,7 +870,6 @@
       (def next (code-or-end b (+ pos 1) limit))
       (cond
         ((= x 10) (record-set! cur (p (+ pos 1)) (line (+ line 1)) (col 0)))
-        ((= x 13) (record-set! cur (p (+ pos 1))))
         ((space? (code-at b pos)) (record-set! cur (p (+ pos (seq-len x))) (col (+ col 1))))
         ;; A comment, to the end of its line.
         ((= x 59)
@@ -882,7 +889,8 @@
                                   ": a quantity literal starting with '<' has no '>' on its line. Write it as <9.81 m/s^2>; a comparison is (< a b), with a space.")))
          (def body (text-of b (+ pos 1) close))
          (move-to! b cur (+ close 1))
-         (defun (mk t) (Token (tok t) (sl line) (sc col) (el (record-ref cur line)) (ec (record-ref cur col))))
+         (defun (mk t) (Token (tok t) (sl line) (sc col) (so pos)
+                              (el (record-ref cur line)) (ec (record-ref cur col)) (eo (record-ref cur p))))
          (push! out (mk TLParen))
          (push! out (mk (TSym "quantity")))
          (match (quantity-parts body)
@@ -1004,14 +1012,21 @@
 (defun (tok-at rd i)
   (array-ref (record-ref rd toks) i))
 
-;; `s` at the range from `sl`, `sc` to `el`, `ec`, with `origin`.
-(: (-> Rd Syntax int int int int SyntaxOrigin Syntax))
-(defun (place rd s sl sc el ec origin)
-  (.WithOrigin (.WithRange s (SrcRange. (record-ref (record-ref rd lx) file) sl sc el ec "")) origin))
+;; `s` at the range from line `sl`, column `sc`, offset `so` to `el`, `ec`,
+;; `eo`, with `origin`.
+(: (-> Rd Syntax int int int int int int SyntaxOrigin Syntax))
+(defun (place rd s sl sc so el ec eo origin)
+  (.WithOrigin (.WithRange s (SrcRange. (record-ref (record-ref rd lx) file) sl sc el ec "" so eo)) origin))
+
+;; `s` at the range of the token `t`, with `origin`.
+(: (-> Rd Syntax Token SyntaxOrigin Syntax))
+(defun (place-token rd s t origin)
+  (place rd s (record-ref t sl) (record-ref t sc) (record-ref t so)
+         (record-ref t el) (record-ref t ec) (record-ref t eo) origin))
 
 (: (-> Rd Syntax Token Syntax))
 (defun (place-at rd s t)
-  (place rd s (record-ref t sl) (record-ref t sc) (record-ref t el) (record-ref t ec) SyntaxOrigin.CallSite))
+  (place-token rd s t SyntaxOrigin.CallSite))
 
 ;; `s` with the range and origin of `old`.
 (: (-> Syntax Syntax Syntax))
@@ -1029,8 +1044,7 @@
   (match (record-ref t tok)
     ((TSym s) (symbol-at rd s t))
     ((TResolved s)
-     (place rd (SSym (string->symbol s)) (record-ref t sl) (record-ref t sc) (record-ref t el) (record-ref t ec)
-            SyntaxOrigin.Resolved))
+     (place-token rd (SSym (string->symbol s)) t SyntaxOrigin.Resolved))
     ((TDatum s) (place-at rd (SDatum (string->symbol s)) t))
     ((TNum s) (place-at rd (SInt s) t))
     ((TStr s) (place-at rd (SStr s) t))
@@ -1103,9 +1117,11 @@
                     (str "Unexpected #' at end of form at " (at lx (start-line node) (start-col node)))))
              ((Cons form tail)
               (def head (place rd (SSym (string->symbol "syntax-quote"))
-                               (start-line node) (start-col node) (end-line node) (end-col node) SyntaxOrigin.CallSite))
+                               (start-line node) (start-col node) (start-offset node)
+                               (end-line node) (end-col node) (end-offset node) SyntaxOrigin.CallSite))
               (go more (Cons (place rd (SList (list head form))
-                                    (start-line node) (start-col node) (end-line form) (end-col form) SyntaxOrigin.CallSite)
+                                    (start-line node) (start-col node) (start-offset node)
+                                    (end-line form) (end-col form) (end-offset form) SyntaxOrigin.CallSite)
                              tail))))
            (go more (Cons node acc)))))))
 
@@ -1200,8 +1216,8 @@
         (match head
           ((Some (Tuple name t)) (Cons (symbol-at rd name t) items))
           (None items))))
-  (place rd (SList final) (record-ref from sl) (record-ref from sc) (record-ref closer el) (record-ref closer ec)
-         SyntaxOrigin.CallSite))
+  (place rd (SList final) (record-ref from sl) (record-ref from sc) (record-ref from so)
+         (record-ref closer el) (record-ref closer ec) (record-ref closer eo) SyntaxOrigin.CallSite))
 
 ;; ---------------------------------------------------------------------------
 ;; #(...)
@@ -1300,46 +1316,70 @@
                        (else (go (- i 1))))))
         (text-of b after (array-length b)))))
 
-;; The forms of the text of `lx`. Raises `ReadFailure` at an error.
-(: (-> Lexer (List Syntax)))
-(defun (read-all lx)
+;; The forms of the text of `lx` from the byte `start`. Raises `ReadFailure`
+;; at an error.
+(: (-> Lexer int (List Syntax)))
+(defun (read-all lx start)
   (def out (new-buf))
-  (lex-range! lx out (Cur (p 0) (line 1) (col 0) (limit (array-length (record-ref lx bytes)))))
+  (lex-range! lx out (Cur (p start) (line 1) (col 0) (limit (array-length (record-ref lx bytes)))))
   (def rd (Rd (lx lx) (toks (record-ref out items)) (n (record-ref out n)) (i 0) (counter 0)))
   (read-level rd None))
 
-;; The forms of the UTF-8 text `bytes`, read as from `file`.
-(: (-> (Array byte) string (Result ReadError (List Syntax))))
-(defun (read-bytes bytes file)
+;; The forms of the UTF-8 text `bytes` from the byte `start`, read as from
+;; `file`. The text starts at line 1, column 0, and offsets count from the
+;; start of `bytes`.
+(: (-> (Array byte) int string (Result ReadError (List Syntax))))
+(defun (read-bytes bytes start file)
   (def lx (Lexer (bytes bytes) (file file) (label (file-label file)) (written Nil)
                  (err-message "") (err-line 0) (err-col 0)))
-  (match (try (read-all lx) #:catch (System.FormatException))
+  (match (try (read-all lx start) #:catch (System.FormatException))
     ((Ok forms) (Ok forms))
     ((Err _) (Err (SyntaxError (record-ref lx err-message) (record-ref lx err-line) (+ (record-ref lx err-col) 1))))))
 
 (: (-> string (#:file string) (Result ReadError (List Syntax))))
 (defun (read-source text #:file "")
-  (read-bytes (string->bytes text) file))
+  (read-bytes (string->bytes text) 0 file))
 
 (: (-> string (Result ReadError (List Syntax))))
 (defun (read-source-file path)
   (match (file-read-bytes path)
     ((Err e) (Err (FileError e)))
     ((Ok raw)
+     ;; A byte order mark is skipped, so that the offsets are the file's.
+     ;; A text that is not UTF-8 is read as its lossy decoding, and the
+     ;; offsets are that decoding's.
      (def n (array-length raw))
-     (def bytes
-       (if (and (>= n 3) (= (byte-at raw 0) 239) (= (byte-at raw 1) 187) (= (byte-at raw 2) 191))
-           (copy-bytes raw 3 (- n 3))
-           raw))
-     (read-bytes (if (bytes-utf-8? bytes 0 (array-length bytes)) bytes (string->bytes (bytes->string/lossy bytes))) path))))
+     (def bom (and (>= n 3) (= (byte-at raw 0) 239) (= (byte-at raw 1) 187) (= (byte-at raw 2) 191)))
+     (if (bytes-utf-8? raw 0 n)
+         (read-bytes raw (if bom 3 0) path)
+         (read-bytes (string->bytes (bytes->string/lossy (if bom (copy-bytes raw 3 (- n 3)) raw))) 0 path)))))
+
+;; ---------------------------------------------------------------------------
+;; Ranges
+;; ---------------------------------------------------------------------------
+
+;; Where a piece of syntax is in its text. Columns count code points from 0.
+;; An offset is a byte offset in the UTF-8 text, or -1 when the reader did not
+;; record it.
+(type (: SourceRange (Record (: start-line int)
+                             (: start-column int)
+                             (: start-offset int)
+                             (: end-line int)
+                             (: end-column int)
+                             (: end-offset int))))
+
+(: (-> Syntax SourceRange))
+(defun (syntax-range s)
+  (SourceRange (start-line (start-line s)) (start-column (start-col s)) (start-offset (start-offset s))
+               (end-line (end-line s)) (end-column (end-col s)) (end-offset (end-offset s))))
 
 ;; ---------------------------------------------------------------------------
 ;; The dump
 ;; ---------------------------------------------------------------------------
 ;; The text of `bjolang --dump-read`, which Program.fs writes:
 ;; - A line per node, indented by two spaces a level: its kind, its payload,
-;;   its range as `line:column-line:column`, and `resolved` for the origin
-;;   Resolved.
+;;   its range as `line:column-line:column`, its byte offsets as `@start-end`,
+;;   and `resolved` for the origin Resolved.
 ;; - A fresh name `&N__M` is written `&N__gK`, K by the order the fresh names
 ;;   first appear in.
 
@@ -1413,7 +1453,8 @@
   (stringbuilder-add-string!
    sb
    (str " " (int->string (start-line s)) ":" (int->string (start-col s))
-        "-" (int->string (end-line s)) ":" (int->string (end-col s))))
+        "-" (int->string (end-line s)) ":" (int->string (end-col s))
+        " @" (int->string (start-offset s)) "-" (int->string (end-offset s))))
   (when (= (.-Origin s) SyntaxOrigin.Resolved)
     (stringbuilder-add-string! sb " resolved"))
   (stringbuilder-add! sb #\newline)

@@ -34,44 +34,44 @@
   ;; --- Forms and ranges ----------------------------------------------------
   (expect "a list and a vec literal, with their ranges"
           (dump "(+ 1 2) [x]")
-          (string-join ["list 1:0-1:7"
-                        "  sym \"+\" 1:1-1:2"
-                        "  num \"1\" 1:3-1:4"
-                        "  num \"2\" 1:5-1:6"
-                        "list 1:8-1:11"
-                        "  sym \"vec-literal\" 1:8-1:9"
-                        "  sym \"x\" 1:9-1:10"
+          (string-join ["list 1:0-1:7 @0-7"
+                        "  sym \"+\" 1:1-1:2 @1-2"
+                        "  num \"1\" 1:3-1:4 @3-4"
+                        "  num \"2\" 1:5-1:6 @5-6"
+                        "list 1:8-1:11 @8-11"
+                        "  sym \"vec-literal\" 1:8-1:9 @8-9"
+                        "  sym \"x\" 1:9-1:10 @9-10"
                         ""]
                        "\n"))
-  (expect "a character above U+FFFF is two columns"
+  (expect "a character above U+FFFF is one column and four bytes"
           (dump "(a \"\u{1F600}\" b)")
-          (string-join ["list 1:0-1:10"
-                        "  sym \"a\" 1:1-1:2"
-                        "  str \"\u{1F600}\" 1:3-1:7"
-                        "  sym \"b\" 1:8-1:9"
+          (string-join ["list 1:0-1:9 @0-12"
+                        "  sym \"a\" 1:1-1:2 @1-2"
+                        "  str \"\u{1F600}\" 1:3-1:6 @3-9"
+                        "  sym \"b\" 1:7-1:8 @10-11"
                         ""]
                        "\n"))
   (expect "the str and displayed of an interpolated string are resolved"
           (dump "#\"n=${n}!\"")
-          (string-join ["list 1:0-1:10"
-                        "  sym \"str\" 1:0-1:10 resolved"
-                        "  str \"n=\" 1:0-1:10"
-                        "  list 1:0-1:10"
-                        "    sym \"displayed\" 1:0-1:10 resolved"
-                        "    sym \"n\" 1:6-1:7"
-                        "  str \"!\" 1:0-1:10"
+          (string-join ["list 1:0-1:10 @0-10"
+                        "  sym \"str\" 1:0-1:10 @0-10 resolved"
+                        "  str \"n=\" 1:0-1:10 @0-10"
+                        "  list 1:0-1:10 @0-10"
+                        "    sym \"displayed\" 1:0-1:10 @0-10 resolved"
+                        "    sym \"n\" 1:6-1:7 @6-7"
+                        "  str \"!\" 1:0-1:10 @0-10"
                         ""]
                        "\n"))
   (expect "#(...) is a fun of fresh names"
           (dump "#(+ & 1)")
-          (string-join ["list 1:0-1:8"
-                        "  sym \"fun\" 1:0-1:1"
-                        "  list 1:0-1:1"
-                        "    sym \"&1__g1\" 1:0-1:1"
-                        "  list 1:0-1:8"
-                        "    sym \"+\" 1:2-1:3"
-                        "    sym \"&1__g1\" 1:4-1:5"
-                        "    num \"1\" 1:6-1:7"
+          (string-join ["list 1:0-1:8 @0-8"
+                        "  sym \"fun\" 1:0-1:1 @0-1"
+                        "  list 1:0-1:1 @0-1"
+                        "    sym \"&1__g1\" 1:0-1:1 @0-1"
+                        "  list 1:0-1:8 @0-8"
+                        "    sym \"+\" 1:2-1:3 @2-3"
+                        "    sym \"&1__g1\" 1:4-1:5 @4-5"
+                        "    num \"1\" 1:6-1:7 @6-7"
                         ""]
                        "\n"))
   (expect "a fresh name is not one the text writes"
@@ -83,6 +83,14 @@
   (expect "a form's line is where it starts"
           (lines-of (read-source "a\n\n(b\n c)"))
           (list 1 3))
+  (expect "the byte offsets of a range cut the form out of the UTF-8 text"
+          (match (read-source "x (é \"ü\")")
+            ((Ok (Cons _ (Cons form Nil)))
+             (def r (syntax-range form))
+             (bytes->string/lossy (string->bytes "x (é \"ü\")")
+                                  #:start (record-ref r start-offset) #:end (record-ref r end-offset)))
+            (_ "no form"))
+          "(é \"ü\")")
   (expect "a comment is not read"
           (lines-of (read-source "; one\nx ; two\n"))
           (list 2))
@@ -107,11 +115,11 @@
   (raise-err (directory-create scratch))
   (def with-bom (path-combine scratch "bom.bjo"))
   (raise-err (file-write-bytes with-bom (string->bytes "\u{FEFF}(a)")))
-  (expect "a byte order mark is not read"
+  (expect "a byte order mark is not read, and the offsets are the file's"
           (match (read-source-file with-bom)
             ((Ok forms) (syntax-dump forms))
             ((Err e) (read-error-message e)))
-          "list 1:0-1:3\n  sym \"a\" 1:1-1:2\n")
+          "list 1:0-1:3 @3-6\n  sym \"a\" 1:1-1:2 @4-5\n")
   (expect "a file that is not there is a FileError"
           (error-of (read-source-file (path-combine scratch "none.bjo")))
           "file error")

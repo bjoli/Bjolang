@@ -244,13 +244,16 @@ let private readFileList (path: string) : string list =
 /// The text of `--dump-read`: the reader's forms, a line per node.
 ///
 /// - Each line has the node's kind, its payload, its range as
-///   `line:column-line:column`, and `resolved` for the origin `Resolved`. It
-///   is indented by two spaces a level.
+///   `line:column-line:column`, its byte offsets as `@start-end`, and
+///   `resolved` for the origin `Resolved`. It is indented by two spaces a
+///   level.
+/// - The compiler's reader records no offsets. `offsetOf line column` gives
+///   them from the text.
 /// - A fresh name `&N__M`, which `#(...)` makes, is written `&N__gK`, K by the
 ///   order the fresh names first appear in.
 /// - `syntax-dump` in lib/std/read.bjo writes the same text. Change the two
 ///   together.
-let private dumpSyntax (forms: Bjolang.Runtime.Syntax list) : string =
+let private dumpSyntax (offsetOf: int -> int -> int) (forms: Bjolang.Runtime.Syntax list) : string =
     let sb = System.Text.StringBuilder()
     let fresh = System.Collections.Generic.Dictionary<string, string>()
     let freshName = System.Text.RegularExpressions.Regex(@"^&\d+__\d+$")
@@ -296,6 +299,7 @@ let private dumpSyntax (forms: Bjolang.Runtime.Syntax list) : string =
 
         let r = s.Range
         sb.Append($" %d{r.StartLine}:%d{r.StartColumn}-%d{r.EndLine}:%d{r.EndColumn}") |> ignore
+        sb.Append($" @%d{offsetOf r.StartLine r.StartColumn}-%d{offsetOf r.EndLine r.EndColumn}") |> ignore
 
         if s.Origin = Bjolang.Runtime.SyntaxOrigin.Resolved then
             sb.Append(" resolved") |> ignore
@@ -312,6 +316,41 @@ let private dumpSyntax (forms: Bjolang.Runtime.Syntax list) : string =
         write form 0
 
     sb.ToString()
+
+/// The byte offset of each line and code point column in a file's UTF-8 text,
+/// as (std read) counts it:
+/// - A byte order mark is before line 1, column 0.
+/// - A text that is not UTF-8 is counted in the UTF-8 of its decoding.
+let private byteOffsets (raw: byte[]) : int -> int -> int =
+    let bom = raw.Length >= 3 && raw[0] = 0xEFuy && raw[1] = 0xBBuy && raw[2] = 0xBFuy
+
+    let start = if bom then 3 else 0
+
+    let bytes, first =
+        try
+            System.Text.UTF8Encoding(false, true).GetString(raw) |> ignore
+            raw, start
+        with :? System.Text.DecoderFallbackException ->
+            System.Text.Encoding.UTF8.GetBytes(System.Text.Encoding.UTF8.GetString(raw, start, raw.Length - start)), 0
+
+    let lineStarts =
+        [| yield first
+           for i in first .. bytes.Length - 1 do
+               if bytes[i] = 10uy then yield i + 1 |]
+
+    fun line col ->
+        let mutable i = lineStarts[line - 1]
+        let mutable c = 0
+
+        while c < col && i < bytes.Length do
+            i <- i + 1
+
+            while i < bytes.Length && bytes[i] &&& 0xC0uy = 0x80uy do
+                i <- i + 1
+
+            c <- c + 1
+
+        i
 
 let rec parseArgs (args: string list) (opts: CompilerOptions) =
     match args with
@@ -334,7 +373,7 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
                     |> Pipeline.read
                     |> fst
                     |> List.map Macro.syntaxOfSExpr
-                    |> dumpSyntax
+                    |> dumpSyntax (byteOffsets (System.IO.File.ReadAllBytes path))
                 with e ->
                     $"error: %s{e.Message}\n"
 

@@ -48,11 +48,19 @@ public enum SyntaxOrigin
 /// <remarks>
 /// <c>File</c> is carried because <c>include</c> splices files together, so a
 /// line number alone is ambiguous.
+/// <para>
+/// Lines count from 1. Columns count code points from 0, and an end is
+/// exclusive.
+/// </para>
 /// </remarks>
 /// <param name="Module">The key of the module whose code this is. It survives a
 /// transformer so that a piece of the call site keeps its module when it lands
 /// inside an expansion, which is what decides whether it may use an
 /// <c>#:opaque</c> type's representation.</param>
+/// <param name="StartOffset">The byte offset of the start in the UTF-8 text,
+/// or -1 when the reader did not record it. <c>(std read)</c> records it; the
+/// compiler's reader does not.</param>
+/// <param name="EndOffset">The byte offset just past the end, or -1.</param>
 [NonUserCode]
 public readonly record struct SrcRange(
     string? File,
@@ -60,8 +68,13 @@ public readonly record struct SrcRange(
     int StartColumn,
     int EndLine,
     int EndColumn,
-    string? Module = null)
+    string? Module = null,
+    int StartOffset = -1,
+    int EndOffset = -1)
 {
+    /// Whether the range has byte offsets.
+    public bool HasOffsets => StartOffset >= 0;
+
     /// A range nothing has filled in yet. The expander replaces these with the
     /// macro call's own range, which is what makes a constructed node report
     /// where it was written rather than nowhere.

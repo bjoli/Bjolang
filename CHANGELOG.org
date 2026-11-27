@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* A column counts code points, and ~(std read)~ records byte offsets
+
+*Breaking.* A column in a message, a ~Range~ and a ~SrcRange~ counts code
+points, not UTF-16 code units.
+
+- *A character above U+FFFF is one column*, as it is in an editor that
+  counts characters. A ~\r~ is also one column, wherever it is.
+- *The compiler asks about a whole character.* A letter or a digit above
+  U+FFFF is a letter or a digit in a number, as it is below U+FFFF.
+- *A ~SrcRange~ has ~StartOffset~ and ~EndOffset~*, the byte offsets in the
+  UTF-8 text, or -1. ~(std read)~ records them, and ~syntax-range~ returns
+  them with the lines and the columns. The compiler's reader does not
+  record them.
+- *~read-source-file~ skips a byte order mark* instead of removing it, so
+  the offsets are offsets in the file.
+- The dump of ~--dump-read~ and ~syntax-dump~ has the offsets.
+- *Open:* a ~#line~ directive in the generated C# gives the columns in
+  code points, and C# counts UTF-16 code units. On a line with a
+  character above U+FFFF, a debugger marks a column after it one too far
+  left.
+
 * ~(std read)~: the reader of Bjolang source, in Bjolang
 
 ~read-source~ and ~read-source-file~ return the forms of a text as

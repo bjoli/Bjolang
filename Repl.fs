@@ -396,10 +396,13 @@ let private absolutizeImports (text: string) (forms: SExpr list) : string =
 
     // A position's offset into `text`: the lengths of the lines before it,
     // each with its newline, and then its column.
-    let lineStarts =
-        text.Split('\n') |> Array.scan (fun start (line: string) -> start + line.Length + 1) 0
+    let lines = text.Split('\n')
 
-    let offset (p: Position) = lineStarts[p.Line - 1] + p.Column
+    let lineStarts =
+        lines |> Array.scan (fun start (line: string) -> start + line.Length + 1) 0
+
+    let offset (p: Position) =
+        lineStarts[p.Line - 1] + utf16Index lines[p.Line - 1] p.Column
 
     let quoted (path: string) =
         "\"" + path.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""
@@ -431,7 +434,7 @@ let private anchorName = "__bjo_anchor"
 /// entry, and run again each time.
 ///
 /// The end is found from the tokens: the reader gives a list a range that
-/// ends at whatever follows it. A token's columns count the characters before
+/// ends at whatever follows it. A token's columns count the code points before
 /// it on its line, and its end is just past its last character.
 let private textOf (text: string) (form: SExpr) : string =
     let start = (getRange form).Start
@@ -454,12 +457,17 @@ let private textOf (text: string) (form: SExpr) : string =
     let stop = tokens[closing first 0].Range.End
     let lines = text.Split('\n')
 
+    let first = lines[start.Line - 1]
+    let last = lines[stop.Line - 1]
+    let from = utf16Index first start.Column
+    let upTo = utf16Index last stop.Column
+
     if start.Line = stop.Line then
-        lines[start.Line - 1].Substring(start.Column, stop.Column - start.Column)
+        first.Substring(from, upTo - from)
     else
-        [ yield lines[start.Line - 1].Substring start.Column
+        [ yield first.Substring from
           yield! lines[start.Line .. stop.Line - 2]
-          yield lines[stop.Line - 1].Substring(0, stop.Column) ]
+          yield last.Substring(0, upTo) ]
         |> String.concat "\n"
 
 /// Which earlier entries this one has to link.
@@ -1388,7 +1396,14 @@ let private contextAt (text: string) (start: int) : CompletionContext =
                 | None -> 0
                 | Some t ->
                     let line = t.Range.End.Line - 1
-                    if line < lineStarts.Length then min before.Length (lineStarts[line] + t.Range.End.Column) else before.Length
+                    if line < lineStarts.Length then
+                        let lineEnd =
+                            if line + 1 < lineStarts.Length then lineStarts[line + 1] - 1 else before.Length
+
+                        let text = before.Substring(lineStarts[line], lineEnd - lineStarts[line])
+                        min before.Length (lineStarts[line] + utf16Index text t.Range.End.Column)
+                    else
+                        before.Length
 
             if before.Substring(afterLast).Contains ';' then
                 Silent
