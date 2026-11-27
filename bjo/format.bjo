@@ -1498,16 +1498,18 @@
 ;; - `Data`: quoted data, a pattern or a parameter list.
 ;; - `Table`: kept in the lines the source has it in.
 ;; - `Bindings`, `Binding`: the bindings of a `let`, and one of them.
+;; - `NamedBindings`: the bindings of a named `let`.
 ;; - `Arm`, `Clause`: a clause of a `match` and of a `cond`.
 ;; - `DefClause`: a clause of a `def*`.
 ;; - `InType`: a type.
-(type (: Place (Union Code Data Table Bindings Binding Arm Clause DefClause InType)))
+(type (: Place (Union Code Data Table Bindings NamedBindings Binding Arm Clause DefClause InType)))
 
 ;; The kinds of list, each with its own layouts (see `plans`).
 (type (: Kind (Union KCall
                      KData
                      KTable
                      KBindings
+                     KNamedBindings
                      KBinding
                      KArm
                      KDef
@@ -1632,6 +1634,7 @@
     (Code #:when (and (hash-macro? g) (node-list? (item-at g 0))) KEntries)
     (Data KData)
     (Bindings KBindings)
+    (NamedBindings KNamedBindings)
     (Binding KBinding)
     (Arm KArm)
     (Clause
@@ -1702,6 +1705,7 @@
        (Code #:when (and (= (record-ref g open) "[") (empty? (record-ref g prefix))) Code)
        (_ Data)))
     (KBindings Binding)
+    (KNamedBindings Binding)
     (KBinding
      (if (= k 0)
          Data
@@ -1734,9 +1738,10 @@
          Data
          Code))
     ((KLet named?)
-     (if (= k (if named? 2 1))
-         Bindings
-         Code))
+     (cond
+       ((not (= k (if named? 2 1))) Code)
+       (named? NamedBindings)
+       (else Bindings)))
     (KLetrec
      (if (= k 1)
          Bindings
@@ -1781,6 +1786,8 @@
   (match kind
     (KTable (= n 0))
     (KBindings (<= n 1))
+    ;; Two bindings stay on one line if the source has them on one.
+    (KNamedBindings (or (<= n 1) (and (<= n 2) (not (record-ref g spans)))))
     (KArm
      (<= n
          (if (= (node-atom (item-at g 1)) "#:when")
@@ -1795,7 +1802,8 @@
     (KBlock (<= n 2))
     (KSmallBlock (or (<= n 2) (and (= (head-of g) "try") (keyword-arg? (node-atom (item-at g 2))))))
     (KCond (<= n 1))
-    (KMatch (<= n 2))
+    ;; A single arm stays on the line if the source has it there.
+    (KMatch (or (<= n 2) (and (= n 3) (not (record-ref g spans)))))
     (KMatchClause
      (<= n
          (if (= (node-atom (item-at g 3)) "#:when")
@@ -2489,6 +2497,7 @@
     (KData (data-plans g))
     (KTable (list (table-plan g)))
     (KBindings (list (plan g 0 (fun (k) (In 1)))))
+    (KNamedBindings (list (plan g 0 (fun (k) (In 1)))))
     (KBinding (call-plans g 1))
     (KArm (arm-plans g))
     (KDef (def-plans g 1 (In 2)))
@@ -2958,6 +2967,76 @@
       (Tuple toks (printed (record-ref p items) tail))))
 
 ;; ---------------------------------------------------------------------------
+;; Tables as written
+;;
+;; A top-level `import/extern` is a table that a person lays out. The result
+;; has its text as the source has it, if it has as many lines there.
+
+;; A part of a text: the text between top-level lists, or a top-level list with
+;; its head. The head is the first atom or string in the list, "(" for a list,
+;; or "" for none.
+(type (: Piece (Union (: Outside string)
+                      (: Listed string string))))
+
+(: joined (-> (List string) string))
+(defun (joined parts)
+  (string-join (list->vec (list-reverse parts)) ""))
+
+;; The parts of `text`, in order, or `None` if it does not lex. The texts of
+;; the parts make `text`.
+(: pieces (-> string (Option (List Piece))))
+(defun (pieces text)
+  (defun (step (: t SourceToken) state)
+    (def (Tuple depth head parts out) state)
+    (def s (record-ref t text))
+    (def first? (and (= depth 1) (= head "")))
+    (match (record-ref t kind)
+      (TokOpen
+       (if (= depth 0)
+           (Tuple 1 "" (list s) (Cons (Outside (joined parts)) out))
+           (Tuple (+ depth 1) (if first? "(" head) (Cons s parts) out)))
+      (TokClose
+       (cond
+         ((= depth 1) (Tuple 0 "" Nil (Cons (Listed head (joined (Cons s parts))) out)))
+         ((= depth 0) (Tuple 0 head (Cons s parts) out))
+         (else (Tuple (- depth 1) head (Cons s parts) out))))
+      (TokAtom (Tuple depth (if first? s head) (Cons s parts) out))
+      (TokString (Tuple depth (if first? s head) (Cons s parts) out))
+      (_ (Tuple depth head (Cons s parts) out))))
+  (match (fold-tokens text step (Tuple 0 "" Nil Nil))
+    ((Ok (Tuple 0 _ parts out)) (Some (list-reverse (Cons (Outside (joined parts)) out))))
+    (_ None)))
+
+(: line-count (-> string int))
+(defun (line-count s)
+  (vec-length (string-split s "\n")))
+
+;; `result`, the layout of `source`, with each top-level `import/extern` as
+;; `source` has it. A table whose lines the layout changed in number keeps its
+;; layout, so that the notes on lines stay right.
+(: with-tables-kept (-> string string string))
+(defun (with-tables-kept source result)
+  (defun (table? p)
+    (match p
+      ((Listed "import/extern" _) #t)
+      (_ #f)))
+  (match (Tuple (pieces source) (pieces result))
+    ((Tuple (Some from) (Some laid))
+     (let go ((laid laid)
+              (kept (list-filter table? from))
+              (out Nil))
+       (match laid
+         (Nil (joined out))
+         ((Cons (Listed "import/extern" text) rest)
+          (match kept
+            ((Cons (Listed _ written) more)
+             (go rest more (Cons (if (= (line-count written) (line-count text)) written text) out)))
+            (_ (go rest Nil (Cons text out)))))
+         ((Cons (Listed _ text) rest) (go rest kept (Cons text out)))
+         ((Cons (Outside text) rest) (go rest kept (Cons text out))))))
+    (_ result)))
+
+;; ---------------------------------------------------------------------------
 ;; The whole of it
 
 ;; `source` laid out, with what is to be said about its lines, each with its
@@ -2972,7 +3051,11 @@
   (def (Ok _) (balanced toks)
     :leave ((Err why) (Err why)))
   (def (Tuple wanted broken) (rebroken rewrite? toks))
-  (def (Tuple result notes) (layout broken))
+  (def (Tuple laid notes) (layout broken))
+  (def result
+    (if (string-contains? source "import/extern")
+        (with-tables-kept source laid)
+        laid))
   (def (Ok same?) (tokens-are? result file (significant wanted))
     :leave ((Err why) (Err #"formatting made it unreadable: ${why}")))
   (cond

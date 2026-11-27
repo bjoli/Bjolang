@@ -2383,6 +2383,22 @@ def test_fmt(work, c):
         ("a table keeps its columns",
          "(import/extern\n  (a   (: X.A (-> int)))\n  (bcd (: X.B (-> int))))\n",
          "(import/extern\n  (a   (: X.A (-> int)))\n  (bcd (: X.B (-> int))))\n"),
+        ("a top-level import/extern is kept as written",
+         "(import/extern\n (a (: X.A (-> int)\n     #:exceptions (E.A E.B\n         E.C))))\n",
+         "(import/extern\n (a (: X.A (-> int)\n     #:exceptions (E.A E.B\n         E.C))))\n"),
+        ("a match of one arm stays on one line",
+         "(match p ((Tuple a b) a))\n", "(match p ((Tuple a b) a))\n"),
+        ("but not one of two arms",
+         "(match p ((Tuple a b) a) (_ 0))\n", "(match p\n  ((Tuple a b) a)\n  (_ 0))\n"),
+        ("and a match of one arm over lines stays so",
+         "(match p\n  ((Tuple a b) a))\n", "(match p\n  ((Tuple a b) a))\n"),
+        ("two bindings of a named let stay on one line",
+         "(let go ((i 0) (acc Nil)) (go i acc))\n", "(let go ((i 0) (acc Nil))\n  (go i acc))\n"),
+        ("but not three",
+         "(let go ((i 0) (a 1) (b 2)) (go i a b))\n",
+         "(let go ((i 0)\n         (a 1)\n         (b 2))\n  (go i a b))\n"),
+        ("and not two over lines",
+         "(let go ((i 0)\n(acc Nil)) (go i acc))\n", "(let go ((i 0)\n         (acc Nil))\n  (go i acc))\n"),
     ]
     for label, given, wanted in cases:
         laid = fmt_text(work, given)
@@ -2491,7 +2507,7 @@ def test_fmt(work, c):
     c.worked("after which fmt --check passes", run_bjo(app, "fmt", "--check"))
     # A line the layout moves past 102 columns, and cannot break (nothing in
     # a table is), is pointed out; one that was that wide already is not.
-    long_call = "(import/extern (" + "f" * 60 + " a\n\"" + "x" * 62 + "\"))\n"
+    long_call = "(import/class (" + "f" * 61 + " a\n\"" + "x" * 62 + "\"))\n"
     already = "(h \"" + "y" * 110 + "\")\n"
     write(app / "src" / "wide.bjo", long_call + already)
     laid = run_bjo(app, "fmt", "src/wide.bjo")
