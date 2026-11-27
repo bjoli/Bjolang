@@ -1,0 +1,209 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; bjo/completions.bjo — the shell completion scripts that
+;; `bjo completions SHELL` prints.
+;;
+;; - The scripts complete the commands, the flags of each command, the
+;;   subcommands of `bjo dep`, and file names for the commands that take
+;;   files.
+;; - Task names come from `bjo -q completions --tasks`, which prints the names
+;;   that the project's tasks.bjo exports, one per line. It compiles nothing.
+;; - A change to the commands or flags of `bjo.bjo` needs a change here.
+
+(export completion-script)
+
+(import (std prelude))
+
+(: string)
+(def bash-script """
+    # bjo completions for bash. To install, run one of:
+    #   bjo completions bash > ~/.local/share/bash-completion/completions/bjo
+    #   echo 'source <(bjo completions bash)' >> ~/.bashrc
+
+    _bjo() {
+        local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+        local commands="init fetch dep run build check test bench publish fmt task sz repl rebjo help version completions"
+        local i=1 command=
+        while [[ $i -lt $COMP_CWORD ]]; do
+            case ${COMP_WORDS[i]} in
+                -q|--quiet) ;;
+                *) command=${COMP_WORDS[i]}; break ;;
+            esac
+            i=$((i + 1))
+        done
+        if [[ -z $command ]]; then
+            COMPREPLY=($(compgen -W "-q --quiet --version $commands" -- "$cur"))
+            return
+        fi
+        local at=$i
+
+        case $prev in
+            -o|--output|--path) COMPREPLY=($(compgen -d -- "$cur")); return ;;
+            --save) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+            --git|--version|--nuget) return ;;
+        esac
+
+        local flags= files=
+        case $command in
+            init) flags="--lib" ;;
+            fetch) flags="--locked" ;;
+            dep)
+                if [[ $COMP_CWORD -eq $((at + 1)) ]]; then
+                    COMPREPLY=($(compgen -W "add remove list" -- "$cur"))
+                    return
+                fi
+                case ${COMP_WORDS[at + 1]} in
+                    add) flags="--git --path --version --nuget --dev --task" ;;
+                    remove) flags="--nuget --dev --task" ;;
+                esac ;;
+            run) flags="-d --debug -c --compile --android"; files=1 ;;
+            build) flags="-d --debug -c --compile --locked --lib"; files=1 ;;
+            check) files=1 ;;
+            test) flags="-d --debug -c --compile"; files=1 ;;
+            bench) flags="-c --compile --all --quick --save"; files=1 ;;
+            publish) flags="-c --compile -o --output --android --whole-stdlib"; files=1 ;;
+            fmt) flags="--rewrite --check --diff"; files=1 ;;
+            task)
+                flags="-d --debug -c --compile"
+                local j=$((at + 1)) named=
+                while [[ $j -lt $COMP_CWORD ]]; do
+                    [[ ${COMP_WORDS[j]} == -* ]] || named=1
+                    j=$((j + 1))
+                done
+                if [[ -z $named && $cur != -* ]]; then
+                    COMPREPLY=($(compgen -W "$(bjo -q completions --tasks 2>/dev/null)" -- "$cur"))
+                    return
+                fi ;;
+            completions) COMPREPLY=($(compgen -W "bash fish zsh" -- "$cur")); return ;;
+            *) return ;;
+        esac
+
+        if [[ $cur == -* || -z $files ]]; then
+            COMPREPLY=($(compgen -W "$flags" -- "$cur"))
+        else
+            compopt -o filenames 2>/dev/null
+            COMPREPLY=($(compgen -f -- "$cur"))
+        fi
+    }
+
+    complete -F _bjo bjo
+
+    """)
+
+(: string)
+(def fish-script """
+    # bjo completions for fish. To install, run:
+    #   bjo completions fish > ~/.config/fish/completions/bjo.fish
+
+    # The command: the first word after bjo that is not a flag, or nothing.
+    function __bjo_command
+        for w in (commandline -opc)[2..-1]
+            string match -q -- '-*' $w; or begin; echo $w; return; end
+        end
+    end
+
+    # Whether the command is one of the arguments.
+    function __bjo_command_is
+        set -l c (__bjo_command)
+        test -n "$c"; and contains -- $c $argv
+    end
+
+    # Whether the word being completed is the first after `bjo task`, flags
+    # aside.
+    function __bjo_task_name_next
+        __bjo_command_is task; or return 1
+        set -l after 0
+        for w in (commandline -opc)[2..-1]
+            if test $after = 1
+                string match -q -- '-*' $w; or return 1
+            else if test $w = task
+                set after 1
+            end
+        end
+    end
+
+    complete -c bjo -f
+
+    complete -c bjo -n "test -z (__bjo_command)" -s q -l quiet -d 'Say nothing about building bjo itself'
+    complete -c bjo -n "test -z (__bjo_command)" -l version -d 'Show the versions of bjo and .NET'
+    complete -c bjo -n "test -z (__bjo_command)" -a init -d 'Make a project here'
+    complete -c bjo -n "test -z (__bjo_command)" -a fetch -d 'Fetch what the manifest names'
+    complete -c bjo -n "test -z (__bjo_command)" -a dep -d 'Add, remove or list dependencies'
+    complete -c bjo -n "test -z (__bjo_command)" -a run -d 'Build and run'
+    complete -c bjo -n "test -z (__bjo_command)" -a build -d 'Build'
+    complete -c bjo -n "test -z (__bjo_command)" -a check -d 'Report errors without building'
+    complete -c bjo -n "test -z (__bjo_command)" -a test -d 'Build and run tests'
+    complete -c bjo -n "test -z (__bjo_command)" -a bench -d 'Build and run benchmarks'
+    complete -c bjo -n "test -z (__bjo_command)" -a publish -d 'Build a program for release'
+    complete -c bjo -n "test -z (__bjo_command)" -a fmt -d 'Lay source out'
+    complete -c bjo -n "test -z (__bjo_command)" -a task -d 'Run a task of tasks.bjo'
+    complete -c bjo -n "test -z (__bjo_command)" -a sz -d 'Read and write samizdat documents'
+    complete -c bjo -n "test -z (__bjo_command)" -a repl -d 'Start a REPL'
+    complete -c bjo -n "test -z (__bjo_command)" -a rebjo -d 'Rebuild the compiler and bjo'
+    complete -c bjo -n "test -z (__bjo_command)" -a help -d 'Show the usage'
+    complete -c bjo -n "test -z (__bjo_command)" -a version -d 'Show the versions of bjo and .NET'
+    complete -c bjo -n "test -z (__bjo_command)" -a completions -d 'Print a shell completion script'
+
+    complete -c bjo -n "__bjo_command_is run build check test bench publish fmt" -F
+    complete -c bjo -n "__bjo_command_is run build test task" -s d -l debug -d 'Unoptimized, for a debugger'
+    complete -c bjo -n "__bjo_command_is run build test bench publish task" -s c -l compile -d 'Compile even when nothing changed'
+    complete -c bjo -n "__bjo_command_is init build" -l lib -d 'Make a library'
+    complete -c bjo -n "__bjo_command_is fetch build" -l locked -d 'Refuse to change the locks'
+    complete -c bjo -n "__bjo_command_is run publish" -l android -d 'For Android'
+    complete -c bjo -n "__bjo_command_is publish" -s o -l output -r -a '(__fish_complete_directories)' -d 'Where publish writes'
+    complete -c bjo -n "__bjo_command_is publish" -l whole-stdlib -d 'Copy all of the standard library'
+    complete -c bjo -n "__bjo_command_is bench" -l all -d 'Run every benchmark'
+    complete -c bjo -n "__bjo_command_is bench" -l quick -d 'Fewer rounds'
+    complete -c bjo -n "__bjo_command_is bench" -l save -r -F -d 'Save the results to a file'
+    complete -c bjo -n "__bjo_command_is fmt" -l rewrite -d 'Also rewrite ifs and lets'
+    complete -c bjo -n "__bjo_command_is fmt" -l check -d 'Write nothing; name what is not laid out'
+    complete -c bjo -n "__bjo_command_is fmt" -l diff -d 'Write nothing; print a diff'
+
+    complete -c bjo -n "__bjo_command_is dep; and not __fish_seen_subcommand_from add remove list" -a add -d 'Add a dependency'
+    complete -c bjo -n "__bjo_command_is dep; and not __fish_seen_subcommand_from add remove list" -a remove -d 'Remove a dependency'
+    complete -c bjo -n "__bjo_command_is dep; and not __fish_seen_subcommand_from add remove list" -a list -d 'List the dependencies'
+    complete -c bjo -n "__bjo_command_is dep; and __fish_seen_subcommand_from add" -l git -r -d 'A git repository URL'
+    complete -c bjo -n "__bjo_command_is dep; and __fish_seen_subcommand_from add" -l path -r -a '(__fish_complete_directories)' -d 'A directory'
+    complete -c bjo -n "__bjo_command_is dep; and __fish_seen_subcommand_from add" -l version -r -d 'The least version'
+    complete -c bjo -n "__bjo_command_is dep; and __fish_seen_subcommand_from add remove" -l nuget -r -d 'A NuGet package id'
+    complete -c bjo -n "__bjo_command_is dep; and __fish_seen_subcommand_from add remove" -l dev -d 'In dev-depends'
+    complete -c bjo -n "__bjo_command_is dep; and __fish_seen_subcommand_from add remove" -l task -d 'In task-depends'
+
+    complete -c bjo -n "__bjo_task_name_next" -a '(bjo -q completions --tasks 2>/dev/null)' -d 'Task'
+
+    complete -c bjo -n "__bjo_command_is completions" -a 'bash fish zsh'
+
+    """)
+
+;; zsh runs the bash script through its bash compatibility layer.
+(: string)
+(def zsh-script
+  (str """
+         # bjo completions for zsh. To install, add this to ~/.zshrc after compinit:
+         #   source <(bjo completions zsh)
+
+         autoload -U +X bashcompinit && bashcompinit
+
+         """
+       (string-join (list->vec (list-filter #(not (string-starts-with? & "#"))
+                                            (vec->list (string-split bash-script "\n"))))
+                    "\n")))
+
+;; The completion script for `shell`, or `None` for a shell it does not know.
+(: (-> string (Option string)))
+(defun (completion-script shell)
+  (case shell
+    ("bash" (Some bash-script))
+    ("fish" (Some fish-script))
+    ("zsh" (Some zsh-script))
+    (else None)))

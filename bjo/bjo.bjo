@@ -62,8 +62,11 @@
 (import "fmtrecord.bjo")
 (import "dep.bjo")
 (import (std parallel))
+(import (only (std run) run/output))
+(import (only (std os) temp-directory dotnet-description os-description runtime-identifier))
 (import "diff.bjo")
 (import "task.bjo")
+(import "completions.bjo")
 
 ;; ---------------------------------------------------------------------------
 ;; Interop
@@ -1695,6 +1698,10 @@
   (println "                                          sz.bjo adds its own samizdat commands.")
   (println "  bjo repl                                Start a REPL.")
   (println "  bjo rebjo                               Rebuild the compiler and bjo itself.")
+  (println "  bjo version, bjo --version              Show the versions of bjo and .NET, and where")
+  (println "                                          bjo is installed.")
+  (println "  bjo completions bash|fish|zsh           Print a completion script for the shell.")
+  (println "                                          The script says how to install it.")
   (println "  bjo help                                Show this message.")
   (println "")
   (println "Flags:")
@@ -1743,6 +1750,50 @@
               (:when-let (Some file) resolved)
               (:acc out (listing file))
           => out))))
+
+;; The version of bjo: what `git describe` says of the checkout at `root`,
+;; without the `v` of the tag, as 0.3.1-76-gd0463fa. "unknown" when git is
+;; missing or `root` is not a checkout.
+(: bjo-version (-> string) #:sync)
+(defun (bjo-version)
+  (def errors (path-combine (temp-directory) "bjo-version-errors"))
+  (match (run/output '(errors-into-file ,errors
+                                        (git ,(list->vec (list "-C" root "describe" "--tags"
+                                                               "--always" "--dirty")))))
+    ((Ok (Tuple 0 out))
+     (def v (string-trim out))
+     (if (string-starts-with? v "v") (string-drop v 1) v))
+    (_ "unknown")))
+
+;; `bjo version`: the versions of bjo and .NET, the system, and where bjo is.
+(: cmd-version (-> int) #:sync)
+(defun (cmd-version)
+  (println (str "bjo " (bjo-version)))
+  (println (str (dotnet-description) " on " (os-description) " (" (runtime-identifier) ")"))
+  (println (str "Installed at " root))
+  0)
+
+;; `bjo completions --tasks`: the names that the project's tasks.bjo exports,
+;; one per line, types left out. Prints nothing when there is no tasks.bjo or
+;; it cannot be read. Compiles nothing.
+(: (-> int))
+(defun (print-task-names)
+  (def dir
+    (match (find-project-dir (current-directory))
+      ((Some d) d)
+      (None (current-directory))))
+  (match (file-read-text (path-combine dir tasks-file-name))
+    ((Ok source)
+     (match (export-names source)
+       ((Ok names)
+        (loop (:for n names)
+              (:do (def first (string-take n 1))
+                   (unless (and (= first (string-upcase first))
+                                (not (= first (string-downcase first))))
+                     (println n)))))
+       ((Err _) (ignore 0))))
+    ((Err _) (ignore 0)))
+  0)
 
 (: dispatch (-> string Cmdline int) #:sync)
 (defun (dispatch command line)
@@ -1989,6 +2040,26 @@
      (usage)
      0)
 
+    (("version" "--version")
+     (if (and (empty? rest) (not (or debug? force? lib? locked?)))
+         (cmd-version)
+         (fail "bjo version: takes no arguments.")))
+
+    ;; `--tasks` is for the completion scripts: the task names, one per line.
+    ("completions"
+     (cond
+       ((or debug? force? lib? locked?)
+        (fail "bjo completions: builds nothing, so it takes no build flags."))
+       ((= rest (list "--tasks")) (print-task-names))
+       (else
+        (match (match rest
+                 ((Cons shell Nil) (completion-script shell))
+                 (_ None))
+          ((Some script)
+           (print script)
+           0)
+          (None (fail "bjo completions: name the shell: bash, fish or zsh."))))))
+
     (else (fail #"bjo: '${command}' is not a command. Try 'bjo help'."))))
 
 (defun (main args)
@@ -2009,7 +2080,8 @@
                           (= command "bench")
                           (= command "fmt")
                           (= command "task")
-                          (= command "sz")))
+                          (= command "sz")
+                          (= command "completions")))
     ((Err message) (fail message))
     ((Ok line) #:when (and (some? (record-ref line output)) (not (= command "publish")))
      (fail #"bjo ${command}: -o is for publish, which writes a directory; ${command} does not."))

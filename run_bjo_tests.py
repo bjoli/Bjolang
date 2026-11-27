@@ -2928,6 +2928,67 @@ SZ_BJO = """(export configure)
 """
 
 
+@test("completions")
+def test_completions(work, c):
+    version = run_bjo(work, "--version")
+    c.worked("bjo --version", version)
+    c.that("names bjo and its version", version.stdout.startswith("bjo "), version.stdout)
+    c.says("and .NET", version, ".NET ")
+    c.says("and where bjo is", version, "Installed at ")
+    c.failed("bjo version takes no arguments", run_bjo(work, "version", "x"))
+
+    c.failed("bjo completions needs a shell", run_bjo(work, "completions"))
+    unknown = run_bjo(work, "completions", "tcsh")
+    c.failed("bjo completions rejects a shell it does not know", unknown)
+    c.says("and names the ones it knows", unknown, "bash, fish or zsh")
+
+    scripts = {}
+    for shell in ("bash", "fish", "zsh"):
+        printed = run_bjo(work, "completions", shell)
+        c.worked(f"bjo completions {shell}", printed)
+        scripts[shell] = work / f"bjo.{shell}"
+        write(scripts[shell], printed.stdout)
+    for shell in ("bash", "fish", "zsh"):
+        if shutil.which(shell):
+            checked = subprocess.run([shell, "-n", str(scripts[shell])], capture_output=True, text=True)
+            c.that(f"the {shell} script parses", checked.returncode == 0, checked.stderr)
+
+    project = work / "tasky"
+    project.mkdir()
+    write(project / "manifest.bjodat", '(package (name (tasky)) (version "0.1.0"))\n')
+    write(project / "tasks.bjo", TASKS_BJO)
+    (project / "src").mkdir()
+    names = run_bjo(project / "src", "completions", "--tasks")
+    c.worked("bjo completions --tasks", names)
+    c.that("prints the task names of the project, types left out",
+           names.stdout.split() == ["build", "deploy", "count", "status"], names.stdout)
+    c.that("and compiles nothing", not (project / ".bjo" / "tasks").exists())
+    empty = run_bjo(work, "completions", "--tasks")
+    c.that("prints nothing without a tasks.bjo", empty.returncode == 0 and empty.stdout == "", said(empty))
+
+    env = dict(os.environ, PATH=f"{BJO.parent}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    def bash_completes(words, cword):
+        script = f'source "{scripts["bash"]}"; COMP_WORDS=({words}); COMP_CWORD={cword}; _bjo; echo "${{COMPREPLY[*]}}"'
+        done = subprocess.run(["bash", "-c", script], cwd=project, env=env, capture_output=True, text=True)
+        return done.stdout.split()
+
+    c.that("bash completes the commands", "completions" in bash_completes('bjo ""', 1))
+    c.that("and the dep subcommands", bash_completes('bjo dep ""', 2) == ["add", "remove", "list"])
+    c.that("and the flags of a command", bash_completes('bjo fmt --c', 2) == ["--check"])
+    c.that("and the task names", bash_completes('bjo task d', 2) == ["deploy"])
+
+    if shutil.which("fish"):
+        def fish_completes(line):
+            script = f'source "{scripts["fish"]}"; complete -C "{line}"'
+            done = subprocess.run(["fish", "-c", script], cwd=project, env=env, capture_output=True, text=True)
+            return [l.split("\t")[0] for l in done.stdout.splitlines()]
+
+        c.that("fish completes the dep subcommands", fish_completes("bjo dep ") == ["add", "list", "remove"])
+        c.that("and the task names", fish_completes("bjo task -d ") == ["build", "count", "deploy", "status"])
+        c.that("and nothing after a task named like a command", fish_completes("bjo task build ") == [])
+
+
 @test("sz")
 def test_sz(work, c):
     loose = work / "loose"
