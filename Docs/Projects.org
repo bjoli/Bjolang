@@ -107,6 +107,39 @@ are in ~bjo/manifest.bjo~, which is the only reader of it.
 - ~targets~ and ~(registry ...)~ sources are not implemented. A registry source
   is an error that says so.
 
+*** Editing the manifest with ~bjo dep~
+
+~bjo dep add~ and ~bjo dep remove~ add and remove dependencies and NuGet
+packages:
+
+#+BEGIN_SRC sh
+bjo dep add bjoweb --git https://github.com/bjoli/bjoweb
+bjo dep add "bjolang http" --path ../http --dev
+bjo dep add --nuget Npgsql
+bjo dep remove bjoweb
+bjo dep remove --nuget Npgsql
+#+END_SRC
+
+- *An edit changes the entry and nothing else.* Comments, blank lines and the
+  layout of the rest of the manifest stay as they are.
+- *A new entry goes after the last one of its clause*, under the first. A
+  clause that is not there is added after the last clause of the package.
+- *A removed entry takes its line with it*, and a comment after it on that
+  line. The last entry of a clause takes the clause with it.
+- ~--git URL~ without ~--version~ writes ~(version-at-least "X")~, where X is
+  the newest version tag of the repository. A repository with no version tags
+  is refused. ~--path DIR~ writes no version unless ~--version~ gives one.
+- ~--dev~ and ~--task~ add to ~dev-depends~ and ~task-depends~ instead of
+  ~depends~. ~bjo dep remove~ finds the clause that has the name, and needs
+  ~--dev~ or ~--task~ only when more than one has it.
+- ~--nuget ID~ without ~--version~ writes the newest stable version, from the
+  sources that ~NuGet.config~ names, as ~dotnet package search~ finds it. The
+  id is written as the feed spells it.
+- *A name that is there already is refused*, in any of the three clauses.
+- The edited manifest is read before it is written. If it does not read, or
+  does not say what was asked, nothing is written.
+- ~bjo dep~ only edits. The next ~bjo fetch~ or ~bjo build~ fetches.
+
 ** Shared frameworks
 
 #+BEGIN_SRC scheme
@@ -947,6 +980,7 @@ logcat -s bjo~ shows them for any app, also one installed from
 |-------------------------+---------------------------------------------------------------|
 | ~bjo init [name] [--lib]~ | Makes a project here. The name defaults to the directory's  |
 | ~bjo fetch [--locked]~  | Resolves, fetches, restores NuGet packages, writes ~.bjo/roots~. Compiles nothing |
+| ~bjo dep add ...~, ~bjo dep remove ...~ | Add or remove a dependency or a NuGet package in the manifest. See [[*Editing the manifest with ~bjo dep~][Editing the manifest]] |
 | ~bjo build [--locked]~  | ~fetch~, then compile the entry — or every module of a library; what the entry imports, and a library's modules, are built in parallel |
 | ~bjo run [. args...]~   | ~build~, then run the entry                                   |
 | ~bjo run --android~     | Build the app for the connected device, install it, start it, and show its log. See [[*Running on a device][Running on a device]] |

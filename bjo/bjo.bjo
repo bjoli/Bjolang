@@ -60,6 +60,7 @@
 (import "bench.bjo")
 (import "format.bjo")
 (import "fmtrecord.bjo")
+(import "dep.bjo")
 (import (std parallel))
 (import "diff.bjo")
 (import "task.bjo")
@@ -1635,6 +1636,14 @@
   (println "                                          this directory's; --lib makes a library.")
   (println
    "  bjo fetch [--locked]                    Fetch what the manifest names. Compiles nothing.")
+  (println "  bjo dep add NAME --git URL [--version V] [--dev | --task]")
+  (println "                                          Add a dependency to the manifest. Without")
+  (println "                                          --version, the newest tag is the least.")
+  (println "  bjo dep add NAME --path DIR [--version V] [--dev | --task]")
+  (println "                                          Add a dependency on a directory.")
+  (println "  bjo dep add --nuget ID [--version V]    Add a NuGet package, by default the newest.")
+  (println "  bjo dep remove NAME [--dev | --task]    Remove a dependency from the manifest.")
+  (println "  bjo dep remove --nuget ID               Remove a NuGet package.")
   (println "  bjo run [-d] [-c] [args...]             Build this project and run it.")
   (println "  bjo run . [args...]                     The same, when the program takes arguments.")
   (println "  bjo run [-d] [-c] <file.bjo> [args...]  Compile one file if it needs it, then run it.")
@@ -1766,6 +1775,15 @@
                      (int->string (prepared-dependencies ready))
                      " dependencies ready."))
        0))
+
+    ;; Edits to the manifest. See `dep.bjo`.
+    ("dep"
+     (with-return ret
+       (when (or debug? force? lib? locked?)
+         (ret (fail "bjo dep: edits the manifest and compiles nothing, so it takes no build flags.")))
+       (def (Ok project) (project-here "dep")
+         :leave ((Err why) (fail why)))
+       (cmd-dep project rest)))
 
     ("run"
      (with-return ret

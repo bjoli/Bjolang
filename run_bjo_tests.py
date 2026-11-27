@@ -2666,6 +2666,118 @@ TASKS_BJO = """(export build deploy count status Level)
 """
 
 
+# ---------------------------------------------------------------------------
+# bjo dep: edits to the manifest
+# ---------------------------------------------------------------------------
+
+DEP_MANIFEST = """(package
+  (name (app)) ; the app
+  (version "0.1.0")
+  (depends
+    ;; first
+    (package (name (a)) (source (path (dir "../a")))) ; why a
+    (package (name (b)) (source (path (dir "../b"))))) ; end of depends
+  (packages (nuget (id "X.One") (version "1.0.0"))))
+"""
+
+
+@test("dep")
+def test_dep(work, c):
+    app = work / "app"
+    app.mkdir()
+    run_bjo(app, "init")
+    made = (app / "manifest.bjodat").read_text()
+
+    # A git dependency, at least its newest version tag.
+    origin = work / "origin"
+    release(origin, "lib", "0.3.1")
+    release(origin, "lib", "0.10.0")
+    added = run_bjo(app, "dep", "add", "lib", "--git", str(origin))
+    c.worked("dep add --git adds a dependency", added)
+    c.says("at least the newest tag, compared as versions", added, "(lib) 0.10.0 or newer in depends")
+    text = (app / "manifest.bjodat").read_text()
+    c.that("and writes it as a (depends ...) clause after the last clause, before the comments",
+           text.startswith('(package\n  (name (app))\n  (version "0.1.0")\n  (depends\n'
+                           '    (package (name (lib))\n'
+                           '             (version (version-at-least "0.10.0"))\n'
+                           f'             (source (git (url "{origin}")))))\n\n  ;; What'), text)
+    c.that("and keeps the comments", ";; A package on disk, instead of one to fetch:" in text, text)
+    fetched = run_bjo(app, "fetch")
+    c.worked("bjo fetch fetches it", fetched)
+    c.says("at the version written", fetched, "added (lib) 0.10.0")
+    c.failed("dep add refuses a name that is there", run_bjo(app, "dep", "add", "lib", "--path", "../x"))
+    c.says("and says where", run_bjo(app, "dep", "add", "lib", "--path", "../x", "--dev"),
+           "(lib) is already in depends")
+    c.worked("dep add --path --dev adds to dev-depends",
+             run_bjo(app, "dep", "add", "bjolang http", "--path", "../http", "--dev"))
+    c.that("with a name of two parts", "(package (name (bjolang http))\n" in
+           (app / "manifest.bjodat").read_text(), (app / "manifest.bjodat").read_text())
+    c.worked("dep remove removes from the clause that has it", run_bjo(app, "dep", "remove", "bjolang http"))
+    c.worked("dep remove lib", run_bjo(app, "dep", "remove", "lib"))
+    c.that("and the manifest is as bjo init made it", (app / "manifest.bjodat").read_text() == made,
+           (app / "manifest.bjodat").read_text())
+    c.failed("dep remove refuses a name that is not there", run_bjo(app, "dep", "remove", "lib"))
+
+    untagged = work / "untagged"
+    make_package(untagged, "u", "0.1.0")
+    make_repo(untagged)
+    c.says("a repository with no version tags is refused",
+           run_bjo(app, "dep", "add", "u", "--git", str(untagged)), "has no version tags")
+    c.says("so is a version that is not one",
+           run_bjo(app, "dep", "add", "u", "--path", "../u", "--version", "1.x"), "'1.x' is not a version")
+    c.says("and a name that is not one", run_bjo(app, "dep", "add", "a(b", "--path", "../u"),
+           "is not a package name")
+    c.says("and a dependency with no source", run_bjo(app, "dep", "add", "u"), "--git URL or --path DIR")
+    c.that("none of which changed the manifest", (app / "manifest.bjodat").read_text() == made)
+
+    # Comments, entries on one line, and entries in the middle.
+    edited = work / "edited"
+    write(edited / "manifest.bjodat", DEP_MANIFEST)
+    c.worked("dep add after an entry with a comment after the clause",
+             run_bjo(edited, "dep", "add", "c", "--path", "../c"))
+    c.worked("dep add --nuget with a version to a clause on one line",
+             run_bjo(edited, "dep", "add", "--nuget", "X.Two", "--version", "2.0.0"))
+    c.that("each goes under the first entry, and the comments stay",
+           (edited / "manifest.bjodat").read_text() == DEP_MANIFEST
+           .replace('(package (name (b)) (source (path (dir "../b"))))) ; end of depends',
+                    '(package (name (b)) (source (path (dir "../b"))))\n'
+                    '    (package (name (c))\n             (source (path (dir "../c"))))) ; end of depends')
+           .replace('(packages (nuget (id "X.One") (version "1.0.0"))))',
+                    '(packages (nuget (id "X.One") (version "1.0.0"))\n'
+                    '            (nuget (id "X.Two") (version "2.0.0"))))'),
+           (edited / "manifest.bjodat").read_text())
+    c.worked("dep remove a, with the comment after it", run_bjo(edited, "dep", "remove", "a"))
+    c.worked("dep remove --nuget ignores the case of the id",
+             run_bjo(edited, "dep", "remove", "--nuget", "x.one"))
+    text = (edited / "manifest.bjodat").read_text()
+    c.that("the entry goes with its line and its comment, and the comment before it stays",
+           "    ;; first\n    (package (name (b))" in text and "why a" not in text, text)
+    for name in ("b", "c"):
+        run_bjo(edited, "dep", "remove", name)
+    run_bjo(edited, "dep", "remove", "--nuget", "X.Two")
+    c.that("the last entry of a clause takes the clause with it",
+           (edited / "manifest.bjodat").read_text()
+           == '(package\n  (name (app)) ; the app\n  (version "0.1.0")\n  )\n',
+           (edited / "manifest.bjodat").read_text())
+    c.failed("dep takes no build flags", run_bjo(edited, "dep", "-d", "add", "x", "--path", "y"))
+    c.failed("dep refuses a verb it does not know", run_bjo(edited, "dep", "frob"))
+    c.failed("dep needs a project", run_bjo(work, "dep", "add", "x", "--path", "y"))
+
+    # The newest NuGet version, from the sources NuGet.config names.
+    if not shutil.which("dotnet"):
+        c.that("SKIPPED: no dotnet on PATH", True)
+        return
+    feed, env, _ = make_feed(work)
+    nuget_config(app, feed)
+    newest = run_bjo(app, "dep", "add", "--nuget", "bjo.testgreeter", env=env)
+    c.worked("dep add --nuget with no version", newest)
+    c.says("adds the newest, as the feed spells its id", newest, "NuGet package Bjo.TestGreeter 1.1.0")
+    c.that("in a (packages ...) clause", '(packages\n    (nuget (id "Bjo.TestGreeter") (version "1.1.0")))'
+           in (app / "manifest.bjodat").read_text(), (app / "manifest.bjodat").read_text())
+    c.says("a package no source has is refused",
+           run_bjo(app, "dep", "add", "--nuget", "No.Such.Package", env=env), "no NuGet package No.Such.Package")
+
+
 @test("task")
 def test_task(work, c):
     loose = work / "loose"

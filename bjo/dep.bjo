@@ -1,0 +1,627 @@
+;; bjo/dep.bjo — `bjo dep add` and `bjo dep remove`: edits to the manifest.
+;;
+;; - An edit changes the text of one clause entry and nothing else. The
+;;   manifest is read with `(std read)`, whose ranges have byte offsets, and
+;;   the new text is spliced into the bytes. Comments, blank lines and layout
+;;   outside the entry stay as they are.
+;; - An added entry goes after the last entry of its clause, on a line of its
+;;   own, under the first entry. A clause that is not there is added after the
+;;   last clause of the package.
+;; - A removed entry takes its line with it when nothing else is on the line
+;;   but a comment. The last entry of a clause takes the clause with it.
+;; - The result is read as a `Package` before it is written. If it does not
+;;   read, or does not say what was asked, the manifest is not changed.
+;; - The manifest is written to a file beside it, which is renamed over it.
+
+(export cmd-dep)
+
+(import (std prelude))
+(import (std run))
+(import (std read))
+(import (text bjodat))
+(import (text json))
+(import "manifest.bjo")
+(import "project.bjo")
+(import "git.bjo")
+
+;; ---------------------------------------------------------------------------
+;; The text
+;; ---------------------------------------------------------------------------
+
+(: (-> (Array byte) int int string))
+(defun (cut b from to)
+  (bytes->string/lossy b #:start from #:end to))
+
+(: (-> (Array byte) int int))
+(defun (byte-at b i)
+  (cast int (array-ref b i)))
+
+(: (-> (Array byte) int bool))
+(defun (blank-at? b i)
+  (or (= (byte-at b i) 32) (= (byte-at b i) 9)))
+
+(: (-> int string))
+(defun (spaces n)
+  (loop (:for _ (range 0 n))
+        (:acc out (stringing #\space))
+    => out))
+
+;; `s` as a string literal.
+(: (-> string string))
+(defun (quoted s)
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add! sb #\")
+  (loop (:for c s)
+        (:do (when (or (= c #\") (= c #\\))
+               (stringbuilder-add! sb #\\))
+             (stringbuilder-add! sb c)))
+  (stringbuilder-add! sb #\")
+  (stringbuilder->string sb))
+
+;; The offset after `at`, a form's end, past a comment on the rest of its line.
+;; An entry added there does not take the comment of the form before it.
+(: (-> (Array byte) int int))
+(defun (past-line-comment b at)
+  (def n (array-length b))
+  (def p
+    (let go ((p at))
+      (if (and (< p n) (blank-at? b p))
+          (go (+ p 1))
+          p)))
+  (if (and (< p n) (= (byte-at b p) 59))
+      (let go ((q p))
+        (if (and (< q n) (not (= (byte-at b q) 10)))
+            (go (+ q 1))
+            q))
+      at))
+
+;; The bytes to cut to remove the form from `from` to `to`.
+;; - A form alone on its lines, but for a comment after it, goes with its
+;;   lines.
+;; - A form with a bracket after it on its line goes with the blanks after it.
+;; - A form after another on its line goes with the blanks before it.
+(: (-> (Array byte) int int (Tuple int int)))
+(defun (cut-range b from to)
+  (def n (array-length b))
+  (def line-start
+    (let go ((p (- from 1)))
+      (cond
+        ((< p 0) (Some 0))
+        ((= (byte-at b p) 10) (Some (+ p 1)))
+        ((blank-at? b p) (go (- p 1)))
+        (else None))))
+  (def after
+    (let go ((p to))
+      (if (and (< p n) (blank-at? b p))
+          (go (+ p 1))
+          p)))
+  (def line-end
+    (cond
+      ((= after n) (Some n))
+      ((= (byte-at b after) 10) (Some (+ after 1)))
+      ((= (byte-at b after) 59)
+       (let go ((q after))
+         (cond
+           ((= q n) (Some n))
+           ((= (byte-at b q) 10) (Some (+ q 1)))
+           (else (go (+ q 1))))))
+      (else None)))
+  (match (Tuple line-start line-end)
+    ((Tuple (Some s) (Some e)) (Tuple s e))
+    ((Tuple (Some _) None) (Tuple from after))
+    (_
+     (def before
+       (let go ((p from))
+         (if (and (> p 0) (blank-at? b (- p 1)))
+             (go (- p 1))
+             p)))
+     (Tuple before to))))
+
+;; ---------------------------------------------------------------------------
+;; The forms
+;; ---------------------------------------------------------------------------
+
+;; The head of a list headed by a name, and the forms after it.
+(: (-> Syntax (Option (Tuple string (List Syntax)))))
+(defun (headed s)
+  (match s
+    ((SList (Cons (SSym h) rest)) (Some (Tuple (symbol->string h) rest)))
+    (_ None)))
+
+;; The first of `forms` headed by `key`.
+(: (-> (List Syntax) string (Option Syntax)))
+(defun (clause-of forms key)
+  (match forms
+    (Nil None)
+    ((Cons f rest)
+     (match (headed f)
+       ((Some (Tuple h _)) #:when (= h key) (Some f))
+       (_ (clause-of rest key))))))
+
+;; The forms of a clause after its head.
+(: (-> Syntax (List Syntax)))
+(defun (items-of s)
+  (match (headed s)
+    ((Some (Tuple _ items)) items)
+    (None Nil)))
+
+;; The one form of the clause `key` of `entry`, as in `(id "X")`.
+(: (-> Syntax string (Option Syntax)))
+(defun (field-of entry key)
+  (match (clause-of (items-of entry) key)
+    ((Some c)
+     (match (items-of c)
+       ((Cons v Nil) (Some v))
+       (_ None)))
+    (None None)))
+
+;; Whether `entry` is `(package (name NAME) ...)`.
+(: (-> (List string) Syntax bool))
+(defun (dep-named? name entry)
+  (match (field-of entry "name")
+    ((Some (SList parts))
+     (= (list-map (fun (p)
+                    (match p
+                      ((SSym s) (symbol->string s))
+                      (_ "")))
+                  parts)
+        name))
+    (_ #f)))
+
+;; Whether `entry` is `(nuget (id ID) ...)`. NuGet ids ignore case.
+(: (-> string Syntax bool))
+(defun (nuget-with-id? id entry)
+  (match (field-of entry "id")
+    ((Some (SStr s)) (= (string-downcase s) (string-downcase id)))
+    (_ #f)))
+
+;; The forms of the package that `text` is, and its bytes.
+(type (: Manifest (Record (: bytes (Array byte))
+                          (: clauses (List Syntax)))))
+
+(: (-> string (Result string Manifest)))
+(defun (manifest-of text)
+  (match (read-source text #:file manifest-name)
+    ((Err e) (Err (read-error-message e)))
+    ((Ok (Cons form Nil))
+     (match (headed form)
+       ((Some (Tuple "package" clauses))
+        (Ok (Manifest (bytes (string->bytes text)) (clauses clauses))))
+       (_ (Err "the manifest is not a (package ...) form"))))
+    ((Ok _) (Err "the manifest is not one (package ...) form"))))
+
+(: (-> Syntax int))
+(defun (start-of s)
+  (record-ref (syntax-range s) start-offset))
+
+(: (-> Syntax int))
+(defun (end-of s)
+  (record-ref (syntax-range s) end-offset))
+
+(: (-> Syntax int))
+(defun (column-of s)
+  (record-ref (syntax-range s) start-column))
+
+(: (-> Syntax (List Syntax) Syntax))
+(defun (last-of first rest)
+  (match rest
+    (Nil first)
+    ((Cons f more) (last-of f more))))
+
+;; `text` with an entry added to the clause `key` of its package.
+;; - `entry` returns the text of the entry for the column it starts at.
+;; - A clause that is not there is added after the last clause.
+(: (-> string string (-> int string) (Result string string)))
+(defun (with-entry text key entry)
+  (def (Ok m) (manifest-of text) :propagate)
+  (def b (record-ref m bytes))
+  (defun (spliced at new)
+    (str (cut b 0 at) new (cut b at (array-length b))))
+  (def clauses (record-ref m clauses))
+  (match (clause-of clauses key)
+    ((Some clause)
+     (match (items-of clause)
+       ((Cons first rest)
+        (def col (column-of first))
+        (Ok (spliced (past-line-comment b (end-of (last-of first rest)))
+                     (str "\n" (spaces col) (entry col)))))
+       (Nil
+        (def head
+          (match clause
+            ((SList (Cons h _)) h)
+            (_ clause)))
+        (def col (+ (record-ref (syntax-range head) end-column) 1))
+        (Ok (spliced (end-of head) (str " " (entry col)))))))
+    (None
+     (match clauses
+       (Nil (Err "the manifest's package has no clauses"))
+       ((Cons first rest)
+        (def col (column-of first))
+        (Ok (spliced (past-line-comment b (end-of (last-of first rest)))
+                     (str "\n" (spaces col) "(" key "\n" (spaces (+ col 2)) (entry (+ col 2))
+                          ")"))))))))
+
+;; `text` without the entry of the clause `key` that `wanted?` holds for, or
+;; `None` when the clause has none. The last entry of a clause takes the clause
+;; with it.
+(: (-> string string (-> Syntax bool) (Result string (Option string))))
+(defun (without-entry text key wanted?)
+  (def (Ok m) (manifest-of text) :propagate)
+  (def b (record-ref m bytes))
+  (match (clause-of (record-ref m clauses) key)
+    (None (Ok None))
+    ((Some clause)
+     (def items (items-of clause))
+     (match (list-filter wanted? items)
+       (Nil (Ok None))
+       ((Cons entry _)
+        (def gone
+          (if (= (list-length items) 1)
+              clause
+              entry))
+        (def (Tuple from to) (cut-range b (start-of gone) (end-of gone)))
+        (Ok (Some (str (cut b 0 from) (cut b to (array-length b))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Versions to write
+;; ---------------------------------------------------------------------------
+
+;; The newest version tag of the repository at `url`, from the clone that
+;; `bjo fetch` uses. A clone already there fetches its tags first.
+(: newest-tag (-> Project string (List Symbol) (Result string Version)) #:sync)
+(defun (newest-tag project url name)
+  (def g (tool-for (project-tmp project)))
+  (def dot-bjo (project-dot-bjo project))
+  (def existed? (directory-exists? (clone-directory dot-bjo url)))
+  (def (Ok dir) (ensure-clone g dot-bjo url name) :propagate)
+  (def (Ok _) (if existed?
+                  (fetch-tags g dir)
+                  (Ok unit))
+    :propagate)
+  (def (Ok tags) (version-tags g dir) :propagate)
+  (match (list-reverse tags)
+    ((Cons v _) (Ok v))
+    (Nil
+     (Err (str "bjo dep add: " url " has no version tags, such as v1.2.3. "
+               "Tag a version, or use --path for a checkout.")))))
+
+;; The numbers of a NuGet version, for comparing: `1.10.0` is (1 10 0). A part
+;; that is not a number counts as 0.
+(: (-> string (List int)))
+(defun (version-numbers v)
+  (def release
+    (match (string-split-once v "-")
+      ((Some (Tuple r _)) r)
+      (None v)))
+  (list-map (fun (part)
+              (if (and (not (string-empty? part)) (all? char-numeric? (string->list part)))
+                  (string->int part)
+                  0))
+            (vec->list (string-split release "."))))
+
+(: (-> (List int) (List int) bool))
+(defun (numbers<? a b)
+  (match (Tuple a b)
+    ((Tuple Nil Nil) #f)
+    ((Tuple Nil (Cons y rest)) (numbers<? (list 0) b))
+    ((Tuple (Cons x rest) Nil) (numbers<? a (list 0)))
+    ((Tuple (Cons x xs) (Cons y ys))
+     (cond
+       ((< x y) #t)
+       ((> x y) #f)
+       ((and (empty? xs) (empty? ys)) #f)
+       (else (numbers<? (if (empty? xs) (list 0) xs) (if (empty? ys) (list 0) ys)))))))
+
+;; The id as the feed spells it, and the newest stable version of the NuGet
+;; package `id`, from the sources that NuGet.config names. It is what
+;; `dotnet package search` finds.
+(: newest-nuget (-> string (Result string (Tuple string string))) #:sync)
+(defun (newest-nuget id)
+  (set-environment-variable! "DOTNET_NOLOGO" "1")
+  (def (Ok (Tuple code out))
+    (result-map-err (fun (e) (str "bjo dep add: could not run dotnet: " (run-error-message e)))
+                    (run/output '(dotnet ["package" "search" ,id "--exact-match" "--format" "json"])))
+    :propagate)
+  (def (Ok json) (if (= code 0)
+                     (result-map-err (fun (e) (str "bjo dep add: dotnet package search said: " e))
+                                     (parse-json out))
+                     (Err (str "bjo dep add: dotnet package search failed:\n  " (string-trim out))))
+    :propagate)
+  (def found
+    (match (json-object-ref json "searchResult")
+      ((Some (JsonArr sources))
+       (loop (:for source sources)
+             (:let packages (json-object-ref source "packages"))
+             (:when-let (Some (JsonArr ps)) packages)
+             (:for p ps)
+             (:let pid (json-object-ref p "id"))
+             (:let pv (json-object-ref p "version"))
+             (:when-let (Some (JsonStr i)) pid)
+             (:when-let (Some (JsonStr v)) pv)
+             (:acc out (listing (Tuple i v)))
+         => out))
+      (_ Nil)))
+  (def newest
+    (list-foldl (fun (p best)
+                  (match best
+                    ((Some (Tuple _ bv)) #:when (not (numbers<? (version-numbers bv)
+                                                                (version-numbers (snd p))))
+                     best)
+                    (_ (Some p))))
+                None
+                found))
+  (match newest
+    ((Some p) (Ok p))
+    (None
+     (Err (str "bjo dep add: no NuGet package " id " in the sources that NuGet.config names. "
+               "Check the id, or give --version.")))))
+
+;; ---------------------------------------------------------------------------
+;; The command
+;; ---------------------------------------------------------------------------
+
+;; What `bjo dep` was given after `add` or `remove`.
+(type (: Options (Record (: names (List string))
+                         (: git (Option string))
+                         (: path (Option string))
+                         (: version (Option string))
+                         (: nuget (Option string))
+                         (: dev bool)
+                         (: task bool))))
+
+(: (-> string (List string) (Result string Options)))
+(defun (options-of verb args)
+  (: go (-> (List string) Options (Result string Options)))
+  (defun (go left o)
+    (match left
+      (Nil (Ok (record-set o (names (list-reverse (record-ref o names))))))
+      ((Cons "--dev" rest) (go rest (record-set o (dev #t))))
+      ((Cons "--task" rest) (go rest (record-set o (task #t))))
+      ((Cons flag rest) #:when (list-contains? (list "--git" "--path" "--version" "--nuget") flag)
+       (match rest
+         (Nil (Err #"bjo dep ${verb}: ${flag} needs a value."))
+         ((Cons v more)
+          (go more
+              (case flag
+                ("--git" (record-set o (git (Some v))))
+                ("--path" (record-set o (path (Some v))))
+                ("--version" (record-set o (version (Some v))))
+                (else (record-set o (nuget (Some v)))))))))
+      ((Cons flag _) #:when (string-starts-with? flag "-")
+       (Err #"bjo dep ${verb}: unknown flag '${flag}'."))
+      ((Cons name rest) (go rest (record-set o (names (Cons name (record-ref o names))))))))
+  (go args
+      (Options (names Nil) (git None) (path None) (version None) (nuget None) (dev #f) (task #f))))
+
+;; The dependency clauses of a manifest, in the order they are searched.
+(: (List string))
+(def dep-clauses (list "depends" "dev-depends" "task-depends"))
+
+(: (-> Package string (List Dep)))
+(defun (deps-in package clause)
+  (case clause
+    ("depends" (record-ref package depends))
+    ("dev-depends" (record-ref package dev-depends))
+    (else (record-ref package task-depends))))
+
+(: (-> (List Symbol) Dep bool))
+(defun (dep-is? name d)
+  (= (record-ref d name) name))
+
+(: (-> Package (List Symbol) (List string)))
+(defun (clauses-naming package name)
+  (list-filter (fun (clause) (any? #(dep-is? name &) (deps-in package clause))) dep-clauses))
+
+(: (-> Package string bool))
+(defun (has-nuget? package id)
+  (any? (fun (p) (= (string-downcase (nuget-id p)) (string-downcase id)))
+        (record-ref package packages)))
+
+;; A package name as the command line writes it: `bjoweb` or `"bjolang http"`.
+(: (-> string (List string)))
+(defun (name-parts s)
+  (list-filter #(not (string-empty? &)) (vec->list (string-split s " "))))
+
+;; Writes `text` as the manifest of `project`, if it reads as a package that
+;; `holds?`, and returns 0. Otherwise writes nothing and returns 1.
+(: write-manifest (-> Project string string (-> Package bool) int) #:sync)
+(defun (write-manifest project verb text holds?)
+  (def file (path-combine (project-dir project) manifest-name))
+  (def temp (str file ".tmp"))
+  (match (bjodat-parse-Package text)
+    ((Err why)
+     (fail
+      #"bjo dep ${verb}: the edited manifest does not read (${why}), so it is not written. This is a bug in bjo."))
+    ((Ok package) #:when (not (holds? package))
+     (fail
+      #"bjo dep ${verb}: the edited manifest does not say what was asked, so it is not written. This is a bug in bjo."))
+    ((Ok _)
+     (match (file-write-text temp text)
+       ((Err e) (fail #"bjo dep ${verb}: could not write ${temp}: ${(fs-error-message e)}"))
+       ((Ok _)
+        (match (file-move temp file #:mode MoveReplace)
+          ((Err e) (fail #"bjo dep ${verb}: could not replace ${file}: ${(fs-error-message e)}"))
+          ((Ok _) 0)))))))
+
+;; The dependency clause that `o` names: `depends` unless `--dev` or `--task`.
+(: (-> string Options (Result string string)))
+(defun (clause-named verb o)
+  (cond
+    ((and (record-ref o dev) (record-ref o task))
+     (Err #"bjo dep ${verb}: --dev and --task are two clauses; give one."))
+    ((record-ref o dev) (Ok "dev-depends"))
+    ((record-ref o task) (Ok "task-depends"))
+    (else (Ok "depends"))))
+
+;; The one package name `o` has, in its parts.
+(: (-> string Options (Result string (List string))))
+(defun (name-given verb o)
+  (match (record-ref o names)
+    ((Cons n Nil)
+     (match (name-parts n)
+       (Nil (Err #"bjo dep ${verb}: the package name is empty."))
+       (parts (Ok parts))))
+    (Nil (Err #"bjo dep ${verb}: name the package, as in 'bjo dep ${verb} bjoweb'."))
+    (_
+     (Err
+      #"bjo dep ${verb}: one package at a time. A name of several parts is quoted, as in \"bjolang http\"."))))
+
+;; The source clause of a new dependency, and the least version to write.
+;; With `--git` and no `--version`, that is the newest tag.
+(: source-given (-> Project Options (List Symbol) (Result string (Tuple string (Option string))))
+   #:sync)
+(defun (source-given project o name)
+  (match (Tuple (record-ref o git) (record-ref o path))
+    ((Tuple (Some url) None)
+     (def source (str "(source (git (url " (quoted url) ")))"))
+     (match (record-ref o version)
+       ((Some v) (Ok (Tuple source (Some v))))
+       (None
+        (def (Ok v) (newest-tag project url name) :propagate)
+        (Ok (Tuple source (Some (version->string v)))))))
+    ((Tuple None (Some dir))
+     (Ok (Tuple (str "(source (path (dir " (quoted dir) ")))") (record-ref o version))))
+    ((Tuple None None) (Err "bjo dep add: say where it comes from: --git URL or --path DIR."))
+    (_ (Err "bjo dep add: --git and --path are two sources; give one."))))
+
+;; The id as the feed spells it and the version of a new NuGet package.
+(: nuget-given (-> string Options (Result string (Tuple string string))) #:sync)
+(defun (nuget-given id o)
+  (match (record-ref o version)
+    ((Some v) (Ok (Tuple id v)))
+    (None (newest-nuget id))))
+
+(: dep-add (-> Project string Options int) #:sync)
+(defun (dep-add project text o)
+  (def package (project-package project))
+  (with-return ret
+    (match (record-ref o nuget)
+      ((Some id)
+       (unless (and (empty? (record-ref o names))
+                    (none? (record-ref o git))
+                    (none? (record-ref o path))
+                    (not (record-ref o dev))
+                    (not (record-ref o task)))
+         (ret (fail "bjo dep add: --nuget takes an id and perhaps --version, and nothing else.")))
+       (when (has-nuget? package id)
+         (ret (fail #"bjo dep add: the manifest already names the NuGet package ${id}.")))
+       (def (Ok (Tuple spelled version)) (nuget-given id o)
+         :leave ((Err why) (fail why)))
+       (def entry
+         (fun (col) (str "(nuget (id " (quoted spelled) ") (version " (quoted version) "))")))
+       (def (Ok edited) (with-entry text "packages" entry)
+         :leave ((Err why) (fail #"bjo dep add: ${why}")))
+       (def code (write-manifest project "add" edited #(has-nuget? & spelled)))
+       (when (= code 0)
+         (println #"bjo dep add: NuGet package ${spelled} ${version}. The next build restores it."))
+       code)
+      (None
+       (def (Ok clause) (clause-named "add" o)
+         :leave ((Err why) (fail why)))
+       (def (Ok parts) (name-given "add" o)
+         :leave ((Err why) (fail why)))
+       (def name (list-map string->symbol parts))
+       (def shown (str "(" (string-join (list->vec parts) " ") ")"))
+       (match (clauses-naming package name)
+         ((Cons c _) (ret (fail #"bjo dep add: ${shown} is already in ${c}. Remove it first.")))
+         (Nil (ignore 0)))
+       (def (Ok (Tuple source at-least)) (source-given project o name)
+         :leave ((Err why) (fail why)))
+       (match at-least
+         ((Some v) #:when (err? (parse-version v))
+          (ret (fail #"bjo dep add: '${v}' is not a version, such as 1.2.3.")))
+         (_ (ignore 0)))
+       (def fields
+         (list-append (match at-least
+                        ((Some v) (list (str "(version (version-at-least " (quoted v) "))")))
+                        (None Nil))
+                      (list source)))
+       (def entry
+         (fun (col)
+           (str "(package (name " shown ")"
+                (string-join (list->vec (list-map (fun (f) (str "\n" (spaces (+ col 9)) f)) fields))
+                             "")
+                ")")))
+       (when (err? (bjodat-parse-Dep (entry 0)))
+         (ret
+          (fail
+           #"bjo dep add: ${shown} is not a package name. A name is symbols, as in (bjolang http).")))
+       (def (Ok edited) (with-entry text clause entry)
+         :leave ((Err why) (fail #"bjo dep add: ${why}")))
+       (def code
+         (write-manifest project "add" edited #(list-contains? (clauses-naming & name) clause)))
+       (when (= code 0)
+         (println (str "bjo dep add: " shown
+                       (match at-least
+                         ((Some v) #" ${v} or newer")
+                         (None ""))
+                       " in " clause ". Run 'bjo fetch' to fetch it.")))
+       code))))
+
+;; The clause to remove the dependency `name` from: the one `o` names, or the
+;; only one that has it.
+(: (-> Options Package (List Symbol) string (Result string string)))
+(defun (clause-to-remove-from o package name shown)
+  (cond
+    ((or (record-ref o dev) (record-ref o task)) (clause-named "remove" o))
+    (else
+     (match (clauses-naming package name)
+       (Nil (Err #"bjo dep remove: the manifest names no ${shown}."))
+       ((Cons c Nil) (Ok c))
+       (in
+        (Err (str "bjo dep remove: " shown " is in " (string-join (list->vec in) " and ")
+                  ". Say which with --dev or --task, or neither for depends.")))))))
+
+(: dep-remove (-> Project string Options int) #:sync)
+(defun (dep-remove project text o)
+  (def package (project-package project))
+  (with-return ret
+    (when (or (some? (record-ref o git)) (some? (record-ref o path)) (some? (record-ref o version)))
+      (ret (fail "bjo dep remove: takes a name, or --nuget and an id, and perhaps --dev or --task.")))
+    (match (record-ref o nuget)
+      ((Some id)
+       (unless (and (empty? (record-ref o names)) (not (record-ref o dev)) (not (record-ref o task)))
+         (ret (fail "bjo dep remove: --nuget takes an id, and nothing else.")))
+       (def (Ok found) (without-entry text "packages" #(nuget-with-id? id &))
+         :leave ((Err why) (fail #"bjo dep remove: ${why}")))
+       (def (Some edited) found
+         :leave (None (fail #"bjo dep remove: the manifest names no NuGet package ${id}.")))
+       (def code (write-manifest project "remove" edited #(not (has-nuget? & id))))
+       (when (= code 0)
+         (println #"bjo dep remove: NuGet package ${id}."))
+       code)
+      (None
+       (def (Ok parts) (name-given "remove" o)
+         :leave ((Err why) (fail why)))
+       (def name (list-map string->symbol parts))
+       (def shown (str "(" (string-join (list->vec parts) " ") ")"))
+       (def (Ok clause) (clause-to-remove-from o package name shown)
+         :leave ((Err why) (fail why)))
+       (def (Ok found) (without-entry text clause #(dep-named? parts &))
+         :leave ((Err why) (fail #"bjo dep remove: ${why}")))
+       (def (Some edited) found
+         :leave (None (fail #"bjo dep remove: ${clause} names no ${shown}.")))
+       (def code
+         (write-manifest project
+                         "remove"
+                         edited
+                         #(not (list-contains? (clauses-naming & name) clause))))
+       (when (= code 0)
+         (println #"bjo dep remove: ${shown} from ${clause}."))
+       code))))
+
+;; `bjo dep add ...` and `bjo dep remove ...`, in the project at `project`.
+(: cmd-dep (-> Project (List string) int) #:sync)
+(defun (cmd-dep project args)
+  (def file (path-combine (project-dir project) manifest-name))
+  (match args
+    ((Cons verb rest) #:when (or (= verb "add") (= verb "remove"))
+     (match (Tuple (options-of verb rest) (file-read-text file))
+       ((Tuple (Err why) _) (fail why))
+       ((Tuple _ (Err e)) (fail #"bjo dep ${verb}: could not read ${file}: ${(fs-error-message e)}"))
+       ((Tuple (Ok o) (Ok text))
+        (if (= verb "add")
+            (dep-add project text o)
+            (dep-remove project text o)))))
+    ((Cons verb _) (fail #"bjo dep: '${verb}' is not a dep command. There are add and remove."))
+    (Nil (fail "bjo dep: add or remove? See 'bjo help'."))))
