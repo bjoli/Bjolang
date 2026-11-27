@@ -1809,7 +1809,10 @@
          (if (= (node-atom (item-at g 3)) "#:when")
              6
              4)))
-    (KIf (= (count-items g node-list?) 0))
+    ;; A ternary `if` stays on the line if the source has it there.
+    (KIf
+     (or (= (count-items g node-list?) 0)
+         (and (not (record-ref g spans)) (= (count-items g straight-line?) n))))
     ((KLet _) (<= n 2))
     (KLetrec (<= n 2))
     (KDefStar (<= n 2))
@@ -1817,6 +1820,35 @@
     (KLoop (<= (count-items g loop-clause?) 1))
     (KLoopDo (<= n 2))
     (_ #t)))
+
+;; Whether `k` is a kind of form that branches, binds or has a body.
+(: control-kind? (-> Kind bool))
+(defun (control-kind? k)
+  (match k
+    (KIf #t)
+    (KCond #t)
+    (KMatch #t)
+    ((KLet _) #t)
+    (KLetrec #t)
+    (KLoop #t)
+    ((KBody _) #t)
+    ((KSmallBody _) #t)
+    (KBlock #t)
+    (KSmallBlock #t)
+    (KDef #t)
+    (KDefStar #t)
+    (KKept #t)
+    (_ #f)))
+
+;; Whether `n` is straight-line code: no list in it is a form that branches,
+;; binds or has a body (see `control-kind?`).
+(: straight-line? (-> Node bool))
+(defun (straight-line? n)
+  (match n
+    ((Leaf _) #t)
+    ((Branch g)
+     (and (not (control-kind? (code-kind g (head-of g))))
+          (= (count-items g straight-line?) (vec-length (record-ref g items)))))))
 
 ;; Of the failure parts, only `:propagate` may share the line.
 (: def-one-line? (-> Group bool))
