@@ -120,12 +120,20 @@
 ;;
 ;; Reporting after a cancellation is exactly the work a shield is for, and
 ;; `with-shield` above is where that promise is tested on its own.
+;;
+;; `leaf`'s wait is such a sync too. A `sync` on `(cancelled tok)` where `tok`
+;; is the ambient token races that same token: when it fires while the fiber
+;; is parked, the event and the ambient branch are ready together, and either
+;; may commit, so the wait returns or raises `Cancelled`. So `leaf` reads the
+;; ambient token outside the shield, which is what shows it was handed the
+;; token, and waits for it inside, where the ambient token is the shield's.
 
 (: (-> (Chan string) void))
 (defbjo (leaf report)
-  (def fired (sync (cancelled (parameter-ref current-cancel))))
+  (def tok (parameter-ref current-cancel))
   (with-shield
     #:within (seconds 5)
+    (def fired (sync (cancelled tok)))
     (sync (chan-send report "leaf"))))
 
 (: (-> (Chan string) void))
@@ -142,6 +150,12 @@
 (: (-> (Chan string) void))
 (defbjo (outsider report)
   (sync (chan-send report (yes-no (cancelled? (parameter-ref current-cancel))))))
+
+;; The next report, or "nothing within 5 s" when none comes, so that a report
+;; that never comes is a `FAILURE:` line rather than a hang.
+(: (-bjo-> (Chan string) string))
+(defbjo (next-report report)
+  (sync (choose (chan-recv report) (wrap (timeout (seconds 5)) (fun (u) "nothing within 5 s")))))
 
 ;; Raced against a generous timeout wherever a test would otherwise be able to
 ;; hang: a broken link should be a `FAILURE:` line, not a suite that never
@@ -246,8 +260,8 @@
     (parameterize ((current-cancel scope-tok))
       (bjo (branch report))))
   (def cs (cancel-scope! (Requested "the scope")))
-  (expect "a grandchild sees the ambient token" (sync (chan-recv report)) "leaf")
-  (expect "and its parent finishes after it" (sync (chan-recv report)) "branch")
+  (expect "a grandchild sees the ambient token" (next-report report) "leaf")
+  (expect "and its parent finishes after it" (next-report report) "branch")
   (expect "the whole subtree came home"
           (match (sync (promise-join root))
             ((Ok u) "done")
@@ -260,5 +274,5 @@
   ;; fired by now and this fiber is entirely unaffected, which is what makes a
   ;; scope a scope.
   (def out (bjo (outsider report)))
-  (expect "a fiber spawned outside the scope is not in it" (sync (chan-recv report)) "no")
+  (expect "a fiber spawned outside the scope is not in it" (next-report report) "no")
   0)
