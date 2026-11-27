@@ -679,6 +679,21 @@ public sealed class BjoOutputPort : TextWriter {
         try {
             if (_disposed || _writeClosed || _inner is null) return;
             SettleSurrogateLocked();
+            // A port made by `make-output-port`: its close is the last write,
+            // and takes the place of a flush.
+            if (_inner is FnOutputStream fn) {
+                try {
+                    await DrainLockedAsync(cancel).ConfigureAwait(false);
+                    await fn.CloseAsync().ConfigureAwait(false);
+                } catch {
+                    _len = 0;
+                    fn.Abandon();
+                    throw;
+                } finally {
+                    _unflushed = false;
+                }
+                return;
+            }
             if (!HasPending) return;
             try {
                 await FlushLockedAsync(cancel).ConfigureAwait(false);
@@ -717,9 +732,12 @@ public sealed class BjoOutputPort : TextWriter {
                 // Held bytes go out before the handle does. With nothing
                 // pending there is no I/O at all, which is what makes a close
                 // after a flush safe over a stream that refuses blocking I/O.
+                // A `make-output-port` stream is drained, not flushed: its
+                // dispose calls its close.
                 if (!_writeClosed && _inner is not null) {
                     SettleSurrogateLocked();
-                    if (HasPending) FlushLocked();
+                    if (_inner is FnOutputStream) DrainLocked();
+                    else if (HasPending) FlushLocked();
                 }
             } finally {
                 _disposed = true;

@@ -1,0 +1,170 @@
+;; std/ports make-input-port and make-output-port: ports made of bjoroutines.
+;; A read reads the chunks the function returns, a read that the function
+;; suspends in suspends the reader, the function sees the reader's dynamic
+;; environment, a cancelled reader leaves the port whole, a raise is sticky,
+;; and an output port calls write, flush and close where it should.
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+
+(import/class
+  (Broken (: System.InvalidOperationException (-> string Broken))))
+
+;; A read function that returns `chunks` one at a time, then None.
+(: (-> (Vec string) (Box int) (-bjo-> (Option (Array byte)))))
+(defun (chunks-of chunks at)
+  (bjoroutine ()
+    (def i (box-ref at))
+    (box-set! at (+ i 1))
+    (if (< i (vec-length chunks))
+        (Some (string->bytes (vec-ref chunks i)))
+        None)))
+
+;; A port that reads what `src` has, through a bjoroutine. Each call writes
+;; "[read]" to the current output port.
+(: (-> InputPort InputPort))
+(defun (relay src)
+  (make-input-port (bjoroutine ()
+                     (write-string (parameter-ref current-output-port) "[read]")
+                     (read-some src))))
+
+(: (-bjo-> InputPort (List string)))
+(defbjo (lines-of p)
+  (match (read-line/opt p)
+    ((Some l) (cons l (lines-of p)))
+    (None '())))
+
+(: (-bjo-> OutputPort int long void))
+(defbjo (write-slowly out n gap)
+  (loop (:for i (range 0 n))
+        (:do (sync (timeout (milliseconds gap)))
+             (write-string out (str "line " (int->string i) "\n"))
+             (flush-port out)))
+  (close-output-port out))
+
+;; What an output port's functions were called with, as one string:
+;; "w:" and the bytes for a write, "f" for a flush, "c" for a close.
+(: (-> (Box string) OutputPort))
+(defun (recording log)
+  (make-output-port (bjoroutine (bytes)
+                      (box-set! log (str (box-ref log) "w:" (bytes->string/lossy bytes) ";")))
+                    #:flush (bjoroutine () (box-set! log (str (box-ref log) "f;")))
+                    #:close (bjoroutine () (box-set! log (str (box-ref log) "c;")))))
+
+(defbjo (main args)
+  ;; --- Input ----------------------------------------------------------------
+  (def closes (make-box 0))
+  (with-scope
+    (def p
+      (make-input-port (chunks-of ["one\ntw" "" "o\nthree" "\n"] (make-box 0))
+                       #:close (fun () (box-set! closes (+ (box-ref closes) 1)))))
+    (expect "the chunks are read as one text, an empty one skipped"
+            (lines-of p)
+            '("one" "two" "three"))
+    (close-input-port p))
+  (expect "close is called once" (box-ref closes) 1)
+
+  (with-scope
+    (ignore (make-input-port (chunks-of [] (make-box 0))
+                             #:close (fun () (box-set! closes (+ (box-ref closes) 1))))))
+  (expect "the scope's end closes a port" (box-ref closes) 2)
+
+  ;; A read that suspends: the source is written slowly by another fiber, and
+  ;; a third runs while the reader waits.
+  (def (Tuple in out) (byte-pipe))
+  (def writer (bjo (write-slowly out 3 30L)))
+  (def ticks (make-box 0))
+  (def ticker
+    (bjo
+      (let ()
+        (loop (:for _ (range 0 5))
+              (:do (sync (timeout (milliseconds 10L)))
+                   (box-set! ticks (+ (box-ref ticks) 1))))
+        0)))
+  (def captured (open-output-string))
+  (def got
+    (with-scope (parameterize ((current-output-port captured))
+                  (lines-of (relay in)))))
+  (ignore (sync (promise-join writer)))
+  (ignore (sync (promise-join ticker)))
+  (expect "a read that suspends reads the lines" got '("line 0" "line 1" "line 2"))
+  (expect "the function sees the reader's parameters"
+          (string-starts-with? (get-output-string captured) "[read][read]")
+          #t)
+  (expect "another fiber runs while the reader waits" (box-ref ticks) 5)
+
+  ;; A reader cancelled while the function waits leaves the refill to finish.
+  (def (Tuple in2 out2) (byte-pipe))
+  (def writer2 (bjo (write-slowly out2 2 100L)))
+  (with-scope
+    (def p2 (relay in2))
+    (def first
+      (try
+        (with-deadline (milliseconds 20L)
+          (read-line/opt p2))
+        #:catch (System.Exception)))
+    (expect "the cancelled read raises"
+            (match first
+              ((Ok _) #f)
+              ((Err _) #t))
+            #t)
+    (expect "the next reader reads everything" (lines-of p2) '("line 0" "line 1")))
+  (ignore (sync (promise-join writer2)))
+
+  ;; A raise in the function is raised by that read and every read after it.
+  (with-scope
+    (def bad (make-input-port (bjoroutine () (raise (cast Exception (Broken. "broken source"))))))
+    (def once (try (read-line/opt bad) #:catch (System.InvalidOperationException)))
+    (def twice (try (read-line/opt bad) #:catch (System.InvalidOperationException)))
+    (expect "a raise reaches the reader"
+            (match once
+              ((Ok _) "")
+              ((Err e) (.-Message e)))
+            "broken source")
+    (expect "and the next reader"
+            (match twice
+              ((Ok _) "")
+              ((Err e) (.-Message e)))
+            "broken source"))
+
+  ;; --- Output ---------------------------------------------------------------
+  (def log (make-box ""))
+  (with-scope
+    (def o (recording log))
+    (write-string o "hello ")
+    (write-string o "world")
+    (expect "nothing is written while it fits in the buffer" (box-ref log) "")
+    (flush-port o)
+    (expect "a flush writes the buffer, then flushes" (box-ref log) "w:hello world;f;")
+    (write-string o "bye")
+    (close-output-port o))
+  (expect "a close writes the buffer, then closes, with no flush"
+          (box-ref log)
+          "w:hello world;f;w:bye;c;")
+
+  (def log2 (make-box ""))
+  (with-scope
+    (write-string (recording log2) "unclosed"))
+  (expect "the scope's end writes the buffer and closes" (box-ref log2) "w:unclosed;c;")
+
+  ;; A write function that suspends: it writes into a pipe that another fiber
+  ;; reads.
+  (def (Tuple in3 out3) (byte-pipe))
+  (def reader
+    (bjo
+      (let ()
+        (lines-of in3))))
+  (with-scope
+    (def o
+      (make-output-port (bjoroutine (bytes)
+                          (write-bytes! out3 bytes)
+                          (flush-port out3)) #:close (bjoroutine ()
+                          (write-string out3 "trailer\n")
+                          (close-output-port out3))))
+    (loop (:for i (range 0 2000))
+          (:do (write-string o (str "line " (int->string i) "\n"))))
+    (close-output-port o))
+  (def read-back (raise-err (sync (promise-join reader))))
+  (expect "a suspending write function passes every line on" (list-length read-back) 2001)
+  (expect "and close writes last" (list-ref read-back 2000) "trailer")
+  0)

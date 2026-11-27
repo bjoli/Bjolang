@@ -358,6 +358,70 @@
     ambient concurrency scope flushes and disposes the underlying stream.
     """))
 
+(:doc make-input-port
+  (summary "A port whose bytes are the chunks a bjoroutine returns.")
+  (arg read "Returns the next chunk of bytes, or None at the end of input.")
+  (key close "Called once, when the port is closed. Does nothing unless given.")
+  (returns "A new input port, owned by the ambient scope.")
+  (raises Bjolang.Runtime.ScopeEnded "When called without an ambient structured concurrency scope.")
+  (see make-output-port stream->input-port byte-pipe)
+  (example """
+    ;; A port that reads another and returns its bytes upper-cased.
+    (defun (upcased src)
+      (make-input-port
+       (bjoroutine ()
+         (match (read-some src)
+           ((Some bytes) (Some (string->bytes (string-upcase (bytes->string/lossy bytes)))))
+           (None None)))))
+    """)
+  (reference """
+    @bold{The port calls read when its buffer is empty} and a reader needs
+    more, and again only after it has used up the last chunk. An empty chunk
+    is skipped. Every read of the port, of text or of bytes, and
+    @code{read-some-evt} in a @code{choose}, works as on a file port.
+
+    @bold{read suspends the reader} where it suspends. It runs in the dynamic
+    environment of the reader that needed the bytes: its parameters, and its
+    scope. It runs under a shield, so a reader cancelled while read waits does
+    not cancel read: the chunk it returns is kept for the next reader.
+
+    @bold{What read raises} is raised by that read of the port and by every
+    read after it.
+    """))
+
+(:doc make-output-port
+  (summary "A port that hands what is written to it to a bjoroutine.")
+  (arg write "Called with each chunk of bytes as it leaves the port's buffer.")
+  (key flush "Called by flush-port, after the buffer has gone to write. Does nothing unless given.")
+  (key close "Called once, when the port is closed, after the buffer has gone to write. Does nothing unless given.")
+  (returns "A new output port, owned by the ambient scope.")
+  (raises Bjolang.Runtime.ScopeEnded "When called without an ambient structured concurrency scope.")
+  (see make-input-port stream->output-port)
+  (example """
+    ;; A port that counts the bytes written to it.
+    (def total (make-box 0))
+    (with-open ((counter (make-output-port
+                          (bjoroutine (bytes) (box-set! total (+ (box-ref total) (array-length bytes)))))))
+      (write-string counter "hello"))
+    (box-ref total)   ; 5
+    """)
+  (reference """
+    @bold{The port buffers} as a file port does, so write is called when the
+    buffer fills, on @code{flush-port} and on close, not on every write. The
+    array write is given is its own, and it may keep it.
+
+    @bold{close takes the place of a last flush:} closing the port hands the
+    buffer to write and then calls close, without calling flush. close is
+    where a format writes its trailer. A port that is not closed by hand is
+    closed at its scope's end.
+
+    @bold{The three run in the writer's dynamic environment} and suspend the
+    writer where they suspend. They run while the port is held, so they must
+    not write to the port itself: that write would wait for the port forever.
+    A write from a sync function, and a close at a scope's end, block a thread
+    until the function returns.
+    """))
+
 ;; ---------------------------------------------------------------------------
 ;; Encodings
 ;; ---------------------------------------------------------------------------

@@ -3,6 +3,25 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~make-input-port~ and ~make-output-port~: ports made of bjoroutines
+
+- *~(make-input-port read)~* in ~(std ports)~ is a port whose bytes are the
+  chunks the bjoroutine ~read~ returns, ~None~ at the end of input. Every
+  read of the port works on it, of text, of bytes, and as an event.
+- *~(make-output-port write #:flush f #:close c)~* hands each chunk that
+  leaves the port's buffer to ~write~. ~flush-port~ calls ~f~. Closing the
+  port, or its scope's end, calls ~c~ in place of a last flush: it is where a
+  format writes its trailer.
+- *The functions suspend the fiber* that reads or writes, where they
+  suspend, and run in its dynamic environment. ~read~ runs under a shield,
+  so a reader cancelled while it waits leaves the chunk for the next
+  reader. What ~read~ raises, every later read raises.
+- The output functions run while the port is held, and must not write to
+  the port itself.
+- *Interop:* a .NET ~Func<..., Fiber<T>>~ is a ~-bjo->~ arrow, both ways, so
+  a bjoroutine can be passed to a .NET method that takes one. Before, the
+  arrow was read as returning a ~Fiber~ and could not be passed.
+
 * ~(std compress)~: gzip, zlib, deflate and Brotli as ports
 
 - *~gzip-input-port p~* reads gzip data from the port ~p~ and returns it

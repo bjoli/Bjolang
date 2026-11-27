@@ -60,6 +60,7 @@
 
   ;; Sources.
   stream->input-port stream->output-port
+  make-input-port make-output-port
 
   ;; Encodings.
   reencode-input-port reencode-output-port)
@@ -169,6 +170,10 @@
   (clr-pipe-in     (: Bjolang.Runtime.BytePorts.PipeInput  (-> BytePipe InputPort)))
   (clr-pipe-out    (: Bjolang.Runtime.BytePorts.PipeOutput (-> BytePipe OutputPort)))
   (clr-limited     (: Bjolang.Runtime.BytePorts.Limited    (-> InputPort int InputPort)))
+  (clr-fn-input    (: Bjolang.Runtime.FnPorts.InputStream
+                      (-> (-bjo-> (Option (Array byte))) (-> void) ClrStream)))
+  (clr-fn-output   (: Bjolang.Runtime.FnPorts.OutputStream
+                      (-> (-bjo-> (Array byte) void) (-bjo-> void) (-bjo-> void) ClrStream)))
 
   ;; The events.
   (clr-read-some-evt  (: Bjolang.Runtime.BytePorts.ReadSomeEvent
@@ -357,6 +362,34 @@
 (defun (stream->output-port s)
   (ignore (current-scope))
   (clr-to-stream s))
+
+;; A port whose bytes are the chunks `read` returns, as Racket's
+;; `make-input-port` makes one.
+;; - `read` returns the next chunk, `None` at the end of input. An empty chunk
+;;   is skipped. It is called again only after the port has used up the last.
+;; - `read` runs in the dynamic environment of the reader that needed the
+;;   bytes, under a shield: the refill belongs to the port, so a reader that is
+;;   cancelled while it waits leaves the refill to finish for the next one.
+;; - What `read` raises is raised by every read of the port after it.
+;; - `close` is called once, when the port is closed. The port is owned by the
+;;   ambient scope.
+(: (-> (-bjo-> (Option (Array byte))) (#:close (-> void)) InputPort))
+(defun (make-input-port read #:close (fun () (ignore 0)))
+  (stream->input-port (clr-fn-input (bjoroutine () (with-shield (read))) close)))
+
+;; A port that hands what is written to it to `write`, as Racket's
+;; `make-output-port` makes one.
+;; - The port buffers, as a file port does. `write` is given each chunk as it
+;;   leaves the buffer, in an array it may keep.
+;; - `flush` is called by `flush-port`, after the buffer has gone to `write`.
+;; - `close` is called once, when the port is closed, after the buffer has
+;;   gone to `write`, and in place of a last `flush`. It is where a format
+;;   writes its trailer. The port is owned by the ambient scope.
+;; - The three run in the writer's dynamic environment, while the port is held:
+;;   they must not write to the port itself.
+(: (-> (-bjo-> (Array byte) void) (#:flush (-bjo-> void)) (#:close (-bjo-> void)) OutputPort))
+(defun (make-output-port write #:flush (bjoroutine () (ignore 0)) #:close (bjoroutine () (ignore 0)))
+  (stream->output-port (clr-fn-output write flush close)))
 
 ;; ---------------------------------------------------------------------------
 ;; Encodings

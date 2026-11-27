@@ -741,8 +741,17 @@ let rec mapClrType (t: Type) : HMType =
         // A delegate is an arrow, which is what lets a Bjolang lambda be passed
         // to `Filter` or `Fold` with nothing in between. `Action` returns the
         // *interop* void rather than unit — see `TypeConstants.voidType`.
+        // - A `Func` that returns a `Fiber<T>` is a bjoroutine, `-bjo->`,
+        //   because that is the delegate a bjoroutine value is emitted as.
+        //   `Fiber<Unit>` is one that returns void, as `Unit` is void.
         if isFuncType def then
-            tfun (args |> List.take (args.Length - 1)) (List.last args)
+            let ret = t.GetGenericArguments() |> Array.last
+            let parameters = args |> List.take (args.Length - 1)
+
+            if ret.IsGenericType && ret.GetGenericTypeDefinition().FullName = "Bjoml.Fiber`1" then
+                TFun(parameters, mapClrType (ret.GetGenericArguments()[0]), EAsync)
+            else
+                tfun parameters (List.last args)
         elif isActionType def then
             tfun args voidType
         elif isValueTupleType def then
@@ -868,15 +877,24 @@ let rec tryClrTypeOf (t: HMType) : Type option =
     // A function value is a delegate. `Action` for the interop void, `Func`
     // otherwise — exactly the choice `Codegen.typeToString` makes, because the
     // delegate this answers has to be the one the argument was emitted as.
-    | TFun(args, ret, _) ->
+    // A bjoroutine is a `Func` that returns `Fiber<T>`, with `Fiber<Unit>`
+    // for void.
+    | TFun(args, ret, eff) ->
         let resolvedArgs = args |> List.map tryClrTypeOf
         let isVoid = pruneLocal ret = voidType
+        let isAsync = groundEffect eff = EAsync
 
         if resolvedArgs |> List.forall Option.isSome then
             let argTypes = resolvedArgs |> List.map Option.get
 
             let name, allTypes =
-                if isVoid then
+                if isAsync then
+                    let payload = if isVoid then tryResolveType "Bjoml.Unit" else tryClrTypeOf ret
+
+                    match payload, tryResolveType "Bjoml.Fiber`1" with
+                    | Some p, Some fiber -> $"System.Func`%d{args.Length + 1}", argTypes @ [ fiber.MakeGenericType p ]
+                    | _ -> "", []
+                elif isVoid then
                     (if args.IsEmpty then "System.Action" else $"System.Action`%d{args.Length}"), argTypes
                 else
                     match tryClrTypeOf ret with
