@@ -2244,10 +2244,10 @@ def test_fmt(work, c):
          "                                  (third-call delta epsilon zeta eta)\n"
          "                                  (fourth-call)))\n"),
         ("whatever its arguments are",
-         "(defun (f) (str \"one fairly long piece of text \" (int->string count) \" and another long piece \" "
+         "(defun (f) (joined \"one fairly long piece of text \" (int->string count) \" and another long piece \" "
          "name \" and more\"))\n",
-         "(defun (f)\n  (str \"one fairly long piece of text \"\n       (int->string count)\n"
-         "       \" and another long piece \"\n       name\n       \" and more\"))\n"),
+         "(defun (f)\n  (joined \"one fairly long piece of text \"\n          (int->string count)\n"
+         "          \" and another long piece \"\n          name\n          \" and more\"))\n"),
         ("an if's arms go four in",
          "(def answer (if (and (> first-number 1000) (< second-number 2000)) (compute-the-result first-number) "
          "(fallback-value 42)))\n",
@@ -2375,7 +2375,7 @@ def test_fmt(work, c):
          "(f a ; one\n b)\n(g\n;; two\nc)\n", "(f a ; one\n   b)\n(g\n ;; two\n c)\n"),
         ("a quantity literal is one token, whatever is in it",
          "(def gamma <0.351 mSv m^2/(GBq  h)>)\n(defun (f) <100 km/h>)\n(f #'(g ,<1 m>) <-.5 s> (< 1 2))\n",
-         "(def gamma <0.351 mSv m^2/(GBq  h)>)\n(defun (f)\n  <100 km/h>)\n(f #'(g ,<1 m>) <-.5 s> (< 1 2))\n"),
+         "(def gamma <0.351 mSv m^2/(GBq  h)>)\n(defun (f) <100 km/h>)\n(f #'(g ,<1 m>) <-.5 s> (< 1 2))\n"),
         ("strings with nothing between them stay so", '(f "a""b" #"c""d")\n', '(f "a""b" #"c""d")\n'),
         ("the value of a def* clause starts on the line of its name",
          "(def* (a 1) (first (if (p x)\n1 2)))\n",
@@ -2398,6 +2398,19 @@ def test_fmt(work, c):
          '(f (if (some? x)\n"yes" "no"))\n', '(f (if (some? x)\n       "yes"\n       "no"))\n'),
         ("and not one with a form that branches or has a body",
          "(f (if (p x) (g (fun (y) y)) 2))\n", "(f (if (p x)\n       (g (fun (y) y))\n       2))\n"),
+        ("a defun of one straight-line form stays on one line",
+         "(defun (sq x) (* x x))\n", "(defun (sq x) (* x x))\n"),
+        ("but not one with an if in its body",
+         "(defun (f x) (if (p x) 1 2))\n", "(defun (f x)\n  (if (p x) 1 2))\n"),
+        ("and not one of two forms",
+         '(defun (h x) "doc" (* x x))\n', '(defun (h x)\n  "doc"\n  (* x x))\n'),
+        ("a str keeps its lines when they fit",
+         '(f (str "a" (g x) "b"\n(h y)))\n', '(f (str "a" (g x) "b"\n        (h y)))\n'),
+        ("a str too wide is filled, not split at each argument",
+         '(f (str "' + "a" * 50 + '" (g x) "' + "b" * 60 + '"))\n',
+         '(f (str "' + "a" * 50 + '" (g x)\n        "' + "b" * 60 + '"))\n'),
+        ("a str that fits only without the brackets after it is filled",
+         '(f (str "' + "a" * 87 + '" "z"))\n', '(f (str "' + "a" * 87 + '"\n        "z"))\n'),
         ("two bindings of a named let stay on one line",
          "(let go ((i 0) (acc Nil)) (go i acc))\n", "(let go ((i 0) (acc Nil))\n  (go i acc))\n"),
         ("but not three",

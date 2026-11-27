@@ -1522,6 +1522,8 @@
                      (: KSmallBody int)
                      ;; As many forms on the head's line as the source has there.
                      KKept
+                     ;; A `str`: its lines as written if they fit, or else filled.
+                     KStr
                      ;; A body right after the head.
                      KBlock
                      ;; As `KBlock`, but allowed on one line with a single form.
@@ -1673,6 +1675,7 @@
     ((or "fun" "bjoroutine" "type/derive") (KSmallBody 1))
     ("let/mono" (KBody 2))
     ((or "begin" "seq") KBlock)
+    ("str" KStr)
     ;; In an `impl`, `(type %elem int)` sets an associated type.
     ("type" #:when (not (node-list? (item-at g 1))) KCall)
     ((or "bjo" "spawn" "spawn/daemon" "spawn/detached" "with-shield" "time-it" "try" "type"
@@ -1796,9 +1799,19 @@
     (KDef (def-one-line? g))
     (KLoopDef (def-one-line? g))
     (KDefClause (def-one-line? g))
-    ((KBody k) (<= n (+ k 1)))
+    ;; A function of one straight-line body form stays on the line if the
+    ;; source has it there.
+    ((KBody k)
+     (or (<= n (+ k 1))
+         (and (= n (+ k 2))
+              (match (head-of g)
+                ((or "defun" "defbjo" "defbjouble") #t)
+                (_ #f))
+              (not (record-ref g spans))
+              (straight-line? (item-at g (+ k 1))))))
     ((KSmallBody k) (<= n (+ (head-line g k) 2)))
     (KKept (not (record-ref g spans)))
+    (KStr (not (record-ref g spans)))
     (KBlock (<= n 2))
     (KSmallBlock (or (<= n 2) (and (= (head-of g) "try") (keyword-arg? (node-atom (item-at g 2))))))
     (KCond (<= n 1))
@@ -2528,6 +2541,7 @@
     (KCall (list-append (hugging-plans g) (call-plans g 1)))
     (KData (data-plans g))
     (KTable (list (table-plan g)))
+    (KStr (list (fill-plan g)))
     (KBindings (list (plan g 0 (fun (k) (In 1)))))
     (KNamedBindings (list (plan g 0 (fun (k) (In 1)))))
     (KBinding (call-plans g 1))
@@ -2627,6 +2641,14 @@
                          (else Same)))
       (go (+ k 1))))
   (Plan (gaps (vecbuilder->vec out)) (style 0)))
+
+;; The arguments after the first, as many on a line as fit, under the first.
+(: fill-plan (-> Group Plan))
+(defun (fill-plan g)
+  (plan g 0 (fun (k)
+              (if (= k 1)
+                  Mark
+                  Fill))))
 
 ;; Data is filled, and has an item per line if any item is a list. A list that
 ;; starts with one has every item under the first.
@@ -2741,7 +2763,12 @@
         (def width (record-ref g width))
         (def flat? (flat-ok? memo node place))
         ;; A line this wide is never chosen when there is anything to break.
-        (def possible? (and flat? (or (< width 1000) (= (vec-length (record-ref g items)) 0))))
+        ;; A `str` that does not fit is filled, so that its layouts are those of
+        ;; the text it is filled to.
+        (def possible?
+          (and flat?
+               (or (< width 1000) (= (vec-length (record-ref g items)) 0))
+               (or (<= (+ col width tail) wide) (not (= (kind-of g place) KStr)))))
         (def flat
           (if possible?
               (list (text-measure col width (Flat node)))
@@ -2755,7 +2782,8 @@
         (mutablemap-set! (record-ref memo laid) key found)
         found)))))
 
-;; The layouts of `g` that its plans give.
+;; The layouts of `g` that its plans give. A `str` has its layout as written
+;; if that fits with the `tail` brackets after it, and is filled if not.
 (: lay-group (-> Memo Group Place int int (List Measure)))
 (defun (lay-group memo g place col tail)
   (def kind (kind-of g place))
@@ -2765,13 +2793,21 @@
                         1
                         (Text (TOpen (record-ref g open))))))
   (def n (vec-length (record-ref g items)))
-  (if (= n 0)
-      (list (closed g opening))
-      (list-foldl (fun (p found)
-                    (merged found
-                            (list-map #(closed g &) (lay-plan memo g place kind p opening tail))))
-                  Nil
-                  (plans g kind))))
+  (: laid (-> (List Plan) (List Measure)))
+  (defun (laid ps)
+    (list-foldl (fun (p found)
+                  (merged found (list-map #(closed g &) (lay-plan memo g place kind p opening tail))))
+                Nil
+                ps))
+  (cond
+    ((= n 0) (list (closed g opening)))
+    ;; A `str` keeps the lines it is written in if they fit.
+    ((= kind KStr)
+     (def as-written (laid (list (table-plan g))))
+     (if (any? #(and (= (record-ref & over) 0) (<= (+ (record-ref & last) tail) wide)) as-written)
+         as-written
+         (laid (plans g kind))))
+    (else (laid (plans g kind)))))
 
 ;; `m`, which is `g` up to its closing bracket, with the bracket. A comment
 ;; before the bracket puts it on a line of its own.
