@@ -22,6 +22,8 @@ import glob
 import re
 import hashlib
 import itertools
+import argparse
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -41,10 +43,57 @@ NC = '\033[0m' # No Color
 def print_color(color, text):
     print(f"{color}{text}{NC}")
 
+ap = argparse.ArgumentParser(
+    description="Builds the compiler and the standard library, then runs the test suite.",
+    epilog="With no options, everything runs.")
+ap.add_argument("--only", choices=["programs"],
+                help="programs: the numbered tests, the error, warning and codegen tests, and "
+                     "nothing that tests the toolchain. For a change to the standard library.")
+ap.add_argument("--touching", action="append", default=[], metavar="MODULE",
+                help="only the tests that import MODULE, directly or through another module. "
+                     "MODULE is std/compress, '(std compress)' or a path to a .bjo file. "
+                     "Repeatable, or comma-separated. Implies --only programs.")
+ARGS = ap.parse_args()
+TOUCHING = [m for arg in ARGS.touching for m in arg.split(",") if m.strip()]
+PROGRAMS_ONLY = ARGS.only == "programs" or bool(TOUCHING)
+
 print_color(BLUE, "=== Bjolang Optimized Parallel Test Runner (Python) ===")
 print("")
 
 MAX_JOBS = min(32, (os.cpu_count() or 8))
+
+class CompilerSlots:
+    """At most `n` batch compilers at once, whoever started them.
+
+    - Batches of different kinds of test run at the same time (see "Run
+      everything"), and each kind asks for MAX_JOBS compilers. A compiler
+      holds a few hundred MB, and three kinds at once would be three times
+      the cores.
+    - A free slot goes to a waiter of priority 0 before one of priority 1.
+      The numbered tests compile at 0: their programs still have to run
+      after the compile, so the other batches fill in around them.
+    """
+
+    def __init__(self, n):
+        self._free = n
+        self._waiting = [0, 0]
+        self._cond = threading.Condition()
+
+    def acquire(self, priority):
+        with self._cond:
+            self._waiting[priority] += 1
+            while self._free == 0 or any(self._waiting[p] for p in range(priority)):
+                self._cond.wait()
+            self._waiting[priority] -= 1
+            self._free -= 1
+
+    def release(self):
+        with self._cond:
+            self._free += 1
+            self._cond.notify_all()
+
+
+COMPILER_SLOTS = CompilerSlots(MAX_JOBS)
 
 # Manage Lock
 lock_fd = None
@@ -147,7 +196,7 @@ def compile_one(bjo_file, lib=False, debug=False):
     return {"file": str(path.resolve()), "status": res.returncode,
             "output": res.stdout + res.stderr, "artifact": artifact}
 
-def batch_compile(files, lib=False, debug=False, if_stale=False, tag="batch"):
+def batch_compile(files, lib=False, debug=False, if_stale=False, tag="batch", priority=1):
     """Kompilerar `files` i en kompilatorprocess.
 
     Ger en tabell från absolut sökväg till batchsvaret, så att den som frågade
@@ -177,7 +226,11 @@ def batch_compile(files, lib=False, debug=False, if_stale=False, tag="batch"):
     if if_stale:
         cmd.append("--if-stale")
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    COMPILER_SLOTS.acquire(priority)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+    finally:
+        COMPILER_SLOTS.release()
 
     results = {}
     if report_file.exists():
@@ -199,12 +252,12 @@ def batch_compile(files, lib=False, debug=False, if_stale=False, tag="batch"):
 
     return results
 
-def batch_compile_parallel(chunks, lib=False, debug=False, if_stale=False, tag="batch"):
+def batch_compile_parallel(chunks, lib=False, debug=False, if_stale=False, tag="batch", priority=1):
     """Kör en batch per klunga, klungorna samtidigt."""
     results = {}
     with ThreadPoolExecutor(max_workers=MAX_JOBS) as executor:
         futures = [executor.submit(batch_compile, c, lib=lib, debug=debug,
-                                   if_stale=if_stale, tag=tag)
+                                   if_stale=if_stale, tag=tag, priority=priority)
                    for c in chunks]
         for future in as_completed(futures):
             results.update(future.result())
@@ -351,6 +404,88 @@ prefixes = sorted(groups)
 if not prefixes:
     print_color(RED, "No test files matching TestFiles/[0-9][0-9][0-9]_*.bjo found.")
     sys.exit(1)
+
+ERROR_DIR = Path("TestFiles/errors")
+WARNING_DIR = Path("TestFiles/warnings")
+CODEGEN_DIR = Path("TestFiles/codegen")
+all_error_files = sorted(ERROR_DIR.glob("*.bjo")) if ERROR_DIR.exists() else []
+all_warning_files = sorted(WARNING_DIR.glob("*.bjo")) if WARNING_DIR.exists() else []
+all_codegen_files = sorted(CODEGEN_DIR.glob("*.bjo")) if CODEGEN_DIR.exists() else []
+
+
+def module_path(spec):
+    """The .bjo file a --touching argument names: std/compress, (std compress),
+    std compress, or a path."""
+    s = spec.strip()
+    if s.endswith(".bjo"):
+        path = Path(s)
+    else:
+        parts = s.strip("()").replace("/", " ").split()
+        path = Path("lib", *parts).with_suffix(".bjo")
+    if not path.exists():
+        print_color(RED, f"--touching {spec}: no module at {path}")
+        sys.exit(2)
+    return path.resolve()
+
+
+def import_graph(files):
+    """Each module's direct imports, as resolved paths, for `files` and what
+    they import. Read from `--build-graph --dry-run`, which builds nothing."""
+    res = subprocess.run(["dotnet", str(COMPILER_DLL), "--build-graph", "--dry-run"] + [str(f) for f in files],
+                         capture_output=True, text=True)
+    if res.returncode != 0:
+        print_color(RED, "Could not read the import graph:")
+        print(res.stdout + res.stderr)
+        sys.exit(1)
+    graph, current = {}, None
+    for line in res.stdout.splitlines():
+        entry = re.match(r'^[A-Z][^:]*: (.+)\.(?:dll|exe)$', line)
+        if entry:
+            current = Path(entry.group(1) + ".bjo").resolve()
+            graph.setdefault(current, set())
+            continue
+        imports = re.match(r'^\s+imports (.+)$', line)
+        if imports and current is not None:
+            graph[current].update(Path(m).resolve() for m in imports.group(1).split(", "))
+    return graph
+
+
+def depends_on(graph, targets):
+    """The modules that are one of `targets`, or import one, directly or not."""
+    importers = {}
+    for m, imports in graph.items():
+        for d in imports:
+            importers.setdefault(d, set()).add(m)
+    found, todo = set(targets), list(targets)
+    while todo:
+        for m in importers.get(todo.pop(), ()):
+            if m not in found:
+                found.add(m)
+                todo.append(m)
+    return found
+
+
+SELECTED = None
+if TOUCHING:
+    targets = {module_path(m) for m in TOUCHING}
+    candidates = bjo_files + all_error_files + all_warning_files + all_codegen_files
+    SELECTED = depends_on(import_graph(candidates), targets)
+
+
+def selected(files):
+    return list(files) if SELECTED is None else [f for f in files if Path(f).resolve() in SELECTED]
+
+
+if SELECTED is not None:
+    # A group runs whole, or not at all: its files are compiled in order.
+    prefixes = [p for p in prefixes if selected(groups[p])]
+    bjo_files = [f for p in prefixes for f in groups[p]]
+    print_color(BLUE, f"--touching {', '.join(TOUCHING)}: {len(prefixes)} groups, "
+                      f"{len(selected(all_error_files))} error, {len(selected(all_warning_files))} warning and "
+                      f"{len(selected(all_codegen_files))} codegen tests.")
+error_files = selected(all_error_files)
+warning_files = selected(all_warning_files)
+codegen_files = selected(all_codegen_files)
 
 # Hur länge ett testprogram får köra.
 #
@@ -1008,197 +1143,90 @@ def run_cutoff_tests():
     return "cutoff", c_total, c_failed, c_failures
 
 
-# Paketproven startas här, samtidigt som testgrupperna, eftersom de är ett
-# trettiotal kompileringar i följd. De rör ingenting som testgrupperna rör:
-# de bygger under `.test-logs/packages` och läser bara standardbiblioteket.
-packages_executor = ThreadPoolExecutor(max_workers=1)
-packages_future = packages_executor.submit(run_package_tests)
-
-# Grafproven och avbrytningsproven likaså: två följder av kompileringar, i var
-# sitt träd under `.test-logs`, som bara läser standardbiblioteket. Startade
-# efter de andra var de sviten sista fas.
-graph_executor = ThreadPoolExecutor(max_workers=2)
-graph_future = graph_executor.submit(run_graph_tests)
-cutoff_future = graph_executor.submit(run_cutoff_tests)
-
-print_color(BLUE, f"Running tests in parallel (max {MAX_JOBS} concurrent jobs)...")
-print("-" * 50)
-
-start_time = time.time()
-
-# Allt raderas före batchen, inte i den: en fil vars `.exe` ligger kvar från
-# förra körningen skulle annars kunna se ut som byggd av den här.
-for f in bjo_files:
-    remove_artifacts(f)
-
-# En klunga är hela grupper, så att en grupps filer kompileras i ordning och i
-# samma process — det är där en `_lib.bjo` byggs som den efterföljande filen
-# importerar.
-prefix_chunks = chunk(prefixes, MAX_JOBS)
-file_chunks = [[f for prefix in pc for f in groups[prefix]] for pc in prefix_chunks]
-compiled = batch_compile_parallel(file_chunks, tag="tests")
-
-success_count = 0
-fail_compile_count = 0
-fail_run_count = 0
-skipped_count = 0
-
-compiled_failed = []
-run_failed = []
-skipped_list = []
-
-group_futures = {}
-with ThreadPoolExecutor(max_workers=MAX_JOBS) as executor:
-    for prefix in prefixes:
-        log_file = LOG_DIR / f"{prefix}.log"
-        if log_file.exists():
-            log_file.unlink()
-        group_futures[executor.submit(run_prefix_group, prefix, log_file, compiled)] = prefix
-
-    for future in as_completed(group_futures):
-        prefix = group_futures[future]
-        status = future.result()
-        log_file = LOG_DIR / f"{prefix}.log"
-
-        files_in_group = " ".join([os.path.basename(f) for f in groups[prefix]])
-
-        if log_file.exists():
-            with open(log_file, "r") as log:
-                content = log.read()
-        else:
-            content = ""
-
-        if status == 0:
-            if "PASS" in content or "PASS_LIB" in content:
-                print(f"  [{GREEN}PASS{NC}] Group {prefix}: {files_in_group}")
-                success_count += 1
-            elif "SKIP" in content:
-                print(f"  [{YELLOW}SKIP{NC}] Group {prefix}: {files_in_group}")
-                skipped_count += 1
-                skipped_list.append(files_in_group)
-            else:
-                print(f"  [{GREEN}PASS{NC}] Group {prefix}: {files_in_group}")
-                success_count += 1
-        else:
-            print(f"  [{RED}FAIL{NC}] Group {prefix}: {files_in_group}")
-            if "FAIL_COMPILE" in content:
-                fail_compile_count += 1
-                match = re.search(r"FAIL_COMPILE:\s+(\S+)", content)
-                if match:
-                    compiled_failed.append(match.group(1))
-            elif "FAIL_RUN" in content:
-                fail_run_count += 1
-                match = re.search(r"FAIL_RUN:\s+(\S+)", content)
-                if match:
-                    run_failed.append(match.group(1))
-            else:
-                fail_run_count += 1
-                match = re.search(r"FAIL_LOGIC:\s+(\S+)", content)
-                if match:
-                    run_failed.append(f"{match.group(1)} (logic failure: contains 'FAILURE:')")
-
 # --- Error tests ---
-ERROR_DIR = Path("TestFiles/errors")
-error_total = 0
-error_failed = 0
-error_failures = []
+# Must be rejected, by Bjolang, and for the reason the file states.
 
-error_files = sorted(ERROR_DIR.glob("*.bjo")) if ERROR_DIR.exists() else []
-if error_files:
-    print("-" * 50)
-    print_color(BLUE, "Running error tests (must be rejected)...")
+def judge_error_test(bjo_file, entry):
+    if entry["status"] == 0:
+        return "FAIL", "compiled successfully, but was expected to be rejected"
 
+    # Ett program som bara C#-kompilatorn avvisar har Bjolang släppt
+    # igenom: felet gäller kod som användaren aldrig skrev.
+    if re.search(r'\berror CS\d+', entry["output"]):
+        return "FAIL", "rejected by the C# compiler, not by Bjolang"
+
+    # `EXPECT-ERROR` säger inte bara att filen ska avvisas utan varför.
+    # En fil som avvisas av något annat skäl än det angivna är ett
+    # felmeddelande som slutat gälla, inte ett test som går igenom.
+    for line in bjo_file.read_text().splitlines():
+        match = re.match(r'^\s*;;\s*EXPECT-ERROR:\s*(.*)', line)
+        if match:
+            expected = match.group(1).strip()
+            if expected and expected not in entry["output"]:
+                return "FAIL", f"rejected, but not for the stated reason. Expected to find: {expected}"
+
+        # `EXPECT-NO-ERROR` säger vad avvisandet *inte* får skylla på. En
+        # deklaration som inte gick att kontrollera binder en platshållare,
+        # och det som anropar den ska därför tiga — ett kaskadfel är det
+        # första felet berättat en gång till, per anropare.
+        match = re.match(r'^\s*;;\s*EXPECT-NO-ERROR:\s*(.*)', line)
+        if match:
+            unwanted = match.group(1).strip()
+            if unwanted and unwanted in entry["output"]:
+                return "FAIL", f"rejected, but also reported what it should have suppressed: {unwanted}"
+
+    return "PASS", ""
+
+
+def run_error_tests():
     rejected = batch_compile_parallel(chunk(error_files, MAX_JOBS), tag="errors")
-
-    def judge_error_test(bjo_file, entry):
-        if entry["status"] == 0:
-            return "FAIL", "compiled successfully, but was expected to be rejected"
-
-        # Ett program som bara C#-kompilatorn avvisar har Bjolang släppt
-        # igenom: felet gäller kod som användaren aldrig skrev.
-        if re.search(r'\berror CS\d+', entry["output"]):
-            return "FAIL", "rejected by the C# compiler, not by Bjolang"
-
-        # `EXPECT-ERROR` säger inte bara att filen ska avvisas utan varför.
-        # En fil som avvisas av något annat skäl än det angivna är ett
-        # felmeddelande som slutat gälla, inte ett test som går igenom.
-        for line in bjo_file.read_text().splitlines():
-            match = re.match(r'^\s*;;\s*EXPECT-ERROR:\s*(.*)', line)
-            if match:
-                expected = match.group(1).strip()
-                if expected and expected not in entry["output"]:
-                    return "FAIL", f"rejected, but not for the stated reason. Expected to find: {expected}"
-
-            # `EXPECT-NO-ERROR` säger vad avvisandet *inte* får skylla på. En
-            # deklaration som inte gick att kontrollera binder en platshållare,
-            # och det som anropar den ska därför tiga — ett kaskadfel är det
-            # första felet berättat en gång till, per anropare.
-            match = re.match(r'^\s*;;\s*EXPECT-NO-ERROR:\s*(.*)', line)
-            if match:
-                unwanted = match.group(1).strip()
-                if unwanted and unwanted in entry["output"]:
-                    return "FAIL", f"rejected, but also reported what it should have suppressed: {unwanted}"
-
-        return "PASS", ""
-
+    total, failed, failures = 0, 0, []
     for bjo_file in error_files:
         entry = result_for(rejected, bjo_file)
         remove_artifacts(bjo_file)
-
         verdict, reason = judge_error_test(bjo_file, entry)
-        error_total += 1
-        if verdict == "PASS":
-            print(f"  [{GREEN}PASS{NC}] {bjo_file.name}")
-        else:
-            print(f"  [{RED}FAIL{NC}] {bjo_file.name}")
-            error_failed += 1
-            error_failures.append(f"{bjo_file.name}: {reason}")
+        total += 1
+        if verdict != "PASS":
+            failed += 1
+            failures.append(f"{bjo_file.name}: {reason}")
+    return "errors", total, failed, failures
 
 # --- Warning tests ---
-WARNING_DIR = Path("TestFiles/warnings")
-warning_total = 0
-warning_failed = 0
-warning_failures = []
+# Must compile, and say what the file states.
 
-warning_files = sorted(WARNING_DIR.glob("*.bjo")) if WARNING_DIR.exists() else []
-if warning_files:
-    print("-" * 50)
-    print_color(BLUE, "Running warning tests (must compile, and say so)...")
+def judge_warning_test(bjo_file, entry):
+    if entry["status"] != 0:
+        return "FAIL", "was expected to compile, and did not"
 
-    # I klungor, som felproven, så att filerna kompileras parallellt.
+    for line in bjo_file.read_text().splitlines():
+        match = re.match(r'^\s*;;\s*EXPECT-WARNING:\s*(.*)', line)
+        if match:
+            expected = match.group(1).strip()
+            if expected and expected not in entry["output"]:
+                return "FAIL", f"compiled, but said nothing about it. Expected to find: {expected}"
+
+        match = re.match(r'^\s*;;\s*EXPECT-NO-WARNING:\s*(.*)', line)
+        if match:
+            unwanted = match.group(1).strip()
+            if unwanted and unwanted in entry["output"]:
+                return "FAIL", f"warned where it should have kept quiet: {unwanted}"
+
+    return "PASS", ""
+
+
+def run_warning_tests():
+    # In chunks, as the error tests are, so that the files compile in parallel.
     warned = batch_compile_parallel(chunk(warning_files, MAX_JOBS), tag="warnings")
-
-    def judge_warning_test(bjo_file, entry):
-        if entry["status"] != 0:
-            return "FAIL", "was expected to compile, and did not"
-
-        for line in bjo_file.read_text().splitlines():
-            match = re.match(r'^\s*;;\s*EXPECT-WARNING:\s*(.*)', line)
-            if match:
-                expected = match.group(1).strip()
-                if expected and expected not in entry["output"]:
-                    return "FAIL", f"compiled, but said nothing about it. Expected to find: {expected}"
-
-            match = re.match(r'^\s*;;\s*EXPECT-NO-WARNING:\s*(.*)', line)
-            if match:
-                unwanted = match.group(1).strip()
-                if unwanted and unwanted in entry["output"]:
-                    return "FAIL", f"warned where it should have kept quiet: {unwanted}"
-
-        return "PASS", ""
-
+    total, failed, failures = 0, 0, []
     for bjo_file in warning_files:
         entry = result_for(warned, bjo_file)
         remove_artifacts(bjo_file)
-
         verdict, reason = judge_warning_test(bjo_file, entry)
-        warning_total += 1
-        if verdict == "PASS":
-            print(f"  [{GREEN}PASS{NC}] {bjo_file.name}")
-        else:
-            print(f"  [{RED}FAIL{NC}] {bjo_file.name}")
-            warning_failed += 1
-            warning_failures.append(f"{bjo_file.name}: {reason}")
+        total += 1
+        if verdict != "PASS":
+            failed += 1
+            failures.append(f"{bjo_file.name}: {reason}")
+    return "warnings", total, failed, failures
 
 # --- Phase Runners ---
 def run_codegen_tests():
@@ -1209,11 +1237,10 @@ def run_codegen_tests():
     kompilering `out.cs` i arbetskatalogen, så de fick köras en i taget i var
     sin katalog.
     """
-    CODEGEN_DIR = Path("TestFiles/codegen")
     c_total, c_failed = 0, 0
     c_failures = []
 
-    files = sorted(CODEGEN_DIR.glob("*.bjo")) if CODEGEN_DIR.exists() else []
+    files = codegen_files
     if not files:
         return "codegen", c_total, c_failed, c_failures
 
@@ -1336,8 +1363,15 @@ def run_reproducibility():
     # Enstaka kompileringar med flit. Det som mäts är att samma källa ger samma
     # byte, och batchläget emitterar med en annan C#-backend än en ensam
     # kompilering gör — att jämföra över den gränsen vore att mäta något annat.
-    REPRO_MAIN = Path("TestFiles/006_modules_and_input.bjo")
-    REPRO_DEP = Path("TestFiles/006_lib")
+    # Copies, because the numbered tests build and delete the originals at the
+    # same time.
+    repro_dir = LOG_DIR / "repro"
+    repro_dir.mkdir(exist_ok=True)
+    for name in ("006_modules_and_input.bjo", "006_lib.bjo"):
+        if Path("TestFiles", name).exists():
+            shutil.copy(Path("TestFiles", name), repro_dir / name)
+    REPRO_MAIN = repro_dir / "006_modules_and_input.bjo"
+    REPRO_DEP = repro_dir / "006_lib"
     rp_failed = 0
     rp_failures = []
     
@@ -1528,8 +1562,15 @@ def run_check_tests():
     # och att den säger exakt samma sak om ett trasigt program som ett bygge
     # gör — en check som rapporterar annorlunda vore en andra sanning om
     # programmet.
-    GOOD = Path("TestFiles/000_simple.bjo")
-    BAD = Path("TestFiles/errors/multi_type_errors.bjo")
+    # Copies, because the numbered tests and the error tests build and delete
+    # the originals at the same time.
+    check_dir = LOG_DIR / "check"
+    check_dir.mkdir(exist_ok=True)
+    for source in (Path("TestFiles/000_simple.bjo"), Path("TestFiles/errors/multi_type_errors.bjo")):
+        if source.exists():
+            shutil.copy(source, check_dir / source.name)
+    GOOD = check_dir / "000_simple.bjo"
+    BAD = check_dir / "multi_type_errors.bjo"
     c_total, c_failed = 0, 0
     c_failures = []
 
@@ -1824,164 +1865,264 @@ def run_pdb_tests():
 
 
 
-# Run phases concurrently
+# --- Run everything ------------------------------------------------------
+#
+# Every phase starts with the numbered tests, and they all run at once: the
+# numbered tests' compile, the error tests and the toolchain checks share the
+# cores (see CompilerSlots). Each phase returns its results, and they are
+# printed once the numbered tests are done. A phase that builds a file
+# another phase builds works on a copy of it.
+start_time = time.time()
+phase_executor = ThreadPoolExecutor(max_workers=16)
 phases = []
-# En tråd per fas. Faserna väntar mest på kompilatorprocesser, så ingen av dem
-# ska behöva vänta på en ledig tråd. Gränsen ligger över antalet faser; en
-# pool startar bara de trådar den får arbete för.
-with ThreadPoolExecutor(max_workers=16) as executor:
-    if list(Path("TestFiles/codegen").glob("*.bjo")) if Path("TestFiles/codegen").exists() else []:
-        print("-" * 50)
-        print_color(BLUE, "Checking the generated C#...")
-        phases.append(executor.submit(run_codegen_tests))
-        
+
+def start_phase(label, fn):
+    print("-" * 50)
+    print_color(BLUE, label)
+    phases.append(phase_executor.submit(fn))
+
+# Allt raderas före batchen, inte i den: en fil vars `.exe` ligger kvar från
+# förra körningen skulle annars kunna se ut som byggd av den här.
+for f in bjo_files:
+    remove_artifacts(f)
+
+# En klunga är hela grupper, så att en grupps filer kompileras i ordning och i
+# samma process — det är där en `_lib.bjo` byggs som den efterföljande filen
+# importerar. The numbered compile starts first and at priority 0: see
+# CompilerSlots.
+prefix_chunks = chunk(prefixes, MAX_JOBS)
+file_chunks = [[f for prefix in pc for f in groups[prefix]] for pc in prefix_chunks]
+numbered_compile = phase_executor.submit(batch_compile_parallel, file_chunks, tag="tests", priority=0)
+
+if error_files:
+    start_phase("Running error tests (must be rejected)...", run_error_tests)
+if warning_files:
+    start_phase("Running warning tests (must compile, and say so)...", run_warning_tests)
+if codegen_files:
+    start_phase("Checking the generated C#...", run_codegen_tests)
+
+if not PROGRAMS_ONLY:
     if list(Path("TestFiles/repl").glob("*.in")) if Path("TestFiles/repl").exists() else []:
-        print("-" * 50)
-        print_color(BLUE, "Running REPL sessions...")
-        phases.append(executor.submit(run_repl_tests))
-        
+        start_phase("Running REPL sessions...", run_repl_tests)
     if list(Path("TestFiles/units").glob("*.units")) if Path("TestFiles/units").exists() else []:
-        print("-" * 50)
-        print_color(BLUE, "Running unit solver scripts...")
-        phases.append(executor.submit(run_unit_solver_tests))
+        start_phase("Running unit solver scripts...", run_unit_solver_tests)
+    start_phase("Checking that a build reproduces...", run_reproducibility)
+    start_phase("Checking that a changed dependency is rebuilt...", run_staleness)
+    start_phase("Checking --check...", run_check_tests)
+    start_phase("Checking debug symbols...", run_pdb_tests)
+    start_phase("Checking how a program ends on a signal...", run_signal_tests)
+    start_phase("Checking (std read) against the compiler's reader...", run_read_conformance)
 
+# Paketproven startas här, samtidigt som testgrupperna, eftersom de är ett
+# trettiotal kompileringar i följd. De rör ingenting som testgrupperna rör:
+# de bygger under `.test-logs/packages` och läser bara standardbiblioteket.
+packages_executor = ThreadPoolExecutor(max_workers=1)
+packages_future = None if PROGRAMS_ONLY else packages_executor.submit(run_package_tests)
+
+# Grafproven och avbrytningsproven likaså: två följder av kompileringar, i var
+# sitt träd under `.test-logs`, som bara läser standardbiblioteket. Startade
+# efter de andra var de sviten sista fas.
+graph_executor = ThreadPoolExecutor(max_workers=2)
+graph_future = None if PROGRAMS_ONLY else graph_executor.submit(run_graph_tests)
+cutoff_future = None if PROGRAMS_ONLY else graph_executor.submit(run_cutoff_tests)
+
+print_color(BLUE, f"Running tests in parallel (max {MAX_JOBS} concurrent jobs)...")
+print("-" * 50)
+
+compiled = numbered_compile.result()
+
+success_count = 0
+fail_compile_count = 0
+fail_run_count = 0
+skipped_count = 0
+
+compiled_failed = []
+run_failed = []
+skipped_list = []
+
+group_futures = {}
+with ThreadPoolExecutor(max_workers=MAX_JOBS) as executor:
+    for prefix in prefixes:
+        log_file = LOG_DIR / f"{prefix}.log"
+        if log_file.exists():
+            log_file.unlink()
+        group_futures[executor.submit(run_prefix_group, prefix, log_file, compiled)] = prefix
+
+    for future in as_completed(group_futures):
+        prefix = group_futures[future]
+        status = future.result()
+        log_file = LOG_DIR / f"{prefix}.log"
+
+        files_in_group = " ".join([os.path.basename(f) for f in groups[prefix]])
+
+        if log_file.exists():
+            with open(log_file, "r") as log:
+                content = log.read()
+        else:
+            content = ""
+
+        if status == 0:
+            if "PASS" in content or "PASS_LIB" in content:
+                print(f"  [{GREEN}PASS{NC}] Group {prefix}: {files_in_group}")
+                success_count += 1
+            elif "SKIP" in content:
+                print(f"  [{YELLOW}SKIP{NC}] Group {prefix}: {files_in_group}")
+                skipped_count += 1
+                skipped_list.append(files_in_group)
+            else:
+                print(f"  [{GREEN}PASS{NC}] Group {prefix}: {files_in_group}")
+                success_count += 1
+        else:
+            print(f"  [{RED}FAIL{NC}] Group {prefix}: {files_in_group}")
+            if "FAIL_COMPILE" in content:
+                fail_compile_count += 1
+                match = re.search(r"FAIL_COMPILE:\s+(\S+)", content)
+                if match:
+                    compiled_failed.append(match.group(1))
+            elif "FAIL_RUN" in content:
+                fail_run_count += 1
+                match = re.search(r"FAIL_RUN:\s+(\S+)", content)
+                if match:
+                    run_failed.append(match.group(1))
+            else:
+                fail_run_count += 1
+                match = re.search(r"FAIL_LOGIC:\s+(\S+)", content)
+                if match:
+                    run_failed.append(f"{match.group(1)} (logic failure: contains 'FAILURE:')")
+
+
+if not PROGRAMS_ONLY:
     print("-" * 50)
-    print_color(BLUE, "Checking that a build reproduces...")
-    phases.append(executor.submit(run_reproducibility))
-    
-    print("-" * 50)
-    print_color(BLUE, "Checking that a changed dependency is rebuilt...")
-    phases.append(executor.submit(run_staleness))
+    print_color(BLUE, "Checking packages and roots, and graph builds...")
+    phases += [packages_future, graph_future, cutoff_future]
 
-    print("-" * 50)
-    print_color(BLUE, "Checking --check...")
-    phases.append(executor.submit(run_check_tests))
+print("-" * 50)
+print_color(BLUE, "Waiting for the other phases...")
+error_total = error_failed = 0
+error_failures = []
+warning_total = warning_failed = 0
+warning_failures = []
 
-    print("-" * 50)
-    print_color(BLUE, "Checking debug symbols...")
-    phases.append(executor.submit(run_pdb_tests))
+def print_per_file(files, failures):
+    failed_names = {f.split(":", 1)[0] for f in failures}
+    for bjo_file in files:
+        name = Path(bjo_file).name
+        if name in failed_names:
+            print(f"  [{RED}FAIL{NC}] {name}")
+        else:
+            print(f"  [{GREEN}PASS{NC}] {name}")
 
-    print("-" * 50)
-    print_color(BLUE, "Checking how a program ends on a signal...")
-    phases.append(executor.submit(run_signal_tests))
+package_total = package_failed = 0
+package_failures = []
+graph_total = graph_failed = 0
+graph_failures = []
+codegen_total = codegen_failed = 0
+repl_total = repl_failed = 0
+units_total = units_failed = 0
+units_failures = []
+repro_total = repro_failed = 0
+stale_total = stale_failed = 0
+check_total = check_failed = 0
+pdb_total = pdb_failed = 0
+pdb_failures = []
+signal_total = signal_failed = 0
+signal_failures = []
+read_total = read_failed = 0
+read_failures = []
+codegen_failures, repl_failures, repro_failures, stale_failures = [], [], [], []
+check_failures = []
 
-    print("-" * 50)
-    print_color(BLUE, "Checking (std read) against the compiler's reader...")
-    phases.append(executor.submit(run_read_conformance))
+for future in as_completed(phases):
+    name, total, failed, failures = future.result()
+    if name == "errors":
+        error_total, error_failed, error_failures = total, failed, failures
+        print_per_file(error_files, failures)
+    elif name == "warnings":
+        warning_total, warning_failed, warning_failures = total, failed, failures
+        print_per_file(warning_files, failures)
+    elif name == "codegen":
+        codegen_total, codegen_failed, codegen_failures = total, failed, failures
+        for bjo_file in codegen_files:
+            cs_name = bjo_file.stem
+            if any(cs_name in f for f in codegen_failures):
+                print(f"  [{RED}FAIL{NC}] {cs_name}.bjo")
+            else:
+                print(f"  [{GREEN}PASS{NC}] {cs_name}.bjo")
+    elif name == "repl":
+        repl_total, repl_failed, repl_failures = total, failed, failures
+        for in_file in list(Path("TestFiles/repl").glob("*.in")) if Path("TestFiles/repl").exists() else []:
+            repl_name = in_file.stem
+            if any(repl_name in f for f in repl_failures):
+                print(f"  [{RED}FAIL{NC}] {repl_name}")
+            else:
+                print(f"  [{GREEN}PASS{NC}] {repl_name}")
+    elif name == "units":
+        units_total, units_failed, units_failures = total, failed, failures
+        if failed == 0:
+            print(f"  [{GREEN}PASS{NC}] unit solver scripts")
+        else:
+            for f in units_failures:
+                print(f"  [{RED}FAIL{NC}] {f}")
+    elif name == "repro":
+        repro_total, repro_failed, repro_failures = total, failed, failures
+        if failed == 0:
+            print(f"  [{GREEN}PASS{NC}] reproducibility checks")
+        else:
+            for f in repro_failures:
+                print(f"  [{RED}FAIL{NC}] {f}")
+    elif name == "staleness":
+        stale_total, stale_failed, stale_failures = total, failed, failures
+        if failed == 0:
+            print(f"  [{GREEN}PASS{NC}] staleness checks")
+        else:
+            for f in stale_failures:
+                print(f"  [{RED}FAIL{NC}] {f}")
+    elif name == "check":
+        check_total, check_failed, check_failures = total, failed, failures
+        if failed == 0:
+            print(f"  [{GREEN}PASS{NC}] --check")
+        else:
+            for f in check_failures:
+                print(f"  [{RED}FAIL{NC}] {f}")
+    elif name == "pdb":
+        pdb_total, pdb_failed, pdb_failures = total, failed, failures
+        if failed == 0:
+            print(f"  [{GREEN}PASS{NC}] debug symbols")
+        else:
+            for f in pdb_failures:
+                print(f"  [{RED}FAIL{NC}] {f}")
+    elif name == "signals":
+        signal_total, signal_failed, signal_failures = total, failed, failures
+        if failed == 0:
+            print(f"  [{GREEN}PASS{NC}] signals and exit")
+        else:
+            for f in signal_failures:
+                print(f"  [{RED}FAIL{NC}] {f}")
+    elif name == "read":
+        read_total, read_failed, read_failures = total, failed, failures
+        if failed == 0:
+            print(f"  [{GREEN}PASS{NC}] (std read) reads as the compiler does")
+        else:
+            for f in read_failures:
+                print(f"  [{RED}FAIL{NC}] {f}")
+    elif name == "packages":
+        package_total, package_failed, package_failures = total, failed, failures
+        if failed == 0:
+            print(f"  [{GREEN}PASS{NC}] packages and roots")
+        else:
+            for f in package_failures:
+                print(f"  [{RED}FAIL{NC}] {f}")
+    elif name in ("graph", "cutoff"):
+        graph_total += total
+        graph_failed += failed
+        graph_failures += failures
+        if failed == 0:
+            print(f"  [{GREEN}PASS{NC}] {'graph builds' if name == 'graph' else 'early cutoff'}")
+        else:
+            for f in failures:
+                print(f"  [{RED}FAIL{NC}] {f}")
 
-    print("-" * 50)
-    print_color(BLUE, "Checking packages and roots...")
-    phases.append(packages_future)
-
-    print("-" * 50)
-    print_color(BLUE, "Checking graph builds...")
-    phases.append(graph_future)
-    phases.append(cutoff_future)
-
-    package_total = package_failed = 0
-    package_failures = []
-    graph_total = graph_failed = 0
-    graph_failures = []
-    codegen_total = codegen_failed = 0
-    repl_total = repl_failed = 0
-    units_total = units_failed = 0
-    units_failures = []
-    repro_total = repro_failed = 0
-    stale_total = stale_failed = 0
-    check_total = check_failed = 0
-    pdb_total = pdb_failed = 0
-    pdb_failures = []
-    signal_total = signal_failed = 0
-    signal_failures = []
-    read_total = read_failed = 0
-    read_failures = []
-    codegen_failures, repl_failures, repro_failures, stale_failures = [], [], [], []
-    check_failures = []
-    
-    for future in as_completed(phases):
-        name, total, failed, failures = future.result()
-        if name == "codegen":
-            codegen_total, codegen_failed, codegen_failures = total, failed, failures
-            for bjo_file in list(Path("TestFiles/codegen").glob("*.bjo")) if Path("TestFiles/codegen").exists() else []:
-                cs_name = bjo_file.stem
-                if any(cs_name in f for f in codegen_failures):
-                    print(f"  [{RED}FAIL{NC}] {cs_name}.bjo")
-                else:
-                    print(f"  [{GREEN}PASS{NC}] {cs_name}.bjo")
-        elif name == "repl":
-            repl_total, repl_failed, repl_failures = total, failed, failures
-            for in_file in list(Path("TestFiles/repl").glob("*.in")) if Path("TestFiles/repl").exists() else []:
-                repl_name = in_file.stem
-                if any(repl_name in f for f in repl_failures):
-                    print(f"  [{RED}FAIL{NC}] {repl_name}")
-                else:
-                    print(f"  [{GREEN}PASS{NC}] {repl_name}")
-        elif name == "units":
-            units_total, units_failed, units_failures = total, failed, failures
-            if failed == 0:
-                print(f"  [{GREEN}PASS{NC}] unit solver scripts")
-            else:
-                for f in units_failures:
-                    print(f"  [{RED}FAIL{NC}] {f}")
-        elif name == "repro":
-            repro_total, repro_failed, repro_failures = total, failed, failures
-            if failed == 0:
-                print(f"  [{GREEN}PASS{NC}] reproducibility checks")
-            else:
-                for f in repro_failures:
-                    print(f"  [{RED}FAIL{NC}] {f}")
-        elif name == "staleness":
-            stale_total, stale_failed, stale_failures = total, failed, failures
-            if failed == 0:
-                print(f"  [{GREEN}PASS{NC}] staleness checks")
-            else:
-                for f in stale_failures:
-                    print(f"  [{RED}FAIL{NC}] {f}")
-        elif name == "check":
-            check_total, check_failed, check_failures = total, failed, failures
-            if failed == 0:
-                print(f"  [{GREEN}PASS{NC}] --check")
-            else:
-                for f in check_failures:
-                    print(f"  [{RED}FAIL{NC}] {f}")
-        elif name == "pdb":
-            pdb_total, pdb_failed, pdb_failures = total, failed, failures
-            if failed == 0:
-                print(f"  [{GREEN}PASS{NC}] debug symbols")
-            else:
-                for f in pdb_failures:
-                    print(f"  [{RED}FAIL{NC}] {f}")
-        elif name == "signals":
-            signal_total, signal_failed, signal_failures = total, failed, failures
-            if failed == 0:
-                print(f"  [{GREEN}PASS{NC}] signals and exit")
-            else:
-                for f in signal_failures:
-                    print(f"  [{RED}FAIL{NC}] {f}")
-        elif name == "read":
-            read_total, read_failed, read_failures = total, failed, failures
-            if failed == 0:
-                print(f"  [{GREEN}PASS{NC}] (std read) reads as the compiler does")
-            else:
-                for f in read_failures:
-                    print(f"  [{RED}FAIL{NC}] {f}")
-        elif name == "packages":
-            package_total, package_failed, package_failures = total, failed, failures
-            if failed == 0:
-                print(f"  [{GREEN}PASS{NC}] packages and roots")
-            else:
-                for f in package_failures:
-                    print(f"  [{RED}FAIL{NC}] {f}")
-        elif name in ("graph", "cutoff"):
-            graph_total += total
-            graph_failed += failed
-            graph_failures += failures
-            if failed == 0:
-                print(f"  [{GREEN}PASS{NC}] {'graph builds' if name == 'graph' else 'early cutoff'}")
-            else:
-                for f in failures:
-                    print(f"  [{RED}FAIL{NC}] {f}")
-
+phase_executor.shutdown()
 end_time = time.time()
 duration = end_time - start_time
 
