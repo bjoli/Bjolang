@@ -6,7 +6,19 @@ Just some small infos to get you started:
 
 To build and run all tests, ./run_tests.py . This runs all the files in TestFiles that start with 3 digits. Tests are reported as failed if compilation fails, or a test outputs "FAILURE: ..." or "FAIL_COMPILE"
 
-A full test run takes just over 2 minutes. Run it in the foreground with a timeout of about 300 seconds, and read the result when it finishes. Do not start it in the background and then wait for it with sleep loops. If a run takes much longer than 2-3 minutes, something is wrong: stop and find out why.
+Smaller runs, for a change to the standard library:
+
+- `./run_tests.py --only programs`: the numbered, error, warning and codegen
+  tests, without the toolchain checks (packages, graph builds, staleness,
+  debug symbols, signals, REPL). About 50 seconds.
+- `./run_tests.py --touching std/compress`: only the tests that import the
+  module, directly or through another module. Takes `std/compress`,
+  `'(std compress)'` or a path to a `.bjo` file; repeat it or separate
+  modules with commas. A module few tests use takes seconds. Everything
+  imports the prelude, so for a prelude change use `--only programs`.
+- Run the full suite before committing.
+
+A full test run takes about a minute. Run it in the foreground with a timeout of about 300 seconds, and read the result when it finishes. Do not start it in the background and then wait for it with sleep loops. If a run takes much longer than 2 minutes, something is wrong: stop and find out why.
 
 If you change anything in bjolangruntime you need to rebuild it. It is a different c# project in BjolangRuntime
 
