@@ -124,10 +124,16 @@ internal abstract class PromiseWaiter : IPromiseWaiter, IThreadPoolWorkItem
 /// event id, then dispatches the value to the sync's continuation.
 ///
 /// - **Commit order.** The commit is done in <see cref="Precommit"/>, on the
-///   completing thread, before the promise wakes any waiter. So of the syncs
-///   waiting on one promise, each commits before a cancellation watch on the
-///   same promise (<c>FiberWatch</c>) can run. A sync on <c>(cancelled tok)</c>
-///   under the token <c>tok</c> returns the token's value, and does not raise.
+///   completing thread, before the promise wakes the waiters near it: all of
+///   them for a list, those of its stripe for <see cref="StripedWaiters"/>.
+///   A cancellation watch (<c>FiberWatch</c>), and a forward, waits for every
+///   precommit before it commits anything (<c>Promise.WaitDrained</c>). So
+///   of the syncs waiting on one promise, each commits before a watch on the
+///   same promise can. A sync on <c>(cancelled tok)</c> under the token
+///   <c>tok</c> returns the token's value, and does not raise.
+/// - **Cost.** A list or stripe that never held one of these is not read by
+///   the precommit pass, and a single waiter has no other waiter to race and
+///   is not precommitted.
 /// - **Dispatch.** Only the commit is inline. The continuation is dispatched
 ///   by the queued work item, as before, so no user code runs on the
 ///   completing thread.
@@ -221,6 +227,10 @@ internal sealed class StripedWaiters
         /// 1 while held. A spin lock: nothing done under it waits on anything.
         public int Held;
         public bool Closed;
+
+        /// Holds, or held, a <see cref="CommitWaiter"/>. A stripe without one
+        /// is skipped by the precommit pass.
+        public bool HasCommit;
         public int PruneAt = 8;
         public readonly List<object> Waiters = new();
 
@@ -243,7 +253,8 @@ internal sealed class StripedWaiters
 
     /// The waiters of <paramref name="from"/> go to the first stripe; the
     /// prune thins them out as registrations on that core arrive.
-    public StripedWaiters(List<object> from)
+    /// <paramref name="hasCommit"/>: whether they include a <see cref="CommitWaiter"/>.
+    public StripedWaiters(List<object> from, bool hasCommit)
     {
         int n = (int)System.Numerics.BitOperations.RoundUpToPowerOf2(
             (uint)Math.Clamp(Environment.ProcessorCount, 1, 64));
@@ -251,6 +262,7 @@ internal sealed class StripedWaiters
         for (int i = 0; i < n; i++) _stripes[i] = new Stripe();
         _mask = n - 1;
         _stripes[0].Waiters.AddRange(from);
+        _stripes[0].HasCommit = hasCommit;
     }
 
     /// <summary>
@@ -272,6 +284,7 @@ internal sealed class StripedWaiters
                 s.PruneAt = Math.Max(8, s.Waiters.Count * 2);
             }
 
+            if (waiter is CommitWaiter) s.HasCommit = true;
             s.Waiters.Add(waiter);
             return true;
         }
@@ -279,34 +292,37 @@ internal sealed class StripedWaiters
     }
 
     /// <summary>
-    /// Close every stripe and wake what they held. Run once, by the completion
-    /// that won, after the promise reads as completed.
+    /// Close every stripe and wake what it held, one stripe at a time. Run
+    /// once, by the completion that won, after the promise reads as completed.
+    /// A registration that finds its stripe closed signals its waiter itself.
     ///
-    /// - Every stripe is closed first, then every waiter is precommitted, then
-    ///   every waiter is woken: the order <c>Promise.Complete</c> keeps for a
-    ///   single list.
-    /// - The precommits and wakes are done outside the stripes' locks.
+    /// - A stripe's syncs are precommitted before its waiters are woken. The
+    ///   caller sets the promise drained after the last stripe.
+    /// - A stripe that never held a <see cref="CommitWaiter"/> skips the
+    ///   precommit pass: reading every waiter of a token with a watch per
+    ///   parked fiber cost a cache miss each.
+    /// - The precommits and wakes are done outside the stripe's lock.
     /// </summary>
-    public void Drain(Action<object> precommit, Action<object> wake)
+    public void Drain<T>()
     {
-        var held = new object[_stripes.Length][];
-        for (int i = 0; i < _stripes.Length; i++)
+        foreach (var s in _stripes)
         {
-            var s = _stripes[i];
+            object[] held;
+            bool hasCommit;
             s.Enter();
             try
             {
                 s.Closed = true;
-                held[i] = s.Waiters.ToArray();
+                held = s.Waiters.ToArray();
+                hasCommit = s.HasCommit;
                 s.Waiters.Clear();
             }
             finally { s.Exit(); }
-        }
 
-        foreach (var ws in held)
-            foreach (var w in ws) precommit(w);
-        foreach (var ws in held)
-            foreach (var w in ws) wake(w);
+            if (hasCommit)
+                foreach (var w in held) Promise<T>.Precommit(w);
+            foreach (var w in held) Promise<T>.Wake(w);
+        }
     }
 
     /// Registered waiters, counted without pruning. Test-only.
@@ -367,11 +383,17 @@ public class Promise<T> : IEvent<Result<T>>,
     /// </summary>
     private const int StripeAt = 32;
 
-    private static readonly Action<object> s_wake = Wake;
-    private static readonly Action<object> s_precommit = Precommit;
 
     /// <summary>Set by the completion once every waiter is precommitted.</summary>
     private bool _drained;
+
+    /// <summary>
+    /// The list of waiters holds, or held, a <see cref="CommitWaiter"/>.
+    /// Without one the precommit pass is skipped. Written before the waiter is
+    /// published: under the list's lock, or before the exchange that installs
+    /// the list. The stripes keep a flag each.
+    /// </summary>
+    private bool _hasCommit;
 
     /// <summary>
     /// Wait for a completed promise to finish precommitting its waiters.
@@ -385,8 +407,10 @@ public class Promise<T> : IEvent<Result<T>>,
     internal void WaitDrained()
     {
         if (Volatile.Read(ref _drained)) return;
+        // No Sleep(1): a watch woken from an early stripe waits here while the
+        // completion drains the later ones, which takes microseconds.
         var sw = new SpinWait();
-        while (!Volatile.Read(ref _drained)) sw.SpinOnce();
+        while (!Volatile.Read(ref _drained)) sw.SpinOnce(sleep1Threshold: -1);
     }
 
     public bool IsCompleted => ReferenceEquals(Volatile.Read(ref _waiters), s_completedSentinel);
@@ -415,9 +439,9 @@ public class Promise<T> : IEvent<Result<T>>,
         // — before it touches Outcome.
         var oldWaiters = Interlocked.Exchange(ref _waiters, s_completedSentinel);
 
-        // Two passes: every waiter is precommitted before any is woken, so a
-        // sync waiting on this promise commits before a cancellation watch on
-        // it runs. See CommitWaiter.
+        // The syncs waiting here are precommitted before the waiters are
+        // woken, and `_drained` is set once every one is. A watch waits for it
+        // (WaitDrained) before it commits. See CommitWaiter.
         if (oldWaiters != null)
         {
             // The exact type: List<T> is not sealed, so `is List<object>`
@@ -429,23 +453,34 @@ public class Promise<T> : IEvent<Result<T>>,
                 var list = Unsafe.As<List<object>>(oldWaiters);
                 lock (list)
                 {
-                    foreach (var w in list) Precommit(w);
+                    if (_hasCommit)
+                        foreach (var w in list) Precommit(w);
+                    Volatile.Write(ref _drained, true);
                     foreach (var w in list) Wake(w);
                 }
             }
             else if (oldWaiters is StripedWaiters striped)
             {
-                striped.Drain(s_precommit, s_wake);
+                // Stripe by stripe, so the first wakes are not held back by
+                // the last stripes. A watch woken here may run before a later
+                // stripe's syncs are precommitted, and waits for `_drained`
+                // before it commits anything.
+                striped.Drain<T>();
+                Volatile.Write(ref _drained, true);
             }
             else
             {
-                Precommit(oldWaiters);
+                // No precommit. A single waiter has no other waiter to race,
+                // and a watch registered after the completion is one that the
+                // prune dropped, which only a list does.
+                Volatile.Write(ref _drained, true);
                 Wake(oldWaiters);
             }
         }
-
-        // After the precommits: WaitDrained returns once this is set.
-        Volatile.Write(ref _drained, true);
+        else
+        {
+            Volatile.Write(ref _drained, true);
+        }
 
         OnLanded(error);
         return true;
@@ -481,6 +516,7 @@ public class Promise<T> : IEvent<Result<T>>,
         _pruneAt = 8;
         _claimed = 0;
         _drained = false;
+        _hasCommit = false;
     }
 
     // ---- waiter registration ----------------------------------------------
@@ -499,7 +535,7 @@ public class Promise<T> : IEvent<Result<T>>,
     /// could implement with unrelated semantics). So the common case — a fiber
     /// blocked on a promise — wakes with zero allocation end to end.
     /// </summary>
-    private static void Wake(object waiter)
+    internal static void Wake(object waiter)
     {
         // A parked fiber's box first, registered with no delegate (see
         // IResume): it is the common waiter, and no PromiseWaiter is one, so
@@ -521,7 +557,7 @@ public class Promise<T> : IEvent<Result<T>>,
     }
 
     /// <summary>The first pass of a completion; see <see cref="CommitWaiter"/>.</summary>
-    private static void Precommit(object waiter)
+    internal static void Precommit(object waiter)
     {
         if (waiter is PromiseWaiter pw) pw.Precommit();
     }
@@ -626,7 +662,7 @@ public class Promise<T> : IEvent<Result<T>>,
 
                         if (list.Count >= StripeAt)
                         {
-                            var stripes = new StripedWaiters(list);
+                            var stripes = new StripedWaiters(list, _hasCommit);
                             if (Interlocked.CompareExchange(ref _waiters, stripes, list) == list)
                             {
                                 if (!stripes.TryAdd(waiter)) SignalInline(waiter);
@@ -638,6 +674,7 @@ public class Promise<T> : IEvent<Result<T>>,
                             // lock is released: adding to it is still right.
                         }
 
+                        if (waiter is CommitWaiter) _hasCommit = true;
                         list.Add(waiter);
                         return;
                     }
@@ -652,6 +689,7 @@ public class Promise<T> : IEvent<Result<T>>,
             else
             {
                 // A single waiter (bare Action or PromiseWaiter); grow to a list.
+                if (current is CommitWaiter || waiter is CommitWaiter) _hasCommit = true;
                 var grown = new List<object>(4) { current, waiter };
                 if (Interlocked.CompareExchange(ref _waiters, grown, current) == current)
                     return;
