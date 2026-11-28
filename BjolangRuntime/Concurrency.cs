@@ -263,8 +263,16 @@ public static partial class BjolangRuntime {
             // The token may have fired before the arm, and its walk of its
             // waiters then found the cell idle. Arming is interlocked and this
             // read follows it, so one of the two sides always sees the other.
-            if (token.IsCompleted && cell.TryTake(gen) && state.TryCommit(stateGen, tokenBranch))
-                ((ICancellableAwaiter)aw).OnCancelled(token.GetAwaiter().GetResult());
+            //
+            // WaitDrained: a branch waiting on the token itself, such as
+            // `(cancelled tok)`, commits in the token's precommit pass, and
+            // must win over the token's own branch. The pass may still be
+            // running on the completing thread. See CommitWaiter.
+            if (token.IsCompleted) {
+                token.WaitDrained();
+                if (cell.TryTake(gen) && state.TryCommit(stateGen, tokenBranch))
+                    ((ICancellableAwaiter)aw).OnCancelled(token.GetAwaiter().GetResult());
+            }
 
             return new SyncAwaiter<T>(aw, cell);
         }
@@ -724,6 +732,11 @@ public static partial class BjolangRuntime {
         public override void Signal() {
             int s = System.Threading.Volatile.Read(ref _state);
             if ((s & StatusMask) != Armed) return;
+
+            // A cell registered after the token completed is signalled at the
+            // registration, maybe while the completion is still precommitting
+            // the syncs that wait on the token. Those win; see CommitWaiter.
+            _token.WaitDrained();
 
             // Read before the take and used only if it succeeds: the state was
             // this park, armed, both before and after the reads, and the fields

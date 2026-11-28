@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* A sync on the ambient token's own event returns
+
+- *~(sync (cancelled (parameter-ref current-cancel)))~* returns the reason
+  when the token fires, and does not raise ~Cancelled~. The event and the
+  ambient token are one promise and become ready together. Before, either
+  could commit, so the wait sometimes raised; on .NET 11 it did often
+  enough to fail ~078_cancel~.
+- *How:* a promise that completes commits the syncs waiting on it before
+  it wakes anything, on the completing thread. Only the commit is inline:
+  the continuations are still dispatched by queued work items, so no user
+  code runs on the completing thread. A cancellation watch, and a forward
+  to a child token, waits for those commits before it runs.
+- *Left open:* in a ~choose~, a branch that is transiently claimed by a
+  partner at that moment commits from its work item instead, and the order
+  is not guaranteed for it.
+- Tests: ~611_cancelled_own_token~, two runtime tests in ~Cml/Tests~, and
+  ~078_cancel~'s leaf waits unshielded again.
+
 * ~make-input-port~ and ~make-output-port~: ports made of bjoroutines
 
 - *~(make-input-port read)~* in ~(std ports)~ is a port whose bytes are the

@@ -1,0 +1,61 @@
+;; A `sync` on `(cancelled tok)` under the ambient token `tok` returns the
+;; reason when `tok` fires, and does not raise `Cancelled`.
+;;
+;; - The event and the ambient token are one promise, so they become ready
+;;   together. The runtime commits the event first.
+;; - Each round starts fibers under a fresh token: half wait on the event
+;;   alone, half in a `choose` with a channel nobody sends on.
+;; - Some rounds fire the token once the fibers are parked, some while they
+;;   are still starting, so that some arm their watch after it fired.
+(import (std prelude))
+(import (std simpletest))
+
+;; Waits for the ambient token. Returns "returned", or raises `Cancelled`.
+(: (-bjo-> (Chan int) bool string))
+(defbjo (waiter never in-choose)
+  (def tok (parameter-ref current-cancel))
+  (if in-choose
+      (sync (choose (wrap (chan-recv never) (fun (n) "a send"))
+                    (wrap (cancelled tok) (fun (why) "returned"))))
+      (match (sync (cancelled tok))
+        ((Requested _) "returned")
+        (_ "another reason"))))
+
+;; The fiber's outcome: what it returned, "raised", or a timeout.
+(: (-bjo-> (Promise string) string))
+(defbjo (outcome p)
+  (sync (choose (wrap (promise-join p) (fun (r)
+                                         (match r
+                                           ((Ok s) s)
+                                           ((Err _) "raised"))))
+                (wrap (timeout (seconds 5)) (fun (u) "nothing within 5 s")))))
+
+;; One round of `n` fibers. Returns how many did not return.
+(: (-bjo-> int bool int))
+(defbjo (round n park-first)
+  (def (cancel! tok) (make-cancel))
+  (def never (make-chan))
+  (def fibers
+    (loop (:for i (range 0 n))
+          (:acc ps (listing (parameterize ((current-cancel tok))
+                              (bjo (waiter never (= (% i 2) 1))))))
+      => ps))
+  (when park-first
+    (sync (timeout (milliseconds 2L))))
+  (ignore (cancel! (Requested "the round")))
+  (loop (:for p fibers)
+        (:acc bad (summing (if (= (outcome p) "returned") 0 1)))
+    => bad))
+
+(defbjo (main args)
+  (def parked
+    (loop (:for _ (range 0 100))
+          (:acc bad (summing (round 40 #t)))
+      => bad))
+  (expect "parked waiters on their own token return" parked 0)
+  (def arming
+    (loop (:for _ (range 0 300))
+          (:acc bad (summing (round 40 #f)))
+      => bad))
+  (expect "waiters that arm as their own token fires return" arming 0)
+  0)

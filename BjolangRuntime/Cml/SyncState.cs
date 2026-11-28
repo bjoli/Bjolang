@@ -353,6 +353,37 @@ public class SyncState
         }
     }
 
+    /// <summary>What <see cref="TryCommitNow"/> found.</summary>
+    public enum CommitNow { Committed, Lost, Busy }
+
+    /// <summary>
+    /// <see cref="TryCommit"/> without the spin, for a caller that may itself
+    /// hold the claim it would spin on.
+    ///
+    /// - <c>Committed</c>: W -&gt; C -&gt; S, as <see cref="TryCommit"/>.
+    /// - <c>Lost</c>: another branch won, or the state is at a later generation.
+    /// - <c>Busy</c>: transiently <c>C</c>. Nothing changed; the caller retries
+    ///   later with <see cref="TryCommit"/>.
+    /// </summary>
+    public CommitNow TryCommitNow(long gen, int eventId)
+    {
+        long w = Word(gen, W), c = Word(gen, C);
+        while (true)
+        {
+            long v = Volatile.Read(ref _value);
+            if (v == w)
+            {
+                if (Interlocked.CompareExchange(ref _value, c, w) == w)
+                {
+                    MarkSynchronized(eventId);
+                    return CommitNow.Committed;
+                }
+                continue;
+            }
+            return v == c ? CommitNow.Busy : CommitNow.Lost;
+        }
+    }
+
     /// <summary>
     /// Finish a synchronisation and fire the nacks of every losing subtree.
     ///

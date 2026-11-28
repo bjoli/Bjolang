@@ -94,6 +94,13 @@ internal abstract class PromiseWaiter : IPromiseWaiter, IThreadPoolWorkItem
     public abstract void Signal();
     public abstract bool IsAbandoned { get; }
 
+    /// <summary>
+    /// Run by the completing thread on every waiter before any is woken. A
+    /// waiter that commits a sync does it here; see <see cref="CommitWaiter"/>.
+    /// Must not run user code.
+    /// </summary>
+    internal virtual void Precommit() { }
+
     public void Execute()
     {
         Scheduler.InlineDepth = 0;
@@ -110,6 +117,77 @@ internal abstract class PromiseWaiter : IPromiseWaiter, IThreadPoolWorkItem
             Scheduler.OnWorkItemComplete();
         }
     }
+}
+
+/// <summary>
+/// A waiter for a promise branch of a sync: it commits the sync under its
+/// event id, then dispatches the value to the sync's continuation.
+///
+/// - **Commit order.** The commit is done in <see cref="Precommit"/>, on the
+///   completing thread, before the promise wakes any waiter. So of the syncs
+///   waiting on one promise, each commits before a cancellation watch on the
+///   same promise (<c>FiberWatch</c>) can run. A sync on <c>(cancelled tok)</c>
+///   under the token <c>tok</c> returns the token's value, and does not raise.
+/// - **Dispatch.** Only the commit is inline. The continuation is dispatched
+///   by the queued work item, as before, so no user code runs on the
+///   completing thread.
+/// - **A busy state.** A state transiently claimed by another branch is not
+///   waited for here: the completing thread may hold that claim itself. Such
+///   a waiter commits from its work item with <see cref="SyncState.TryCommit"/>,
+///   which spins past the claim, and the order above is not guaranteed for it.
+/// </summary>
+[NonUserCode]
+internal abstract class CommitWaiter : PromiseWaiter
+{
+    private const int Pending = 0, Committed = 1, Lost = 2;
+
+    private readonly SyncState _state;
+    private readonly long _gen;   // the generation published at; see SyncState
+    private readonly int _eventId;
+    private int _pre;
+
+    protected CommitWaiter(SyncState state, int eventId)
+    {
+        _state = state;
+        _gen = state.Gen;
+        _eventId = eventId;
+    }
+
+    /// <summary>The sync has committed under this branch: pass the value on.</summary>
+    protected abstract void Dispatch();
+
+    internal sealed override void Precommit()
+    {
+        _pre = _state.TryCommitNow(_gen, _eventId) switch
+        {
+            SyncState.CommitNow.Committed => Committed,
+            SyncState.CommitNow.Lost => Lost,
+            _ => Pending,
+        };
+    }
+
+    public sealed override void Signal()
+    {
+        switch (Volatile.Read(ref _pre))
+        {
+            case Committed: Dispatch(); return;
+            case Lost: return;
+        }
+
+        // TryCommit, not TryClaim. This can run on another thread long after
+        // Publish returned, and find the state transiently claimed by a sibling
+        // branch still being published. Treating that as "someone else won"
+        // would drop a completion that happened, and the sync would wait
+        // forever on an event that already fired.
+        if (_state.TryCommit(_gen, _eventId)) Dispatch();
+    }
+
+    /// <summary>
+    /// Another branch won the sync, so the waiter can be dropped. A waiter that
+    /// committed in <see cref="Precommit"/> still has its value to dispatch.
+    /// </summary>
+    public sealed override bool IsAbandoned =>
+        Volatile.Read(ref _pre) != Committed && _state.IsSynchronizedAt(_gen);
 }
 
 /// <summary>
@@ -201,26 +279,34 @@ internal sealed class StripedWaiters
     }
 
     /// <summary>
-    /// Close every stripe and wake what each held. Run once, by the completion
-    /// that won, after the promise reads as completed. The waking is done
-    /// outside the stripe's lock.
+    /// Close every stripe and wake what they held. Run once, by the completion
+    /// that won, after the promise reads as completed.
+    ///
+    /// - Every stripe is closed first, then every waiter is precommitted, then
+    ///   every waiter is woken: the order <c>Promise.Complete</c> keeps for a
+    ///   single list.
+    /// - The precommits and wakes are done outside the stripes' locks.
     /// </summary>
-    public void Drain(Action<object> wake)
+    public void Drain(Action<object> precommit, Action<object> wake)
     {
-        foreach (var s in _stripes)
+        var held = new object[_stripes.Length][];
+        for (int i = 0; i < _stripes.Length; i++)
         {
-            object[] held;
+            var s = _stripes[i];
             s.Enter();
             try
             {
                 s.Closed = true;
-                held = s.Waiters.ToArray();
+                held[i] = s.Waiters.ToArray();
                 s.Waiters.Clear();
             }
             finally { s.Exit(); }
-
-            foreach (var w in held) wake(w);
         }
+
+        foreach (var ws in held)
+            foreach (var w in ws) precommit(w);
+        foreach (var ws in held)
+            foreach (var w in ws) wake(w);
     }
 
     /// Registered waiters, counted without pruning. Test-only.
@@ -282,6 +368,26 @@ public class Promise<T> : IEvent<Result<T>>,
     private const int StripeAt = 32;
 
     private static readonly Action<object> s_wake = Wake;
+    private static readonly Action<object> s_precommit = Precommit;
+
+    /// <summary>Set by the completion once every waiter is precommitted.</summary>
+    private bool _drained;
+
+    /// <summary>
+    /// Wait for a completed promise to finish precommitting its waiters.
+    ///
+    /// - For a caller that saw the promise completed and is about to commit a
+    ///   sync against it: the syncs that were waiting on the promise commit
+    ///   first. See <see cref="CommitWaiter"/>.
+    /// - Precondition: <see cref="IsCompleted"/>. The wait is a spin over the
+    ///   precommit pass, which does no blocking work.
+    /// </summary>
+    internal void WaitDrained()
+    {
+        if (Volatile.Read(ref _drained)) return;
+        var sw = new SpinWait();
+        while (!Volatile.Read(ref _drained)) sw.SpinOnce();
+    }
 
     public bool IsCompleted => ReferenceEquals(Volatile.Read(ref _waiters), s_completedSentinel);
 
@@ -309,6 +415,9 @@ public class Promise<T> : IEvent<Result<T>>,
         // — before it touches Outcome.
         var oldWaiters = Interlocked.Exchange(ref _waiters, s_completedSentinel);
 
+        // Two passes: every waiter is precommitted before any is woken, so a
+        // sync waiting on this promise commits before a cancellation watch on
+        // it runs. See CommitWaiter.
         if (oldWaiters != null)
         {
             // The exact type: List<T> is not sealed, so `is List<object>`
@@ -320,18 +429,23 @@ public class Promise<T> : IEvent<Result<T>>,
                 var list = Unsafe.As<List<object>>(oldWaiters);
                 lock (list)
                 {
+                    foreach (var w in list) Precommit(w);
                     foreach (var w in list) Wake(w);
                 }
             }
             else if (oldWaiters is StripedWaiters striped)
             {
-                striped.Drain(s_wake);
+                striped.Drain(s_precommit, s_wake);
             }
             else
             {
+                Precommit(oldWaiters);
                 Wake(oldWaiters);
             }
         }
+
+        // After the precommits: WaitDrained returns once this is set.
+        Volatile.Write(ref _drained, true);
 
         OnLanded(error);
         return true;
@@ -366,6 +480,7 @@ public class Promise<T> : IEvent<Result<T>>,
         _error = null;
         _pruneAt = 8;
         _claimed = 0;
+        _drained = false;
     }
 
     // ---- waiter registration ----------------------------------------------
@@ -403,6 +518,12 @@ public class Promise<T> : IEvent<Result<T>>,
             if (a.Target is IFiberResume box) Scheduler.Enqueue(box);
             else Scheduler.Enqueue(a);
         }
+    }
+
+    /// <summary>The first pass of a completion; see <see cref="CommitWaiter"/>.</summary>
+    private static void Precommit(object waiter)
+    {
+        if (waiter is PromiseWaiter pw) pw.Precommit();
     }
 
     /// <summary>Run a waiter inline; the already-completed registration path.</summary>
@@ -480,13 +601,17 @@ public class Promise<T> : IEvent<Result<T>>,
             }
             else if (current is List<object> list)
             {
+                // Signalled after the lock is released: the completion holds
+                // this lock for its precommits, and a late waiter may wait for
+                // them (WaitDrained).
+                bool late = false;
                 lock (list)
                 {
                     var now = Volatile.Read(ref _waiters);
                     if (ReferenceEquals(now, s_completedSentinel))
                     {
-                        SignalInline(waiter);
-                        return;
+                        late = true;
+                        goto unlocked;
                     }
 
                     // Moved to stripes while this waited for the lock, and
@@ -516,6 +641,12 @@ public class Promise<T> : IEvent<Result<T>>,
                         list.Add(waiter);
                         return;
                     }
+                }
+            unlocked:
+                if (late)
+                {
+                    SignalInline(waiter);
+                    return;
                 }
             }
             else
@@ -553,6 +684,9 @@ public class Promise<T> : IEvent<Result<T>>,
     {
         if (IsCompleted)
         {
+            // The target's waiters run after this promise's syncs commit, as
+            // they do when the forward is woken; see CommitWaiter.
+            WaitDrained();
             var r = Outcome;
             if (r.IsError) target.TrySetException(r.Error!);
             else target.TrySetResult(r.Value);
@@ -576,6 +710,9 @@ public class Promise<T> : IEvent<Result<T>>,
 
         public override void Signal()
         {
+            // Signalled at the registration, it may be during the source's
+            // precommits; see Forward.
+            _source.WaitDrained();
             var r = _source.Outcome;
             if (r.IsError) _target.TrySetException(r.Error!);
             else _target.TrySetResult(r.Value);
@@ -620,7 +757,7 @@ public class Promise<T> : IEvent<Result<T>>,
     {
         if (IsCompleted)
         {
-            // From inside the publish, so this sync's own sink; see Deliver.
+            // From inside the publish, so this sync's own sink; see CommitWaiter.
             if (state.TryCommit(state.Gen, eventId)) Scheduler.DispatchOwn(onSync, Outcome);
             return;
         }
@@ -628,40 +765,20 @@ public class Promise<T> : IEvent<Result<T>>,
         Register(new Waiter(this, state, eventId, onSync));
     }
 
-    private void Deliver(SyncState state, long gen, int eventId, Action<Result<T>> onSync)
-    {
-        // TryCommit, not TryClaim. This waiter can run on a completely different
-        // thread long after Publish returned, and may well find the state transiently
-        // Claimed by a sibling branch still being published. Treating that as "someone
-        // else won" would drop a completion that actually happened, and the choose
-        // would then wait forever on an event that already fired.
-        if (!state.TryCommit(gen, eventId)) return;
-
-        Scheduler.Dispatch(onSync, Outcome);
-    }
-
     [NonUserCode]
-    private sealed class Waiter : PromiseWaiter
+    private sealed class Waiter : CommitWaiter
     {
         private readonly Promise<T> _owner;
-        private readonly SyncState _state;
-        private readonly long _gen;   // the generation published at; see SyncState
-        private readonly int _eventId;
         private readonly Action<Result<T>> _onSync;
 
         public Waiter(Promise<T> owner, SyncState state, int eventId, Action<Result<T>> onSync)
+            : base(state, eventId)
         {
             _owner = owner;
-            _state = state;
-            _gen = state.Gen;
-            _eventId = eventId;
             _onSync = onSync;
         }
 
-        public override void Signal() => _owner.Deliver(_state, _gen, _eventId, _onSync);
-
-        /// <summary>Our sync block was won by another branch; we can be dropped.</summary>
-        public override bool IsAbandoned => _state.IsSynchronizedAt(_gen);
+        protected override void Dispatch() => Scheduler.Dispatch(_onSync, _owner.Outcome);
     }
 
     // ---- the hosted language's join ---------------------------------------
@@ -712,38 +829,23 @@ public class Promise<T> : IEvent<Result<T>>,
         Register(new JoinWaiter(this, state, eventId, onSync));
     }
 
-    /// <summary>See <see cref="Deliver"/>, which this is with the conversion.</summary>
-    private void DeliverJoin(
-        SyncState state, long gen, int eventId, Action<global::BjolangRuntime.Result<Exception, T>> onSync)
-    {
-        if (!state.TryCommit(gen, eventId)) return;
-        Scheduler.Dispatch(onSync, ForJoin(Outcome));
-    }
-
+    /// <summary>The join's waiter: <see cref="Waiter"/> with the conversion.</summary>
     [NonUserCode]
-    private sealed class JoinWaiter : PromiseWaiter
+    private sealed class JoinWaiter : CommitWaiter
     {
         private readonly Promise<T> _owner;
-        private readonly SyncState _state;
-        private readonly long _gen;   // the generation published at; see SyncState
-        private readonly int _eventId;
         private readonly Action<global::BjolangRuntime.Result<Exception, T>> _onSync;
 
         public JoinWaiter(
             Promise<T> owner, SyncState state, int eventId,
             Action<global::BjolangRuntime.Result<Exception, T>> onSync)
+            : base(state, eventId)
         {
             _owner = owner;
-            _state = state;
-            _gen = state.Gen;
-            _eventId = eventId;
             _onSync = onSync;
         }
 
-        public override void Signal() => _owner.DeliverJoin(_state, _gen, _eventId, _onSync);
-
-        /// <summary>Our sync block was won by another branch; we can be dropped.</summary>
-        public override bool IsAbandoned => _state.IsSynchronizedAt(_gen);
+        protected override void Dispatch() => Scheduler.Dispatch(_onSync, ForJoin(_owner.Outcome));
     }
 
     /// <summary>
@@ -801,37 +903,20 @@ internal sealed class PromiseValue<T> : IEvent<T>, INowable<T>
         _promise.Register(new Waiter(this, state, eventId, onSync));
     }
 
-    /// <summary>
-    /// <c>TryCommit</c>, not <c>TryClaim</c>, for the reason
-    /// <see cref="Promise{T}"/>'s own delivery gives.
-    /// </summary>
-    private void Deliver(SyncState state, long gen, int eventId, Action<T> onSync)
-    {
-        if (!state.TryCommit(gen, eventId)) return;
-        Scheduler.Dispatch(onSync, _promise.Outcome.Value);
-    }
-
     [NonUserCode]
-    private sealed class Waiter : PromiseWaiter
+    private sealed class Waiter : CommitWaiter
     {
         private readonly PromiseValue<T> _owner;
-        private readonly SyncState _state;
-        private readonly long _gen;   // the generation published at; see SyncState
-        private readonly int _eventId;
         private readonly Action<T> _onSync;
 
         public Waiter(PromiseValue<T> owner, SyncState state, int eventId, Action<T> onSync)
+            : base(state, eventId)
         {
             _owner = owner;
-            _state = state;
-            _gen = state.Gen;
-            _eventId = eventId;
             _onSync = onSync;
         }
 
-        public override void Signal() => _owner.Deliver(_state, _gen, _eventId, _onSync);
-
-        public override bool IsAbandoned => _state.IsSynchronizedAt(_gen);
+        protected override void Dispatch() => Scheduler.Dispatch(_onSync, _owner._promise.Outcome.Value);
     }
 }
 

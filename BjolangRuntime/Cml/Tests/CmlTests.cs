@@ -110,6 +110,8 @@ public static class CmlTests
         Run("a spawned child builds a cell of its own, and both cancel", SpawnedChildHasACellOfItsOwn);
         Run("a watched park has one winner, and a stale withdrawal finds nothing", OpClaimHasOneWinner);
         Run("a finished fiber's idle watch is reused under its own token only", RetiredWatchIsReused);
+        Run("a sync on its own token's event returns, for parked fibers", OwnTokenEventWinsWhenParked);
+        Run("a sync on its own token's event returns, when the token fires during the arm", OwnTokenEventWinsWhileArming);
     }
 
     // -----------------------------------------------------------------------
@@ -956,6 +958,80 @@ public static class CmlTests
 
         AssertEqual(10, taken.Count, "watches handed back of the 10 retired");
         Assert(taken.SetEquals(cells), "a watch came back that was never retired");
+    }
+
+    /// <summary>
+    /// Run <paramref name="fibers"/> fibers under one token, each syncing on
+    /// the token's own event, alone or in a choose, and fire the token.
+    ///
+    /// - <paramref name="parkFirst"/>: fire once every fiber is parked, so the
+    ///   token's completion finds the sync's waiter and its watch both
+    ///   registered. Otherwise fire as the fibers start, so some arm their
+    ///   watch after the token fired.
+    /// - Returns how many of the syncs raised <c>Cancelled</c>.
+    /// </summary>
+    private static int SyncOnOwnToken(int fibers, bool parkFirst, int round)
+    {
+        var token = new Promise<global::BjolangRuntime.CancelReason>();
+        var never = new Channel<int>();
+        var left = new CountdownEvent(fibers);
+        int raised = 0, wrong = 0;
+
+        for (int i = 0; i < fibers; i++)
+        {
+            bool inChoose = (i & 1) == 1;
+            _ = UnderToken(token, async () =>
+            {
+                try
+                {
+                    if (inChoose)
+                    {
+                        var ev = Cml.Choose<int>(
+                            never,
+                            Cml.Wrap(global::BjolangRuntime.cancelled(token), static _ => 1));
+                        if (await global::BjolangRuntime.sync(ev) != 1) Interlocked.Increment(ref wrong);
+                    }
+                    else
+                    {
+                        var why = await global::BjolangRuntime.sync(global::BjolangRuntime.cancelled(token));
+                        if (why is null) Interlocked.Increment(ref wrong);
+                    }
+                }
+                catch (Bjolang.Runtime.Cancelled) { Interlocked.Increment(ref raised); }
+                left.Signal();
+                return default;
+            });
+        }
+
+        // Each parked fiber registers its sync's waiter and its watch.
+        if (parkFirst) AwaitPark(() => token.RawWaiterCount >= 2 * fibers ? 1 : 0, "every fiber to park");
+
+        token.TrySetResult(Reason($"round {round}"));
+        if (!left.Wait(5000)) throw new Exception($"round {round}: a sync on its own token never returned");
+        AssertEqual(0, wrong, $"round {round}: syncs that returned the wrong value");
+        return raised;
+    }
+
+    /// <summary>
+    /// `(sync (cancelled tok))` under `tok`: the event and the ambient token are
+    /// one promise and become ready together, and the event wins. The token's
+    /// completion commits the sync before its watch runs (see CommitWaiter).
+    /// </summary>
+    private static void OwnTokenEventWinsWhenParked()
+    {
+        for (int round = 0; round < 300; round++)
+        {
+            AssertEqual(0, SyncOnOwnToken(1, parkFirst: true, round), $"round {round}: one parked fiber raised");
+            AssertEqual(0, SyncOnOwnToken(40, parkFirst: true, round), $"round {round}: parked fibers raised");
+        }
+    }
+
+    /// The same, with the token firing while the fibers publish and arm. A
+    /// fiber that arms after the token fired waits for its precommits.
+    private static void OwnTokenEventWinsWhileArming()
+    {
+        for (int round = 0; round < 300; round++)
+            AssertEqual(0, SyncOnOwnToken(40, parkFirst: false, round), $"round {round}: arming fibers raised");
     }
 
     // -----------------------------------------------------------------------

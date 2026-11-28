@@ -121,19 +121,16 @@
 ;; Reporting after a cancellation is exactly the work a shield is for, and
 ;; `with-shield` above is where that promise is tested on its own.
 ;;
-;; `leaf`'s wait is such a sync too. A `sync` on `(cancelled tok)` where `tok`
-;; is the ambient token races that same token: when it fires while the fiber
-;; is parked, the event and the ambient branch are ready together, and either
-;; may commit, so the wait returns or raises `Cancelled`. So `leaf` reads the
-;; ambient token outside the shield, which is what shows it was handed the
-;; token, and waits for it inside, where the ambient token is the shield's.
+;; `leaf`'s wait is not such a sync. A `sync` on `(cancelled tok)` where `tok`
+;; is the ambient token races that same token, and the two are ready together
+;; when it fires. The runtime commits the event first, so the wait returns
+;; the reason and does not raise. 611_cancelled_own_token stresses this.
 
 (: (-> (Chan string) void))
 (defbjo (leaf report)
-  (def tok (parameter-ref current-cancel))
+  (def fired (sync (cancelled (parameter-ref current-cancel))))
   (with-shield
     #:within (seconds 5)
-    (def fired (sync (cancelled tok)))
     (sync (chan-send report "leaf"))))
 
 (: (-> (Chan string) void))
